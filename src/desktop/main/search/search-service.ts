@@ -1,8 +1,5 @@
-import { promises as fs } from 'node:fs';
-import * as path from 'node:path';
-import { StringDecoder } from 'node:string_decoder';
 import picomatch from 'picomatch';
-import { processLauncher, type LaunchedProcess } from '../../../core/process-launcher';
+import { pathFor } from '../../../shared/project-location';
 import { isRelativeFilePath } from '../../../shared/relative-path';
 import {
   compareSearchFiles,
@@ -19,10 +16,14 @@ import {
   type SearchSortOrder,
 } from '../../../shared/text-search';
 import { MAX_EDITOR_TEXT_CHARS, type SearchBufferWarning, type SearchCopyTarget, type SearchDone, type SearchFileUpdate, type SearchResultsBatch, type SearchStartResult } from '../../preload/shell-channels';
-import { keepMatchText, lineStarts, type KeptText } from './replace';
-import { parseGlobList, rgSearchArgs } from './rg-args';
+import { keepMatchText, lineStarts, type KeptText } from '../../workspace/search/replace';
+import { parseGlobList, rgSearchArgs } from '../../workspace/search/rg-args';
+import type { RgEvent, SearchRun, SearchRunEnd } from '../../workspace/search/search-runner';
+import { runWithin } from '../../workspace/search/time-bound';
+import type { RecordedMatch, RecordedSearch, SearchFolder } from '../../workspace/search/types';
+import type { ProjectWorkspace } from '../../workspace/project-workspace';
+import { NotConnectedError, type Workspaces } from '../workspace/workspaces';
 import { editorMatches, SEARCH_EDITOR_CHARS_PER_LINE, type EditorFileResult, type EditorMatch } from './search-editor-format';
-import { runWithin } from './time-bound';
 
 // A finished file waits at most this long, or until this many matches wait, before its batch goes to the shell.
 export const SEARCH_BATCH_MS = 50;
@@ -34,20 +35,6 @@ export const GLOB_TIMEOUT_MS = 250;
 export const BUFFER_SEARCH_TIMEOUT_MS = 1000;
 // VS Code's FileMatch re-finds an open model's matches this long after its last change (RunOnceScheduler).
 export const LIVE_UPDATE_MS = 250;
-// Characters of ripgrep's stderr kept for the error and the log.
-const MAX_STDERR_CHARS = 4096;
-// Bytes of one ripgrep JSON event main reads; a longer one is dropped unread. --json prints each matching line whole, and a
-// multi-line match's lines can be a whole file, which main would hold several times over while it decodes them.
-export const MAX_RG_EVENT_BYTES: number = 32 * 1024 * 1024;
-
-export type RgProcess = Pick<LaunchedProcess, 'onData' | 'exited' | 'closed' | 'kill'>;
-
-// The shown folder of the window's selected project: ripgrep's working directory and only path.
-export interface SearchFolder {
-  readonly projectKey: string;
-  readonly fsPath: string;
-}
-
 // An open text document Search may read: a file of the searched project, or an untitled buffer. The caller scopes them.
 export interface BufferDocument {
   readonly documentId: string;
@@ -66,7 +53,9 @@ export interface SearchSettings {
 
 export interface SearchServiceDeps {
   readonly folder: () => SearchFolder | undefined;
-  readonly rgPath: () => Promise<string>;
+  readonly workspaces: Workspaces;
+  // the OS a project's files are on: this computer's, or its remote host's
+  readonly osOf: (projectKey: string) => NodeJS.Platform;
   // getRipgrepSearchOptions: the search.use*IgnoreFiles switches
   readonly ignoreArgs: () => readonly string[];
   // the true entries of damocles.desktop.files.exclude and damocles.desktop.search.exclude
@@ -78,28 +67,6 @@ export interface SearchServiceDeps {
   readonly sendFileUpdate: (update: SearchFileUpdate) => void;
   readonly sendDone: (done: SearchDone) => void;
   readonly log: (line: string) => void;
-  readonly spawnRg?: (rgPath: string, args: readonly string[], cwd: string) => RgProcess;
-  // the modification time of a result file, undefined when it cannot be read
-  readonly mtime?: (fsPath: string) => Promise<number | undefined>;
-}
-
-// A match main keeps for replace, dismiss and copy: its file, its text at its range as keepMatchText keeps it, and the
-// buffer it came from.
-export interface RecordedMatch {
-  readonly file: SearchFileKey;
-  readonly range: SearchRange;
-  readonly text: KeptText;
-  // the first line's preview, for Copy
-  readonly line: string;
-  readonly documentId?: string;
-}
-
-export interface RecordedSearch {
-  readonly searchId: number;
-  // as the user typed it, with smart case applied
-  readonly query: SearchQuery;
-  readonly folder: SearchFolder;
-  readonly matches: ReadonlyMap<number, RecordedMatch>;
 }
 
 // What a Search Editor's run hands back: its files in sort order, for VS Code's serialization.
@@ -140,22 +107,20 @@ interface Run extends RecordedSearch {
   readonly dismissedFiles: Set<string>;
   readonly liveTimers: Map<string, ReturnType<typeof setTimeout>>;
   debounce: ReturnType<typeof setTimeout> | undefined;
-  process: RgProcess | undefined;
+  process: SearchRun | undefined;
   // a newer search, Clear, a project switch or the window closing discarded it
   discarded: boolean;
   // ripgrep finished or was stopped; live updates go on for a view run
   done: boolean;
   file: RunFile | undefined;
-  pending: Array<Promise<SearchFileResult>>;
+  // finished files not yet sent (a view run), or still without their modification time (a Search Editor run)
+  pending: RunFile[];
   pendingMatches: number;
   batchTimer: ReturnType<typeof setTimeout> | undefined;
   sending: Promise<void>;
   nextId: number;
   resultCount: number;
   limitHit: boolean;
-  stderr: string;
-  // ripgrep events past MAX_RG_EVENT_BYTES, dropped unread
-  dropped: number;
   // the buffers' regex ran out of its time once; no buffer is searched for this run again
   bufferWarning: SearchBufferWarning | undefined;
   // characters of preview and context lines a Search Editor run holds; past MAX_EDITOR_TEXT_CHARS it stops as at the limit
@@ -164,59 +129,6 @@ interface Run extends RecordedSearch {
 }
 
 type RgText = { readonly text: string } | { readonly bytes: string };
-
-function spawnRipgrep(rgPath: string, args: readonly string[], cwd: string): RgProcess {
-  return processLauncher().launch({ file: rgPath, args, cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-}
-
-/** A result file's modification time, or undefined when it cannot be read for any reason. */
-export async function lstatMtime(fsPath: string): Promise<number | undefined> {
-  try {
-    return (await fs.lstat(fsPath)).mtimeMs;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Calls onLine with each line of the chunks it is pushed, and onDropped instead for a line longer than maxBytes, which is never
- * held whole; end() ends the last line.
- */
-function lineReader(maxBytes: number, onLine: (line: string) => void, onDropped: () => void): { push(chunk: Buffer): void; end(): void } {
-  let chunks: Buffer[] = [];
-  let size = 0;
-  let dropping = false;
-  const take = (piece: Buffer): void => {
-    if (dropping || piece.length === 0) return;
-    if (size + piece.length > maxBytes) {
-      dropping = true;
-      chunks = [];
-      size = 0;
-      return;
-    }
-    chunks.push(piece);
-    size += piece.length;
-  };
-  const endLine = (): void => {
-    if (dropping) onDropped();
-    else if (size > 0) onLine(Buffer.concat(chunks, size).toString('utf8'));
-    chunks = [];
-    size = 0;
-    dropping = false;
-  };
-  return {
-    push: (chunk) => {
-      let start = 0;
-      for (let index = chunk.indexOf(10); index !== -1; index = chunk.indexOf(10, start)) {
-        take(chunk.subarray(start, index));
-        endLine();
-        start = index + 1;
-      }
-      take(chunk.subarray(start));
-    },
-    end: endLine,
-  };
-}
 
 function textOf(value: RgText): Buffer {
   return 'text' in value ? Buffer.from(value.text, 'utf8') : Buffer.from(value.bytes, 'base64');
@@ -545,8 +457,6 @@ export class SearchService {
       nextId: 0,
       resultCount: 0,
       limitHit: false,
-      stderr: '',
-      dropped: 0,
       bufferWarning: undefined,
       editorChars: 0,
     };
@@ -569,7 +479,7 @@ export class SearchService {
         this.finish(run, undefined, false);
         return;
       }
-      this.execute(run, args).catch((err: unknown) => this.finish(run, err instanceof Error ? err.message : String(err), false));
+      this.execute(run, args);
     };
     if (owner.kind === 'editor' || owner.immediate) begin();
     else run.debounce = setTimeout(begin, settings.debounceMs);
@@ -666,46 +576,32 @@ export class SearchService {
     }
   }
 
-  private async execute(run: Run, args: readonly string[]): Promise<void> {
-    const rgPath = await this.deps.rgPath();
-    if (run.done) return;
-    const rg = (this.deps.spawnRg ?? spawnRipgrep)(rgPath, args, run.folder.fsPath);
-    run.process = rg;
-    const lines = lineReader(MAX_RG_EVENT_BYTES, (line) => {
-      if (run.done) return;
-      let event: { type: string; data: Record<string, unknown> };
-      try {
-        event = JSON.parse(line) as typeof event;
-      } catch {
-        this.deps.log('[search] dropping a ripgrep line that is not JSON');
-        return;
-      }
-      this.onEvent(run, event);
-    }, () => {
+  private execute(run: Run, args: readonly string[]): void {
+    let workspace: ProjectWorkspace;
+    try {
+      workspace = this.deps.workspaces.forProject(run.folder.projectKey);
+    } catch (err) {
+      if (!(err instanceof NotConnectedError)) throw err;
+      this.finish(run, err.message, false);
+      return;
+    }
+    run.process = workspace.search.run(run.folder.fsPath, args, {
+      event: (event) => {
+        if (!run.done) this.onEvent(run, event);
+      },
       // A dropped match leaves the results a subset, which the limit says.
-      run.dropped++;
-      run.limitHit = true;
-    });
-    rg.onData('stdout', (chunk) => lines.push(chunk));
-    const stderr = new StringDecoder('utf8');
-    rg.onData('stderr', (chunk) => {
-      if (run.stderr.length < MAX_STDERR_CHARS) run.stderr += stderr.write(chunk).slice(0, MAX_STDERR_CHARS - run.stderr.length);
-    });
-    // The close follows every chunk of output.
-    Promise.all([rg.exited, rg.closed]).then(([{ code }]) => {
-      lines.end();
-      if (run.dropped > 0) this.deps.log(`[search] dropped ${run.dropped} ripgrep events over ${MAX_RG_EVENT_BYTES} bytes`);
-      const stderr = run.stderr.trim();
-      if (stderr !== '') this.deps.log(`[search] ripgrep: ${stderr.slice(0, 500)}`);
+      dropped: () => {
+        run.limitHit = true;
+      },
       // 1 is ripgrep's "nothing found"; 2 with results is an unreadable file among readable ones.
-      this.finish(run, code === 0 || code === 1 ? undefined : rgErrorForDisplay(stderr), false);
-    }, (err: Error) => this.finish(run, err.message, false));
+      end: (end: SearchRunEnd) => this.finish(run, 'error' in end ? end.error : end.code === 0 || end.code === 1 ? undefined : rgErrorForDisplay(end.stderr), false),
+    });
   }
 
-  private onEvent(run: Run, event: { type: string; data: Record<string, unknown> }): void {
+  private onEvent(run: Run, event: RgEvent): void {
     if (event.type === 'begin') {
       const printed = event.data['path'] as RgText;
-      const relativePath = 'text' in printed ? relativeResultPath(printed.text) : undefined;
+      const relativePath = 'text' in printed ? relativeResultPath(printed.text, this.deps.osOf(run.folder.projectKey)) : undefined;
       if (relativePath === undefined) this.deps.log('[search] dropping a result outside the shown folder or with a path that is not UTF-8');
       const key: SearchFileKey | undefined = relativePath === undefined ? undefined : { kind: 'file', relativePath };
       // An open document's buffer was searched instead.
@@ -796,19 +692,34 @@ export class SearchService {
     if (!file || file.matches.length === 0) return;
     run.files.set(fileKeyId(file.key), file);
     if (run.owner.kind === 'editor') {
-      if (run.settings.sortOrder === 'modified' && file.key.kind === 'file' && file.mtimeMs === undefined) run.pending.push(this.withMtime(run, file).then(() => this.resultOf(file)));
+      if (needsMtime(run, file)) run.pending.push(file);
       return;
     }
-    run.pending.push(run.settings.sortOrder === 'modified' && file.key.kind === 'file' && file.mtimeMs === undefined ? this.withMtime(run, file).then(() => this.resultOf(file)) : Promise.resolve(this.resultOf(file)));
+    run.pending.push(file);
     run.pendingMatches += file.matches.length;
     if (run.pendingMatches >= SEARCH_BATCH_MATCHES) this.flush(run);
     else run.batchTimer ??= setTimeout(() => this.flush(run), SEARCH_BATCH_MS);
   }
 
-  private async withMtime(run: Run, file: RunFile): Promise<void> {
-    if (file.key.kind !== 'file') return;
-    const mtime = await (this.deps.mtime ?? lstatMtime)(path.join(run.folder.fsPath, ...file.key.relativePath.split('/')));
-    if (mtime !== undefined) file.mtimeMs = mtime;
+  // One request per SEARCH_BATCH_MATCHES files, as a remote host answers each over the wire; a file whose time cannot be read,
+  // or a host that cannot answer, leaves it unset, which sorts the file as having none.
+  private async withMtimes(run: Run, files: readonly RunFile[]): Promise<void> {
+    const unread = files.filter((file) => needsMtime(run, file));
+    if (unread.length === 0) return;
+    for (let start = 0; start < unread.length; start += SEARCH_BATCH_MATCHES) {
+      const files = unread.slice(start, start + SEARCH_BATCH_MATCHES);
+      const relativePaths = files.map((file) => (file.key.kind === 'file' ? file.key.relativePath : ''));
+      const times = await Promise.resolve()
+        .then(() => this.deps.workspaces.forProject(run.folder.projectKey).files.mtimes(run.folder.fsPath, relativePaths))
+        .catch((err: unknown): ReadonlyArray<number | undefined> => {
+          this.deps.log(`[search] reading modification times failed: ${err instanceof Error ? err.message : String(err)}`);
+          return [];
+        });
+      files.forEach((file, index) => {
+        const mtime = times[index];
+        if (mtime !== undefined) file.mtimeMs = mtime;
+      });
+    }
   }
 
   private resultOf(file: RunFile): SearchFileResult {
@@ -832,8 +743,8 @@ export class SearchService {
     run.pendingMatches = 0;
     const searchId = run.searchId;
     run.sending = run.sending.then(async () => {
-      const results = await Promise.all(files);
-      if (!run.discarded) this.deps.sendResults({ searchId, matchCase: run.query.matchCase, files: results });
+      await this.withMtimes(run, files);
+      if (!run.discarded) this.deps.sendResults({ searchId, matchCase: run.query.matchCase, files: files.map((file) => this.resultOf(file)) });
     });
   }
 
@@ -862,7 +773,7 @@ export class SearchService {
     }
     const pending = run.pending;
     run.pending = [];
-    void Promise.all(pending).then(() => {
+    void this.withMtimes(run, pending).then(() => {
       if (run.discarded) return;
       this.runs.delete(this.ownerId(run.owner));
       run.onEditorDone?.({
@@ -871,7 +782,7 @@ export class SearchService {
         ...(error !== undefined ? { error } : {}),
         ...(run.bufferWarning !== undefined ? { bufferWarning: run.bufferWarning } : {}),
       });
-    }, (err: unknown) => this.deps.log(`[search] reading modification times failed: ${err instanceof Error ? err.message : String(err)}`));
+    });
   }
 
   private sortedFiles(run: Run): RunFile[] {
@@ -882,7 +793,7 @@ export class SearchService {
 
   // A file in the Search Editor's terms; a view run's file (Open Results in Editor) has no context and one preview per match.
   private editorFileOf(run: Run, file: RunFile): EditorFileResult {
-    const label = file.key.kind === 'file' ? file.key.relativePath.split('/').join(path.sep) : (file.title ?? '');
+    const label = file.key.kind === 'file' ? file.key.relativePath.split('/').join(pathFor({ os: this.deps.osOf(run.folder.projectKey) }).sep) : (file.title ?? '');
     if (file.editor) return { label, matches: file.editor.matches.filter((match) => file.matches.some((kept) => sameRange(kept.range, match.range))), context: file.editor.context };
     const matches = file.matches.flatMap((match) => {
       const recorded = run.matches.get(match.id);
@@ -945,6 +856,10 @@ export class SearchService {
 // Each match with its first line, for the preview.
 function withLines(lines: readonly string[], found: ReadonlyArray<{ range: SearchRange; text: string }>): Array<{ range: SearchRange; text: string; line: string }> {
   return found.map((match) => ({ ...match, line: (lines[match.range.startLine - 1] ?? '').replace(/\r$/, '') }));
+}
+
+function needsMtime(run: Run, file: RunFile): boolean {
+  return run.settings.sortOrder === 'modified' && file.key.kind === 'file' && file.mtimeMs === undefined;
 }
 
 function filesWithMatches(run: Run): RunFile[] {

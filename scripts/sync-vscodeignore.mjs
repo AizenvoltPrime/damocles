@@ -77,8 +77,12 @@ function optionalShipRoots() {
   return new Set(Object.keys((json && json.optionalDependencies) || {}));
 }
 
-/** The set of top-level node_modules package names to allowlist (the externals + their prod closure). */
-function computeClosure() {
+/**
+ * The top-level node_modules packages `roots` load: each root and its production-dependency closure, as Node resolves it
+ * from this checkout's installed tree. `label` names the artifact in the errors. Shared by the VSIX allowlist and the
+ * server packages (scripts/build-server.mjs).
+ */
+export function productionClosure(roots, label) {
   const topLevel = new Set();
   const visited = new Set();
   const optional = optionalShipRoots();
@@ -107,13 +111,13 @@ function computeClosure() {
     }
   }
 
-  for (const root of shipRoots()) {
+  for (const root of roots) {
     const dir = join(NM, root);
     if (!existsSync(dir)) {
       // An optional external that failed to build on this platform ships nothing; the release VSIX
       // content gate is what catches its absence on a platform that actually needs it.
       if (optional.has(root)) {
-        console.warn(`Warning: ${root} is not installed, so the packaged extension will ship without it.`);
+        console.warn(`Warning: ${root} is not installed, so the ${label} will ship without it.`);
         continue;
       }
       throw new Error(`External package not installed: ${root} (run npm install)`);
@@ -121,10 +125,16 @@ function computeClosure() {
     topLevel.add(root);
     walk(dir);
   }
-  assertNoBuildToolPackages(buildTools);
-  assertNoDevOnlyPackages(topLevel, requirers);
-  assertNoDesktopOnlyPackages(topLevel, requirers);
-  return [...topLevel].sort();
+  assertNoBuildToolPackages(buildTools, label);
+  assertNoDevOnlyPackages(topLevel, requirers, label);
+  return { packages: [...topLevel].sort(), requirers };
+}
+
+/** The set of top-level node_modules package names to allowlist (the externals + their prod closure). */
+function computeClosure() {
+  const { packages, requirers } = productionClosure(shipRoots(), 'packaged extension');
+  assertNoDesktopOnlyPackages(new Set(packages), requirers);
+  return packages;
 }
 
 /** esbuild and its per-platform binaries: build tooling no shipped code path loads. */
@@ -136,10 +146,10 @@ export function isBuildToolPackage(name) {
  * Fail when the closure reaches esbuild at any depth. A nested copy under a shipped package is not
  * top-level, so assertNoDevOnlyPackages never sees it, and its native binaries would ship in the VSIX unused.
  */
-function assertNoBuildToolPackages(found) {
+function assertNoBuildToolPackages(found, label) {
   if (found.size) {
     throw new Error(
-      `Build-tool package(s) in the VSIX closure: ${[...found].sort().join('; ')}. ` +
+      `Build-tool package(s) in the ${label} closure: ${[...found].sort().join('; ')}. ` +
       `Check whether the requiring package can reach esbuild at runtime before shipping it.`,
     );
   }
@@ -186,7 +196,7 @@ const DEV_DEPS_SHARED_WITH_RUNTIME = new Set(['@types/node', 'cross-spawn', 'dif
  * A new one means a runtime package's dependency resolved to the hoisted build-time copy instead of the
  * nested copy Node would load, which is how a 10 MB compiler binary gets into the VSIX.
  */
-function assertNoDevOnlyPackages(topLevel, requirers) {
+function assertNoDevOnlyPackages(topLevel, requirers, label) {
   const json = pkgJson(ROOT) || {};
   const runtime = new Set([
     ...Object.keys(json.dependencies || {}),
@@ -202,7 +212,7 @@ function assertNoDevOnlyPackages(topLevel, requirers) {
   if (devOnly.length) {
     const detail = devOnly.sort().map((name) => `${name} (required by ${[...(requirers.get(name) || ['?'])].sort().join(', ')})`);
     throw new Error(
-      `devDependencies-only package(s) in the VSIX closure: ${detail.join('; ')}. ` +
+      `devDependencies-only package(s) in the ${label} closure: ${detail.join('; ')}. ` +
       `Check whether the requiring package declares a version the top-level copy does not satisfy; if so ` +
       `the resolution is wrong, not the allowlist.`,
     );
@@ -255,11 +265,11 @@ function assertNoDesktopOnlyPackages(topLevel, requirers) {
 const PLATFORM_TOKENS = new Set([
   'win32', 'darwin', 'linux', 'freebsd', 'openbsd', 'netbsd', 'android', 'sunos', 'aix',
   'x64', 'arm64', 'arm', 'ia32', 'x86', 'ppc64', 'ppc', 's390x', 'riscv64', 'loong64', 'mips64el', 'mips64', 'universal',
-  'musl', 'gnu', 'gnueabihf', 'eabi', 'msvc',
+  'musl', 'glibc', 'gnu', 'gnueabihf', 'eabi', 'msvc',
 ]);
 
 /** True if the installed package declares `os`/`cpu` — i.e. it is an npm platform-specific binary. */
-function isPlatformBinary(pkgName) {
+export function isPlatformBinary(pkgName) {
   const json = pkgJson(join(NM, pkgName));
   return !!(json && (Array.isArray(json.os) || Array.isArray(json.cpu)));
 }
@@ -622,7 +632,7 @@ function applyBlock(original, block) {
  * `.vscodeignore` rules that keep desktop-only files out of the VSIX: the Monaco editor
  * (vite.config.ts emits all of it under `dist/webview/assets/monaco-`), the desktop build output and
  * packaging config, the end-to-end suite and its output, typecheck-only stubs, the Windows icon file, the terminal's
- * shell-integration scripts, the askpass helper and its scripts, and logs.
+ * shell-integration scripts, the askpass helper and its scripts, the daemon and the server packages, and logs.
  * Each must appear verbatim as a line of `.vscodeignore`; the syntax is limited to `*` and `**`.
  */
 export const DESKTOP_EXCLUDE_RULES = [
@@ -631,6 +641,9 @@ export const DESKTOP_EXCLUDE_RULES = [
   'dist/desktop/**',
   'dist/desktop-shell/**',
   'dist/core-host.js',
+  'dist/daemon.js',
+  'dist/subscription-plugin/**',
+  'dist/server-packages/**',
   'dist/formatter-host.js',
   'dist/pty-host.js',
   'dist/quick-open-worker.js',

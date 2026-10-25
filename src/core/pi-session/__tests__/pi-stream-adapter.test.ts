@@ -77,6 +77,7 @@ function makeAdapter(
     onMidStreamEntryCommitted: hooks?.onMidStreamEntryCommitted ?? (() => undefined),
     promptEntryId: () => 'u-entry',
     onTurnStateChanged: (...[state, outcome]) => hooks?.onTurnStateChanged?.(state, outcome),
+    turnRunning: () => false,
     onAssistantTextFinal: vi.fn(),
   });
 }
@@ -103,6 +104,7 @@ function makeBudgetAdapter(out: ExtensionToWebviewMessage[], limit: number, onSt
       turns?.push(state);
       if (outcome) outcomes?.push(outcome);
     },
+    turnRunning: () => false,
     onAssistantTextFinal: vi.fn(),
   });
 }
@@ -1754,6 +1756,7 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
       onMidStreamEntryCommitted: () => undefined,
       promptEntryId: () => 'u-entry',
       onTurnStateChanged: () => undefined,
+      turnRunning: () => false,
       onAssistantTextFinal: vi.fn(),
     });
     const session = fakeSessionWithCost(turn(), () => cost);

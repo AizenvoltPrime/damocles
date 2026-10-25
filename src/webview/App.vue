@@ -29,6 +29,7 @@ import StatusBar from "./components/StatusBar.vue";
 import BudgetWarning from "./components/BudgetWarning.vue";
 import ContextWarningBanner from "./components/ContextWarningBanner.vue";
 import AuthFailureBanner from "./components/AuthFailureBanner.vue";
+import AllowanceUnavailableBanner from "./components/AllowanceUnavailableBanner.vue";
 import McpRenamedRulesBanner from "./components/McpRenamedRulesBanner.vue";
 import RewindConfirmModal from "./components/RewindConfirmModal.vue";
 import PermissionPrompt from "./components/PermissionPrompt.vue";
@@ -82,6 +83,7 @@ const EditorOverlayHost = defineAsyncComponent({
 });
 import PromptNavigator from "./components/PromptNavigator.vue";
 import { useOpenSettings } from "@/composables/useOpenSettings";
+import { showYoloRefusal } from "@/composables/useYoloRefusal";
 import { usePlatformBridge } from "./composables/usePlatformBridge";
 import { remPx } from "./composables/useRemPx";
 import { useBtwAsk } from "./composables/useBtwAsk";
@@ -173,6 +175,7 @@ const {
   toolsSnapshot,
   budgetWarning,
   contextWarning,
+  showAllowanceNotice,
 } = storeToRefs(settingsStore);
 
 const sessionStore = useSessionStore();
@@ -505,6 +508,11 @@ function handleModeChange(mode: PermissionMode) {
 
 function handleToggleDangerouslySkipPermissions() {
   const newValue = !currentSettings.value.dangerouslySkipPermissions;
+  // a remote host's policy refuses YOLO; core refuses it too, so nothing is sent
+  if (newValue && settingsStore.hostCapabilities.bypassPermissions === false) {
+    showYoloRefusal();
+    return;
+  }
   postMessage({ type: "setDangerouslySkipPermissions", enabled: newValue });
   settingsStore.setDangerouslySkipPermissions(newValue);
 }
@@ -1109,6 +1117,11 @@ function handleSuggestion(prompt: string) {
             :level="contextWarning.level"
             :auto-compact-triggered="contextWarning.autoCompactTriggered"
             @dismiss="handleDismissContextWarning"
+          />
+          <AllowanceUnavailableBanner
+            v-if="showAllowanceNotice"
+            key="allowance"
+            @dismiss="settingsStore.dismissAllowanceNotice()"
           />
           <AuthFailureBanner
             v-if="authFailureMessage"

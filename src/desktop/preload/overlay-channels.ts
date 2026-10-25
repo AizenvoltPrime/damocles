@@ -30,6 +30,8 @@ export const OVERLAY_CHANNELS = {
   toastsPointer: 'damocles:overlay:toasts:pointer',
   // { generation, message }: a settings view request for the chat the modal is attached to
   settingsSend: 'damocles:overlay:settings:send',
+  // renderer → main, invoke { scope }: a remote chat's settings tab chosen; answers closed unless the settings modal is open
+  settingsScope: 'damocles:overlay:settings:scope',
   // (id, png: Uint8Array | null): the answer to a rasterize request; main validates the PNG before using it
   rasterized: 'damocles:overlay:rasterized',
   // renderer → main, invoke
@@ -358,6 +360,8 @@ export type OverlayRequest =
       // a release index version, which About's What's new expands and scrolls to
       readonly release?: string;
       readonly generation: number;
+      // present while the selected chat is remote: its User, host and Project tabs
+      readonly scopes?: OverlaySettingsScopes;
     }
   // Only main asks one (D41); it stacks above an open request instead of dismissing it.
   | {
@@ -777,6 +781,17 @@ export interface OverlayToastArea {
 
 export interface OverlaySettingsAttached {
   readonly generation: number;
+  readonly scopes?: OverlaySettingsScopes;
+}
+
+export type OverlaySettingsScope = 'user' | 'machine' | 'project';
+
+// A remote chat's settings tabs: User, its host (as this computer names it) and Project, with the tab shown.
+export interface OverlaySettingsScopes {
+  readonly host: { readonly name: string; readonly color?: string };
+  // the Project tab's settings file, its path native to the host
+  readonly projectFile?: string;
+  readonly active: OverlaySettingsScope;
 }
 
 export interface OverlayPrefs {
@@ -831,6 +846,8 @@ export interface DamoclesOverlayApi {
   settingsSend(generation: number, message: WebviewToExtensionMessage): void;
   onSettingsMessage(listener: (message: ExtensionToWebviewMessage) => void): () => void;
   onSettingsAttached(listener: (attached: OverlaySettingsAttached) => void): () => void;
+  // a remote chat's settings tab; main re-attaches the modal and answers the tab attached, or rejects when it could not
+  setSettingsScope(scope: OverlaySettingsScope): Promise<PopupAnswer<OverlaySettingsScope>>;
   onSettingsTarget(listener: (target: SettingsTarget) => void): () => void;
   getPrefs(): Promise<OverlayPrefs>;
   onPrefsChanged(listener: (prefs: OverlayPrefs) => void): () => void;

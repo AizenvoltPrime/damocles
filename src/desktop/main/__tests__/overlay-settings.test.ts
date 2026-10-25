@@ -82,17 +82,27 @@ async function setup() {
   // core's side of the settings modal, as core-service.ts serves it
   const attached = new Map<number, string>();
   const lines: string[] = [];
+  const real: SettingsViewHost = {
+    attachSettingsView: async (panelId, attachment, view) => {
+      attached.set(attachment, panelId);
+      return harness.manager.attachView(panelId, view);
+    },
+    dispatchSettingsView: (attachment, message) => harness.manager.dispatchFromView(attached.get(attachment) ?? '', message),
+  };
+  // what the tests swap: the core the chat runs on and how its panel is found
+  const hooks: { core: () => SettingsViewHost | undefined; targetPanel: () => Promise<string | undefined> } = {
+    core: () => real,
+    targetPanel: async () => target,
+  };
   const settings = new OverlaySettings({
     overlay: fake.overlay,
     settings: settingsPlatform.settings,
-    core: () => ({
-      attachSettingsView: async (panelId, attachment, view) => {
-        attached.set(attachment, panelId);
-        return harness.manager.attachView(panelId, view);
-      },
-      dispatchSettingsView: (attachment, message) => harness.manager.dispatchFromView(attached.get(attachment) ?? '', message),
-    }),
-    targetPanel: async () => target,
+    target: async () => {
+      const panelId = await hooks.targetPanel();
+      const host = hooks.core();
+      return panelId === undefined || host === undefined ? undefined : { host, panelId };
+    },
+    scopes: () => undefined,
     focused: () => undefined,
     relaunch,
     resetLayout,
@@ -102,12 +112,38 @@ async function setup() {
   });
   harness.routed.length = 0;
   return {
-    harness, fake, settings, first, second, settingsPlatform, relaunch, resetLayout, lines, attached,
+    harness, fake, settings, first, second, settingsPlatform, relaunch, resetLayout, lines, attached, hooks,
     select: (panelId: string) => { target = panelId; },
   };
 }
 
 describe('OverlaySettings', () => {
+  it('opens the settings of a remote chat on the User tab for a sign-in, and counts as showing while it finds the chat of that tab', async () => {
+    const fake = fakeOverlay();
+    const seen: Array<[unknown, boolean]> = [];
+    const settings: OverlaySettings = new OverlaySettings({
+      overlay: fake.overlay,
+      settings: createFakePlatform().settings,
+      target: async (scope) => {
+        seen.push([scope, settings.showing()]);
+        return undefined;
+      },
+      scopes: () => ({ host: { authority: 'loopback', name: 'Local daemon' } }),
+      focused: () => undefined,
+      relaunch: vi.fn(),
+      resetLayout: vi.fn(),
+      terminalProfiles: () => ({ profiles: [], hidden: [], problems: [] }),
+      log: () => undefined,
+      languageAtLaunch: 'en',
+    });
+    await expect(settings.show({ section: 'accounts', account: 'openai' })).rejects.toThrow('No chat could be opened');
+    expect(seen).toEqual([['user', true]]);
+    expect(settings.showing()).toBe(false);
+    await expect(settings.show({ section: 'workspace' })).rejects.toThrow();
+    // the host's core does not answer, so the User tab is tried before the settings give up
+    expect(seen.slice(-2)).toEqual([['machine', true], ['user', true]]);
+  });
+
   it('attaches the modal to the selected chat, runs its requests there and copies the chat\'s settings messages to it', async () => {
     const { harness, fake, settings, first } = await setup();
     const shown = settings.show({ section: 'workspace' });
@@ -146,10 +182,10 @@ describe('OverlaySettings', () => {
   });
 
   it('shows nothing when its window closes while it is still finding the chat to attach to', async () => {
-    const { fake, settings } = await setup();
+    const { fake, settings, hooks } = await setup();
     let found!: () => void;
     const finding = new Promise<void>((resolve) => { found = resolve; });
-    (settings as unknown as { deps: { targetPanel: () => Promise<string | undefined> } }).deps.targetPanel = async () => {
+    hooks.targetPanel = async () => {
       await finding;
       return undefined;
     };
@@ -204,18 +240,18 @@ describe('OverlaySettings', () => {
   });
 
   it('disposes an attachment core finishes after the modal closed', async () => {
-    const { harness, fake, settings, first, second, select } = await setup();
-    const core = (settings as unknown as { deps: { core: () => SettingsViewHost } }).deps;
-    const real = core.core();
+    const { harness, fake, settings, first, second, select, hooks } = await setup();
+    const real = hooks.core()!;
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
-    core.core = () => ({
+    const holding: SettingsViewHost = {
       ...real,
       attachSettingsView: async (panelId, attachment, view) => {
         if (panelId === second.panelId) await held;
         return real.attachSettingsView(panelId, attachment, view);
       },
-    });
+    };
+    hooks.core = () => holding;
     const shown = settings.show({});
     await tick();
     expect(harness.manager.attachedView(first.panelId)).toBeDefined();
@@ -231,13 +267,12 @@ describe('OverlaySettings', () => {
   });
 
   it('drops what the modal sends to a chat that detached while core attached it, and follows the selection again', async () => {
-    const { harness, fake, settings, first, lines } = await setup();
-    const core = (settings as unknown as { deps: { core: () => SettingsViewHost } }).deps;
-    const real = core.core();
+    const { harness, fake, settings, first, lines, hooks } = await setup();
+    const real = hooks.core()!;
     let attaches = 0;
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
-    core.core = () => ({
+    const detaching: SettingsViewHost = {
       ...real,
       attachSettingsView: async (panelId, attachment, view) => {
         attaches++;
@@ -246,7 +281,8 @@ describe('OverlaySettings', () => {
         if (attaches === 1) view.detached();
         return handle;
       },
-    });
+    };
+    hooks.core = () => detaching;
     void settings.show({});
     await tick();
     expect(attaches).toBe(2);
@@ -261,13 +297,13 @@ describe('OverlaySettings', () => {
   });
 
   it('drops what the modal sends once its core ended, logs it, and attaches to the next core', async () => {
-    const { harness, fake, settings, first, lines } = await setup();
-    const deps = (settings as unknown as { deps: { core: () => SettingsViewHost | undefined } }).deps;
+    const { harness, fake, settings, first, lines, hooks } = await setup();
+    const deps = hooks;
     const real = deps.core()!;
     void settings.show({});
     await tick();
     deps.core = () => undefined;
-    settings.coreEnded();
+    settings.coreEnded(real);
     fake.fire(OVERLAY_CHANNELS.settingsSend, { generation: 1, message: { type: 'setBudgetLimit', budgetUsd: 5 } });
     await tick();
     expect(harness.routed).toEqual([]);
@@ -435,5 +471,104 @@ describe('OverlaySettings', () => {
     await expect(fake.invoke(OVERLAY_CHANNELS.terminalProfiles, { path: 'C:\\' })).rejects.toThrow('Malformed terminal profiles request');
     settings.terminalProfilesChanged();
     expect(fake.sent.filter(({ channel }) => channel === OVERLAY_CHANNELS.terminalProfilesChanged)).toEqual([{ channel: OVERLAY_CHANNELS.terminalProfilesChanged, payload: { profiles: [{ id: 'pwsh', name: 'PowerShell', path: 'C:\\pwsh.exe', args: [], source: 'detected', icon: 'powershell', customIcon: null, color: null, isDefault: true }], hidden: ['Command Prompt'], problems: [{ name: 'Evil', reason: 'pathNotAllowed', detail: '\\\\server\\x.exe' }] } }]);
+  });
+});
+
+describe('OverlaySettings scope tabs', () => {
+  async function scoped() {
+    h = createHarness([folderEntry(A)]);
+    const harness = h;
+    const local = await openPanel(harness);
+    const remote = await openPanel(harness);
+    const fake = fakeOverlay();
+    const attached = new Map<number, string>();
+    const hooks = { remoteUp: true, refuse: (_scope: string | undefined): boolean => false, attaches: 0 };
+    const host = (): SettingsViewHost => ({
+      attachSettingsView: async (panelId, attachment, view, scope) => {
+        hooks.attaches++;
+        if (hooks.refuse(scope)) throw new Error('No open chat panel');
+        attached.set(attachment, panelId);
+        return harness.manager.attachView(panelId, view);
+      },
+      dispatchSettingsView: (attachment, message) => harness.manager.dispatchFromView(attached.get(attachment) ?? '', message),
+    });
+    const localCore = host();
+    const remoteCore = host();
+    const settings = new OverlaySettings({
+      overlay: fake.overlay,
+      settings: createFakePlatform({ settings: { scopeFiles: { user: USER_FILE } } }).settings,
+      target: async (scope) => (scope === 'user'
+        ? { host: localCore, panelId: local.panelId, scope }
+        : hooks.remoteUp ? { host: remoteCore, panelId: remote.panelId, scope: scope ?? 'machine' } : undefined),
+      scopes: () => ({ host: { authority: 'loopback', name: 'Local daemon' } }),
+      focused: () => undefined,
+      relaunch: vi.fn(),
+      resetLayout: vi.fn(),
+      terminalProfiles: () => ({ profiles: [], hidden: [], problems: [] }),
+      log: () => undefined,
+      languageAtLaunch: 'en',
+    });
+    harness.routed.length = 0;
+    const attachedEvents = () => fake.sent.filter((entry) => entry.channel === OVERLAY_CHANNELS.settingsAttached).map((entry) => entry.payload);
+    const send = async (generation: number) => {
+      harness.routed.length = 0;
+      fake.fire(OVERLAY_CHANNELS.settingsSend, { generation, message: { type: 'setBudgetLimit', budgetUsd: generation } });
+      await tick();
+      return harness.routed.map((r) => r.panelId);
+    };
+    return { harness, fake, settings, local, remote, localCore, remoteCore, hooks, attachedEvents, send };
+  }
+
+  it('refuses a tab whose core does not answer, keeping the tab and the attachment it had, and answers the tab a switch attached', async () => {
+    const { fake, settings, local, remote, hooks, attachedEvents, send } = await scoped();
+    void settings.show({});
+    await tick();
+    expect(fake.requests.at(-1)).toMatchObject({ generation: 1, scopes: { active: 'machine' } });
+    hooks.remoteUp = false;
+    await expect(fake.invoke(OVERLAY_CHANNELS.settingsScope, { scope: 'project' })).rejects.toThrow('could not be opened');
+    expect(attachedEvents()).toEqual([]);
+    expect(await send(1)).toEqual([remote.panelId]);
+
+    await expect(fake.invoke(OVERLAY_CHANNELS.settingsScope, { scope: 'user' })).resolves.toEqual({ ok: true, value: 'user' });
+    expect(attachedEvents()).toEqual([{ generation: 2, scopes: { host: { name: 'Local daemon' }, active: 'user' } }]);
+    expect(await send(2)).toEqual([local.panelId]);
+  });
+
+  it("opens on the User tab while the host's core is unavailable", async () => {
+    const { fake, settings, local, hooks, send } = await scoped();
+    hooks.remoteUp = false;
+    void settings.show({ section: 'workspace' });
+    await tick();
+    expect(fake.requests.at(-1)).toMatchObject({ generation: 1, scopes: { active: 'user' } });
+    expect(await send(1)).toEqual([local.panelId]);
+  });
+
+  it('attaches the previous tab again when core refuses the new one, once', async () => {
+    const { fake, settings, remote, hooks, attachedEvents, send } = await scoped();
+    void settings.show({});
+    await tick();
+    hooks.refuse = (scope) => scope === 'project';
+    await expect(fake.invoke(OVERLAY_CHANNELS.settingsScope, { scope: 'project' })).rejects.toThrow('No open chat panel');
+    await tick();
+    expect(attachedEvents().map((event) => (event as { scopes: { active: string } }).scopes.active)).toEqual(['project', 'machine']);
+    expect(await send(3)).toEqual([remote.panelId]);
+
+    hooks.refuse = () => true;
+    const before = hooks.attaches;
+    await expect(fake.invoke(OVERLAY_CHANNELS.settingsScope, { scope: 'user' })).rejects.toThrow('No open chat panel');
+    await tick();
+    expect(hooks.attaches - before).toBe(2);
+  });
+
+  it('stays attached when a core it is not attached to ends', async () => {
+    const { settings, remote, localCore, remoteCore, attachedEvents, send } = await scoped();
+    void settings.show({});
+    await tick();
+    settings.coreEnded(localCore);
+    await tick();
+    expect(attachedEvents()).toEqual([]);
+    expect(await send(1)).toEqual([remote.panelId]);
+    settings.coreEnded(remoteCore);
+    expect(await send(1)).toEqual([]);
   });
 });

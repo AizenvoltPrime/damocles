@@ -98,13 +98,18 @@ describe('hot exit backups', () => {
     expect(await store.list()).toEqual([]);
   });
 
-  it('backs up untitled and settings buffers, and nothing for a file outside every project', async () => {
+  it('backs up untitled, settings and host settings buffers, and nothing for a file outside every project', async () => {
     const store = new BackupStore(dir, (line) => lines.push(line), 60_000);
     store.changed(document({ backupId: '1f8fad5b-d9cb-469f-a165-70867728950e', untitled: true, location: undefined }));
     store.changed(document({ backupId: '2f8fad5b-d9cb-469f-a165-70867728950e', settingsScope: 'user', location: { path: '/home/.damocles/settings.json' } }));
     store.changed(document({ backupId: '3f8fad5b-d9cb-469f-a165-70867728950e', location: { path: '/elsewhere/x.ts' } }));
+    store.changed(document({ backupId: '4f8fad5b-d9cb-469f-a165-70867728950e', location: { path: '/srv/.damocles/settings.json', host: 'loopback' } }));
     await store.flush();
-    expect((await store.list()).map((record) => record.target).sort((a, b) => a.kind.localeCompare(b.kind))).toEqual([{ kind: 'settings', scope: 'user', path: '/home/.damocles/settings.json' }, { kind: 'untitled' }]);
+    expect((await store.list()).map((record) => record.target).sort((a, b) => a.kind.localeCompare(b.kind))).toEqual([
+      { kind: 'hostSettings', authority: 'loopback', path: '/srv/.damocles/settings.json' },
+      { kind: 'settings', scope: 'user', path: '/home/.damocles/settings.json' },
+      { kind: 'untitled' },
+    ]);
   });
 
   it('flush waits for a write in flight and for a removal queued while it waits', async () => {
@@ -186,6 +191,8 @@ describe('parseBackup', () => {
     ['an unknown settings scope', { target: { kind: 'settings', scope: 'workspace', path: '/home/.damocles/settings.json' } }],
     ['a settings backup without its file', { target: { kind: 'settings', scope: 'user' } }],
     ['a settings backup with a relative file', { target: { kind: 'settings', scope: 'user', path: 'settings.json' } }],
+    ['a host settings backup without its authority', { target: { kind: 'hostSettings', path: '/srv/.damocles/settings.json' } }],
+    ['a host settings backup with a relative file', { target: { kind: 'hostSettings', authority: 'loopback', path: 'settings.json' } }],
     ['an unknown encoding', { encoding: 'latin1' }],
     ['a lone CR line ending', { eol: '\r' }],
     ['another schema', { version: 2 }],

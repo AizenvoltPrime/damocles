@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { testWorkspaces } from './test-workspaces';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
 import type { ActiveEditorContext } from '../../../platform/editor-service';
@@ -12,6 +13,7 @@ import type { Project } from '../../local-services/confine';
 import { DocumentService, type TextDocument } from '../documents/document-service';
 import { EditorPane, selectionText, settingLine, type BrowserTabSource, type PersistedEditor } from '../editor-pane';
 import type { MessageQuestion } from '../message-dialog';
+import { projectKeyOf } from '../../../shared/project-location';
 
 let root: string;
 let projectDir: string;
@@ -34,6 +36,8 @@ let flushFormats: string[][];
 let shellFormats: (documentIds: readonly string[]) => void;
 let browser: BrowserTabSource | undefined;
 let warnings: string[];
+// the OS of the loopback host's paths
+let hostOs: NodeJS.Platform;
 // runs while a question is up, before it is answered
 let whileAsking: (() => Promise<void>) | undefined;
 
@@ -63,9 +67,17 @@ beforeEach(() => {
     return answers.shift();
   };
   const t = (message: string, ...args: Array<string | number>): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]));
+  hostOs = process.platform;
   documents = new DocumentService({
+    authorityOs: (authority) => (authority === 'loopback' ? hostOs : process.platform),
     projects: () => roots,
-    watchers: platform.fileWatchers,
+    workspaces: testWorkspaces({
+      watchers: platform.fileWatchers,
+      remote: (authorityKey) => {
+        if (authorityKey !== 'loopback') throw new Error(`${authorityKey} is not connected`);
+        return testWorkspaces({ watchers: platform.fileWatchers, damoclesHome: path.join(root, 'host', '.damocles') }).local;
+      },
+    }),
     ask,
     t,
     log: () => undefined,
@@ -74,6 +86,7 @@ beforeEach(() => {
     settings: { locate: (scope) => (scope === 'user' ? path.join(root, 'settings.json') : undefined), save: async () => ({ ok: false, error: 'unused', conflict: false }) },
   });
   pane = new EditorPane({
+    authorityOs: (authority) => (authority === 'loopback' ? hostOs : process.platform),
     documents,
     settings: platform.settings,
     ask,
@@ -570,6 +583,66 @@ describe('restoring settings buffers', () => {
     expect(tabs.map((tab) => [tab.kind, tab.settingsScope, tab.dirty])).toEqual([['untitled', undefined, true], ['settings', 'user', true]]);
     expect(warnings).toEqual(['The unsaved changes to settings.json are in an untitled editor: That settings file does not apply now.']);
   });
+
+  it('restores a host settings backup into that host\'s file while it is connected, else as an untitled buffer', async () => {
+    const hostFile = path.join(root, 'host', '.damocles', 'settings.json');
+    fs.mkdirSync(path.dirname(hostFile), { recursive: true });
+    fs.writeFileSync(hostFile, '{}');
+    const record = (backupId: string, authority: string): BackupRecord => ({
+      backupId, name: 'Local daemon: settings.json', languageId: 'json', encoding: 'utf8', bom: false, eol: '\n', text: '{ "a": 1 }', target: { kind: 'hostSettings', authority, path: hostFile },
+    });
+    await pane.restore({ tabs: [], active: null, recent: [] }, [record('0f8fad5b-d9cb-469f-a165-70867728950e', 'loopback'), record('1f8fad5b-d9cb-469f-a165-70867728950e', 'ssh+gone')]);
+    const tabs = pane.state().tabs;
+    expect(tabs.map((tab) => [tab.kind, tab.title, tab.dirty])).toEqual([['settings', 'Local daemon: settings.json', true], ['untitled', 'Local daemon: settings.json', true]]);
+    expect(warnings).toEqual(['The unsaved changes to Local daemon: settings.json are in an untitled editor: It could not be reopened.']);
+  });
+});
+
+describe('a host\'s own settings file', () => {
+  it('opens as one editable settings tab titled with its host, validated as a user file, saved on the host and never persisted by scope', async () => {
+    const hostFile = path.join(root, 'host', '.damocles', 'settings.json');
+    fs.mkdirSync(path.dirname(hostFile), { recursive: true });
+    fs.writeFileSync(hostFile, '{\n  "damocles.model": "x"\n}\n');
+    await pane.openHostSettingsFile('loopback', 'Local daemon: settings.json', 'damocles.model');
+    await pane.openHostSettingsFile('loopback', 'Local daemon: settings.json');
+    const [tab, ...others] = pane.state().tabs;
+    expect(others).toEqual([]);
+    expect(tab).toMatchObject({ kind: 'settings', title: 'Local daemon: settings.json', settingsScope: 'user', readOnly: false, displayPath: hostFile });
+    expect(events).toContain(`reveal:${tab!.id}:2`);
+    const document = textOf(tab!.id);
+    expect(await pane.save(document.id, document.version, '{}\n', false)).toEqual({ ok: true });
+    expect(fs.readFileSync(hostFile, 'utf8')).toBe('{}\n');
+    await pane.tabAction('revealInExplorer', tab!.id);
+    expect(events).not.toContain(`reveal:${hostFile}`);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(persisted?.tabs).toEqual([]);
+  });
+});
+
+describe('a file of another host', () => {
+  it('copies its relative path in its host\'s separator, and refuses Reveal in File Explorer and Open Changes with a warning', async () => {
+    write('src/a.ts', 'x');
+    // the other OS than this computer's, so the separator differs from node:path's
+    hostOs = process.platform === 'win32' ? 'linux' : 'win32';
+    const remote: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(projectDir)), fsPath: projectDir, name: 'proj' };
+    roots = [remote];
+    const opened = await pane.openFromUser(remote.key, 'src/a.ts', {});
+    if (!opened.ok) throw new Error(opened.reason);
+    const tab = pane.state().tabs.at(-1)!;
+    await pane.tabAction('copyRelativePath', tab.id);
+    expect(events).toContain(`copy:${hostOs === 'win32' ? 'src\\a.ts' : 'src/a.ts'}`);
+    await pane.tabAction('revealInExplorer', tab.id);
+    await pane.tabAction('openChanges', tab.id);
+    expect(warnings).toEqual(['The file is not on this computer.', 'The file is not on this computer.']);
+    expect(events.some((event) => event.startsWith('reveal:') && event.includes(projectDir))).toBe(false);
+  });
+
+  it('fails to read a file of a project that is not listed instead of showing it empty', async () => {
+    await expect(pane.projectFileText({ projectKey: projectKeyOf({ kind: 'loopback' }, folderKey(path.join(root, 'gone'))), relativePath: 'a.ts' })).rejects.toThrow('is not an open project');
+    write('src/new.ts', 'text');
+    expect(await pane.projectFileText({ projectKey: project.key, relativePath: 'src/new.ts' })).toBe('text');
+    expect(await pane.projectFileText({ projectKey: project.key, relativePath: 'src/not-yet.ts' })).toBe('');
+  });
 });
 
 describe('IDE context', () => {
@@ -643,6 +716,7 @@ describe('page tabs (D14)', () => {
     browser = source;
     const opened = await pane.openFromUser(project.key, 'a.ts');
     if (!opened.ok) throw new Error('not opened');
+    expect(pane.activeProjectKey()).toBe(project.key);
     events.length = 0;
     pane.activateBrowserTab('p2');
     await new Promise((resolve) => setImmediate(resolve));
@@ -651,6 +725,7 @@ describe('page tabs (D14)', () => {
     expect(source.active.at(-1)).toBe('p2');
     expect(events).toEqual(['showPane']);
     expect(pane.activeContext()).toEqual({ filePath: undefined, selection: undefined });
+    expect(pane.activeProjectKey()).toBeUndefined();
 
     const saved = persisted;
     persisted = undefined;

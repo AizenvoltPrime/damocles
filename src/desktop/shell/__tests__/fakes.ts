@@ -1,8 +1,8 @@
 import { vi } from 'vitest';
 import { DEFAULT_GRID_LAYOUT, SIDEBAR_SECTIONS, type DamoclesShellApi, type DropZonesPointer, type EditorCommand, type EditorDocumentChange, type EditorFlushRequest, type EditorReveal, type FileRef, type FilesChanged, type SearchCommandMessage, type SearchDone, type SearchEditorHighlights, type SearchFileUpdate, type SearchFocus, type SearchResultsBatch, type ShellSearchSettings, type ChatsContinueWorktree, type ChatsWorktreeOptions, type ShellChat, type ShellChatList, type ShownFolder, type ShellEditorState, type ShellFocusPart, type ShellState } from '../../preload/shell-channels';
-import type { DamoclesOverlayApi, InputBrowseResult, OverlayAnswer, PaletteCommand, OverlayPrefs, OverlayRasterRequest, OverlayRequest, OverlayState, OverlayToast, PopupAnswer, QuickOpenQuery, QuickOpenResponse } from '../../preload/overlay-channels';
+import type { DamoclesOverlayApi, InputBrowseResult, OverlayAnswer, PaletteCommand, OverlayPrefs, OverlayRasterRequest, OverlayRequest, OverlaySettingsScope, OverlaySettingsScopes, OverlayState, OverlayToast, PopupAnswer, QuickOpenQuery, QuickOpenResponse } from '../../preload/overlay-channels';
 import type { ChimeTone, NotificationCenterState } from '../../preload/notifications';
-import type { DamoclesTerminalApi, TerminalData, TerminalProfileReport, TerminalRunAction, TerminalState } from '../../preload/terminal-channels';
+import type { DamoclesTerminalApi, TerminalData, TerminalProfileReport, TerminalRunAction, TerminalScreen, TerminalState } from '../../preload/terminal-channels';
 import type { ReleaseIndex, UpdateSnapshot, VersionInfo } from '../../preload/updates';
 import type { DamoclesScmApi, ScmArtifacts, ScmArtifactsChanged, ScmArtifactsRequest, ScmArtifactsResult, ScmCloneState, ScmCommitDetailsResult, ScmCommitInput, ScmHistoryResult, ScmDecorations, ScmRepoSnapshot, ScmSetInput, ScmSettings, ScmShellCommand, ScmShellState, ScmView } from '../../preload/scm-channels';
 import type { SettingsTarget } from '../../../shared/settings-sections';
@@ -24,14 +24,16 @@ export const SEARCH_SETTINGS: ShellSearchSettings = {
   searchEditor: { doubleClickBehaviour: 'goToLocation', focusResultsOnSearch: false },
 };
 
+const LOCAL = { kind: 'local', name: 'This computer' } as const;
+
 export const STATE: ShellState = {
   revision: 1,
   locale: 'en',
   platform: 'win32',
   windowState: 'normal',
   projects: [
-    { key: 'p1', name: 'alpha', fsPath: '/w/alpha', trusted: true, running: 1, waiting: 0 },
-    { key: 'p2', name: 'beta', fsPath: '/w/beta', trusted: false, running: 2, waiting: 1, branch: 'main' },
+    { key: 'p1', name: 'alpha', fsPath: '/w/alpha', trusted: true, authority: LOCAL, platform: 'win32', connection: 'connected', running: 1, waiting: 0 },
+    { key: 'p2', name: 'beta', fsPath: '/w/beta', trusted: false, authority: LOCAL, platform: 'win32', connection: 'connected', running: 2, waiting: 1, branch: 'main' },
   ],
   selected: { projectKey: 'p1', chatId: 'c1' },
   selectedChat: { id: 'c1', title: 'Fix login', status: 'idle' },
@@ -52,6 +54,7 @@ export const STATE: ShellState = {
     editorMenu: { goToDefinition: 'F12', goToReferences: 'Shift+F12', renameSymbol: 'F2', changeAllOccurrences: 'Ctrl+F2', formatDocument: 'Shift+Alt+F', cut: 'Ctrl+X', copy: 'Ctrl+C', paste: 'Ctrl+V', commandPalette: 'Ctrl+Shift+P' } },
   notifications: { unseen: 0, doNotDisturb: false, popupsOff: false, attention: 0 },
   engineHalted: false,
+  engines: [],
   search: SEARCH_SETTINGS,
   sidebar: { alwaysShowHeaderActions: false },
   shownFolders: {
@@ -75,13 +78,13 @@ export const TERMINAL_STATE: TerminalState = {
   passKeys: ['CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'CmdOrCtrl+B', 'CmdOrCtrl+,', 'CmdOrCtrl+N', 'F6', 'Shift+F6'],
   profiles: [],
   screenReader: false,
-  windowsBuild: 0,
 };
 
 export type FakeTerminalApi = DamoclesTerminalApi & {
   // main's terminal pushes
   pushState: (state: TerminalState) => void;
   data: (data: TerminalData) => void;
+  screen: (screen: TerminalScreen) => void;
   focus: (id: string) => void;
   startRename: (id: string) => void;
   requestPaste: (id: string) => void;
@@ -92,6 +95,7 @@ export type FakeTerminalApi = DamoclesTerminalApi & {
 export function fakeTerminalApi(state: TerminalState = TERMINAL_STATE): FakeTerminalApi {
   const states = emitter<TerminalState>();
   const data = emitter<TerminalData>();
+  const screens = emitter<TerminalScreen>();
   const focus = emitter<string>();
   const startRename = emitter<string>();
   const requestPaste = emitter<string>();
@@ -101,6 +105,7 @@ export function fakeTerminalApi(state: TerminalState = TERMINAL_STATE): FakeTerm
     getState: vi.fn(async () => state),
     onState: vi.fn(states.listen),
     onData: vi.fn(data.listen),
+    onScreen: vi.fn(screens.listen),
     onFocus: vi.fn(focus.listen),
     onStartRename: vi.fn(startRename.listen),
     onRequestPaste: vi.fn(requestPaste.listen),
@@ -113,6 +118,7 @@ export function fakeTerminalApi(state: TerminalState = TERMINAL_STATE): FakeTerm
     ack: vi.fn(),
     kill: vi.fn(),
     restart: vi.fn(),
+    clear: vi.fn(),
     select: vi.fn(),
     setListWidth: vi.fn(),
     paste: vi.fn(),
@@ -129,6 +135,7 @@ export function fakeTerminalApi(state: TerminalState = TERMINAL_STATE): FakeTerm
     resizePanes: vi.fn(),
     pushState: states.emit,
     data: data.emit,
+    screen: screens.emit,
     focus: focus.emit,
     startRename: startRename.emit,
     requestPaste: requestPaste.emit,
@@ -413,7 +420,7 @@ export type FakeOverlayApi = DamoclesOverlayApi & {
   pushState: (state: OverlayState) => void;
   // main's side of the settings attachment
   settingsMessage: (message: ExtensionToWebviewMessage) => void;
-  settingsAttached: (generation: number) => void;
+  settingsAttached: (generation: number, scopes?: OverlaySettingsScopes) => void;
   settingsTarget: (target: SettingsTarget) => void;
   prefsChanged: (prefs: OverlayPrefs) => void;
   // main's center: what getNotifications answers, and a push while the center is open
@@ -452,7 +459,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
   const toastsFocusListeners = new Set<() => void>();
   const stateListeners = new Set<(state: OverlayState) => void>();
   const settingsListeners = new Set<(message: ExtensionToWebviewMessage) => void>();
-  const attachedListeners = new Set<(attached: { generation: number }) => void>();
+  const attachedListeners = new Set<(attached: { generation: number; scopes?: OverlaySettingsScopes }) => void>();
   const targetListeners = new Set<(target: SettingsTarget) => void>();
   const prefsListeners = new Set<(prefs: OverlayPrefs) => void>();
   const notificationListeners = new Set<(state: NotificationCenterState) => void>();
@@ -491,6 +498,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
     rasterized: vi.fn(),
     onChime: vi.fn((listener) => { chimeListeners.add(listener); return () => chimeListeners.delete(listener); }),
     settingsSend: vi.fn(),
+    setSettingsScope: vi.fn(async (scope: OverlaySettingsScope) => ({ ok: true as const, value: scope })),
     onSettingsMessage: vi.fn((listener) => { settingsListeners.add(listener); return () => settingsListeners.delete(listener); }),
     onSettingsAttached: vi.fn((listener) => { attachedListeners.add(listener); return () => attachedListeners.delete(listener); }),
     onSettingsTarget: vi.fn((listener) => { targetListeners.add(listener); return () => targetListeners.delete(listener); }),
@@ -526,7 +534,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
     focusToasts: () => { for (const l of toastsFocusListeners) l(); },
     pushState: (state) => { for (const l of stateListeners) l(state); },
     settingsMessage: (message) => { for (const l of settingsListeners) l(message); },
-    settingsAttached: (generation) => { for (const l of attachedListeners) l({ generation }); },
+    settingsAttached: (generation, scopes) => { for (const l of attachedListeners) l({ generation, ...(scopes ? { scopes } : {}) }); },
     settingsTarget: (target) => { for (const l of targetListeners) l(target); },
     prefsChanged: (prefs) => { for (const l of prefsListeners) l(prefs); },
     center,

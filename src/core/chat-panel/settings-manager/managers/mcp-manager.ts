@@ -19,7 +19,7 @@ import type {
 import type { McpServerEntry } from "../types";
 import type { McpScope } from "../../../session-types";
 import type { McpServerSpec } from "../../../pi-session/mcp/types";
-import { defaultProjectPath, type FolderTarget } from "../../../workspace-folders/folder-registry";
+import { windowSettingsProject, type FolderTarget } from "../../../workspace-folders/folder-registry";
 import {
   mergeMcpEntries,
   orderMcpSources,
@@ -583,14 +583,14 @@ export class McpManager {
   /**
    * The scopes a per-tool exposure can be saved to from a panel in `folderKey`, lowest first. Project
    * and local apply only in a trusted folder with a project layer. The settings store writes them for
-   * the default project (`defaultProjectPath`), which refuses an untrusted project, so that folder must
-   * be trusted too. Local is offered only where the host keeps a local settings file (`scopeFile`),
-   * which VS Code does not.
+   * the window's project (`windowSettingsProject`), which refuses an untrusted project and is none on a
+   * daemon's core, so that folder must exist and be trusted too. Local is offered only where the host
+   * keeps a local settings file (`scopeFile`), which VS Code does not.
    */
   toolExposureScopes(folderKey: string): McpToolExposureScope[] {
     const target = this.folders().find(candidate => candidate.key === folderKey);
     if (!target?.projectScope || !this.isTargetTrusted(target)) return ["user"];
-    const writeTarget = defaultProjectPath(this.platform.workspaceFolders, this.workspaceState);
+    const writeTarget = windowSettingsProject(this.platform);
     if (writeTarget === undefined || !this.platform.trust.isTrusted(writeTarget)) return ["user"];
     return this.platform.settings.scopeFile("local") === undefined ? ["user", "project"] : ["user", "project", "local"];
   }

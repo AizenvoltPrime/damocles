@@ -74,6 +74,20 @@ export function deferredToolNames(eligible: Iterable<string>, mcpNames: Iterable
   return [...new Set(eligible)].filter((name) => deferrable.has(name));
 }
 
+/** Groups whose service is the client's user scope, which a daemon's core cannot reach yet. */
+const USER_SCOPE_GROUPS: ReadonlySet<BuiltinDeferredGroup> = new Set(['browser']);
+
+/** The deferred tools whose user-scope service is unavailable on this core: they stay eligible and deferred, never loadable. */
+export function userScopeToolNames(userScopeReachable: boolean): ReadonlySet<string> {
+  return new Set(userScopeReachable ? [] : BUILTIN_DEFERRED_GROUPS.filter((g) => USER_SCOPE_GROUPS.has(g.group)).flatMap((g) => [...g.names]));
+}
+
+/** The loadable snapshot: the deferred tools ToolSearch may list and load, those with an unavailable service left out. */
+export function loadableToolNames(deferred: readonly string[], userScopeReachable: boolean): string[] {
+  const unavailable = userScopeToolNames(userScopeReachable);
+  return deferred.filter((name) => !unavailable.has(name));
+}
+
 /** `(eligible \ deferred) ∪ (deferred ∩ activated)`, in `eligible` order. */
 export function initialActiveToolNames(
   eligible: Iterable<string>,

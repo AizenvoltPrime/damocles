@@ -32,6 +32,13 @@ describe('PermissionPrompt for a tool with no dedicated view', () => {
     expect(JSON.parse(wrapper.get('[data-testid="tool-permission-input"]').text())).toEqual({ file_path: 'secrets/key.pem' });
   });
 
+  it('names no host on a local chat', () => {
+    const title = prompt({ toolName: 'Read', toolInput: { file_path: 'a.ts' } }).get('[data-testid="permission-title"]');
+
+    expect(title.text()).toBe(i18n.global.t('permission.useTool', { tool: 'Read' }));
+    expect(title.find('[data-testid="host-name-badge"]').exists()).toBe(false);
+  });
+
   it('names the tool once, in the title, with no subtitle repeating it', () => {
     const wrapper = prompt({ toolName: 'Read', toolInput: { file_path: 'secrets/key.pem' } });
 

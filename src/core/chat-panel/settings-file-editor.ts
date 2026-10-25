@@ -3,7 +3,7 @@ import type { Disposable } from '../../platform/disposable';
 import type { Platform } from '../../platform/platform';
 import type { PanelHost } from '../../platform/window-service';
 import type { ExtensionToWebviewMessage, SettingsFileAvailability, SettingsFileScope, SettingsFileUnavailableReason } from '../../shared/types/messages';
-import { defaultProjectPath } from '../workspace-folders/folder-registry';
+import { windowSettingsProject } from '../workspace-folders/folder-registry';
 import { folderKey } from '../workspace-folders/folder-key';
 import { writeJsonConfig } from '../config/json-config-write';
 import { parseSettingsText, settingsFileVersion } from '../config/settings-file';
@@ -36,11 +36,11 @@ function parseError(text: string, filePath: string): string | undefined {
   }
 }
 
-/** The file a scope names, or why it does not apply: project and local files only for a trusted default project. */
+/** The file a scope names, or why it does not apply: project and local files only for a trusted window project. */
 export function locateSettingsFile(platform: Platform, scope: SettingsFileScope): string | { reason: SettingsFileUnavailableReason } {
   if (!KNOWN_SCOPES.has(scope)) throw new Error(`unknown settings file scope ${JSON.stringify(scope)}`);
   if (scope !== 'user') {
-    const folder = defaultProjectPath(platform.workspaceFolders, platform.state.workspace);
+    const folder = windowSettingsProject(platform);
     if (folder === undefined) return { reason: 'noProject' };
     if (!platform.trust.isTrusted(folder)) return { reason: 'untrusted' };
   }

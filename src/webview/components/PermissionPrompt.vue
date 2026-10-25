@@ -5,6 +5,7 @@ import { ListboxRoot, ListboxItem } from 'reka-ui';
 import DockPromptOptions from './DockPromptOptions.vue';
 import { FilePlus, ImagePlus, MessageSquare, PencilLine, SquareTerminal, Wrench } from 'lucide-vue-next';
 import PermissionDestinationPicker from './PermissionDestinationPicker.vue';
+import HostBadge from './HostBadge.vue';
 import { isShellTool, TOOL_EDIT, TOOL_GENERATE_IMAGE, TOOL_WRITE, WRITE_TOOLS } from '@shared/tool-names';
 import type { PermissionUpdate, PermissionUpdateDestination, PromptOwner } from '@shared/types/permissions';
 import type { FilePatchOmitted } from '@shared/types/file-patch';
@@ -15,6 +16,7 @@ import { useFolderRelativePath } from '@/composables/useFolderRelativePath';
 import { useDiffStore } from '@/stores/useDiffStore';
 import { useEditorStore } from '@/stores/useEditorStore';
 import { useSettingsStore } from '@/stores/useSettingsStore';
+import { useChatHost } from '@/composables/useChatHost';
 
 const { t } = useI18n();
 const displayPath = useFolderRelativePath();
@@ -78,12 +80,14 @@ const kindIcon = computed<Component>(() => {
   return isNewFile.value ? FilePlus : PencilLine;
 });
 
-const title = computed(() => {
-  if (isShell.value) return t('permission.runCommand');
-  if (isGenerateImage.value) return t('permission.generateImage');
-  if (isGeneric.value) return t('permission.useTool', { tool: props.toolName });
-  return isNewFile.value ? t('prompts.permission.allowCreate') : t('prompts.permission.allowEdit');
+// On a remote chat the title names its host as main's panel init does; the visible title shows it in its badge.
+const host = useChatHost();
+const titleKey = computed(() => {
+  const key = isShell.value ? 'runCommand' : isGenerateImage.value ? 'generateImage' : isGeneric.value ? 'useTool' : isNewFile.value ? 'allowCreate' : 'allowEdit';
+  if (host.value) return `permission.onHost.${key}`;
+  return key === 'allowCreate' || key === 'allowEdit' ? `prompts.permission.${key}` : `permission.${key}`;
 });
+const title = computed(() => t(titleKey.value, { tool: props.toolName, host: host.value?.name }));
 
 const agentLine = computed(() => {
   const owner = props.owner;
@@ -266,7 +270,23 @@ watch(() => props.toolUseId, resetState);
           class="font-semibold"
           data-testid="permission-title"
         >
-          {{ title }}
+          <i18n-t
+            v-if="host"
+            :keypath="titleKey"
+            tag="span"
+            class="inline-flex flex-wrap items-center gap-x-1.5"
+            scope="global"
+          >
+            <template #host>
+              <HostBadge :name="host.name" />
+            </template>
+            <template #tool>
+              {{ toolName }}
+            </template>
+          </i18n-t>
+          <template v-else>
+            {{ title }}
+          </template>
         </div>
         <div
           v-if="subtitle"

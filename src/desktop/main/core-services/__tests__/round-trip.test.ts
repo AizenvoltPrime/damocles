@@ -7,8 +7,10 @@ import type { Disposable } from '../../../../platform/disposable';
 import type { PanelOptions } from '../../../../platform/window-service';
 import { createCorePlatform, type CorePlatform } from '../../../core-host/platform';
 import { createLoopback, createMainEndpoint, INVALID, parseCoreInit } from '../../../core-protocol';
-import { createDesktopKeyValueState, type DesktopKeyValueState } from '../../platform/key-value-state';
+import { createDesktopKeyValueState, type DesktopKeyValueState } from '../../../local-services/key-value-state';
 import { createHostServices, type HostServices, type HostTrust, type HostUi, type RelayView } from '../host-services';
+import type { PageSpec } from '../../../../shared/panel-html';
+import { folderKey } from '../../../../core/workspace-folders/folder-key';
 import { hostExtras } from './host-deps';
 
 interface Harness {
@@ -17,7 +19,6 @@ interface Harness {
   readonly host: HostServices;
   readonly state: DesktopKeyValueState;
   readonly grant: (folder: string) => void;
-  readonly setTheme: (css: string) => void;
   readonly setTerminal: (shown: boolean) => void;
   // the JSON text main forwarded to each view, unparsed
   readonly relayed: Array<{ readonly viewId: string; readonly type: string; readonly json: string }>;
@@ -27,16 +28,20 @@ interface Harness {
   readonly coreTransport: ReturnType<typeof createLoopback>['core'];
 }
 
-type FakeRelayView = FakePanelHost & RelayView;
+type FakeRelayView = FakePanelHost & RelayView & { readonly pages: PageSpec[] };
 
 /** A fake view main relays to: JSON text is recorded as it arrives, then parsed as the panel preload does. */
 function relayView(view: FakePanelHost, panelId: string, relayed: Harness['relayed']): FakeRelayView {
+  const pages: PageSpec[] = [];
   return Object.assign(view, {
     panelId,
     postJson: (type: string, json: string) => {
       relayed.push({ viewId: panelId, type, json });
       void view.postMessage(JSON.parse(json));
     },
+    pages,
+    showPage: (page: PageSpec) => pages.push(page),
+    closeReason: 'user' as const,
   });
 }
 
@@ -64,7 +69,7 @@ function connect(options: { readonly trusted?: readonly string[]; readonly globa
     for (const listener of [...grants]) listener([folder]);
   };
   const trust: HostTrust = {
-    trustedFolders: () => [...trusted],
+    trustedKeys: () => [...trusted].map((folder) => folderKey(folder)),
     onDidGrant: (listener): Disposable => {
       grants.add(listener);
       return { dispose: () => { grants.delete(listener); } };
@@ -75,8 +80,6 @@ function connect(options: { readonly trusted?: readonly string[]; readonly globa
       return true;
     },
   };
-  let css = 'initial-css';
-  const themeListeners = new Set<(css: string) => void>();
   let terminal = { shown: false, shortcut: 'Ctrl+`' };
   const relayed: Harness['relayed'] = [];
   const { main: mainEnd, core: coreEnd } = createLoopback();
@@ -86,13 +89,6 @@ function connect(options: { readonly trusted?: readonly string[]; readonly globa
     platform: main,
     trust,
     state,
-    theme: {
-      css: () => css,
-      onDidChange: (listener) => {
-        themeListeners.add(listener);
-        return { dispose: () => { themeListeners.delete(listener); } };
-      },
-    },
     terminalToggle: () => terminal,
     resolveProxy: (url) => Promise.resolve(`PROXY proxy.example:8080 for ${url}`),
     createView: (panelId, create) => relayView(main.window.createPanel(create) as FakePanelHost, panelId, relayed),
@@ -123,10 +119,6 @@ function connect(options: { readonly trusted?: readonly string[]; readonly globa
     host,
     state,
     grant,
-    setTheme: (next) => {
-      css = next;
-      for (const listener of themeListeners) listener(next);
-    },
     setTerminal: (shown) => {
       terminal = { ...terminal, shown };
       host.terminalToggleChanged();
@@ -343,14 +335,14 @@ describe('proxied services', () => {
     await core.editor.openFile(file, { line: 3, preserveFocus: true, panelId: 'p1' });
     await core.editor.openUntitled('content', 'markdown', { panelId: 'p1' });
     expect(await core.editor.readText(file)).toBe('disk text');
-    await core.editor.showMarkdownPreview(file, { panelId: 'p1' });
+    await core.editor.showMarkdownPreview(file, { panelId: 'p1', content: '# text' });
     await core.editor.openHostSettings('damocles.x', 'chat');
     await core.editor.openSettingsFile('user', { key: 'damocles.x' });
     await core.editor.showChatReview('p1', 'turn');
     await core.editor.searchHostExtensions('speech').catch(() => undefined);
     expect(main.editor.openedFiles).toEqual([{ path: file, options: { line: 3, preserveFocus: true, panelId: 'p1' } }]);
     expect(main.editor.untitled).toEqual([{ content: 'content', language: 'markdown', options: { panelId: 'p1' } }]);
-    expect(main.editor.markdownPreviews).toEqual([{ path: file, options: { panelId: 'p1' } }]);
+    expect(main.editor.markdownPreviews).toEqual([{ path: file, options: { panelId: 'p1', content: '# text' } }]);
     expect(main.editor.settingsQueries).toEqual(['damocles.x']);
     expect(main.editor.settingsFiles).toEqual([{ scope: 'user', key: 'damocles.x' }]);
     expect(main.editor.chatReviews).toEqual([{ panelId: 'p1', scope: 'turn' }]);
@@ -426,7 +418,7 @@ describe('proxied services', () => {
 
 describe('panels', () => {
   it('a panel core creates is a proxy main makes a view for, named by one id on both sides', () => {
-    const { main, core, setTheme, relayed } = connect();
+    const { main, core, relayed } = connect();
     const panel = core.window.createPanel(CHAT);
     const view = main.window.panels[0] as FakeRelayView;
     expect(view.options).toEqual(CHAT);
@@ -434,17 +426,17 @@ describe('panels', () => {
     expect(core.panels.get(view.panelId)).toBe(panel);
     expect(panel.workerSrc).toBe('app://damocles/webview/assets/');
     expect(panel.cspSource).toBe('app://damocles');
-    expect(panel.themeCssSource()).toBe('initial-css');
-    setTheme('next-css');
-    expect(panel.themeCssSource()).toBe('next-css');
-
-    panel.setHtml('<html></html>');
+    // main builds the page with its own theme; core names only the page
+    expect(panel.themeCssSource()).toBe('');
+    expect(() => panel.setHtml('<html></html>')).toThrow('showPage');
+    panel.showPage!({ kind: 'chat' });
     void panel.postMessage({ type: 'ping', nothing: undefined });
     panel.setTitle('Renamed');
     panel.setIcon(path.resolve('/icon.png'));
     panel.setFolderLabel('a');
     panel.reveal(2);
-    expect(view.html).toBe('<html></html>');
+    expect(view.pages).toEqual([{ kind: 'chat' }]);
+    expect(view.html).toBe('');
     expect(relayed).toEqual([{ viewId: view.panelId, type: 'ping', json: '{"type":"ping"}' }]);
     expect(view.posted).toEqual([{ type: 'ping' }]);
     expect(view.title).toBe('Renamed');
@@ -471,9 +463,9 @@ describe('panels', () => {
     let panel!: ReturnType<typeof core.panels.attach>;
     void host.adopt(view, async () => {
       panel = core.panels.attach('main-view');
-      panel.setHtml('<html>at once</html>');
+      panel.showPage!({ kind: 'error' });
     });
-    expect(view.html).toBe('<html>at once</html>');
+    expect(view.pages).toEqual([{ kind: 'error' }]);
     expect(core.panels.idOf(panel)).toBe('main-view');
     expect(panel.visible).toBe(true);
     const received = vi.fn();

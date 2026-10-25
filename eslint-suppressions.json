@@ -234,11 +234,6 @@
       "count": 1
     }
   },
-  "src/desktop/main/index.ts": {
-    "damocles/no-sync": {
-      "count": 2
-    }
-  },
   "src/desktop/main/panel-state-store.ts": {
     "damocles/no-sync": {
       "count": 1
@@ -249,7 +244,7 @@
       "count": 1
     }
   },
-  "src/desktop/main/platform/key-value-state.ts": {
+  "src/desktop/local-services/key-value-state.ts": {
     "damocles/no-sync": {
       "count": 1
     }
@@ -282,6 +277,11 @@
   "src/desktop/main/worktrees/chat-rows.ts": {
     "damocles/no-sync": {
       "count": 1
+    }
+  },
+  "src/desktop/workspace/terminal/terminal-backend.ts": {
+    "damocles/no-sync": {
+      "count": 2
     }
   }
 }

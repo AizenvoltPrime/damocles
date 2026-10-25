@@ -450,8 +450,8 @@ export class SettingsManager {
     return this.configManager.handleSetIdeContextEnabled(enabled);
   }
 
-  handleSetDangerouslySkipPermissions(permissionHandler: PermissionHandler, enabled: boolean): void {
-    this.configManager.handleSetDangerouslySkipPermissions(permissionHandler, enabled);
+  handleSetDangerouslySkipPermissions(permissionHandler: PermissionHandler, enabled: boolean): boolean {
+    return this.configManager.handleSetDangerouslySkipPermissions(permissionHandler, enabled);
   }
 
   async setVoiceProvider(provider: VoiceProvider): Promise<SettingWrite> {

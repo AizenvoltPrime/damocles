@@ -43,6 +43,17 @@ export interface HostSettings {
 
 export const NO_HOST_SETTINGS: HostSettings = { sections: [], rows: [] };
 
+/**
+ * A desktop scope tab's page: the rows it lists, a section's text when it lists none, while its rows are not known yet the
+ * loading text, and the shared sections its nav leaves out.
+ */
+export interface SettingsScopeView {
+  readonly listed: (meta: SettingsRowMeta) => boolean;
+  readonly empty?: (section: SettingsSectionId) => string | undefined;
+  readonly loading?: string;
+  readonly hidden?: ReadonlySet<SettingsSectionId>;
+}
+
 const m = 'settingsModal.rows';
 
 function row(section: SettingsSectionId, id: string, name: string, keys?: readonly string[]): SettingsRowMeta {

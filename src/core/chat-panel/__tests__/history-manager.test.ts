@@ -27,6 +27,14 @@ vi.mock('../../pi-session/session-store', () => ({
   getPiSkippedFiles: vi.fn(async () => ({ ok: true, value: [] })),
 }));
 
+vi.mock('../../pi-session/session-store/history-loader', () => ({
+  replayContext: vi.fn(async () => ({ reasons: undefined, isContextOverflow: undefined })),
+  replayLiveBranch: vi.fn(async (_context: unknown, _cwd: string, sessionId: string, _sm: unknown, _branch: unknown, post: (m: ExtensionToWebviewMessage) => void) => {
+    post({ type: 'sessionCleared', sessionId });
+    return [];
+  }),
+}));
+
 import { HistoryManager } from '../history-manager';
 
 function harness(): {
@@ -89,6 +97,20 @@ describe('HistoryManager.loadSessionHistory', () => {
     const types = posted.map((m) => m.type);
     expect(posted.filter((m) => m.type === 'taskStarted')).toEqual([{ type: 'taskStarted', taskId: 'live-of-s1', toolUseId: 'tc-1', description: 'dig' }]);
     expect(types.indexOf('taskStarted')).toBeGreaterThan(types.indexOf('done'));
+  });
+});
+
+/** A view joining a running chat (views.join) starts with an empty store, so its replay of pi's branch delivers the account state too. */
+describe('HistoryManager.replayLive', () => {
+  it('delivers account state to the joining view after the replay', async () => {
+    const { manager, session, posted } = harness();
+    const viewPosts: ExtensionToWebviewMessage[] = [];
+    const live = { sessionId: 's1', stored: true, branch: [], sessionManager: {}, snapshot: { seq: 0, messages: [], liveToolCallIds: new Set<string>() } };
+
+    await manager.replayLive({ reasons: undefined, isContextOverflow: undefined } as never, '/ws', session, (m) => viewPosts.push(m), live as never);
+
+    expect(viewPosts.map((m) => m.type)).toEqual(['sessionCleared', 'sessionStarted']);
+    expect(posted).toEqual([{ type: 'accountInfo', data: { model: 'gpt-6.1-sol', dollarBilled: true } }]);
   });
 });
 

@@ -1,4 +1,5 @@
 import { log } from '../logger';
+import { userScopeRemote } from '../user-scope';
 import { buildFtsMatchQuery } from './text-tokenize';
 import { USEFULNESS_RUBRIC } from './rubric';
 import { listKnownWorkspaces, matchKnownWorkspace, sameWorkspace, workspaceContaining } from './workspaces';
@@ -491,17 +492,20 @@ const EXISTING_MATCH_TOKEN_CAP = 20;
 
 /**
  * Loads the live fact/preference/episode memories most likely to overlap with this pass's extraction
- * (project rows for the workspace + all global rows) so the extractor can skip already-known info —
+ * (project rows for the workspace, plus all global rows on this computer's core) so the extractor can skip already-known info —
  * catching reworded duplicates that lexical dedup can't. An FTS MATCH over the batch text finds
  * old-but-relevant rows a recency window would miss; it's UNIONed with a most-recent-N fallback,
  * deduped by content, and capped at {@link EXISTING_MEMORY_LIMIT}. Only an empty MATCH falls back to
  * recency; a real DB error propagates.
  */
 function loadExistingMemoriesForExtraction(ctx: ClaimedPassCtx, candidates: ClaimedCandidate[]): string[] {
+  // global memory is the client's, so a daemon's core sends the extractor no global row
+  const inScope = (column: string): string =>
+    `(${userScopeRemote() ? '' : `${column}scope = 'global' OR `}(${column}scope = 'project' AND ${column}workspace IS ?))`;
   const recentQuery = `SELECT content FROM memories
         WHERE is_latest = 1 AND forgotten = 0
           AND kind IN ('fact', 'preference', 'episode')
-          AND (scope = 'global' OR (scope = 'project' AND workspace IS ?))
+          AND ${inScope('')}
         ORDER BY updated_at DESC
         LIMIT ?`;
 
@@ -527,12 +531,12 @@ function loadExistingMemoriesForExtraction(ctx: ClaimedPassCtx, candidates: Clai
           WHERE memories_fts MATCH ?
             AND m.is_latest = 1 AND m.forgotten = 0
             AND m.kind IN ('fact', 'preference', 'episode')
-            AND (m.scope = 'global' OR (m.scope = 'project' AND m.workspace IS ?))
+            AND ${inScope('m.')}
          UNION ALL
          SELECT content, 1e18 AS ord FROM memories
           WHERE is_latest = 1 AND forgotten = 0
             AND kind IN ('fact', 'preference', 'episode')
-            AND (scope = 'global' OR (scope = 'project' AND workspace IS ?))
+            AND ${inScope('')}
        )
        GROUP BY content
        ORDER BY best
@@ -596,6 +600,8 @@ function toNewMemoryFields(
   const scope = memory.scope as MemoryScope;
 
   if (scope === 'session' && !sessionId) return null;
+  // global memory is the client's, so a daemon's core writes no global row (refuseGlobalRows)
+  if (scope === 'global' && userScopeRemote()) return null;
 
   let workspace = pass.workspace;
   if (scope === 'project' && memory.workspace != null) {

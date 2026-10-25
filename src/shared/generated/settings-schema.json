@@ -875,6 +875,13 @@
         "maximum": 100000,
         "description": "The number of lines the desktop terminal keeps above the screen."
       },
+      "damocles.desktop.remote.terminalIdleDays": {
+        "type": "integer",
+        "default": 30,
+        "minimum": 0,
+        "maximum": 3650,
+        "description": "A terminal on a remote host that no device has reattached for this many days ends on its own. 0 means never."
+      },
       "damocles.desktop.terminal.cursorStyle": {
         "type": "string",
         "enum": [
@@ -2249,6 +2256,12 @@
         "errorMessage": "damocles.desktop.terminal.scrollback applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
         "description": "damocles.desktop.terminal.scrollback applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe number of lines the desktop terminal keeps above the screen."
+      },
+      "damocles.desktop.remote.terminalIdleDays": {
+        "not": {},
+        "errorMessage": "damocles.desktop.remote.terminalIdleDays applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.remote.terminalIdleDays applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nA terminal on a remote host that no device has reattached for this many days ends on its own. 0 means never."
       },
       "damocles.desktop.terminal.cursorStyle": {
         "not": {},

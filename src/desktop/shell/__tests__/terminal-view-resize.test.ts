@@ -10,6 +10,7 @@ import { TERMINAL_STORE, type TerminalStore } from '../terminal/terminal-store';
 import { shellI18n } from '../i18n';
 import { TERMINAL_STATE, fakeShellApi } from './fakes';
 
+const xterms: Array<{ cols: number; rows: number }> = [];
 // A stand-in xterm: 80×24 once fitted, its typed input handed to the test.
 const typed: { listeners: Array<(data: string) => void>; send: (data: string) => void } = {
   listeners: [],
@@ -18,6 +19,9 @@ const typed: { listeners: Array<(data: string) => void>; send: (data: string) =>
 vi.mock('@xterm/xterm', () => {
   const disposable = { dispose: () => undefined };
   class Terminal {
+    constructor() {
+      xterms.push(this);
+    }
     cols = 40;
     rows = 24;
     options: Record<string, unknown> = {};
@@ -47,7 +51,14 @@ vi.mock('@xterm/xterm', () => {
       this.element.append(screen);
       parent.append(this.element);
     }
-    write(): void {}
+    write(_data: string, parsed?: () => void): void {
+      parsed?.();
+    }
+    resize(cols: number, rows: number): void {
+      this.cols = cols;
+      this.rows = rows;
+    }
+    reset(): void {}
     focus(): void {}
     hasSelection = () => false;
     dispose(): void {}
@@ -89,7 +100,7 @@ let wrapper: VueWrapper | undefined;
 afterEach(() => wrapper?.unmount());
 
 const info: TerminalInfo = {
-  id: 'term-1', title: 'bash', name: null, profileId: 'bash', icon: 'bash', customIcon: null, color: null, projectKey: 'alpha', projectName: 'alpha', status: 'running', exitCode: null, description: null, running: null, integrated: true,
+  id: 'term-1', title: 'bash', name: null, profileId: 'bash', icon: 'bash', customIcon: null, color: null, projectKey: 'alpha', projectName: 'alpha', status: 'running', exitCode: null, description: null, running: null, integrated: true, restoring: false, windowsBuild: null, pathFlavor: 'posix',
 };
 
 describe('terminal view pty size', () => {
@@ -97,9 +108,9 @@ describe('terminal view pty size', () => {
   // width on the late SIGWINCH and erase the command's output above it.
   it('sends the size on screen before the first keys of input, without waiting for it to settle', async () => {
     const api = fakeShellApi();
-    const store = { state: shallowRef(TERMINAL_STATE), focusRequest: shallowRef(null), pasteRequest: shallowRef(null), actionRequest: shallowRef(null), attach: () => () => undefined } as unknown as TerminalStore;
+    const store = { state: shallowRef(TERMINAL_STATE), focusRequest: shallowRef(null), pasteRequest: shallowRef(null), actionRequest: shallowRef(null), screenWaits: () => false, attach: () => () => undefined } as unknown as TerminalStore;
     wrapper = mount(TerminalView, {
-      props: { api, terminal: info, shown: true, settings: TERMINAL_STATE.settings, passKeys: [], platform: 'linux', splitShortcut: 'Ctrl+Shift+5', screenReader: false, windowsBuild: 0 },
+      props: { api, terminal: info, shown: true, settings: TERMINAL_STATE.settings, passKeys: [], platform: 'linux', splitShortcut: 'Ctrl+Shift+5', screenReader: false },
       global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: store } },
     });
     await flushPromises();
@@ -115,11 +126,11 @@ describe('terminal view pty size', () => {
   // A pane opening glides from no height, and on a busy renderer two frames can be further apart than the settle time.
   it('sends no size while the grid tracks glide, and the size it settles at once they stop', async () => {
     const api = fakeShellApi();
-    const store = { state: shallowRef(TERMINAL_STATE), focusRequest: shallowRef(null), pasteRequest: shallowRef(null), actionRequest: shallowRef(null), attach: () => () => undefined } as unknown as TerminalStore;
+    const store = { state: shallowRef(TERMINAL_STATE), focusRequest: shallowRef(null), pasteRequest: shallowRef(null), actionRequest: shallowRef(null), screenWaits: () => false, attach: () => () => undefined } as unknown as TerminalStore;
     const gliding = ref(true);
     const grid = { dragging: ref(null), press: () => undefined, takeClick: () => true, openMoveMenu: async () => undefined, gliding } satisfies GridContext;
     wrapper = mount(TerminalView, {
-      props: { api, terminal: info, shown: true, settings: TERMINAL_STATE.settings, passKeys: [], platform: 'linux', splitShortcut: 'Ctrl+Shift+5', screenReader: false, windowsBuild: 0 },
+      props: { api, terminal: info, shown: true, settings: TERMINAL_STATE.settings, passKeys: [], platform: 'linux', splitShortcut: 'Ctrl+Shift+5', screenReader: false },
       global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: store, [GRID_CONTEXT as symbol]: grid } },
     });
     await flushPromises();
@@ -129,5 +140,22 @@ describe('terminal view pty size', () => {
     gliding.value = false;
     await vi.waitFor(() => expect(api.terminal.resize).toHaveBeenCalledWith({ id: 'term-1', cols: 80, rows: 24 }));
     expect(api.terminal.resize).toHaveBeenCalledTimes(1);
+  });
+
+  // A daemon's screen for a lagging client is written into a view already shown, at the size it was serialized at.
+  it('fits a shown view to its box again after a screen resized it', async () => {
+    const api = fakeShellApi();
+    const sinks: Array<(batch: unknown) => void> = [];
+    const store = { state: shallowRef(TERMINAL_STATE), focusRequest: shallowRef(null), pasteRequest: shallowRef(null), actionRequest: shallowRef(null), screenWaits: () => false, attach: (_id: string, sink: (batch: unknown) => void) => { sinks.push(sink); return () => undefined; } } as unknown as TerminalStore;
+    wrapper = mount(TerminalView, {
+      props: { api, terminal: info, shown: true, settings: TERMINAL_STATE.settings, passKeys: [], platform: 'linux', splitShortcut: 'Ctrl+Shift+5', screenReader: false },
+      global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: store } },
+    });
+    await flushPromises();
+    const xterm = xterms.at(-1)!;
+    expect(xterm.cols).toBe(80);
+    sinks[0]!({ screen: { id: 'term-1', data: 'fresh', cols: 120, rows: 30, marks: [] } });
+    await flushPromises();
+    expect(xterm.cols).toBe(80);
   });
 });

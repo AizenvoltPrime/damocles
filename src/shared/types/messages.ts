@@ -375,6 +375,8 @@ export interface HostCapabilities {
   chatReview: boolean;
   /** Worktree chats (D30, D61): core posts `worktreeState` and accepts `worktreeAction` and `chatMove`. */
   worktrees: boolean;
+  /** False: the chat's host refuses YOLO (a remote host's policy), and core answers a change with `permissionModeRefused`. Absent: allowed. */
+  bypassPermissions?: boolean;
 }
 
 /** Where a worktree-capable chat works (D61). */
@@ -545,9 +547,12 @@ export type ExtensionToWebviewMessage =
   /**
    * `settingSources` is present only when `HostCapabilities.settingsSources`; a key absent from it resolves from the user file or the default.
    * `workspaceWritable` is false in an untrusted folder, whose Workspace section core refuses to write.
+   * `writableKeys` goes only to a settings view attached with a scope tab: the keys that tab may write, which it lists.
    */
-  | { type: "settingsUpdate"; settings: ExtensionSettings; workspaceWritable: boolean; settingSources?: Record<string, SettingSource> }
+  | { type: "settingsUpdate"; settings: ExtensionSettings; workspaceWritable: boolean; settingSources?: Record<string, SettingSource>; writableKeys?: string[] }
   | { type: "hostCapabilities"; capabilities: HostCapabilities }
+  /** Core refused a permission change: YOLO on a host whose policy refuses it, or a mode core does not know. */
+  | { type: "permissionModeRefused"; mode: string; reason: "remote-host" | "unknown-mode" }
   /**
    * Sent after each settings write; `key` is the damocles.* key the row that asked shows, `scope` and `file` where the value
    * the setter wrote now comes from. A write that left its key at the default reports the setter's home scope and no file.

@@ -2,8 +2,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { testRemote, testWorkspaces } from './test-workspaces';
+import { projectKeyOf } from '../../../shared/project-location';
+import type { ProjectWorkspace } from '../../workspace/project-workspace';
+import type { Workspaces } from '../workspace/workspaces';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
-import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
+import { createFakePlatform, type FakeFileWatcher, type FakePlatform } from '../../../__mocks__/fake-platform';
 import { EDITOR_MAX_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { settingsFileVersion } from '../../../core/config/settings-file';
 import type { SettingsFileSaveOutcome } from '../../../core/chat-panel/settings-file-editor';
@@ -15,6 +19,8 @@ import { DocumentService, isDocumentDirty, type Backups, type DocumentChange, ty
 let root: string;
 let projectDir: string;
 let outside: string;
+// the loopback host's ~/.damocles
+let hostHome: string;
 let platform: FakePlatform;
 let asked: MessageQuestion[];
 let answer: number | undefined;
@@ -32,6 +38,7 @@ beforeEach(() => {
   root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dm-docs-')));
   projectDir = path.join(root, 'proj');
   outside = path.join(root, 'outside');
+  hostHome = path.join(root, 'host', '.damocles');
   fs.mkdirSync(path.join(projectDir, 'src'), { recursive: true });
   fs.mkdirSync(outside);
   project = { key: folderKey(projectDir), fsPath: projectDir, name: 'proj' };
@@ -58,8 +65,16 @@ beforeEach(() => {
     },
   };
   service = new DocumentService({
+    authorityOs: () => process.platform,
     projects: () => [project],
-    watchers: platform.fileWatchers,
+    workspaces: testWorkspaces({
+      watchers: platform.fileWatchers,
+      // the loopback host's workspace, whose home is its own
+      remote: (authorityKey) => {
+        if (authorityKey !== 'loopback') throw new Error(`${authorityKey} is not connected`);
+        return testWorkspaces({ watchers: platform.fileWatchers, damoclesHome: hostHome }).local;
+      },
+    }),
     ask: async (question) => {
       asked.push(question);
       return answer;
@@ -719,6 +734,58 @@ describe('settings files', () => {
   });
 });
 
+describe('a host\'s own settings file', () => {
+  const ORIGINAL = '{\n  "damocles.maxBudgetUsd": 40\n}\n';
+  const MINE = '{\n  "damocles.maxBudgetUsd": 12\n}\n';
+  let hostFile: string;
+
+  beforeEach(() => {
+    fs.mkdirSync(hostHome, { recursive: true });
+    hostFile = path.join(hostHome, 'settings.json');
+    fs.writeFileSync(hostFile, ORIGINAL);
+  });
+
+  const openHost = async (): Promise<TextDocument> => (await service.openHostSettings('loopback', 'Local daemon: settings.json')) as TextDocument;
+
+  it('opens editable through the authority\'s workspace, apart from a local open of the same path, and saves in place there', async () => {
+    const document = await openHost();
+    expect(document).toMatchObject({ location: { path: hostFile, host: 'loopback' }, name: 'Local daemon: settings.json', languageId: 'json', readOnlyReason: undefined, text: ORIGINAL });
+    expect(await openHost()).toBe(document);
+    expect(await service.openPath(hostFile)).not.toBe(document);
+    const inode = fs.statSync(hostFile, { bigint: true }).ino;
+
+    expect(await service.save(document.id, document.version, MINE)).toEqual({ ok: true });
+    expect(fs.readFileSync(hostFile, 'utf8')).toBe(MINE);
+    expect(fs.statSync(hostFile, { bigint: true }).ino).toBe(inode);
+    expect(isDocumentDirty(document)).toBe(false);
+    expect(settingsSaves).toEqual([]);
+  });
+
+  it('keeps the settings file rules: text that does not parse is not saved, a file that does not parse is not overwritten, a changed one is a conflict', async () => {
+    const document = await openHost();
+    expect(await service.save(document.id, document.version, '{\n  "damocles.maxBudgetUsd": \n')).toMatchObject({ ok: false, reason: 'failed', message: expect.stringContaining('Not saved: the text is not valid JSON.') });
+    expect(fs.readFileSync(hostFile, 'utf8')).toBe(ORIGINAL);
+
+    fs.writeFileSync(hostFile, '{ "damocles.maxBudgetUsd": ');
+    expect(await service.save(document.id, document.version, MINE)).toMatchObject({ ok: false, reason: 'failed', message: expect.stringContaining('does not parse, so it was not overwritten') });
+    expect(fs.readFileSync(hostFile, 'utf8')).toBe('{ "damocles.maxBudgetUsd": ');
+
+    fs.writeFileSync(hostFile, '{}');
+    expect(await service.save(document.id, document.version, MINE)).toEqual({ ok: false, reason: 'conflict' });
+    expect(fs.readFileSync(hostFile, 'utf8')).toBe('{}');
+  });
+
+  it('refuses a save once settings.json links to another file', async () => {
+    const document = await openHost();
+    const elsewhere = path.join(outside, 'elsewhere.json');
+    fs.writeFileSync(elsewhere, ORIGINAL);
+    fs.rmSync(hostFile);
+    fs.symlinkSync(elsewhere, hostFile, 'file');
+    expect(await service.save(document.id, document.version, MINE)).toMatchObject({ ok: false, reason: 'failed', message: expect.stringContaining('outside the file the editor opened') });
+    expect(fs.readFileSync(elsewhere, 'utf8')).toBe(ORIGINAL);
+  });
+});
+
 describe('overwrite sizes the bytes it writes', () => {
   const limit = EDITOR_MAX_DOCUMENT_BYTES;
   // One byte per line in a buffer reported with LF; two per line once written with the file's CRLF.
@@ -1252,3 +1319,168 @@ async function waitFor(condition: () => boolean): Promise<void> {
   }
   throw new Error('condition never held');
 }
+
+describe('documents of projects on other hosts', () => {
+  const t = (message: string, ...args: Array<string | number>): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]));
+  const noBackups: Backups = { changed: () => undefined, writeNow: async () => undefined, remove: () => undefined };
+  const noSettings = { locate: () => undefined, save: async (): Promise<SettingsFileSaveOutcome> => { throw new Error('no settings file in this test'); } };
+
+  function serviceOver(projects: readonly Project[], workspaces: Workspaces, authorityOs: (authority: string) => NodeJS.Platform): DocumentService {
+    return new DocumentService({ projects: () => projects, workspaces, authorityOs, ask: async () => 0, t, log: (line) => logged.push(line), pickSavePath: async () => undefined, backups: noBackups, settings: noSettings });
+  }
+
+  it('keeps a folder open here and through a host as two files, each saved and replaced through its own authority', async () => {
+    write('src/a.ts', 'base');
+    const remote = testRemote({ watchers: platform.fileWatchers });
+    const away: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(projectDir)), fsPath: projectDir, name: 'proj' };
+    const documents = serviceOver([project, away], testWorkspaces({ watchers: platform.fileWatchers, remote: () => remote.workspace() }), () => process.platform);
+    const there = await documents.openProjectFile(away.key, 'src/a.ts');
+    const here = await documents.openProjectFile(project.key, 'src/a.ts');
+    if (!there.ok || !here.ok || here.document.kind !== 'text') throw new Error('not opened');
+    expect(here.document.id).not.toBe(there.document.id);
+    remote.disconnect('network');
+    expect(await documents.save(here.document.id, here.document.version, 'local')).toEqual({ ok: true });
+    // a replace in the local file, which no local editor holds, is not refused for the host's editor of the same path
+    const remoteRoot = testRemote({ watchers: platform.fileWatchers });
+    const onlyThere = serviceOver([project, away], testWorkspaces({ watchers: platform.fileWatchers, remote: () => remoteRoot.workspace() }), () => process.platform);
+    await onlyThere.openProjectFile(away.key, 'src/a.ts');
+    const unheld = await onlyThere.readClosedFile(project.key, 'src/a.ts');
+    if (unheld.kind !== 'text') throw new Error(unheld.kind);
+    expect(await onlyThere.writeClosedFile(unheld, 'replaced')).toEqual({ ok: true });
+    expect(fs.readFileSync(path.join(projectDir, 'src', 'a.ts'), 'utf8')).toBe('replaced');
+    onlyThere.dispose();
+    documents.dispose();
+    remoteRoot.disconnect('the test ended');
+  });
+
+  it('words a host\'s failed write by the code the host reported, and a save while the host is away as not connected', async () => {
+    const file = write('src/full.ts', 'base');
+    const remote = testRemote({ watchers: platform.fileWatchers });
+    const away: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(projectDir)), fsPath: projectDir, name: 'proj' };
+    const documents = serviceOver([away], testWorkspaces({ watchers: platform.fileWatchers, remote: () => remote.workspace() }), () => process.platform);
+    const opened = await documents.openProjectFile(away.key, 'src/full.ts');
+    if (!opened.ok || opened.document.kind !== 'text') throw new Error('not opened');
+    const document = opened.document;
+    failWrite(file, 'ENOSPC', 'none');
+    expect(await documents.save(document.id, document.version, 'mine')).toEqual({ ok: false, reason: 'failed', message: 'Failed to save \'full.ts\': There is not enough space on the disk.' });
+    remote.disconnect('network');
+    expect(await documents.save(document.id, document.version, 'mine')).toEqual({ ok: false, reason: 'failed', message: 'Failed to save \'full.ts\': loopback is not connected.' });
+    documents.dispose();
+  });
+
+  it('offers Save As of a host\'s file under its name in a local project, never at its path on the host', async () => {
+    const remoteDir = path.join(root, 'remote');
+    fs.mkdirSync(path.join(remoteDir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(remoteDir, 'src', 'b.ts'), 'base');
+    const remote = testRemote({ watchers: platform.fileWatchers });
+    const away: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(remoteDir)), fsPath: remoteDir, name: 'remote' };
+    const offered: string[] = [];
+    const documents = new DocumentService({
+      projects: () => [away, project], workspaces: testWorkspaces({ watchers: platform.fileWatchers, remote: () => remote.workspace() }), authorityOs: () => process.platform,
+      ask: async () => 0, t, log: (line) => logged.push(line), backups: noBackups, settings: noSettings,
+      pickSavePath: async (defaultPath) => {
+        offered.push(defaultPath);
+        return undefined;
+      },
+    });
+    const opened = await documents.openProjectFile(away.key, 'src/b.ts');
+    if (!opened.ok || opened.document.kind !== 'text') throw new Error('not opened');
+    expect(await documents.saveAs(opened.document.id, opened.document.version, 'base')).toEqual({ ok: false, reason: 'cancelled' });
+    expect(offered).toEqual([path.join(projectDir, 'b.ts')]);
+    documents.dispose();
+    remote.disconnect('the test ended');
+  });
+
+  it('words a save whose connection closes during the write as the host not being connected', async () => {
+    const file = write('src/cut.ts', 'base');
+    const remote = testRemote({ watchers: platform.fileWatchers });
+    const away: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(projectDir)), fsPath: projectDir, name: 'proj' };
+    const documents = serviceOver([away], testWorkspaces({ watchers: platform.fileWatchers, remote: () => remote.workspace() }), () => process.platform);
+    const opened = await documents.openProjectFile(away.key, 'src/cut.ts');
+    if (!opened.ok || opened.document.kind !== 'text') throw new Error('not opened');
+    const original = fs.promises.open.bind(fs.promises);
+    let writing!: () => void;
+    const reached = new Promise<void>((resolve) => { writing = resolve; });
+    // the host's write never finishes, so the connection closes under it
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (opened, flags, mode) => {
+      if (String(opened) === file && flags === 'r+') {
+        writing();
+        return new Promise<never>(() => undefined);
+      }
+      return original(opened, flags, mode);
+    });
+    const saved = documents.save(opened.document.id, opened.document.version, 'mine');
+    await reached;
+    remote.disconnect('network');
+    expect(await saved).toEqual({ ok: false, reason: 'failed', message: 'Failed to save \'cut.ts\': loopback is not connected.' });
+    documents.dispose();
+  });
+
+  it('watches open documents again over their host\'s next connection, and takes what changed on disk while the host was away', async () => {
+    const cleanFile = write('src/clean.ts', 'base');
+    const editedFile = write('src/edited.ts', 'base');
+    let remote = testRemote({ watchers: platform.fileWatchers });
+    const away: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(projectDir)), fsPath: projectDir, name: 'proj' };
+    const documents = serviceOver([away], testWorkspaces({ watchers: platform.fileWatchers, remote: () => remote.workspace() }), () => process.platform);
+    const srcDir = path.join(projectDir, 'src');
+    const live = (): FakeFileWatcher[] => platform.fileWatchers.watchers.filter((watcher) => !watcher.disposed && watcher.base === srcDir);
+    try {
+      const clean = await documents.openProjectFile(away.key, 'src/clean.ts');
+      const edited = await documents.openProjectFile(away.key, 'src/edited.ts');
+      if (!clean.ok || clean.document.kind !== 'text' || !edited.ok || edited.document.kind !== 'text') throw new Error('not opened');
+      const [cleanDocument, editedDocument] = [clean.document, edited.document];
+      documents.edit(editedDocument.id, { version: editedDocument.version, seq: 1, text: 'mine', overReload: false });
+      await vi.waitFor(() => expect(live()).toHaveLength(2));
+      remote.disconnect('network');
+      documents.connectionsChanged();
+      fs.writeFileSync(cleanFile, 'changed while away');
+      fs.writeFileSync(editedFile, 'changed while away');
+      remote = testRemote({ watchers: platform.fileWatchers });
+      documents.connectionsChanged();
+      await vi.waitFor(() => expect(cleanDocument.text).toBe('changed while away'));
+      await vi.waitFor(() => expect(editedDocument.conflict).toBe(true));
+      expect(editedDocument.text).toBe('mine');
+      await vi.waitFor(() => expect(live()).toHaveLength(2));
+      fs.writeFileSync(cleanFile, 'changed after');
+      for (const watcher of live()) watcher.fireChange(cleanFile);
+      await vi.waitFor(() => expect(cleanDocument.text).toBe('changed after'));
+    } finally {
+      documents.dispose();
+      remote.disconnect('the test ended');
+    }
+  });
+
+  it('names, watches and tells files apart by the path rules of the host they are on, whatever this computer runs', async () => {
+    // a POSIX host, where case makes two files, and a Windows host, where it does not
+    const posix: Project = { key: projectKeyOf({ kind: 'loopback' }, '/srv/app'), fsPath: '/srv/app', name: 'app' };
+    const windows: Project = { key: projectKeyOf({ kind: 'ssh', hostId: 'w' }, 'c:\\work\\app'), fsPath: 'C:\\Work\\App', name: 'App' };
+    const watched: string[] = [];
+    const hostWorkspace = (root: string, flavor: path.PlatformPath): ProjectWorkspace => ({
+      files: {
+        confineExisting: async (_project: Project, relativePath: string) => (relativePath.includes('moved') ? { ok: false, reason: 'missing' } : { ok: true, path: flavor.join(root, ...relativePath.split('/')) }),
+        read: async () => ({ kind: 'bytes', bytes: Buffer.from('text'), mtimeMs: 1, dev: 1, ino: 1 }),
+        watch: (base: string) => {
+          watched.push(base);
+          return { dispose: () => undefined };
+        },
+      },
+    }) as unknown as ProjectWorkspace;
+    const hosts: Record<string, ProjectWorkspace> = { loopback: hostWorkspace(posix.fsPath, path.posix), 'ssh+w': hostWorkspace(windows.fsPath, path.win32) };
+    const documents = serviceOver([posix, windows], testWorkspaces({ watchers: platform.fileWatchers, remote: (authority) => hosts[authority]! }), (authority) => (authority === 'ssh+w' ? 'win32' : 'linux'));
+    const openIn = async (owner: Project, relativePath: string) => {
+      const result = await documents.openProjectFile(owner.key, relativePath);
+      if (!result.ok) throw new Error(result.reason);
+      return result.document;
+    };
+    const [upper, lower] = [await openIn(posix, 'src/A.ts'), await openIn(posix, 'src/a.ts')];
+    expect(upper.id).not.toBe(lower.id);
+    const [winUpper, winLower] = [await openIn(windows, 'src/A.ts'), await openIn(windows, 'src/a.ts')];
+    expect(winUpper.id).toBe(winLower.id);
+    expect([upper.name, winUpper.name]).toEqual(['A.ts', 'A.ts']);
+    expect(watched).toEqual(['/srv/app/src', '/srv/app/src', 'C:\\Work\\App\\src']);
+    // a Files rename whose new name the host cannot confine yet leaves the document at the path joined in the host's rules
+    await documents.rename(posix.key, 'src/A.ts', async () => ({ ok: true, relativePath: 'src/moved/B.ts' }));
+    expect(documents.get(upper.id)?.location?.path).toBe('/srv/app/src/moved/B.ts');
+    documents.dispose();
+  });
+});

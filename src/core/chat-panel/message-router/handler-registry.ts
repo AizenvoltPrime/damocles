@@ -1,4 +1,4 @@
-import type { HandlerDependencies, HandlerRegistry } from "./types";
+import type { HandlerDependencies, HandlerRegistry, ViewHandlerRegistry } from "./types";
 import { createChatHandlers } from "./handlers/chat-handlers";
 import { createPermissionHandlers } from "./handlers/permission-handlers";
 import { createSettingsHandlers } from "./handlers/settings-handlers";
@@ -21,7 +21,9 @@ import { createWorkspaceFolderHandlers } from "./handlers/workspace-folder-handl
 import { createSettingsFileHandlers } from "./handlers/settings-file-handlers";
 import { log } from "../../logger";
 
-export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistry {
+/** Every message's handler, and the voice handlers a remote chat's view reaches on this computer's core (VOICE_VIEW_MESSAGES). */
+export function createHandlerRegistry(deps: HandlerDependencies): { readonly handlers: HandlerRegistry; readonly viewHandlers: ViewHandlerRegistry } {
+  const voice = createVoiceHandlers(deps);
   const voiceStream = createVoiceStreamHandlers(deps);
   const chatDeps: HandlerDependencies = { ...deps, markUserTypedDuringTurn: voiceStream.markUserTypedDuringTurn };
   const settingsFiles = createSettingsFileHandlers(deps);
@@ -31,7 +33,7 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
     postSettingsFileAvailability: settingsFiles.postAvailability,
     postClaudeAuthState: claudeAuth.postState,
   };
-  return {
+  const handlers: HandlerRegistry = {
     log: (msg) => {
       if (msg.type === "log") log("[Webview]", msg.message);
     },
@@ -46,7 +48,7 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
     ...createWorkspaceHandlers(deps),
     ...createModelHandlers(deps),
     ...createMemoryHandlers(deps),
-    ...createVoiceHandlers(deps),
+    ...voice.handlers,
     ...voiceStream.handlers,
     ...createBtwHandlers(deps),
     ...createBrowserHandlers(deps),
@@ -59,4 +61,5 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
     ...createWorkspaceFolderHandlers(deps),
     ...settingsFiles.handlers,
   };
+  return { handlers, viewHandlers: { ...voice.viewHandlers, ...voiceStream.viewHandlers } };
 }

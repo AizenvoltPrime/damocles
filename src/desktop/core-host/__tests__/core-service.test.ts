@@ -14,6 +14,8 @@ const H = vi.hoisted(() => ({
   worktree: [] as Array<(event: unknown) => void>,
   permissions: [] as Array<(panelId: string) => void>,
   restored: [] as unknown[][],
+  foreignDispatched: [] as unknown[][],
+  clientAuthListeners: [] as Array<() => void>,
 }));
 
 vi.mock('../../../core/logger', () => ({ log: (line: string) => H.order.push(`log: ${line}`) }));
@@ -25,6 +27,10 @@ vi.mock('../../../core/workspace-folders/folder-registry', () => ({ settingsFold
 vi.mock('../../../core/pi-session/pi-runtime', () => ({
   PiRuntime: {
     exists: true,
+    onClientAuthChange: (listener: () => void) => {
+      H.clientAuthListeners.push(listener);
+      return () => undefined;
+    },
     disposeInstance: () => {
       H.order.push('runtime.dispose');
       return H.disposeRuntime();
@@ -66,6 +72,7 @@ vi.mock('../../../core/chat-panel', () => {
       getVoiceService = () => ({});
       getBrowserService = () => ({ holdsPages: (chat: unknown) => H.holdsPages(chat) });
       restorePanel = async (...args: unknown[]) => void H.restored.push(args);
+      dispatchForeign = async (...args: unknown[]) => void H.foreignDispatched.push(args);
       dispose = () => {
         H.order.push('provider.dispose');
         return H.disposeProvider();
@@ -99,24 +106,28 @@ afterEach(() => {
   H.worktree.length = 0;
   H.permissions.length = 0;
   H.restored.length = 0;
+  H.foreignDispatched.length = 0;
+  H.clientAuthListeners.length = 0;
   H.disposeProvider = () => Promise.resolve();
   H.disposeRuntime = () => Promise.resolve();
   H.holdsPages = () => false;
 });
 
-function start(teardown: () => Promise<void> = async () => void H.order.push('teardown')): { main: MainEndpoint; addChat(panelId: string, viewId: string): Chat } {
+function start(teardown: () => Promise<void> = async () => void H.order.push('teardown'), remote?: object): { main: MainEndpoint; addChat(panelId: string, viewId: string): Chat; foreign: Map<string, PanelHost> } {
   const loopback = createLoopback();
   const core = createCoreEndpoint(loopback.core, () => undefined);
   const main = createMainEndpoint(loopback.main, () => undefined);
   const hosts = new Map<string, PanelHost>();
+  const foreign = new Map<string, PanelHost>();
   const platform = {
     endpoint: core,
-    panels: { get: (viewId: string) => hosts.get(viewId), attach: (viewId: string) => hosts.get(viewId), idOf: (host: PanelHost) => [...hosts].find(([, candidate]) => candidate === host)?.[0] },
+    panels: { get: (viewId: string) => hosts.get(viewId), attach: (viewId: string) => hosts.get(viewId), idOf: (host: PanelHost) => [...hosts].find(([, candidate]) => candidate === host)?.[0], foreign: (viewId: string) => foreign.get(viewId) },
     init: { git: { available: true }, e2eHooks: false },
     secrets: {},
     settings: { get: <T>(_key: string, fallback: T) => fallback, onDidChange: () => ({ dispose: () => void H.order.push('subscription disposed') }) },
     setChatPrompts: () => undefined,
     notifications: {},
+    remote,
   } as unknown as CorePlatform;
   startCoreService(platform, {
     chatFolders: { set: () => undefined, changed: () => undefined },
@@ -127,6 +138,7 @@ function start(teardown: () => Promise<void> = async () => void H.order.push('te
   });
   return {
     main,
+    foreign,
     addChat: (panelId, viewId) => {
       const host = { close: vi.fn(), onDispose: () => ({ dispose: () => undefined }) } as unknown as Chat['host'];
       hosts.set(viewId, host);
@@ -262,5 +274,30 @@ describe('chats.unload', () => {
     expect(await main.request('chats.unload', { viewId: 'view-1', empty: true })).toBe(false);
     chat.instance.session = { storedSessionId: null, hasConversation: () => false, processing: false };
     expect(await main.request('chats.unload', { viewId: 'view-1', empty: true })).toBe(true);
+  });
+});
+
+describe('panels.foreignMessage', () => {
+  it('dispatches a voice message of an attached remote view, and refuses any other message or an unattached view', async () => {
+    const { main, foreign } = start();
+    const proxy = {} as PanelHost;
+    foreign.set('remote-view', proxy);
+    await main.request('panels.foreignMessage', { viewId: 'remote-view', message: { type: 'startVoiceRecording' } });
+    await expect(main.request('panels.foreignMessage', { viewId: 'remote-view', message: { type: 'sendMessage', text: 'hi' } })).rejects.toThrow('Only voice messages reach this computer from a remote chat');
+    await expect(main.request('panels.foreignMessage', { viewId: 'other-view', message: { type: 'startVoiceRecording' } })).rejects.toThrow('The remote chat view is not attached');
+    expect(H.foreignDispatched).toEqual([[proxy, { type: 'startVoiceRecording' }]]);
+  });
+});
+
+describe('user.clientAuthChanged', () => {
+  it('reports this computer\'s sign-in changes, and a daemon\'s core sends none', async () => {
+    const { main } = start();
+    const heard = vi.fn();
+    main.onEvent('user.clientAuthChanged', heard);
+    for (const listener of H.clientAuthListeners) listener();
+    await vi.waitFor(() => expect(heard).toHaveBeenCalledTimes(1));
+    H.clientAuthListeners.length = 0;
+    start(undefined, { hostId: 'h' });
+    expect(H.clientAuthListeners).toEqual([]);
   });
 });

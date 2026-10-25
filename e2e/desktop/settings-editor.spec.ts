@@ -1,25 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { Locator } from '@playwright/test';
 import { expect, test } from './support/fixtures';
 import { writeUserSettings } from './support/hermetic';
 import { overlayPage, shellPage, shellState } from './support/shell';
 import { chooseSegment, editSettingsFile, openSettingsModal, settingsRow } from './support/settings';
 import { openProjectChat } from './support/screenshots';
-import { activeTab, codeEditor, conflictBar, diffEditor, editorTab, saveWithKeyboard } from './support/editor';
-
-const SELECT_ALL = process.platform === 'darwin' ? 'Meta+A' : 'Control+A';
-
-/** Selects all and pastes `text`; pasted text skips Monaco's auto-closing and auto-indent, which would alter typed JSON. */
-async function replaceText(editor: Locator, text: string): Promise<void> {
-  await editor.locator('.lines-content > .view-lines').click();
-  await editor.page().keyboard.press(SELECT_ALL);
-  await editor.locator('.native-edit-context, textarea.inputarea').first().evaluate((input, pasted) => {
-    const data = new DataTransfer();
-    data.setData('text/plain', pasted);
-    input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
-  }, text);
-}
+import { activeTab, codeEditor, conflictBar, diffEditor, editorTab, replaceText, saveWithKeyboard } from './support/editor';
 
 const ORIGINAL = '{\n  "damocles.maxBudgetUsd": 40\n}\n';
 const MINE = '{\n  "damocles.maxBudgetUsd": 12\n}\n';

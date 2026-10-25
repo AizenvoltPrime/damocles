@@ -130,7 +130,7 @@ function setImageModel(model: string): void {
 
   <template v-if="imageGeneration">
     <div
-      v-if="!page.query"
+      v-if="page.groupShown(['damocles.imageGeneration.enabled', 'damocles.imageGeneration.model'])"
       class="sm-group-head"
     >
       {{ t('settingsModal.groups.imageGeneration') }}

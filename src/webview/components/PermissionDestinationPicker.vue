@@ -4,7 +4,9 @@ import { useI18n } from 'vue-i18n';
 import { AlertDialog, AlertDialogContent } from '@/components/ui/alert-dialog';
 import { User, FolderGit, Globe, ShieldCheck, ShieldX } from 'lucide-vue-next';
 import { useOpenerFocus } from '@/composables/useOpenerFocus';
+import { useChatHost } from '@/composables/useChatHost';
 import ConfirmDialogLayout from './ConfirmDialogLayout.vue';
+import HostBadge from './HostBadge.vue';
 import type { PermissionUpdateDestination, PermissionBehavior } from '@shared/types/permissions';
 
 const { t } = useI18n();
@@ -29,6 +31,8 @@ const emit = defineEmits<{
 }>();
 
 const returnFocus = useOpenerFocus(() => props.open);
+// On a remote chat the all-projects rule is saved on its host, which main's panel init names
+const host = useChatHost();
 
 const destinations = [
   {
@@ -90,7 +94,26 @@ const destinations = [
                 class="size-3.5"
               />
             </span>
-            <span class="flex min-w-0 flex-col">
+            <span
+              v-if="host && dest.value === 'userSettings'"
+              class="flex min-w-0 flex-col"
+            >
+              <i18n-t
+                :keypath="behavior === 'deny' ? 'permission.destination.denyOnHost' : 'permission.destination.allowOnHost'"
+                tag="span"
+                class="flex min-w-0 items-center gap-1.5 text-13 font-medium"
+                scope="global"
+              >
+                <template #host>
+                  <HostBadge :name="host.name" />
+                </template>
+              </i18n-t>
+              <span class="text-xs text-(--d-muted)">{{ t('permission.destination.onHostDesc', { host: host.name }) }}</span>
+            </span>
+            <span
+              v-else
+              class="flex min-w-0 flex-col"
+            >
               <span class="text-13 font-medium">{{ t(dest.labelKey) }}</span>
               <span class="text-xs text-(--d-muted)">{{ t(dest.descriptionKey) }}</span>
             </span>

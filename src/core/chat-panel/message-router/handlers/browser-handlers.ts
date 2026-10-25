@@ -1,6 +1,7 @@
-import type { HandlerDependencies, HandlerRegistry } from "../types";
+import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
 import type { BrowserService } from "../../../browser";
 import { log } from "../../../logger";
+import { browserUnavailableReason, userScopeRemote } from "../../../user-scope";
 
 export function createBrowserHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, platform } = deps;
@@ -9,8 +10,16 @@ export function createBrowserHandlers(deps: HandlerDependencies): Partial<Handle
     return deps.browserService ?? null;
   }
 
+  /** The browser of a chat on a remote host is its client's, so a daemon's core refuses it. */
+  function refusedOnRemoteHost(ctx: HandlerContext): boolean {
+    if (!userScopeRemote()) return false;
+    postMessage(ctx.host, { type: "notification", message: browserUnavailableReason(), notificationType: "warning" });
+    return true;
+  }
+
   return {
     pickBrowserElement: async (_msg, ctx) => {
+      if (refusedOnRemoteHost(ctx)) return;
       const browserService = getBrowserService();
       if (!browserService?.isConnected()) {
         postMessage(ctx.host, {
@@ -44,6 +53,7 @@ export function createBrowserHandlers(deps: HandlerDependencies): Partial<Handle
     },
 
     openBrowser: async (_msg, ctx) => {
+      if (refusedOnRemoteHost(ctx)) return;
       const browserService = getBrowserService();
       if (!browserService) {
         postMessage(ctx.host, {

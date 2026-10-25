@@ -20,6 +20,8 @@ export interface StubReply {
   toolCalls?: StubToolCall[];
   /** When set, the stub sends the first chunk and waits for this promise before sending the rest. */
   holdAfterFirst?: Promise<void>;
+  /** Each hold waits before the chunk at index `before` is sent; `sent` resolves once every chunk before it went out. */
+  holds?: { before: number; until: Promise<void>; sent?: () => void }[];
 }
 
 export interface OpenAIStub {
@@ -56,7 +58,14 @@ async function streamReply(res: http.ServerResponse, reply: StubReply, includeUs
   const [first, ...rest] = reply.chunks;
   if (first !== undefined) res.write(chunk(id, { content: first }, null));
   if (reply.holdAfterFirst) await reply.holdAfterFirst;
-  for (const text of rest) res.write(chunk(id, { content: text }, null));
+  for (const [offset, text] of rest.entries()) {
+    const hold = reply.holds?.find((candidate) => candidate.before === offset + 1);
+    if (hold) {
+      hold.sent?.();
+      await hold.until;
+    }
+    res.write(chunk(id, { content: text }, null));
+  }
   const toolCalls = reply.toolCalls ?? [];
   toolCalls.forEach((call, index) => {
     const toolCall = { index, id: `call_${++toolCallCount}`, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } };

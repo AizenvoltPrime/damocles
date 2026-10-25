@@ -16,7 +16,7 @@ import type { PanelStateStore } from '../panel-state-store';
 import { CHAT_WORKER_SRC, DesktopPanel, type PagesHost, type PanelViews } from '../views';
 
 function panel(kind: PanelOptions['kind']): DesktopPanel {
-  const deps = { window: {} as never, preloadPath: '', states: { set: vi.fn() } as unknown as PanelStateStore, pages: {} as PagesHost, log: vi.fn(), onChange: vi.fn(), onRestack: vi.fn(), onReveal: vi.fn(), onRendererGaveUp: vi.fn(), onSavedSessionChange: vi.fn(), popupOpen: () => false };
+  const deps = { window: {} as never, preloadPath: '', resourceRoot: '', pageStrings: vi.fn(), hostLabel: () => undefined, states: { set: vi.fn() } as unknown as PanelStateStore, pages: {} as PagesHost, log: vi.fn(), onChange: vi.fn(), onRestack: vi.fn(), onReveal: vi.fn(), onRendererGaveUp: vi.fn(), onSavedSessionChange: vi.fn(), popupOpen: () => false };
   return new DesktopPanel({} as PanelViews, deps, { options: { kind, title: '', localResourceRoots: [] } }, undefined);
 }
 

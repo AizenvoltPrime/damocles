@@ -10,6 +10,9 @@ import type { ShownFolder } from '../../preload/shell-channels';
 import { confineExisting } from '../../local-services/confine';
 import { chatRowWorktree } from '../worktrees/chat-rows';
 import { RootSet, WorktreeRoots } from '../worktrees/roots';
+import { remoteChatRecord, WorktreeRecords } from '../worktrees/records';
+import { worktreeFolderFor } from '../../../core/worktrees/records';
+import { projectKeyOf } from '../../../shared/project-location';
 import { setupArgs, setupShell } from '../worktrees/setup-terminal';
 import { ShownFolderState, type SelectedChatPlace } from '../worktrees/shown-folder';
 
@@ -68,7 +71,7 @@ describe('folder roots', () => {
       { id: 'dddddddd', kind: 'adopted', projectPath: alpha, repositoryRoot: alpha, worktreeRoot: path.join(dir, 'worktrees', 'dddddddd'), workingFolder: path.join(dir, 'worktrees', 'dddddddd'), createdAt: 1 },
     ];
     const projects = [{ key: folderKey(alpha), fsPath: alpha, name: 'alpha' }, { key: folderKey(beta), fsPath: beta, name: 'beta' }];
-    const roots = new WorktreeRoots({ projects: () => projects, registry: () => registryOf(() => records) });
+    const roots = new WorktreeRoots({ projects: () => projects, registry: () => registryOf(() => records), osOf: () => process.platform });
     const a = folderKey(alpha);
     const own = roots.resolve(rootKey({ projectKey: a, worktreeId: 'aaaaaaaa' }));
     expect(own?.fsPath).toBe(path.join(dir, 'worktrees', 'aaaaaaaa'));
@@ -89,12 +92,56 @@ describe('folder roots', () => {
   });
 });
 
+describe('folder roots of several authorities', () => {
+  it('takes each project\'s worktrees from its own authority\'s registry, never from another one naming the same folder', () => {
+    const local = [chatRecord('aaaaaaaa', alpha)];
+    const remote = [chatRecord('bbbbbbbb', alpha)];
+    const localKey = folderKey(alpha);
+    const remoteKey = projectKeyOf({ kind: 'loopback' }, folderKey(alpha));
+    const projects = [{ key: localKey, fsPath: alpha, name: 'alpha' }, { key: remoteKey, fsPath: alpha, name: 'alpha' }];
+    const registries: Record<string, WorktreeRegistry> = { local: registryOf(() => local), loopback: registryOf(() => remote) };
+    const roots = new WorktreeRoots({ projects: () => projects, registry: (authority) => registries[authority], osOf: () => process.platform });
+    const localRoot = rootKey({ projectKey: localKey, worktreeId: 'aaaaaaaa' });
+    const remoteRoot = rootKey({ projectKey: remoteKey, worktreeId: 'bbbbbbbb' });
+    expect(roots.all().map((root) => root.key)).toEqual([localKey, remoteKey, localRoot, remoteRoot]);
+    expect(roots.resolve(rootKey({ projectKey: remoteKey, worktreeId: 'aaaaaaaa' }))).toBeUndefined();
+    expect(roots.resolve(rootKey({ projectKey: localKey, worktreeId: 'bbbbbbbb' }))).toBeUndefined();
+    expect(roots.ofWorktree('bbbbbbbb', 'loopback')?.key).toBe(remoteRoot);
+    expect(roots.ofWorktree('bbbbbbbb')).toBeUndefined();
+    expect(roots.ofWorktree('aaaaaaaa')?.key).toBe(localRoot);
+    expect(roots.branchOf(remoteRoot)).toBe('damocles/bbbbbbbb');
+    expect(roots.branchOf(rootKey({ projectKey: remoteKey, worktreeId: 'aaaaaaaa' }))).toBeUndefined();
+  });
+});
+
+describe('folder roots on a target of another OS', () => {
+  const TARGETS = [
+    { os: 'linux', root: '/home/u/.damocles/worktrees', project: '/srv/App', folderKey: '/srv/App' },
+    { os: 'win32', root: 'C:\\Users\\u\\.damocles\\worktrees', project: 'C:\\Work\\App', folderKey: 'c:\\work\\app' },
+  ] as const;
+
+  for (const target of TARGETS) {
+    it(`matches a ${target.os} target's chat records to its project by that target's folder key`, () => {
+      const key = projectKeyOf({ kind: 'loopback' }, target.folderKey);
+      const worktreeRoot = worktreeFolderFor(target.root, target.project, 'abcd1234', target.os);
+      const records = new WorktreeRecords(remoteChatRecord(() => [target.project], () => target.os), () => undefined, () => target.os);
+      records.apply([{ ...chatRecord('abcd1234', target.project), worktreeRoot, workingFolder: worktreeRoot }]);
+      const roots = new WorktreeRoots({ projects: () => [{ key, fsPath: target.project, name: 'App' }], registry: (authority) => (authority === 'loopback' ? records : undefined), osOf: () => target.os });
+      const worktreeKey = rootKey({ projectKey: key, worktreeId: 'abcd1234' });
+      expect(roots.ofWorktree('abcd1234', 'loopback')?.key).toBe(worktreeKey);
+      expect(roots.resolve(worktreeKey)?.fsPath).toBe(worktreeRoot);
+      expect(roots.branchOf(worktreeKey)).toBe('damocles/abcd1234');
+      expect(roots.all().map((root) => root.key)).toEqual([key, worktreeKey]);
+    });
+  }
+});
+
 describe('ShownFolderState', () => {
   it('follows the selected chat\'s working folder, and Show project folder lasts until another chat is selected (D31)', () => {
     const records: WorktreeRecord[] = [chatRecord('aaaaaaaa', alpha)];
     const a = folderKey(alpha);
     const projects = [{ key: a, fsPath: alpha, name: 'alpha' }];
-    const roots = new WorktreeRoots({ projects: () => projects, registry: () => registryOf(() => records) });
+    const roots = new WorktreeRoots({ projects: () => projects, registry: () => registryOf(() => records), osOf: () => process.platform });
     let selected: SelectedChatPlace | undefined = { chatId: 'plain' };
     const state = new ShownFolderState({ roots, selectedChat: () => selected, finish: () => ({ busy: false, hasRemote: true, detachedTarget: false }), newChatIn: (record) => ({ projectKey: a, worktreeId: record.id }) });
     const events: ShownFolder[] = [];
@@ -141,7 +188,7 @@ describe('ShownFolderState root changes', () => {
   it('says the shown root changed only when its root key did, not when the worktree\'s chat starts working or its branch moves', () => {
     const records: WorktreeRecord[] = [chatRecord('aaaaaaaa', alpha)];
     const a = folderKey(alpha);
-    const roots = new WorktreeRoots({ projects: () => [{ key: a, fsPath: alpha, name: 'alpha' }], registry: () => registryOf(() => records) });
+    const roots = new WorktreeRoots({ projects: () => [{ key: a, fsPath: alpha, name: 'alpha' }], registry: () => registryOf(() => records), osOf: () => process.platform });
     let selected: SelectedChatPlace | undefined = { chatId: 'wt', worktreeId: 'aaaaaaaa', state: STATE };
     let busy = false;
     let available = true;
@@ -171,7 +218,7 @@ describe('root keys', () => {
   it('names a closing worktree\'s branch for its tabs, though the worktree is no longer a root', () => {
     const records: WorktreeRecord[] = [chatRecord('aaaaaaaa', alpha), chatRecord('bbbbbbbb', beta)];
     const a = folderKey(alpha);
-    const roots = new WorktreeRoots({ projects: () => [{ key: a, fsPath: alpha, name: 'alpha' }], registry: () => registryOf(() => records) });
+    const roots = new WorktreeRoots({ projects: () => [{ key: a, fsPath: alpha, name: 'alpha' }], registry: () => registryOf(() => records), osOf: () => process.platform });
     const key = rootKey({ projectKey: a, worktreeId: 'aaaaaaaa' });
     const closing = roots.close('aaaaaaaa');
     expect(roots.resolve(key)).toBeUndefined();

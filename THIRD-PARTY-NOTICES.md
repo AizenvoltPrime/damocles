@@ -155,6 +155,38 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ---
 
+## pi-anthropic-auth
+
+Each server package ships the pi extension `@gotgenes/pi-anthropic-auth` at the commit pinned in `src/core/pi-session/subscription-pin.ts`, in `dist/subscription-plugin/` with this licence beside it. A daemon's core sends a Claude subscription request through it when the client behind the request chose the included allowance.
+
+- **Source**: https://github.com/gotgenes/pi-anthropic-auth
+
+```
+MIT License
+
+Copyright (c) 2026 Christopher D. Lasher
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
 ## Voice sidecar — model and runtime attribution
 
 The voice sidecar (`python/damocles_voice_sidecar/`) downloads and loads several
@@ -495,7 +527,7 @@ Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles
   - `src/desktop/main/search/search-service.ts` (`findBufferMatches`) from `src/vs/editor/common/model/textModelSearch.ts`
   - `src/desktop/main/search/search-editor-format.ts` from `src/vs/workbench/contrib/searchEditor/browser/searchEditorSerialization.ts`
   - `src/desktop/shell/editor/search-result-language.ts` from `extensions/search-result/syntaxes/generateTMLanguage.js`
-  - `src/desktop/main/search/rg-args.ts` (`splitGlobAware` and the include and exclude glob rules) from `src/vs/base/common/glob.ts`
+  - `src/desktop/workspace/search/rg-args.ts` (`splitGlobAware` and the include and exclude glob rules) from `src/vs/base/common/glob.ts`
   - `src/desktop/shell/terminal/pty-resize.ts` from `src/vs/workbench/contrib/terminal/browser/terminalResizeDebouncer.ts` (the resize delay)
   - `src/desktop/main/terminal/terminal-service.ts` (the split group model: a pane right of its source, equal sizes after a split or a removal, the active pane after a removal, pane focus wrapping, Unsplit, Focus Next and Previous Terminal Group) from `src/vs/workbench/contrib/terminal/browser/terminalGroup.ts` and `terminalGroupService.ts`
   - `src/desktop/main/commands.ts` (the Split, Unsplit, Focus Pane, Focus Terminal Group and Resize Pane titles, keys and `when` clauses) from `src/vs/workbench/contrib/terminal/browser/terminalActions.ts`
@@ -513,14 +545,16 @@ Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles
   - `src/shared/text-search.ts` (`compareSearchResults`) from `src/vs/workbench/contrib/search/browser/searchCompare.ts` (`searchMatchComparer`) and `src/vs/base/common/comparers.ts` (`compareFileNames`, `compareFileExtensions`, `comparePaths`); its replace case operations from `src/vs/workbench/services/search/common/replace.ts` (`ReplacePattern`)
   - `src/desktop/quick-open-worker/file-search.ts` (scoring only the previous result set when a query extends it, and scoring in batches between event-loop turns) from `src/vs/workbench/services/search/node/rawSearchService.ts` (`getResultsFromCache`, `sortResults`)
   - `src/shared/relative-path.ts` (the reserved Windows names) from `src/vs/base/common/extpath.ts` (`WINDOWS_FORBIDDEN_NAMES`)
-  - `src/desktop/main/terminal/terminal-env.ts` (`langFromLocale`, the `LANG` check, and the integration variables a terminal never inherits) from `src/vs/workbench/contrib/terminal/common/terminalEnvironment.ts` (`shouldSetLangEnvVariable`, `getLangEnvVariable`) and `src/vs/base/common/processes.ts` (`sanitizeProcessEnvironment`); the Windows launch failure codes in `src/desktop/main/terminal/terminal-service.ts` from `src/vs/workbench/contrib/terminal/browser/terminalInstance.ts` (`parseExitResult`)
+  - `src/desktop/workspace/terminal/terminal-env.ts` (`langFromLocale`, the `LANG` check, and the integration variables a terminal never inherits) from `src/vs/workbench/contrib/terminal/common/terminalEnvironment.ts` (`shouldSetLangEnvVariable`, `getLangEnvVariable`) and `src/vs/base/common/processes.ts` (`sanitizeProcessEnvironment`); the Windows launch failure codes in `src/desktop/main/terminal/terminal-service.ts` from `src/vs/workbench/contrib/terminal/browser/terminalInstance.ts` (`parseExitResult`)
   - `src/desktop/main/editor-pane.ts` (diff titles from the file they show) from `src/vs/workbench/common/editor/diffEditorInput.ts` (`computeLabels`)
-  - `src/desktop/main/files/file-tree.ts` (`delete`, `deletePermanently`) and `src/desktop/main/files/files-failure.ts` from `src/vs/workbench/contrib/files/browser/fileActions.ts` (`deleteFiles`)
-  - `src/desktop/main/terminal/profiles.ts` from `src/vs/base/node/powershell.ts` (where PowerShell 7 is looked for, in order) and `src/vs/platform/terminal/node/terminalProfiles.ts` (WSL distros, Docker Desktop's skipped)
+  - `src/desktop/main/files/file-tree.ts` (`delete`, `deletePermanently`), `src/desktop/workspace/file-system.ts` (`deleteEntry`) and `src/desktop/main/files/files-failure.ts` from `src/vs/workbench/contrib/files/browser/fileActions.ts` (`deleteFiles`)
+  - `src/desktop/workspace/terminal/profiles.ts` from `src/vs/base/node/powershell.ts` (where PowerShell 7 is looked for, in order) and `src/vs/platform/terminal/node/terminalProfiles.ts` (WSL distros, Docker Desktop's skipped)
   - `src/desktop/shell/terminal/terminal-link-parsing.ts` and its tests from `src/vs/workbench/contrib/terminalContrib/links/browser/terminalLinkParsing.ts` and `test/browser/terminalLinkParsing.test.ts`; `src/desktop/shell/terminal/terminal-links.ts` from `terminalLocalLinkDetector.ts` and `terminalLinkHelpers.ts`; `src/desktop/main/terminal/terminal-links.ts` from `terminalLinkResolver.ts`
   - `src/desktop/main/terminal/terminal-paste.ts` from `src/vs/workbench/contrib/terminalContrib/clipboard/browser/terminalClipboard.ts`, with xterm.js's paste preparation (`src/browser/Clipboard.ts`)
   - `resources/shell-integration/` (`shellIntegration-bash.sh`, `shellIntegration-{env,profile,rc,login}.zsh`, `shellIntegration.fish`, `shellIntegration.ps1`) from `src/vs/workbench/contrib/terminal/common/scripts/`, each keeping VS Code's MIT header
-  - `src/desktop/main/terminal/shell-integration-injection.ts` from `getShellIntegrationInjection` in `src/vs/platform/terminal/node/terminalEnvironment.ts`; `src/desktop/main/terminal/shell-integration.ts` (OSC 633 parsing and value escapes) from `src/vs/platform/terminal/common/xterm/shellIntegrationAddon.ts`; the kill confirmation wording from `src/vs/workbench/contrib/terminal/browser/terminalService.ts`
+  - `src/desktop/workspace/terminal/shell-integration-injection.ts` from `getShellIntegrationInjection` in `src/vs/platform/terminal/node/terminalEnvironment.ts`; `src/desktop/main/terminal/shell-integration.ts` (OSC 633 parsing and value escapes) from `src/vs/platform/terminal/common/xterm/shellIntegrationAddon.ts`; the kill confirmation wording from `src/vs/workbench/contrib/terminal/browser/terminalService.ts`
+  - `src/desktop/pty-host/screen.ts` (a headless xterm per pty, serialized for a page that loads again) from `src/vs/platform/terminal/node/ptyService.ts` (`XtermSerializer`)
+  - `src/remote/persistent-protocol.ts` (the message header, sequenced messages with acks riding on outgoing traffic, the standalone ack and the keepalive with its event-loop load check) from `src/vs/base/parts/ipc/common/ipc.net.ts` (`PersistentProtocol`, `ProtocolConstants`)
   - `src/desktop/shell/terminal/terminal-commands.ts`, `terminal-marks.ts` and the command items of `terminal-menu.ts` from `src/vs/workbench/contrib/terminal/browser/xterm/markNavigationAddon.ts`, `decorationAddon.ts` and `src/vs/platform/terminal/common/capabilities/` (command and partial command detection)
   - `src/core/scm/parsers.ts` (`GitStatusParser`, `parseGitmodules`, the config section parser, the dubious-ownership match and `stripCommitMessageComments`) and its tests from `extensions/git/src/git.ts`, `extensions/git/src/model.ts` and `extensions/git/src/test/git.test.ts`; `splitInChunks` in `src/core/scm/git-runner.ts` from `extensions/git/src/util.ts`
   - `src/core/scm/repository.ts` (the status groups, letters, colours and strike-through, the commit, reset and clean arguments, the operation-in-progress checks, the .gitignore append and the conflict-marker check) from `extensions/git/src/repository.ts`, `git.ts` and `commands.ts`; `src/core/scm/discovery.ts` (the scan, the parent and unsafe repository rules, submodules) from `extensions/git/src/model.ts`; `src/core/scm/scm-service.ts` (the discard and stage confirmations, the parent repository notice; the tracked discard's "This is IRREVERSIBLE!" warning is replaced by where the trash keeps the changes, since Damocles trashes them first) and `src/desktop/main/scm/scm-host.ts` (the diff sides, titles and group views) from `extensions/git/src/commands.ts`, `repository.ts` and `decorationProvider.ts`; the git palette titles and when clauses in `src/desktop/main/commands.ts` and the git settings in `src/desktop/local-services/desktop-configuration.ts` from `extensions/git/package.json` and `package.nls.json`; the commit flow and its questions in `src/core/scm/scm-service.ts` (`commit`, `undoLastCommit`), the commit options, template read and undo in `src/core/scm/repository.ts`, and the save-before-commit prompt, branch name input, rename, delete, Open All Changes and Close All Unmodified Editors in `src/desktop/main/scm/scm-host.ts` from `extensions/git/src/commands.ts` (`smartCommit`, `undoCommit`, `promptForBranchName`, `rename`, `delete`, `openChanges`, `closeUnmodifiedEditors`), `repository.ts` (`commit`, `isBranchProtected`) and `git.ts` (`commit`, `getCommitTemplate`); the history rules in `src/core/scm/commit-history.ts` from `src/vs/base/common/history.ts` (`HistoryNavigator2`) and `src/vs/workbench/contrib/scm/common/scmService.ts`
@@ -1121,7 +1155,7 @@ SOFTWARE.
 
 ## Desktop terminal: xterm.js and node-pty — MIT
 
-The desktop app's integrated terminal. Vite bundles xterm.js and its addons into the shell renderer (`dist/desktop-shell/`); electron-builder ships node-pty as `node_modules/node-pty` with its license file and only the target platform's prebuild.
+The desktop app's integrated terminal. Vite bundles xterm.js and its addons into the shell renderer (`dist/desktop-shell/`), and esbuild bundles the headless xterm.js with the serialize and Unicode 11 addons into the pty host (`dist/pty-host.js`); electron-builder ships node-pty as `node_modules/node-pty` with its license file and only the target platform's prebuild. Each remote server package (`damocles-server-<version>-<target>`) carries the same pty host and node-pty, with node-pty's license file and only its target's prebuild (on Alpine, node-pty compiled against musl).
 
 - **@xterm/xterm** (v6.0.0) — MIT, Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js); Copyright (c) 2014-2016, SourceLair Private Company (https://www.sourcelair.com); Copyright (c) 2012-2013, Christopher Jeffrey (https://github.com/chjj/) — https://github.com/xtermjs/xterm.js
   — the terminal emulator.
@@ -1132,6 +1166,10 @@ The desktop app's integrated terminal. Vite bundles xterm.js and its addons into
   — find in the terminal.
 - **@xterm/addon-unicode11** (v0.9.0) — MIT, Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
   — Unicode 11 character widths.
+- **@xterm/headless** (v6.0.0) — MIT, Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js); Copyright (c) 2014-2016, SourceLair Private Company (https://www.sourcelair.com); Copyright (c) 2012-2013, Christopher Jeffrey (https://github.com/chjj/) — https://github.com/xtermjs/xterm.js
+  — each terminal's screen, kept in the pty host.
+- **@xterm/addon-serialize** (v0.14.0) — MIT, Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
+  — the screen as the sequences that redraw it.
 - **node-pty** (v1.2.0-beta.15) — MIT, Copyright (c) 2012-2015, Christopher Jeffrey (https://github.com/chjj/); Copyright (c) 2016, Daniel Imms (http://www.growingwiththeweb.com); Copyright (c) 2018 - present Microsoft Corporation — https://github.com/microsoft/node-pty
   — the pseudoterminal the pty host runs shells in. Its Windows prebuild includes `conpty.dll` and `OpenConsole.exe` from Microsoft's Windows Terminal (MIT, Copyright (c) Microsoft Corporation, https://github.com/microsoft/terminal).
 
@@ -1160,6 +1198,15 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+---
+
+## Node.js (remote server packages) — MIT and bundled licenses
+
+Each remote server package (`damocles-server-<version>-<target>`) runs on its own Node.js: the `node` binary of the release the desktop app's Electron embeds, from nodejs.org (or unofficial-builds.nodejs.org for Alpine's musl builds), pinned by SHA-256 in `scripts/server-targets.mjs`.
+
+- **Source**: https://github.com/nodejs/node
+- **License**: MIT, Copyright Node.js contributors, Copyright Joyent, Inc. and other Node contributors. The package ships the release's own `LICENSE` file as `node/LICENSE`, which holds Node.js's license and the licenses of the third-party code compiled into the binary (V8, libuv, OpenSSL, ICU, zlib and others).
 
 ---
 

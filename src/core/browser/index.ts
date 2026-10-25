@@ -28,6 +28,7 @@ import { ScreencastController, MAX_DEVICE_SCALE } from './screencast';
 import { BrowserAgentScope, type ScopeTabInfo } from './agent-scope';
 import { log } from '../logger';
 import { t } from '../l10n';
+import { browserUnavailableReason, userScopeRemote } from '../user-scope';
 import type { BrowserSessionState, InterceptRule, RedactedInterceptRule } from './types';
 import type { ElementAttachment, ConsoleEntry, NetworkError, DownloadEntry, BrowserDialogRecord } from '../../shared/types/browser';
 
@@ -910,6 +911,8 @@ export class BrowserService {
   // action run OUTSIDE this chain, so concurrent scopes open tabs and drive their pages in parallel.
   // Resolves true when this call launched the context, which adopted its first page for launchScopeId.
   private async ensureContext(launchScopeId: string, signal?: AbortSignal): Promise<boolean> {
+    // the browser is the client's, so a daemon's core neither launches Chrome nor creates a browser profile on its host
+    if (userScopeRemote()) throw new Error(browserUnavailableReason());
     const run = this.openChain.then(() => this.ensureContextInternal(launchScopeId, signal));
     this.openChain = run.then(() => {}, () => {});
     return run;

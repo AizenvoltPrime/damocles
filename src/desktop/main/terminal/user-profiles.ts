@@ -13,7 +13,7 @@ import {
 } from '../../preload/terminal-channels';
 import { followsLocalLinksOnly } from '../../local-services/confine';
 import { executablePathForm, searchPathEntries } from '../../../core/executable-path';
-import type { TerminalProfile } from './profiles';
+import type { TerminalProfile } from '../../workspace/terminal/profiles';
 import { sanitizeTitle } from './shell-integration';
 import { isTerminalColor, isTerminalCustomIcon, parseTerminalName } from './terminal-service';
 

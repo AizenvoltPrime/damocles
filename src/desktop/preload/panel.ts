@@ -1,20 +1,24 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { applyHostTheme } from './apply-theme';
-import { PANEL_CHANNELS, type PanelInit, type PanelTheme } from './panel-channels';
+import { PANEL_CHANNELS, type PanelHostLabel, type PanelInit, type PanelTheme } from './panel-channels';
 import type { DamoclesBridge } from '../../shared/damocles-bridge';
 
 // Hydrated on first use, not at preload start: main checks the sender frame's URL, which commits only after the preload has run.
-// Undefined while main refuses the frame (it answers null); the next call asks again.
-let hydrated: { state: unknown; theme: PanelTheme } | undefined;
-function current(): { state: unknown; theme: PanelTheme } | undefined {
+// Undefined while main refuses the frame (it answers null); the next call asks again, DOMContentLoaded's at the latest, and
+// a host it learns then reaches the onHost listeners of a page that read none before.
+let hydrated: { state: unknown; theme: PanelTheme; host: PanelHostLabel | undefined } | undefined;
+function current(): { state: unknown; theme: PanelTheme; host: PanelHostLabel | undefined } | undefined {
   if (!hydrated) {
     const init = ipcRenderer.sendSync(PANEL_CHANNELS.init) as PanelInit | null;
     if (init === null) return undefined;
-    hydrated = { state: init.state, theme: init.theme };
+    hydrated = { state: init.state, theme: init.theme, host: init.host };
+    const host = init.host;
+    if (host) for (const listener of [...hostListeners]) listener(host);
   }
   return hydrated;
 }
 const listeners = new Set<(message: unknown) => void>();
+const hostListeners = new Set<(host: PanelHostLabel) => void>();
 
 function parsed(payload: string): { readonly message: unknown } | undefined {
   try {
@@ -60,6 +64,13 @@ const bridge: DamoclesBridge = {
     };
   },
   getState: (): unknown => current()?.state,
+  getHost: (): PanelHostLabel | undefined => current()?.host,
+  onHost: (listener: (host: PanelHostLabel) => void): (() => void) => {
+    hostListeners.add(listener);
+    return () => {
+      hostListeners.delete(listener);
+    };
+  },
   setState: (next: unknown): void => {
     const hydratedState = current();
     if (hydratedState) hydratedState.state = next;

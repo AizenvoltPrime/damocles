@@ -1,15 +1,18 @@
 import { randomUUID } from 'node:crypto';
-import { folderKey } from '../../../core/workspace-folders/folder-key';
 import type { Disposable } from '../../../platform/disposable';
 import type { Memento } from '../../../platform/key-value-state';
 import type { NotificationOptions } from '../../../platform/notification-service';
 import type { Platform } from '../../../platform/platform';
 import type { PanelHost } from '../../../platform/window-service';
+import type { PageSpec } from '../../../shared/panel-html';
+import { LOCAL_CLIENT_ID, type BrokerAnswer } from '../../../shared/remote-user';
+import { desktopHostCapabilities } from '../../local-services/capabilities';
 import type { DesktopEditorService, HostDiffView } from '../platform/editor-service';
 import { DIFF_TITLE_NAME, type AskQuestion, type CoreInit, type CredentialKind, type MainEndpoint, type MirrorTopics, type PanelCreate, type StateScope } from '../../core-protocol';
 
 export interface HostTrust {
-  trustedFolders(): readonly string[];
+  // the folder keys core names trusted folders by, as its own folderKey computes them
+  trustedKeys(): readonly string[];
   onDidGrant(listener: (folderPaths: readonly string[]) => void): Disposable;
   requestTrust(folderPath: string): Promise<boolean>;
 }
@@ -31,6 +34,10 @@ export type HostPlatform = Pick<Platform, 'appInfo' | 'secrets' | 'notifications
 export interface RelayView extends PanelHost {
   readonly panelId: string;
   postJson(type: string, json: string): void;
+  // main builds the page core names (views.ts); core's HTML is never loaded
+  showPage(page: PageSpec): void;
+  // why the view is closing: the user closed it, or a quit, window close, reload or disconnect took it down
+  readonly closeReason: 'user' | 'detach';
 }
 
 /**
@@ -53,6 +60,18 @@ export interface HostWorktreeUi {
   showApplyConflicts(worktreeId: string, files: readonly string[]): Promise<void>;
 }
 
+/** This computer's user scope a remote core reaches; the local core reaches none. */
+export interface HostUser {
+  credentials(provider: string): Promise<BrokerAnswer>;
+  speak(viewId: string, text: string): Promise<void>;
+}
+
+/** What the local core's host services answer: it asks this computer's PiRuntime and voice service itself. */
+export const NO_USER_RELAYS: HostUser = {
+  credentials: () => Promise.reject(new Error('Credentials are relayed only to a remote core')),
+  speak: () => Promise.reject(new Error('Speech is relayed only from a remote core')),
+};
+
 /** Main's own UI core's engine reaches: log tabs, the trash, questions, credential prompts and the worktree dialogs. */
 export interface HostUi {
   // logs/<name>.log as a read-only editor tab (D36)
@@ -71,7 +90,6 @@ export interface HostServicesDeps {
   readonly platform: HostPlatform;
   readonly trust: HostTrust;
   readonly state: HostState;
-  readonly theme: { css(): string; onDidChange(listener: (css: string) => void): Disposable };
   readonly terminalToggle: () => { readonly shown: boolean; readonly shortcut: string };
   readonly resolveProxy: (url: string) => Promise<string>;
   // the view for a panel core creates, with the id core issued; a browser page's owner is its chat's view
@@ -86,6 +104,11 @@ export interface HostServicesDeps {
   readonly language: { current(): MirrorTopics['language']['language']; onDidChange(listener: () => void): Disposable };
   readonly power: { onSuspend(listener: () => void): Disposable; onResume(listener: () => void): Disposable };
   readonly ui: HostUi;
+  readonly user: HostUser;
+  // a chat page's message main takes instead of relaying it to core (a refused cross-authority drop, a remote chat's voice)
+  readonly divert: (view: RelayView, message: unknown) => boolean;
+  // the post types this core may not send its views: a remote core's voice view state, which only this computer's core feeds
+  readonly refusedPosts: ReadonlySet<string>;
   readonly log: (line: string) => void;
 }
 
@@ -97,9 +120,10 @@ export interface HostServices extends Disposable {
   // Relays a chat view main created from before attach asks core to attach to it, which may set its HTML at once; its view
   // state follows the request, which creates the proxy it updates.
   adopt<T>(view: RelayView, attach: () => Promise<T>): Promise<T>;
+  // Relays a chat view whose page main loads itself for a rejoin: true once the page sent its ready, which core never gets;
+  // false when the view closed or the services were disposed first.
+  adoptHeld(view: RelayView): Promise<boolean>;
 }
-
-const trustedKeys = (trust: HostTrust): string[] => trust.trustedFolders().map((folder) => folderKey(folder));
 
 /**
  * Main's side of the core protocol: serves core's proxied calls with main's services, publishes the mirrors core reads
@@ -126,12 +150,16 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     worktreeRecords: deps.worktreeRecords,
     mirrors: {
       state: { global: state.snapshot('global'), workspace: state.snapshot('workspace') },
-      trust: { keys: trustedKeys(trust) },
+      trust: { keys: [...trust.trustedKeys()] },
       folders: { folders: platform.workspaceFolders.folders() },
       editor: editorPatch(platform.editor.getActiveContext()),
       terminal,
-      theme: { css: deps.theme.css() },
       language: { language: deps.language.current() },
+      // a local core's one client is main, whose YOLO is never refused; a daemon builds a remote core's init itself
+      clientAuth: {},
+      clientUser: {},
+      clientPolicy: { [LOCAL_CLIENT_ID]: { voice: desktopHostCapabilities(process.platform).voice, allowBypass: true } },
+      actingClient: { clientId: LOCAL_CLIENT_ID },
     },
   };
 
@@ -144,21 +172,37 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     if (views.has(panelId)) throw new Error(`Panel ${panelId} is already relayed`);
   };
 
+  // a held view's messages are dropped up to its page's ready, which settles its hold instead of reaching core
+  const holds = new Map<string, (ready: boolean) => void>();
+
   const relay = (view: RelayView): void => {
     const { panelId } = view;
     refuseRelayed(panelId);
     views.set(panelId, view);
     viewSubscriptions.set(panelId, [
-      view.onMessage((message) => endpoint.postPanel(panelId, 'message', { message })),
+      view.onMessage((message) => {
+        const hold = holds.get(panelId);
+        if (hold) {
+          if ((message as { type?: unknown }).type !== 'ready') return;
+          holds.delete(panelId);
+          hold(true);
+          return;
+        }
+        if (deps.divert(view, message)) return;
+        endpoint.postPanel(panelId, 'message', { message });
+      }),
       view.onDidChangeViewState(() => publishViewState(panelId, view)),
       view.onDispose(() => {
         forget(panelId);
-        endpoint.postPanel(panelId, 'disposed', {});
+        endpoint.postPanel(panelId, 'disposed', { reason: view.closeReason });
       }),
     ]);
   };
 
   const forget = (panelId: string): void => {
+    const hold = holds.get(panelId);
+    holds.delete(panelId);
+    hold?.(false);
     views.delete(panelId);
     for (const subscription of viewSubscriptions.get(panelId) ?? []) subscription.dispose();
     viewSubscriptions.delete(panelId);
@@ -171,6 +215,12 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     const chat = views.get(owner);
     if (!chat) throw new Error('A browser page opens only in a loaded chat');
     return deps.createView(panelId, { ...options, owner: chat });
+  };
+
+  const refused = (type: unknown): boolean => {
+    if (typeof type !== 'string' || !deps.refusedPosts.has(type)) return false;
+    log(`[core-services] dropped a ${type} post this core may not send`);
+    return true;
   };
 
   const serve = (): void => {
@@ -206,7 +256,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
       diffs.delete(viewId);
       await view?.close();
     });
-    endpoint.serve('editor.showMarkdownPreview', ({ path, panelId }) => editor.showMarkdownPreview(path, panelId !== undefined ? { panelId } : undefined));
+    endpoint.serve('editor.showMarkdownPreview', ({ path, panelId, content }) => editor.showMarkdownPreview(path, { ...(panelId !== undefined ? { panelId } : {}), ...(content !== undefined ? { content } : {}) }));
     endpoint.serve('editor.openHostSettings', ({ query, section }) => editor.openHostSettings(query, section));
     endpoint.serve('editor.openSettingsFile', ({ scope, key }) => editor.openSettingsFile(scope, key !== undefined ? { key } : undefined));
     endpoint.serve('editor.showChatReview', ({ panelId, scope }) => editor.showChatReview(panelId, scope));
@@ -226,6 +276,8 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     endpoint.serve('worktrees.stopSetup', ({ worktreeId }) => ui.worktrees.stopSetup(worktreeId));
     endpoint.serve('worktrees.confirmHandOff', (request, signal) => ui.worktrees.confirmHandOff(request, signal));
     endpoint.serve('worktrees.showRefusal', (request, signal) => ui.worktrees.showRefusal(request, signal));
+    endpoint.serve('user.credentials', ({ provider }) => deps.user.credentials(provider));
+    endpoint.serve('user.voice.speak', ({ viewId, text }) => deps.user.speak(viewId, text));
     endpoint.serve('worktrees.showApplyConflicts', ({ worktreeId, files }) => ui.worktrees.showApplyConflicts(worktreeId, files));
   };
 
@@ -243,7 +295,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
           log(`[core-services] could not create a ${envelope.payload.kind} panel: ${error}`);
-          endpoint.postPanel(panelId, 'disposed', { error });
+          endpoint.postPanel(panelId, 'disposed', { error, reason: 'user' });
         }
         return;
       }
@@ -251,13 +303,15 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
       const view = views.get(panelId);
       if (!view) return;
       switch (envelope.op) {
-        case 'setHtml':
-          view.setHtml(envelope.payload.html);
+        case 'showPage':
+          view.showPage(envelope.payload.page);
           return;
         case 'post':
+          if (refused(envelope.payload.type)) return;
           view.postJson(envelope.payload.type, envelope.payload.json);
           return;
         case 'postBinary':
+          if (refused((envelope.payload.message as { readonly type?: unknown } | null)?.type)) return;
           void view.postMessage(envelope.payload.message);
           return;
         case 'setIcon':
@@ -279,10 +333,9 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     }),
     platform.secrets.onDidChange((key) => endpoint.emit('secrets.changed', { key })),
     state.onDidUpdate((scope, key) => endpoint.publish('state', { scope, key, value: state[scope].get(key) })),
-    trust.onDidGrant((granted) => endpoint.publish('trust', { keys: trustedKeys(trust), granted })),
+    trust.onDidGrant((granted) => endpoint.publish('trust', { keys: [...trust.trustedKeys()], granted })),
     platform.workspaceFolders.onDidChange(() => endpoint.publish('folders', { folders: platform.workspaceFolders.folders() })),
     platform.editor.onDidChangeActiveContext((context) => endpoint.publish('editor', editorPatch(context))),
-    deps.theme.onDidChange((css) => endpoint.publish('theme', { css })),
     deps.language.onDidChange(() => endpoint.publish('language', { language: deps.language.current() })),
     deps.power.onSuspend(() => endpoint.emit('power.suspend', {})),
     deps.power.onResume(() => endpoint.emit('power.resume', {})),
@@ -302,6 +355,11 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
       publishViewState(view.panelId, view);
       return attached;
     },
+    adoptHeld: (view) => new Promise<boolean>((resolve) => {
+      relay(view);
+      holds.set(view.panelId, resolve);
+      publishViewState(view.panelId, view);
+    }),
     // A view core left open (its process ended without closing it) closes with it; a reload's retained states survive.
     dispose: () => {
       for (const subscription of subscriptions) subscription.dispose();

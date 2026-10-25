@@ -6,7 +6,7 @@ import { BrowserService } from '../index';
 import { createFakePlatform, installFakePlatform, type FakePanelHost, type FakePlatform } from '../../../__mocks__/fake-platform';
 import { BrowserPanel } from '../browser-panel';
 import * as logger from '../../logger';
-import { BROWSER_WEBVIEW_SCRIPT } from '../browser-webview-script';
+import { BROWSER_WEBVIEW_SCRIPT } from '../../../shared/browser-page-html';
 import { AS_TYPED, HTTP_AT_ONCE, REFUSED, UPGRADED } from '../../../shared/__tests__/typed-address-cases';
 
 /**
@@ -704,7 +704,7 @@ describe('C9 — the unreachable disconnected/clipboard model is gone from every
   // ever show one call site is gone, never that none remains.
   const layers = () => ({
     'browser-panel.ts': readSrc('browser-panel.ts'),
-    'browser-webview-script.ts': readSrc('browser-webview-script.ts'),
+    'browser-page-html.ts': readSrc('../../shared/browser-page-html.ts'),
     'index.ts': readSrc('index.ts'),
   });
 

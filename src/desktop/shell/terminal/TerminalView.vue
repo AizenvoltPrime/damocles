@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button';
 import { remPx } from '@/composables/useRemPx';
 import type { OverlayRect } from '../../preload/overlay-channels';
 import type { DamoclesShellApi, ShellPlatform } from '../../preload/shell-channels';
-import { MAX_TERMINAL_COLS, MAX_TERMINAL_ROWS, TERMINAL_ACK_CHARS, type TerminalAction, type TerminalInfo, type TerminalPaste, type TerminalSettings } from '../../preload/terminal-channels';
+import { MAX_TERMINAL_COLS, MAX_TERMINAL_ROWS, TERMINAL_ACK_CHARS, type TerminalAction, type TerminalInfo, type TerminalPaste, type TerminalScreen, type TerminalSettings } from '../../preload/terminal-channels';
 import { capTerminalText } from '../../preload/terminal-attachment-cap';
 import { groupPanes, TERMINAL_STORE } from './terminal-store';
 import { inputChunks, isShiftF10, parseAccelerator, terminalKeyAction, type KeyChord } from './terminal-keys';
@@ -29,6 +29,8 @@ import TerminalLinkHover, { type LinkHover } from './TerminalLinkHover.vue';
 import TerminalMarkHover, { type MarkHover } from './TerminalMarkHover.vue';
 
 // One terminal's xterm. It stays mounted while another terminal is active (hidden), so its output keeps parsing and acking.
+// SerializeAddon writes the alternate screen after this switch, once the normal buffer is complete.
+const ALT_SCREEN_SWITCH = '\x1b[?1049h\x1b[H';
 const props = defineProps<{
   api: DamoclesShellApi;
   terminal: TerminalInfo;
@@ -38,9 +40,8 @@ const props = defineProps<{
   platform: ShellPlatform;
   // main's Split Terminal key, which the context menu shows
   splitShortcut: string;
-  // TerminalState.screenReader and windowsBuild
+  // TerminalState.screenReader
   screenReader: boolean;
-  windowsBuild: number;
 }>();
 // resizePane: main's Resize Pane Left or Right, with this xterm's cell width in px, which the split layout moves by
 const emit = defineEmits<{ resizePane: [direction: 'left' | 'right', cellPx: number] }>();
@@ -54,9 +55,11 @@ const search = shallowRef<SearchAddon | null>(null);
 const findOpen = ref(false);
 const find = ref<InstanceType<typeof TerminalFind> | null>(null);
 const atEnd = ref(true);
+// A terminal whose screen main restores stays hidden until that screen is written, so it never shows empty first.
+const revealed = ref(!props.terminal.restoring && !store.screenWaits(props.terminal.id));
+let screenReceived = false;
 const exited = computed(() => props.terminal.status === 'exited');
 const mac = props.platform === 'darwin';
-const linkOs = props.platform === 'win32' ? 'windows' : 'posix';
 const passChords = computed(() => props.passKeys.flatMap((key) => parseAccelerator(key, mac) ?? ([] as KeyChord[])));
 const linkHover = shallowRef<LinkHover | null>(null);
 // The text of the last line whose links were provided (main's answer included), which e2e waits on before asserting none.
@@ -112,6 +115,31 @@ function readEnd(xterm: Terminal): void {
 
 function focus(): void {
   term.value?.focus();
+}
+
+// A restore resized the xterm to the screen's size, so a view already shown fits its box again too.
+function reveal(): void {
+  revealed.value = true;
+  void nextTick(() => {
+    refit();
+    takeFocusRequest();
+  });
+}
+
+// The page loaded again: the screen goes into this fresh xterm at the size it was serialized at, the command marks onto the
+// normal buffer before any alternate screen covers it, and the pane shows once all of it is parsed.
+// The screen replaces what the view shows: a reloaded page's empty one, or a remote terminal's whose live data the daemon held
+// back while this client lagged, after which its acknowledgement window starts again at 0.
+function restoreScreen(xterm: Terminal, commandMarks: TerminalMarks, screen: TerminalScreen): void {
+  screenReceived = true;
+  xterm.reset();
+  commandMarks.reset();
+  parsed = 0;
+  if (xterm.cols !== screen.cols || xterm.rows !== screen.rows) xterm.resize(screen.cols, screen.rows);
+  const alt = screen.data.indexOf(ALT_SCREEN_SWITCH);
+  xterm.write(alt < 0 ? screen.data : screen.data.slice(0, alt), () => commandMarks.restoreMarks(screen.marks));
+  if (alt >= 0) xterm.write(screen.data.slice(alt));
+  xterm.write('', reveal);
 }
 
 // Every paste goes through main, which reads the clipboard only for a paste gesture it saw, may ask about several lines, and
@@ -353,7 +381,7 @@ async function provideLinks(bufferLine: number, callback: (links: ILink[] | unde
   }
   const buffer = xterm.buffer.active;
   const line = readWrappedLine(buffer, bufferLine - 1, xterm.cols, buffer.getNullCell());
-  const candidates = lineCandidates(line.text, linkOs);
+  const candidates = lineCandidates(line.text, props.terminal.pathFlavor === 'win32' ? 'windows' : 'posix');
   const paths = requestPaths(candidates);
   const links: ILink[] = [];
   const add = (start: number, end: number, text: string, kind: LinkHover['kind'], open: () => void): void => {
@@ -413,6 +441,7 @@ async function openMenu(anchor: OverlayRect): Promise<void> {
     focus();
   } else if (action === 'clear') {
     marks?.clear();
+    props.api.terminal.clear(props.terminal.id);
     focus();
   } else runTerminalAction(action, props.terminal.id, { api: props.api.terminal, store, returnTo: 'terminal' });
 }
@@ -526,8 +555,9 @@ async function open(): Promise<void> {
     rightClickSelectsWord: mac,
     linkHandler: hyperlinks,
     screenReaderMode: props.screenReader,
-    // xterm turns reflow off and its wrapped-line heuristics on below conpty's build 21376.
-    ...(props.platform === 'win32' ? { windowsPty: { backend: 'conpty', buildNumber: props.windowsBuild } } : {}),
+    // xterm turns reflow off and its wrapped-line heuristics on below conpty's build 21376; the build is the host's that runs
+    // the pty, as its screen in the pty host has it.
+    ...(props.terminal.windowsBuild === null ? {} : { windowsPty: { backend: 'conpty', buildNumber: props.terminal.windowsBuild } }),
   });
   fit = new FitAddon();
   const searchAddon = new SearchAddon();
@@ -564,7 +594,12 @@ async function open(): Promise<void> {
   marks = commandMarks;
   stops.push(() => commandMarks.dispose());
   refit();
-  stops.push(store.attach(props.terminal.id, ({ data, events }) => {
+  stops.push(store.attach(props.terminal.id, (batch) => {
+    if ('screen' in batch) {
+      restoreScreen(xterm, commandMarks, batch.screen);
+      return;
+    }
+    const { data, events } = batch;
     // Each event applies once xterm has parsed the output before it, so its marker lands on the cursor's row then.
     // Main sends offsets in 0..data.length, non-decreasing.
     let at = 0;
@@ -595,7 +630,7 @@ async function open(): Promise<void> {
 // Main's focus after a user action, or a click in the list, reaches the xterm once it is open and shown.
 function takeFocusRequest(): void {
   const request = store.focusRequest.value;
-  if (!request || request.id !== props.terminal.id || !term.value || !props.shown) return;
+  if (!request || request.id !== props.terminal.id || !term.value || !props.shown || !revealed.value) return;
   store.focusRequest.value = null;
   void nextTick(focus);
 }
@@ -624,6 +659,15 @@ useResizeObserver(host, refit);
 // The glide's last frame may already have been observed, so the size it settled at is sent from here.
 watch(() => grid?.gliding.value, (gliding) => {
   if (gliding === false) refit();
+});
+
+// Main can start waiting for a screen after this view mounted, when the page's first state came before main asked for the
+// screens; the pane hides until the screen is written. A screen still waiting in the store reveals the pane once written;
+// with none (the pty host ended first) the pane shows what it has.
+watch(() => props.terminal.restoring, (restoring) => {
+  if (screenReceived) return;
+  if (restoring) revealed.value = false;
+  else if (!store.screenWaits(props.terminal.id)) reveal();
 });
 
 watch(() => props.screenReader, (enabled) => {
@@ -684,7 +728,7 @@ defineExpose({ focus, openFind });
       <div
         ref="host"
         class="terminal-host absolute inset-0"
-        :class="{ 'terminal-host-marks': settings.decorationsEnabled }"
+        :class="{ 'terminal-host-marks': settings.decorationsEnabled, invisible: !revealed }"
         @contextmenu="onContextMenu"
       />
       <TerminalMarkHover

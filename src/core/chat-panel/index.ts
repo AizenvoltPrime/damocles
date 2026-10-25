@@ -37,7 +37,7 @@ import { WorkspaceFolderRegistry } from "../workspace-folders/folder-registry";
 import type { FolderTarget } from "../workspace-folders/folder-registry";
 import type { CompassViewsHandle, CompassViewsOptions } from "./types";
 import type { ChatSession } from "../chat-session";
-import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
+import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../shared/types/messages";
 import { t } from "../l10n";
 import { log } from "../logger";
 import { perfSpan } from "../perf";
@@ -301,6 +301,7 @@ export class ChatPanelProvider {
       },
       handleWebviewMessage: (message, panelId, view) =>
         this.messageRouter.handleWebviewMessage(message, panelId, view),
+      joinView: (panelId, gate) => this.messageRouter.joinView(panelId, gate),
       sendCurrentSettings: (host, permissionHandler, folder) =>
         this.settingsManager.sendCurrentSettings(host, permissionHandler, folder),
       getStoredSessions: () => this.storageManager.getStoredSessions(),
@@ -559,7 +560,27 @@ export class ChatPanelProvider {
     if (!this.platform.capabilities.voice || !this.platform.settings.get<boolean>("damocles.voice.tts.enabled", false)) return;
     const trimmed = text.trim();
     if (trimmed.length === 0) return;
+    // a daemon's core has no voice of its own: the client showing the chat speaks it, with its own consent
+    const remote = this.platform.remote;
+    if (remote) {
+      const host = this.panelManager.getPanels().get(panelId)?.host;
+      if (host) remote.speak(host, trimmed).catch((err) => log("[ChatPanelProvider] relaying a reply to speak failed:", err));
+      return;
+    }
     this.voiceService.speakReply(trimmed, panelId).catch((err) => log("[ChatPanelProvider] tts dispatch failed:", err));
+  }
+
+  /** This computer's core speaks a remote chat's reply (`user.voice.speak`), under this computer's voice settings and consent. */
+  async speakForeign(viewId: string, text: string): Promise<void> {
+    if (!this.platform.capabilities.voice || !this.platform.settings.get<boolean>("damocles.voice.tts.enabled", false)) return;
+    const trimmed = text.trim();
+    if (trimmed.length === 0) return;
+    await this.voiceService.speakReply(trimmed, viewId);
+  }
+
+  /** A remote chat view's voice message, run on this computer's voice service with replies posted to its foreign proxy. */
+  dispatchForeign(host: PanelHost, message: WebviewToExtensionMessage): Promise<void> {
+    return this.messageRouter.dispatchForeign(host, message);
   }
 
   private noticeReplyNotSpoken(reason: string, panelId: string): void {

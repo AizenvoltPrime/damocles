@@ -11,6 +11,7 @@ import type { KeyValueState } from './key-value-state';
 import type { LocalizationService } from './localization-service';
 import type { LogSinkFactory } from './log-sink';
 import type { NotificationService } from './notification-service';
+import type { RemoteHost } from './remote-host';
 import type { SecretsStore } from './secrets-store';
 import type { SettingsStore } from './settings-store';
 import type { ShellService } from './shell-service';
@@ -39,4 +40,6 @@ export interface Platform {
   readonly window: WindowService;
   readonly lifecycle: HostLifecycle;
   readonly logSinks: LogSinkFactory;
+  // set only for a daemon's core (desktop CoreInit.remote): user scope, AI sign-ins and the trash are the client's, not this host's
+  readonly remote?: RemoteHost;
 }

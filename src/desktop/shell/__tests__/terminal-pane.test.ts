@@ -10,7 +10,7 @@ import { shellI18n } from '../i18n';
 import { STATE, TERMINAL_STATE, fakeShellApi } from './fakes';
 
 const info = (id: string, title: string): TerminalInfo => ({
-  id, title, name: null, profileId: 'pwsh', icon: 'powershell', customIcon: null, color: null, projectKey: 'alpha', projectName: 'alpha', status: 'running', exitCode: null, description: null, running: null, integrated: false,
+  id, title, name: null, profileId: 'pwsh', icon: 'powershell', customIcon: null, color: null, projectKey: 'alpha', projectName: 'alpha', status: 'running', exitCode: null, description: null, running: null, integrated: false, restoring: false, windowsBuild: null, pathFlavor: 'posix',
 });
 
 function fakeStore(state: TerminalState): TerminalStore {

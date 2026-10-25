@@ -198,7 +198,7 @@ const judgeWarning = computed(() => {
   </SettingsRow>
 
   <div
-    v-if="!page.query"
+    v-if="page.groupShown(['damocles.explore.model'])"
     class="sm-group-head"
   >
     {{ t('settingsModal.groups.explore') }}
@@ -220,7 +220,7 @@ const judgeWarning = computed(() => {
   </SettingsRow>
 
   <div
-    v-if="!page.query"
+    v-if="page.groupShown(['damocles.background.model', 'damocles.memory.judge'])"
     class="sm-group-head"
   >
     {{ t('settingsModal.groups.background') }}

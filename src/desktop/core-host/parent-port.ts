@@ -1,11 +1,6 @@
 import type { Disposable } from '../../platform/disposable';
 import type { CoreTransport } from '../core-protocol';
-
-/** Electron's process.parentPort in a utility process, as core reads it; typed here, since core never imports electron. */
-export interface ParentPort {
-  on(event: 'message', listener: (event: { readonly data: unknown }) => void): unknown;
-  postMessage(message: unknown): void;
-}
+import type { ParentPort } from '../local-services/parent-channel';
 
 export interface ParentPortTransport extends CoreTransport {
   // main's first message on the channel: the init handshake

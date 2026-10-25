@@ -28,6 +28,8 @@
 import type { Api, AuthOperationOptions } from '@earendil-works/pi-ai';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { log } from '../logger';
+import type { RemoteHost } from '../../platform/remote-host';
+import { currentPin, outsidePins } from '../client-snapshots';
 import { describeAuthError, isCredentialSyncError } from './describe-error';
 import type { ModelLookup } from './pi-models';
 import { PROVIDER_SECRET_KEYS } from './explore-providers';
@@ -161,6 +163,8 @@ export interface SyncCustomProvidersDeps {
   signal?: AbortSignal;
   /** Runs before a provider's credential is replaced or removed, each of which supersedes pi's running refresh of it. */
   beforeCredentialChange?: (provider: string) => void;
+  /** A daemon's core: keys come from the broker for the turn's pinned client, never as runtime overrides. */
+  remote?: RemoteHost;
 }
 
 export interface SyncCustomProvidersResult {
@@ -186,8 +190,16 @@ export interface SyncCustomProvidersResult {
  */
 const syncedKeys = new WeakMap<ModelRuntime, Map<string, string>>();
 
-/** The key providers whose applied key bills a flat subscription (`CustomProviderDef.flatFeeKey`). Only ids leave this module, never a key. */
-export function flatFeeKeyProviders(runtime: ModelRuntime): ReadonlySet<KeyProviderId> {
+/**
+ * The key providers whose applied key bills a flat subscription (`CustomProviderDef.flatFeeKey`). Only ids leave this
+ * module, never a key. A daemon's core applies no key, so it reads the pinned client's clientAuth.
+ */
+export function flatFeeKeyProviders(runtime: ModelRuntime, remote?: RemoteHost): ReadonlySet<KeyProviderId> {
+  if (remote) {
+    const clientId = currentPin(remote).clientId;
+    const providers = clientId === undefined ? undefined : remote.clients.auth(clientId)?.providers;
+    return new Set(CUSTOM_PROVIDER_DEFS.filter((def) => providers?.[def.provider]?.flatFee === true).map((def) => def.provider));
+  }
   const cache = syncedKeys.get(runtime);
   const flat = new Set<KeyProviderId>();
   if (!cache) return flat;
@@ -300,6 +312,7 @@ function isKnownConfigured(
  * it did and did not reach is reported rather than swallowed — see `SyncCustomProvidersResult`.
  */
 export async function syncCustomProviders(deps: SyncCustomProvidersDeps): Promise<SyncCustomProvidersResult> {
+  if (deps.remote) return registerForBroker(deps.modelRuntime, deps.remote);
   const wired: string[] = [];
   const notWired: string[] = [];
   const changed: string[] = [];
@@ -383,6 +396,22 @@ export async function syncCustomProviders(deps: SyncCustomProvidersDeps): Promis
     log('[custom-providers] sync cut short (aborted); not wired: %s', unreached.join(', ') || '(none configured)');
   }
   return { wired, aborted: cutShortAt >= 0, notWired, changed };
+}
+
+const brokerRegistered = new WeakSet<ModelRuntime>();
+
+// pi reads its runtime keys before any credential store, so a key there would serve every client's turns (plan "Token broker").
+function registerForBroker(runtime: ModelRuntime, remote: RemoteHost): SyncCustomProvidersResult {
+  if (!brokerRegistered.has(runtime)) {
+    brokerRegistered.add(runtime);
+    // registering queues pi's availability check of the provider, which must never run inside a turn's pin
+    outsidePins(() => {
+      for (const def of CUSTOM_PROVIDER_DEFS) if (def.mode === 'register' && def.registerConfig) runtime.registerProvider(def.provider, def.registerConfig);
+    });
+  }
+  const clientId = currentPin(remote).clientId;
+  const providers = clientId === undefined ? undefined : remote.clients.auth(clientId)?.providers;
+  return { wired: CUSTOM_PROVIDER_DEFS.filter((def) => providers?.[def.provider]?.hasKey === true).map((def) => def.provider), aborted: false, notWired: [], changed: [] };
 }
 
 /**

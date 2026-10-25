@@ -2,7 +2,7 @@
 import { h, render } from 'vue';
 import type { IBuffer, IDecoration, IDisposable, IMarker, Terminal } from '@xterm/xterm';
 import { remPx } from '@/composables/useRemPx';
-import type { TerminalShellEvent } from '../../preload/terminal-channels';
+import type { TerminalScreenMark, TerminalShellEvent } from '../../preload/terminal-channels';
 import {
   commandStatus,
   createCommandModel,
@@ -60,7 +60,12 @@ export function readRows(buffer: IBuffer, start: number, end: number): string {
  * instead, which draw no mark.
  */
 export function createTerminalMarks(xterm: Terminal, deps: TerminalMarksDeps) {
-  const model = createCommandModel<IMarker>(() => xterm.registerMarker(0));
+  // the absolute line a restored mark stands on; undefined marks the cursor's line
+  let restoringLine: number | undefined;
+  const model = createCommandModel<IMarker>(() => {
+    const buffer = xterm.buffer.active;
+    return xterm.registerMarker(restoringLine === undefined ? 0 : restoringLine - (buffer.baseY + buffer.cursorY));
+  });
   const marks = new Map<number, Mark>();
   let partial: IMarker[] = [];
   let position: NavigationPosition<IMarker> = { kind: 'bottom' };
@@ -201,8 +206,21 @@ export function createTerminalMarks(xterm: Terminal, deps: TerminalMarksDeps) {
     return false;
   }));
 
+  /** A restored screen's marks, written while its normal buffer is active: each event as it first arrived, at its own line. */
+  function restoreMarks(restored: readonly TerminalScreenMark[]): void {
+    for (const { line, event } of restored) {
+      restoringLine = line;
+      try {
+        handle(event);
+      } finally {
+        restoringLine = undefined;
+      }
+    }
+  }
+
   return {
     handle,
+    restoreMarks,
     scroll,
     current,
     outputText,

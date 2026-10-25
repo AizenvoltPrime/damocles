@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { sqliteJournalMode } from '../network-fs';
 import { DatabaseSync } from 'node:sqlite';
 import { log } from '../logger';
 import { splitIdentifier, qualifyName } from './schema';
@@ -214,7 +215,7 @@ export class GraphStore {
 				this._openReadOnly(dbPath);
 				return;
 			}
-			raw.exec('PRAGMA journal_mode = WAL');
+			raw.exec(`PRAGMA journal_mode = ${sqliteJournalMode(dbPath)}`);
 			raw.exec('PRAGMA synchronous = NORMAL');
 			// FK enforcement is already on via the constructor's enableForeignKeyConstraints.
 			this._db = wrapped;

@@ -12,6 +12,7 @@ import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import { existsSync } from 'fs';
 import * as os from 'os';
 import { log } from '../logger';
+import { outsidePins } from '../client-snapshots';
 import type { PiCodingAgentModule } from './pi-loader';
 import { overrideGlobalContextFile } from './context-files';
 import { createDamoclesExtensionFactory, type PanelRegistryReader, type CheckpointRegistryReader } from './damocles-extension';
@@ -321,7 +322,8 @@ export class FolderRuntime {
       userHome: os.homedir(),
     };
     this._refreshAdditionalResourcePaths();
-    this._services = await pi.createAgentSessionServices({
+    // its availability refresh reads every provider's credential, so it must never run inside a turn's pin
+    this._services = await outsidePins(() => pi.createAgentSessionServices({
       cwd: this.cwd,
       agentDir: this._agentDir,
       modelRuntime: this._modelRuntime,
@@ -366,7 +368,7 @@ export class FolderRuntime {
           extensions: base.extensions.filter((e) => e.path.startsWith('<inline:')),
         }),
       },
-    });
+    }));
     // `createAgentSessionServices` already ran the factory above, so an extension instance exists with
     // no session bound to it and none guaranteed to arrive: the subscription reconcile can supersede it
     // with a bare reload before the first panel ever binds. Adopt it now — otherwise that reload strands
@@ -773,7 +775,8 @@ export class FolderRuntime {
       { projectTrusted: this._trust.isTrusted(opts.cwd) },
     ));
 
-    const services = await pi.createAgentSessionServices({
+    // its availability refresh reads every provider's credential; the subagent's own prompt runs in the caller's pin
+    const services = await outsidePins(() => pi.createAgentSessionServices({
       cwd: opts.cwd,
       agentDir: this._agentDir,
       modelRuntime: this._modelRuntime,
@@ -791,7 +794,7 @@ export class FolderRuntime {
         noPromptTemplates: true,
         noThemes: true,
       },
-    });
+    }));
     for (const diag of services.diagnostics) {
       log('[FolderRuntime] subagent services diagnostic (%s): %s', diag.type, diag.message);
     }

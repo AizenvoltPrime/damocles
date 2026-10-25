@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createFakePlatform } from "../../../../../__mocks__/fake-platform";
+import { createFakeRemoteHost } from "../../../../../__mocks__/fake-remote-host";
 import type { Platform } from "../../../../../platform/platform";
 import { folderKey } from "../../../../workspace-folders/folder-key";
 import { DEFAULT_WORKSPACE_FOLDER_STATE_KEY } from "../../../../workspace-folders/folder-registry";
@@ -37,6 +38,13 @@ describe("McpManager.toolExposureScopes", () => {
     });
     const platform: Platform = { ...base, trust: { ...base.trust, isTrusted: (folder) => folderKey(folder) === folderKey("/ws/a") } };
     const manager = new McpManager(platform, () => [trustedFolder, folderTarget("/ws/b")]);
+    expect(manager.toolExposureScopes(trustedFolder.key)).toEqual(["user"]);
+  });
+
+  // Every client's folders are open on a daemon's core and none is the window's, so a write with no folder has no project.
+  it("offers only User on a daemon's core, whose window-level writes have no project file", () => {
+    const base = createFakePlatform({ folders: openFolders, settings: { scopeFiles: { local: "/ws/a/.damocles/settings.local.json" } } });
+    const manager = new McpManager({ ...base, remote: createFakeRemoteHost().remote }, () => [trustedFolder]);
     expect(manager.toolExposureScopes(trustedFolder.key)).toEqual(["user"]);
   });
 

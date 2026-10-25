@@ -1,12 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import type { Disposable } from '../../../platform/disposable';
-import type { FileWatcherFactory } from '../../../platform/file-watcher';
-import { folderKey } from '../../../core/workspace-folders/folder-key';
+import { folderKeyOn } from '../../../core/workspace-folders/folder-key';
 import { EDITOR_MAX_DOCUMENT_BYTES, type SettingsFileScope } from '../../../shared/types/messages';
 import type { SettingsFileSaveOutcome } from '../../../core/chat-panel/settings-file-editor';
-import { settingsFileVersion } from '../../../core/config/settings-file';
+import { parseSettingsText, settingsFileVersion } from '../../../core/config/settings-file';
 import type { EditorConflictResult, EditorEditReport, EditorReadOnlyReason, EditorSaveResult, FilesMutationResult, NotDisplayedReason, SearchEditorConfig, SearchEditorMessage, ShellDocumentContent } from '../../preload/shell-channels';
 import {
   DEFAULT_SEARCH_EDITOR_CONFIG,
@@ -18,20 +16,15 @@ import {
   suggestedFileName,
 } from '../search/search-editor-format';
 import type { AskMessage } from '../message-dialog';
-import {
-  decodeDocument,
-  encodeDocument,
-  encodedLength,
-  languageIdForName,
-  majorityEol,
-  readFileBytes,
-  withEol,
-  type FileBytes,
-  type TextEncoding,
-} from '../platform/editor-document';
+import { decodeDocument, encodeDocument, encodedLength, languageIdForName, majorityEol, withEol } from '../platform/editor-document';
 import { isRelativeFilePath } from '../../../shared/relative-path';
 import { visibleText } from '../../../shared/visible-text';
-import { confineExisting, confineMissing, confineOrCreateFolder, followsLocalLinksOnly, projectOfPath, type Project } from '../../local-services/confine';
+import type { Project } from '../../local-services/confine';
+import { authorityKeyOfProject, pathFor } from '../../../shared/project-location';
+import type { FileBytes } from '../../local-services/file-bytes';
+import { WriteRefusedError, type WatchEvent, type WorkspaceFileSystem, type WriteRefusal } from '../../workspace/file-system';
+import type { ClosedFileRead, ClosedFileWrite, DiskState, TextEncoding } from '../../workspace/search/types';
+import { NotConnectedError, type Workspaces } from '../workspace/workspaces';
 
 // Images preview from a data: URL of at most this many bytes; a larger one is not displayed.
 export const MAX_IMAGE_BYTES: number = 10 * 1024 * 1024;
@@ -55,13 +48,6 @@ export function imageMimeOf(name: string): string | undefined {
 
 type Eol = '\n' | '\r\n';
 
-interface DiskState {
-  readonly exists: boolean;
-  readonly mtimeMs: number;
-  readonly size: number;
-  readonly sha256: string;
-}
-
 const MISSING: DiskState = { exists: false, mtimeMs: 0, size: 0, sha256: '' };
 
 interface Location {
@@ -70,6 +56,9 @@ interface Location {
   // present when the file lies inside an open project
   readonly projectKey?: string;
   readonly relativePath?: string;
+  // the authority key of a host whose own settings file this is (HOST_SETTINGS_FILE), read and written only through that
+  // authority's workspace; its path is native to that host
+  readonly host?: string;
 }
 
 export interface TextDocument {
@@ -139,21 +128,6 @@ export type Document = TextDocument | ImageDocument | NotDisplayedDocument;
 
 export type ShellEdit = Omit<EditorEditReport, 'documentId'>;
 
-export type ClosedFileRead =
-  | {
-      readonly kind: 'text';
-      readonly location: Required<Location>;
-      // decoded, with the line endings the file has
-      readonly text: string;
-      readonly eol: Eol;
-      readonly encoding: TextEncoding;
-      readonly bom: boolean;
-      readonly disk: DiskState;
-    }
-  | { readonly kind: 'readOnly' | 'missing' };
-
-export type ClosedFileWrite = { readonly ok: true } | { readonly ok: false; readonly reason: 'openInEditor' | 'conflict' | 'failed'; readonly message?: string };
-
 export type OpenProjectResult = { readonly ok: true; readonly document: Document } | { readonly ok: false; readonly reason: 'outside' | 'missing' | 'failed' };
 
 // How a missing file's text is written back: a hot-exit backup's record of the buffer it kept.
@@ -190,7 +164,9 @@ export interface SettingsFiles {
 
 export interface DocumentServiceDeps {
   readonly projects: () => readonly Project[];
-  readonly watchers: FileWatcherFactory;
+  readonly workspaces: Workspaces;
+  // the OS whose path rules an authority's paths follow: this computer's, or the target's
+  readonly authorityOs: (authority: string) => NodeJS.Platform;
   readonly ask: AskMessage;
   readonly t: (message: string, ...args: Array<string | number>) => string;
   readonly log: (line: string) => void;
@@ -221,6 +197,16 @@ class WriteRefused extends Error {
 function errnoCode(err: unknown): string | undefined {
   const code = (err as NodeJS.ErrnoException | undefined)?.code;
   return typeof code === 'string' ? code : undefined;
+}
+
+// Why the settings reader refuses text, or undefined when it parses.
+function settingsParseError(text: string, filePath: string): string | undefined {
+  try {
+    parseSettingsText(text, filePath);
+    return undefined;
+  } catch (err) {
+    return errorText(err);
+  }
 }
 
 function isDirty(document: TextDocument): boolean {
@@ -264,6 +250,8 @@ export class DocumentService {
   private renaming: Promise<void> = Promise.resolve();
   // a read that makes a document, by the key openResolved matches documents on, so opens of one file share it
   private readonly resolving = new Map<string, Promise<Document>>();
+  // the file system each document's watcher runs on; a remote one's watch ends with its connection
+  private readonly watchedOn = new WeakMap<TextDocument, WorkspaceFileSystem>();
 
   constructor(deps: DocumentServiceDeps) {
     this.deps = deps;
@@ -300,7 +288,7 @@ export class DocumentService {
     const project = this.deps.projects().find((candidate) => candidate.key === projectKey);
     // '' would name the project folder itself, which is no document.
     if (!project || !isRelativeFilePath(relativePath)) return { ok: false, reason: 'outside' };
-    const confined = await confineExisting(project, relativePath);
+    const confined = await this.files(project.key).confineExisting(project, relativePath);
     if (confined.ok) return { ok: true, document: await this.openResolved(confined.path, { projectKey: project.key, relativePath }) };
     return confined.reason === 'missing' && opts.missing ? this.openMissing(project, relativePath, opts.missing) : confined;
   }
@@ -308,11 +296,11 @@ export class DocumentService {
   // VS Code resolves a backup whose file is gone as an orphaned model (textFileEditorModel.ts doResolveFromBackup): the
   // document sits at the path the file had, under its deepest existing folder, and a save writes the file back.
   private async openMissing(project: Project, relativePath: string, format: MissingFileFormat): Promise<OpenProjectResult> {
-    const confined = await confineMissing(project, relativePath);
+    const confined = await this.files(project.key).confineMissing(project, relativePath);
     if (!confined.ok) return confined;
-    const existing = this.fileDocument(confined.path);
+    const existing = this.fileDocument({ path: confined.path, projectKey: project.key });
     if (existing) return { ok: true, document: existing };
-    const name = path.basename(confined.path);
+    const name = this.flavorOf({ projectKey: project.key }).basename(confined.path);
     const searchEditor = isSearchEditorPath(name);
     const document: TextDocument = {
       id: randomUUID(),
@@ -345,13 +333,28 @@ export class DocumentService {
     return { ok: true, document };
   }
 
-  // The document of a file on disk (not its settings or untitled documents), by native path.
-  private fileDocument(filePath: string): Document | undefined {
-    const key = folderKey(filePath);
+  // The document of a file on disk (not its settings or untitled documents), by its identity.
+  private fileDocument(location: Location): Document | undefined {
+    const key = this.identity(location);
     return [...this.documents.values()].find((document) => {
       if (document.kind === 'text' && (document.untitled || document.settingsScope !== undefined)) return false;
-      return document.location !== undefined && folderKey(document.location.path) === key;
+      return document.location !== undefined && document.location.host === undefined && this.identity(document.location) === key;
     });
+  }
+
+  // The authority a file is on: a host's own settings file names it, and a project file's project key carries it.
+  private authorityOf(location: Pick<Location, 'projectKey' | 'host'>): string {
+    return location.host ?? (location.projectKey === undefined ? 'local' : authorityKeyOfProject(location.projectKey));
+  }
+
+  private flavorOf(location: Pick<Location, 'projectKey' | 'host'>): path.PlatformPath {
+    return pathFor({ os: this.deps.authorityOs(this.authorityOf(location)) });
+  }
+
+  // A file's identity: its authority and its path by that host's rules, so the same path on two hosts is two files.
+  private identity(location: Location): string {
+    const authority = this.authorityOf(location);
+    return `${authority}\0${folderKeyOn(this.deps.authorityOs(authority), location.path)}`;
   }
 
   /**
@@ -361,9 +364,10 @@ export class DocumentService {
   async readClosedFile(projectKey: string, relativePath: string): Promise<ClosedFileRead> {
     const project = this.deps.projects().find((candidate) => candidate.key === projectKey);
     if (!project || !isRelativeFilePath(relativePath)) return { kind: 'missing' };
-    const confined = await confineExisting(project, relativePath);
+    const files = this.files(projectKey);
+    const confined = await files.confineExisting(project, relativePath);
     if (!confined.ok) return { kind: 'missing' };
-    const read = await readFileBytes(confined.path);
+    const read = await files.read(confined.path);
     if (read.kind === 'missing') return { kind: 'missing' };
     if (read.kind !== 'bytes') return { kind: 'readOnly' };
     const decoded = decodeDocument(read.bytes);
@@ -384,7 +388,7 @@ export class DocumentService {
    * refused when a document opened the file since or its bytes changed since the read.
    */
   async writeClosedFile(read: Extract<ClosedFileRead, { kind: 'text' }>, text: string): Promise<ClosedFileWrite> {
-    if (this.holdsPath(read.location.path)) return { ok: false, reason: 'openInEditor' };
+    if (this.holdsFile(read.location)) return { ok: false, reason: 'openInEditor' };
     const refused = this.oversize(text, read);
     if (refused) return { ok: false, reason: 'failed', message: refused };
     const current = await this.readDiskState(read.location);
@@ -408,9 +412,9 @@ export class DocumentService {
     return undefined;
   }
 
-  private holdsPath(filePath: string): boolean {
-    const key = folderKey(filePath);
-    return [...this.documents.values()].some((document) => document.location !== undefined && folderKey(document.location.path) === key);
+  private holdsFile(location: Location): boolean {
+    const key = this.identity(location);
+    return [...this.documents.values()].some((document) => document.location !== undefined && this.identity(document.location) === key);
   }
 
   /** A path core named (the agent's openFile, a plan file, a checkpoint side): read-only unless it lies inside an open project. */
@@ -420,14 +424,9 @@ export class DocumentService {
 
   private async openPathNow(filePath: string, opts: { readonly readOnlyReason?: EditorReadOnlyReason }): Promise<Document> {
     const absolute = path.resolve(filePath);
-    let real: string;
-    try {
-      real = await fs.realpath(absolute);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-      real = absolute;
-    }
-    const inProject = await projectOfPath(this.deps.projects(), real);
+    const { files } = this.deps.workspaces.local;
+    const real = (await files.realpath(absolute)) ?? absolute;
+    const inProject = await files.projectOfPath(this.deps.projects(), real);
     const location = inProject ? { projectKey: inProject.project.key, relativePath: inProject.relativePath } : {};
     return this.openResolved(real, location, opts.readOnlyReason ?? (inProject ? undefined : 'outsideProject'));
   }
@@ -437,6 +436,16 @@ export class DocumentService {
     const filePath = this.deps.settings.locate(scope);
     if (filePath === undefined) return undefined;
     return this.openResolved(filePath, {}, undefined, scope);
+  }
+
+  /** The settings file of a host's own ~/.damocles, named name, read and saved through the authority's workspace. */
+  async openHostSettings(authority: string, name: string): Promise<Document> {
+    const existing = [...this.documents.values()].find((document) => document.location?.host === authority);
+    if (existing) return existing;
+    return this.joined(`${authority}\0host`, async () => {
+      const { path: filePath, read } = await this.deps.workspaces.forAuthority(authority).files.readHostSettings();
+      return this.documentOf({ path: filePath, host: authority }, read, undefined, undefined, name);
+    });
   }
 
   /** In-memory text: a read-only diff side, or an editable untitled buffer. */
@@ -552,11 +561,15 @@ export class DocumentService {
   }
 
   // The default Save As path of an untitled Search Editor: <query>.code-search in its project, as VS Code suggests.
-  private searchEditorDefaultPath(document: TextDocument): string | undefined {
-    const state = document.searchEditor;
-    if (!state || !document.untitled) return undefined;
-    const project = this.deps.projects().find((candidate) => candidate.key === state.projectKey) ?? this.deps.projects()[0];
-    return path.join(project?.fsPath ?? '', suggestedFileName(state.config.query));
+  // A path on another host is never offered: its name goes into a local project instead (VS Code's suggestSavePath for a
+  // scheme the dialog cannot show).
+  private saveAsDefaultPath(document: TextDocument, local: readonly Project[]): string {
+    const { location } = document;
+    if (location && this.authorityOf(location) === 'local') return location.path;
+    const searchEditor = document.untitled ? document.searchEditor : undefined;
+    const folder = local.find((project) => project.key === searchEditor?.projectKey) ?? local[0];
+    const name = location ? this.flavorOf(location).basename(location.path) : searchEditor ? suggestedFileName(searchEditor.config.query) : document.name;
+    return path.join(folder?.fsPath ?? '', name);
   }
 
   private searchEditorDocument(id: string): TextDocument {
@@ -640,10 +653,11 @@ export class DocumentService {
 
   private async saveAsInTurn(document: TextDocument): Promise<EditorSaveResult> {
     const id = document.id;
-    const defaultPath = document.location?.path ?? this.searchEditorDefaultPath(document) ?? path.join(this.deps.projects()[0]?.fsPath ?? '', document.name);
-    const chosen = await this.deps.pickSavePath(defaultPath);
+    // the native dialog names this computer's paths, which only a local project holds
+    const local = this.deps.projects().filter((project) => authorityKeyOfProject(project.key) === 'local');
+    const chosen = await this.deps.pickSavePath(this.saveAsDefaultPath(document, local));
     if (chosen === undefined) return { ok: false, reason: 'cancelled' };
-    const target = await projectOfPath(this.deps.projects(), chosen);
+    const target = await this.deps.workspaces.local.files.projectOfPath(local, chosen);
     if (!target) return { ok: false, reason: 'failed', message: this.deps.t('Save As saves only inside an open project.') };
     // A copy of a read-only document is a new file of the user's; text that was not valid UTF-8 is written as UTF-8.
     const format = document.readOnlyReason === 'encoding' ? { encoding: 'utf8' as const, bom: false } : document;
@@ -672,10 +686,10 @@ export class DocumentService {
 
   private async overwriteInTurn(document: TextDocument): Promise<EditorConflictResult> {
     if (document.readOnlyReason !== undefined || document.untitled) return { ok: false, reason: 'failed' };
-    const name = document.location?.path ?? document.name;
+    const name = document.location ? this.flavorOf(document.location).basename(document.location.path) : document.name;
     const choice = await this.deps.ask({
       severity: 'warning',
-      message: this.deps.t('Overwrite {0}?', visibleText(path.basename(name))),
+      message: this.deps.t('Overwrite {0}?', visibleText(name)),
       detail: this.deps.t('The file changed on disk. Overwriting replaces those changes with the text in the editor.'),
       actions: [this.deps.t('Overwrite')],
       cancelLabel: this.deps.t('Cancel'),
@@ -769,7 +783,7 @@ export class DocumentService {
       const relativePath = movedPath(location.relativePath, from, to);
       if (relativePath === undefined) continue;
       // A new location object before any await, so a watcher read of the old path in flight is ignored (reload).
-      document.location = { path: path.join(project.fsPath, ...relativePath.split('/')), projectKey, relativePath };
+      document.location = { path: this.flavorOf({ projectKey }).join(project.fsPath, ...relativePath.split('/')), projectKey, relativePath };
       if (document.kind === 'text') {
         document.watcher?.dispose();
         document.watcher = undefined;
@@ -777,13 +791,13 @@ export class DocumentService {
       moving.push({ document, relativePath });
     }
     for (const { document, relativePath } of moving) {
-      const confined = await confineExisting(project, relativePath);
+      const confined = await this.files(projectKey).confineExisting(project, relativePath);
       if (!confined.ok) {
         this.deps.log(`[documents] ${relativePath} is ${confined.reason} after a rename; its editor keeps the path`);
         continue;
       }
       document.location = { path: confined.path, projectKey, relativePath };
-      document.name = path.basename(confined.path);
+      document.name = this.flavorOf({ projectKey }).basename(confined.path);
       if (document.kind !== 'text') {
         this.emit(document.id, false);
         continue;
@@ -842,17 +856,23 @@ export class DocumentService {
   }
 
   private async openResolved(filePath: string, location: Omit<Location, 'path'>, readOnlyReason?: EditorReadOnlyReason, settingsScope?: SettingsFileScope): Promise<Document> {
-    const key = folderKey(filePath);
+    const key = this.identity({ path: filePath, ...location });
     // A settings file opened by Edit settings.json is a document of its own, so its saves keep the settings file rules.
     for (const existing of this.documents.values()) {
       const scope = existing.kind === 'text' ? existing.settingsScope : undefined;
-      if (existing.location && folderKey(existing.location.path) === key && scope === settingsScope && !(existing.kind === 'text' && existing.untitled)) return existing;
+      if (existing.location && existing.location.host === undefined && this.identity(existing.location) === key && scope === settingsScope && !(existing.kind === 'text' && existing.untitled)) return existing;
     }
-    // textFileEditorModelManager.ts joinPendingResolves: a second open of a file still being read gets the same document.
-    const resolvingKey = `${key}\0${settingsScope ?? ''}`;
+    return this.joined(`${key}\0${settingsScope ?? ''}`, async () => {
+      const read = await this.files(location.projectKey).read(filePath, imageMimeOf(this.flavorOf(location).basename(filePath)) ? MAX_IMAGE_BYTES : EDITOR_MAX_DOCUMENT_BYTES);
+      return this.documentOf({ path: filePath, ...location }, read, readOnlyReason, settingsScope);
+    });
+  }
+
+  // textFileEditorModelManager.ts joinPendingResolves: a second open of a file still being read gets the same document.
+  private async joined(resolvingKey: string, resolve: () => Promise<Document>): Promise<Document> {
     const pending = this.resolving.get(resolvingKey);
     if (pending) return pending;
-    const read = this.readDocument(filePath, location, readOnlyReason, settingsScope);
+    const read = resolve();
     this.resolving.set(resolvingKey, read);
     try {
       return await read;
@@ -861,35 +881,39 @@ export class DocumentService {
     }
   }
 
-  private async readDocument(filePath: string, location: Omit<Location, 'path'>, readOnlyReason: EditorReadOnlyReason | undefined, settingsScope: SettingsFileScope | undefined): Promise<Document> {
-    const name = path.basename(filePath);
-    const fullLocation: Location = { path: filePath, ...location };
+  private documentOf(
+    location: Location,
+    read: FileBytes | { readonly kind: 'outside' },
+    readOnlyReason: EditorReadOnlyReason | undefined,
+    settingsScope: SettingsFileScope | undefined,
+    name: string = this.flavorOf(location).basename(location.path),
+  ): Document {
+    const filePath = location.path;
     const id = randomUUID();
     const mime = imageMimeOf(name);
-    const read = await readFileBytes(filePath, mime ? MAX_IMAGE_BYTES : EDITOR_MAX_DOCUMENT_BYTES);
     let document: Document;
     if (read.kind === 'tooLarge') {
-      document = { id, kind: 'notDisplayed', location: fullLocation, name, reason: 'tooLarge', bytes: read.bytes };
-    } else if (read.kind === 'unreadable') {
-      this.deps.log(`[documents] cannot read ${filePath}: ${read.error}`);
-      document = { id, kind: 'notDisplayed', location: fullLocation, name, reason: 'unreadable' };
+      document = { id, kind: 'notDisplayed', location, name, reason: 'tooLarge', bytes: read.bytes };
+    } else if (read.kind === 'unreadable' || read.kind === 'outside') {
+      this.deps.log(`[documents] cannot read ${filePath}: ${read.kind === 'outside' ? 'it leads outside the file it names' : read.error}`);
+      document = { id, kind: 'notDisplayed', location, name, reason: 'unreadable' };
     } else if (mime && read.kind === 'bytes') {
-      document = { id, kind: 'image', location: fullLocation, name, dataUrl: `data:${mime};base64,${read.bytes.toString('base64')}`, bytes: read.bytes.length };
+      document = { id, kind: 'image', location, name, dataUrl: `data:${mime};base64,${read.bytes.toString('base64')}`, bytes: read.bytes.length };
     } else {
       const bytes = read.kind === 'bytes' ? read.bytes : Buffer.alloc(0);
       const decoded = decodeDocument(bytes);
       if (!decoded) {
-        document = { id, kind: 'notDisplayed', location: fullLocation, name, reason: 'binary', bytes: bytes.length };
+        document = { id, kind: 'notDisplayed', location, name, reason: 'binary', bytes: bytes.length };
       } else {
-        const parsed = settingsScope === undefined && readOnlyReason === undefined && decoded.valid && isSearchEditorPath(filePath) ? parseSearchEditor(decoded.text) : undefined;
+        const parsed = settingsScope === undefined && readOnlyReason === undefined && decoded.valid && isSearchEditorPath(name) ? parseSearchEditor(decoded.text) : undefined;
         const eol = parsed ? '\n' : majorityEol(decoded.text);
         const text = parsed ? parsed.body : withEol(decoded.text, eol);
         document = {
           id,
           kind: 'text',
-          location: fullLocation,
+          location,
           name,
-          languageId: settingsScope !== undefined ? 'json' : parsed ? SEARCH_RESULT_LANGUAGE_ID : languageIdForName(name),
+          languageId: settingsScope !== undefined || location.host !== undefined ? 'json' : parsed ? SEARCH_RESULT_LANGUAGE_ID : languageIdForName(name),
           encoding: decoded.encoding,
           bom: decoded.bom,
           eol,
@@ -930,16 +954,36 @@ export class DocumentService {
     document.watcher?.dispose();
     const location = document.location;
     if (!location) return;
-    const key = folderKey(location.path);
-    const watcher = this.deps.watchers.watch(path.dirname(location.path), '*');
-    const changed = (fsPath: string): void => {
-      if (folderKey(fsPath) !== key) return;
-      this.reload(document, { force: false }).catch((err: unknown) => this.deps.log(`[documents] reloading ${location.path} failed: ${errorText(err)}`));
-    };
-    watcher.onDidCreate(changed);
-    watcher.onDidChange(changed);
-    watcher.onDidDelete(changed);
-    document.watcher = watcher;
+    const key = this.identity(location);
+    const files = this.filesAt(location);
+    document.watcher = files.watch(this.flavorOf(location).dirname(location.path), '*', (event: WatchEvent) => {
+      if (this.identity({ ...location, path: event.path }) !== key) return;
+      this.reloadLogged(document);
+    });
+    this.watchedOn.set(document, files);
+  }
+
+  private reloadLogged(document: TextDocument): void {
+    const filePath = document.location?.path;
+    this.reload(document, { force: false }).catch((err: unknown) => this.deps.log(`[documents] reloading ${filePath} failed: ${errorText(err)}`));
+  }
+
+  /** A host connected or went away: each watched document whose host now serves a new connection is watched over it and read again. */
+  connectionsChanged(): void {
+    for (const document of this.documents.values()) {
+      if (document.kind !== 'text' || !document.watcher || !document.location) continue;
+      let files: WorkspaceFileSystem;
+      try {
+        files = this.filesAt(document.location);
+      } catch (err) {
+        if (err instanceof NotConnectedError) continue;
+        throw err;
+      }
+      if (this.watchedOn.get(document) === files) continue;
+      this.watch(document);
+      // what changed while the host was away was never reported
+      this.reloadLogged(document);
+    }
   }
 
   // The watcher path (agent writes, checkpoint restores, git checkout, any editor): a clean buffer takes the disk text,
@@ -1033,6 +1077,8 @@ export class DocumentService {
   // VS Code's doSave, handleSaveSuccess and handleSaveError (textFileEditorModel.ts:769, :959, :973), the buffer stays dirty
   // when it changed while the write ran, and after a failed write, which may have torn the file.
   private async write(document: TextDocument, location: Location, format: { readonly encoding: TextEncoding; readonly bom: boolean }): Promise<EditorSaveResult> {
+    const unparsed = location.host !== undefined ? settingsParseError(savedText(document), location.path) : undefined;
+    if (unparsed !== undefined) return { ok: false, reason: 'failed', message: this.deps.t('Not saved: the text is not valid JSON. {0}', unparsed) };
     if (isDirty(document)) await this.deps.backups.writeNow(document);
     const buffer = document.text;
     const header = document.searchEditor ? serializeSearchConfiguration(document.searchEditor.config) : undefined;
@@ -1048,7 +1094,7 @@ export class DocumentService {
       if (isDirty(document)) this.deps.backups.changed(document, true);
       this.emit(document.id, false);
       this.deps.log(`[documents] saving ${location.path} failed: ${errorText(err)}`);
-      return { ok: false, reason: 'failed', message: this.saveFailure(location.path, this.writeFailureReason(err)) };
+      return { ok: false, reason: 'failed', message: this.saveFailure(location, this.writeFailureReason(err)) };
     }
     this.writing.delete(document);
     const unchanged = document.text === buffer && (!document.searchEditor || serializeSearchConfiguration(document.searchEditor.config) === header);
@@ -1069,104 +1115,14 @@ export class DocumentService {
     return { ok: true };
   }
 
-  // A pwrite may take fewer bytes than asked (a nearly full disk); the rest follows from where it stopped.
-  private async writeAll(handle: fs.FileHandle, filePath: string, bytes: Buffer): Promise<void> {
-    for (let offset = 0; offset < bytes.length;) {
-      const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset, offset);
-      if (bytesWritten === 0) throw new WriteRefused(`${filePath} was not written in full`, this.deps.t('The disk stopped accepting data.'));
-      offset += bytesWritten;
-    }
-  }
-
-  // In place, so the file keeps its mode, hardlinks and ACLs. The handle must be the file confinement resolved: an existing
-  // file's identity (bigint dev and ino, which NTFS ids need) is taken from the confined realpath before the open and
-  // compared with the opened handle; a new file's realpath is checked after its exclusive create. A junction or link swapped
-  // in between the check and the open fails either way. Resolves the written file's mtime.
+  // The in-place write of the workspace that holds the file (WorkspaceFileSystem.writeInPlace), only while the document's
+  // project is still listed; every write names one, or a host's own settings file. Resolves the written file's mtime.
   private async writeConfined(location: Location, bytes: Buffer): Promise<number> {
-    const identity = await this.reconfine(location);
-    if (identity) {
-      const handle = await fs.open(location.path, 'r+');
-      try {
-        const opened = await handle.stat({ bigint: true });
-        if (!opened.isFile() || opened.dev !== identity.dev || opened.ino !== identity.ino) throw new WriteRefused(`${location.path} changed while it was being saved`, this.deps.t('The file was replaced while it was being saved.'));
-        await this.writeAll(handle, location.path, bytes);
-        await handle.truncate(bytes.length);
-        await handle.sync();
-        return Number((await handle.stat({ bigint: true })).mtimeMs);
-      } finally {
-        await handle.close();
-      }
-    }
-    const handle = await fs.open(location.path, 'wx');
-    const made = await handle.stat({ bigint: true });
-    let misplaced = true;
-    try {
-      if (folderKey(await fs.realpath(location.path)) !== folderKey(location.path)) throw new WriteRefused(`${location.path} changed while it was being saved`, this.deps.t('The file was replaced while it was being saved.'));
-      misplaced = false;
-      await this.writeAll(handle, location.path, bytes);
-      await handle.sync();
-      return Number((await handle.stat({ bigint: true })).mtimeMs);
-    } finally {
-      await handle.close();
-      if (misplaced) await this.removeCreated(location.path, made);
-    }
-  }
-
-  // The exclusive create landed somewhere confinement never approved: the empty file is removed, but only while the path
-  // still names that same file, so a swapped-in link never deletes a file the editor did not create.
-  private async removeCreated(filePath: string, made: { readonly dev: bigint; readonly ino: bigint }): Promise<void> {
-    const now = await fs.stat(filePath, { bigint: true });
-    if (now.dev === made.dev && now.ino === made.ino) await fs.rm(filePath);
-    else this.deps.log(`[documents] left ${filePath} alone: it is no longer the file a refused save created`);
-  }
-
-  // A project file is written only while its path still resolves inside that project; every write names one. Resolves the
-  // existing file's identity, or undefined when the file is to be created in its confined parent.
-  private async reconfine(location: Location): Promise<{ readonly dev: bigint; readonly ino: bigint } | undefined> {
+    if (location.host !== undefined) return this.filesAt(location).writeHostSettings(bytes);
     if (location.projectKey === undefined || location.relativePath === undefined) throw new WriteRefused(`${location.path} is outside every project`, this.deps.t('Its path now leads outside the project.'));
     const project = this.deps.projects().find((candidate) => candidate.key === location.projectKey);
     if (!project) throw new WriteRefused(`${location.path}: its project is no longer in the project list`, this.deps.t('The project is no longer in the project list.'));
-    // The walk comes first, so the stat never follows a link to a share. The identity is taken before the realpath check, so
-    // one swap at any point fails: before the stat or between the stat and the realpath, the realpath leaves the file; after
-    // it, the opened handle differs.
-    if (!(await this.followsLocalLinks(project, location.relativePath))) throw new WriteRefused(`${location.relativePath} is outside the project`, this.deps.t('Its path now leads outside the project.'));
-    const identity = await this.identityOf(location.path);
-    const existing = await confineExisting(project, location.relativePath);
-    if (existing.ok) {
-      if (folderKey(existing.path) !== folderKey(location.path)) throw new WriteRefused(`${location.relativePath} now resolves outside the file the editor opened`, this.deps.t('Its path now leads outside the file the editor opened.'));
-      if (!identity) throw new WriteRefused(`${location.relativePath} changed while it was being saved`, this.deps.t('The file was replaced while it was being saved.'));
-      return identity;
-    }
-    if (existing.reason !== 'missing') throw new WriteRefused(`${location.relativePath} is outside the project`, this.deps.t('Its path now leads outside the project.'));
-    const parent = path.posix.dirname(location.relativePath);
-    // A file whose folder was deleted too is written back with its folders (fileService.ts writeFile's mkdirp).
-    const confinedParent = await confineOrCreateFolder(project, parent === '.' ? '' : parent);
-    if (!confinedParent.ok || folderKey(path.join(confinedParent.path, path.basename(location.path))) !== folderKey(location.path)) {
-      throw new WriteRefused(`${location.relativePath} is outside the project`, this.deps.t('Its path now leads outside the project.'));
-    }
-    return undefined;
-  }
-
-  // A missing segment ends the walk with nothing left to follow, as for a file a save creates.
-  private async followsLocalLinks(project: Project, relativePath: string): Promise<boolean> {
-    try {
-      return await followsLocalLinksOnly(project.fsPath, relativePath.split('/'));
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT' || code === 'ENOTDIR') return true;
-      throw err;
-    }
-  }
-
-  private async identityOf(filePath: string): Promise<{ readonly dev: bigint; readonly ino: bigint } | undefined> {
-    try {
-      const stat = await fs.stat(filePath, { bigint: true });
-      if (!stat.isFile()) throw new WriteRefused(`${filePath} is not a file`, this.deps.t('The path is not a file.'));
-      return { dev: stat.dev, ino: stat.ino };
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-      throw err;
-    }
+    return this.files(project.key).writeInPlace(project, { path: location.path, projectKey: location.projectKey, relativePath: location.relativePath }, bytes);
   }
 
   // The buffer stays dirty when it changed while the settings writer ran, as write() keeps it.
@@ -1178,7 +1134,7 @@ export class DocumentService {
     const result = await this.deps.settings.save(scope, document.location!.path, raw, baseVersion);
     if (!result.ok) {
       if (result.conflict) return this.refuseConflict(document);
-      return { ok: false, reason: 'failed', message: result.cause === undefined ? result.error : this.saveFailure(document.location!.path, this.errnoReason(errnoCode(result.cause))) };
+      return { ok: false, reason: 'failed', message: result.cause === undefined ? result.error : this.saveFailure(document.location!, this.errnoReason(errnoCode(result.cause))) };
     }
     // The writer reports the sha256 of the bytes it wrote; the mtime only orders Search's results.
     document.disk = { exists: true, mtimeMs: Date.now(), size: Buffer.byteLength(raw, 'utf8'), sha256: result.version };
@@ -1198,11 +1154,10 @@ export class DocumentService {
 
   private async currentSettingsVersion(document: TextDocument): Promise<{ readonly ok: true; readonly version: string } | { readonly ok: false; readonly reason: 'failed'; readonly message: string }> {
     try {
-      return { ok: true, version: settingsFileVersion(await fs.readFile(document.location!.path, 'utf8')) };
+      return { ok: true, version: settingsFileVersion(await this.deps.workspaces.local.files.readText(document.location!.path)) };
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, version: settingsFileVersion(undefined) };
       this.deps.log(`[documents] cannot read ${document.location!.path} before overwriting it: ${errorText(err)}`);
-      return { ok: false, reason: 'failed', message: this.saveFailure(document.location!.path, this.errnoReason(errnoCode(err))) };
+      return { ok: false, reason: 'failed', message: this.saveFailure(document.location!, this.errnoReason(errnoCode(err))) };
     }
   }
 
@@ -1232,26 +1187,49 @@ export class DocumentService {
     return result;
   }
 
-  // A file that cannot be read now (grown past the limit, locked, replaced by a folder) fails the save with the reason.
+  // A file that cannot be read now (grown past the limit, locked, replaced by a folder) fails the save with the reason, and so
+  // does a host's settings file that does not parse, as saveSettingsFileText never overwrites one.
   private async readDiskState(location: Location): Promise<{ readonly ok: true; readonly disk: DiskState } | { readonly ok: false; readonly reason: 'failed'; readonly message: string }> {
-    const read = await this.readLocation(location);
+    let read: Awaited<ReturnType<DocumentService['readLocation']>>;
+    try {
+      read = await this.readLocation(location);
+    } catch (err) {
+      // only a host's workspace rejects a read: not connected, or the connection ended during it
+      this.deps.log(`[documents] cannot read ${location.path} before saving it: ${errorText(err)}`);
+      return { ok: false, reason: 'failed', message: this.saveFailure(location, this.writeFailureReason(err)) };
+    }
     if (read.kind === 'missing') return { ok: true, disk: MISSING };
+    const unparsed = read.kind === 'bytes' && location.host !== undefined ? settingsParseError(read.bytes.toString('utf8'), location.path) : undefined;
+    if (unparsed !== undefined) return { ok: false, reason: 'failed', message: this.deps.t('{0} does not parse, so it was not overwritten: {1}', location.path, unparsed) };
     if (read.kind === 'bytes') return { ok: true, disk: { exists: true, mtimeMs: read.mtimeMs, size: read.bytes.length, sha256: sha256(read.bytes) } };
     this.deps.log(`[documents] cannot read ${location.path} before saving it: ${read.kind === 'unreadable' ? read.error : read.kind}`);
     const reason = read.kind === 'tooLarge'
       ? this.deps.t('The file on disk is too large for the editor.')
       : read.kind === 'outside' ? this.deps.t('Its path now leads outside the file the editor opened.') : this.errnoReason(read.code);
-    return { ok: false, reason: 'failed', message: this.saveFailure(location.path, reason) };
+    return { ok: false, reason: 'failed', message: this.saveFailure(location, reason) };
   }
 
   // VS Code's genericSaveError (textFileSaveErrorHandler.ts): the file's base name and a reason; the raw error and path go
   // only to the log.
-  private saveFailure(filePath: string, reason: string): string {
-    return this.deps.t('Failed to save \'{0}\': {1}', visibleText(path.basename(filePath)), reason);
+  private saveFailure(location: Location, reason: string): string {
+    return this.deps.t('Failed to save \'{0}\': {1}', visibleText(this.flavorOf(location).basename(location.path)), reason);
   }
 
   private writeFailureReason(err: unknown): string {
-    return err instanceof WriteRefused ? err.reason : this.errnoReason(errnoCode(err));
+    if (err instanceof WriteRefused) return err.reason;
+    if (err instanceof NotConnectedError) return err.message;
+    return err instanceof WriteRefusedError ? this.refusalReason(err.refusal) : this.errnoReason(errnoCode(err));
+  }
+
+  private refusalReason(refusal: WriteRefusal): string {
+    const t = this.deps.t;
+    switch (refusal) {
+      case 'outsideProject': return t('Its path now leads outside the project.');
+      case 'outsideFile': return t('Its path now leads outside the file the editor opened.');
+      case 'replaced': return t('The file was replaced while it was being saved.');
+      case 'notAFile': return t('The path is not a file.');
+      case 'diskFull': return t('The disk stopped accepting data.');
+    }
   }
 
   private errnoReason(code: string | undefined): string {
@@ -1275,17 +1253,30 @@ export class DocumentService {
   // walk before anything follows a link, so a file replaced by a link to a share or out of the project is never opened. A
   // file outside every project reads as it opened.
   private async readLocation(location: Location): Promise<FileBytes | { readonly kind: 'outside' }> {
+    if (location.host !== undefined) {
+      const { path: filePath, read } = await this.filesAt(location).readHostSettings();
+      return this.identity({ ...location, path: filePath }) === this.identity(location) ? read : { kind: 'outside' };
+    }
     if (location.projectKey !== undefined && location.relativePath !== undefined) {
       const project = this.deps.projects().find((candidate) => candidate.key === location.projectKey);
       if (!project) return { kind: 'outside' };
-      const confined = await confineExisting(project, location.relativePath);
+      const confined = await this.files(project.key).confineExisting(project, location.relativePath);
       if (!confined.ok) {
         if (confined.reason === 'missing') return { kind: 'missing' };
         return confined.reason === 'failed' ? { kind: 'unreadable', error: `${location.path} cannot be read` } : { kind: 'outside' };
       }
-      if (folderKey(confined.path) !== folderKey(location.path)) return { kind: 'outside' };
+      if (this.identity({ ...location, path: confined.path }) !== this.identity(location)) return { kind: 'outside' };
     }
-    return readFileBytes(location.path);
+    return this.files(location.projectKey).read(location.path);
+  }
+
+  // The files of the workspace holding a project; this computer's for a path outside every project.
+  private files(projectKey: string | undefined): WorkspaceFileSystem {
+    return projectKey === undefined ? this.deps.workspaces.local.files : this.deps.workspaces.forProject(projectKey).files;
+  }
+
+  private filesAt(location: Location): WorkspaceFileSystem {
+    return location.host !== undefined ? this.deps.workspaces.forAuthority(location.host).files : this.files(location.projectKey);
   }
 
   private text(id: string): TextDocument | undefined {

@@ -274,6 +274,8 @@ describe('the UserPromptSubmit hook runs before pi', () => {
 
     expect(await sending).toBe('withdrawn');
     expect(emitted).toContainEqual({ type: 'interruptRecovery', correlationId: 'c1', promptContent: SLOW });
+    // a view that joins now is shown neither the given-back prompt nor a running turn
+    expect(panel.liveConversation()?.snapshot.messages).toEqual([]);
     expect(withdrawn).toHaveBeenCalledOnce();
     await vi.waitFor(() => expect(alive(hook.pid()!)).toBe(false), { timeout: 10_000 });
     expect(hook.finished()).toBe(false);

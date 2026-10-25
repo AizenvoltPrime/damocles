@@ -10,6 +10,7 @@ import type { FileWatcherFactory } from "../../platform/file-watcher";
 import type { Memento } from "../../platform/key-value-state";
 import type { WorkspaceFolders } from "../../platform/workspace-folders";
 import type { SettingsFolder } from "../../platform/settings-store";
+import type { Platform } from "../../platform/platform";
 
 export const DEFAULT_WORKSPACE_FOLDER_STATE_KEY = "damocles.defaultWorkspaceFolder";
 
@@ -35,6 +36,14 @@ export function defaultProjectPath(folders: WorkspaceFolders, state: Memento): s
   const stored = state.get<string>(DEFAULT_WORKSPACE_FOLDER_STATE_KEY);
   const match = stored !== undefined ? open.find((f) => folderKey(f.fsPath) === stored) : undefined;
   return (match ?? open[0])?.fsPath;
+}
+
+/**
+ * The folder whose project and local files a settings read or write with no folder uses: the default project, and none
+ * on a daemon's core, which serves every client's folders and no window. The desktop settings store applies the same rule.
+ */
+export function windowSettingsProject(platform: Pick<Platform, "workspaceFolders" | "state" | "remote">): string | undefined {
+  return platform.remote !== undefined ? undefined : defaultProjectPath(platform.workspaceFolders, platform.state.workspace);
 }
 
 export interface FolderTarget {

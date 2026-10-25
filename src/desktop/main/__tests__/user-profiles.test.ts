@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { MAX_HOST_ARGS, MAX_HOST_PATH_CHARS } from '../../pty-host/protocol';
 import { MAX_USER_TERMINAL_PROFILES } from '../../preload/terminal-channels';
-import type { TerminalProfile } from '../terminal/profiles';
+import type { TerminalProfile } from '../../workspace/terminal/profiles';
 import {
   MAX_PROFILE_PATHS,
   MAX_TERMINAL_COMMAND_LINE_CHARS,

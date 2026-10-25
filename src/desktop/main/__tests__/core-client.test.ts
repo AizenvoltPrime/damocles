@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoreEndpoint, createLoopback, createMainEndpoint, type ChatEntry, type FolderTargetEntry } from '../../core-protocol';
 import { CoreClient } from '../core-client';
+import { LOCAL_PROJECT_KEYS } from '../remote/remote-project-keys';
 
 const PROJECT = path.resolve('/projects/a');
 const WORKING = path.resolve('/worktrees/a-1');
@@ -25,7 +26,7 @@ function connect(): { client: CoreClient; core: ReturnType<typeof createCoreEndp
   const { main, core } = createLoopback();
   const mainEnd = createMainEndpoint(main, () => undefined);
   const coreEnd = createCoreEndpoint(core, () => undefined);
-  const client = new CoreClient(mainEnd, (_view, attach) => attach());
+  const client = new CoreClient(mainEnd, (_view, attach) => attach(), LOCAL_PROJECT_KEYS);
   closers.push(() => {
     client.dispose();
     mainEnd.close('closed');

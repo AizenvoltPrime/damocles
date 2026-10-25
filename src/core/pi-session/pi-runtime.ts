@@ -80,10 +80,16 @@ import { withSettingsPolicy } from './settings-policy';
 import { platform } from '../platform-host';
 import type { Platform } from '../../platform/platform';
 import type { Disposable } from '../../platform/disposable';
+import type { RemoteHost } from '../../platform/remote-host';
 import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
 import { IMAGE_SETTINGS_SECTION } from './tools/image-tool-specs';
 import { fetchSubscriptionUsage } from './subscription-usage';
 import { UsageMonitor, type UsageThresholdCrossing } from './usage-thresholds';
+import { BrokeredCredentialStore, oauthAnswerOf } from './credential-broker';
+import { allowanceProvider, builtinAnthropicTransport, clientClaudeAuthStatus, loadAllowanceTransport, subscriptionPluginDir } from './allowance-transport';
+import { logAuthReadFailure, readAuthFile } from './auth-file';
+import { clientHasKey, outsidePins, runPinnedSubcall } from '../client-snapshots';
+import { type BrokerAnswer, type HeldAuth, type HeldAuthEntry } from '../../shared/remote-user';
 
 /**
  * How long the custom-provider credential sync may block before it is cancelled. The sync is offline
@@ -102,6 +108,16 @@ const OPENROUTER_CATALOG_REFRESH_TIMEOUT_MS = 30_000;
 /** pi rewrites auth.json as a truncate then a write, which a watcher reports as more than one event. */
 const AUTH_REPUBLISH_DEBOUNCE_MS = 150;
 
+const clientAuthListeners = new Set<() => void>();
+function notifyClientAuthListeners(): void {
+  for (const listener of [...clientAuthListeners]) {
+    try {
+      listener();
+    } catch (err) {
+      log('[PiRuntime] client auth listener failed: %O', err);
+    }
+  }
+}
 /** Module-level so subscribing never creates the singleton: activation must leave `PiRuntime.exists` false. */
 const memoryJudgeListeners = new Set<() => void>();
 function notifyMemoryJudgeListeners(): void {
@@ -119,6 +135,7 @@ export interface CustomProvidersSynced {
 }
 const customProvidersSyncedListeners = new Set<(sync: CustomProvidersSynced) => void>();
 const authFileListeners = new Set<() => void>();
+
 function notifyAuthFileListeners(): void {
   for (const listener of [...authFileListeners]) listener();
 }
@@ -138,6 +155,11 @@ const usageThresholdListeners = new Set<(crossing: UsageThresholdCrossing) => vo
  *  `ModelRuntime.login(provider, 'api_key', …)` from a key the user already supplied out-of-band. */
 function keyInteraction(key: string): AuthInteraction {
   return { prompt: async () => key, notify: () => {} };
+}
+
+/** Why a daemon's core changes no sign-in, key or billing bucket: they are the client's and change only there. */
+export function remoteSignInRefusal(): string {
+  return t('Sign-ins change only in the User tab on your computer.');
 }
 
 /** One classifier request. Untrusted text (memories, prompts) goes only in `state`; `questions` are built from
@@ -341,6 +363,8 @@ export class PiRuntime {
   private _userDebounce: NodeJS.Timeout | null = null;
   /** This runtime's hold on the shared auth.json watch; set once init has applied the OpenAI key, so changes route here. */
   private _authWatch: Disposable | null = null;
+  /** A daemon's core's credential store; null on this computer's core, which reads auth.json. */
+  private _broker: BrokeredCredentialStore | null = null;
   /** OpenAI credential changes, the key migration and every runtime-key sync run one at a time on this
    *  chain, so a sync reads the state it applies and no sign-in lands between the migration's check and delete. */
   private _openaiCredentialSync: Promise<void> = Promise.resolve();
@@ -352,6 +376,10 @@ export class PiRuntime {
   private _appliedPreferApiKey: boolean | null = null;
   private _preferResyncPending = false;
   private _secretsListener: Disposable | null = null;
+  /** A daemon's core: the acting client decides a view's account state. */
+  private _clientsListener: Disposable | null = null;
+  /** A daemon's core: the bundled subscription plugin did not load, so an allowance client's Claude requests bill extra usage. */
+  private _allowanceUnavailable = false;
   /** Granting trust admits a folder's project layer, which needs a reload to reach its loader. */
   private _trustListener: Disposable | null = null;
   /** `damocles.imageGeneration.*` decides whether GenerateImage is eligible. */
@@ -400,6 +428,7 @@ export class PiRuntime {
     this._agentDir = agentDir;
     this._platform = platform();
     this._classifierBreakers.onChange(notifyMemoryJudgeListeners);
+    this._clientsListener = this._platform.remote ? this._watchClients(this._platform.remote) : null;
   }
 
   /** Get (lazily creating) the process-wide PiRuntime singleton. */
@@ -433,6 +462,8 @@ export class PiRuntime {
    * Does not create the singleton.
    */
   static watchAuthFile(): Disposable {
+    // a daemon's core reads account state from its clients' clientAuth, never its host's auth.json
+    if (platform().remote) return { dispose: () => undefined };
     return PiRuntime._holdAuthFileWatch(platform().fileWatchers, PI_AGENT_DIR);
   }
 
@@ -480,6 +511,7 @@ export class PiRuntime {
       void runtime._resyncOpenAIAndRepublish('auth.json change').then(notifyAuthFileListeners);
       return;
     }
+    notifyClientAuthListeners();
     notifyMemoryJudgeListeners();
     notifyAuthFileListeners();
   }
@@ -489,6 +521,14 @@ export class PiRuntime {
     authFileListeners.add(listener);
     return () => {
       authFileListeners.delete(listener);
+    };
+  }
+
+  /** Fires whenever an input of `clientAuthSnapshot()` may have changed. Subscribing does not create the singleton. */
+  static onClientAuthChange(listener: () => void): () => void {
+    clientAuthListeners.add(listener);
+    return () => {
+      clientAuthListeners.delete(listener);
     };
   }
 
@@ -518,6 +558,7 @@ export class PiRuntime {
 
   /** For judge inputs that change outside the runtime: a Claude or OpenAI credential change republishes the account. */
   static notifyMemoryJudgeChange(): void {
+    notifyClientAuthListeners();
     notifyMemoryJudgeListeners();
   }
 
@@ -701,10 +742,12 @@ export class PiRuntime {
     // A window closing mid-creation disposes every folder it finds; stop before touching the plugin.
     if (this._disposed) return folder;
     const folders = [...this.folders(), folder];
-    if (!this._pinReconciled) {
+    // a daemon's core bills by its bundled plugin and never touches the host's pi packages
+    const local = !this._platform.remote;
+    if (local && !this._pinReconciled) {
       this._pinReconciled = true;
       await this._reconcileSubscriptionPin(pi, folders, folder);
-    } else {
+    } else if (local) {
       await this._unlistFailedPluginLoad(pi, folders, folder);
     }
     // A trust grant during creation reached only the folders already published.
@@ -763,6 +806,7 @@ export class PiRuntime {
    * only in that file.
    */
   private _setupAuthWatcher(): void {
+    if (this._platform.remote) return;
     this._authWatch?.dispose();
     this._authWatch = PiRuntime._holdAuthFileWatch(this._platform.fileWatchers, this._agentDir);
   }
@@ -785,6 +829,26 @@ export class PiRuntime {
     this._publishAccountInfoToSessions();
   }
 
+  /** A daemon's core: a client's clientAuth changed, after the broker dropped its cached credentials for the changed providers. */
+  async credentialsChanged(): Promise<void> {
+    const modelRuntime = this._modelRuntime;
+    if (modelRuntime) {
+      // pi's availability snapshot reads the broker's status answers again, outside any turn
+      const refreshed = await outsidePins(() => modelRuntime.refresh({ allowNetwork: false }));
+      for (const [provider, err] of refreshed.errors) log('[PiRuntime] clientAuth refresh: provider %s failed: %s', provider, describeAuthError(err));
+    }
+    // its listeners republish every key provider's status, read from clientAuth
+    await this.syncCustomProviders((key) => this._platform.secrets.get(key));
+    await this._resyncOpenAIAndRepublish('a clientAuth change', true);
+  }
+
+  /** Outside a run, account state reads the acting client, so a new acting client republishes it. */
+  private _watchClients(remote: RemoteHost): Disposable {
+    return remote.clients.onDidChange((change) => {
+      if (change.topic === 'actingClient') this._publishAccountInfoToSessions();
+    });
+  }
+
   private _publishAccountInfoToSessions(): void {
     for (const session of new Set(this._sessionMutators.values())) {
       try {
@@ -793,6 +857,7 @@ export class PiRuntime {
         log('[PiRuntime] publishing a session\'s account state failed: %O', err);
       }
     }
+    notifyClientAuthListeners();
     notifyMemoryJudgeListeners();
   }
 
@@ -815,11 +880,32 @@ export class PiRuntime {
     const pi = await initPiLoader();
     if (!pi) throw new Error('PiRuntime.init: pi coding-agent failed to load');
     ensurePiAgentDir(this._agentDir, cacheWarmingSetting());
-    this._modelRuntime = await pi.ModelRuntime.create({
-      authPath: path.join(this._agentDir, 'auth.json'),
+    const remote = this._platform.remote;
+    this._broker?.dispose();
+    // a daemon's core never reads the target's AI login, which is user scope and lives on the client
+    this._broker = remote
+      ? new BrokeredCredentialStore({
+          remote,
+          credentialsChanged: () => {
+            this.credentialsChanged().catch((err: unknown) => log('[PiRuntime] applying a clientAuth change failed: %s', describeAuthError(err)));
+          },
+        })
+      : null;
+    // pi's availability checks read every provider's credential, so they must never run inside a turn's pin
+    const modelRuntime = await outsidePins(() => pi.ModelRuntime.create({
+      ...(this._broker ? { credentials: this._broker } : { authPath: path.join(this._agentDir, 'auth.json') }),
       modelsPath: path.join(this._agentDir, 'models.json'),
       modelsStorePath: this._modelsStorePath(),
-    });
+    }));
+    if (remote) {
+      // pi also starts this pass itself, from every provider (un)registration and session bind, in its caller's context
+      const refresh = modelRuntime.refresh.bind(modelRuntime);
+      modelRuntime.refresh = (options) => outsidePins(() => refresh(options));
+      const shaped = await loadAllowanceTransport(pi, subscriptionPluginDir(this._platform.paths.resourceRoot));
+      this._allowanceUnavailable = shaped === undefined;
+      modelRuntime.registerProvider('anthropic', allowanceProvider(remote, await builtinAnthropicTransport(), shaped));
+    }
+    this._modelRuntime = modelRuntime;
     for (const resolve of this._modelRuntimeWaiters) resolve(this._modelRuntime);
     this._modelRuntimeWaiters.clear();
     const userSettings = withSettingsPolicy(pi.SettingsManager.create(this._agentDir, this._agentDir));
@@ -840,16 +926,19 @@ export class PiRuntime {
     });
     // Before the auth.json watcher and before init resolves, which every OpenAI sign-in awaits.
     await this._withOpenAICredentialSync(async () => {
-      try {
-        await migrateOpenAIApiKey({
-          modelRuntime: this._modelRuntime!,
-          secrets: this._platform.secrets,
-          agentDir: this._agentDir,
-          markerPath: OPENAI_KEY_MOVED_MARKER_PATH,
-          host: this._platform.appInfo.host,
-        });
-      } catch (err) {
-        log('[PiRuntime] OpenAI API key migration failed; it runs again at the next start: %s', describeAuthError(err));
+      // a daemon's core holds no key to move: its keys are the clients'
+      if (!remote) {
+        try {
+          await migrateOpenAIApiKey({
+            modelRuntime: this._modelRuntime!,
+            secrets: this._platform.secrets,
+            agentDir: this._agentDir,
+            markerPath: OPENAI_KEY_MOVED_MARKER_PATH,
+            host: this._platform.appInfo.host,
+          });
+        } catch (err) {
+          log('[PiRuntime] OpenAI API key migration failed; it runs again at the next start: %s', describeAuthError(err));
+        }
       }
       try {
         await this._syncOpenAIRuntimeKeyNow();
@@ -993,6 +1082,7 @@ export class PiRuntime {
         modelRuntime: this._modelRuntime,
         getSecret,
         signal: AbortSignal.any([this._syncAbort.signal, AbortSignal.timeout(CUSTOM_PROVIDER_SYNC_TIMEOUT_MS)]),
+        ...(this._platform.remote ? { remote: this._platform.remote } : {}),
         beforeCredentialChange: (provider) => {
           if (provider === 'openrouter') this._openRouterCatalogAbort?.abort();
         },
@@ -1068,7 +1158,7 @@ export class PiRuntime {
       }
       if (signal.aborted || !modelRuntime) return;
       const startedAt = Date.now();
-      const refreshed = await modelRuntime.refresh({ providers: ['openrouter'], signal });
+      const refreshed = await outsidePins(() => modelRuntime.refresh({ providers: ['openrouter'], signal }));
       const failure = refreshed.errors.get('openrouter');
       if (failure) {
         log('[PiRuntime] OpenRouter catalog refresh failed: %s', describeCatalogError(failure));
@@ -1146,10 +1236,15 @@ export class PiRuntime {
       log('[PiRuntime] extension failed to load (%s): %s', extPath, error);
     }
     // pi reports per-provider composition failures instead of throwing.
-    const refreshed = await modelRuntime.refresh({ allowNetwork: false });
+    const refreshed = await outsidePins(() => modelRuntime.refresh({ allowNetwork: false }));
     for (const [provider, err] of refreshed.errors) log('[PiRuntime] hot-reload refresh: provider %s failed: %s', provider, describeAuthError(err));
     if (refreshed.aborted) log('[PiRuntime] hot-reload refresh aborted before completing');
     return { registered, errors };
+  }
+
+  // sign-ins, keys and the subscription's billing bucket are the client's on a daemon's core, so they are refused before any pi call, probe or network use
+  private _refuseRemoteSignIn(): void {
+    if (this._platform.remote) throw new Error(remoteSignInRefusal());
   }
 
   /**
@@ -1157,6 +1252,7 @@ export class PiRuntime {
    * unambiguous.
    */
   async setAnthropicApiKey(key: string): Promise<ClaudeAuthStatus> {
+    this._refuseRemoteSignIn();
     await this.init();
     if (!this._modelRuntime) throw new Error('PiRuntime.setAnthropicApiKey: runtime not initialized');
     // `login` persists the api_key credential (overwriting any OAuth grant under 'anthropic') and
@@ -1172,6 +1268,7 @@ export class PiRuntime {
    * `cwd` is the requesting panel's folder: the plugin switch verifies against a live loader.
    */
   async signInSubscription(cwd: string, useAllowance: boolean, interaction: AuthInteraction): Promise<ClaudeAuthStatus> {
+    this._refuseRemoteSignIn();
     await this.folder(cwd);
     const pi = getPiCodingAgent();
     if (!pi || !this._modelRuntime) throw new Error('PiRuntime.signInSubscription: runtime not initialized');
@@ -1186,6 +1283,7 @@ export class PiRuntime {
    * requesting panel's folder: the plugin switch verifies against a live loader.
    */
   async setSubscriptionBilling(cwd: string, useAllowance: boolean): Promise<ClaudeAuthStatus> {
+    this._refuseRemoteSignIn();
     await this.folder(cwd);
     const pi = getPiCodingAgent();
     if (!pi) throw new Error('PiRuntime.setSubscriptionBilling: runtime not initialized');
@@ -1196,6 +1294,7 @@ export class PiRuntime {
 
   /** Clear any stored Anthropic credential (API key or OAuth grant). */
   async signOutAnthropic(): Promise<ClaudeAuthStatus> {
+    this._refuseRemoteSignIn();
     if (this._modelRuntime) {
       await this._modelRuntime.logout('anthropic');
       log('[PiRuntime] anthropic signed out');
@@ -1204,9 +1303,11 @@ export class PiRuntime {
   }
 
   /** Current Claude auth mode (credential type + plugin presence). Read from disk (auth.json), which
-   *  every login/logout persists before resolving — so it stays in lockstep with the stored grant. */
+   *  every login/logout persists before resolving — so it stays in lockstep with the stored grant. A daemon's core reads
+   *  the pinned (else acting) client's sign-in and choice, and whether its bundled plugin loaded, never the host's files. */
   getClaudeAuthStatus(): ClaudeAuthStatus {
-    return readClaudeAuthFromDisk(this._agentDir);
+    const remote = this._platform.remote;
+    return remote ? clientClaudeAuthStatus(remote, !this._allowanceUnavailable) : readClaudeAuthFromDisk(this._agentDir);
   }
 
   /**
@@ -1267,6 +1368,7 @@ export class PiRuntime {
       onKeyPresence: (present) => {
         this._openaiKeyPresent = present;
       },
+      ...(this._platform.remote ? { remote: this._platform.remote } : {}),
     });
     this._appliedPreferApiKey = preferApiKey;
   }
@@ -1298,6 +1400,7 @@ export class PiRuntime {
    * grant, which writing a key would delete, the key lasts until restart.
    */
   async setOpenAIApiKey(key: string): Promise<OpenAIAuthStatus> {
+    this._refuseRemoteSignIn();
     await this.init();
     await this._withOpenAICredentialSync(async () => {
       if (this._platform.secrets.isPersistent || readOpenAIAuthFromDisk(this._agentDir).chatgpt) {
@@ -1322,6 +1425,7 @@ export class PiRuntime {
    * non-persistent secret store leaves there. Any ChatGPT or Codex grant stays intact.
    */
   async clearOpenAIApiKey(): Promise<OpenAIAuthStatus> {
+    this._refuseRemoteSignIn();
     await this.init();
     await this._withOpenAICredentialSync(async () => {
       await this._platform.secrets.delete(OPENAI_API_KEY_SECRET);
@@ -1340,6 +1444,7 @@ export class PiRuntime {
    * device id comes from the user settings. On success the legacy Codex grant is removed.
    */
   async signInChatGPT(interaction: AuthInteraction): Promise<OpenAIAuthStatus> {
+    this._refuseRemoteSignIn();
     await this.init();
     const settings = this._settings();
     await this._withOpenAICredentialSync(() =>
@@ -1369,6 +1474,7 @@ export class PiRuntime {
 
   /** Remove the ChatGPT grant, leaving the API key secret intact. */
   async signOutChatGPT(): Promise<OpenAIAuthStatus> {
+    this._refuseRemoteSignIn();
     await this.init();
     await this._withOpenAICredentialSync(() =>
       this._resyncOpenAIAfter(async () => {
@@ -1398,6 +1504,7 @@ export class PiRuntime {
 
   /** Remove the legacy Codex grant, leaving the API key secret intact. */
   async signOutCodex(): Promise<OpenAIAuthStatus> {
+    this._refuseRemoteSignIn();
     await this.init();
     await this._withOpenAICredentialSync(() =>
       this._resyncOpenAIAfter(async () => {
@@ -1409,11 +1516,66 @@ export class PiRuntime {
   }
 
   /**
+   * This computer's core: the credential a daemon's token broker asked for (`user.resolveCredential`), resolved by this
+   * runtime, so an expiring OAuth token is refreshed under pi's lock first. A provider this computer has only from its
+   * environment answers none, and the target then uses its own.
+   */
+  async resolveCredentialForBroker(provider: string): Promise<BrokerAnswer> {
+    // a daemon's core holds only what its pinned client sent, and answers no other core
+    if (this._platform.remote) throw new Error('A remote host\'s core resolves no credential for a broker');
+    await this.init();
+    const runtime = this._modelRuntime!;
+    if (!runtime.getProvider(provider)) throw new Error(`pi knows no provider ${provider}`);
+    if (!(await runtime.listCredentials()).some((credential) => credential.providerId === provider)) return { type: 'none' };
+    const resolved = await runtime.getAuth(provider);
+    if (!resolved) return { type: 'none' };
+    if (resolved.source === 'OAuth') {
+      // pi's refresh persisted the credential before releasing its lock
+      const stored = readAuthFile(this._agentDir)?.[provider];
+      if (typeof stored !== 'object' || stored === null) throw new Error(`The ${provider} sign-in changed while it was read`);
+      return oauthAnswerOf(stored as Record<string, unknown>, Date.now());
+    }
+    const key = resolved.auth.apiKey;
+    return key ? { type: 'api_key', key } : { type: 'none' };
+  }
+
+  /** This computer's core: every provider pi knows with its credential type, expiry, whether a key is stored and bills flat, and whether Claude's sign-in bills the allowance; never a secret. */
+  async clientAuthSnapshot(): Promise<HeldAuth> {
+    await this.init();
+    const runtime = this._modelRuntime!;
+    let file: Record<string, unknown> | undefined;
+    try {
+      file = readAuthFile(this._agentDir);
+    } catch (err) {
+      logAuthReadFailure('PiRuntime', err, 'its sign-ins read as absent for remote hosts');
+    }
+    const listed = new Map((await runtime.listCredentials()).map((credential) => [credential.providerId, credential.type]));
+    const providers: Record<string, HeldAuthEntry> = {};
+    const flatFee = this.flatFeeKeyProviders();
+    const claudeAllowance = this.getClaudeAuthStatus().mode === 'allowance';
+    for (const { id } of runtime.getProviders()) {
+      const stored = file?.[id] as { type?: unknown; expires?: unknown } | undefined;
+      const type = stored?.type === 'oauth' ? 'oauth' : (listed.get(id) ?? 'none');
+      const hasKey = listed.get(id) === 'api_key' || stored?.type === 'api_key' || (id === OPENAI_API_PROVIDER && this._openaiKeyPresent);
+      providers[id] = {
+        type,
+        hasKey,
+        flatFee: flatFee.has(id),
+        ...(stored?.type === 'oauth' && typeof stored.expires === 'number' ? { expires: stored.expires } : {}),
+        ...(id === 'anthropic' && type === 'oauth' && claudeAllowance ? { allowance: true } : {}),
+      };
+    }
+    return { providers };
+  }
+
+  /**
    * Current OpenAI auth state: the grants from auth.json and the key secret's cached presence. Not pi's
    * `hasConfiguredAuth`, which also counts ambient `OPENAI_API_KEY` env vars and runtime overrides.
    */
   getOpenAIAuthStatus(): OpenAIAuthStatus {
-    return openaiAuthStatus(readOpenAIAuthFromDisk(this._agentDir), this._openaiKeyPresent);
+    const remote = this._platform.remote;
+    // a daemon's core reads the pinned (else acting) client's key, never the one its last sync saw
+    return openaiAuthStatus(readOpenAIAuthFromDisk(this._agentDir), remote ? clientHasKey(remote, OPENAI_API_PROVIDER) : this._openaiKeyPresent);
   }
 
   /** Whether `getOpenAIAuthStatus` reflects the key secret: false until init's first key sync has run. */
@@ -1596,9 +1758,10 @@ export class PiRuntime {
       registered = (await this._hotReloadExtensions(folders)).registered.has('anthropic');
     } finally {
       if (!registered && this._modelRuntime) {
-        this._modelRuntime.unregisterProvider('anthropic');
+        const modelRuntime = this._modelRuntime;
         // `unregisterProvider`'s own refresh is fire-and-forget; the caller reports status right after.
-        const refreshed = await this._modelRuntime.refresh({ allowNetwork: false });
+        outsidePins(() => modelRuntime.unregisterProvider('anthropic'));
+        const refreshed = await outsidePins(() => modelRuntime.refresh({ allowNetwork: false }));
         for (const [provider, err] of refreshed.errors) log('[PiRuntime] provider-reset refresh: provider %s failed: %s', provider, describeAuthError(err));
         if (refreshed.aborted) log('[PiRuntime] provider-reset refresh aborted before completing');
       }
@@ -1761,9 +1924,9 @@ export class PiRuntime {
     return this.subCallModelFor(purpose) !== null;
   }
 
-  /** Key providers whose applied key bills a flat subscription; empty before the model runtime exists. */
+  /** Key providers whose applied key bills a flat subscription (on a daemon's core, the pinned client's); empty before the model runtime exists. */
   flatFeeKeyProviders(): ReadonlySet<string> {
-    return this._modelRuntime ? flatFeeKeyProviders(this._modelRuntime) : new Set();
+    return this._modelRuntime ? flatFeeKeyProviders(this._modelRuntime, this._platform.remote) : new Set();
   }
 
   /**
@@ -1810,7 +1973,11 @@ export class PiRuntime {
    * Inference runs through `ModelRuntime.completeSimple`, which resolves the request credential
    * (OAuth bearer token or API key, incl. refresh) and provider headers itself.
    */
-  async runStructuredCompletion<T>(req: StructuredCompletionRequest): Promise<StructuredCompletionResult<T>> {
+  runStructuredCompletion<T>(req: StructuredCompletionRequest): Promise<StructuredCompletionResult<T>> {
+    return runPinnedSubcall(this._platform.remote, () => this._runStructuredCompletion<T>(req));
+  }
+
+  private async _runStructuredCompletion<T>(req: StructuredCompletionRequest): Promise<StructuredCompletionResult<T>> {
     // Only run once a session's folder runtime is live. We do NOT boot pi here — sub-calls happen
     // during/after a session, so a folder exists in practice; this keeps background memory tasks
     // fail-soft (and never spins up pi from a test). Fully guarded.
@@ -1957,7 +2124,11 @@ export class PiRuntime {
    * or `null` when the judge is no classifier, the request did not stop normally, or an answer is missing; never throws.
    * Appends a ledger line whenever the service reported usage, including for a failed request.
    */
-  async runClassification(req: ClassificationRequest): Promise<Record<string, ClassifierAnswer> | null> {
+  runClassification(req: ClassificationRequest): Promise<Record<string, ClassifierAnswer> | null> {
+    return runPinnedSubcall(this._platform.remote, () => this._runClassification(req));
+  }
+
+  private async _runClassification(req: ClassificationRequest): Promise<Record<string, ClassifierAnswer> | null> {
     const modelRuntime = this._modelRuntime;
     const picked = this.resolveMemoryJudge();
     if (!modelRuntime || picked.kind !== 'classifier') return null;
@@ -2052,6 +2223,8 @@ export class PiRuntime {
     this._classifierBreakers.dispose();
     this._secretsListener?.dispose();
     this._secretsListener = null;
+    this._clientsListener?.dispose();
+    this._clientsListener = null;
     this._trustListener?.dispose();
     this._trustListener = null;
     this._imageSettingsListener?.dispose();

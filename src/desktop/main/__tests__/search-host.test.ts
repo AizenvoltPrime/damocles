@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { testWorkspaces } from './test-workspaces';
 import { resolveRgPath } from '../../../core/chat-panel/ripgrep';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
@@ -52,8 +53,9 @@ beforeEach(() => {
   copied = [];
   const t = (message: string, ...args: Array<string | number>): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]));
   documents = new DocumentService({
+    authorityOs: () => process.platform,
     projects: () => [project, other],
-    watchers: platform.fileWatchers,
+    workspaces: testWorkspaces({ watchers: platform.fileWatchers }),
     ask: async () => undefined,
     t,
     log: () => undefined,
@@ -62,6 +64,7 @@ beforeEach(() => {
     settings: { locate: () => path.join(root, 'settings.json'), save: async () => ({ ok: false, error: 'unused', conflict: false }) },
   });
   pane = new EditorPane({
+    authorityOs: () => process.platform,
     documents,
     settings: platform.settings,
     ask: async () => undefined,
@@ -93,12 +96,13 @@ beforeEach(() => {
     worktreeBranch: () => undefined,
   });
   host = new SearchHost({
+    osOf: () => process.platform,
     settings: platform.settings,
     documents,
     editorPane: pane,
     projects: () => [project, other],
     selectedFolder: () => ({ projectKey: project.key, fsPath: projectDir }),
-    rgPath: () => resolveRgPath({ resourceRoot: process.cwd(), unpackedRoot: process.cwd() }),
+    workspaces: testWorkspaces({ watchers: platform.fileWatchers, rgPath: () => resolveRgPath({ resourceRoot: process.cwd(), unpackedRoot: process.cwd() }) }),
     ignoreArgs: () => [],
     excludeSettings: () => [],
     ask: async () => 0,

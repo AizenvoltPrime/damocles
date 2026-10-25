@@ -4,7 +4,16 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { FormatService, loggedError, type FormatAction, type FormatTarget } from '../formatting/format-service';
-import type { HostOutcome } from '../formatting/formatter-hosts';
+import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { createFormatter } from '../../workspace/format/formatter';
+import type { HostOutcome } from '../../workspace/format/formatter-hosts';
+import { testWorkspaces } from './test-workspaces';
+import type { Workspaces } from '../workspace/workspaces';
+import { HostStore } from '../remote/host-store';
+import { createProjectTrust, createRemoteTrust } from '../remote/remote-trust';
+import { TRUST_FILE, TrustStore } from '../trust-store';
+import { rootKey } from '../../preload/folder-root';
+import { projectKeyOf, targetFolderKeyOf } from '../../../shared/project-location';
 
 const dirs: string[] = [];
 
@@ -65,19 +74,20 @@ function create(): Setup {
     },
     service: undefined as unknown as FormatService,
   };
+  const { fileWatchers: watchers } = createFakePlatform();
+  // the real resolution, with the host the test answers for
+  const formatter = createFormatter({ starters: { startFormatterHost: () => { throw new Error('no formatter host in this test'); } }, watchers, log: () => undefined });
   (state as { service: FormatService }).service = new FormatService({
     target: (documentId) => targets.get(documentId),
     // Fresh objects per read, as main's project list gives.
     projects: () => [...(state.projectPresent() ? [{ ...project }] : []), ...state.others.map((other) => ({ ...other }))],
-    isTrusted: (fsPath) => (fsPath === root ? state.trusted() : state.others.some((other) => other.fsPath === fsPath && other.trusted)),
-    requestTrust: (fsPath) => state.trustRequests.push(fsPath),
+    isTrusted: ({ fsPath }) => (fsPath === root ? state.trusted() : state.others.some((other) => other.fsPath === fsPath && other.trusted)),
+    requestTrust: ({ fsPath }) => state.trustRequests.push(fsPath),
     formatOnSave: () => state.formatOnSave,
-    hosts: {
-      format: async (target, request) => {
-        state.hostCalls.push({ target, request });
-        return state.outcome;
-      },
-    },
+    workspaces: testWorkspaces({ watchers, format: { ...formatter, format: async (target, request) => {
+      state.hostCalls.push({ target, request });
+      return state.outcome;
+    } } }),
     notify: (severity, message, action) => state.notices.push({ severity, message, ...(action ? { action } : {}) }),
     formatLog: { appendLine: (line) => state.logLines.push(line), show: () => state.shown.count++ },
     log: () => undefined,
@@ -205,6 +215,15 @@ describe('trust gate', () => {
     expect(await setup.service.format(id, 'x', 'command')).toMatchObject({ kind: 'formatted' });
   });
 
+  it('takes no other host\'s untrusted project for one nested in this project, though its path names this project\'s folder', async () => {
+    installPrettier(path.join(setup.root, 'vendor', 'lib'), '3.3.3');
+    const id = setup.target('vendor/lib/a.ts');
+    const nested = path.join(setup.root, 'vendor', 'lib');
+    setup.others.push({ key: projectKeyOf({ kind: 'loopback' }, folderKey(nested)), fsPath: nested, name: 'lib', trusted: false });
+    expect(await setup.service.format(id, 'x', 'command')).toMatchObject({ kind: 'formatted' });
+    expect(setup.notices).toEqual([]);
+  });
+
   it('formats a trusted project opened inside an untrusted folder that is listed too', async () => {
     installPrettier(setup.root, '3.3.3');
     setup.others.push({ key: 'outer', fsPath: path.dirname(setup.root), name: 'outer', trusted: false });
@@ -330,3 +349,75 @@ describe('failures', () => {
   });
 });
 
+
+describe('a remote chat worktree root', () => {
+  async function remoteSetup(): Promise<{ service: FormatService; documentId: string; projectKey: string; userData: string; store: HostStore; notices: Array<{ message: string; action?: FormatAction }>; answers: Array<number | undefined>; granted: Array<Promise<boolean>>; hostKeys: string[] }> {
+    const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'fmr')));
+    dirs.push(base);
+    const userData = path.join(base, 'userData');
+    fs.mkdirSync(userData);
+    const app = path.join(base, 'app');
+    const working = path.join(base, 'worktrees', 'ab12cd34', 'app');
+    fs.mkdirSync(app, { recursive: true });
+    installPrettier(working, '3.3.3');
+    const file = put(path.join(working, 'a.ts'), 'text');
+    const projectKey = projectKeyOf({ kind: 'loopback' }, folderKey(app));
+    const project = { key: projectKey, fsPath: app, name: 'app' };
+    const worktreeRoot = { key: rootKey({ projectKey, worktreeId: 'ab12cd34' }), fsPath: working, name: 'app' };
+    const store = await HostStore.open(userData, () => undefined);
+    const answers: Array<number | undefined> = [];
+    const ask = async (): Promise<number | undefined> => answers.shift();
+    const t = (message: string, ...args: Array<string | number>): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]));
+    const local = new TrustStore(userData, ask, t, () => undefined);
+    const trust = createProjectTrust({
+      local,
+      remote: createRemoteTrust({ store, ask, t, log: () => undefined }),
+      remoteTarget: (key) => (key === projectKey ? { key, authorityKey: 'loopback', folderKey: folderKey(app), fsPath: app, host: 'Local daemon' } : undefined),
+    });
+    const notices: Array<{ message: string; action?: FormatAction }> = [];
+    const granted: Array<Promise<boolean>> = [];
+    const hostKeys: string[] = [];
+    const { fileWatchers: watchers } = createFakePlatform();
+    const formatter = createFormatter({ starters: { startFormatterHost: () => { throw new Error('no formatter host in this test'); } }, watchers, log: () => undefined });
+    const workspaces: Workspaces = testWorkspaces({
+      watchers,
+      format: { ...formatter, format: async (target) => {
+        hostKeys.push(target.key);
+        return { kind: 'formatted', text: 'formatted\n' };
+      } },
+      remote: () => workspaces.local,
+    });
+    const service = new FormatService({
+      target: (id) => (id === 'doc' ? { path: file, projectKey: worktreeRoot.key, relativePath: 'a.ts', name: 'a.ts', languageId: 'typescript' } : undefined),
+      projects: () => [project, worktreeRoot],
+      isTrusted: (candidate) => trust.isTrusted(candidate),
+      requestTrust: (candidate) => granted.push(trust.request(candidate)),
+      formatOnSave: () => true,
+      workspaces,
+      notify: (_severity, message, action) => notices.push({ message, ...(action ? { action } : {}) }),
+      formatLog: { appendLine: () => undefined, show: () => undefined },
+      log: () => undefined,
+      t,
+    });
+    return { service, documentId: 'doc', projectKey, userData, store, notices, answers, granted, hostKeys };
+  }
+
+  it('formats while the host store trusts its project, whatever the local allowlist says', async () => {
+    const remote = await remoteSetup();
+    await remote.store.grantTrust('loopback', targetFolderKeyOf(remote.projectKey)!);
+    expect(await remote.service.format(remote.documentId, 'text', 'command')).toEqual({ kind: 'formatted', text: 'formatted\n' });
+    expect(remote.hostKeys).toEqual([rootKey({ projectKey: remote.projectKey, worktreeId: 'ab12cd34' })]);
+    expect(remote.notices).toEqual([]);
+  });
+
+  it('grants its project into remote-hosts.json only, never trusted-folders.json', async () => {
+    const remote = await remoteSetup();
+    expect(await remote.service.format(remote.documentId, 'text', 'command')).toEqual({ kind: 'skipped' });
+    remote.answers.push(0);
+    remote.notices[0]!.action!.run();
+    expect(await remote.granted[0]).toBe(true);
+    expect((await HostStore.open(remote.userData, () => undefined)).isTrusted('loopback', targetFolderKeyOf(remote.projectKey)!)).toBe(true);
+    expect(fs.existsSync(path.join(remote.userData, TRUST_FILE))).toBe(false);
+    expect(await remote.service.format(remote.documentId, 'text', 'command')).toEqual({ kind: 'formatted', text: 'formatted\n' });
+  });
+});

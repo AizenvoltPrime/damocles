@@ -9,11 +9,13 @@ import type { ChatAttachmentInput } from '../../shared/types/chat-attachment';
 import type { UserContentBlock } from '../../shared/types/content';
 import type { ChatPlace, ChatReviewScope, ExtensionToWebviewMessage, WebviewToExtensionMessage, WorktreeFinishAction } from '../../shared/types/messages';
 import type { StoredSession } from '../../shared/types/session';
+import type { BrokerAnswer, HeldAuth } from '../../shared/remote-user';
 import type { ChatEntry, ChatPermissions, FolderTargetEntry, MainRequests, MentionTargetData, RepositoryCall, ScmCall, ScmMirrorPatch, WorktreeCall } from '../core-protocol';
 import type { MainEndpoint } from '../core-protocol';
 import type { ReviewSession } from './chat-review-host';
 import type { RelayView } from './core-services/host-services';
 import { finishHold, type FinishHold } from './worktrees/engine';
+import { chatEntryToShell, folderTargetToShell, mentionToCore, scmEventToShell, scmPatchToShell, storedSessionToShell, type ProjectKeys } from './remote/remote-project-keys';
 
 type Params<M extends keyof MainRequests> = MainRequests[M]['params'];
 type Result<M extends keyof MainRequests> = MainRequests[M]['result'];
@@ -25,6 +27,8 @@ type Result<M extends keyof MainRequests> = MainRequests[M]['result'];
  */
 export class CoreClient implements Disposable {
   private readonly endpoint: MainEndpoint;
+  // every project key core sends or receives passes through these (remote-project-keys.ts)
+  readonly keys: ProjectKeys;
   private readonly adoptView: <T>(view: RelayView, attach: () => Promise<T>) => Promise<T>;
   private readonly chatsById = new Map<string, ChatEntry>();
   private readonly chatsByView = new Map<string, ChatEntry>();
@@ -32,9 +36,10 @@ export class CoreClient implements Disposable {
   private readonly subscriptions: Disposable[];
   private readonly foldersListeners = new Set<() => void>();
 
-  constructor(endpoint: MainEndpoint, adoptView: <T>(view: RelayView, attach: () => Promise<T>) => Promise<T>) {
+  constructor(endpoint: MainEndpoint, adoptView: <T>(view: RelayView, attach: () => Promise<T>) => Promise<T>, keys: ProjectKeys) {
     this.endpoint = endpoint;
     this.adoptView = adoptView;
+    this.keys = keys;
     this.subscriptions = [
       endpoint.onMirror('chats', ({ panelId, entry }) => {
         const previous = this.chatsById.get(panelId);
@@ -43,11 +48,13 @@ export class CoreClient implements Disposable {
           this.chatsById.delete(panelId);
           return;
         }
-        this.chatsById.set(panelId, entry);
-        this.chatsByView.set(entry.viewId, entry);
+        const shown = chatEntryToShell(keys, entry);
+        this.chatsById.set(panelId, shown);
+        this.chatsByView.set(shown.viewId, shown);
       }),
       endpoint.onMirror('folderTargets', ({ defaultKey, targets }) => {
-        this.folders = { defaultKey, targets: new Map(targets.map((target) => [target.key, target])) };
+        const shown = targets.map((target) => folderTargetToShell(keys, target));
+        this.folders = { defaultKey: keys.toShell(defaultKey), targets: new Map(shown.map((target) => [target.key, target])) };
         for (const listener of [...this.foldersListeners]) listener();
       }),
     ];
@@ -131,7 +138,7 @@ export class CoreClient implements Disposable {
   }
 
   onCatalogChanged(listener: (projectKey: string | undefined) => void): Disposable {
-    return this.endpoint.onEvent('catalog.changed', ({ projectKey }) => listener(projectKey));
+    return this.endpoint.onEvent('catalog.changed', ({ projectKey }) => listener(projectKey === undefined ? undefined : this.keys.toShell(projectKey)));
   }
 
   // ---- chats
@@ -140,16 +147,28 @@ export class CoreClient implements Disposable {
    * Core attaches to a chat view main created and restores it there; main relays the view's traffic from then on.
    * permissions: what the core before this one published for the chat (KeptPermissions), in place of the defaults.
    */
-  restoreChat(view: RelayView, folderKey: string | undefined, permissions?: ChatPermissions): Promise<void> {
+  async restoreChat(view: RelayView, folderKey: string | undefined, permissions?: ChatPermissions): Promise<void> {
+    const coreKey = folderKey === undefined ? undefined : this.keys.toCore(folderKey);
     return this.adoptView(view, () => this.request('chats.restore', {
       viewId: view.panelId,
-      ...(folderKey !== undefined ? { folderKey } : {}),
+      ...(coreKey !== undefined ? { folderKey: coreKey } : {}),
       ...(permissions ? { permissions } : {}),
     }));
   }
 
-  startInWorktree(view: RelayView, projectKey: string, worktreeId: string): Promise<void> {
-    return this.adoptView(view, () => this.request('chats.startInWorktree', { viewId: view.panelId, projectKey, worktreeId }));
+  /** A rejoining view (already relayed, its ready held) joins the panel its page token names; null: none, so main restores it. */
+  joinView(viewId: string, viewKey: string): Promise<{ readonly panelId: string } | null> {
+    return this.request('views.join', { viewId, viewKey });
+  }
+
+  /** chats.restore for a view main already relays (a rejoin core refused). */
+  restoreRelayed(viewId: string, permissions?: ChatPermissions): Promise<void> {
+    return this.request('chats.restore', { viewId, ...(permissions ? { permissions } : {}) });
+  }
+
+  async startInWorktree(view: RelayView, projectKey: string, worktreeId: string): Promise<void> {
+    const coreKey = this.keys.toCore(projectKey);
+    return this.adoptView(view, () => this.request('chats.startInWorktree', { viewId: view.panelId, projectKey: coreKey, worktreeId }));
   }
 
   whenSetUp(viewId: string): Promise<void> {
@@ -168,8 +187,8 @@ export class CoreClient implements Disposable {
     return this.request('chats.restorePages', { viewId, urls, ...(activePage !== undefined ? { activePage } : {}) });
   }
 
-  mention(panelId: string, target: MentionTargetData): Promise<void> {
-    return this.request('chats.mention', { panelId, target });
+  async mention(panelId: string, target: MentionTargetData): Promise<void> {
+    return this.request('chats.mention', { panelId, target: mentionToCore(this.keys, target) });
   }
 
   addAttachment(panelId: string, attachment: ChatAttachmentInput, prompt: string | undefined): Promise<boolean> {
@@ -226,8 +245,8 @@ export class CoreClient implements Disposable {
   }
 
   /** D33's busy rule: a loaded chat of the project, its worktrees' included, is processing or active. */
-  projectBusy(projectKey: string): Promise<boolean> {
-    return this.request('chats.projectBusy', { projectKey });
+  async projectBusy(projectKey: string): Promise<boolean> {
+    return this.request('chats.projectBusy', { projectKey: this.keys.toCore(projectKey) });
   }
 
   /** Whether another holder keeps the session from opening here; announce tells the user, with a takeover (onTakeover). */
@@ -238,11 +257,11 @@ export class CoreClient implements Disposable {
   // ---- the session catalog
 
   async listSessions(projectKey: string, complete = false): Promise<readonly StoredSession[]> {
-    return (await this.request('catalog.list', { projectKey, complete })) as readonly StoredSession[];
+    return ((await this.request('catalog.list', { projectKey: this.keys.toCore(projectKey), complete })) as readonly StoredSession[]).map((row) => storedSessionToShell(this.keys, row));
   }
 
   async searchSessions(projectKey: string, query: string): Promise<readonly StoredSession[]> {
-    return (await this.request('catalog.search', { projectKey, query })) as readonly StoredSession[];
+    return ((await this.request('catalog.search', { projectKey: this.keys.toCore(projectKey), query })) as readonly StoredSession[]).map((row) => storedSessionToShell(this.keys, row));
   }
 
   async renameSession(sessionId: string, name: string): Promise<CatalogResult> {
@@ -259,8 +278,8 @@ export class CoreClient implements Disposable {
 
   // ---- folders, browser pages, worktrees
 
-  setDefaultFolder(key: string): Promise<void> {
-    return this.request('folders.setDefault', { key });
+  async setDefaultFolder(key: string): Promise<void> {
+    return this.request('folders.setDefault', { key: this.keys.toCore(key) });
   }
 
   newBrowserPage(chatViewId: string): Promise<void> {
@@ -303,7 +322,7 @@ export class CoreClient implements Disposable {
   }
 
   /** Attaches the settings modal to a chat; its posts and its detach arrive for that attachment id until it detaches. */
-  attachSettingsView(panelId: string, attachment: number, view: { post(message: ExtensionToWebviewMessage): void; detached(): void }): Promise<Disposable> {
+  attachSettingsView(panelId: string, attachment: number, view: { post(message: ExtensionToWebviewMessage): void; detached(): void }, scope?: 'user' | 'machine' | 'project'): Promise<Disposable> {
     const subscriptions = [
       this.endpoint.onEvent('settingsView.post', (event) => {
         if (event.attachment === attachment) view.post(event.message as ExtensionToWebviewMessage);
@@ -319,7 +338,7 @@ export class CoreClient implements Disposable {
         void this.request('settingsView.detach', { attachment }).catch(() => undefined);
       },
     };
-    return this.request('settingsView.attach', { panelId, attachment }).then(() => handle, (err: unknown) => {
+    return this.request('settingsView.attach', { panelId, attachment, ...(scope !== undefined ? { scope } : {}) }).then(() => handle, (err: unknown) => {
       for (const subscription of subscriptions) subscription.dispose();
       throw err;
     });
@@ -332,12 +351,12 @@ export class CoreClient implements Disposable {
   // ---- source control and worktrees, which core runs (core-host/scm.ts, worktrees.ts)
 
   onScmMirror(listener: (patch: ScmMirrorPatch) => void): Disposable {
-    return this.endpoint.onMirror('scm', listener);
+    return this.endpoint.onMirror('scm', (patch) => listener(scmPatchToShell(this.keys, patch)));
   }
 
   // a ScmService event, after the scm mirror shows it
   onScmChanged(listener: (event: unknown) => void): Disposable {
-    return this.endpoint.onEvent('scm.changed', ({ event }) => listener(event));
+    return this.endpoint.onEvent('scm.changed', ({ event }) => listener(scmEventToShell(this.keys, event)));
   }
 
   onWorktreeRecords(listener: (records: readonly unknown[]) => void): Disposable {
@@ -365,8 +384,8 @@ export class CoreClient implements Disposable {
     return this.request('scm.commit', { repoId, message, variant, saved, ...(branchName !== undefined ? { branchName } : {}) });
   }
 
-  scmIgnoredIn(projectKey: string, relativeDir: string, entries: readonly { readonly name: string; readonly dir: boolean }[]): Promise<readonly string[]> {
-    return this.request('scm.ignoredIn', { projectKey, relativeDir, entries });
+  async scmIgnoredIn(projectKey: string, relativeDir: string, entries: readonly { readonly name: string; readonly dir: boolean }[]): Promise<readonly string[]> {
+    return this.request('scm.ignoredIn', { projectKey: this.keys.toCore(projectKey), relativeDir, entries });
   }
 
   scmCommitBlob(repoId: string, commit: string, path: string): Promise<Uint8Array | 'tooLarge' | undefined> {
@@ -383,6 +402,40 @@ export class CoreClient implements Disposable {
 
   worktreeCall(method: WorktreeCall, args: readonly unknown[]): Promise<unknown> {
     return this.request('worktrees.call', { method, args });
+  }
+
+  // ---- this computer's user scope, which the local core serves to remote chats
+
+  resolveCredential(provider: string): Promise<BrokerAnswer> {
+    return this.request('user.resolveCredential', { provider });
+  }
+
+  clientAuth(): Promise<HeldAuth> {
+    return this.request('user.clientAuth', {});
+  }
+
+  onClientAuthChanged(listener: () => void): Disposable {
+    return this.endpoint.onEvent('user.clientAuthChanged', () => listener());
+  }
+
+  speak(viewId: string, text: string): Promise<void> {
+    return this.request('user.voice.speak', { viewId, text });
+  }
+
+  attachForeign(authority: string, viewId: string): Promise<void> {
+    return this.request('panels.attachForeign', { authority, viewId });
+  }
+
+  detachForeign(viewId: string): Promise<void> {
+    return this.request('panels.detachForeign', { viewId });
+  }
+
+  foreignMessage(viewId: string, message: unknown): Promise<void> {
+    return this.request('panels.foreignMessage', { viewId, message });
+  }
+
+  onForeignPost(listener: (viewId: string, message: unknown) => void): Disposable {
+    return this.endpoint.onEvent('panel.foreignPost', ({ viewId, message }) => listener(viewId, message));
   }
 
   // ---- lifecycle and the e2e namespace
@@ -417,6 +470,14 @@ export class CoreClient implements Disposable {
 
   e2eHoldShutdown(): Promise<void> {
     return this.request('e2e.holdShutdown', {});
+  }
+
+  e2eFakeVoice(transcript: string): Promise<{ readonly pid: number }> {
+    return this.request('e2e.fakeVoice', { transcript });
+  }
+
+  e2eVoiceRecorder(): Promise<{ readonly starts: number; readonly recorderPid: number | null }> {
+    return this.request('e2e.voiceRecorder', {});
   }
 
   e2eWatchProbe(folder: string): Promise<readonly string[]> {

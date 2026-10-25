@@ -1,7 +1,8 @@
-import type { HandlerDependencies, HandlerRegistry } from "../types";
+import type { HandlerDependencies, HandlerRegistry, ViewHandlerRegistry } from "../types";
 import {
   startRecording,
   stopRecording,
+  e2eFakeTranscript,
   cancelRecording,
 } from "../../../voice/recorder";
 import { transcribe } from "../../../voice/transcription";
@@ -13,7 +14,7 @@ const MAX_RECORDING_MS = 120_000;
 
 export function createVoiceHandlers(
   deps: HandlerDependencies,
-): Partial<HandlerRegistry> {
+): { readonly handlers: Partial<HandlerRegistry>; readonly viewHandlers: ViewHandlerRegistry } {
   const { postMessage, settingsManager } = deps;
   let recordingTimeout: ReturnType<typeof setTimeout> | null = null;
   let recordingHost: Parameters<typeof postMessage>[0] | null = null;
@@ -33,6 +34,11 @@ export function createVoiceHandlers(
         result.audioBuffer.length,
       );
 
+      const fake = e2eFakeTranscript();
+      if (fake !== undefined) {
+        postMessage(host, { type: "transcriptionResult", text: fake });
+        return;
+      }
       const config = settingsManager.getVoiceConfig();
       const apiKey = await settingsManager.getVoiceApiKey(config.provider);
 
@@ -63,7 +69,7 @@ export function createVoiceHandlers(
     }
   }
 
-  return {
+  const viewHandlers: ViewHandlerRegistry = {
     startVoiceRecording: async (_msg, ctx) => {
       log("[VoiceHandlers] startVoiceRecording received");
       try {
@@ -105,6 +111,15 @@ export function createVoiceHandlers(
       cancelRecording();
     },
 
+    requestVoiceConfig: async (_msg, ctx) => {
+      log("[VoiceHandlers] requestVoiceConfig received");
+      await settingsManager.sendVoiceConfig(ctx.host);
+    },
+  };
+
+  const handlers: Partial<HandlerRegistry> = {
+    ...viewHandlers,
+
     setVoiceProvider: async (msg, ctx) => {
       if (msg.type !== "setVoiceProvider") return;
       await writeSetting(deps, ctx, "damocles.voice.provider", (detail) => t("Failed to save the voice setting: {0}", detail), () =>
@@ -128,11 +143,6 @@ export function createVoiceHandlers(
     deleteVoiceApiKey: async (msg, ctx) => {
       if (msg.type !== "deleteVoiceApiKey") return;
       await settingsManager.deleteVoiceApiKey(msg.provider);
-      await settingsManager.sendVoiceConfig(ctx.host);
-    },
-
-    requestVoiceConfig: async (_msg, ctx) => {
-      log("[VoiceHandlers] requestVoiceConfig received");
       await settingsManager.sendVoiceConfig(ctx.host);
     },
 
@@ -199,4 +209,6 @@ export function createVoiceHandlers(
       await settingsManager.sendVoiceConfig(ctx.host);
     },
   };
+
+  return { handlers, viewHandlers };
 }

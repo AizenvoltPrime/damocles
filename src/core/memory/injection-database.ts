@@ -1,4 +1,5 @@
 import * as path from 'path';
+import { sqliteJournalMode } from '../network-fs';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as crypto from 'crypto';
@@ -215,7 +216,7 @@ export async function openInjectionDatabase(sessionId: string): Promise<Injectio
     const probe = createDatabaseWrapper(raw);
     try {
       if (getCurrentVersion(probe) <= CURRENT_VERSION) {
-        raw.exec('PRAGMA journal_mode = WAL');
+        raw.exec(`PRAGMA journal_mode = ${sqliteJournalMode(dbPath)}`);
         raw.exec('PRAGMA synchronous = NORMAL');
         raw.exec('PRAGMA busy_timeout = 5000');
         raw.exec('PRAGMA foreign_keys = ON');

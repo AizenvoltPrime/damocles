@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createParentPortTransport, type ParentPort } from '../parent-port';
+import type { ParentPort } from '../../local-services/parent-channel';
+import { createParentPortTransport } from '../parent-port';
 
 function fakePort(): ParentPort & { readonly posted: unknown[]; deliver(data: unknown): void } {
   const listeners: Array<(event: { readonly data: unknown }) => void> = [];

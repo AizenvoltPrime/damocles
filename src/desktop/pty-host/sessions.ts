@@ -1,7 +1,8 @@
-// The pty host's terminals: spawn, input, resize and kill, output batching and flow control (AD6). No electron import.
+// The pty host's terminals: spawn, input, resize and kill, output batching, flow control and screens (AD6). No electron import.
 
 import { TERMINAL_HIGH_WATERMARK_CHARS, TERMINAL_LOW_WATERMARK_CHARS } from '../preload/terminal-channels';
 import { MAX_HOST_MESSAGE_CHARS, MAX_HOST_PROCESS_NAME_CHARS, TERMINAL_BATCH_CHARS, TERMINAL_BATCH_MS, type HostMessage, type HostRequest } from './protocol';
+import type { PtyScreen, PtyScreenOptions } from './screen';
 
 // Output a pty prints after its exit event still reaches the terminal within this window (VS Code's DataFlushTimeout).
 export const EXIT_FLUSH_MS = 250;
@@ -43,10 +44,20 @@ export interface PtySessionsDeps {
   readonly throttleConpty: boolean;
   // reports the foreground process name (macOS and Linux; Windows' never changes)
   readonly readProcessName: boolean;
+  // the screen each pty's output also feeds
+  readonly screen: (options: PtyScreenOptions) => PtyScreen;
+  // output is acknowledged once the screen parsed it, and the parent's acks are ignored (the daemon, terminal flow control)
+  readonly selfAcknowledge?: boolean;
+  readonly log: (line: string) => void;
 }
 
 interface Session {
   readonly pty: Pty;
+  readonly screen: PtyScreen;
+  // the serializes in flight, one at a time; the exit is reported after them
+  serializing: Promise<void> | undefined;
+  // output the screen being serialized has not taken waits in buffer until that screen is posted
+  holding: boolean;
   // characters posted to main that the shell has not acknowledged
   unacked: number;
   paused: boolean;
@@ -93,6 +104,7 @@ export function createPtySessions(deps: PtySessionsDeps): PtySessions {
   const flush = (id: string, session: Session): void => {
     clearTimeout(session.timer);
     session.timer = undefined;
+    if (session.holding) return;
     while (session.buffer.length > 0) {
       const end = batchEnd(session.buffer);
       deps.post({ type: 'data', id, data: session.buffer.slice(0, end) });
@@ -120,6 +132,8 @@ export function createPtySessions(deps: PtySessionsDeps): PtySessions {
       session.paused = true;
       session.pty.pause();
     }
+    if (deps.selfAcknowledge) session.screen.write(data, () => acknowledge(session, data.length));
+    else session.screen.write(data);
     session.buffer += data;
     if (session.buffer.length >= TERMINAL_BATCH_CHARS) flush(id, session);
     else session.timer ??= setTimeout(() => flush(id, session), TERMINAL_BATCH_MS);
@@ -152,7 +166,8 @@ export function createPtySessions(deps: PtySessionsDeps): PtySessions {
       deps.post({ type: 'error', id: request.id, message: errorText(err) });
       return;
     }
-    const session: Session = { pty, unacked: 0, paused: false, buffer: '', timer: undefined, exited: false, announced: false, processTimer: undefined, processName: undefined };
+    const screen = deps.screen({ cols: request.cols, rows: request.rows, scrollback: request.scrollback });
+    const session: Session = { pty, screen, serializing: undefined, holding: false, unacked: 0, paused: false, buffer: '', timer: undefined, exited: false, announced: false, processTimer: undefined, processName: undefined };
     sessions.set(request.id, session);
     let connected = (): void => undefined;
     if (pty.pid === 0) {
@@ -174,11 +189,14 @@ export function createPtySessions(deps: PtySessionsDeps): PtySessions {
       clearTimeout(session.processTimer);
       session.processTimer = undefined;
       setTimeout(() => {
-        if (sessions.get(request.id) !== session) return;
-        flush(request.id, session);
-        sessions.delete(request.id);
-        clearTimeout(session.processTimer);
-        deps.post({ type: 'exit', id: request.id, exitCode });
+        void (session.serializing ?? Promise.resolve()).then(() => {
+          if (sessions.get(request.id) !== session) return;
+          flush(request.id, session);
+          sessions.delete(request.id);
+          session.screen.dispose();
+          clearTimeout(session.processTimer);
+          deps.post({ type: 'exit', id: request.id, exitCode });
+        });
       }, EXIT_FLUSH_MS);
     });
     // node-pty connects a Windows pty after spawn returns, with pid 0 until its first output (microsoft/node-pty#885).
@@ -200,6 +218,7 @@ export function createPtySessions(deps: PtySessionsDeps): PtySessions {
     const session = sessions.get(id);
     if (!session) return;
     sessions.delete(id);
+    session.screen.dispose();
     clearTimeout(session.timer);
     clearTimeout(session.processTimer);
     if (session.exited) return;
@@ -212,6 +231,7 @@ export function createPtySessions(deps: PtySessionsDeps): PtySessions {
   const killAll = (): void => {
     for (const [id, session] of [...sessions]) {
       sessions.delete(id);
+      session.screen.dispose();
       clearTimeout(session.timer);
       clearTimeout(session.processTimer);
       if (!session.exited) session.pty.kill();
@@ -220,12 +240,48 @@ export function createPtySessions(deps: PtySessionsDeps): PtySessions {
     dying.clear();
   };
 
-  // Input, a resize or an ack for a pty that already exited or was killed is dropped.
-  const forward = (request: Extract<HostRequest, { type: 'input' | 'resize' | 'ack' | 'clearAck' }>): void => {
+  // The pending batch goes first, then the screen with everything posted so far and nothing after, then the output since.
+  const serialize = (id: string, session: Session): Promise<void> => {
+    const turn = (session.serializing ?? Promise.resolve()).then(async () => {
+      if (sessions.get(id) !== session) return;
+      flush(id, session);
+      session.holding = true;
+      try {
+        // A kill disposes the screen, whose serialize then rejects; nobody waits for that screen. Main drops the output until
+        // a screen arrives, so a serialize that failed answers with a blank one.
+        const screen = await session.screen.serialize().catch((err: unknown) => {
+          if (sessions.get(id) !== session) return undefined;
+          deps.log(`the screen of ${id} could not be serialized: ${errorText(err)}`);
+          return session.screen.blank();
+        });
+        if (screen && sessions.get(id) === session) deps.post({ type: 'screen', id, ...screen });
+      } finally {
+        session.holding = false;
+        if (sessions.get(id) === session) flush(id, session);
+      }
+    });
+    const done = turn.then(() => undefined, () => undefined);
+    session.serializing = done;
+    void done.then(() => {
+      if (session.serializing === done) session.serializing = undefined;
+    });
+    return turn;
+  };
+
+  // Input, a resize or an ack for a pty that already exited or was killed is dropped; a screen is kept until the exit is
+  // reported.
+  const forward = async (request: Extract<HostRequest, { type: 'input' | 'resize' | 'ack' | 'clearAck' | 'serialize' | 'clear' | 'scrollback' }>): Promise<void> => {
     const session = sessions.get(request.id);
+    if (session && request.type === 'serialize') return serialize(request.id, session);
+    if (session && request.type === 'clear') return session.screen.clear();
+    if (session && request.type === 'scrollback') return session.screen.setScrollback(request.scrollback);
     if (!session || session.exited) return;
     if (request.type === 'input') session.pty.write(request.data);
-    else if (request.type === 'resize') resize(session.pty, request.cols, request.rows);
+    else if (request.type === 'resize') {
+      resize(session.pty, request.cols, request.rows);
+      session.screen.resize(request.cols, request.rows);
+    }
+    else if (deps.selfAcknowledge) return;
     else if (request.type === 'ack') acknowledge(session, request.chars);
     else acknowledge(session, session.unacked);
   };
@@ -272,7 +328,7 @@ export function createPtySessions(deps: PtySessionsDeps): PtySessions {
         default: {
           const prior = waiting.get(request.id);
           if (prior) return queueBehind(request.id, prior.then(() => forward(request)));
-          forward(request);
+          return forward(request);
         }
       }
     },

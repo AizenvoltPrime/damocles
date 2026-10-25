@@ -55,6 +55,20 @@ export interface AttachedView {
   post(message: ExtensionToWebviewMessage): void;
   /** Called once, when the panel closes, another view is attached in its place or a dispose detaches it. */
   detached(): void;
+  /** The settings overlay tab the view serves (desktop scope tabs); absent for a local chat's overlay. */
+  readonly scope?: SettingsViewScope;
+}
+
+export type SettingsViewScope = 'user' | 'machine' | 'project';
+
+/**
+ * A view joining a panel (views.join): what the join posts goes to the view at once; from `hold` on the panel's own posts wait,
+ * and `release` delivers them after the join's posts, except live events at or below the snapshot's sequence.
+ */
+export interface ViewJoinGate {
+  post(message: ExtensionToWebviewMessage): void;
+  hold(): void;
+  release(snapshotSeq: number): void;
 }
 
 export type { StoredSession, HistoryMessage, RewindHistoryItem, McpServerConfig };

@@ -46,7 +46,7 @@ export default defineConfig({
           ...sharedTest,
           name: 'core',
           // scripts/ tests need no host; release-targets.test.ts reports drift between scripts/release-targets.mjs and the release workflow matrix.
-          include: [...tests(['src/core', 'src/platform', 'src/shared']), 'scripts/**/*.test.ts'],
+          include: [...tests(['src/core', 'src/platform', 'src/shared', 'src/remote']), 'scripts/**/*.test.ts'],
           setupFiles: [hermeticHome, fakePlatform],
           benchmark: { include: ['src/core/**/*.bench.ts'] },
         },

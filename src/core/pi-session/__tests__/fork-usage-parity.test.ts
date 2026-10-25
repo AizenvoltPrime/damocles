@@ -56,6 +56,7 @@ function liveSessionUsage(file: string, sessionDir: string): ExtensionToWebviewM
     onMidStreamEntryCommitted: () => undefined,
     promptEntryId: () => null,
     onTurnStateChanged: () => undefined,
+    turnRunning: () => false,
   });
   let listener: ((event: unknown) => void) | undefined;
   const session = {

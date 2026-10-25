@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { HandlerDependencies, HandlerRegistry } from "../types";
+import type { HandlerDependencies, HandlerRegistry, ViewHandlerRegistry } from "../types";
 import type { PanelHost } from "../../../../platform/window-service";
 import type { CpuFallbackEvent, IncomingTtsChunk, SidecarManagerStatus, SidecarOutbound, TtsUnloadedEvent } from "../../../voice/sidecar";
 import { log } from "../../../logger";
@@ -100,6 +100,7 @@ type TurnPhase = "idle" | "vad-active";
 
 export type VoiceStreamHandlersResult = {
   handlers: Partial<HandlerRegistry>;
+  viewHandlers: ViewHandlerRegistry;
   markUserTypedDuringTurn: () => void;
 };
 
@@ -387,7 +388,7 @@ export function createVoiceStreamHandlers(
     });
   }
 
-  const handlers: Partial<HandlerRegistry> = {
+  const viewHandlers: ViewHandlerRegistry = {
     voiceStreamEnable: async (_msg, ctx) => {
       activeHost = ctx.host;
       if (voiceService === undefined) {
@@ -432,18 +433,6 @@ export function createVoiceStreamHandlers(
       postStartFailure(ctx.host);
     },
 
-    voiceRuntimeInstall: async (msg, ctx) => {
-      if (msg.type !== "voiceRuntimeInstall" || voiceService === undefined) return;
-      // Settings sends `consent` once the user accepted the first-run dialog it opened.
-      if (msg.consent === true) await voiceService.recordDownloadConsent();
-      await voiceService.install();
-      postStartFailure(ctx.host);
-    },
-
-    voiceRuntimeCancel: () => {
-      voiceService?.cancelStart();
-    },
-
     voiceCancelFirstRunModal: async () => {
       // User declined the disclosure: revert mode to push-to-talk so
       // the panel doesn't keep firing firstRunRequired on every start.
@@ -458,6 +447,91 @@ export function createVoiceStreamHandlers(
       if (msg.type !== "voiceStreamMute") return;
       if (voiceService === undefined) return;
       voiceService.setMuted(msg.muted);
+    },
+
+    voiceWebviewMicUnavailable: (msg, ctx) => {
+      if (msg.type !== "voiceWebviewMicUnavailable") return;
+      log(`[VoiceStreamHandlers] webview mic unavailable: ${msg.reason}`);
+      postMessage(ctx.host, { type: "voiceMicUnavailable", reason: msg.reason });
+      if (voiceService !== undefined && msg.reason !== "denied") {
+        voiceService.stop().catch((err) => log("[VoiceStreamHandlers] stop on mic-unavailable failed:", err));
+      }
+    },
+
+    voiceAcceptModelUpgrade: async (msg, ctx) => {
+      if (msg.type !== "voiceAcceptModelUpgrade") return;
+      if (voiceService === undefined) return;
+      const paths = voiceService.getPaths();
+      let manifest: VoiceModelManifest;
+      try {
+        manifest = await loadManifest(platform.paths.unpackedRoot);
+      } catch (err) {
+        log("[VoiceStreamHandlers] upgrade-accept manifest load failed:", err);
+        return;
+      }
+      const allow = new Set(msg.modelIds);
+      const targets = manifest.models.filter((entry) => allow.has(entry.id));
+      const session = await runDownloadSession(async (signal) => {
+        for (const entry of targets) {
+          try {
+            await downloadModel({
+              entry,
+              modelsRoot: paths.modelsDir,
+              acceptLicense: !entry.gated,
+              signal,
+              onProgress: (p) => {
+                postMessage(ctx.host, {
+                  type: "voiceModelDownloadProgress",
+                  modelId: p.modelId,
+                  bytesReceived: p.bytesReceived,
+                  bytesTotal: p.bytesTotal,
+                  status: p.status,
+                  ...(p.message !== undefined ? { message: p.message } : {}),
+                });
+              },
+            });
+          } catch (err) {
+            if (signal.aborted) return;
+            postMessage(ctx.host, {
+              type: "voiceModelDownloadProgress",
+              modelId: entry.id,
+              bytesReceived: 0,
+              bytesTotal: 0,
+              status: "error",
+              message: err instanceof Error ? err.message : String(err),
+            });
+            return;
+          }
+        }
+      });
+      if (session.aborted) return;
+      postMessage(ctx.host, { type: "voiceModelDownloadAllDone" });
+      if (voiceService.isReady()) await voiceService.restart();
+    },
+
+    voiceDismissModelUpgrade: () => {
+      // Webview-driven; no host-side state to clear.
+    },
+
+    voiceCancelModelDownload: (_msg, ctx) => {
+      currentDownloadAbort?.abort();
+      postMessage(ctx.host, { type: "voiceModelDownloadCancelled" });
+    },
+  };
+
+  const handlers: Partial<HandlerRegistry> = {
+    ...viewHandlers,
+
+    voiceRuntimeInstall: async (msg, ctx) => {
+      if (msg.type !== "voiceRuntimeInstall" || voiceService === undefined) return;
+      // Settings sends `consent` once the user accepted the first-run dialog it opened.
+      if (msg.consent === true) await voiceService.recordDownloadConsent();
+      await voiceService.install();
+      postStartFailure(ctx.host);
+    },
+
+    voiceRuntimeCancel: () => {
+      voiceService?.cancelStart();
     },
 
     voiceTestVoice: async (_msg, ctx) => {
@@ -490,15 +564,6 @@ export function createVoiceStreamHandlers(
       const reqId = randomUUID();
       log(`[VoiceStreamHandlers] voiceTestVoice: dispatching ttsRequest req=${reqId}`);
       voiceService.ttsRequest(reqId, "Hello. This is your on-device voice assistant.");
-    },
-
-    voiceWebviewMicUnavailable: (msg, ctx) => {
-      if (msg.type !== "voiceWebviewMicUnavailable") return;
-      log(`[VoiceStreamHandlers] webview mic unavailable: ${msg.reason}`);
-      postMessage(ctx.host, { type: "voiceMicUnavailable", reason: msg.reason });
-      if (voiceService !== undefined && msg.reason !== "denied") {
-        voiceService.stop().catch((err) => log("[VoiceStreamHandlers] stop on mic-unavailable failed:", err));
-      }
     },
 
     setVoiceTtsVoice: async (msg, ctx) => {
@@ -566,66 +631,6 @@ export function createVoiceStreamHandlers(
       // restart the sidecar for a voice change.
       const swapped = voiceService.setTtsVoice(msg.voice);
       log(`[VoiceStreamHandlers] setVoiceTtsVoice: voice=${msg.voice} prefetched=${needsFetch} hotswap=${swapped}`);
-    },
-
-    voiceAcceptModelUpgrade: async (msg, ctx) => {
-      if (msg.type !== "voiceAcceptModelUpgrade") return;
-      if (voiceService === undefined) return;
-      const paths = voiceService.getPaths();
-      let manifest: VoiceModelManifest;
-      try {
-        manifest = await loadManifest(platform.paths.unpackedRoot);
-      } catch (err) {
-        log("[VoiceStreamHandlers] upgrade-accept manifest load failed:", err);
-        return;
-      }
-      const allow = new Set(msg.modelIds);
-      const targets = manifest.models.filter((entry) => allow.has(entry.id));
-      const session = await runDownloadSession(async (signal) => {
-        for (const entry of targets) {
-          try {
-            await downloadModel({
-              entry,
-              modelsRoot: paths.modelsDir,
-              acceptLicense: !entry.gated,
-              signal,
-              onProgress: (p) => {
-                postMessage(ctx.host, {
-                  type: "voiceModelDownloadProgress",
-                  modelId: p.modelId,
-                  bytesReceived: p.bytesReceived,
-                  bytesTotal: p.bytesTotal,
-                  status: p.status,
-                  ...(p.message !== undefined ? { message: p.message } : {}),
-                });
-              },
-            });
-          } catch (err) {
-            if (signal.aborted) return;
-            postMessage(ctx.host, {
-              type: "voiceModelDownloadProgress",
-              modelId: entry.id,
-              bytesReceived: 0,
-              bytesTotal: 0,
-              status: "error",
-              message: err instanceof Error ? err.message : String(err),
-            });
-            return;
-          }
-        }
-      });
-      if (session.aborted) return;
-      postMessage(ctx.host, { type: "voiceModelDownloadAllDone" });
-      if (voiceService.isReady()) await voiceService.restart();
-    },
-
-    voiceDismissModelUpgrade: () => {
-      // Webview-driven; no host-side state to clear.
-    },
-
-    voiceCancelModelDownload: (_msg, ctx) => {
-      currentDownloadAbort?.abort();
-      postMessage(ctx.host, { type: "voiceModelDownloadCancelled" });
     },
 
     voiceRedownloadModels: async (_msg, ctx) => {
@@ -698,12 +703,11 @@ export function createVoiceStreamHandlers(
         });
       }
     },
-
   };
 
   const markUserTypedDuringTurn = (): void => {
     userTypedSinceWake = true;
   };
 
-  return { handlers, markUserTypedDuringTurn };
+  return { handlers, viewHandlers, markUserTypedDuringTurn };
 }

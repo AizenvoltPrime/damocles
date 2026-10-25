@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { sqliteJournalMode } from '../../../network-fs';
 import { DatabaseSync } from 'node:sqlite';
 import type { StoredSession } from '@shared/types/session';
 import { log } from '../../../logger';
@@ -51,7 +52,7 @@ const messageOf = (err: unknown): string => (err instanceof Error ? err.message 
 function openDatabase(file: string): DatabaseSync {
   const db = new DatabaseSync(file, { timeout: BUSY_TIMEOUT_MS });
   try {
-    db.exec('PRAGMA journal_mode = WAL');
+    db.exec(`PRAGMA journal_mode = ${sqliteJournalMode(file)}`);
     db.exec('PRAGMA synchronous = NORMAL');
     db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
     db.exec(SCHEMA_SQL);

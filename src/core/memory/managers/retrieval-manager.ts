@@ -15,6 +15,7 @@ import { expandQuery } from '../query-expansion';
 import type { MemorySubCallRunner } from '../subcall-runner';
 import { LLM_RERANK_MIN_MS, classifierReason, classifierRerank } from '../classifier-judges';
 import type { SettingsStore } from '../../../platform/settings-store';
+import { userScopeRemote } from '../../user-scope';
 
 /**
  * Defensive forward-slash normalization for paths returned on an entry: a legacy row read before the
@@ -268,6 +269,8 @@ export class RetrievalManager {
     if (!query.includeForgotten) clauses.push(`${column}forgotten = 0`);
     clauses.push(`(${column}forget_after IS NULL OR ${column}forget_after >= ?)`);
     const params: unknown[] = [Date.now()];
+    // global memory is the client's, so a daemon's core reads no global row
+    if (userScopeRemote()) clauses.push(`${column}scope != 'global'`);
 
     // Scope to this workspace + global + this session; foreign-session rows never surface. allWorkspaces opts out.
     if (!query.allWorkspaces) {

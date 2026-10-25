@@ -57,13 +57,14 @@ import { buildPlanModeGuidance } from "./plan-mode-guidance";
 import { dispatchInput, dispatchObserveOnly, type DispatchDeps, type InputHookResult } from "./hooks/dispatch";
 import { HOOK_CONTEXT_CUSTOM_TYPE, postUserPromptVerdict } from "./hooks";
 import { buildPermissionRequiredPayload, buildForkPayload } from "./hooks/payload";
-import { PiStreamAdapter, isNothingToCompact } from "./pi-stream-adapter";
+import { PiStreamAdapter, isNothingToCompact, type LiveSnapshot, type UserEcho } from "./pi-stream-adapter";
 import { deriveSessionState, turnOutcomeOfError, type ChatActivity, type PendingPrompt, type RaisedPrompt, type SessionState, type TurnChange, type TurnOutcome, type TurnState } from "./session-state";
 import { noticeWindDown, type WindDownNotice } from "./wind-down-notice";
 import { trackRunLifecycle, type RunLifecycle } from "./run-lifecycle";
 import { pendingPromptDescriber, pendingPromptOwners, promptOwnerOf, type PromptOwners } from "./pending-prompts";
 import type { SubscriptionProvider, UsageMonitor } from "./usage-thresholds";
 import {
+  markLoopbackEndpoints,
   piSupportedModels,
   resolvePiModel,
   modelValueOfPiModel,
@@ -77,6 +78,8 @@ import {
   type ModelResolution,
 } from "./pi-models";
 import type { OpenAIAuthStatus } from "./openai-auth";
+import { currentPin, runPinnedTurn } from "../client-snapshots";
+import { pinRunStarts } from "./credential-broker";
 import { buildCustomTools } from "./tools";
 import { ShellCancelStore } from "./tools/shell-cancel-registry";
 import { processLauncher } from "../process-launcher";
@@ -215,7 +218,8 @@ import {
   mcpDeferrableNames,
   type ToolStatusDeps,
 } from "./tool-status";
-import { deferredToolNames } from "./tools/deferred-tools";
+import { deferredToolNames, loadableToolNames } from "./tools/deferred-tools";
+import { userScopeRemote } from "../user-scope";
 import { resourceToolsExposure } from "./mcp/exposure";
 import { restoredDeferredTools } from "./tools/restored-tools";
 import { waitForPendingDirectServers } from "./mcp/startup-wait";
@@ -416,6 +420,8 @@ export class PiSession implements ChatSession {
   private readonly options: SessionOptions;
   private readonly cwd: string;
   private readonly adapter: PiStreamAdapter;
+  /** Each live event's number, so a joining view drops the ones its snapshot already holds. */
+  private readonly liveEventSeqs = new WeakMap<object, number>();
   /** Per-PiSession webview-bridged extension UI context (US-026), re-bound on each (re)bind. */
   private readonly uiContext: WebviewExtensionUIContext;
 
@@ -497,6 +503,8 @@ export class PiSession implements ChatSession {
   // The catalog is static, so it is populated before start(): a resumed panel defers start() and still
   // has to resolve its model's billing.
   private supportedModelsCache: ModelInfo[] = piSupportedModels();
+  /** The models a daemon's core last logged unavailable for a loopback endpoint, so the log names each change once. */
+  private loopbackUnavailable: string | undefined;
   private permissionMode: PermissionMode;
   private processingFlag = false;
   /** Set while a manual compaction runs. Distinct from `processingFlag` so it gates a concurrent
@@ -683,13 +691,14 @@ export class PiSession implements ChatSession {
     });
     this.adapter = new PiStreamAdapter({
       onMessage: (message) => {
+        this.liveEventSeqs.set(message, this.adapter.eventSeq);
         options.onMessage(message);
         this.scheduleReviewOn(message);
       },
       cwd: options.cwd,
       sessionId: () => this.runtime?.session.sessionId ?? "",
       modelValue: () => this.modelValue,
-      supportedModels: () => this.supportedModelsCache,
+      supportedModels: () => this.modelsForView(),
       permissionMode: () => this.permissionMode,
       budgetLimit: () => this.budgetLimitForEnforcement(),
       showCacheMissNotices: () =>
@@ -702,6 +711,7 @@ export class PiSession implements ChatSession {
       onMidStreamEntryCommitted: (userEntryId) => this.recordMidStreamMarker(userEntryId),
       promptEntryId: () => this.promptEntry?.entry()?.id ?? null,
       onTurnStateChanged: (...change) => this.setTurnState(...change),
+      turnRunning: () => this.turnState === "running",
       ...(options.onAssistantTextFinal ? { onAssistantTextFinal: options.onAssistantTextFinal } : {}),
     });
     this.uiContext = new WebviewExtensionUIContext(options.onMessage, () => this.runtime?.session.sessionId ?? "");
@@ -845,6 +855,7 @@ export class PiSession implements ChatSession {
         customTools,
         thinkingLevel: recorded ? this.resolveThinkingLevel(recorded.value, recorded.thinkingLevel) : this.resolveThinkingLevel(),
       });
+      this.pinRunStarts(result.session);
       if (recorded) this.builtSelections.set(result.session, recorded);
       bound.session = result.session;
       return { ...result, services: shared, diagnostics: shared.diagnostics ?? [] };
@@ -1592,21 +1603,24 @@ export class PiSession implements ChatSession {
     // A clear can replace the session before the turn settles; the turn's memory candidate stays with this conversation.
     const candidateKey: MemoryCandidateKey = { sessionId: session.sessionId, promptIndex: this.currentPromptIndex };
 
-    if (userBroadcast && correlationId) {
-      this.emit({
-        type: "userMessage",
-        content: userBroadcast.content,
-        ...(userBroadcast.contentBlocks ? { contentBlocks: userBroadcast.contentBlocks } : {}),
-        ...(userBroadcast.terminalAttachments ? { terminalAttachments: userBroadcast.terminalAttachments } : {}),
-        correlationId,
-        promptIndex: this.currentPromptIndex,
-        ...(isPrompt ? {} : { isInjected: true, isCommandEcho: true }),
-      });
-    }
+    const echo: UserEcho | undefined = userBroadcast && correlationId
+      ? {
+          message: {
+            type: "userMessage",
+            content: userBroadcast.content,
+            ...(userBroadcast.contentBlocks ? { contentBlocks: userBroadcast.contentBlocks } : {}),
+            ...(userBroadcast.terminalAttachments ? { terminalAttachments: userBroadcast.terminalAttachments } : {}),
+            correlationId,
+            promptIndex: this.currentPromptIndex,
+            ...(isPrompt ? {} : { isInjected: true, isCommandEcho: true }),
+          },
+          text: null,
+        }
+      : undefined;
 
     this._aborting = false;
     this._budgetStopRequested = false;
-    this.adapter.beginTurn(correlationId);
+    this.adapter.beginTurn(correlationId, echo);
 
     // After `beginTurn`, which makes the chat busy, so no finish action (D33) starts while the hook runs.
     const hooks = isPrompt ? this.promptHooks() : undefined;
@@ -1663,7 +1677,7 @@ export class PiSession implements ChatSession {
     outgoing.inPi = true;
     try {
       // `isStreaming` covers a run's retry and auto-compaction windows, where a prompt queues as a follow-up.
-      await session.prompt(text, {
+      await this.pinned(() => session.prompt(text, {
         ...(images.length > 0 ? { images } : {}),
         ...(this.runOf(session)?.streaming ? { streamingBehavior: "followUp" as const } : {}),
         // pi treats this as internal and calls it outside every try (#11044, #11065), so it only observes.
@@ -1705,7 +1719,7 @@ export class PiSession implements ChatSession {
             }
           }
         },
-      });
+      }));
       // An extension command (`/todos`) opens no run, so no pi event ends its turn; `prompt()` resolves once a run settled.
       if (this.currentSend === outgoing && !this._aborting && !this.runOf(session)?.streaming && !this.adapter.observedAgentRun()) {
         this.adapter.endTurnWithoutAgentRun();
@@ -1863,6 +1877,7 @@ export class PiSession implements ChatSession {
     log("[PiSession] message not sent: cancelled or session replaced before its turn started");
     this.emit({ type: "processing", isProcessing: false });
     if (correlationId && userBroadcast) {
+      this.adapter.withdrawEcho(correlationId);
       this.emit({
         type: "interruptRecovery",
         correlationId,
@@ -2143,7 +2158,7 @@ export class PiSession implements ChatSession {
     this.batchInPi = batch;
     let dispositioned = false;
     try {
-      await session.prompt(text, {
+      await this.pinned(() => session.prompt(text, {
         streamingBehavior: "steer",
         // Every message in it already passed the input handlers when it was queued.
         source: "extension",
@@ -2153,7 +2168,7 @@ export class PiSession implements ChatSession {
           if (this.batchInPi === batch) this.batchInPi = null;
           this.admitSteer(session, batch, disposition);
         },
-      });
+      }));
     } finally {
       if (this.batchInPi === batch) this.batchInPi = null;
       // pi refused a batch a Stop had left to its verdict, so nothing committed it.
@@ -2164,7 +2179,7 @@ export class PiSession implements ChatSession {
   /** Puts one follow-up back with the content it was queued with; one a Stop overtook in pi's hands is sent and stopped, or returned (`queued`). */
   private requeueFollowUp(session: AgentSession, queued: RequeuedFollowUp): void {
     let dispositioned = false;
-    void session
+    void this.pinned(() => session
       .prompt(queued.text, {
         expandPromptTemplates: false,
         streamingBehavior: "followUp",
@@ -2199,7 +2214,7 @@ export class PiSession implements ChatSession {
           if (disposition === "started") this.stopRunAtStart(session);
           if (disposition === "queued") this.takeBackQueued(session, queued.text);
         },
-      })
+      }))
       .catch((err) => {
         log("[PiSession] re-queueing a preserved follow-up failed: %O", err);
         if (dispositioned) return;
@@ -2472,11 +2487,12 @@ export class PiSession implements ChatSession {
           return;
         }
         note.echoed = true;
-        this.emit({ type: "userMessage", content: text, correlationId: randomUUID(), promptIndex, isInjected: true });
+        const echo: UserEcho = { message: { type: "userMessage", content: text, correlationId: randomUUID(), promptIndex, isInjected: true }, text };
         if (startsRun) {
-          this.adapter.beginTurn();
+          this.adapter.beginTurn(undefined, echo);
           return;
         }
+        this.adapter.echoUser(echo);
         if (target && target === this.runtime?.session) this.resteerQueuedInputs();
       };
       void deliver(text, onPreflight).catch((err) => {
@@ -2650,7 +2666,7 @@ export class PiSession implements ChatSession {
       // From here a Stop aborts the compaction through pi (`abort()` runs `abortCompaction()`, agent-session.js:1976).
       this.compactionBeforePi = null;
       try {
-        await session.compact(trimmed && trimmed.length > 0 ? trimmed : undefined);
+        await this.pinned(() => session.compact(trimmed && trimmed.length > 0 ? trimmed : undefined));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // pi emits `compaction_end` and then rethrows the same failure, so the adapter has usually
@@ -3221,7 +3237,35 @@ export class PiSession implements ChatSession {
 
   async getSupportedModels(): Promise<ModelInfo[]> {
     await this.ensureStarted().catch(() => undefined);
-    return this.supportedModelsCache;
+    return this.modelsForView();
+  }
+
+  // a daemon's core marks a model whose provider endpoint is a loopback address the acting client does not share with it
+  private modelsForView(): ModelInfo[] {
+    const registry = PiRuntime.exists ? PiRuntime.get().modelRuntime : null;
+    const remote = this.options.platform.remote;
+    if (!remote || !registry) return this.supportedModelsCache;
+    const sharedLoopback = currentPin(remote).policy?.sharedLoopback === true;
+    const models = markLoopbackEndpoints(this.supportedModelsCache, registry, PiRuntime.get().getOpenAIAuthStatus(), this.preferOpenAIApiKey(), sharedLoopback);
+    const unavailable = models.filter((model) => model.unavailable).map((model) => model.value);
+    const named = unavailable.join(", ");
+    if (named !== this.loopbackUnavailable) {
+      this.loopbackUnavailable = named;
+      log("[PiSession] remote model list: %d unavailable for a loopback endpoint (%s)", unavailable.length, named);
+    }
+    return models;
+  }
+
+  /** Runs a turn's pi call pinned to the acting client of a daemon's core (plan "Several clients"). */
+  private pinned<T>(run: () => T): T {
+    return runPinnedTurn(this.options.platform.remote, this.options.panelId ?? "", run);
+  }
+
+  /** Every pi session this panel builds: on a daemon's core, a run it starts outside every pin is pinned at its start. */
+  private pinRunStarts(session: AgentSession): AgentSession {
+    const remote = this.options.platform.remote;
+    if (remote) pinRunStarts(session, remote, this.options.panelId ?? "");
+    return session;
   }
 
   /**
@@ -3294,6 +3338,35 @@ export class PiSession implements ChatSession {
     // `resumeSessionId` also names the target of a switch still in flight, while `currentSessionId`
     // reports the session being left until the switch lands.
     return this.currentSessionId === sessionId || this.resumeSessionId === sessionId;
+  }
+
+  /** The adapter's event count, which a joining view's snapshot is taken at (views.join). */
+  get eventSeq(): number {
+    return this.adapter.eventSeq;
+  }
+
+  eventSeqOf(message: object): number | undefined {
+    return this.liveEventSeqs.get(message);
+  }
+
+  /** Settles once no resume, restore or hand-off switch is pending, so a joining view is shown only a conversation pi switched to. */
+  async whenConversationSettled(): Promise<void> {
+    for (;;) {
+      const request = this.resumeRequest;
+      if (!request || request.settled || request.atStart) return;
+      await this.openResumeTarget(request.sessionId);
+    }
+  }
+
+  /**
+   * The conversation pi holds, its in-memory branch and the adapter's live snapshot, read in one synchronous step so no event
+   * falls between the branch and the snapshot's sequence; undefined while no runtime holds a conversation.
+   */
+  liveConversation(): { readonly sessionId: string; readonly stored: boolean; readonly branch: readonly SessionEntry[]; readonly sessionManager: AgentSession["sessionManager"]; readonly snapshot: LiveSnapshot } | undefined {
+    const session = this.runtime?.session;
+    if (!session) return undefined;
+    const sm = session.sessionManager;
+    return { sessionId: session.sessionId, stored: this.hasSessionFile(), branch: [...sm.getBranch(sm.getLeafId() ?? undefined)], sessionManager: sm, snapshot: this.adapter.liveSnapshot() };
   }
 
   hasSessionFile(): boolean {
@@ -3860,7 +3933,7 @@ export class PiSession implements ChatSession {
   /** The eligible tools ToolSearch may load right now. */
   private deferrableNow(): Set<string> {
     const deps = this.toolStatusDeps();
-    return new Set(deferredToolNames(fullActiveToolNamesFrom(deps), mcpDeferrableNames(deps)));
+    return new Set(loadableToolNames(deferredToolNames(fullActiveToolNamesFrom(deps), mcpDeferrableNames(deps)), !userScopeRemote()));
   }
 
   /** A newly bound conversation starts from the loadout its transcript recorded, the record pi restores a resumed session from. */
@@ -3931,7 +4004,8 @@ export class PiSession implements ChatSession {
     const session = this.runtime?.session;
     const deps = this.toolStatusDeps();
     const eligible = fullActiveToolNamesFrom(deps);
-    const names = deferredToolNames(eligible, mcpDeferrableNames(deps));
+    // a tool whose user-scope service this core cannot reach stays eligible and deferred, but off the menu
+    const names = loadableToolNames(deferredToolNames(eligible, mcpDeferrableNames(deps)), !userScopeRemote());
     const pendingMcpServers = (this.mcpClientManager()?.getServerStatuses() ?? [])
       .filter((status) => status.enabled && status.status !== 'connected')
       .map((status) => status.name);
@@ -4199,7 +4273,7 @@ export class PiSession implements ChatSession {
   private trackedNestedSessions(folder: FolderRuntime): Pick<SubagentEngine, "createSession" | "forgetSession"> {
     return {
       createSession: async (opts) => {
-        const session = await folder.createSubagentSession(opts);
+        const session = this.pinRunStarts(await folder.createSubagentSession(opts));
         this.unpersistedImages.track(session);
         return session;
       },
@@ -5171,7 +5245,7 @@ export class PiSession implements ChatSession {
     const ac = new AbortController();
     let session: AgentSession;
     try {
-      session = await folder.createSubagentSession({
+      session = this.pinRunStarts(await folder.createSubagentSession({
         cwd: this.cwd,
         systemPrompt: BTW_SYSTEM_PROMPT,
         model: resolution.model,
@@ -5180,7 +5254,7 @@ export class PiSession implements ChatSession {
         excludeTools: [],
         extensionFactory: (pi) => { registerTurnEndImagePruning(pi); registerAgentStartImageReconcile(pi); },
         store: { kind: "memory" },
-      });
+      }));
     } catch (err) {
       this.emit({ type: "btwError", btwId, message: err instanceof Error ? err.message : String(err) });
       return;
@@ -5200,7 +5274,7 @@ export class PiSession implements ChatSession {
     });
 
     try {
-      await session.prompt(prompt);
+      await this.pinned(() => session.prompt(prompt));
       if (!ac.signal.aborted) {
         const finalText = (streamed.trim() || session.getLastAssistantText() || "").trim();
         if (finalText) this.emit({ type: "btwComplete", btwId, text: finalText });
@@ -5359,7 +5433,7 @@ export class PiSession implements ChatSession {
         // (`resolveToolSearchEntries` → "Unknown entries"). This mirrors the
         // `tools: [...toolNames, ...mcp.names]` the caller builds from the same snapshot. Always-loaded
         // tools are in `mcp.names` but not `mcp.deferrable`, so they are active and never on the menu.
-        deferrableToolNames: deferredToolNames([...this.teamAgentBaseToolNames(), ...mcp.names], mcp.deferrable),
+        deferrableToolNames: loadableToolNames(deferredToolNames([...this.teamAgentBaseToolNames(), ...mcp.names], mcp.deferrable), !userScopeRemote()),
         mcpDescriptions: mcp.descriptions,
         directMcpGroups: mcp.directGroups,
         isMcpReadOnly: mcp.isReadOnly,
@@ -5582,14 +5656,16 @@ export class PiSession implements ChatSession {
     const registry = piRuntime.modelRuntime;
     const openaiAuthStatus = piRuntime.getOpenAIAuthStatus();
     const preferApiKey = this.preferOpenAIApiKey();
+    const claude = piRuntime.getClaudeAuthStatus();
     return {
       modelValue: this.modelValue,
       modelInfo: this.getModelInfo(this.modelValue),
-      claudeAuthMode: piRuntime.getClaudeAuthStatus().mode,
+      claudeAuthMode: claude.mode,
       openaiAuthStatus,
       preferApiKey,
       resolvedProvider: resolvedProviderOf(this.modelValue, registry ?? undefined, openaiAuthStatus, preferApiKey),
       flatFeeKeyProviders: piRuntime.flatFeeKeyProviders(),
+      allowanceUnavailable: claude.allowanceUnavailable === true,
     };
   }
 

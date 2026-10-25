@@ -2,6 +2,7 @@ import type { HandlerContext, HandlerDependencies } from "./types";
 import { CHAT_SETTING_KEYS } from "../../config/chat-settings";
 import { settingsFolderOf } from "../../workspace-folders/folder-registry";
 import { effectiveScope, type SettingWrite } from "../settings-manager/utils";
+import { settingsViewWriteScope } from "../settings-view-scope";
 import { log } from "../../logger";
 
 /**
@@ -29,7 +30,8 @@ export async function writeSetting(
     return false;
   }
   const folder = CHAT_SETTING_KEYS.has(written.key) ? settingsFolderOf(ctx.folder) : undefined;
-  const scope = effectiveScope(platform, written.key, folder);
+  // a scope tab's write landed in that tab's file, whichever file the value comes from now
+  const scope = settingsViewWriteScope(folder !== undefined) ?? effectiveScope(platform, written.key, folder);
   const file = scope === undefined ? undefined : platform.settings.scopeFile(scope, folder);
   postMessage(ctx.host, { type: "settingWriteResult", key, ok: true, scope: scope ?? written.home, ...(file !== undefined ? { file } : {}) });
   return true;

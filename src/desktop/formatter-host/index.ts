@@ -1,18 +1,21 @@
-// The formatter host (D29): an Electron utility process, one per project root, that runs the project's own
-// Prettier through its Node API. Main resolved and confined every path it sends, and kills this process on a timeout.
+// The formatter host (D29): a child process (an Electron utility process locally), one per project root, that runs the project's own
+// Prettier through its Node API. Its parent (main, or the daemon on a target) resolved and confined every path it sends, and
+// kills this process on a timeout.
 import { realpathSync } from 'node:fs';
+import { parentChannel } from '../local-services/parent-channel';
 import { confineModules } from './confine-modules';
 import { formatRequest, type PrettierApi } from './format-request';
 import { parseHostRequest, type HostReply } from './protocol';
 
 // Before any of the project's code loads: main starts this process with its cwd at the root's real path.
 const refused = confineModules(realpathSync.native(process.cwd()));
+const channel = parentChannel();
+if (!channel) throw new Error('the formatter host runs only as a child process');
+channel.onDisconnect(() => process.exit(0));
 
-function post(reply: HostReply): void {
-  process.parentPort.postMessage(reply);
-}
+const post = (reply: HostReply): void => channel.postMessage(reply);
 
-process.parentPort.on('message', (event) => {
+channel.on('message', (event) => {
   const request = parseHostRequest(event.data);
   // Main builds every request; one outside the contract is a bug, and this exit fails every request main has pending here.
   if (!request) throw new Error('the formatter host received a malformed request');

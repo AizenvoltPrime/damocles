@@ -55,14 +55,19 @@ interface Request<C> {
 }
 
 /**
- * The running core services. A reload tears the core down and builds a new one; a second reload while one runs joins it,
- * and once the quit stopped the host a reload starts no core, so two cores never run side by side and none outlives the quit.
+ * The running core services. A reload tears the core down and builds a new one; a second reload while one runs joins it
+ * until it starts its core and runs after it from then on, and once the quit stopped the host a reload starts no core, so two
+ * cores never run side by side and none outlives the quit.
  * A core reaches callers only once its ready settles.
  */
 export class CoreHost<C extends HostedCore> {
   private readonly deps: CoreHostDeps<C>;
   private core: C | undefined;
   private reloading: Promise<void> | undefined;
+  // the reload under way started its core, so a reload asked for from now on cannot join it
+  private reloadStarted = false;
+  // the reload asked for after the one under way started its core, which runs once that one settles
+  private queuedReload: Promise<void> | undefined;
   // The core the reload under way starts, rejected when it starts none. A reload whose core ended before it was ready leaves
   // it to the crash path, whose restart resolves it and whose halt refuses it.
   private next: NextCore<C> | undefined;
@@ -149,11 +154,23 @@ export class CoreHost<C extends HostedCore> {
     return this.core;
   }
 
+  /**
+   * Joins the reload under way until it starts its core, since that core is built from what holds then; one asked for later
+   * runs once that reload settles, and every request meanwhile joins it (VS Code's Throttler).
+   */
   reload(): Promise<void> {
     if (this.stopped) return Promise.resolve();
     this.setHalted(false);
+    if (this.reloading && this.reloadStarted) {
+      this.queuedReload ??= this.reloading.catch(() => undefined).then(() => {
+        this.queuedReload = undefined;
+        return this.reload();
+      });
+      return this.queuedReload;
+    }
     this.reloading ??= this.runReload().finally(() => {
       this.reloading = undefined;
+      this.reloadStarted = false;
     });
     return this.reloading;
   }
@@ -254,6 +271,7 @@ export class CoreHost<C extends HostedCore> {
         if (!this.stopped) this.deps.retainTabStates(false);
       }
       if (this.stopped) return;
+      this.reloadStarted = true;
       const core = this.start();
       // the quit disposes a core that is not ready yet instead of waiting for it
       await Promise.race([core.ready, this.stopping]);

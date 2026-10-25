@@ -8,6 +8,7 @@ import type { NotificationCenterState, NotificationEntry } from '../../../preloa
 import { trapTab } from '../focus-trap';
 import { answerOf } from '../popup-answer';
 import { notificationView, relativeTime, TONE_CLASSES } from '../notification-view';
+import HostBadge from '@/components/HostBadge.vue';
 import ToggleSwitch from '@/components/ToggleSwitch.vue';
 import { Button } from '@/components/ui/button';
 import { remPx } from '@/composables/useRemPx';
@@ -280,7 +281,13 @@ onBeforeUnmount(() => {
               />
               <span class="flex min-w-0 flex-1 flex-col">
                 <span class="flex items-baseline gap-2">
-                  <span class="min-w-0 flex-1 truncate text-12.5 font-semibold">{{ view.title || view.where }}</span>
+                  <span class="min-w-0 truncate text-12.5 font-semibold">{{ view.title || view.where }}</span>
+                  <HostBadge
+                    v-if="view.host"
+                    :name="view.host"
+                    class="self-center"
+                  />
+                  <span class="flex-1" />
                   <time
                     class="shrink-0 text-10.5 text-(--d-faint-text)"
                     :datetime="new Date(entry.at).toISOString()"

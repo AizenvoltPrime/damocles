@@ -7,6 +7,7 @@ import { personalConfigRoot } from "../worktrees/personal-config";
 import { parseSettingsText } from "../config/settings-file";
 import { TOOL_EDIT, TOOL_GENERATE_IMAGE, TOOL_READ, TOOL_WRITE } from "../../shared/tool-names";
 import { inertMcpSpecifierRule } from "./mcp-resource-rule";
+import type { PermissionRuleLists } from "../../shared/remote-user";
 
 export interface FilePermissions {
   allow: string[];
@@ -174,9 +175,14 @@ async function readPermissionsFromPath(filePath: string, root: string): Promise<
  *
  * A `/path` rule is relative to the project folder in a project file and to the file's own directory in
  * a home file, as Claude Code resolves it to `~/.claude/path` for `~/.claude/settings.json`.
+ *
+ * On a daemon's core the home files are its host's (machine scope), and `clientRules`, the pinned client's user files'
+ * rules from its clientUser (one entry per file), come last; rules combine as deny > ask > allow, so a host file never
+ * lifts a client's deny.
  */
 export async function loadPermissionsByPriority(
-  workspacePath: string | null
+  workspacePath: string | null,
+  clientRules?: readonly PermissionRuleLists[],
 ): Promise<FilePermissions[]> {
   const result: FilePermissions[] = [];
   const home = os.homedir();
@@ -203,6 +209,11 @@ export async function loadPermissionsByPriority(
   // eight serial round-trips on every cache miss buy nothing.
   const all = await Promise.all(sources.map((source) => readPermissionsFromPath(source.file, source.root)));
 
+  // a client file's `/path` rules name a folder of the client's home, which this host lacks, so they anchor at this host's same folder
+  clientRules?.forEach((rules, index) => {
+    const label = `the client's user settings file ${index + 1}`;
+    all.push({ allow: ruleList(label, "allow", rules.allow), deny: ruleList(label, "deny", rules.deny), ask: ruleList(label, "ask", rules.ask), root: path.join(home, rules.dir) });
+  });
   for (const perms of all) {
     if (perms.allow.length || perms.deny.length || perms.ask.length) {
       result.push(perms);

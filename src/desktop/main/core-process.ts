@@ -1,10 +1,9 @@
-// Damocles Core's utility process as main runs it: the fork, the channel, how it ended, and the restart policy
-// (docs/invariants.md "Desktop host", VS Code's extension host policy).
+// Damocles Core's utility process as main runs it: the fork, the channel and how it ended (docs/invariants.md "Desktop host").
 import { StringDecoder } from 'node:string_decoder';
 import { app, utilityProcess, type Details } from 'electron';
 import type { Disposable } from '../../platform/disposable';
 import type { CoreTransport } from '../core-protocol';
-import { hostEnvironment } from './formatting/formatter-process';
+import { hostEnvironment } from '../local-services/host-environment';
 
 // The name app's child-process-gone reports core by (Details.name), and app.getAppMetrics() lists it under.
 export const CORE_SERVICE_NAME = 'Damocles Core';
@@ -17,9 +16,6 @@ export const CORE_READY_TIMEOUT_MS = 120_000;
 export const CORE_KILL_GRACE_MS = 1_000;
 // The stderr tail kept for the log when core ends.
 const STDERR_TAIL_CHARS = 16 * 1024;
-
-export const RESTART_LIMIT = 3;
-export const RESTART_WINDOW_MS: number = 5 * 60 * 1000;
 
 /** How core's process ended: its exit code, Chromium's reason when it did not exit by itself, and the tail of its stderr. */
 export interface CoreExit {
@@ -118,18 +114,4 @@ export function forkCore(entry: string, echo: boolean): CoreProcess {
       void exited.then(() => clearTimeout(timer));
     },
   };
-}
-
-export type RestartDecision =
-  | { readonly restart: true; readonly crashes: readonly number[]; readonly count: number }
-  | { readonly restart: false; readonly crashes: readonly number[] };
-
-/**
- * A crash at `now` given the earlier crashes' times: core restarts while fewer than RESTART_LIMIT restarts happened in the
- * rolling RESTART_WINDOW_MS, and stays down past that. `count` is this restart's place among them.
- */
-export function restartDecision(crashes: readonly number[], now: number): RestartDecision {
-  const recent = crashes.filter((at) => now - at < RESTART_WINDOW_MS);
-  const next = [...recent, now];
-  return recent.length < RESTART_LIMIT ? { restart: true, crashes: next, count: recent.length + 1 } : { restart: false, crashes: next };
 }

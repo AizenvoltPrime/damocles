@@ -310,16 +310,16 @@ export const useStreamingStore = defineStore("streaming", () => {
     contentBlocks?: ContentBlock[],
     sdkMessageId?: string
   ): void {
-    const msg = getOrCreateStreamingMessage(sdkMessageId);
-    const existingToolCalls = msg.toolCalls || [];
-
-    const existingTool = existingToolCalls.find((t) => t.id === tool.id);
-    if (existingTool) {
+    flushReplayQueue();
+    // A call has one card, which a replayed message may hold: a prompt reposted to a joining view names a call it replayed.
+    if (messages.value.some((m) => m.toolCalls?.some((t) => t.id === tool.id))) {
       if (tool.metadata) {
         updateToolMetadata(tool.id, tool.metadata);
       }
       return;
     }
+    const msg = getOrCreateStreamingMessage(sdkMessageId);
+    const existingToolCalls = msg.toolCalls || [];
 
     if (tool.metadata) {
       toolMetadataCache.value.set(tool.id, { ...toolMetadataCache.value.get(tool.id), ...tool.metadata });

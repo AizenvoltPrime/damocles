@@ -6,7 +6,7 @@ import { WorkspaceFolderRegistry } from '../../workspace-folders/folder-registry
 import type { FolderTarget } from '../../workspace-folders/folder-registry';
 import type { ChatSession } from '../../chat-session';
 import type { ChatActivity, TurnOutcome } from '../../pi-session/session-state';
-import type { AttachedView, HostInstance } from '../types';
+import type { AttachedView, HostInstance, ViewJoinGate } from '../types';
 import type { PanelHost } from '../../../platform/window-service';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../../shared/types/messages';
 
@@ -141,6 +141,8 @@ export interface HarnessOptions {
   /** Builds each panel's session in place of a fake one; such a session is not listed in `sessions`. */
   readonly createSession?: (folder: FolderTarget) => ChatSession;
   readonly loadHistory?: (cwd: string, sessionId: string, host: PanelHost, session: ChatSession) => Promise<string[] | null>;
+  /** The router's views.join; the default posts nothing. */
+  readonly joinView?: (panelId: string, gate: ViewJoinGate) => Promise<void>;
 }
 
 export function createHarness(initial: ReturnType<typeof folderEntry>[], options: HarnessOptions = {}): Harness {
@@ -202,6 +204,7 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[], options
       routed.push({ message, panelId, session: manager.getPanels().get(panelId)?.session, ...(view ? { view } : {}) });
       if (message.type === 'ready' && holdReady.gate) await holdReady.gate;
     },
+    joinView: options.joinView ?? (async () => undefined),
     sendCurrentSettings: async () => undefined,
     getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
     invalidateSessionsCache: () => undefined,

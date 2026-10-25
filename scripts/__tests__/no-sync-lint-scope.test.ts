@@ -19,6 +19,8 @@ const TREE_ROOTS = [
   'src/desktop/core-host',
   'src/desktop/core-protocol',
   'src/desktop/local-services',
+  'src/desktop/daemon',
+  'src/remote',
   'src/platform',
   'src/shared',
   'src/vscode',

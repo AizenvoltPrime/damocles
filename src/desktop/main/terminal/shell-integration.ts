@@ -13,17 +13,50 @@ const ESC = '\x1b';
 const BEL = '\x07';
 const CAN = '\x18';
 const SUB = '\x1a';
+const DEL = '\x7f';
 // C1 OSC, which xterm also reads as an OSC introducer; such a sequence is stripped like the 7-bit one.
 const C1_OSC = '\x9d';
+// C1 ST ends an OSC as BEL does; any other C1 control ends one unhandled and is read again outside it (xterm's
+// VT500_TRANSITION_TABLE).
+const C1_ST = '\x9c';
 // The ident before `;`: 633 with any leading zeros, as xterm parses it. An ident that is still all zeros or a 633 prefix
-// at this many digits is dropped as a 633 sequence, so the held introducer stays bounded.
+// at this many digits is stripped through its end, so the held introducer stays bounded.
 const MAX_IDENT_DIGITS = 16;
 const IDENT_PREFIX = /^0*(?:6(?:3(?:3)?)?)?$/;
 const IDENT_633 = /^0*633$/;
-// A raw C0 control or DEL inside a body: the scripts escape every one, so the sequence is malformed. A C1 control arrives
-// raw inside a UTF-8 name and is refused by the field it lands in.
+// xterm's PAYLOAD_LIMIT (common/parser/Constants.ts): its OSC handler never sees a longer payload.
+const XTERM_OSC_PAYLOAD_LIMIT = 10_000_000;
+// A raw C0 control or DEL inside a body: the scripts escape every one, so the sequence is malformed. A C1 control ends
+// the sequence before it reaches a body.
 // eslint-disable-next-line no-control-regex -- the C0 controls and DEL are what this matches
 const RAW_CONTROL = /[\x00-\x1f\x7f]/;
+// eslint-disable-next-line no-control-regex -- the C0 controls xterm never puts into an OSC payload
+const C0_CONTROLS = /[\x00-\x1f]/g;
+
+// xterm's EXECUTABLES: run at once after a lone ESC, which still waits, and ignored inside an OSC, where BEL ends it instead.
+function isExecutable(char: string): boolean {
+  const code = char.charCodeAt(0);
+  return code < 0x18 || code === 0x19 || (code >= 0x1c && code < 0x20);
+}
+
+const isC1 = (char: string): boolean => char >= '\x80' && char <= '\x9f';
+
+// An ident's digits without leading zeros while it may still be 633, else 'x'.
+function identSoFar(digits: string): string {
+  const id = digits.replace(/^0+/, '');
+  return IDENT_PREFIX.test(id) ? id : 'x';
+}
+
+interface Discard {
+  readonly kind: 'discard';
+  readonly escape: boolean;
+  // the ident as identSoFar reads it while xterm still reads it; null after it
+  readonly ident: string | null;
+  // after the ident: xterm hands the end to its 633 handler unless the payload passes its limit
+  readonly handled: boolean;
+  // the characters xterm has put into the payload
+  readonly payload: number;
+}
 
 type ParserState =
   | { readonly kind: 'ground' }
@@ -33,33 +66,62 @@ type ParserState =
   | { readonly kind: 'ident'; readonly digits: string }
   // escape: an ESC was read and the next character decides between ST and an abort
   | { readonly kind: 'body'; readonly body: string; readonly malformed: boolean; readonly escape: boolean }
-  // a body past MAX_SHELL_SEQUENCE_CHARS: dropped through its end
-  | { readonly kind: 'discard'; readonly escape: boolean };
+  // past MAX_IDENT_DIGITS or MAX_SHELL_SEQUENCE_CHARS: stripped through its end, counted as xterm counts it
+  | Discard;
+
+// One more character of a discarded sequence, as xterm's OscParser reads it.
+function discarded(state: Discard, char: string): Discard {
+  if (isExecutable(char)) return state;
+  if (state.ident === null) return { ...state, payload: state.payload + 1 };
+  if (char >= '0' && char <= '9') return { ...state, ident: identSoFar(state.ident + char) };
+  return { ...state, ident: null, handled: char === ';' && state.ident === '633' };
+}
+
+// Whether xterm hands this sequence's end to its 633 handler.
+function handled(state: Extract<ParserState, { kind: 'body' | 'discard' }>): boolean {
+  if (state.kind === 'body') return true;
+  return state.ident === null ? state.handled && state.payload <= XTERM_OSC_PAYLOAD_LIMIT : state.ident === '633';
+}
 
 export interface ParsedChunk {
   // the input without its OSC 633 sequences, minus a partial introducer held for the next chunk
   readonly data: string;
-  // the complete, well-formed sequences' fields (after `633;`, split on ';'), each at its offset into data
-  readonly sequences: ReadonlyArray<{ readonly offset: number; readonly fields: readonly string[] }>;
+  // the complete, well-formed sequences' fields (after `633;`, split on ';'), each at its offset into data, with its index
+  // among the sequences since the stream began
+  readonly sequences: ReadonlyArray<{ readonly offset: number; readonly fields: readonly string[]; readonly index: number }>;
   // characters that will never be forwarded, counted as soon as they are known to belong to a 633 sequence
   readonly stripped: number;
 }
 
 /**
- * One terminal's output stream with every OSC 633 sequence removed, trusted or not. A sequence ends at BEL or ESC \; an ESC
- * not followed by \, CAN or SUB inside one aborts it (the ESC starts what follows). A partial sequence waits for the next
- * chunk and no character of a 633 sequence is ever forwarded. Only an introducer that may still turn out to be another
- * OSC is held back unacknowledged, so flow control never stalls on a long or endless sequence.
+ * One terminal's output stream with every OSC 633 sequence removed, trusted or not, read as xterm's parser reads it. A
+ * sequence ends at BEL, C1 ST or ESC \; an ESC not followed by \ ends it too and starts what follows; CAN, SUB or another
+ * C1 control cancels it. A partial sequence waits for the next chunk and no character of a 633 sequence is ever forwarded.
+ * Only an introducer that may still turn out to be another OSC is held back unacknowledged, so flow control never stalls on
+ * a long or endless sequence.
  */
 export class Osc633Stream {
   private state: ParserState = { kind: 'ground' };
+  // Every sequence xterm hands its OSC 633 handler counts, malformed and ended by ESC included, so an index names the same
+  // sequence as the pty host's screen counts it (pty-host/screen.ts); a cancelled one is not counted.
+  private dispatched: number;
   // ESC, `]` or C1 OSC and ident digits: forwarded if the sequence is not 633, stripped if it is
   private held = '';
+
+  // next: the index of the stream's first sequence, a restored screen's count when the stream starts after it
+  constructor(next = 0) {
+    this.dispatched = next;
+  }
+
+  /** The index the next sequence gets. */
+  get next(): number {
+    return this.dispatched;
+  }
 
   push(chunk: string): ParsedChunk {
     let out = '';
     let stripped = 0;
-    const sequences: Array<{ offset: number; fields: string[] }> = [];
+    const sequences: Array<{ offset: number; fields: string[]; index: number }> = [];
     const release = (): void => {
       out += this.held;
       this.held = '';
@@ -71,7 +133,10 @@ export class Osc633Stream {
       this.state = { kind: 'body', body: '', malformed, escape: false };
     };
     const end = (state: Extract<ParserState, { kind: 'body' | 'discard' }>): void => {
-      if (state.kind === 'body' && !state.malformed) sequences.push({ offset: out.length, fields: state.body.split(';') });
+      if (handled(state)) {
+        const index = this.dispatched++;
+        if (state.kind === 'body' && !state.malformed) sequences.push({ offset: out.length, fields: state.body.split(';'), index });
+      }
       this.state = { kind: 'ground' };
     };
     let i = 0;
@@ -93,6 +158,10 @@ export class Osc633Stream {
           this.held += char;
           this.state = { kind: 'ident', digits: '' };
           i += 1;
+        } else if (isExecutable(char) || char === DEL) {
+          // xterm runs it, or ignores DEL, and still waits on the ESC
+          out += char;
+          i += 1;
         } else {
           // not an OSC: the ESC goes out and this character is read again from the ground state
           release();
@@ -108,15 +177,19 @@ export class Osc633Stream {
         } else if (digit) {
           stripped += this.held.length + 1;
           this.held = '';
-          this.state = { kind: 'discard', escape: false };
+          this.state = { kind: 'discard', escape: false, ident: identSoFar(state.digits + char), handled: false, payload: 0 };
           i += 1;
         } else if (IDENT_633.test(state.digits) && char === ';') {
           stripped += 1;
           i += 1;
           enterBody(false);
-        } else if (IDENT_633.test(state.digits) && (char === BEL || char === ESC)) {
+        } else if (IDENT_633.test(state.digits) && (char === BEL || char === ESC || char === C1_ST)) {
           // `633` with no fields: nothing to trust; this character ends it as it would end a body
           enterBody(true);
+        } else if (isExecutable(char) && char !== BEL) {
+          // xterm ignores it inside an OSC
+          stripped += 1;
+          i += 1;
         } else {
           // another OSC (title, hyperlink, ...): forwarded untouched, this character read again from the ground state
           release();
@@ -129,10 +202,16 @@ export class Osc633Stream {
           i += 1;
           end(state);
         } else {
-          // the ESC aborted the sequence and starts whatever follows, this character read again after it
+          // the ESC ended the sequence and starts whatever follows, this character read again after it
+          if (handled(state)) this.dispatched++;
           this.held = ESC;
           this.state = { kind: 'escape' };
         }
+        continue;
+      }
+      if (isC1(char) && char !== C1_ST) {
+        // the sequence ends unhandled and this control is read again from the ground state
+        this.state = { kind: 'ground' };
         continue;
       }
       i += 1;
@@ -141,14 +220,17 @@ export class Osc633Stream {
         continue;
       }
       stripped += 1;
-      if (char === BEL) {
+      if (char === BEL || char === C1_ST) {
         end(state);
       } else if (char === CAN || char === SUB) {
         this.state = { kind: 'ground' };
-      } else if (state.kind === 'body') {
+      } else if (state.kind === 'discard') {
+        this.state = discarded(state, char);
+      } else {
+        const body = state.body + char;
         this.state = state.body.length >= MAX_SHELL_SEQUENCE_CHARS
-          ? { kind: 'discard', escape: false }
-          : { ...state, body: state.body + char, malformed: state.malformed || RAW_CONTROL.test(char) };
+          ? { kind: 'discard', escape: false, ident: null, handled: true, payload: body.replace(C0_CONTROLS, '').length }
+          : { ...state, body, malformed: state.malformed || RAW_CONTROL.test(char) };
       }
     }
     return { data: out, sequences, stripped };

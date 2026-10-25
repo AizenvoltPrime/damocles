@@ -1,9 +1,11 @@
-import { promises as fs, type Stats } from 'node:fs';
 import * as path from 'node:path';
 import type { QuickOpenScope } from '../../preload/overlay-channels';
 import type { FileRef } from '../../preload/shell-channels';
 import { MAX_TERMINAL_LINK_PATH_LENGTH, type TerminalLinkKind } from '../../preload/terminal-channels';
-import { confineExisting, type Project } from '../../local-services/confine';
+import type { Project } from '../../local-services/confine';
+
+// What an existing path inside the project is after every link is followed, on the host that holds it; null for anything else.
+export type LinkKindOf = (project: Project, relativePath: string) => Promise<TerminalLinkKind | null>;
 
 // How a terminal writes paths: a Windows shell, a WSL distro's shell on Windows, or a macOS or Linux shell.
 export type LinkPathStyle = 'win32' | 'wsl' | 'posix';
@@ -89,24 +91,11 @@ export function linkRelativePath(candidate: string, base: LinkBase): string | un
 }
 
 /** A candidate that names an existing file or folder inside the project after every link is followed; null otherwise. */
-export async function resolveTerminalLink(candidate: string, base: LinkBase, log: (line: string) => void): Promise<ResolvedTerminalLink | null> {
+export async function resolveTerminalLink(candidate: string, base: LinkBase, kindOf: LinkKindOf): Promise<ResolvedTerminalLink | null> {
   const relativePath = linkRelativePath(candidate, base);
   if (relativePath === undefined) return null;
-  const confined = await confineExisting(base.project, relativePath);
-  if (!confined.ok) {
-    if (confined.reason === 'failed') log(`[terminal] a link inside ${base.project.name} could not be resolved`);
-    return null;
-  }
-  let stat: Stats;
-  try {
-    stat = await fs.stat(confined.path);
-  } catch (err) {
-    // removed since the realpath
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw err;
-  }
-  if (stat.isFile()) return { kind: 'file', relativePath };
-  return stat.isDirectory() ? { kind: 'folder', relativePath } : null;
+  const kind = await kindOf(base.project, relativePath);
+  return kind === null ? null : { kind, relativePath };
 }
 
 interface CacheEntry {
@@ -158,10 +147,10 @@ function cacheKey(candidate: string, base: LinkBase): string {
 /** Link resolution for every terminal of the window; hover-time answers come from the cache, an open always resolves again. */
 export class TerminalLinks {
   private readonly cache: TerminalLinkCache;
-  private readonly log: (line: string) => void;
+  private readonly kindOf: LinkKindOf;
 
-  constructor(log: (line: string) => void, cache: TerminalLinkCache = new TerminalLinkCache()) {
-    this.log = log;
+  constructor(kindOf: LinkKindOf, cache: TerminalLinkCache = new TerminalLinkCache()) {
+    this.kindOf = kindOf;
     this.cache = cache;
   }
 
@@ -175,7 +164,7 @@ export class TerminalLinks {
   }
 
   async resolveFresh(candidate: string, base: LinkBase): Promise<ResolvedTerminalLink | null> {
-    const resolved = await resolveTerminalLink(candidate, base, this.log);
+    const resolved = await resolveTerminalLink(candidate, base, this.kindOf);
     this.cache.set(cacheKey(candidate, base), resolved);
     return resolved;
   }

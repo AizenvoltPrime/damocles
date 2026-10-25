@@ -1,4 +1,4 @@
-import { promises as fs, type Stats } from 'node:fs';
+import { promises as fs, type BigIntStats } from 'node:fs';
 import * as path from 'node:path';
 import { canonicalPath } from '../../core/canonical-path';
 import { followsLocalLinksOnly } from '../../core/local-links';
@@ -107,7 +107,7 @@ export async function confineOrCreateFolder(project: Project, relativeDir: strin
  * lead to a UNC or device path, and the result is that parent plus the last segment, so a rename, trash or reveal of a link
  * acts on the link and never on what it points to.
  */
-export async function confineEntry(project: Project, relativePath: string): Promise<Confined & { readonly stat?: Stats }> {
+export async function confineEntry(project: Project, relativePath: string): Promise<{ readonly ok: true; readonly path: string; readonly stat: BigIntStats } | { readonly ok: false; readonly reason: ConfineFailure }> {
   if (!isRelativeFilePath(relativePath)) return { ok: false, reason: 'outside' };
   const lexical = lexicalJoin(project.fsPath, relativePath);
   if (lexical === undefined) return { ok: false, reason: 'outside' };
@@ -116,7 +116,7 @@ export async function confineEntry(project: Project, relativePath: string): Prom
     const [realRoot, realParent] = await Promise.all([realRootOf(project), fs.realpath(path.dirname(lexical))]);
     if (!isInsideRealRoot(realRoot, realParent)) return { ok: false, reason: 'outside' };
     const entry = path.join(realParent, path.basename(lexical));
-    const stat = await fs.lstat(entry);
+    const stat = await fs.lstat(entry, { bigint: true });
     return { ok: true, path: entry, stat };
   } catch (err) {
     return { ok: false, reason: isMissing(err) ? 'missing' : 'failed' };

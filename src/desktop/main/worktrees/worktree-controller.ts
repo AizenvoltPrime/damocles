@@ -6,7 +6,6 @@ import type { UpdateOutcome } from '../../../core/worktrees/integrate';
 import type { LeftoverFinding } from '../../../core/worktrees/leftovers';
 import type { ChatWorktreeRecord } from '../../../core/worktrees/registry';
 import { DEFAULT_BRANCH_PREFIX } from '../../../core/worktrees/slug';
-import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { rootKey } from '../../preload/folder-root';
 import type { HostWorktreeUi } from '../core-services/host-services';
 import type { ChatsContinueWorktree, ChatsWorktreeOptions, WorktreeFinishAction, WorktreeFinishState } from '../../preload/shell-channels';
@@ -29,6 +28,10 @@ export interface WorktreeChatUse {
 }
 
 export interface WorktreeControllerDeps {
+  // the core whose registry and git hold these worktrees, and which gives their finish holds: 'local' or a remote host's key
+  readonly authority: string;
+  // the key that host's project at a record's project path has (the path is native to that host)
+  readonly projectKeyOf: (projectPath: string) => string;
   readonly records: WorktreeRecordReader;
   readonly engine: WorktreeEngine;
   readonly roots: WorktreeRoots;
@@ -608,7 +611,7 @@ export class WorktreeController {
   }
 
   private projectKeyOf(record: ChatWorktreeRecord): string {
-    return this.deps.roots.ofWorktree(record.id)?.root.projectKey ?? folderKey(record.projectPath);
+    return this.deps.roots.ofWorktree(record.id, this.deps.authority)?.root.projectKey ?? this.deps.projectKeyOf(record.projectPath);
   }
 
   private rootKeyOf(record: ChatWorktreeRecord): string {

@@ -43,13 +43,18 @@ export interface ChatFolders {
   onDidChange(cb: () => void): Disposable;
 }
 
-export interface DesktopSettingsStoreDeps {
+export interface RemoteSettings {
+  readonly fromHostTab: () => boolean;
+  readonly clientSettings: () => SettingsObject | undefined;
+  readonly onDidChangeClientSettings: (cb: () => void) => Disposable;
+}
+
+interface StoreDeps {
   readonly userFile: string;
   readonly contributed: ContributedConfiguration;
   readonly fileWatchers: FileWatcherFactory;
   readonly projects: WorkspaceFolders;
   readonly trust: TrustService;
-  readonly defaultProject: DefaultProject;
   readonly chatFolders: ChatFolders;
   // where a file that stops parsing is reported, once until it parses again; undefined only logs it. One process of the
   // app reports, so one typo is one toast.
@@ -57,6 +62,15 @@ export interface DesktopSettingsStoreDeps {
   readonly localization: LocalizationService;
   readonly log: (line: string) => void;
 }
+
+// The app's own core reads with no folder from the window's default project. A daemon's core has no window and every
+// client's folders open, so it takes no default project: userFile is its host's machine layer, and the user layer is the
+// acting client's clientUser settings, which it never writes. A user-scope write lands in the machine file only from the
+// settings overlay's host tab.
+export type DesktopSettingsStoreDeps = StoreDeps & (
+  | { readonly defaultProject: DefaultProject; readonly remote?: undefined }
+  | { readonly remote: RemoteSettings; readonly defaultProject?: undefined }
+);
 
 interface Layers {
   readonly user: SettingsObject;
@@ -105,6 +119,9 @@ export function withDesktopConfiguration(contributed: ContributedConfiguration):
     keys: [...contributed.keys, ...desktop.map(([key]) => key)],
     defaults: new Map([...contributed.defaults, ...desktop.map(([key, property]) => [key, property.default] as const)]),
     userOnlyKeys: new Set([...contributed.userOnlyKeys, ...desktop.filter(([, property]) => property.scope === 'application').map(([key]) => key)]),
+    clientOnlyKeys: new Set([...contributed.clientOnlyKeys, ...desktop.filter(([, property]) => property.scope === 'application').map(([key]) => key)]),
+    resourceKeys: contributed.resourceKeys,
+    machineKeys: contributed.machineKeys,
   };
 }
 
@@ -123,7 +140,8 @@ function resolved(folder: SettingsFolder): { path: string; personalPath: string 
 /**
  * `damocles.*` keys, flat beside the `permissions` object, in three files: user `~/.damocles/settings.json` always, and
  * for a folder its project `<path>/.damocles/settings.json` and local `<personalPath>/.damocles/settings.local.json`
- * only while `personalPath` is trusted. A read with no folder uses the default project's. Precedence local > project >
+ * only while `personalPath` is trusted. A read with no folder uses the default project's, and a daemon's core has none,
+ * so there it reads no project file. Precedence local > project >
  * user > package.json default, with object values merged across layers; user-only keys never come from a project or
  * local file. A file that stops parsing keeps the layer it last parsed. Each folder's layers are cached and watched
  * while the default project or a loaded chat uses it. See docs/invariants.md "Desktop host".
@@ -143,6 +161,8 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
   private readonly written = new Set<string>();
   private emptyRetry: NodeJS.Timeout | undefined;
   private user: SettingsObject;
+  // a daemon's core: the client's user layer at the last change notice, which the next notice diffs against
+  private notifiedClient: SettingsObject = {};
   private disposed = false;
   // the entry window-level reads used at the last default-project change
   private windowKey: string | undefined;
@@ -160,10 +180,19 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
     this.subscriptions.push(
       userWatcher,
       deps.projects.onDidChange(windowChange),
-      deps.defaultProject.onDidChange(windowChange),
       deps.chatFolders.onDidChange(() => this.releaseUnused()),
       deps.trust.onDidGrantTrust(() => this.reloadAll(false)),
     );
+    if (deps.defaultProject !== undefined) this.subscriptions.push(deps.defaultProject.onDidChange(windowChange));
+    const remote = deps.remote;
+    if (remote !== undefined) {
+      this.notifiedClient = { ...remote.clientSettings() };
+      this.subscriptions.push(remote.onDidChangeClientSettings(() => {
+        const before = this.notifiedClient;
+        this.notifiedClient = { ...remote.clientSettings() };
+        this.fire(changedKeys({ user: before }, { user: this.notifiedClient }));
+      }));
+    }
     const windowEntry = this.windowEntry();
     this.windowKey = windowEntry === undefined ? undefined : entryKey(windowEntry);
   }
@@ -172,7 +201,7 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
   get<T>(key: string, defaultValue: T, folder?: SettingsFolder): T;
   get<T>(key: string, defaultValue?: T, folder?: SettingsFolder): T | undefined {
     const inspection = this.inspect<T>(key, folder);
-    const values = (['defaultValue', 'userValue', 'projectValue', 'localValue'] as const)
+    const values = (['defaultValue', 'userValue', 'machineValue', 'projectValue', 'localValue'] as const)
       .filter((layer) => layer in inspection)
       .map((layer) => inspection[layer]);
     return values.length === 0 ? defaultValue : (mergeSettingValues(values) as T);
@@ -182,9 +211,19 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
     const { user, project, local } = this.layersFor(folder);
     const contributed = this.deps.contributed.defaults.get(key);
     const defaultValue = contributed !== undefined ? contributed : HOST_DEFAULTS[key];
+    const own = Object.hasOwn(user, key);
+    if (this.deps.remote !== undefined && this.isMachineKey(key)) return defaultValue !== undefined ? { defaultValue: defaultValue as T } : {};
+    // read per call, since a pinned turn reads its own client's layer whoever acts later
+    const client = this.deps.remote?.clientSettings() ?? {};
+    const file = this.deps.remote === undefined
+      ? (own ? { userValue: user[key] as T } : {})
+      : {
+          ...(Object.hasOwn(client, key) ? { userValue: client[key] as T } : {}),
+          ...(own && !this.isClientOnly(key) ? { machineValue: user[key] as T } : {}),
+        };
     return {
       ...(defaultValue !== undefined ? { defaultValue: defaultValue as T } : {}),
-      ...(Object.hasOwn(user, key) ? { userValue: user[key] as T } : {}),
+      ...file,
       ...(project !== undefined && Object.hasOwn(project, key) ? { projectValue: project[key] as T } : {}),
       ...(local !== undefined && Object.hasOwn(local, key) ? { localValue: local[key] as T } : {}),
     };
@@ -197,6 +236,7 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
   }
 
   async update(key: string, value: unknown, scope: SettingsScope, folder?: SettingsFolder): Promise<void> {
+    if (scope === 'user' && this.deps.remote !== undefined) this.checkMachineWrite(key);
     const filePath = scope === 'user' ? this.deps.userFile : this.writableProjectFile(key, scope, folder);
     this.written.add(filePath);
     await writeJsonConfig(filePath, (current) => {
@@ -235,7 +275,7 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
 
   private targetFolder(folder: SettingsFolder | undefined): { path: string; personalPath: string } | undefined {
     if (folder !== undefined) return resolved(folder);
-    const fallback = this.deps.defaultProject.folder();
+    const fallback = this.deps.defaultProject?.folder();
     return fallback === undefined ? undefined : { path: fallback, personalPath: fallback };
   }
 
@@ -307,6 +347,28 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
       throw new Error(`${target.personalPath} is not trusted, so ${key} cannot be written to its ${scope} settings`);
     }
     return projectFile(target, scope);
+  }
+
+  // On a daemon's core user settings change only on the client, and a user-home setter writes this host's machine file
+  // only from the host tab, for a key a host may hold.
+  private checkMachineWrite(key: string): void {
+    if (!this.deps.remote?.fromHostTab()) throw new Error(this.deps.localization.t('User settings change only in the User tab on this computer, so {0} was not changed on this host.', key));
+    if (this.isClientOnly(key)) throw new Error(this.deps.localization.t('{0} applies only on this computer, so it cannot be set for this host.', key));
+  }
+
+  // a machine-scoped key configures voice, which runs on the client, so a daemon's core reads it from no layer
+  private isMachineKey(key: string): boolean {
+    for (const machine of this.deps.contributed.machineKeys) {
+      if (key === machine || machine.startsWith(`${key}.`) || key.startsWith(`${machine}.`)) return true;
+    }
+    return false;
+  }
+
+  private isClientOnly(key: string): boolean {
+    for (const clientOnly of this.deps.contributed.clientOnlyKeys) {
+      if (key === clientOnly || clientOnly.startsWith(`${key}.`) || key.startsWith(`${clientOnly}.`)) return true;
+    }
+    return false;
   }
 
   // A key that is, contains or sits under a user-only key, so an object value cannot smuggle one in.

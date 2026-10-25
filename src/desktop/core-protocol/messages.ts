@@ -11,6 +11,8 @@ import type { WorkerName } from '../../platform/app-paths';
 import type { PickFileOptions, PickFolderOptions, InputBoxOptions } from '../../platform/dialog-service';
 import type { ActiveEditorContext, DiffSide, OpenFileOptions } from '../../platform/editor-service';
 import type { OpenFolder } from '../../platform/workspace-folders';
+import type { PageSpec } from '../../shared/panel-html';
+import { MAX_BROKER_EXPIRES_IN_MS, type BrokerAnswer, type ClientAuth, type ClientPolicy, type ClientUser, type HeldAuth } from '../../shared/remote-user';
 import { SETTINGS_ACCOUNT_IDS, SETTINGS_SECTION_IDS, type SettingsAccountId, type SettingsSectionId } from '../../shared/settings-sections';
 import { WORKTREE_PHASES, type ChatPlace, type ChatReviewScope, type SettingsFileScope, type WorktreeFinishAction } from '../../shared/types/messages';
 import { MAX_CALL_ARGS, REPOSITORY_CALLS, SCM_CALLS, WORKTREE_CALLS, type RepositoryCall, type ScmCall, type WorktreeCall } from './scm-calls';
@@ -36,6 +38,10 @@ export const PAGE_STATE_TYPES: ReadonlySet<string> = new Set(['urlChanged', 'nav
 export const DIFF_TITLE_NAME = '\u0000name\u0000';
 
 export type StateScope = 'global' | 'workspace';
+
+// The key-value state that is the client's on a daemon's core, set in the User tab: the language preference
+// (LANGUAGE_PREFERENCE_KEY) and the prefer-API-key flag (OPENAI_PREFER_API_KEY_STATE). A daemon's core never writes them.
+export const CLIENT_STATE_KEYS: readonly string[] = ['userLanguagePreference', 'damocles.openai.preferApiKey'];
 
 /**
  * A panel envelope's panelId is its view's id on both sides: core issues it for a panel core creates, main for a chat view
@@ -121,7 +127,7 @@ export interface CoreRequests {
   'editor.readText': Call<{ readonly path: string }, string>;
   'editor.showDiff': Call<DiffShow, { readonly viewId: string }>;
   'editor.closeDiff': Call<{ readonly viewId: string }, void>;
-  'editor.showMarkdownPreview': Call<{ readonly path: string; readonly panelId?: string }, void>;
+  'editor.showMarkdownPreview': Call<{ readonly path: string; readonly panelId?: string; readonly content?: string }, void>;
   'editor.openHostSettings': Call<{ readonly query?: string; readonly section?: SettingsSectionId }, void>;
   'editor.openSettingsFile': Call<{ readonly scope: SettingsFileScope; readonly key?: string }, void>;
   'editor.showChatReview': Call<{ readonly panelId: string; readonly scope: ChatReviewScope }, void>;
@@ -149,7 +155,13 @@ export interface CoreRequests {
   'worktrees.confirmHandOff': Call<{ readonly direction: 'toWorktree' | 'toProject'; readonly branch?: string; readonly files: readonly HandOffFile[] }, boolean>;
   'worktrees.showRefusal': Call<{ readonly kind: 'handOff' | 'apply'; readonly files: readonly WorktreeFileEntry[] }, void>;
   'worktrees.showApplyConflicts': Call<{ readonly worktreeId: string; readonly files: readonly string[] }, void>;
+  // a daemon's core: the token broker's ask, answered by the client clientId names and no other
+  'user.credentials': Call<{ readonly provider: string; readonly clientId: string }, BrokerAnswer>;
+  // a daemon's core: speak a chat's final reply on the client that shows the view
+  'user.voice.speak': Call<{ readonly viewId: string; readonly text: string }, void>;
 }
+
+export type { BrokerAnswer, ClientAuth, ClientPolicy, ClientUser, HeldAuth };
 
 export type CredentialKind = 'username' | 'password' | 'passphrase' | 'confirm' | 'notice';
 
@@ -230,9 +242,13 @@ export interface MainRequests {
   'review.stale': Call<{ readonly panelId: string; readonly checks: readonly unknown[] }, readonly unknown[]>;
   'review.submit': Call<{ readonly panelId: string; readonly drafts: readonly unknown[] }, unknown>;
   // the settings modal attached to a chat (PanelManager.attachView); its posts come back as settingsView.post
-  'settingsView.attach': Call<{ readonly panelId: string; readonly attachment: number }, void>;
+  // scope: the settings overlay tab it serves (absent: a local chat's overlay); the view shows only the keys that scope writes
+  'settingsView.attach': Call<{ readonly panelId: string; readonly attachment: number; readonly scope?: SettingsViewScope }, void>;
   'settingsView.dispatch': Call<{ readonly attachment: number; readonly message: unknown }, void>;
   'settingsView.detach': Call<{ readonly attachment: number }, void>;
+  // a view main made for a panel core holds, whose page holds the panel's token as viewKey; answers the panel's id, or null
+  // when no panel holds that token. Core replays the conversation and live state to it, never changing the panel's token.
+  'views.join': Call<{ readonly viewId: string; readonly viewKey: string }, { readonly panelId: string } | null>;
   // core's ScmService (scm-calls.ts): a method of SCM_CALLS with its arguments, answered with its result
   'scm.call': Call<{ readonly method: ScmCall; readonly args: readonly unknown[] }, unknown>;
   // ScmService.commit; branchName names the token core asks scm.branchName with, saved the documents saved just before
@@ -259,7 +275,23 @@ export interface MainRequests {
   // the first call starts core's recursive watch of folder; every call returns the paths it reported created
   'e2e.watchProbe': Call<{ readonly folder: string }, readonly string[]>;
   'e2e.stopWatchProbe': Call<{ readonly folder: string }, void>;
+  // core's voice recording starts a stand-in recorder from now on and transcribes as transcript; pid is core's
+  'e2e.fakeVoice': Call<{ readonly transcript: string }, { readonly pid: number }>;
+  // how often core started a recorder since fakeVoice, and the last one's pid
+  'e2e.voiceRecorder': Call<object, { readonly starts: number; readonly recorderPid: number | null }>;
+  // this computer's core: a credential for a daemon's broker, resolved and refreshed by its own pi
+  'user.resolveCredential': Call<{ readonly provider: string }, BrokerAnswer>;
+  // this computer's core: every provider pi knows with its non-secret credential state, for the clientAuth mirror
+  'user.clientAuth': Call<object, HeldAuth>;
+  // this computer's core speaks a remote chat's reply; its voice consent applies
+  'user.voice.speak': Call<{ readonly viewId: string; readonly text: string }, void>;
+  // this computer's core: a proxy for a remote chat's view, which only VOICE_VIEW_MESSAGES reach
+  'panels.attachForeign': Call<{ readonly authority: string; readonly viewId: string }, void>;
+  'panels.detachForeign': Call<{ readonly viewId: string }, void>;
+  'panels.foreignMessage': Call<{ readonly viewId: string; readonly message: unknown }, void>;
 }
+
+export type SettingsViewScope = 'user' | 'machine' | 'project';
 
 export type MentionTargetData = { readonly projectKey: string; readonly relativePath: string } | { readonly path: string };
 
@@ -282,6 +314,12 @@ export interface CoreEvents {
   'scm.changed': { readonly event: unknown };
   'worktrees.newChatInWorktree': { readonly projectPath: string; readonly worktreeId: string };
   'worktrees.newChatInProject': { readonly projectPath: string };
+  // a daemon's core: the providers a chat's runs read through the token broker, for the daemon's run registry
+  'chat.providers': { readonly panelId: string; readonly providers: readonly string[] };
+  // this computer's core: a foreign proxy's post to a remote chat's view, which main delivers after its own checks
+  'panel.foreignPost': { readonly viewId: string; readonly message: unknown };
+  // this computer's core: a credential changed, so user.clientAuth answers differently
+  'user.clientAuthChanged': object;
 }
 
 export interface MainEvents {
@@ -344,15 +382,27 @@ export interface MirrorTopics {
   panel: { readonly panelId: string; readonly visible: boolean; readonly active: boolean; readonly column?: number };
   editor: { readonly context?: ActiveEditorContext };
   terminal: { readonly shown: boolean; readonly shortcut: string };
-  theme: { readonly css: string };
   // the UI language core's localization follows
   language: { readonly language: 'en' | 'el' };
+  // per client: a client publishes its own value; the daemon stamps its id for the client, value undefined when it detached
+  clientAuth: ClientDelta<ClientAuth>;
+  clientUser: ClientDelta<ClientUser>;
+  clientPolicy: ClientDelta<ClientPolicy>;
+  // the daemon's: the client that most recently sent core a message, published before that message; a client's is dropped
+  actingClient: { readonly clientId?: string };
+}
+
+/** A client's value of a per-client mirror; clientId is the daemon's id for that client, and a client never sets it. */
+export interface ClientDelta<T> {
+  readonly clientId?: string;
+  readonly value?: T;
 }
 
 /** Panel envelopes core sends, addressed to a view by its id. */
 export interface CorePanelOps {
   create: PanelCreate;
-  setHtml: { readonly html: string };
+  // main builds the page itself; core never sends HTML
+  showPage: { readonly page: PageSpec };
   // a webview message as JSON text, which main forwards unparsed; type is the message's own
   post: { readonly type: string; readonly json: string };
   // a webview message holding binary (a browser page's frame), structured-cloned
@@ -364,10 +414,13 @@ export interface CorePanelOps {
   close: object;
 }
 
-/** Panel envelopes main sends about a core panel's view. disposed.error: the view could not be created. */
+/**
+ * Panel envelopes main sends about a core panel's view. disposed.error: the view could not be created. reason: user, the
+ * user closed the chat; detach, a quit, window teardown or disconnect took the view away (a daemon keeps a panel with a run).
+ */
 export interface MainPanelOps {
   message: { readonly message: unknown };
-  disposed: { readonly error?: string };
+  disposed: { readonly error?: string; readonly reason: 'user' | 'detach' };
 }
 
 /** What core needs from main before its platform exists: static host facts and every mirror's value at version 0. */
@@ -393,14 +446,20 @@ export interface CoreInit {
   readonly endedCores: readonly EndedLeaseHolder[];
   // the worktree records main last read from a core, which the registry serves while registry.json does not parse
   readonly worktreeRecords: readonly unknown[];
+  // set only for a daemon's core: it deletes permanently where it would trash and refuses every user-scope write
+  readonly remote?: { readonly hostId: string };
   readonly mirrors: {
     readonly state: { readonly global: Readonly<Record<string, unknown>>; readonly workspace: Readonly<Record<string, unknown>> };
     readonly trust: { readonly keys: readonly string[] };
     readonly folders: MirrorTopics['folders'];
     readonly editor: MirrorTopics['editor'];
     readonly terminal: MirrorTopics['terminal'];
-    readonly theme: MirrorTopics['theme'];
     readonly language: MirrorTopics['language'];
+    // by client id: a daemon's attached clients; a local core's one client is LOCAL_CLIENT_ID, with allowBypass true
+    readonly clientAuth: Readonly<Record<string, ClientAuth>>;
+    readonly clientUser: Readonly<Record<string, ClientUser>>;
+    readonly clientPolicy: Readonly<Record<string, ClientPolicy>>;
+    readonly actingClient: MirrorTopics['actingClient'];
   };
 }
 
@@ -576,6 +635,44 @@ const scmRepositoryState = obj({
   lastRemote: nullable(obj({ op: oneOf(REMOTE_OPS), outcome: oneOf(REMOTE_OUTCOMES), stashKept: bool, seq: int(0, Number.MAX_SAFE_INTEGER) })),
 });
 const callArgs = arr(value, MAX_CALL_ARGS);
+const strings = arr(label, MAX_ITEMS);
+const brokerAnswer: Parser<BrokerAnswer> = either(
+  obj({
+    type: oneOf(['oauth'] as const),
+    access: nonEmpty(MAX_MESSAGE_CHARS),
+    expiresIn: int(0, MAX_BROKER_EXPIRES_IN_MS),
+    refresh: oneOf([''] as const),
+    clientId: opt(label),
+    scopes: opt(strings),
+    enterpriseUrl: opt(message),
+    accountId: opt(label),
+    availableModelIds: opt(strings),
+  }),
+  either(obj({ type: oneOf(['api_key'] as const), key: nonEmpty(MAX_MESSAGE_CHARS) }), obj({ type: oneOf(['none'] as const) })),
+);
+const authType = oneOf(['oauth', 'api_key', 'none'] as const);
+const clientAuth: Parser<ClientAuth> = obj({
+  providers: dict(obj({ type: authType, expiresIn: opt(int(0, Number.MAX_SAFE_INTEGER)), hasKey: bool, flatFee: bool, allowance: opt(bool) }), MAX_ID_CHARS, MAX_ITEMS),
+});
+const heldAuth: Parser<HeldAuth> = obj({
+  providers: dict(obj({ type: authType, expires: opt(num), hasKey: bool, flatFee: bool, allowance: opt(bool) }), MAX_ID_CHARS, MAX_ITEMS),
+});
+const clientUser: Parser<ClientUser> = obj({
+  settings: dict(value, MAX_KEY_CHARS, MAX_ITEMS),
+  permissionRules: arr(obj({ allow: strings, ask: strings, deny: strings, dir: oneOf(['.damocles', '.claude'] as const) }), MAX_ACTIONS),
+});
+const clientPolicy: Parser<ClientPolicy> = obj({
+  voice: bool,
+  allowBypass: bool,
+  defaultPermissionMode: opt(oneOf(['default', 'acceptEdits', 'plan'] as const)),
+  sharedLoopback: opt(bool),
+});
+const clientDelta = <T>(parser: Parser<T>) => obj({ clientId: opt(id), value: opt(parser) });
+const actingClient = obj({ clientId: opt(id) });
+const pageSpec: Parser<PageSpec> = either(
+  obj({ kind: oneOf(['chat', 'error'] as const) }),
+  obj({ kind: oneOf(['browser'] as const), toolbar: bool }),
+);
 
 const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'secrets.get': method(obj({ key }), maybe(message)),
@@ -620,7 +717,7 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
     obj({ viewId: id }),
   ),
   'editor.closeDiff': method(obj({ viewId: id }), done),
-  'editor.showMarkdownPreview': method(obj({ path: filePath, panelId: opt(id) }), done),
+  'editor.showMarkdownPreview': method(obj({ path: filePath, panelId: opt(id), content: opt(text) }), done),
   'editor.openHostSettings': method(obj({ query: opt(label), section: opt(section) }), done),
   'editor.openSettingsFile': method(obj({ scope: oneOf(['user', 'project', 'local'] as const), key: opt(label) }), done),
   'editor.showChatReview': method(obj({ panelId: id, scope: reviewScope }), done),
@@ -661,6 +758,8 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   ),
   'worktrees.showRefusal': method(obj({ kind: oneOf(['handOff', 'apply'] as const), files: arr(worktreeFile, MAX_ITEMS) }), done),
   'worktrees.showApplyConflicts': method(obj({ worktreeId: id, files: arr(filePath, MAX_ITEMS) }), done),
+  'user.credentials': method(obj({ provider: id, clientId: id }), brokerAnswer),
+  'user.voice.speak': method(obj({ viewId: id, text }), done),
 };
 
 const MIRROR_TOPICS: Tables<MainToCore>['mirrors'] = {
@@ -670,8 +769,11 @@ const MIRROR_TOPICS: Tables<MainToCore>['mirrors'] = {
   panel: obj({ panelId: id, visible: bool, active: bool, column }),
   editor: obj({ context: opt(editorContext) }),
   terminal: obj({ shown: bool, shortcut: label }),
-  theme: obj({ css: text }),
   language: obj({ language: oneOf(['en', 'el'] as const) }),
+  clientAuth: clientDelta(clientAuth),
+  clientUser: clientDelta(clientUser),
+  clientPolicy: clientDelta(clientPolicy),
+  actingClient,
 };
 
 const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
@@ -713,9 +815,10 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'review.anchor': method(obj({ panelId: id, comment: value }), maybe(text)),
   'review.stale': method(obj({ panelId: id, checks: rows }), rows),
   'review.submit': method(obj({ panelId: id, drafts: rows }), value),
-  'settingsView.attach': method(obj({ panelId: id, attachment: int(1, Number.MAX_SAFE_INTEGER) }), done),
+  'settingsView.attach': method(obj({ panelId: id, attachment: int(1, Number.MAX_SAFE_INTEGER), scope: opt(oneOf(['user', 'machine', 'project'] as const)) }), done),
   'settingsView.dispatch': method(obj({ attachment: int(1, Number.MAX_SAFE_INTEGER), message: value }), done),
   'settingsView.detach': method(attachmentRef, done),
+  'views.join': method(obj({ viewId: id, viewKey: key }), either(obj({ panelId: id }), nul)),
   'scm.call': method(obj({ method: oneOf(SCM_CALLS), args: callArgs }), value),
   'scm.commit': method(obj({ repoId: id, message: text, variant: value, saved: arr(filePath, MAX_ITEMS), branchName: opt(id) }), value),
   'scm.ignoredIn': method(obj({ projectKey: filePath, relativeDir: str(MAX_PATH_CHARS), entries: arr(obj({ name: filePath, dir: bool }), MAX_ITEMS) }), arr(filePath, MAX_ITEMS)),
@@ -732,6 +835,14 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'e2e.holdShutdown': method(nothing, done),
   'e2e.watchProbe': method(obj({ folder: filePath }), arr(filePath, MAX_ITEMS)),
   'e2e.stopWatchProbe': method(obj({ folder: filePath }), done),
+  'e2e.fakeVoice': method(obj({ transcript: text }), obj({ pid: int(1, 2 ** 32) })),
+  'e2e.voiceRecorder': method(nothing, obj({ starts: count, recorderPid: nullable(int(1, 2 ** 32)) })),
+  'user.resolveCredential': method(obj({ provider: id }), brokerAnswer),
+  'user.clientAuth': method(nothing, heldAuth),
+  'user.voice.speak': method(obj({ viewId: id, text }), done),
+  'panels.attachForeign': method(obj({ authority: filePath, viewId: id }), done),
+  'panels.detachForeign': method(viewRef, done),
+  'panels.foreignMessage': method(obj({ viewId: id, message: value }), done),
 };
 
 export const CORE_TO_MAIN: Tables<CoreToMain> = {
@@ -752,6 +863,9 @@ export const CORE_TO_MAIN: Tables<CoreToMain> = {
     'scm.changed': obj({ event: value }),
     'worktrees.newChatInWorktree': obj({ projectPath: filePath, worktreeId: id }),
     'worktrees.newChatInProject': obj({ projectPath: filePath }),
+    'chat.providers': obj({ panelId: id, providers: arr(id, MAX_ACTIONS) }),
+    'panel.foreignPost': obj({ viewId: id, message: value }),
+    'user.clientAuthChanged': nothing,
   },
   mirrors: {
     chats: obj({ panelId: id, entry: opt(chatEntry) }),
@@ -764,7 +878,7 @@ export const CORE_TO_MAIN: Tables<CoreToMain> = {
   },
   panelOps: {
     create: panelCreate,
-    setHtml: obj({ html: text }),
+    showPage: obj({ page: pageSpec }),
     post: panelPost,
     postBinary: obj({ message: value }),
     setIcon: obj({ path: opt(filePath) }),
@@ -786,7 +900,7 @@ export const MAIN_TO_CORE: Tables<MainToCore> = {
   mirrors: MIRROR_TOPICS,
   panelOps: {
     message: obj({ message: value }),
-    disposed: obj({ error: opt(message) }),
+    disposed: obj({ error: opt(message), reason: oneOf(['user', 'detach'] as const) }),
   },
 };
 
@@ -814,16 +928,23 @@ export const parseCoreInit: Parser<CoreInit> = obj({
   logs: obj({ dir: filePath, echo: bool }),
   endedCores: arr(obj({ pid: int(1, 2 ** 32), endedAt: int(0, Number.MAX_SAFE_INTEGER) }), MAX_ITEMS),
   worktreeRecords: rows,
+  remote: opt(obj({ hostId: id })),
   mirrors: obj({
     state: obj({ global: dict(value, MAX_KEY_CHARS, MAX_ITEMS), workspace: dict(value, MAX_KEY_CHARS, MAX_ITEMS) }),
     trust: obj({ keys: trustedKeys }),
     folders: MIRROR_TOPICS.folders,
     editor: MIRROR_TOPICS.editor,
     terminal: MIRROR_TOPICS.terminal,
-    theme: MIRROR_TOPICS.theme,
     language: MIRROR_TOPICS.language,
+    clientAuth: dict(clientAuth, MAX_ID_CHARS, MAX_ITEMS),
+    clientUser: dict(clientUser, MAX_ID_CHARS, MAX_ITEMS),
+    clientPolicy: dict(clientPolicy, MAX_ID_CHARS, MAX_ITEMS),
+    actingClient,
   }),
 });
+
+/** A client's version-0 values of the per-client mirrors, as control.attachCore carries them. */
+export const parseClientValues: { readonly clientAuth: Parser<ClientAuth>; readonly clientUser: Parser<ClientUser>; readonly clientPolicy: Parser<ClientPolicy> } = { clientAuth, clientUser, clientPolicy };
 
 /** ScmService.setProjects' argument as main sends it in scm.call: each listed root's key and folder. */
 export const parseScmProjects: Parser<readonly { readonly key: string; readonly path: string }[]> = arr(obj({ key: filePath, path: filePath }), MAX_ITEMS);

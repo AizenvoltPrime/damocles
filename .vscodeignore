@@ -174,10 +174,13 @@ bun.lockb
 package-lock.json
 **/*.log
 
-# Desktop app: build output, packaging config, end-to-end suite, Windows icon, terminal shell-integration scripts, and the askpass helper and its scripts (DESKTOP_EXCLUDE_RULES in scripts/sync-vscodeignore.mjs)
+# Desktop app: build output, the daemon and server packages, packaging config, end-to-end suite, Windows icon, terminal shell-integration scripts, and the askpass helper and its scripts (DESKTOP_EXCLUDE_RULES in scripts/sync-vscodeignore.mjs)
 dist/desktop/**
 dist/desktop-shell/**
 dist/core-host.js
+dist/daemon.js
+dist/subscription-plugin/**
+dist/server-packages/**
 dist/formatter-host.js
 dist/pty-host.js
 dist/quick-open-worker.js

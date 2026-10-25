@@ -7,6 +7,11 @@ import { processLauncher, type LaunchedProcess } from '../../../core/process-lau
 import { rgPath } from '@vscode/ripgrep';
 import { build } from 'esbuild';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import type { QuickOpenListingDeps } from '../../workspace/quick-open-listing';
+import { testRemote, testWorkspaces } from './test-workspaces';
+import { FileTree } from '../files/file-tree';
+import { projectKeyOf } from '../../../shared/project-location';
 import * as fuzzy from '../../../core/quick-open/fuzzy-match';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRequest, type PopupAnswer } from '../../preload/overlay-channels';
@@ -14,7 +19,7 @@ import { createQuickOpenFileSearch } from '../../quick-open-worker/file-search';
 import { ripgrepFileArgs, type WorkerReply, type WorkerRequest } from '../../quick-open-worker/protocol';
 import type { Project } from '../../local-services/confine';
 import type { MenuState } from '../menu';
-import { QUICK_OPEN_WORKER_SILENCE_MS, QuickOpenIndex, QuickOpenPicker, type QuickOpenDeps, type QuickOpenWorker } from '../quick-open';
+import { QUICK_OPEN_WORKER_SILENCE_MS, QuickOpenIndex, QuickOpenPicker, type QuickOpenWorker } from '../quick-open';
 import { fakeHandleWhileOpen } from './fake-popup-channels';
 import { NO_SCM_MENU_STATE } from '../scm/scm-host';
 
@@ -106,19 +111,18 @@ async function settled<T>(promise: Promise<T>): Promise<boolean> {
   return done;
 }
 
-function index(startWorker: () => QuickOpenWorker = () => new InProcessWorker(), spawnRg?: QuickOpenDeps['spawnRg'], resolveRg: () => Promise<string> = async () => rgPath): QuickOpenIndex {
+function index(startWorker: () => QuickOpenWorker = () => new InProcessWorker(), spawnRg?: QuickOpenListingDeps['spawnRg'], resolveRg: () => Promise<string> = async () => rgPath): QuickOpenIndex {
   return new QuickOpenIndex({
     projects: () => [alpha, beta],
-    rgPath: resolveRg,
+    workspaces: testWorkspaces({ watchers: createFakePlatform().fileWatchers, rgPath: resolveRg, log: (line) => logged.push(line), ...(spawnRg ? { spawnListingRg: spawnRg } : {}) }),
     ignoreArgs: () => [],
     excludes: () => ['**/.git'],
-    watch: () => undefined,
+    watch: () => true,
     startWorker: () => {
       started++;
       return startWorker();
     },
     log: (line) => logged.push(line),
-    ...(spawnRg ? { spawnRg } : {}),
   });
 }
 
@@ -488,6 +492,75 @@ describe('ripgrep listings main runs for the worker', () => {
     } finally {
       for (const rg of rgs) rg.kill();
     }
+  });
+
+  it('sends neither data nor an end after a kill, as a host\'s listing over the wire sends none', async () => {
+    let exit!: (code: number | null) => void;
+    let output!: (chunk: Buffer) => void;
+    const rg = {
+      onData: (stream: string, listener: (chunk: Buffer) => void) => {
+        if (stream === 'stdout') output = listener;
+      },
+      exited: new Promise<{ code: number | null }>((resolve) => (exit = (code) => resolve({ code }))),
+      closed: Promise.resolve(),
+      kill: () => undefined,
+    } as unknown as LaunchedProcess;
+    const listed: string[] = [];
+    const listing = testWorkspaces({ watchers: createFakePlatform().fileWatchers, spawnListingRg: () => rg }).local.quickOpen.list(alpha.fsPath, [], [], { data: () => listed.push('data'), end: (error) => listed.push(`end ${error}`) });
+    await turnsUntil(() => output !== undefined);
+    listing.kill();
+    output(Buffer.from('a.ts\n'));
+    exit(null);
+    await settled(Promise.resolve());
+    expect(listed).toEqual([]);
+  });
+
+  it('kills each listing once: a killed listing, which never ends, is not killed again when the next worker stops', async () => {
+    const kills: number[] = [];
+    const workers = [new ListingWorker(), new ListingWorker()];
+    const quickOpen = index(() => workers.shift()!, () => {
+      const id = kills.push(0) - 1;
+      return { onData: () => undefined, exited: new Promise(() => undefined), closed: new Promise(() => undefined), kill: () => kills[id]!++ } as unknown as LaunchedProcess;
+    });
+    const search = quickOpen.open();
+    const context = { currentProjectKey: alpha.key, recent: [] };
+    const failing = workers[0]!;
+    void quickOpen.query('a', context, { id: search, generation: 0 });
+    await turnsUntil(() => kills.length === 1);
+    failing.emit('error', new Error('out of memory'));
+    void quickOpen.query('a', context, { id: search, generation: 1 });
+    await turnsUntil(() => kills.length === 2);
+    quickOpen.dispose();
+    expect(kills).toEqual([1, 1]);
+  });
+
+  it('leaves a project whose host is not connected out of a query, and ends a listing the worker asks for it with the reason', async () => {
+    touch(alpha, 'a.ts');
+    const remote = testRemote({ watchers: createFakePlatform().fileWatchers });
+    remote.disconnect('network');
+    const away: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(beta.fsPath)), fsPath: beta.fsPath, name: 'beta' };
+    const workspaces = testWorkspaces({ watchers: createFakePlatform().fileWatchers, remote: () => remote.workspace() });
+    const fileTree = new FileTree({ projects: () => [alpha, away], exclude: () => ({}), workspaces, ask: async () => undefined, t: (message) => message, log: (line) => logged.push(line), reveal: async () => undefined, copy: async () => undefined, changed: () => undefined, ignored: async () => new Set(), target: () => ({ os: process.platform }) });
+    const worker = new InProcessWorker();
+    const quickOpen = new QuickOpenIndex({ projects: () => [alpha, away], workspaces, ignoreArgs: () => [], excludes: () => [], watch: (owner) => fileTree.watch(owner), startWorker: () => worker, log: (line) => logged.push(line) });
+    const search = quickOpen.open();
+    const answer = await quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: search, generation: 0 });
+    expect(answer?.failed).toBeUndefined();
+    expect(answer?.results.map((result) => [result.projectKey, result.relativePath])).toEqual([[alpha.key, 'a.ts']]);
+    expect(await quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: search, generation: 1 })).toMatchObject({ results: [{ relativePath: 'a.ts' }] });
+    quickOpen.dispose();
+
+    const scripted = new ScriptedWorker();
+    const asking = new QuickOpenIndex({ projects: () => [alpha, away], workspaces, ignoreArgs: () => [], excludes: () => [], watch: (owner) => fileTree.watch(owner), startWorker: () => scripted, log: (line) => logged.push(line) });
+    void asking.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: asking.open(), generation: 0 });
+    await turnsUntil(() => scripted.queries.length === 1);
+    expect(scripted.queries[0]!.projects.map((queried) => queried.key)).toEqual([alpha.key]);
+    // a listing the worker still asks for, from a query made before the host went away
+    scripted.emit('message', { kind: 'list', listing: 3, projectKey: away.key });
+    await turnsUntil(() => scripted.received.some((request) => request.kind === 'listEnd'));
+    expect(scripted.received.at(-1)).toEqual({ kind: 'listEnd', listing: 3, error: 'loopback is not connected.' });
+    asking.dispose();
+    fileTree.dispose();
   });
 
   it('starts no ripgrep for a worker that stopped while main looked for ripgrep', async () => {

@@ -54,6 +54,8 @@ export async function pickEntry<T>(quickPick: ScmHostDeps['quickPick'], placehol
 export interface RefFlowHost {
   readonly deps: ScmHostDeps;
   repo(repoId: string): ScmRepository;
+  // refuses an action that acts on this computer's records, buffers or folders by a remote repository's paths
+  localOnly(repoId: string): void;
   setting<T>(key: string, fallback: T): T;
   // the stash's View Stash tabs, now that it left the stash list
   closeStashTabs(repoId: string, hash: string): Promise<void>;
@@ -548,7 +550,8 @@ export class RefFlows {
       void this.deps.notify.info(scope === 'staged' ? t('There are no staged changes to stash.') : t('There are no changes to stash.'));
       return TOLD;
     }
-    if (!(await this.saveBeforeStash(repo.root, groups.index.map((change) => change.path), paths))) return CANCELLED;
+    // a remote repository's files are never matched against this computer's buffers
+    if (repo.authority === 'local' && !(await this.saveBeforeStash(repo.root, groups.index.map((change) => change.path), paths))) return CANCELLED;
     const message = await this.deps.askInput({ prompt: t('Optionally provide a stash message'), placeholder: t('Stash message') });
     if (message === undefined) return CANCELLED;
     const outcome = await this.deps.service.stash(repoId, scope, message, paths);
@@ -776,6 +779,7 @@ export class RefFlows {
 
   // VS Code's _createWorktree: a new branch or a ref to check out, then the folder, then `worktree add`.
   async createWorktree(repoId: string): Promise<ScmRunResult> {
+    this.host.localOnly(repoId);
     const t = this.t.bind(this);
     const CREATE = { kind: 'create' } as const;
     const rows = await this.refRows(repoId, ['branch', 'remote', 'tag']);
@@ -863,6 +867,7 @@ export class RefFlows {
   // project the folder holds; then (slice 12a rule 14) that project and its chats close before `git worktree remove`, and a
   // dirty worktree asks again, then removes with --force. Its chats are then listed read-only under the main project.
   async deleteWorktree(repoId: string, worktreePath?: string): Promise<ScmRunResult> {
+    this.host.localOnly(repoId);
     const t = this.t.bind(this);
     const removable = (await this.worktrees(repoId)).filter((worktree) => !worktree.main && !worktree.current);
     let worktree: WorktreeArtifact | undefined;

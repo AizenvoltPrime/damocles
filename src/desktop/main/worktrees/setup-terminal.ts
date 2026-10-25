@@ -2,7 +2,7 @@
 // another, stopping at the first failure with its exit code.
 import * as path from 'node:path';
 import { findOnAbsolutePath, windowsPowerShell } from '../../../core/system-tools';
-import { NONCE_ENV } from '../terminal/shell-integration-injection';
+import { NONCE_ENV } from '../../workspace/terminal/shell-integration-injection';
 
 export type SetupShellKind = 'powershell' | 'posix' | 'fish';
 
@@ -26,6 +26,15 @@ export function setupShell(platform: NodeJS.Platform, env: Readonly<Record<strin
   if (login !== undefined && name !== undefined && POSIX_SHELLS.has(name)) return { file: login, kind: 'posix' };
   const bash = findOnAbsolutePath('bash', platform, env);
   return bash === undefined ? undefined : { file: bash, kind: 'posix' };
+}
+
+/**
+ * The Setup shell on a remote host, whose environment this computer does not read: Windows PowerShell at its fixed path on a
+ * Windows target, else /bin/sh, which every POSIX target has. undefined: the host's OS is not known yet.
+ */
+export function remoteSetupShell(os: NodeJS.Platform | undefined): SetupShell | undefined {
+  if (os === undefined) return undefined;
+  return os === 'win32' ? { file: windowsPowerShell({}), kind: 'powershell' } : { file: '/bin/sh', kind: 'posix' };
 }
 
 /**

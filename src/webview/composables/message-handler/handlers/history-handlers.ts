@@ -51,7 +51,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
             teamStore.registerTeamFromTool(
               tool.id,
               tool.input as { title?: string; agents?: Array<{ name: string; role: string }> },
-              {
+              tool.live ? undefined : {
                 status: tool.isError ? 'failed' : tool.result ? 'completed' : 'cancelled',
                 ...(tool.result !== undefined && { result: tool.result }),
               },

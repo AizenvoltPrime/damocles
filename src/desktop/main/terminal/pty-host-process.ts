@@ -1,8 +1,8 @@
 import { StringDecoder } from 'node:string_decoder';
 import { app, utilityProcess, type Details } from 'electron';
 import { MAX_HOST_MESSAGE_CHARS, NODE_PTY_ARG_PREFIX, type HostRequest } from '../../pty-host/protocol';
-import { hostEnvironment } from '../formatting/formatter-process';
-import type { PtyHostExit, PtyHostProcess } from './terminal-service';
+import { hostEnvironment } from '../../local-services/host-environment';
+import type { PtyHostExit, PtyHostProcess } from '../../workspace/host-starters';
 
 // The name app's child-process-gone reports the host by, as Details.name.
 export const PTY_HOST_SERVICE_NAME = 'Damocles Terminal';

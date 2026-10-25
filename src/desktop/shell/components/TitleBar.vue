@@ -198,6 +198,7 @@ async function openCenter(): Promise<void> {
       <EnginePill
         :api="api"
         :halted="state.engineHalted"
+        :engines="state.engines"
       />
       <UpdatePill
         :api="api"

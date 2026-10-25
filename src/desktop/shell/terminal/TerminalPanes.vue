@@ -179,7 +179,6 @@ function faded(key: string): void {
         :platform="platform"
         :split-shortcut="splitShortcut"
         :screen-reader="terminal.screenReader"
-        :windows-build="terminal.windowsBuild"
         @resize-pane="(direction: 'left' | 'right', cellPx: number) => resizePane(item.id, direction, cellPx)"
       />
     </div>

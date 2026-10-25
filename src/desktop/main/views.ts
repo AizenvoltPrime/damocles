@@ -1,13 +1,15 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { WebContentsView, type BrowserWindow, type IpcMainEvent, type Rectangle, type WebContents } from 'electron';
 import type { Disposable } from '../../platform/disposable';
 import type { PanelHost, PanelOptions } from '../../platform/window-service';
 import { restoredWorkspaceFolderKey } from '../../shared/restored-folder-key';
+import { browserPageHtml, type BrowserPageStrings } from '../../shared/browser-page-html';
+import { chatPageHtml, errorPageHtml, type ErrorPageStrings, type PageSpec } from '../../shared/panel-html';
 import { CHAT_WORKER_SRC } from '../app-urls';
 import { PAGE_STATE_TYPES } from '../core-protocol';
-import { PANEL_CHANNELS, type PanelInit, type PanelTheme } from '../preload/panel-channels';
+import { PANEL_CHANNELS, type PanelHostLabel, type PanelInit, type PanelTheme } from '../preload/panel-channels';
 import { onWindowActivated, onWindowDeactivated } from './activation-focus';
 import type { PanelStateStore } from './panel-state-store';
 import { APP_ORIGIN, isPanelId, panelPageUrl } from './protocol';
@@ -147,8 +149,19 @@ export interface PagesHost {
   chatClosed(chat: DesktopPanel): void;
 }
 
+// The localized text main builds the error and browser pages with.
+export interface PageStrings {
+  readonly error: ErrorPageStrings;
+  readonly browser: BrowserPageStrings;
+}
+
 interface PanelViewsDeps {
   readonly window: BrowserWindow;
+  // the root holding dist/webview and resources, which a chat page loads its bundle and logo from
+  readonly resourceRoot: string;
+  readonly pageStrings: () => PageStrings;
+  // the host of a remote chat's authority as this computer's host store names it, never as its core does; undefined for a local chat
+  readonly hostLabel: (authority: string) => PanelHostLabel | undefined;
   readonly preloadPath: string;
   readonly states: PanelStateStore;
   readonly pages: PagesHost;
@@ -177,11 +190,15 @@ export interface CreatePanelRequest {
   readonly restore?: { readonly panelId: string; readonly state: unknown };
   // the id core issued for a panel it created
   readonly panelId?: string;
+  // the authority whose core serves the panel; absent for the local core
+  readonly authority?: string;
 }
 
 export class DesktopPanel implements PanelHost {
   readonly panelId: string;
   readonly kind: PanelOptions['kind'];
+  // 'local', or the authority key of the remote core serving the panel; only a local chat persists to panels.json
+  readonly authority: string;
   readonly pageUrl: string;
   // Monaco's workers load from the built webview assets; only a chat renders editors.
   readonly workerSrc?: string;
@@ -208,6 +225,7 @@ export class DesktopPanel implements PanelHost {
     this.deps = deps;
     this.panelId = request.restore?.panelId ?? request.panelId ?? randomUUID();
     this.kind = request.options.kind;
+    this.authority = request.authority ?? chat?.authority ?? 'local';
     this.title = request.options.title;
     this.state = request.restore?.state ?? null;
     this.chat = chat;
@@ -231,7 +249,8 @@ export class DesktopPanel implements PanelHost {
     this.view.setVisible(false);
 
     this.onIpc(PANEL_CHANNELS.init, (event) => {
-      const init: PanelInit = { state: this.state, theme: currentTheme() };
+      const host = this.authority === 'local' ? undefined : deps.hostLabel(this.authority);
+      const init: PanelInit = { state: this.state, theme: currentTheme(), ...(host ? { host } : {}) };
       event.returnValue = init;
     }, (event) => { event.returnValue = null; });
     this.onIpc(PANEL_CHANNELS.post, (_event, payload) => {
@@ -253,7 +272,7 @@ export class DesktopPanel implements PanelHost {
       this.state = state ?? null;
       // A page's address persists from what core reports (observePageMessage), never from the page renderer.
       if (this.kind !== 'chat') return;
-      deps.states.set({ panelId: this.panelId, state: this.state });
+      if (this.persists) deps.states.set({ panelId: this.panelId, state: this.state });
       if (this.savedSessionId !== savedSession) deps.onSavedSessionChange(this);
     });
 
@@ -272,7 +291,24 @@ export class DesktopPanel implements PanelHost {
       }
       this.load();
     });
-    if (this.kind === 'chat') deps.states.set({ panelId: this.panelId, state: this.state });
+    if (this.persists) deps.states.set({ panelId: this.panelId, state: this.state });
+  }
+
+  // A remote chat is kept in remote-state.json instead, which an older version never misreads.
+  private get persists(): boolean {
+    return this.kind === 'chat' && this.authority === 'local';
+  }
+
+  // The token the chat's page keeps in its state (its `ready.panelToken`), which a rejoin names it by.
+  get panelToken(): string | undefined {
+    const state = this.state;
+    if (typeof state !== 'object' || state === null || !Object.hasOwn(state, 'panelToken')) return undefined;
+    const token = (state as { panelToken: unknown }).panelToken;
+    return typeof token === 'string' && token !== '' ? token : undefined;
+  }
+
+  get closeReason(): 'user' | 'detach' {
+    return this.owner.retaining(this) ? 'detach' : 'user';
   }
 
   get webContents(): WebContents {
@@ -318,7 +354,7 @@ export class DesktopPanel implements PanelHost {
     if (this.kind !== 'chat' || this.disposed || this.savedSessionId === sessionId) return;
     const base = typeof this.state === 'object' && this.state !== null && !Array.isArray(this.state) ? this.state : {};
     this.state = { ...base, sessionId };
-    this.deps.states.set({ panelId: this.panelId, state: this.state });
+    if (this.persists) this.deps.states.set({ panelId: this.panelId, state: this.state });
   }
 
   // The folder key the chat's saved state names, which core restores it into.
@@ -330,8 +366,13 @@ export class DesktopPanel implements PanelHost {
     return currentTheme().css;
   }
 
-  setHtml(html: string): void {
-    this.html = html;
+  // PanelHost's, which only the VS Code host serves: no HTML a core produced is loaded here.
+  setHtml(): void {
+    throw new Error('A desktop page is built by main (showPage)');
+  }
+
+  showPage(page: PageSpec): void {
+    this.html = this.owner.pageHtml(this, page);
     this.load();
   }
 
@@ -485,6 +526,8 @@ export class PanelViews {
   // drops it, never a focus change: the window's activation focuses the window's own page.
   private launchFocus: { readonly panel: DesktopPanel; ready: boolean } | undefined;
   private retainStates = false;
+  // remote authorities whose chats close with their states kept while their core is replaced
+  private readonly retainedAuthorities = new Set<string>();
   // DIP rectangle of the chat slot; undefined until the shell first reports it
   private contentBounds: Rectangle | undefined;
   // The editor's focus overlay covers the window, so the chat view hides under the shell's scrim.
@@ -513,7 +556,7 @@ export class PanelViews {
   // chat lays out when first shown: Chromium sends a view's size to its page only once the view has been visible.
   create(request: CreatePanelRequest): DesktopPanel {
     // A closing window, a quit or a core reload closes every chat with its state kept; nothing may open in between.
-    if (this.retainStates) throw new Error('The chats are closing');
+    if (this.retainStates || this.retainedAuthorities.has(request.authority ?? 'local')) throw new Error('The chats are closing');
     // A restored id comes from panels.json, an issued one from core; either names the page URL and the panels map.
     const named = request.restore?.panelId ?? request.panelId;
     if (named !== undefined && !isPanelId(named)) throw new Error(`Panel id ${JSON.stringify(named.slice(0, 64))} has characters a page URL cannot carry`);
@@ -599,6 +642,44 @@ export class PanelViews {
     return this.retainStates;
   }
 
+  // A remote authority's chats close with their states kept while its core is replaced; the local ones are unaffected.
+  retainAuthorityOnClose(authority: string, retain: boolean): void {
+    if (retain) this.retainedAuthorities.add(authority);
+    else this.retainedAuthorities.delete(authority);
+  }
+
+  retaining(panel: DesktopPanel): boolean {
+    return this.retainingAuthority(panel.authority);
+  }
+
+  retainingAuthority(authority: string): boolean {
+    return this.retainStates || this.retainedAuthorities.has(authority);
+  }
+
+  // The kind is checked against the panel's own: a chat shows the chat or error page, a browser page its toolbar or none.
+  pageHtml(panel: DesktopPanel, page: PageSpec): string {
+    const uri = (...parts: string[]): string => this.resourceUriFor(path.join(this.deps.resourceRoot, ...parts));
+    const themeCss = currentTheme().css;
+    if (panel.kind === 'chat' && page.kind === 'chat') {
+      return chatPageHtml({
+        cspSource: APP_ORIGIN,
+        workerSrc: CHAT_WORKER_SRC,
+        nonce: randomBytes(16).toString('base64'),
+        scriptUri: uri('dist', 'webview', 'assets', 'index.js'),
+        styleUri: uri('dist', 'webview', 'assets', 'index.css'),
+        logoUri: uri('resources', 'icon.png'),
+        themeCss,
+      });
+    }
+    if (panel.kind === 'chat' && page.kind === 'error') {
+      return errorPageHtml({ cspSource: APP_ORIGIN, logoUri: uri('resources', 'icon.png'), themeCss, strings: this.deps.pageStrings().error });
+    }
+    if (panel.kind === 'browser' && page.kind === 'browser' && typeof page.toolbar === 'boolean') {
+      return browserPageHtml({ nonce: randomBytes(16).toString('base64'), strings: this.deps.pageStrings().browser, toolbar: page.toolbar, themeCss });
+    }
+    throw new Error(`A ${panel.kind} panel cannot show a ${String((page as { kind?: unknown }).kind)} page`);
+  }
+
   resourceUri(absolutePath: string): string {
     return this.resourceUriFor(absolutePath);
   }
@@ -681,7 +762,7 @@ export class PanelViews {
     }
     const index = this.order.indexOf(panel.panelId);
     if (index >= 0) this.order.splice(index, 1);
-    if (!this.retainStates) this.deps.states.delete(panel.panelId);
+    if (!this.retaining(panel) && panel.authority === 'local') this.deps.states.delete(panel.panelId);
     if (this.selectedId === panel.panelId) this.selectedId = undefined;
     this.deps.pages.chatClosed(panel);
     this.deps.onChange();

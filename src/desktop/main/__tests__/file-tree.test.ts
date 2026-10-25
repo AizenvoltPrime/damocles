@@ -7,7 +7,10 @@ import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-p
 import type { FileEntry, FilesChanged } from '../../preload/shell-channels';
 import { DEFAULT_FILES_EXCLUDE } from '../../local-services/desktop-configuration';
 import type { Project } from '../../local-services/confine';
-import { compareEntries, FileTree } from '../files/file-tree';
+import { compareEntries, FileTree, type FileTreeDeps } from '../files/file-tree';
+import { testRemote, testWorkspaces } from './test-workspaces';
+import { projectKeyOf } from '../../../shared/project-location';
+import type { FileSystemDeps } from '../../workspace/file-system';
 import { fileNameProblem, isValidFileName } from '../../preload/file-names';
 import type { MessageQuestion } from '../message-dialog';
 
@@ -20,6 +23,7 @@ let trashed: string[];
 let revealed: string[];
 let copied: string[];
 let answer: number | undefined;
+let host: string | undefined;
 // answered first, in order, before answer
 let answers: Array<number | undefined>;
 let asked: MessageQuestion[];
@@ -42,6 +46,7 @@ beforeEach(() => {
   revealed = [];
   copied = [];
   answer = 0;
+  host = undefined;
   answers = [];
   asked = [];
   trashFailure = undefined;
@@ -49,10 +54,9 @@ beforeEach(() => {
   removeFailure = undefined;
   exclude = { ...DEFAULT_FILES_EXCLUDE };
   changed = [];
-  tree = new FileTree({
+  tree = fileTree({
     projects: () => [project],
     exclude: () => exclude,
-    watchers: platform.fileWatchers,
     ask: async (question) => {
       asked.push(question);
       return answers.length > 0 ? answers.shift() : answer;
@@ -72,7 +76,7 @@ beforeEach(() => {
     reveal: async (target) => { revealed.push(target); },
     copy: async (text) => { copied.push(text); },
     changed: (change) => changed.push(change),
-    ignored: async () => new Set(),
+    ignored: async () => new Set(), target: () => ({ os: process.platform, ...(host !== undefined ? { host } : {}) }),
   });
 });
 
@@ -85,6 +89,13 @@ function touch(relativePath: string): void {
   const file = path.join(projectDir, ...relativePath.split('/'));
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, '');
+}
+
+
+// FileTree over the test's watchers, with the trash and permanent delete its workspace's files use.
+function fileTree(deps: Omit<FileTreeDeps, 'workspaces'> & { readonly trash: FileSystemDeps['trash']; readonly remove: NonNullable<FileSystemDeps['remove']> }): FileTree {
+  const { trash, remove, ...rest } = deps;
+  return new FileTree({ ...rest, workspaces: testWorkspaces({ watchers: platform.fileWatchers, trash, remove }) });
 }
 
 describe('listing', () => {
@@ -110,9 +121,9 @@ describe('listing', () => {
     const lines: string[] = [];
     const asked: Array<[string, string, string[]]> = [];
     let fail = false;
-    const make = (): FileTree => new FileTree({
-      projects: () => [project], exclude: () => exclude, watchers: platform.fileWatchers, t: (message) => message, log: (line) => lines.push(line), ask: async () => 0,
-      trash: async () => undefined, remove: async () => undefined, reveal: async () => undefined, copy: async () => undefined, changed: () => undefined,
+    const make = (): FileTree => fileTree({
+      projects: () => [project], exclude: () => exclude, t: (message) => message, log: (line) => lines.push(line), ask: async () => 0,
+      trash: async () => undefined, remove: async () => undefined, reveal: async () => undefined, copy: async () => undefined, changed: () => undefined, target: () => ({ os: process.platform }),
       ignored: async (projectKey, relativeDir, entries) => {
         asked.push([projectKey, relativeDir, entries.map((entry) => `${entry.name}:${entry.kind}`).sort()]);
         if (fail) throw new Error('git refused');
@@ -239,6 +250,20 @@ describe('delete, reveal and copy', () => {
     expect(trashed).toEqual([path.join(projectDir, 'src', 'old.ts')]);
   });
 
+  it('deletes an entry on a remote host permanently, only after a confirmation that says so, and never reveals it', async () => {
+    host = 'Local daemon';
+    touch('src/old.ts');
+    answer = undefined;
+    expect(await tree.delete(project.key, 'src/old.ts')).toEqual({ ok: false, reason: 'cancelled' });
+    expect(asked.at(-1)).toMatchObject({ severity: 'danger', actions: ['Delete Permanently'], detail: 'It is deleted permanently on Local daemon, which has no trash. This action is irreversible.' });
+    answer = 0;
+    expect(await tree.delete(project.key, 'src/old.ts')).toEqual({ ok: true });
+    expect(trashed).toEqual([]);
+    expect(removed).toEqual([path.join(projectDir, 'src', 'old.ts')]);
+    expect(await tree.reveal(project.key, '')).toEqual({ ok: false, reason: 'failed', message: 'The folder is not on this computer.' });
+    expect(revealed).toEqual([]);
+  });
+
   it('trashes a junction itself, never the folder outside it points to', async () => {
     fs.writeFileSync(path.join(outside, 'keep.txt'), 'x');
     fs.symlinkSync(outside, path.join(projectDir, 'out'), 'junction');
@@ -316,8 +341,8 @@ describe('delete, reveal and copy', () => {
     const file = path.join(projectDir, 'src', 'a.ts');
     trashFailure = 'no trash';
     let calls = 0;
-    tree = new FileTree({
-      projects: () => [project], exclude: () => exclude, watchers: platform.fileWatchers, t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)])), log: () => undefined,
+    tree = fileTree({
+      projects: () => [project], exclude: () => exclude, t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)])), log: () => undefined,
       ask: async () => {
         if (++calls === 2) {
           fs.writeFileSync(`${file}.new`, 'someone else');
@@ -327,7 +352,7 @@ describe('delete, reveal and copy', () => {
       },
       trash: async () => { throw new Error('no trash'); },
       remove: async (target) => { removed.push(target); },
-      reveal: async () => undefined, copy: async () => undefined, changed: () => undefined, ignored: async () => new Set(),
+      reveal: async () => undefined, copy: async () => undefined, changed: () => undefined, ignored: async () => new Set(), target: () => ({ os: process.platform }),
     });
     expect(await tree.delete(project.key, 'src/a.ts')).toMatchObject({ ok: false, reason: 'failed' });
     expect(removed).toEqual([]);
@@ -338,12 +363,12 @@ describe('delete, reveal and copy', () => {
     expect(await tree.reveal(project.key, 'src/gone.ts')).toEqual({ ok: false, reason: 'missing' });
     expect(await tree.copyPath('removed-project', 'src/a.ts', false)).toEqual({ ok: false, reason: 'missing' });
     touch('src/a.ts');
-    tree = new FileTree({
-      projects: () => [project], exclude: () => exclude, watchers: platform.fileWatchers, ask: async () => 0, t: (message) => message, log: () => undefined,
+    tree = fileTree({
+      projects: () => [project], exclude: () => exclude, ask: async () => 0, t: (message) => message, log: () => undefined,
       trash: async () => undefined, remove: async () => undefined,
       reveal: async () => { throw new Error('no file manager'); },
       copy: async () => { throw new Error('clipboard busy'); },
-      changed: () => undefined, ignored: async () => new Set(),
+      changed: () => undefined, ignored: async () => new Set(), target: () => ({ os: process.platform }),
     });
     expect(await tree.reveal(project.key, 'src/a.ts')).toEqual({ ok: false, reason: 'failed', message: 'no file manager' });
     expect(await tree.copyPath(project.key, 'src/a.ts', true)).toEqual({ ok: false, reason: 'failed', message: 'clipboard busy' });
@@ -371,6 +396,68 @@ describe('watching', () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(changed).toEqual([{ projectKey: project.key, relativeDirs: ['src', ''] }]);
     expect(structural).toBe(1);
+  });
+
+  it('fails a listing of a project whose host is not connected or drops during the call, and watches it once it is back', async () => {
+    touch('src/a.ts');
+    let remote = testRemote({ watchers: platform.fileWatchers });
+    remote.disconnect('network');
+    const away: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(projectDir)), fsPath: projectDir, name: 'proj' };
+    const lines: string[] = [];
+    const remoteTree = new FileTree({
+      projects: () => [away], exclude: () => ({}), workspaces: testWorkspaces({ watchers: platform.fileWatchers, remote: () => remote.workspace() }),
+      ask: async () => undefined, t: (message) => message, log: (line) => lines.push(line), reveal: async () => undefined, copy: async () => undefined,
+      changed: () => undefined, ignored: async () => new Set(), target: () => ({ os: process.platform, host: 'Local daemon' }),
+    });
+    try {
+      expect(await remoteTree.list(away.key, '')).toEqual({ ok: false, reason: 'failed' });
+      expect(remoteTree.watch(away)).toBe(false);
+      remote = testRemote({ watchers: platform.fileWatchers });
+      const listing = remoteTree.list(away.key, 'src');
+      // the request is on its way once the listing's first step ran
+      await Promise.resolve();
+      remote.disconnect('network');
+      expect(await listing).toEqual({ ok: false, reason: 'failed' });
+      remote = testRemote({ watchers: platform.fileWatchers });
+      expect(await remoteTree.list(away.key, 'src')).toEqual({ ok: true, entries: [{ name: 'a.ts', kind: 'file' }] });
+      expect(remoteTree.watch(away)).toBe(true);
+      expect(lines.filter((line) => line.includes('failed'))).toHaveLength(2);
+    } finally {
+      remoteTree.dispose();
+      remote.disconnect('the test ended');
+    }
+  });
+
+  it('watches a remote project again over its host\'s next connection, and refetches what changed while the host was away', async () => {
+    let remote = testRemote({ watchers: platform.fileWatchers });
+    const away: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(projectDir)), fsPath: projectDir, name: 'proj' };
+    const remoteChanged: FilesChanged[] = [];
+    const remoteTree = new FileTree({
+      projects: () => [away], exclude: () => ({}), workspaces: testWorkspaces({ watchers: platform.fileWatchers, remote: () => remote.workspace() }),
+      ask: async () => undefined, t: (message) => message, log: () => undefined, reveal: async () => undefined, copy: async () => undefined,
+      changed: (change) => remoteChanged.push(change), ignored: async () => new Set(), target: () => ({ os: process.platform, host: 'Local daemon' }),
+    });
+    let structural = 0;
+    remoteTree.onDidChangeStructure(() => structural++);
+    const liveWatchers = (): number => platform.fileWatchers.watchers.filter((watcher) => !watcher.disposed && watcher.base === projectDir).length;
+    try {
+      expect((await remoteTree.list(away.key, '')).ok).toBe(true);
+      await vi.waitFor(() => expect(liveWatchers()).toBe(1));
+      remote.disconnect('network');
+      remoteTree.connectionsChanged();
+      expect(remoteTree.watch(away)).toBe(false);
+      remote = testRemote({ watchers: platform.fileWatchers });
+      const before = platform.fileWatchers.watchers.length;
+      remoteTree.connectionsChanged();
+      expect(remoteChanged).toEqual([{ projectKey: away.key, relativeDirs: [] }]);
+      expect(structural).toBe(1);
+      await vi.waitFor(() => expect(platform.fileWatchers.watchers.length).toBe(before + 1));
+      platform.fileWatchers.watcher(projectDir, '**').fireCreate(path.join(projectDir, 'src', 'new.ts'));
+      await vi.waitFor(() => expect(remoteChanged).toContainEqual({ projectKey: away.key, relativeDirs: ['src'] }));
+    } finally {
+      remoteTree.dispose();
+      remote.disconnect('the test ended');
+    }
   });
 
   it('asks every watched project to refetch when files.exclude changes', async () => {

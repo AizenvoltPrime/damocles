@@ -19,7 +19,7 @@ beforeAll(() => {
 });
 
 const info = (id: string, title = id): TerminalInfo => ({
-  id, title, name: null, profileId: 'cmd', icon: 'cmd', customIcon: null, color: null, projectKey: 'alpha', projectName: 'alpha', status: 'running', exitCode: null, description: null, running: null, integrated: false,
+  id, title, name: null, profileId: 'cmd', icon: 'cmd', customIcon: null, color: null, projectKey: 'alpha', projectName: 'alpha', status: 'running', exitCode: null, description: null, running: null, integrated: false, restoring: false, windowsBuild: null, pathFlavor: 'posix',
 });
 
 const group = (id: string, paneIds: string[], sizes: number[], activePaneId = paneIds[0]!): TerminalGroupInfo => ({ id, paneIds, sizes, activePaneId });

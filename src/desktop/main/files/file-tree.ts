@@ -1,11 +1,7 @@
-import { promises as fs } from 'node:fs';
-import * as path from 'node:path';
-import picomatch from 'picomatch';
-import type { BigIntStats, Dirent } from 'node:fs';
 import type { Disposable } from '../../../platform/disposable';
-import type { FileWatcher, FileWatcherFactory } from '../../../platform/file-watcher';
 import { isRelativeFilePath } from '../../../shared/relative-path';
 import { visibleText } from '../../../shared/visible-text';
+import { pathFor } from '../../../shared/project-location';
 import { isValidFileName } from '../../preload/file-names';
 import type {
   FileEntry,
@@ -15,7 +11,11 @@ import type {
   FilesMutationResult,
 } from '../../preload/shell-channels';
 import type { AskMessage } from '../message-dialog';
-import { confineEntry, confineExisting, followsLocalLinksOnly, isRelativeOrRoot, type Project } from '../../local-services/confine';
+import { isRelativeOrRoot, type Project } from '../../local-services/confine';
+import type { EntryIdentity, WorkspaceFileSystem } from '../../workspace/file-system';
+import type { ProjectWorkspace } from '../../workspace/project-workspace';
+import { excludeTest, type ExcludeTest } from '../../workspace/tree-listing';
+import { NotConnectedError, type Workspaces } from '../workspace/workspaces';
 
 // Bursts of watcher events (a checkout, a build) reach the shell as one change per this window.
 const CHANGE_BATCH_MS = 100;
@@ -24,19 +24,22 @@ export interface FileTreeDeps {
   readonly projects: () => readonly Project[];
   // damocles.desktop.files.exclude: glob to true (hidden) or false
   readonly exclude: () => Readonly<Record<string, unknown>>;
-  readonly watchers: FileWatcherFactory;
+  readonly workspaces: Workspaces;
   readonly ask: AskMessage;
   readonly t: (message: string, ...args: Array<string | number>) => string;
   readonly log: (line: string) => void;
-  // Electron's shell.trashItem
-  readonly trash: (absolutePath: string) => Promise<void>;
-  // deletes the entry for good, a folder with its contents and a link as itself (fs.rm, recursive)
-  readonly remove: (absolutePath: string) => Promise<void>;
   readonly reveal: (absolutePath: string) => Promise<void>;
   readonly copy: (text: string) => Promise<void>;
   readonly changed: (change: FilesChanged) => void;
   // the listed entries git ignores (source control's check-ignore); none, and no git, in an untrusted project
   readonly ignored: (projectKey: string, relativeDir: string, entries: readonly FileEntry[]) => Promise<ReadonlySet<string>>;
+  // the OS a project's files are on, and for a project on another authority the host's name
+  readonly target: (projectKey: string) => FilesTarget;
+}
+
+export interface FilesTarget {
+  readonly os: NodeJS.Platform;
+  readonly host?: string;
 }
 
 // Copy path and Reveal: a cancel never happens, every other failure is reported as a delete's is.
@@ -57,6 +60,13 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// A failure the workspace reported, as the shell reports it: a failed fs call names its error, a confinement does not.
+function failed(result: { readonly reason: string; readonly message?: string }, log: (line: string) => void, action: string): FilesMutationResult & { ok: false } {
+  if (result.reason !== 'failed' || result.message === undefined) return { ok: false, reason: result.reason as 'outside' | 'missing' | 'failed' | 'exists' };
+  log(`[files] ${action} failed: ${result.message}`);
+  return { ok: false, reason: 'failed', message: result.message };
+}
+
 function joinRelative(dir: string, name: string): string {
   return dir === '' ? name : `${dir}/${name}`;
 }
@@ -66,13 +76,21 @@ function parentOf(relativePath: string): string {
   return slash < 0 ? '' : relativePath.slice(0, slash);
 }
 
+interface Watched {
+  // a remote workspace's watch ends with its connection, so the next connection's workspace watches again
+  workspace: ProjectWorkspace;
+  watcher: Disposable;
+  readonly pending: Set<string>;
+  timer: NodeJS.Timeout | undefined;
+}
+
 /** The Files section's data: lazy listings and confined operations, every path resolved inside its project in main. */
 export class FileTree implements Disposable {
   private readonly deps: FileTreeDeps;
-  private readonly watched = new Map<string, { readonly watcher: FileWatcher; readonly pending: Set<string>; timer: NodeJS.Timeout | undefined }>();
+  private readonly watched = new Map<string, Watched>();
   private readonly structureListeners = new Set<(projectKey: string) => void>();
   private excludeKey = '';
-  private excludeMatcher: (relativePath: string) => boolean = () => false;
+  private excludeMatcher: ExcludeTest = () => false;
 
   constructor(deps: FileTreeDeps) {
     this.deps = deps;
@@ -86,12 +104,7 @@ export class FileTree implements Disposable {
 
   /** Whether files.exclude hides relativePath or a folder above it. */
   isExcluded(relativePath: string): boolean {
-    const matcher = this.matcher();
-    const segments = relativePath.split('/');
-    for (let index = 1; index <= segments.length; index++) {
-      if (matcher(segments.slice(0, index).join('/'))) return true;
-    }
-    return false;
+    return this.matcher()(relativePath);
   }
 
   /** The exclude patterns hidden now, for Quick Open's ripgrep globs. */
@@ -107,21 +120,16 @@ export class FileTree implements Disposable {
   async list(projectKey: string, relativeDir: string): Promise<FilesListResult> {
     const project = this.project(projectKey);
     if (!project || !isRelativeOrRoot(relativeDir)) return { ok: false, reason: 'outside' };
-    const confined = await confineExisting(project, relativeDir);
-    if (!confined.ok) return confined;
+    // a host that is not connected, or whose connection ends during the call, fails this listing only
+    const listing = await Promise.resolve()
+      .then(() => this.deps.workspaces.forProject(projectKey).tree.list(project, relativeDir, this.excludePatterns()))
+      .catch((err: unknown): FilesListResult => {
+        this.deps.log(`[files] listing ${relativeDir || '.'} of ${project.name} failed: ${errorText(err)}`);
+        return { ok: false, reason: 'failed' };
+      });
+    if (!listing.ok) return listing;
     this.watch(project);
-    let dirents: Dirent[];
-    try {
-      dirents = await fs.readdir(confined.path, { withFileTypes: true });
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      return { ok: false, reason: code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'failed' };
-    }
-    const entries: FileEntry[] = [];
-    for (const dirent of dirents) {
-      if (this.isExcluded(joinRelative(relativeDir, dirent.name))) continue;
-      entries.push({ name: dirent.name, kind: await this.kindOf(confined.path, dirent) });
-    }
+    const { entries } = listing;
     const ignored = await this.deps.ignored(projectKey, relativeDir, entries).catch((err: unknown) => {
       this.deps.log(`[files] the ignored-file query failed: ${errorText(err)}`);
       return new Set<string>();
@@ -132,42 +140,18 @@ export class FileTree implements Disposable {
   async create(projectKey: string, relativeDir: string, name: unknown, kind: 'file' | 'dir'): Promise<FilesMutationResult> {
     const project = this.project(projectKey);
     if (!project || !isRelativeOrRoot(relativeDir)) return { ok: false, reason: 'outside' };
-    if (!isValidFileName(name, process.platform)) return { ok: false, reason: 'invalidName' };
-    const parent = await confineExisting(project, relativeDir);
-    if (!parent.ok) return parent;
-    const target = path.join(parent.path, name);
-    try {
-      if (kind === 'dir') {
-        await fs.mkdir(target);
-      } else {
-        const handle = await fs.open(target, 'wx');
-        await handle.close();
-      }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'EEXIST') return { ok: false, reason: 'exists' };
-      this.deps.log(`[files] creating ${name} failed: ${errorText(err)}`);
-      return { ok: false, reason: 'failed', message: errorText(err) };
-    }
+    if (!isValidFileName(name, this.deps.target(projectKey).os)) return { ok: false, reason: 'invalidName' };
+    const created = await this.files(projectKey).createEntry(project, relativeDir, name, kind);
+    if (!created.ok) return failed(created, this.deps.log, `creating ${name}`);
     return { ok: true, relativePath: joinRelative(relativeDir, name) };
   }
 
   async rename(projectKey: string, relativePath: string, newName: unknown): Promise<FilesMutationResult> {
     const project = this.project(projectKey);
     if (!project || !isRelativeFilePath(relativePath)) return { ok: false, reason: 'outside' };
-    if (!isValidFileName(newName, process.platform)) return { ok: false, reason: 'invalidName' };
-    const entry = await confineEntry(project, relativePath);
-    if (!entry.ok) return entry;
-    const target = path.join(path.dirname(entry.path), newName);
-    if (target === entry.path) return { ok: true, relativePath };
-    // fs.rename replaces an existing file on Windows (MoveFileEx with REPLACE_EXISTING); only a case-only rename on a
-    // case-insensitive file system may find the entry itself under the new name.
-    if (await this.isAnotherEntry(target, entry.path)) return { ok: false, reason: 'exists' };
-    try {
-      await fs.rename(entry.path, target);
-    } catch (err) {
-      this.deps.log(`[files] renaming ${relativePath} failed: ${errorText(err)}`);
-      return { ok: false, reason: 'failed', message: errorText(err) };
-    }
+    if (!isValidFileName(newName, this.deps.target(projectKey).os)) return { ok: false, reason: 'invalidName' };
+    const renamed = await this.files(projectKey).renameEntry(project, relativePath, newName);
+    if (!renamed.ok) return failed(renamed, this.deps.log, `renaming ${relativePath}`);
     return { ok: true, relativePath: joinRelative(parentOf(relativePath), newName) };
   }
 
@@ -178,21 +162,34 @@ export class FileTree implements Disposable {
   async delete(projectKey: string, relativePath: string): Promise<FilesDeleteResult> {
     const project = this.project(projectKey);
     if (!project || !isRelativeFilePath(relativePath)) return { ok: false, reason: 'outside' };
-    const entry = await confineEntry(project, relativePath);
+    const files = this.files(projectKey);
+    const entry = await files.entry(project, relativePath);
     if (!entry.ok) return entry;
-    const identity = await fs.lstat(entry.path, { bigint: true });
-    const name = visibleText(path.basename(entry.path));
-    const folder = entry.stat?.isDirectory() === true;
+    const { identity, folder } = entry;
+    const target = this.deps.target(projectKey);
+    const name = visibleText(pathFor(target).basename(entry.path));
+    const question = folder ? this.deps.t('Are you sure you want to delete the folder \'{0}\' and its contents?', name) : this.deps.t('Are you sure you want to delete \'{0}\'?', name);
+    // a remote host has no trash Damocles can reach, so its delete is permanent and says so
+    if (target.host !== undefined) {
+      const permanently = await this.deps.ask({
+        severity: 'danger',
+        message: question,
+        detail: this.deps.t('It is deleted permanently on {0}, which has no trash. This action is irreversible.', target.host),
+        actions: [this.deps.t('Delete Permanently')],
+        cancelLabel: this.deps.t('Cancel'),
+      });
+      return permanently === 0 ? this.deletePermanently(project, relativePath, identity) : { ok: false, reason: 'cancelled' };
+    }
     const choice = await this.deps.ask({
       severity: 'danger',
-      message: folder ? this.deps.t('Are you sure you want to delete the folder \'{0}\' and its contents?', name) : this.deps.t('Are you sure you want to delete \'{0}\'?', name),
+      message: question,
       detail: this.deps.t('You can restore it from the trash.'),
       actions: [this.deps.t('Move to Trash')],
       cancelLabel: this.deps.t('Cancel'),
     });
     if (choice !== 0) return { ok: false, reason: 'cancelled' };
     try {
-      await this.deps.trash(entry.path);
+      await files.trash(entry.path);
       return { ok: true };
     } catch (err) {
       this.deps.log(`[files] moving ${relativePath} to the trash failed: ${errorText(err)}`);
@@ -209,19 +206,12 @@ export class FileTree implements Disposable {
   }
 
   // Only the entry the user confirmed: one that another replaced while the questions showed is left alone.
-  // Linux reuses a freed inode number at once, so a deleted and recreated file differs only in its birth time.
-  private async deletePermanently(project: Project, relativePath: string, confirmed: BigIntStats): Promise<FilesDeleteResult> {
-    const entry = await confineEntry(project, relativePath);
-    if (!entry.ok) return entry;
-    try {
-      const now = await fs.lstat(entry.path, { bigint: true });
-      if (now.dev !== confirmed.dev || now.ino !== confirmed.ino || now.birthtimeNs !== confirmed.birthtimeNs) return { ok: false, reason: 'failed', message: this.deps.t('It changed while Damocles was asking.') };
-      await this.deps.remove(entry.path);
-    } catch (err) {
-      this.deps.log(`[files] deleting ${relativePath} failed: ${errorText(err)}`);
-      return { ok: false, reason: 'failed', message: errorText(err) };
-    }
-    return { ok: true };
+  private async deletePermanently(project: Project, relativePath: string, confirmed: EntryIdentity): Promise<FilesDeleteResult> {
+    const deleted = await this.files(project.key).deleteEntry(project, relativePath, confirmed);
+    if (deleted.ok) return deleted;
+    if (deleted.reason === 'changed') return { ok: false, reason: 'failed', message: this.deps.t('It changed while Damocles was asking.') };
+    if (deleted.reason === 'failed' && deleted.message !== undefined) this.deps.log(`[files] deleting ${relativePath} failed: ${deleted.message}`);
+    return deleted.message !== undefined ? { ok: false, reason: deleted.reason, message: deleted.message } : { ok: false, reason: deleted.reason };
   }
 
   async copyPath(projectKey: string, relativePath: string, relative: boolean): Promise<FilesActionResult> {
@@ -229,14 +219,17 @@ export class FileTree implements Disposable {
     if (!project) return { ok: false, reason: 'missing' };
     if (!isRelativeOrRoot(relativePath)) return { ok: false, reason: 'outside' };
     const segments = relativePath === '' ? [] : relativePath.split('/');
-    return this.attempt('copying the path of', relativePath, () => this.deps.copy(relative ? segments.join(path.sep) : path.join(project.fsPath, ...segments)));
+    const flavor = pathFor(this.deps.target(projectKey));
+    return this.attempt('copying the path of', relativePath, () => this.deps.copy(relative ? segments.join(flavor.sep) : flavor.join(project.fsPath, ...segments)));
   }
 
   async reveal(projectKey: string, relativePath: string): Promise<FilesActionResult> {
     const project = this.project(projectKey);
     if (!project) return { ok: false, reason: 'missing' };
+    // a path a daemon names is never handed to this computer's file manager
+    if (this.deps.target(projectKey).host !== undefined) return { ok: false, reason: 'failed', message: this.deps.t('The folder is not on this computer.') };
     if (relativePath === '') return this.attempt('revealing', relativePath, () => this.deps.reveal(project.fsPath));
-    const entry = await confineEntry(project, relativePath);
+    const entry = await this.files(projectKey).entry(project, relativePath).catch((): { ok: false; reason: 'failed' } => ({ ok: false, reason: 'failed' }));
     if (!entry.ok) return entry;
     return this.attempt('revealing', relativePath, () => this.deps.reveal(entry.path));
   }
@@ -251,15 +244,35 @@ export class FileTree implements Disposable {
     }
   }
 
-  /** Starts watching a project for Files and Quick Open; a project that left the list stops. */
-  watch(project: Project): void {
-    if (this.watched.has(project.key)) return;
-    const watcher = this.deps.watchers.watch(project.fsPath, '**');
-    const state = { watcher, pending: new Set<string>(), timer: undefined as NodeJS.Timeout | undefined };
-    const structural = (fsPath: string): void => this.record(project, state, fsPath);
-    watcher.onDidCreate(structural);
-    watcher.onDidDelete(structural);
+  /**
+   * Starts watching a project for Files and Quick Open, and says whether it is watched; a project whose host is not connected
+   * is not, and a later call tries again. A project that left the list stops.
+   */
+  watch(project: Project): boolean {
+    let workspace: ProjectWorkspace;
+    try {
+      workspace = this.deps.workspaces.forProject(project.key);
+    } catch (err) {
+      if (err instanceof NotConnectedError) return false;
+      throw err;
+    }
+    const known = this.watched.get(project.key);
+    if (known?.workspace === workspace) return true;
+    known?.watcher.dispose();
+    const state: Watched = known ?? { workspace, watcher: { dispose: () => undefined }, pending: new Set(), timer: undefined };
+    state.workspace = workspace;
+    state.watcher = workspace.files.watch(project.fsPath, '**', (event) => {
+      if (event.kind !== 'change') this.record(project, state, event.path);
+    });
     this.watched.set(project.key, state);
+    // what changed while the host was away was never reported
+    if (known) this.refetch(project.key);
+    return true;
+  }
+
+  /** A host connected or went away: each watched project whose host now serves a new connection is watched over it. */
+  connectionsChanged(): void {
+    for (const project of this.deps.projects()) if (this.watched.has(project.key)) this.watch(project);
   }
 
   /** Stops watching projects that are no longer in the list. */
@@ -282,8 +295,15 @@ export class FileTree implements Disposable {
     this.structureListeners.clear();
   }
 
-  private record(project: Project, state: { pending: Set<string>; timer: NodeJS.Timeout | undefined }, fsPath: string): void {
-    const relative = path.relative(project.fsPath, fsPath).split(path.sep).join('/');
+  // every listing of the project and its Quick Open list may be stale
+  private refetch(projectKey: string): void {
+    this.deps.changed({ projectKey, relativeDirs: [] });
+    for (const listener of [...this.structureListeners]) listener(projectKey);
+  }
+
+  private record(project: Project, state: Watched, fsPath: string): void {
+    const flavor = pathFor(this.deps.target(project.key));
+    const relative = flavor.relative(project.fsPath, fsPath).split(flavor.sep).join('/');
     if (relative === '' || !isRelativeFilePath(relative) || this.isExcluded(relative)) return;
     state.pending.add(parentOf(relative));
     if (state.timer) return;
@@ -296,41 +316,18 @@ export class FileTree implements Disposable {
     }, CHANGE_BATCH_MS);
   }
 
-  // A link is listed as what it points to (a dangling one as a file); listing a folder link that leads outside the project
-  // is refused by confinement, so it is never followed there.
-  private async kindOf(dir: string, dirent: Dirent): Promise<'file' | 'dir'> {
-    if (dirent.isDirectory()) return 'dir';
-    if (!dirent.isSymbolicLink()) return 'file';
-    try {
-      if (!(await followsLocalLinksOnly(dir, [dirent.name]))) return 'file';
-      const stat = await fs.stat(path.join(dir, dirent.name));
-      return stat.isDirectory() ? 'dir' : 'file';
-    } catch (err) {
-      this.deps.log(`[files] cannot follow the link ${dirent.name}: ${errorText(err)}`);
-      return 'file';
-    }
-  }
-
-  private async isAnotherEntry(target: string, entry: string): Promise<boolean> {
-    let found: BigIntStats;
-    try {
-      found = await fs.lstat(target, { bigint: true });
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
-      throw err;
-    }
-    const own = await fs.lstat(entry, { bigint: true });
-    return found.dev !== own.dev || found.ino !== own.ino;
-  }
-
-  private matcher(): (relativePath: string) => boolean {
+  private matcher(): ExcludeTest {
     const patterns = this.excludePatterns();
     const key = JSON.stringify(patterns);
     if (key !== this.excludeKey) {
       this.excludeKey = key;
-      this.excludeMatcher = patterns.length === 0 ? () => false : picomatch(patterns, { dot: true });
+      this.excludeMatcher = excludeTest(patterns);
     }
     return this.excludeMatcher;
+  }
+
+  private files(projectKey: string): WorkspaceFileSystem {
+    return this.deps.workspaces.forProject(projectKey).files;
   }
 
   private project(projectKey: string): Project | undefined {

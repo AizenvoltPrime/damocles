@@ -198,6 +198,8 @@ export interface MenuActions {
   showLog(): void;
   // a new engine replaces the running or halted one, its crash count cleared
   restartEngine(): void;
+  // present only in a dev or e2e run with the loopback daemon enabled
+  readonly loopback?: { openFolder(): void; showLog(): void };
   // Settings › About
   about(): void;
   // Settings › About with the running version expanded in What's new
@@ -308,6 +310,7 @@ export function installApplicationMenu(
       item(MENU_IDS.saveAs),
       { type: 'separator' },
       item(MENU_IDS.addProject),
+      ...(actions.loopback ? [item(MENU_IDS.openFolderThroughLocalDaemon), item(MENU_IDS.showLocalDaemonLog)] : []),
       { type: 'separator' },
       ...(mac ? [] : [settingsItem, { type: 'separator' as const }]),
       item(MENU_IDS.closeEditor),

@@ -2,11 +2,12 @@ import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { renameWithRetry } from '../../../core/config/json-config-write';
+import { isAbsoluteFolderKey } from '../../../shared/project-location';
 import { isRelativeFilePath } from '../../../shared/relative-path';
 import { settlePending } from '../../../shared/settle-pending';
 import type { SettingsFileScope } from '../../../shared/types/messages';
 import { MAX_ID_LENGTH, MAX_RELATIVE_PATH_LENGTH } from '../../preload/shell-channels';
-import type { TextEncoding } from '../platform/editor-document';
+import type { TextEncoding } from '../../workspace/search/types';
 import { savedText, type Backups, type TextDocument } from './document-service';
 
 export const BACKUP_DIR = 'backups';
@@ -31,6 +32,8 @@ export interface BackupRecord {
     | { readonly kind: 'project'; readonly projectKey: string; readonly relativePath: string }
     // path: the file the buffer was opened from; a restore that finds the scope naming another file drops it
     | { readonly kind: 'settings'; readonly scope: SettingsFileScope; readonly path: string }
+    // a host's own settings file, by its authority key and its path on that host
+    | { readonly kind: 'hostSettings'; readonly authority: string; readonly path: string }
     | { readonly kind: 'untitled' }
     // an untitled Search Editor, text in the .code-search form; projectKey is resolved again against the open projects on restore
     | { readonly kind: 'searchEditor'; readonly projectKey?: string };
@@ -64,6 +67,13 @@ function parseTarget(raw: unknown): BackupRecord['target'] | undefined {
     const filePath = field(raw, 'path');
     if (scope !== 'user' && scope !== 'project' && scope !== 'local') return undefined;
     return typeof filePath === 'string' && filePath.length <= MAX_RELATIVE_PATH_LENGTH && path.isAbsolute(filePath) && !filePath.includes('\0') ? { kind, scope, path: filePath } : undefined;
+  }
+  if (kind === 'hostSettings') {
+    const authority = field(raw, 'authority');
+    const filePath = field(raw, 'path');
+    return isBoundedText(authority, MAX_ID_LENGTH) && typeof filePath === 'string' && filePath.length <= MAX_RELATIVE_PATH_LENGTH && isAbsoluteFolderKey(filePath) && !filePath.includes('\0')
+      ? { kind, authority, path: filePath }
+      : undefined;
   }
   if (kind !== 'project') return undefined;
   const projectKey = field(raw, 'projectKey');
@@ -100,6 +110,7 @@ function targetOf(document: TextDocument): BackupRecord['target'] | undefined {
   }
   if (document.untitled) return { kind: 'untitled' };
   if (document.settingsScope !== undefined && document.location) return { kind: 'settings', scope: document.settingsScope, path: document.location.path };
+  if (document.location?.host !== undefined) return { kind: 'hostSettings', authority: document.location.host, path: document.location.path };
   const location = document.location;
   if (location?.projectKey !== undefined && location.relativePath !== undefined) {
     return { kind: 'project', projectKey: location.projectKey, relativePath: location.relativePath };

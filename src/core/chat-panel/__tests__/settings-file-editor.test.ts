@@ -8,6 +8,7 @@ vi.mock('../../logger', () => ({ log: vi.fn() }));
 import { locateSettingsFile, saveSettingsFileText, SettingsFileAvailabilityFeed } from '../settings-file-editor';
 import { settingsFileVersion } from '../../config/settings-file';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
+import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import type { PanelHost } from '../../../platform/window-service';
 import type { ExtensionToWebviewMessage, SettingsFileScope } from '../../../shared/types/messages';
 
@@ -64,6 +65,13 @@ describe('locateSettingsFile', () => {
     expect(locateSettingsFile(platform, 'user')).toBe(userFile);
     setup({ folders: false });
     expect(locateSettingsFile(platform, 'local')).toEqual({ reason: 'noProject' });
+  });
+
+  it("names no project or local file on a daemon's core, which has no window project", () => {
+    const remote: FakePlatform = { ...platform, remote: createFakeRemoteHost().remote };
+    expect(locateSettingsFile(remote, 'user')).toBe(userFile);
+    expect(locateSettingsFile(remote, 'project')).toEqual({ reason: 'noProject' });
+    expect(locateSettingsFile(remote, 'local')).toEqual({ reason: 'noProject' });
   });
 
   it('refuses a scope outside user, project and local', () => {

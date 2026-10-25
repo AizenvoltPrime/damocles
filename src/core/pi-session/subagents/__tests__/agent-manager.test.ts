@@ -29,6 +29,8 @@ import { SubagentStreamBridge } from '../subagent-stream-bridge';
 import { recordResultText } from '../status-note';
 import { DAMOCLES_AGENT_STATUS_ENTRY } from '../../session-store/constants';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
+import { createFakeRemoteHost } from '../../../../__mocks__/fake-remote-host';
+import { installPlatform } from '../../../platform-host';
 import { ShellCancelStore } from '../../tools/shell-cancel-registry';
 import type { McpResourceRuleFilter } from '../../../permission-handler/mcp-resource-rule';
 
@@ -1192,6 +1194,24 @@ describe('AgentManager → subagent gate context', () => {
     const ctx = gateContexts().at(-1)!;
     for (const name of COMPASS_PI_TOOL_NAMES) expect(ctx.deferrableToolNames, name).not.toContain(name);
     mgr.dispose();
+  });
+
+  it('on a daemon\'s core leaves the browser tools out of what the agent\'s ToolSearch may load, since the browser is the client\'s', async () => {
+    vi.mocked(createSubagentExtensionFactory).mockClear();
+    const { engine } = makeEngine();
+    engine.parentFullToolNames = () => ['Read', 'Bash', ...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, 'ToolSearch'];
+    installPlatform({ ...createFakePlatform(), remote: createFakeRemoteHost().remote });
+    try {
+      const mgr = new AgentManager(engine, 2);
+      mgr.spawn(spec(0));
+      await flush();
+      const ctx = gateContexts().at(-1)!;
+      for (const name of BROWSER_PI_TOOL_NAMES) expect(ctx.deferrableToolNames, name).not.toContain(name);
+      for (const name of COMPASS_PI_TOOL_NAMES) expect(ctx.deferrableToolNames, name).toContain(name);
+      mgr.dispose();
+    } finally {
+      installPlatform(createFakePlatform());
+    }
   });
 
   it('marks a read-only agent readOnlyShell, so no write tool means no writes via the shell either', async () => {

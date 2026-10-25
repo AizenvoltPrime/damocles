@@ -116,6 +116,22 @@ describe('CoreHost', () => {
     expect(coreHost.current()?.id).toBe(2);
   });
 
+  it('runs one more reload after a running one that already started its core, which every later request joins', async () => {
+    const reopening = deferred();
+    const { coreHost, started, openTabs } = host({ openTabs: () => reopening.promise });
+    coreHost.start();
+
+    const first = coreHost.reload();
+    await vi.waitFor(() => expect(openTabs).toHaveBeenCalledTimes(1));
+    const later = [coreHost.reload(), coreHost.reload()];
+    expect(started).toHaveLength(2);
+    reopening.resolve();
+    await Promise.all([first, ...later]);
+
+    expect(started.map((core) => core.id)).toEqual([1, 2, 3]);
+    expect(coreHost.current()?.id).toBe(3);
+  });
+
   it('starts no core for a reload that the quit overtook, and disposes the one it left', async () => {
     const teardown = deferred();
     const disposed: number[] = [];

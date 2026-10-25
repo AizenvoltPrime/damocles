@@ -65,6 +65,8 @@ export interface NotificationView {
   readonly project: NotificationProject | undefined;
   // "Damocles · {where}"
   readonly where: string;
+  // a remote chat's or core's host, which main named from its host store; undefined for this computer
+  readonly host: string | undefined;
   // empty for a core notice, whose message is the whole text
   readonly title: string;
   readonly lead: string;
@@ -110,6 +112,7 @@ export function notificationView(body: NotificationBody, t: Translate, locale: s
       tone,
       project: undefined,
       where: t(`toasts.${body.severity}`),
+      host: body.host,
       title: '',
       lead: '',
       message: body.message,
@@ -132,6 +135,7 @@ export function notificationView(body: NotificationBody, t: Translate, locale: s
       ...base,
       project: undefined,
       where: t('notifications.usage'),
+      host: undefined,
       title: body.planName ? `${body.planName} · ${body.windowLabel}` : body.windowLabel || t('notifications.usage'),
       lead: t('notifications.kinds.limit.lead'),
       message: body.resetsAt === undefined ? used : `${used} ${resets('limit', body.resetsAt)}`,
@@ -175,5 +179,5 @@ export function notificationView(body: NotificationBody, t: Translate, locale: s
         return text(t('notifications.kinds.limit.lead'), t('notifications.kinds.limit.budget'));
     }
   })();
-  return { ...base, project: chat.project, where: chat.where, title: chat.title, ...parts };
+  return { ...base, project: chat.project, where: chat.where, host: body.chat.host, title: chat.title, ...parts };
 }

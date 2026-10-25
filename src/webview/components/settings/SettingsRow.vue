@@ -28,7 +28,7 @@ const meta = computed(() => {
   return found;
 });
 const keys = computed(() => meta.value.keys ?? []);
-const visible = computed(() => rowMatches(meta.value, page.query, t));
+const visible = computed(() => page.listed(meta.value) && rowMatches(meta.value, page.query, t));
 // The entrance plays only when the row's element is created, so a row takes a slot only as it appears.
 const index = ref(visible.value ? page.nextIndex() : STAGGERED_ROWS);
 watch(visible, (shown) => {

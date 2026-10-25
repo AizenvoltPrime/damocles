@@ -24,6 +24,8 @@ import { RUBRIC_VERSION, USEFULNESS_RUBRIC } from './rubric';
 import { EPISODE_TTL_MS } from './dedup-decay';
 import type { EffortBadgeLevel } from '@shared/effort-badge';
 import { matchKnownWorkspace, sameWorkspace } from './workspaces';
+import { localOnly } from './local-only';
+import { userScopeRemote } from '../user-scope';
 import {
   DYNAMIC_CHAR_CAP,
   PROFILE_SCHEMA,
@@ -231,11 +233,21 @@ function sameState(row: MemoryRow, state: MemoryState): boolean {
 }
 
 /** Live unpinned rows the audit grades; notes and pins are the user's own choices. */
-const ELIGIBLE_WHERE = "is_latest = 1 AND forgotten = 0 AND pinned = 0 AND kind IN ('fact','preference','episode','observation')";
+function eligibleWhere(): string {
+  return `is_latest = 1 AND forgotten = 0 AND pinned = 0 AND kind IN ('fact','preference','episode','observation')${localOnly()}`;
+}
+
+/** Global memory is the client's: on a daemon's core, a proposal that names a global row or profile, or would make a row global, is left out. */
+function localProposal(alias = ''): string {
+  if (!userScopeRemote()) return '';
+  return ` AND ${alias}action != 'rescope_global' AND ${alias}profile_scope IS NOT 'global'
+    AND json_extract(${alias}before_state, '$.row.scope') IS NOT 'global'
+    AND NOT EXISTS (SELECT 1 FROM memories g WHERE g.id = ${alias}memory_id AND g.scope = 'global')`;
+}
 
 function loadEligibleRows(db: DatabaseInstance): MemoryRow[] {
   return db
-    .prepare(`SELECT * FROM memories WHERE ${ELIGIBLE_WHERE} ORDER BY COALESCE(workspace, ''), scope, kind, created_at, id`)
+    .prepare(`SELECT * FROM memories WHERE ${eligibleWhere()} ORDER BY COALESCE(workspace, ''), scope, kind, created_at, id`)
     .all() as MemoryRow[];
 }
 
@@ -246,7 +258,7 @@ function loadProfileTargets(db: DatabaseInstance, profileManager: ProfileManager
     .prepare(
       `SELECT scope, workspace FROM memory_profile
         GROUP BY scope, workspace
-       HAVING MAX(LENGTH(TRIM(content))) > 0
+       HAVING MAX(LENGTH(TRIM(content))) > 0${localOnly()}
         ORDER BY scope, workspace`,
     )
     .all() as AuditProfileTarget[];
@@ -407,7 +419,7 @@ export function gradesToProposals(
     } else if (verdict === 'rescope') {
       const targetScope = g.targetScope ?? (typeof g.targetWorkspace === 'string' ? 'project' : undefined);
       if (targetScope === 'global') {
-        if (row.scope !== 'global' && row.kind !== 'observation') proposals.push({ row, action: 'rescope_global', targetWorkspace: null, reason });
+        if (row.scope !== 'global' && row.kind !== 'observation' && !userScopeRemote()) proposals.push({ row, action: 'rescope_global', targetWorkspace: null, reason });
       } else if (targetScope === 'project') {
         const candidate = typeof g.targetWorkspace === 'string' ? g.targetWorkspace : row.workspace;
         const target = candidate ? matchKnownWorkspace(candidate, knownWorkspaces) : null;
@@ -696,7 +708,7 @@ function forgetChain(db: DatabaseInstance, row: MemoryRow): Array<{ id: string; 
   const root = row.root_id ?? row.id;
   // The OR arms use idx_memories_root and the primary key, which COALESCE(root_id, id) cannot.
   const chain = db
-    .prepare('SELECT id, forget_reason FROM memories WHERE (root_id = ? OR (root_id IS NULL AND id = ?)) AND +forgotten = 0')
+    .prepare(`SELECT id, forget_reason FROM memories WHERE (root_id = ? OR (root_id IS NULL AND id = ?)) AND +forgotten = 0${localOnly()}`)
     .all(root, root) as Array<{ id: string; forget_reason: string | null }>;
   const update = db.prepare('UPDATE memories SET forgotten = 1, forget_reason = ? WHERE id = ? AND forgotten = 0');
   for (const r of chain) update.run(QUALITY_AUDIT_FORGET_REASON, r.id);
@@ -866,7 +878,7 @@ export async function applyAuditDecisions(
       const now = Date.now();
       for (const id of ids) {
         const p = db
-          .prepare("SELECT * FROM memory_audit_proposals WHERE id = ? AND run_id = ? AND status = 'pending'")
+          .prepare(`SELECT * FROM memory_audit_proposals WHERE id = ? AND run_id = ? AND status = 'pending'${localProposal()}`)
           .get(id, runId) as ProposalRow | undefined;
         if (!p) continue;
         const outcome = p.action === 'profile_rewrite' ? applyProfileProposal(profileManager, p) : applyMemoryProposal(db, p, chunkOps);
@@ -914,7 +926,7 @@ function revertMemoryProposal(db: DatabaseInstance, p: ProposalRow, ops: Tracker
   if (!row || !state.applied || state.sessionGone || !stillApplied(row, p, state.applied)) return false;
 
   if (state.forgotten) {
-    const restore = db.prepare('UPDATE memories SET forgotten = 0, forget_reason = ? WHERE id = ? AND forgotten = 1 AND forget_reason = ?');
+    const restore = db.prepare(`UPDATE memories SET forgotten = 0, forget_reason = ? WHERE id = ? AND forgotten = 1 AND forget_reason = ?${localOnly()}`);
     for (const f of state.forgotten) restore.run(f.forget_reason, f.id, QUALITY_AUDIT_FORGET_REASON);
   }
   if (state.dedupTargetId) {
@@ -965,7 +977,7 @@ export async function revertAuditRun(
   const { db, writeQueue, profileManager } = deps;
   const ids = (
     db
-      .prepare("SELECT id FROM memory_audit_proposals WHERE run_id = ? AND status = 'applied' ORDER BY decided_at DESC, rowid DESC")
+      .prepare(`SELECT id FROM memory_audit_proposals WHERE run_id = ? AND status = 'applied'${localProposal()} ORDER BY decided_at DESC, rowid DESC`)
       .all(runId) as Array<{ id: string }>
   ).map(r => r.id);
   const result: MemoryAuditRevertResult = { reverted: 0, skipped: 0 };
@@ -1040,7 +1052,7 @@ function latestRun(db: DatabaseInstance): RunRow | undefined {
 }
 
 function countProposals(db: DatabaseInstance, runId: string, status: MemoryAuditProposalStatus): number {
-  return (db.prepare('SELECT COUNT(*) AS n FROM memory_audit_proposals WHERE run_id = ? AND status = ?').get(runId, status) as { n: number }).n;
+  return (db.prepare(`SELECT COUNT(*) AS n FROM memory_audit_proposals WHERE run_id = ? AND status = ?${localProposal()}`).get(runId, status) as { n: number }).n;
 }
 
 /** The latest run, its proposals and a fresh estimate, as the review overlay shows them. */
@@ -1074,7 +1086,7 @@ export function getAuditState(
           .prepare(
             `SELECT p.*, m.title AS m_title, m.content AS m_content, m.kind AS m_kind
                FROM memory_audit_proposals p LEFT JOIN memories m ON m.id = p.memory_id
-              WHERE p.run_id = ? ORDER BY p.created_at, p.rowid`,
+              WHERE p.run_id = ?${localProposal('p.')} ORDER BY p.created_at, p.rowid`,
           )
           .all(latest.id) as ProposalViewRow[]
       ).map(toProposalView)
@@ -1094,7 +1106,7 @@ export function getAuditSummary(db: DatabaseInstance, holder: string): MemoryAud
   const latest = latestRun(db);
   const running = latest !== undefined && isLeaseLive(latest, Date.now());
   const runningHere = running && latest?.holder === holder;
-  const eligible = db.prepare(`SELECT COUNT(*) AS n FROM memories WHERE ${ELIGIBLE_WHERE}`).get() as { n: number };
+  const eligible = db.prepare(`SELECT COUNT(*) AS n FROM memories WHERE ${eligibleWhere()}`).get() as { n: number };
   return {
     hasAnyRun: latest !== undefined,
     eligibleCount: eligible.n,

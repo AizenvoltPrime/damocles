@@ -1,5 +1,7 @@
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
+import type { RemoteHost } from '../../platform/remote-host';
 import type { SecretsStore } from '../../platform/secrets-store';
+import { currentPin } from '../client-snapshots';
 import { describeAuthError, isCredentialSyncError } from './describe-error';
 import { log } from '../logger';
 import {
@@ -16,6 +18,8 @@ export interface OpenAIRuntimeKeyDeps {
   preferApiKey: boolean;
   /** Receives whether the secret is present, before pi is called, so a pi failure cannot leave it stale. */
   onKeyPresence: (present: boolean) => void;
+  /** A daemon's core: the key is the pinned client's, served by the broker, so presence comes from its clientAuth. */
+  remote?: RemoteHost;
 }
 
 /**
@@ -25,6 +29,12 @@ export interface OpenAIRuntimeKeyDeps {
  * `CredentialSynchronizationError` comes after it committed the change, so it counts as applied.
  */
 export async function syncOpenAIRuntimeKey(deps: OpenAIRuntimeKeyDeps): Promise<void> {
+  // pi reads its runtime keys before any credential store, so one there would serve every client's turns
+  if (deps.remote) {
+    const clientId = currentPin(deps.remote).clientId;
+    deps.onKeyPresence(clientId !== undefined && deps.remote.clients.auth(clientId)?.providers[OPENAI_API_PROVIDER]?.hasKey === true);
+    return;
+  }
   const key = await deps.secrets.get(OPENAI_API_KEY_SECRET);
   const apiKey = key !== undefined && key !== '';
   deps.onKeyPresence(apiKey);

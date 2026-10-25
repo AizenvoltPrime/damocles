@@ -7,6 +7,7 @@ import { TOAST_OPEN_ACTION } from '../../../preload/notifications';
 import { trapTab } from '../focus-trap';
 import { notificationView, relativeTime, TONE_CLASSES, type NotificationView } from '../notification-view';
 import NotificationAvatar from './NotificationAvatar.vue';
+import HostBadge from '@/components/HostBadge.vue';
 import ToastLife from './ToastLife.vue';
 import { Button } from '@/components/ui/button';
 import { remPx } from '@/composables/useRemPx';
@@ -58,7 +59,7 @@ const announcements = shallowRef<Readonly<Record<Politeness, readonly Announceme
 function announce(toast: OverlayToast): void {
   const shown = viewOf(toast);
   const live: Politeness = shown.urgent ? 'assertive' : 'polite';
-  const text = [shown.where, shown.title, `${shown.lead} ${shown.message}`.trim()].filter((part) => part !== '').join(': ');
+  const text = [shown.where, shown.host ?? '', shown.title, `${shown.lead} ${shown.message}`.trim()].filter((part) => part !== '').join(': ');
   announcements.value = { ...announcements.value, [live]: [...announcements.value[live], { id: toast.id, text }] };
 }
 
@@ -369,13 +370,22 @@ onBeforeUnmount(() => {
             </Button>
           </div>
           <template v-if="shown.kind === 'notice'">
+            <HostBadge
+              v-if="shown.host"
+              :name="shown.host"
+              class="self-start"
+            />
             <p class="max-h-40 overflow-y-auto text-12.5 wrap-break-word whitespace-pre-wrap text-(--d-text)">
               <span class="sr-only">{{ shown.where }}: </span>{{ shown.message }}
             </p>
           </template>
           <template v-else>
-            <div class="truncate text-13.5 font-semibold">
-              {{ shown.title }}
+            <div class="flex min-w-0 items-center gap-1.5">
+              <span class="truncate text-13.5 font-semibold">{{ shown.title }}</span>
+              <HostBadge
+                v-if="shown.host"
+                :name="shown.host"
+              />
             </div>
             <p class="line-clamp-2 text-12.5 text-pretty text-(--d-muted)">
               <span

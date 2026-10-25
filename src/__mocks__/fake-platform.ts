@@ -201,8 +201,12 @@ export interface FakeEditorService extends EditorService {
   readonly chatReviews: ReadonlyArray<{ readonly panelId: string; readonly scope: ChatReviewScope }>;
   /** Host extensions start inactive. */
   setHostExtensionActive(id: string, active: boolean): void;
-  /** Sets the focused editor's context (undefined: none focused, the initial state) and fires onDidChangeActiveContext. */
-  setActiveContext(context: ActiveEditorContext | undefined): void;
+  /**
+   * Sets the focused editor's context (undefined: none focused, the initial state) and the project key of its document, as
+   * desktop's editor reports it, and fires onDidChangeActiveContext.
+   */
+  setActiveContext(context: ActiveEditorContext | undefined, projectKey?: string): void;
+  activeProjectKey(): string | undefined;
 }
 
 export interface FakeLogSink extends LogSink {
@@ -686,6 +690,7 @@ function createEditor(): FakeEditorService {
   const untitled: FakeUntitledDocument[] = [];
   const contextListeners = listenerSet<[ActiveEditorContext | undefined]>();
   let activeContext: ActiveEditorContext | undefined;
+  let activeProjectKey: string | undefined;
   return {
     openedFiles,
     untitled,
@@ -715,9 +720,11 @@ function createEditor(): FakeEditorService {
       return Promise.resolve();
     },
     getActiveContext: () => activeContext,
+    activeProjectKey: () => activeProjectKey,
     onDidChangeActiveContext: (cb) => contextListeners.add(cb),
-    setActiveContext: (context) => {
+    setActiveContext: (context, projectKey) => {
       activeContext = context;
+      activeProjectKey = projectKey;
       contextListeners.fire(context);
     },
     openHostSettings: (query) => {

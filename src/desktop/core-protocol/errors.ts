@@ -1,4 +1,5 @@
 import { GitError, GitUntrustedError, RemoteCancelledError, StashKeptError, SyncBranchChangedError, type StashKeptOutcome, type SyncBranch } from '../../core/scm/errors';
+import { WriteRefusedError, type WriteRefusal } from '../workspace/file-system';
 import type { ErrorCodec, Fault } from './endpoint';
 import { MAX_MESSAGE_CHARS } from './messages';
 import { either, INVALID, int, maybe, nonEmpty, obj, oneOf, str, type Parser } from './schema';
@@ -10,6 +11,13 @@ const ref = nonEmpty(64 * 1024);
 const syncBranch: Parser<SyncBranch> = obj({ branch: ref, remote: ref, upstreamBranch: ref });
 const gitFailure = obj({ exitCode: maybe(int(-(2 ** 31), 2 ** 32)), stderr: str(MAX_STDERR_CHARS) });
 const nul: Parser<null> = (raw) => (raw === null ? null : INVALID);
+// A system error's code (ENOSPC, EACCES), which the other side words in its own language.
+const ERRNO_CODE = /^E[A-Z0-9]{1,31}$/;
+
+function errnoCodeOf(err: unknown): string | undefined {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === 'string' && ERRNO_CODE.test(code) ? code : undefined;
+}
 
 const FAULTS = {
   GitError: gitFailure,
@@ -21,6 +29,8 @@ const FAULTS = {
     cause: maybe(obj({ message: str(MAX_MESSAGE_CHARS), git: maybe(gitFailure) })),
   }),
   SyncBranchChangedError: obj({ stage: oneOf(['pull', 'push'] as const), confirmed: syncBranch, found: either(syncBranch, nul) }),
+  WriteRefusedError: obj({ refusal: oneOf(['outsideProject', 'outsideFile', 'replaced', 'notAFile', 'diskFull'] as const satisfies readonly WriteRefusal[]) }),
+  Errno: obj({ code: (raw: unknown) => (typeof raw === 'string' && ERRNO_CODE.test(raw) ? raw : INVALID) }),
 };
 
 const gitData = (err: GitError): { exitCode: number | null; stderr: string } => ({ exitCode: err.exitCode, stderr: err.stderr.slice(-MAX_STDERR_CHARS) });
@@ -30,8 +40,9 @@ const causeData = (cause: unknown): { message: string; git?: { exitCode: number 
 });
 
 /**
- * The errors the host acts on by class (scm-host.ts, ref-flows.ts), carried by name with their own fields and rebuilt on the
- * other side; every other error crosses as its message. Only these names are ever rebuilt.
+ * The errors the host acts on by class (scm-host.ts, ref-flows.ts, document-service.ts), carried by name with their own fields and rebuilt on the
+ * other side, and any other error with a system error code as that code (Errno); every other error crosses as its message. Only
+ * these names are ever rebuilt.
  */
 export const ERROR_CODEC: ErrorCodec = {
   encode: (err): Fault | undefined => {
@@ -45,6 +56,9 @@ export const ERROR_CODEC: ErrorCodec = {
       };
     }
     if (err instanceof SyncBranchChangedError) return { name: 'SyncBranchChangedError', data: { stage: err.stage, confirmed: err.confirmed, found: err.found } };
+    if (err instanceof WriteRefusedError) return { name: 'WriteRefusedError', data: { refusal: err.refusal } };
+    const code = errnoCodeOf(err);
+    if (code !== undefined) return { name: 'Errno', data: { code } };
     return undefined;
   },
   decode: (fault, message) => {
@@ -67,6 +81,14 @@ export const ERROR_CODEC: ErrorCodec = {
       case 'SyncBranchChangedError': {
         const data = FAULTS.SyncBranchChangedError(fault.data);
         return data === INVALID ? undefined : new SyncBranchChangedError(text, data.stage, data.confirmed, data.found);
+      }
+      case 'WriteRefusedError': {
+        const data = FAULTS.WriteRefusedError(fault.data);
+        return data === INVALID ? undefined : new WriteRefusedError(text, data.refusal);
+      }
+      case 'Errno': {
+        const data = FAULTS.Errno(fault.data);
+        return data === INVALID ? undefined : Object.assign(new Error(text), { code: data.code });
       }
       default:
         return undefined;

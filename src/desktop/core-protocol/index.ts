@@ -4,12 +4,18 @@ import { ERROR_CODEC } from './errors';
 import { CORE_TO_MAIN, MAIN_TO_CORE, type CoreToMain, type MainToCore } from './messages';
 
 export { CoreProtocolError, type CoreTransport, type PanelEnvelope } from './endpoint';
+export { attachedTransport, CORE_MAX_MESSAGE_BYTES, type AttachedTransport } from './attached-transport';
 export { createLoopback } from './loopback';
 export {
+  CLIENT_STATE_KEYS,
   DIFF_TITLE_NAME,
   parseCoreInit,
   parseScmProjects,
   type AskQuestion,
+  type BrokerAnswer,
+  type ClientAuth,
+  type ClientPolicy,
+  type ClientUser,
   type ChatEntry,
   type ChatPermissions,
   type CoreInit,
@@ -22,6 +28,7 @@ export {
   type PanelCreate,
   type ScmMirrorPatch,
   type ScmRepositoryEntry,
+  type SettingsViewScope,
   type StateScope,
 } from './messages';
 export { REPOSITORY_CALLS, SCM_CALLS, WORKTREE_CALLS, type FinishCall, type RepositoryCall, type ScmCall, type WorktreeCall, type WorktreeCalls } from './scm-calls';

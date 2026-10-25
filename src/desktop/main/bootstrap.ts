@@ -1,14 +1,18 @@
 import { log } from '../../core/logger';
+import { folderKey } from '../../core/workspace-folders/folder-key';
 import { createMainEndpoint, type CoreInit } from '../core-protocol';
 import { CoreClient } from './core-client';
 import { forkCore, type CoreExit } from './core-process';
-import { createHostServices, type HostServicesDeps } from './core-services/host-services';
+import { createHostServices, NO_USER_RELAYS, type HostServicesDeps } from './core-services/host-services';
 import type { DesktopPlatform } from './platform';
 import { bounded } from './shutdown';
 import type { TrustStore } from './trust-store';
+import { LOCAL_PROJECT_KEYS } from './remote/remote-project-keys';
 
 /** One running Damocles Core process as main sees it: its client, and the shutdown that ends it. */
 export interface DesktopCore {
+  // 'local': the core this app forks
+  readonly authority: string;
   readonly client: CoreClient;
   // the process's pid once it spawned
   readonly pid: () => number | undefined;
@@ -24,7 +28,7 @@ export interface DesktopCore {
 }
 
 export interface CoreConnectionDeps
-  extends Pick<HostServicesDeps, 'theme' | 'terminalToggle' | 'resolveProxy' | 'createView' | 'git' | 'e2eHooks' | 'paths' | 'logs' | 'language' | 'power' | 'ui' | 'log'> {
+  extends Pick<HostServicesDeps, 'terminalToggle' | 'resolveProxy' | 'createView' | 'git' | 'e2eHooks' | 'paths' | 'logs' | 'language' | 'power' | 'ui' | 'divert' | 'log'> {
   // main's platform: what core's proxies reach
   readonly platform: DesktopPlatform;
   readonly trust: TrustStore;
@@ -74,10 +78,11 @@ export function startDesktopCore(deps: CoreConnectionDeps, start: CoreStart): De
     endpoint.close(`Damocles Core broke the protocol (${error.message})`);
     child.kill();
   });
-  const hostServices = createHostServices({ ...deps, endpoint, state: deps.platform.state, endedCores: start.endedCores, worktreeRecords: start.worktreeRecords });
+  const trust = { trustedKeys: () => deps.trust.trustedFolders().map((folder) => folderKey(folder)), onDidGrant: deps.trust.onDidGrant.bind(deps.trust), requestTrust: deps.trust.requestTrust.bind(deps.trust) };
+  const hostServices = createHostServices({ ...deps, trust, endpoint, state: deps.platform.state, endedCores: start.endedCores, worktreeRecords: start.worktreeRecords, user: NO_USER_RELAYS, refusedPosts: new Set() });
   // The init is the channel's first message; core parses everything after it with the protocol's tables.
   child.transport.post(hostServices.init);
-  const client = new CoreClient(endpoint, (view, attach) => hostServices.adopt(view, attach));
+  const client = new CoreClient(endpoint, (view, attach) => hostServices.adopt(view, attach), LOCAL_PROJECT_KEYS);
   void child.spawned.then(() => {
     pid = child.pid;
     log(`[core] started (pid ${pidText()})`);
@@ -121,6 +126,7 @@ export function startDesktopCore(deps: CoreConnectionDeps, start: CoreStart): De
   });
 
   return {
+    authority: 'local',
     client,
     pid: () => pid,
     ready,

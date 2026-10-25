@@ -6,6 +6,8 @@ import {
   MAX_TERMINAL_ID_LENGTH,
   MAX_TERMINAL_INPUT_CHARS,
   MAX_TERMINAL_ROWS,
+  MAX_TERMINAL_SCREEN_CHARS,
+  MAX_TERMINAL_SCREEN_MARKS,
 } from '../preload/terminal-channels';
 
 // The host sends a pty's output every TERMINAL_BATCH_MS, or as soon as TERMINAL_BATCH_CHARS are buffered, in messages of at
@@ -24,12 +26,17 @@ export const MAX_HOST_MESSAGE_CHARS = 2000;
 export const MAX_HOST_PROCESS_NAME_CHARS = 256;
 // The host's argv entry naming the node-pty package it loads.
 export const NODE_PTY_ARG_PREFIX = '--node-pty=';
+// The daemon's argv entry: each pty's output is acknowledged once its screen consumed it, so no client paces a pty.
+export const SELF_ACKNOWLEDGE_ARG = '--self-acknowledge';
+// The scrollback of a screen the host keeps; the terminal scrollback setting's maximum.
+export const MAX_SCREEN_SCROLLBACK = 100_000;
 
 const TERMINAL_ID = /^term-[1-9][0-9]{0,14}$/;
 
 /**
  * main → host. killAll kills every pty (the window closed); shutdown kills every pty and ends the host; clearAck forgets a
- * pty's unacknowledged output (a reloaded shell).
+ * pty's unacknowledged output (a reloaded shell); serialize answers the pty's screen after every data message before it;
+ * clear clears that screen as the shell's Clear does; scrollback sets the scrollback that screen keeps.
  */
 export type HostRequest =
   | {
@@ -41,19 +48,33 @@ export type HostRequest =
       readonly env: Readonly<Record<string, string>>;
       readonly cols: number;
       readonly rows: number;
+      readonly scrollback: number;
     }
   | { readonly type: 'input'; readonly id: string; readonly data: string }
   | { readonly type: 'resize'; readonly id: string; readonly cols: number; readonly rows: number }
   | { readonly type: 'ack'; readonly id: string; readonly chars: number }
   | { readonly type: 'clearAck'; readonly id: string }
+  | { readonly type: 'serialize'; readonly id: string }
+  | { readonly type: 'clear'; readonly id: string }
+  | { readonly type: 'scrollback'; readonly id: string; readonly scrollback: number }
   | { readonly type: 'kill'; readonly id: string }
   | { readonly type: 'killAll' }
   | { readonly type: 'shutdown' };
 
-/** host → main. error: the pty could not start; exitCode is the process's. process: node-pty's foreground process name changed (macOS and Linux). */
+// Where the OSC 633 sequence with this index since the spawn stood: its absolute line in the screen's buffer.
+export interface ScreenMark {
+  readonly index: number;
+  readonly line: number;
+}
+
+/**
+ * host → main. error: the pty could not start; exitCode is the process's. process: node-pty's foreground process name changed
+ * (macOS and Linux). screen: the answer to serialize; sequences is the index the next OSC 633 sequence after it gets.
+ */
 export type HostMessage =
   | { readonly type: 'ready'; readonly id: string; readonly pid: number }
   | { readonly type: 'data'; readonly id: string; readonly data: string }
+  | { readonly type: 'screen'; readonly id: string; readonly data: string; readonly cols: number; readonly rows: number; readonly marks: readonly ScreenMark[]; readonly sequences: number }
   | { readonly type: 'process'; readonly id: string; readonly name: string }
   | { readonly type: 'exit'; readonly id: string; readonly exitCode: number }
   | { readonly type: 'error'; readonly id: string; readonly message: string };
@@ -110,8 +131,9 @@ export function parseHostRequest(raw: unknown): HostRequest | undefined {
       const env = parseEnv(own(value, 'env'));
       const cols = own(value, 'cols');
       const rows = own(value, 'rows');
-      if (!isPath(file) || !args || !isPath(cwd) || !env || !isInteger(cols, 1, MAX_TERMINAL_COLS) || !isInteger(rows, 1, MAX_TERMINAL_ROWS)) return undefined;
-      return { type, id, file, args, cwd, env, cols, rows };
+      const scrollback = own(value, 'scrollback');
+      if (!isPath(file) || !args || !isPath(cwd) || !env || !isInteger(cols, 1, MAX_TERMINAL_COLS) || !isInteger(rows, 1, MAX_TERMINAL_ROWS) || !isInteger(scrollback, 0, MAX_SCREEN_SCROLLBACK)) return undefined;
+      return { type, id, file, args, cwd, env, cols, rows, scrollback };
     }
     case 'input': {
       const data = own(value, 'data');
@@ -126,12 +148,31 @@ export function parseHostRequest(raw: unknown): HostRequest | undefined {
       const chars = own(value, 'chars');
       return isInteger(chars, 1, MAX_TERMINAL_ACK_CHARS) ? { type, id, chars } : undefined;
     }
+    case 'scrollback': {
+      const scrollback = own(value, 'scrollback');
+      return isInteger(scrollback, 0, MAX_SCREEN_SCROLLBACK) ? { type, id, scrollback } : undefined;
+    }
     case 'clearAck':
+    case 'serialize':
+    case 'clear':
     case 'kill':
       return { type, id };
     default:
       return undefined;
   }
+}
+
+function parseMarks(raw: unknown): ScreenMark[] | undefined {
+  if (!Array.isArray(raw) || raw.length > MAX_TERMINAL_SCREEN_MARKS) return undefined;
+  const marks: ScreenMark[] = [];
+  for (const entry of raw as unknown[]) {
+    const mark = record(entry);
+    const index = mark && own(mark, 'index');
+    const line = mark && own(mark, 'line');
+    if (!isInteger(index, 0, Number.MAX_SAFE_INTEGER) || !isInteger(line, 0, Number.MAX_SAFE_INTEGER)) return undefined;
+    marks.push({ index, line });
+  }
+  return marks;
 }
 
 /** A message from the host as main reads it: anything outside the contract is undefined. */
@@ -153,6 +194,15 @@ export function parseHostMessage(raw: unknown): HostMessage | undefined {
     case 'process': {
       const name = own(value, 'name');
       return isText(name, MAX_HOST_PROCESS_NAME_CHARS) ? { type, id, name } : undefined;
+    }
+    case 'screen': {
+      const data = own(value, 'data');
+      const cols = own(value, 'cols');
+      const rows = own(value, 'rows');
+      const marks = parseMarks(own(value, 'marks'));
+      const sequences = own(value, 'sequences');
+      if (!isText(data, MAX_TERMINAL_SCREEN_CHARS) || !isInteger(cols, 1, MAX_TERMINAL_COLS) || !isInteger(rows, 1, MAX_TERMINAL_ROWS) || !marks || !isInteger(sequences, 0, Number.MAX_SAFE_INTEGER)) return undefined;
+      return { type, id, data, cols, rows, marks, sequences };
     }
     case 'exit': {
       const exitCode = own(value, 'exitCode');

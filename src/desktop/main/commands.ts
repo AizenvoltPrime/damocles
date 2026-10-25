@@ -87,6 +87,8 @@ export const MENU_IDS = {
   toggleBrowserDevTools: 'damocles.browser.toggleDevTools',
   showLog: 'damocles.showLog',
   restartEngine: 'damocles.restartEngine',
+  openFolderThroughLocalDaemon: 'damocles.developer.openFolderThroughLocalDaemon',
+  showLocalDaemonLog: 'damocles.developer.showLocalDaemonLog',
   openSettings: 'damocles.openSettings',
   about: 'damocles.about',
   releaseNotes: 'damocles.releaseNotes',
@@ -616,6 +618,15 @@ function editorGitCommands(actions: MenuActions): Command[] {
   ];
 }
 
+// Dev and e2e only (MenuActions.loopback): a local folder opened through a daemon this app starts, the path a remote host uses.
+function loopbackCommands(loopback: NonNullable<MenuActions['loopback']>): Command[] {
+  const developer = t('Developer');
+  return [
+    { id: MENU_IDS.openFolderThroughLocalDaemon, title: t('Open Folder Through Local Daemon...'), category: developer, run: () => loopback.openFolder() },
+    { id: MENU_IDS.showLocalDaemonLog, title: t('Show Local Daemon Log'), category: developer, run: () => loopback.showLog() },
+  ];
+}
+
 /** Every desktop command, the per-project ones included; ids are unique. */
 export function desktopCommands(projects: readonly OpenFolder[], actions: MenuActions, platform: NodeJS.Platform): Command[] {
   const mac = platform === 'darwin';
@@ -778,6 +789,7 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
     { id: MENU_IDS.showLog, title: pkg('command.showLog.title'), category: chat, run: () => actions.showLog() },
     // VS Code's Restart Extension Host: a new engine replaces the running one, or the one left down after its fourth crash
     { id: MENU_IDS.restartEngine, title: t('Restart Engine'), category: chat, run: () => actions.restartEngine() },
+    ...(actions.loopback ? loopbackCommands(actions.loopback) : []),
     { id: MENU_IDS.about, title: t('About Damocles'), category: help, run: () => actions.about() },
     { id: MENU_IDS.releaseNotes, title: t('Release Notes'), category: help, run: () => actions.releaseNotes() },
     { id: MENU_IDS.checkForUpdates, title: t('Check for Updates...'), category: help, enabled: (context) => context.updateCheck, run: () => actions.checkForUpdates() },

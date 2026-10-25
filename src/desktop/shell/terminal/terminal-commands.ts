@@ -1,5 +1,5 @@
 // Adapted from VS Code's commandDetection capability, markNavigationAddon.ts and partialCommandDetectionCapability.ts (MIT, see THIRD-PARTY-NOTICES.md).
-import type { TerminalShellEvent } from '../../preload/terminal-channels';
+import { MAX_TRACKED_COMMANDS, type TerminalShellEvent } from '../../preload/terminal-channels';
 
 // The parts of an xterm marker the command model reads; xterm's IMarker has them.
 export interface CommandMarker {
@@ -39,9 +39,6 @@ export function commandStatus(command: Pick<TerminalCommand, 'endMarker' | 'exit
 export type CommandChange<M extends CommandMarker> =
   | { readonly kind: 'started'; readonly command: TerminalCommand<M> }
   | { readonly kind: 'finished'; readonly command: TerminalCommand<M> };
-
-// Commands one terminal keeps for its marks and menus; main tracks as many labels.
-export const MAX_TRACKED_COMMANDS = 100;
 
 /**
  * One terminal's commands from main's shell events (VS Code's command detection, capabilities/commandDetection), which

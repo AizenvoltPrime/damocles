@@ -2,15 +2,17 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { testWorkspaces } from './test-workspaces';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { SearchQuery, SearchRange } from '../../../shared/text-search';
 import type { Project } from '../../local-services/confine';
 import { DocumentService } from '../documents/document-service';
-import { createReplacer, keepMatchText, MAX_KEPT_MATCH_CHARS, planReplacements, planWithin, type ReplaceDeps } from '../search/replace';
+import { createReplacer, keepMatchText, MAX_KEPT_MATCH_CHARS, planReplacements, planWithin, type ReplaceDeps } from '../../workspace/search/replace';
 import { searchRegExp } from '../../../shared/text-search';
 import { resolveRgPath } from '../../../core/chat-panel/ripgrep';
-import { SearchService, type RecordedMatch, type RecordedSearch } from '../search/search-service';
+import type { RecordedMatch, RecordedSearch } from '../../workspace/search/types';
+import { SearchService } from '../search/search-service';
 
 let root: string;
 let project: Project;
@@ -22,8 +24,9 @@ beforeEach(() => {
   project = { key: folderKey(root), fsPath: root, name: 'proj' };
   notices = [];
   documents = new DocumentService({
+    authorityOs: () => process.platform,
     projects: () => [project],
-    watchers: createFakePlatform().fileWatchers,
+    workspaces: testWorkspaces({ watchers: createFakePlatform().fileWatchers }),
     ask: async () => undefined,
     t: (message) => message,
     log: () => undefined,
@@ -82,8 +85,9 @@ async function ripgrepSearch(search: SearchQuery): Promise<RecordedSearch> {
   let recordedSearch: RecordedSearch | undefined;
   await new Promise<void>((resolve) => {
     const service: SearchService = new SearchService({
+      osOf: () => process.platform,
       folder: () => ({ projectKey: project.key, fsPath: root }),
-      rgPath: () => resolveRgPath({ resourceRoot: process.cwd(), unpackedRoot: process.cwd() }),
+      workspaces: testWorkspaces({ watchers: createFakePlatform().fileWatchers, rgPath: () => resolveRgPath({ resourceRoot: process.cwd(), unpackedRoot: process.cwd() }) }),
       ignoreArgs: () => [],
       excludeSettings: () => [],
       settings: () => ({ smartCase: false, maxResults: 20_000, debounceMs: 0, sortOrder: 'default' }),

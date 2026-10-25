@@ -5,6 +5,7 @@ import type { MemoryWriteQueue } from '../write-queue';
 import type { MemorySubCallRunner } from '../subcall-runner';
 import { buildFtsMatchQuery } from '../text-tokenize';
 import { classifyContradiction } from '../classifier-judges';
+import { localOnly } from '../local-only';
 
 /** Directed relationship kinds stored in `memory_edges`. */
 export type EdgeKind = 'UPDATES' | 'EXTENDS' | 'DERIVES' | 'SUPERSEDES';
@@ -114,6 +115,12 @@ export class FactGraphManager {
 
   private getRow(id: string): MemoryRow | null {
     const row = this.db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as MemoryRow | undefined;
+    return row ?? null;
+  }
+
+  /** A row a reader may be shown: on a daemon's core, no global one, since global memory is the client's. */
+  private readableRow(id: string): MemoryRow | null {
+    const row = this.db.prepare(`SELECT * FROM memories WHERE id = ?${localOnly()}`).get(id) as MemoryRow | undefined;
     return row ?? null;
   }
 
@@ -267,7 +274,7 @@ export class FactGraphManager {
   async sweepConflictChecks(limit: number = CONFLICT_SWEEP_LIMIT): Promise<number> {
     const rows = this.db.prepare(
       `SELECT * FROM memories
-        WHERE needs_conflict_check = 1 AND is_latest = 1 AND forgotten = 0
+        WHERE needs_conflict_check = 1 AND is_latest = 1 AND forgotten = 0${localOnly()}
         ORDER BY updated_at ASC
         LIMIT ?`,
     ).all(limit) as MemoryRow[];
@@ -362,12 +369,12 @@ export class FactGraphManager {
   getVersionHistory(id: string): MemoryRow[] {
     const lineage: MemoryRow[] = [];
     const visited = new Set<string>();
-    let current = this.getRow(id);
+    let current = this.readableRow(id);
 
     while (current && !visited.has(current.id)) {
       visited.add(current.id);
       lineage.push(current);
-      current = current.parent_id ? this.getRow(current.parent_id) : null;
+      current = current.parent_id ? this.readableRow(current.parent_id) : null;
     }
 
     return lineage.reverse();
@@ -403,7 +410,7 @@ export class FactGraphManager {
 
     const rows: MemoryRow[] = [];
     for (const reachedId of reached) {
-      const row = this.getRow(reachedId);
+      const row = this.readableRow(reachedId);
       if (row && row.forgotten === 0) rows.push(row);
     }
     return rows;

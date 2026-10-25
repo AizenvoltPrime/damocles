@@ -60,7 +60,7 @@ function setPermissionMode(mode: PermissionMode): void {
 
 <template>
   <div
-    v-if="!page.query"
+    v-if="page.groupShown(['workspace-folder'])"
     class="sm-group-head"
   >
     {{ t('settingsModal.groups.workspace') }}
@@ -79,7 +79,7 @@ function setPermissionMode(mode: PermissionMode): void {
   </SettingsRow>
 
   <div
-    v-if="!page.query"
+    v-if="page.groupShown(['model', 'effort', 'disable-thinking', 'permission-mode'])"
     class="sm-group-head"
   >
     {{ t('settingsModal.groups.model') }}

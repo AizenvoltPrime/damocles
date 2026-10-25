@@ -337,7 +337,7 @@ describe('ShellHost', () => {
 
   // The page asks by the state it holds while main may already have changed the list and sent the next state.
   it('answers a chat list only for a project of the state the page names; one that left the list since answers null after the state without it', async () => {
-    const projects = (...keys: string[]): ShellState['projects'] => keys.map((key) => ({ key, name: key, fsPath: key, trusted: true, running: 0, waiting: 0 }));
+    const projects = (...keys: string[]): ShellState['projects'] => keys.map((key) => ({ key, name: key, fsPath: key, trusted: true, authority: { kind: 'local', name: 'This computer' }, platform: 'win32', connection: 'connected', running: 0, waiting: 0 }));
     let body: Pick<ShellState, 'projects' | 'selected'> = { projects: projects('a', 'b'), selected: { projectKey: 'a' } };
     const known = new Set(['a', 'b']);
     const listed = (key: string): ShellChatList | undefined => (known.has(key) ? { projectKey: key, chats: [], tags: [] } : undefined);

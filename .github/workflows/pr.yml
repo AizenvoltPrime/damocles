@@ -1,0 +1,126 @@
+name: Pull request checks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # The whole history, so the base branch's protocol snapshot can be read below.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Node 24 matches package.json engines.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # The wire's compatibility check (src/remote/protocol-version.ts): the committed snapshot matches the contracts.
+      - name: Protocol compatibility
+        run: node scripts/protocol-compat.mjs --check
+
+      # The contracts against the base branch's committed snapshot, so a regenerated snapshot cannot hide a breaking change.
+      - name: Protocol compatibility with the base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git rev-parse --verify --quiet "origin/$BASE_REF^{commit}" > /dev/null
+          snapshot="origin/$BASE_REF:src/remote/protocol-snapshot.json"
+          if ! git cat-file -e "$snapshot" 2>/dev/null; then
+            echo "origin/$BASE_REF has no protocol snapshot yet"
+            exit 0
+          fi
+          git show "$snapshot" > "$RUNNER_TEMP/base-protocol-snapshot.json"
+          node scripts/protocol-compat.mjs --against "$RUNNER_TEMP/base-protocol-snapshot.json"
+
+      - name: Unit tests
+        run: npm test
+
+  # The Windows-only tests, such as win32-pipe.test.ts.
+  windows-unit:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Windows unit tests
+        run: npx vitest run src/remote src/desktop/daemon src/desktop/local-services src/desktop/main
+
+  # The @loopback specs, with the release workflow's Linux e2e setup (release.yml, e2e-desktop).
+  loopback:
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Xvfb and a window manager
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb openbox
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Fetch the grammars and wake models
+        run: npm run fetch:assets
+
+      # The electron package has no install script and downloads its binary on first require.
+      - name: Download the Electron binary
+        run: npx --no install-electron
+
+      # Ubuntu 24.04 restricts unprivileged user namespaces for binaries without an AppArmor profile, so Chromium needs its setuid helper; the sandbox stays on.
+      - name: Enable the setuid sandbox helper of the dev Electron binary
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+
+      # test:desktop builds the webview and the desktop app itself; minimizing needs a window manager.
+      - name: Loopback end-to-end specs
+        timeout-minutes: 40
+        run: xvfb-run -a -s '-screen 0 1920x1080x24' sh -c 'openbox & exec npm run test:desktop -- --grep @loopback'
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: loopback-e2e-report
+          path: dist/e2e-report
+          retention-days: 7
+          if-no-files-found: ignore

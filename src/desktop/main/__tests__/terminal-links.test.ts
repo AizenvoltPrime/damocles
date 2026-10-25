@@ -14,7 +14,9 @@ import {
   TerminalLinkCache,
   TerminalLinks,
   type LinkBase,
+  type LinkKindOf,
 } from '../terminal/terminal-links';
+import { createTerminalBackend } from '../../workspace/terminal/terminal-backend';
 
 const WIN: LinkBase = { project: { key: 'c:\\work\\proj', fsPath: 'C:\\work\\proj', name: 'proj' }, baseDir: 'C:\\work\\proj', style: 'win32' };
 const WSL: LinkBase = { ...WIN, style: 'wsl' };
@@ -114,6 +116,8 @@ describe('confirmed links', () => {
   const log = (line: string): void => {
     lines.push(line);
   };
+  const backend = createTerminalBackend({ starters: { startPtyHost: () => { throw new Error('no pty host in this test'); } }, platform: process.platform, scriptsDir: '', zshDotDir: '', homedir: '', env: {}, log });
+  const kindOf: LinkKindOf = (project, relativePath) => backend.linkKind(project, relativePath);
 
   beforeEach(() => {
     root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dm-links-')));
@@ -136,7 +140,7 @@ describe('confirmed links', () => {
   });
 
   it('answers only files and folders that exist inside the project after every link is followed', async () => {
-    const links = new TerminalLinks(log);
+    const links = new TerminalLinks(kindOf);
     const candidates = [
       'src/app.ts',
       'src',
@@ -160,13 +164,13 @@ describe('confirmed links', () => {
     try {
       const windowsOnly = process.platform === 'win32' ? ['\\\\server\\share\\a.ts', '//host/x', 'C:foo', '\\\\?\\UNC\\host\\x'] : [];
       for (const candidate of [...windowsOnly, path.join(outside, 'secret.txt'), '../outside/secret.txt']) {
-        expect(await resolveTerminalLink(candidate, base, log), candidate).toBeNull();
+        expect(await resolveTerminalLink(candidate, base, kindOf), candidate).toBeNull();
       }
-      expect(await resolveTerminalLink('/mnt/c/x', { ...base, baseDir: projectDir, style: 'wsl' }, log)).toBeNull();
+      expect(await resolveTerminalLink('/mnt/c/x', { ...base, baseDir: projectDir, style: 'wsl' }, kindOf)).toBeNull();
       expect(realpath).not.toHaveBeenCalled();
       expect(stat).not.toHaveBeenCalled();
       expect(lstat).not.toHaveBeenCalled();
-      expect(await resolveTerminalLink('src/app.ts', base, log)).toEqual({ kind: 'file', relativePath: 'src/app.ts' });
+      expect(await resolveTerminalLink('src/app.ts', base, kindOf)).toEqual({ kind: 'file', relativePath: 'src/app.ts' });
       expect(realpath).toHaveBeenCalled();
     } finally {
       vi.restoreAllMocks();
@@ -190,8 +194,8 @@ describe('confirmed links', () => {
     const realpath = vi.spyOn(fs.promises, 'realpath');
     const stat = vi.spyOn(fs.promises, 'stat');
     try {
-      expect(await resolveTerminalLink('share/app.ts', base, log)).toBeNull();
-      expect(await resolveTerminalLink('share', base, log)).toBeNull();
+      expect(await resolveTerminalLink('share/app.ts', base, kindOf)).toBeNull();
+      expect(await resolveTerminalLink('share', base, kindOf)).toBeNull();
       expect(remote).toEqual([]);
       expect(realpath).not.toHaveBeenCalled();
       expect(stat).not.toHaveBeenCalled();
@@ -202,24 +206,24 @@ describe('confirmed links', () => {
   });
 
   it('gives the project-relative path a click opens', async () => {
-    expect(await resolveTerminalLink('src/app.ts', base, log)).toEqual({ kind: 'file', relativePath: 'src/app.ts' });
-    expect(await resolveTerminalLink('.', base, log)).toEqual({ kind: 'folder', relativePath: '' });
+    expect(await resolveTerminalLink('src/app.ts', base, kindOf)).toEqual({ kind: 'file', relativePath: 'src/app.ts' });
+    expect(await resolveTerminalLink('.', base, kindOf)).toEqual({ kind: 'folder', relativePath: '' });
     const inSrc: LinkBase = { ...base, baseDir: path.join(projectDir, 'src') };
-    expect(await resolveTerminalLink('app.ts', inSrc, log)).toEqual({ kind: 'file', relativePath: 'src/app.ts' });
-    expect(await resolveTerminalLink('../../outside/secret.txt', inSrc, log)).toBeNull();
+    expect(await resolveTerminalLink('app.ts', inSrc, kindOf)).toEqual({ kind: 'file', relativePath: 'src/app.ts' });
+    expect(await resolveTerminalLink('../../outside/secret.txt', inSrc, kindOf)).toBeNull();
   });
 
   it.runIf(process.platform === 'win32')('maps a WSL terminal\'s /mnt/<drive>/ path to the Windows file', async () => {
     const drive = projectDir[0]!.toLowerCase();
     const mounted = `/mnt/${drive}${projectDir.slice(2).split('\\').join('/')}/src/app.ts`;
     const wsl: LinkBase = { ...base, style: 'wsl' };
-    expect(await resolveTerminalLink(mounted, wsl, log)).toEqual({ kind: 'file', relativePath: 'src/app.ts' });
-    expect(await resolveTerminalLink(`/mnt/${drive}${outside.slice(2).split('\\').join('/')}/secret.txt`, wsl, log)).toBeNull();
+    expect(await resolveTerminalLink(mounted, wsl, kindOf)).toEqual({ kind: 'file', relativePath: 'src/app.ts' });
+    expect(await resolveTerminalLink(`/mnt/${drive}${outside.slice(2).split('\\').join('/')}/secret.txt`, wsl, kindOf)).toBeNull();
   });
 
   it('keeps a hover answer for the TTL, while an open resolves again', async () => {
     let now = 0;
-    const links = new TerminalLinks(log, new TerminalLinkCache(() => now));
+    const links = new TerminalLinks(kindOf, new TerminalLinkCache(() => now));
     expect(await links.resolveAll(['src/app.ts'], base)).toEqual(['file']);
     fs.rmSync(path.join(projectDir, 'src', 'app.ts'));
     expect(await links.resolveAll(['src/app.ts'], base)).toEqual(['file']);
@@ -231,7 +235,7 @@ describe('confirmed links', () => {
   });
 
   it('never answers one base directory or path style with another\'s entry', async () => {
-    const links = new TerminalLinks(log);
+    const links = new TerminalLinks(kindOf);
     const inSrc: LinkBase = { ...base, baseDir: path.join(projectDir, 'src') };
     expect(await links.resolveAll(['app.ts'], inSrc)).toEqual(['file']);
     expect(await links.resolveAll(['app.ts'], base)).toEqual([null]);

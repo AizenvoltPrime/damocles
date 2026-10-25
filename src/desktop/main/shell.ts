@@ -111,6 +111,7 @@ import {
   type TerminalTarget,
   type TerminalCreateResult,
   type TerminalData,
+  type TerminalScreen,
   type TerminalLinkKind,
   type TerminalOpenLink,
   type TerminalPaste,
@@ -186,7 +187,8 @@ export interface ShellActions {
   // window DIP
   openAppMenu(anchor: { readonly x: number; readonly y: number }): void;
   toggleTheme(): void;
-  restartEngine(): void;
+  // authority: a remote host's engine (the pill on its halted core); none: the local engine
+  restartEngine(authority?: string): void;
   toggleSidebar(): void;
   showSidebar(): void;
   windowControl(control: WindowControl): void;
@@ -273,6 +275,8 @@ export interface ShellTerminalActions {
   ack(id: string, chars: number): void;
   kill(id: string): void;
   restart(id: string): void;
+  // the menu's Clear ran on the terminal's xterm
+  clear(id: string): void;
   select(id: string): void;
   split(id: string): void;
   unsplit(id: string): void;
@@ -1071,7 +1075,10 @@ export class ShellHost {
       this.actions.openAppMenu({ x: Math.round(anchor.x * zoom), y: Math.round(anchor.y * zoom) });
     });
     this.handle(SHELL_CHANNELS.toggleTheme, () => this.actions.toggleTheme());
-    this.handle(SHELL_CHANNELS.restartEngine, () => this.actions.restartEngine());
+    this.handle(SHELL_CHANNELS.restartEngine, (authority) => {
+      if (authority !== undefined && (typeof authority !== 'string' || authority === '' || authority.length > 256)) throw new Error('Malformed engine from the shell');
+      this.actions.restartEngine(authority);
+    });
     this.handle(SHELL_CHANNELS.toggleSidebar, () => this.actions.toggleSidebar());
     this.handle(SHELL_CHANNELS.showSidebar, () => this.actions.showSidebar());
     this.handle(SHELL_CHANNELS.windowControl, (control) => {
@@ -1438,6 +1445,7 @@ export class ShellHost {
     this.onTerminal(TERMINAL_CHANNELS.ack, parseTerminalAck, ({ id, chars }) => terminal.ack(id, chars));
     this.onTerminal(TERMINAL_CHANNELS.kill, parseTerminalRef, (id) => terminal.kill(id));
     this.onTerminal(TERMINAL_CHANNELS.restart, parseTerminalRef, (id) => terminal.restart(id));
+    this.onTerminal(TERMINAL_CHANNELS.clear, parseTerminalRef, (id) => terminal.clear(id));
     this.onTerminal(TERMINAL_CHANNELS.select, parseTerminalRef, (id) => terminal.select(id));
     this.onTerminal(TERMINAL_CHANNELS.split, parseTerminalRef, (id) => terminal.split(id));
     this.onTerminal(TERMINAL_CHANNELS.unsplit, parseTerminalRef, (id) => terminal.unsplit(id));
@@ -1544,6 +1552,10 @@ export class ShellHost {
 
   terminalData(data: TerminalData): void {
     this.send(TERMINAL_CHANNELS.data, data);
+  }
+
+  terminalScreen(screen: TerminalScreen): void {
+    this.send(TERMINAL_CHANNELS.screen, screen);
   }
 
   // A user's action in main: keyboard focus moves to the window's own page, which focuses the terminal. The state goes first,

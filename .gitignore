@@ -3,6 +3,7 @@ dist/
 dist-desktop/
 # Local pixel baselines a screenshots run records next to its script (slice6b), per machine and never shared.
 e2e/desktop/screenshots/*-snapshots/
+test-results/
 *.vsix
 .vscode-test/
 logs/

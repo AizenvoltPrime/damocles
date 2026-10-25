@@ -32,13 +32,19 @@ import { MENU_CONTENT, MENU_ITEM } from '@/components/chat-header/menuStyles';
 import SettingsNav from './SettingsNav.vue';
 import SettingsPage from './SettingsPage.vue';
 import SettingButton from './controls/SettingButton.vue';
-import { normalizeQuery, SETTINGS_ROWS, type HostSettings, type SettingsRowMeta, type SettingsSectionMeta } from './settings-rows';
+import { normalizeQuery, SETTINGS_ROWS, type HostSettings, type SettingsRowMeta, type SettingsScopeView, type SettingsSectionMeta } from './settings-rows';
 import { provideSettingsBanner, provideSettingsFiles, provideSettingsTarget, type SettingsBanner } from './settings-view';
 import { prefersReducedMotion } from '@/utils/reducedMotion';
 import './settings.css';
 
-/** How the footer reaches the full settings: the host's own Settings UI, or the chat's settings.json editor. */
-export type SettingsFooter = { readonly kind: 'hostSettings' } | { readonly kind: 'settingsFiles' };
+/** A settings file the footer offers; label replaces the scope's own name. */
+export interface SettingsFooterFile {
+  readonly scope: SettingsFileScope;
+  readonly label?: string;
+}
+
+/** How the footer reaches the full settings: the host's own Settings UI, or the chat's settings.json editor (every file unless files names them). */
+export type SettingsFooter = { readonly kind: 'hostSettings' } | { readonly kind: 'settingsFiles'; readonly files?: readonly SettingsFooterFile[] };
 
 const props = defineProps<{
   host: HostSettings;
@@ -49,6 +55,8 @@ const props = defineProps<{
   target?: SettingsTarget | undefined;
   /** A new value remounts the page, dropping anything typed into it, and asks for the state again (the desktop view re-attached to another chat). */
   pageKey?: number | undefined;
+  /** The desktop scope tab: only the rows it lists show, and nothing while it loads. */
+  scopeView?: SettingsScopeView | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -76,7 +84,7 @@ const SHARED_SECTIONS: readonly SettingsSectionMeta[] = [
 ];
 
 const sections = computed<readonly SettingsSectionMeta[]>(() => [
-  ...SHARED_SECTIONS.filter((section) => section.id !== 'voice' || voiceControlsAvailable.value),
+  ...SHARED_SECTIONS.filter((section) => (section.id !== 'voice' || voiceControlsAvailable.value) && props.scopeView?.hidden?.has(section.id) !== true),
   ...props.host.sections,
 ]);
 
@@ -138,7 +146,7 @@ watch(() => props.target, (next) => {
 
 function back(): void {
   narrowPage.value = 'nav';
-  void nextTick(() => root.value?.querySelector<HTMLElement>(`[data-testid="settings-nav-${active.value}"]`)?.focus());
+  void nextTick(() => root.value?.querySelector<HTMLElement>(`[data-testid="settings-nav-${activeMeta.value.id}"]`)?.focus());
 }
 
 const scrim = shallowRef<HTMLElement | null>(null);
@@ -180,7 +188,8 @@ const heading = computed(() => (query.value
   : { title: t(activeMeta.value.label), subtitle: t(activeMeta.value.subtitle) }));
 
 // Editing settings.json: the three files, offered where the host can edit them in the chat.
-const FILE_SCOPES: readonly SettingsFileScope[] = ['user', 'project', 'local'];
+const FILE_SCOPES: readonly SettingsFooterFile[] = [{ scope: 'user' }, { scope: 'project' }, { scope: 'local' }];
+const footerFiles = computed(() => (props.footer.kind === 'settingsFiles' ? props.footer.files ?? FILE_SCOPES : []));
 function fileUnavailable(scope: SettingsFileScope): string | null {
   const availability = editorStore.settingsFileAvailability?.[scope];
   if (availability === undefined || availability.available) return null;
@@ -278,7 +287,7 @@ defineExpose({ close });
         <SettingsNav
           v-if="!narrow || !query"
           :sections="sections"
-          :active="active"
+          :active="activeMeta.id"
           :searching="query !== ''"
           :list="narrow"
           :panel-id="panelId"
@@ -307,7 +316,7 @@ defineExpose({ close });
             >
               <!-- An unavailable scope dims only its label, so its reason keeps its token's contrast (palette-contrast.test.ts). -->
               <DropdownMenuItem
-                v-for="scope in FILE_SCOPES"
+                v-for="{ scope, label } in footerFiles"
                 :key="scope"
                 :class="[MENU_ITEM, 'data-disabled:opacity-100']"
                 :disabled="fileUnavailable(scope) !== null"
@@ -315,7 +324,7 @@ defineExpose({ close });
                 @select="emit('editSettingsFile', scope)"
               >
                 <span class="sm-option-text">
-                  <span :class="fileUnavailable(scope) !== null && 'opacity-50'">{{ t(`settings.jsonFiles.edit.${scope}`) }}</span>
+                  <span :class="fileUnavailable(scope) !== null && 'opacity-50'">{{ label ?? t(`settings.jsonFiles.edit.${scope}`) }}</span>
                   <span
                     v-if="fileUnavailable(scope)"
                     class="sm-option-hint"
@@ -347,6 +356,8 @@ defineExpose({ close });
         :class="{ 'sm-page-in': narrow }"
         role="tabpanel"
       >
+        <!-- the desktop's scope tabs for a remote chat (User, its host, Project) -->
+        <slot name="scope" />
         <header class="sm-header">
           <button
             v-if="narrow && !query"
@@ -388,7 +399,12 @@ defineExpose({ close });
         <div
           :key="contentKey"
           class="sm-content"
+          :class="$slots.scope && 'sm-content-swap'"
         >
+          <slot
+            name="scopeBanner"
+            :section="query ? undefined : activeMeta.id"
+          />
           <div
             v-if="banner"
             class="sm-banner"
@@ -411,6 +427,7 @@ defineExpose({ close });
             :typed="typed"
             :host="host"
             :rows="rows"
+            :scope-view="scopeView"
             @matches="(count) => (matches = count)"
           />
         </div>

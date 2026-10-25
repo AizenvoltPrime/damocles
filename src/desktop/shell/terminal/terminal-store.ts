@@ -1,9 +1,10 @@
 import { computed, shallowRef, type ComputedRef, type InjectionKey, type ShallowRef } from 'vue';
 import type { DamoclesShellApi } from '../../preload/shell-channels';
-import type { TerminalData, TerminalInfo, TerminalRunAction, TerminalState } from '../../preload/terminal-channels';
+import type { TerminalData, TerminalInfo, TerminalRunAction, TerminalScreen, TerminalState } from '../../preload/terminal-channels';
 
-// A batch of output and the shell events main parsed out of it.
-export type TerminalSink = (batch: Pick<TerminalData, 'data' | 'events'>) => void;
+// A batch of output and the shell events main parsed out of it, or the screen a reloaded page shows before its output.
+export type TerminalBatch = Pick<TerminalData, 'data' | 'events'> | { readonly screen: TerminalScreen };
+export type TerminalSink = (batch: TerminalBatch) => void;
 
 // Where focus goes when an inline rename ends: the terminal it renames, or the list row or tab it was started from.
 export type RenameReturn = 'terminal' | 'tab';
@@ -24,6 +25,8 @@ export interface TerminalStore {
   readonly actionRequest: ShallowRef<(TerminalRunAction & { readonly seq: number }) | null>;
   // the view's xterm takes the terminal's output; output that arrives before it mounts waits for it
   attach(id: string, sink: TerminalSink): () => void;
+  // a screen waits for the terminal's view
+  screenWaits(id: string): boolean;
   start(): Promise<void>;
   stop(): void;
 }
@@ -44,7 +47,7 @@ export function createTerminalStore(api: DamoclesShellApi): TerminalStore {
   const actionRequest = shallowRef<(TerminalRunAction & { seq: number }) | null>(null);
   const sinks = new Map<string, TerminalSink>();
   // Bounded by flow control: the host pauses a pty whose output no view acknowledges.
-  const pending = new Map<string, Array<Pick<TerminalData, 'data' | 'events'>>>();
+  const pending = new Map<string, TerminalBatch[]>();
   const stops: Array<() => void> = [];
   let seq = 0;
 
@@ -62,7 +65,10 @@ export function createTerminalStore(api: DamoclesShellApi): TerminalStore {
   }
 
   function onData({ id, data, events }: TerminalData): void {
-    const batch = events ? { data, events } : { data };
+    route(id, events ? { data, events } : { data });
+  }
+
+  function route(id: string, batch: TerminalBatch): void {
     const sink = sinks.get(id);
     if (sink) sink(batch);
     else if (pending.has(id)) pending.get(id)!.push(batch);
@@ -89,6 +95,7 @@ export function createTerminalStore(api: DamoclesShellApi): TerminalStore {
     },
     pasteRequest,
     actionRequest,
+    screenWaits: (id) => (pending.get(id) ?? []).some((batch) => 'screen' in batch),
     attach(id, sink) {
       sinks.set(id, sink);
       for (const batch of pending.get(id) ?? []) sink(batch);
@@ -101,6 +108,7 @@ export function createTerminalStore(api: DamoclesShellApi): TerminalStore {
       // Subscribed before the first read, so nothing between the two is lost.
       stops.push(api.terminal.onState(applyState));
       stops.push(api.terminal.onData(onData));
+      stops.push(api.terminal.onScreen((screen) => route(screen.id, { screen })));
       stops.push(api.terminal.onFocus(requestFocus));
       stops.push(api.terminal.onStartRename((id) => startRename(id, 'terminal')));
       stops.push(api.terminal.onRequestPaste((id) => {

@@ -3,14 +3,14 @@ import * as path from 'path';
 import { stripBom } from '../config/bom';
 import { PI_AGENT_DIR } from './agent-dir';
 import { logAuthReadFailure, readAuthFile } from './auth-file';
+import { SUBSCRIPTION_COMMIT, SUBSCRIPTION_REPO } from './subscription-pin';
 
 // The plugin wraps pi-ai's Anthropic transport and adds Claude Code's billing block, which bills the
 // subscription's included allowance; the same OAuth token without it meters as extra usage.
-const SUBSCRIPTION_REPO = 'https://github.com/gotgenes/pi-anthropic-auth';
 
 // `@<sha>`, not `#<sha>`: pi's parseGitUrl keeps a `#` fragment on the clone URL, which breaks `git clone`.
 // Before bumping, run the plugin's tests with its @earendil-works/pi-* devDependencies set to Damocles' versions; nothing in this repo's CI clones it.
-export const SUBSCRIPTION_SOURCE: string = `${SUBSCRIPTION_REPO}@f648e814d479dae75f6e403d8ffa8ae5bc918783`;
+export const SUBSCRIPTION_SOURCE: string = `${SUBSCRIPTION_REPO}@${SUBSCRIPTION_COMMIT}`;
 
 // pi keys git packages by repo identity, so a replaced plugin's entry is invisible to checks on the current repo.
 export const LEGACY_SUBSCRIPTION_REPOS: readonly string[] = [
@@ -56,6 +56,8 @@ export type ClaudeAuthMode = 'none' | 'apikey' | 'allowance' | 'extra';
 
 export interface ClaudeAuthStatus {
   mode: ClaudeAuthMode;
+  // a daemon's core: the client bills its sign-in to the allowance, but this host's bundled plugin did not load, so `extra`
+  allowanceUnavailable?: true;
 }
 
 /**

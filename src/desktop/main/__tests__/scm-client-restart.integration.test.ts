@@ -4,6 +4,7 @@ import { folder, git, harness, HAS_GIT, makeRepo, ready, statusOf, useGitSandbox
 import { createCoreEndpoint, createLoopback, createMainEndpoint } from '../../core-protocol';
 import { CoreClient } from '../core-client';
 import { createScmClient } from '../scm/scm-client';
+import { LOCAL_PROJECT_KEYS } from '../remote/remote-project-keys';
 
 /** A repository id main holds across a core restart never names the new core's repositories. */
 useGitSandbox();
@@ -13,7 +14,7 @@ const quiet = (): void => undefined;
 // A core serving scm.call from a real ScmService, as core-host/scm.ts does.
 function coreOf(h: Harness): CoreClient {
   const { main, core } = createLoopback();
-  const client = new CoreClient(createMainEndpoint(main, quiet), (_view, attach) => attach());
+  const client = new CoreClient(createMainEndpoint(main, quiet), (_view, attach) => attach(), LOCAL_PROJECT_KEYS);
   const endpoint = createCoreEndpoint(core, quiet);
   const calls = h.service as unknown as Record<string, (...args: unknown[]) => unknown>;
   endpoint.serve('scm.call', ({ method, args }) => calls[method]!.apply(h.service, [...args]));
@@ -41,7 +42,7 @@ describe.runIf(HAS_GIT)('a repository id across a core restart', { timeout: 60_0
     const first = harness({ trusted: [a.repo, b.repo] });
     const second = harness({ trusted: [a.repo, b.repo] });
     let running: CoreClient | undefined;
-    const scm = createScmClient({ core: (_label, work) => work(running!), gitVersion: undefined, log: quiet });
+    const scm = createScmClient({ core: (_authority, _label, work) => work(running!), gitVersion: undefined, log: quiet });
     try {
       first.service.setProjects([{ key: 'a', path: a.repo }]);
       const held = (await ready(first, 1, 'a')).repos[0]!.repoId;

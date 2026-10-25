@@ -10,8 +10,8 @@
       "electron/*": ["./types/no-electron.d.ts"]
     }
   },
-  // Damocles Core, its protocol, the per-process services and the app URL helpers are electron-free too: core runs them outside main.
-  "include": ["src/core", "src/platform", "src/shared", "src/desktop/core-host", "src/desktop/core-protocol", "src/desktop/local-services", "src/desktop/app-urls.ts"],
+  // Damocles Core, its protocol, the per-process services, the workspace modules, the wire, the daemon, the pty and formatter hosts and the app URL helpers are electron-free too: they run outside main.
+  "include": ["src/core", "src/platform", "src/shared", "src/desktop/core-host", "src/desktop/core-protocol", "src/desktop/local-services", "src/desktop/workspace", "src/remote", "src/desktop/daemon", "src/desktop/pty-host", "src/desktop/formatter-host", "src/desktop/app-urls.ts"],
   // Tests are checked by tsconfig.tests*.json.
   "exclude": [
     "node_modules",

@@ -18,7 +18,7 @@ vi.mock('electron', () => ({
 
 import { MAX_HOST_MESSAGE_CHARS } from '../../pty-host/protocol';
 import { PTY_HOST_GONE_WAIT_MS, PTY_HOST_SERVICE_NAME, spawnPtyHost } from '../terminal/pty-host-process';
-import type { PtyHostExit } from '../terminal/terminal-service';
+import type { PtyHostExit } from '../../workspace/host-starters';
 
 beforeEach(() => {
   vi.useFakeTimers();

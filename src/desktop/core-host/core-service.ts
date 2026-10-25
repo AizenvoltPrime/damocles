@@ -9,11 +9,13 @@ import { setMcpSecretStorage } from '../../core/pi-session/mcp/mcp-auth';
 import { PiRuntime } from '../../core/pi-session/pi-runtime';
 import type { ChatActivity } from '../../core/pi-session/session-state';
 import { setupAutoDisable } from '../../core/voice/auto-disable';
+import { e2eVoiceRecorder, fakeVoiceForE2e } from '../../core/voice/recorder';
 import { settingsFolderOf, type FolderTarget } from '../../core/workspace-folders/folder-registry';
 import type { Disposable } from '../../platform/disposable';
 import type { PanelHost } from '../../platform/window-service';
 import { holdsWorktreeSetup, isActiveActivity } from '../../shared/chat-retention';
-import type { WorktreePhase } from '../../shared/types/messages';
+import { VOICE_VIEW_MESSAGES } from '../../shared/remote-user';
+import type { WebviewToExtensionMessage, WorktreePhase } from '../../shared/types/messages';
 import type { ChatEntry, FolderTargetEntry } from '../core-protocol';
 import { resolveChatTab } from './chat-tab-target';
 import type { ChatFolderSource } from './local';
@@ -48,7 +50,12 @@ export interface CoreServiceOptions {
   readonly setPlatform: (platform: NodeJS.Platform | undefined) => void;
 }
 
-export function startCoreService(platform: CorePlatform, options: CoreServiceOptions): void {
+export interface CoreService {
+  // core.shutdown's steps, run once however often asked
+  readonly shutdown: () => Promise<void>;
+}
+
+export function startCoreService(platform: CorePlatform, options: CoreServiceOptions): CoreService {
   const { endpoint, panels } = platform;
   const subscriptions: Disposable[] = [];
   setCheckpointGitAvailability(platform.init.git.available ? { available: true } : { available: false, reason: platform.init.git.reason ?? '' });
@@ -201,7 +208,7 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   // e2e.holdShutdown: the next core.shutdown never settles
   let holdShutdown = false;
 
-  endpoint.serve('core.shutdown', () => {
+  const shutdownCore = (): Promise<void> => {
     if (holdShutdown) return new Promise<void>(() => undefined);
     shutdown ??= (async () => {
       // Every step runs after a failed one, so core's config writes and log lines still land; the first failure is the reply.
@@ -222,7 +229,8 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
       if (failures.length > 0) throw failures[0];
     })();
     return shutdown;
-  });
+  };
+  endpoint.serve('core.shutdown', shutdownCore);
   endpoint.serve('chats.restore', async ({ viewId, folderKey, permissions }) => {
     const host = panels.attach(viewId);
     await provider.restorePanel(host, folderKey, permissions);
@@ -322,6 +330,27 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
     await registry.setDefault(key);
   });
   endpoint.serve('browser.newPage', ({ chatViewId }) => provider.getBrowserService().openNewPageForChat(requireHost(chatViewId)));
+  // this computer's user scope for remote chats: main asks only this core, and checks every answer before it leaves
+  endpoint.serve('user.resolveCredential', ({ provider }) => PiRuntime.get().resolveCredentialForBroker(provider));
+  endpoint.serve('user.clientAuth', () => PiRuntime.get().clientAuthSnapshot());
+  // a daemon's core has no user scope of its own to relay
+  if (!platform.remote) {
+    const stopClientAuth = PiRuntime.onClientAuthChange(() => endpoint.emit('user.clientAuthChanged', {}));
+    subscriptions.push({ dispose: stopClientAuth });
+  }
+  endpoint.serve('user.voice.speak', ({ viewId, text }) => provider.speakForeign(viewId, text));
+  endpoint.serve('panels.attachForeign', ({ authority, viewId }) => {
+    panels.attachForeign(authority, viewId);
+  });
+  endpoint.serve('panels.detachForeign', ({ viewId }) => panels.detachForeign(viewId));
+  // main sends only VOICE_VIEW_MESSAGES of a view it attached; checked again here
+  endpoint.serve('panels.foreignMessage', async ({ viewId, message }) => {
+    const host = panels.foreign(viewId);
+    if (!host) throw new Error('The remote chat view is not attached');
+    const type = (message as { type?: unknown } | null)?.type;
+    if (typeof type !== 'string' || !VOICE_VIEW_MESSAGES.has(type)) throw new Error('Only voice messages reach this computer from a remote chat');
+    await provider.dispatchForeign(host, message as WebviewToExtensionMessage);
+  });
   endpoint.serve('worktree.retrySetup', ({ worktreeId }) => panelManager.retrySetup(worktreeId));
   endpoint.serve('worktree.beginFinish', ({ worktreeId, action }) => {
     const hold = panelManager.beginWorktreeFinish(worktreeId, action);
@@ -334,15 +363,23 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   endpoint.serve('review.anchor', ({ panelId, comment }) => requireInstance(panelId).session.chatReviewAnchor(comment as Parameters<Session['chatReviewAnchor']>[0]));
   endpoint.serve('review.stale', ({ panelId, checks }) => requireInstance(panelId).session.chatReviewStale(checks as Parameters<Session['chatReviewStale']>[0]));
   endpoint.serve('review.submit', ({ panelId, drafts }) => requireInstance(panelId).session.submitReview(drafts as Parameters<Session['submitReview']>[0]));
-  endpoint.serve('settingsView.attach', ({ panelId, attachment }) => {
+  endpoint.serve('settingsView.attach', ({ panelId, attachment, scope }) => {
     const handle = panelManager.attachView(panelId, {
       post: (message) => endpoint.emit('settingsView.post', { attachment, message }),
       detached: () => {
         settingsViews.delete(attachment);
         endpoint.emit('settingsView.detached', { attachment });
       },
+      ...(scope !== undefined ? { scope } : {}),
     });
     settingsViews.set(attachment, { panelId, handle });
+  });
+  // a view main made for a panel this core holds; the panel's token never changes
+  endpoint.serve('views.join', async ({ viewId, viewKey }) => {
+    const host = panels.get(viewId);
+    if (!host) return null;
+    const panelId = await panelManager.joinView(host, viewKey);
+    return panelId === undefined ? null : { panelId };
   });
   endpoint.serve('settingsView.dispatch', async ({ attachment, message }) => {
     const view = settingsViews.get(attachment);
@@ -376,6 +413,12 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
       holdShutdown = true;
     });
     endpoint.serve('e2e.inputBox', (options) => platform.dialogs.inputBox(options));
+    // this core's recorder starts a stand-in under its own launcher, so a test can tell which process records
+    endpoint.serve('e2e.fakeVoice', ({ transcript }) => {
+      fakeVoiceForE2e(transcript);
+      return { pid: process.pid };
+    });
+    endpoint.serve('e2e.voiceRecorder', () => e2eVoiceRecorder());
     // the requests a route sends to toHost instead, by their original URL
     endpoint.serve('e2e.routeBrowser', async ({ pattern, toHost }) => {
       const page = provider.getBrowserService().getActivePage();
@@ -405,4 +448,5 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
       watchProbes.delete(folder);
     });
   }
+  return { shutdown: shutdownCore };
 }

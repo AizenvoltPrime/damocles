@@ -24,6 +24,8 @@ export interface AccountBillingDeps {
   resolvedProvider?: string | undefined;
   /** Key providers whose applied key bills a flat subscription (`PiRuntime.flatFeeKeyProviders()`). */
   flatFeeKeyProviders: ReadonlySet<string>;
+  /** A daemon's core: the Claude sign-in bills extra usage only because the host's bundled plugin did not load (`ClaudeAuthStatus`). */
+  allowanceUnavailable?: boolean;
 }
 
 /** The subscription the active credential bills, or undefined for an API key or a custom provider. */
@@ -57,9 +59,10 @@ export function apiKeySource(deps: AccountBillingDeps): string {
   return deps.claudeAuthMode;
 }
 
-/** The account state the webview reads: the active model and whether its credential is dollar-metered. */
+/** The account state the webview reads: the active model, whether its credential is dollar-metered, and why a Claude chat bills extra usage against the user's choice. */
 export function buildAccountInfo(deps: AccountBillingDeps): AccountInfo {
-  return { model: deps.modelValue, dollarBilled: dollarBilled(deps) };
+  const allowanceUnavailable = deps.allowanceUnavailable === true && subscriptionProvider(deps) === 'anthropic';
+  return { model: deps.modelValue, dollarBilled: dollarBilled(deps), ...(allowanceUnavailable ? { allowanceUnavailable } : {}) };
 }
 
 /** Whether the active credential is dollar-metered (API key or extra-usage), vs a flat subscription. */

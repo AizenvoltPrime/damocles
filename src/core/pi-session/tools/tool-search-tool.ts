@@ -5,7 +5,8 @@ import { TOOL_TOOL_SEARCH } from '../../../shared/tool-names';
 import { log } from '../../logger';
 import { mcpServerNamespaceKey } from '../../../shared/types/mcp';
 import { stripControlChars } from '../untrusted-text';
-import { BUILTIN_DEFERRED_GROUPS, resolveToolSearchEntries } from './deferred-tools';
+import { BUILTIN_DEFERRED_GROUPS, resolveToolSearchEntries, userScopeToolNames } from './deferred-tools';
+import { browserUnavailableReason, userScopeRemote } from '../../user-scope';
 
 /** One MCP tool's ToolSearch menu facts, taken from its descriptor. */
 export interface McpToolMenuEntry {
@@ -269,13 +270,19 @@ export function createToolSearchTool(port: ToolActivationPort): ToolDefinition {
       }
 
       const entries = params.tools ?? [];
-      const { matches, unknown, alreadyActive, alreadyActiveGroups, shadowedGroups, inertGroups } = resolveToolSearchEntries(
+      const resolution = resolveToolSearchEntries(
         entries,
         snapshot.names,
         snapshot.mcpGroups,
         snapshot.loaded,
         snapshot.directMcpGroups,
       );
+      const { matches, alreadyActive, alreadyActiveGroups, shadowedGroups } = resolution;
+      // an entry naming a tool or group whose user-scope service this core cannot reach gets that reason, not "unknown"
+      const userScope = userScopeToolNames(!userScopeRemote());
+      const unavailable = entries.filter((entry) => userScope.has(entry) || BUILTIN_DEFERRED_GROUPS.some((g) => g.group === entry && g.names.some((name) => userScope.has(name))));
+      const unknown = resolution.unknown.filter((entry) => !unavailable.includes(entry));
+      const inertGroups = resolution.inertGroups.filter((entry) => !unavailable.includes(entry));
       const requested = matches.filter((name) => !snapshot.loaded.has(name));
       if (matches.length > 0) port.activate(sessionId, matches);
 
@@ -326,6 +333,7 @@ export function createToolSearchTool(port: ToolActivationPort): ToolDefinition {
       // Without this, an inert group is indistinguishable from a no-op: the description is built from
       // the static catalog (one process-wide extension, no session identity), so it lists groups whose
       // subsystem may be off in THIS session. Naming the cause stops the model retrying the same call.
+      if (unavailable.length > 0) lines.push(`Not available: ${names([...new Set(unavailable)])}. ${browserUnavailableReason()}`);
       if (inertGroups.length > 0) {
         lines.push(`Not available in this session: ${inertGroups.join(', ')} — the subsystem is disabled or every tool in it is turned off, so it cannot be loaded here.`);
       }

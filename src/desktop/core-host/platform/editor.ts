@@ -20,7 +20,7 @@ export function createEditorProxy(endpoint: CoreEndpoint, init: CoreInit): Edito
       const { viewId } = await endpoint.request('editor.showDiff', { ...req, titleTemplate: title(DIFF_TITLE_NAME) });
       return { close: () => endpoint.request('editor.closeDiff', { viewId }) };
     },
-    showMarkdownPreview: (path, opts) => endpoint.request('editor.showMarkdownPreview', { path, ...(opts?.panelId !== undefined ? { panelId: opts.panelId } : {}) }),
+    showMarkdownPreview: (path, opts) => endpoint.request('editor.showMarkdownPreview', { path, ...(opts?.panelId !== undefined ? { panelId: opts.panelId } : {}), ...(opts?.content !== undefined ? { content: opts.content } : {}) }),
     getActiveContext: () => context,
     onDidChangeActiveContext: (listener) => changed.add(listener),
     openHostSettings: (query, section) => endpoint.request('editor.openHostSettings', { ...(query !== undefined ? { query } : {}), ...(section !== undefined ? { section } : {}) }),

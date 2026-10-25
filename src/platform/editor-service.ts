@@ -70,8 +70,11 @@ export interface EditorService {
   // proposal diff's original side equals what the agent's tools read and write.
   readText(path: string): Promise<string>;
   showDiff(req: DiffRequest): Promise<DiffView>;
-  /** panelId names the chat that asked, so a host that shows documents per chat opens it there. */
-  showMarkdownPreview(path: string, opts?: { panelId?: string }): Promise<void>;
+  /**
+   * panelId names the chat that asked, so a host that shows documents per chat opens it there; content is the file's text,
+   * for a host that cannot read the file where core wrote it.
+   */
+  showMarkdownPreview(path: string, opts?: { panelId?: string; content?: string }): Promise<void>;
   // context of the focused text editor; undefined when none has focus
   getActiveContext(): ActiveEditorContext | undefined;
   // fires when the focused text editor changes or any text editor's selection changes, with that editor's context (undefined: no editor)

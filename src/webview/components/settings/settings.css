@@ -327,6 +327,11 @@
   animation: d-slide 0.24s var(--ease-out);
 }
 
+/* While the scope tabs show, each new page (a section, or a scope tab's) replaces the last one with a cross-fade. */
+.sm-content-swap {
+  animation: d-fade 0.2s var(--ease-out);
+}
+
 .sm-group-head {
   font-size: 0.6875rem;
   font-weight: 600;

@@ -103,6 +103,17 @@ export async function quickOpen(app: ElectronApplication, query: string, fromUrl
   return overlay;
 }
 
+/** Selects all and pastes `text`; pasted text skips Monaco's auto-closing and auto-indent, which would alter typed JSON. */
+export async function replaceText(editor: Locator, text: string): Promise<void> {
+  await editor.locator('.lines-content > .view-lines').click();
+  await editor.page().keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
+  await editor.locator('.native-edit-context, textarea.inputarea').first().evaluate((input, pasted) => {
+    const data = new DataTransfer();
+    data.setData('text/plain', pasted);
+    input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  }, text);
+}
+
 /** Saves the active editor with Ctrl+S (Cmd+S), as a user does while the editor has focus. */
 export async function saveWithKeyboard(app: ElectronApplication): Promise<void> {
   await pressKeys(app, '/shell/', 'S', [PRIMARY]);

@@ -53,7 +53,15 @@
     "removeRefused": "Could not remove project {name}: {reason}",
     "keyboardHelp": "Arrow keys move, Enter selects, Shift+F10 opens the menu.",
     "home": "Home folder",
-    "worktreeOf": "A worktree of {project}, opened as its own project"
+    "worktreeOf": "A worktree of {project}, opened as its own project",
+    "hostState": "{host}, {state}",
+    "remoteTitle": "{host}: {path}",
+    "connection": {
+      "connecting": "Connecting",
+      "connected": "Connected",
+      "failed": "Couldn't connect",
+      "offline": "Not connected"
+    }
   },
   "chats": {
     "heading": "Chats",
@@ -196,6 +204,19 @@
     "info": "Information",
     "warning": "Warning",
     "danger": "Caution"
+  },
+  "settingsScope": {
+    "label": "Settings scope",
+    "user": "User",
+    "project": "Project",
+    "userBanner": "Saved on this computer. Applies to every project, local and remote, unless a host or project changes it.",
+    "machineBanner": "Saved on {host} in {file}. Applies to every project and every device on {hostAgain}. Theme, sign-ins and API keys stay on the User tab.",
+    "projectBanner": "Saved in {file} on {host}. Applies only while the folder is trusted.",
+    "chatBanner": "Changes only this chat on {host}. Nothing here is saved in a settings file.",
+    "chatOnHost": "This chat runs on {host}. Change its settings on the {host} tab.",
+    "loading": "Loading the {tab} settings…",
+    "switchFailed": "The {tab} settings could not be opened.",
+    "editHostFile": "Edit settings.json on {host}"
   },
   "settingsHost": {
     "sections": {
@@ -813,7 +834,11 @@
   "engine": {
     "stopped": "Engine stopped",
     "stoppedTitle": "The Damocles engine stopped unexpectedly and was not restarted. Click to restart it.",
-    "restartLabel": "Engine stopped. Restart Engine"
+    "restartLabel": "Engine stopped. Restart Engine",
+    "hostStopped": "Engine stopped on {host}",
+    "hostStoppedTitle": "The Damocles engine on {host} stopped unexpectedly and was not restarted. Click to restart it.",
+    "hostRestartLabel": "Engine stopped on {host}. Restart Engine",
+    "hostRestarting": "Restarting the engine on {host}"
   },
   "grid": {
     "move": {

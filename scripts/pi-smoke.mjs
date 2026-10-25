@@ -153,5 +153,38 @@ if (pi) {
   bad('B3 skipped — pi failed to import');
 }
 
+// The token broker (src/core/pi-session/credential-broker.ts) relies on pi resolving a stored OAuth credential without
+// `modify` while it is valid, and calling `modify` (never refreshing itself) once it expires within pi's 5 minutes.
+console.log('\n== B4: broker credential store pin ==');
+if (pi) {
+  try {
+    const now = Date.now();
+    const stored = { anthropic: { type: 'oauth', access: 'valid-token', refresh: '', expires: now + 60 * 60 * 1000 } };
+    const modified = [];
+    const store = {
+      read: async (id) => stored[id],
+      list: async () => Object.entries(stored).map(([providerId, c]) => ({ providerId, type: c.type })),
+      modify: async (id) => {
+        modified.push(id);
+        stored[id] = { type: 'oauth', access: 'fresh-token', refresh: '', expires: Date.now() + 60 * 60 * 1000 };
+        return stored[id];
+      },
+      delete: async () => {
+        throw new Error('delete refused');
+      },
+    };
+    const runtime = await pi.ModelRuntime.create({ credentials: store, modelsPath: null, refreshOnCreate: false });
+    const valid = await runtime.getAuth('anthropic');
+    assert(valid?.auth.apiKey === 'valid-token' && modified.length === 0, 'an empty-refresh credential with a future expiry resolves without modify');
+    stored.anthropic = { type: 'oauth', access: 'expiring-token', refresh: '', expires: now + 60 * 1000 };
+    const refreshed = await runtime.getAuth('anthropic');
+    assert(modified.join() === 'anthropic' && refreshed?.auth.apiKey === 'fresh-token', 'an expiring credential goes through modify, whose answer is used');
+  } catch (err) {
+    bad(`B4 broker pin — ${err?.stack ?? err}`);
+  }
+} else {
+  bad('B4 skipped — pi failed to import');
+}
+
 console.log(`\n${failures === 0 ? 'pi-smoke: ALL PASS' : `pi-smoke: ${failures} FAILURE(S)`}\n`);
 process.exit(failures === 0 ? 0 : 1);

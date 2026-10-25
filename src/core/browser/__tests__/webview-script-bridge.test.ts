@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BROWSER_WEBVIEW_SCRIPT } from '../browser-webview-script';
+import { BROWSER_WEBVIEW_SCRIPT } from '../../../shared/browser-page-html';
 
 // The desktop panel preload's bridge: host messages arrive only through onMessage, never as window 'message' events.
 interface Bridge {

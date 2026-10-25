@@ -14,6 +14,7 @@ import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
 import type { PermissionUpdate, PromptApprover, PromptOwner } from '../../shared/types/permissions';
 import { log } from '../logger';
+import { bypassAllowed } from '../client-snapshots';
 import type { PermissionResult, CanUseToolContext, SettledApproval, McpToolIdentity, ChatPermissions } from './types';
 import { buildUnaskedDenyResult } from './utils';
 import type { McpResourceRuleFilter } from './mcp-resource-rule';
@@ -64,13 +65,22 @@ export class PermissionHandler {
     );
     this.skillManager = new SkillManager(
       this.state,
-      getPostMessage
+      getPostMessage,
+      () => bypassAllowed(platform),
     );
     this.evaluatorManager = new EvaluatorManager(this.state, platform);
     this.elicitationManager = new ElicitationManager(this.state, getPostMessage);
 
     this.state.permissionMode = platform.settings.get<PermissionMode>('damocles.permissionMode', 'default', settingsFolder);
-    this.state.dangerouslySkipPermissions = platform.settings.get<boolean>('damocles.dangerouslySkipPermissions', false, settingsFolder);
+    this.state.dangerouslySkipPermissions = this.allowedBypass(platform.settings.get<boolean>('damocles.dangerouslySkipPermissions', false, settingsFolder));
+  }
+
+  // Every write of YOLO passes here: a daemon's core keeps it off while the pinned client's policy refuses it, whichever
+  // door it came through (a settings file, a restore's permissions, a fork, the setter).
+  private allowedBypass(requested: boolean): boolean {
+    if (!requested || bypassAllowed(this.platform)) return requested;
+    log('[PermissionHandler] YOLO refused: the policy of this host does not allow it');
+    return false;
   }
 
   /** Every mode change goes through here, so open prompts the new mode would not ask about are approved. */
@@ -84,10 +94,13 @@ export class PermissionHandler {
     return this.state.permissionMode;
   }
 
-  setDangerouslySkipPermissions(enabled: boolean): void {
-    this.state.dangerouslySkipPermissions = enabled;
+  /** False when the host's policy refused YOLO, which then stays off. */
+  setDangerouslySkipPermissions(enabled: boolean): boolean {
+    const allowed = this.allowedBypass(enabled);
+    this.state.dangerouslySkipPermissions = allowed;
     this.onPermissionsChanged?.();
     this.approveUnaskedPrompts();
+    return allowed === enabled;
   }
 
   getPermissions(): ChatPermissions {
@@ -105,7 +118,7 @@ export class PermissionHandler {
    */
   resetForNewConversation(settingsFolder: SettingsFolder | undefined): void {
     // Open prompts belong to the conversation being replaced, so this YOLO change never approves them.
-    this.state.dangerouslySkipPermissions = this.platform.settings.get<boolean>('damocles.dangerouslySkipPermissions', false, settingsFolder);
+    this.state.dangerouslySkipPermissions = this.allowedBypass(this.platform.settings.get<boolean>('damocles.dangerouslySkipPermissions', false, settingsFolder));
     this.onPermissionsChanged?.();
     this.dropSessionApprovals();
   }
@@ -141,6 +154,11 @@ export class PermissionHandler {
       this.skillManager.approveUnasked(id, approvedBy);
     }
     if (approved > 0) log('[PermissionHandler] %s approved %d open prompts', approvedBy, approved);
+  }
+
+  /** "Always allow" is saving a rule: the chat's next call is decided by the files as `save` leaves them. */
+  savingPermissionRules(save: Promise<unknown>): void {
+    this.evaluatorManager.savingRules(save);
   }
 
   getDangerouslySkipPermissions(): boolean {

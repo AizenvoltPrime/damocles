@@ -89,6 +89,29 @@ describe('ModelEffortPopover reasoning effort', () => {
     expect(label()).toMatch(/^Haiku 5\.5/);
   });
 
+  it('keeps a model core marks unreachable listed, muted and not pickable, with the reason under its name', async () => {
+    const settings = useSettingsStore();
+    const opus = settings.availableModels.find((model) => model.value === 'claude-opus-5-5')!;
+    const haiku = settings.availableModels.find((model) => model.value === 'claude-haiku-5-5')!;
+    settings.setAvailableModels([opus, { ...haiku, unavailable: { reason: 'loopback-endpoint', endpoint: 'http://127.0.0.1:4000/v1' } }]);
+    await openMenu();
+    const marked = [...document.body.querySelectorAll<HTMLElement>('[data-testid="composer-model-option"]')].find((option) => option.textContent?.includes('Haiku 5.5'));
+    expect(marked?.getAttribute('data-unavailable')).toBe('loopback-endpoint');
+    expect(marked?.hasAttribute('data-disabled')).toBe(true);
+    expect(marked?.textContent).toContain('Not reachable here');
+    expect(marked?.getAttribute('title')).toContain('http://127.0.0.1:4000/v1');
+    // only the name dims; the reason keeps its token's contrast
+    const spans = [...marked!.querySelectorAll('span')];
+    expect(marked!.classList).toContain('data-disabled:opacity-100');
+    expect(spans.find((span) => span.textContent === 'Haiku 5.5')!.classList).toContain('opacity-50');
+    for (let el: HTMLElement | null = spans.find((span) => span.textContent === 'Not reachable here')!; el && el !== marked; el = el.parentElement) {
+      expect(el.classList.contains('opacity-50')).toBe(false);
+    }
+    marked?.click();
+    await flush();
+    expect(postMessage).not.toHaveBeenCalledWith({ type: 'setActiveModel', model: 'claude-haiku-5-5' });
+  });
+
   it('sends a pick of the model the chat already runs on, which withdraws an earlier refused pick in core', async () => {
     await openMenu();
     [...document.body.querySelectorAll<HTMLElement>('[data-testid="composer-model-option"]')].find((option) => option.textContent?.trim() === 'Opus 5.5')?.click();

@@ -9,14 +9,17 @@ import type { BrowserService } from "../../browser";
 import type { CompassRegistry } from "../../compass/compass-registry";
 import type { VoiceService } from "../../voice/service";
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../../../shared/types/messages";
-import type { AttachedView, HostInstance } from "../types";
+import type { AttachedView, HostInstance, ViewJoinGate } from "../types";
 import type { PanelHost } from "../../../platform/window-service";
-import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "./types";
+import type { HandlerContext, HandlerDependencies, HandlerRegistry, ViewHandlerRegistry } from "./types";
 import { createHandlerRegistry } from "./handler-registry";
+import { createViewJoin } from "./handlers/session-handlers";
+import { withSettingsViewScope } from "../settings-view-scope";
 import { MEMORY_MESSAGE_TYPES, MEMORY_MESSAGE_SOURCES } from "./handlers/memory-handlers";
 import { log } from "../../logger";
 import { visibleLines } from "../../../shared/visible-text";
 import { LANGUAGE_PREFERENCE_KEY } from "../../../shared/language-preference";
+import { VOICE_VIEW_MESSAGES } from "../../../shared/remote-user";
 
 export interface MessageRouterConfig {
   postMessage: (host: PanelHost, message: ExtensionToWebviewMessage) => void;
@@ -44,6 +47,8 @@ export interface MessageRouterConfig {
 
 export class MessageRouter {
   private readonly handlers: HandlerRegistry;
+  private readonly viewHandlers: ViewHandlerRegistry;
+  private readonly viewJoin: ReturnType<typeof createViewJoin>;
   private readonly getPanels: MessageRouterConfig["getPanels"];
   private readonly postMessage: MessageRouterConfig["postMessage"];
 
@@ -51,7 +56,7 @@ export class MessageRouter {
     this.getPanels = config.getPanels;
     this.postMessage = config.postMessage;
 
-    this.handlers = createHandlerRegistry({
+    const deps: HandlerDependencies = {
       postMessage: config.postMessage,
       getPanels: config.getPanels,
       storageManager: config.storageManager,
@@ -74,7 +79,24 @@ export class MessageRouter {
       restoreRetryChanged: config.restoreRetryChanged,
       webviewPrompts: config.webviewPrompts,
       worktrees: config.worktrees,
-    });
+    };
+    ({ handlers: this.handlers, viewHandlers: this.viewHandlers } = createHandlerRegistry(deps));
+    this.viewJoin = createViewJoin(deps);
+  }
+
+  /** A view joins the panel's chat (views.join); the panel's own posts wait behind `gate` while the join replays it. */
+  async joinView(panelId: string, gate: ViewJoinGate): Promise<void> {
+    const instance = this.getPanels().get(panelId);
+    if (!instance) throw new Error(`No open chat panel ${panelId}`);
+    await this.viewJoin({
+      host: instance.host,
+      session: instance.session,
+      permissionHandler: instance.permissionHandler,
+      ideContextManager: instance.ideContextManager,
+      terminalAttachments: instance.terminalAttachments,
+      panelId,
+      folder: instance.folder,
+    }, gate);
   }
 
   private getLanguagePreference(platform: Platform): string {
@@ -83,6 +105,13 @@ export class MessageRouter {
 
   private async setLanguagePreference(platform: Platform, locale: string): Promise<void> {
     await platform.state.global.update(LANGUAGE_PREFERENCE_KEY, locale);
+  }
+
+  /** A remote chat view's voice message on this computer's core: only VOICE_VIEW_MESSAGES, whose handlers read only the host they reply to. */
+  async dispatchForeign(host: PanelHost, message: WebviewToExtensionMessage): Promise<void> {
+    const handler = this.viewHandlers[message.type];
+    if (!VOICE_VIEW_MESSAGES.has(message.type) || !handler) throw new Error(`${message.type} does not reach this computer from a remote chat`);
+    await handler(message, { host });
   }
 
   /** `view` is the attached settings view the message came from; the handler then runs with the chat's own context. */
@@ -107,7 +136,7 @@ export class MessageRouter {
     const handler = this.handlers[message.type];
     if (handler) {
       try {
-        await handler(message, ctx);
+        await withSettingsViewScope(view?.scope, () => handler(message, ctx));
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
         log("[MessageRouter] Handler for", message.type, "threw:", detail);

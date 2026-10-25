@@ -30,6 +30,7 @@ export const TERMINAL_SHELL_INTEGRATION_SETTING = 'damocles.desktop.terminal.she
 export const TERMINAL_DECORATIONS_SETTING = 'damocles.desktop.terminal.shellIntegration.decorationsEnabled';
 export const TERMINAL_CONFIRM_ON_KILL_SETTING = 'damocles.desktop.terminal.confirmOnKill';
 export const TERMINAL_PROFILES_SETTING = 'damocles.desktop.terminal.profiles';
+export const REMOTE_TERMINAL_IDLE_DAYS_SETTING = 'damocles.desktop.remote.terminalIdleDays';
 export const FILES_EXCLUDE_SETTING = 'damocles.desktop.files.exclude';
 export const SEARCH_EXCLUDE_SETTING = 'damocles.desktop.search.exclude';
 export const SEARCH_MODE_SETTING = 'damocles.desktop.search.mode';
@@ -348,6 +349,14 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     maximum: 100000,
     scope: 'application',
     description: 'The number of lines the desktop terminal keeps above the screen.',
+  },
+  [REMOTE_TERMINAL_IDLE_DAYS_SETTING]: {
+    type: 'integer',
+    default: 30,
+    minimum: 0,
+    maximum: 3650,
+    scope: 'application',
+    description: 'A terminal on a remote host that no device has reattached for this many days ends on its own. 0 means never.',
   },
   [TERMINAL_CURSOR_STYLE_SETTING]: {
     type: 'string',

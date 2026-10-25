@@ -29,6 +29,8 @@ import { isMcpAppResource } from "../../../pi-session/tools/mcp-resource-tools";
 import { MAX_PENDING_TERMINAL_ATTACHMENTS } from "../../terminal-attachment-manager";
 import { directoryChildren, errorText, mimeTypeOf, resourceLabel, resourceRows, templateRows } from "../../mcp-resource-attachments";
 import { oneLine } from "../../../pi-session/untrusted-text";
+import { bypassAllowed } from "../../../client-snapshots";
+import { PERMISSION_MODES } from "../../../../shared/types/settings";
 
 const EXPOSURE_SCOPES: readonly string[] = ["user", "project", "local"] satisfies McpToolExposureScope[];
 
@@ -72,6 +74,11 @@ export function broadcastImageGenerationState({ getPanels, settingsManager, post
 
 export function createSettingsHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, settingsManager, getPanels, platform } = deps;
+  // a forged or refused change shows as a calm inline message in the composer, never an error
+  const refuseMode = (ctx: HandlerContext, mode: string, reason: "remote-host" | "unknown-mode"): void => {
+    log("[SettingsHandlers] refused the permission change to %s: %s", mode, reason);
+    postMessage(ctx.host, { type: "permissionModeRefused", mode, reason });
+  };
 
   /**
    * Feed every panel its own folder's MCP scope. Every panel, not the acting one: a user-scope toggle,
@@ -419,6 +426,10 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     setPermissionMode: async (msg, ctx) => {
       if (msg.type !== "setPermissionMode") return;
+      if (!PERMISSION_MODES.includes(msg.mode)) {
+        refuseMode(ctx, String(msg.mode), "unknown-mode");
+        return;
+      }
       await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, msg.mode);
       // The chat's own composer and an attached settings view both show the mode from this.
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
@@ -426,6 +437,10 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     setDefaultPermissionMode: async (msg, ctx) => {
       if (msg.type !== "setDefaultPermissionMode") return;
+      if (!PERMISSION_MODES.includes(msg.mode)) {
+        refuseMode(ctx, String(msg.mode), "unknown-mode");
+        return;
+      }
       const saved = await writeSetting(deps, ctx, "damocles.permissionMode", (detail) => t("Failed to save default permission mode: {0}", detail), () =>
         settingsManager.handleSetDefaultPermissionMode(msg.mode, ctx.folder));
       if (!saved) await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
@@ -433,12 +448,19 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     setDangerouslySkipPermissions: async (msg, ctx) => {
       if (msg.type !== "setDangerouslySkipPermissions") return;
-      settingsManager.handleSetDangerouslySkipPermissions(ctx.permissionHandler, msg.enabled);
+      if (!settingsManager.handleSetDangerouslySkipPermissions(ctx.permissionHandler, msg.enabled === true)) refuseMode(ctx, "dangerouslySkipPermissions", "remote-host");
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setDefaultDangerouslySkipPermissions: async (msg, ctx) => {
       if (msg.type !== "setDefaultDangerouslySkipPermissions") return;
+      // a daemon's core never takes the default while its client's policy refuses YOLO; the row says why
+      if (msg.enabled && !bypassAllowed(deps.platform)) {
+        refuseMode(ctx, "dangerouslySkipPermissions", "remote-host");
+        postMessage(ctx.host, { type: "settingWriteResult", key: "damocles.dangerouslySkipPermissions", ok: false, error: t("YOLO is off for your turns on this host.") });
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+        return;
+      }
       const saved = await writeSetting(deps, ctx, "damocles.dangerouslySkipPermissions", (detail) => t("Failed to save default YOLO mode: {0}", detail), () =>
         settingsManager.handleSetDefaultDangerouslySkipPermissions(msg.enabled, ctx.folder));
       if (!saved) await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);

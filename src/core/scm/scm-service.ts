@@ -123,6 +123,8 @@ export interface ScmServiceDeps {
   // a non-modal notice with actions (NotificationService.info); resolves the chosen action's label
   readonly notify: (message: string, ...actions: string[]) => Promise<string | undefined>;
   readonly trash: (absolutePath: string) => Promise<void>;
+  // the host has no trash (a daemon's core): trash deletes permanently, and the questions say so in VS Code's words
+  readonly deletesPermanently?: boolean;
   readonly t: (message: string, ...args: Array<string | number>) => string;
   readonly log: (line: string) => void;
   readonly platform?: NodeJS.Platform;
@@ -1680,18 +1682,23 @@ export class ScmService implements Disposable {
   private async cleanUntracked(entry: RepoEntry, changes: readonly Change[]): Promise<boolean> {
     const t = this.deps.t;
     const [message, detail] = this.untrackedQuestion(changes);
-    const action = this.platform() === 'win32' ? t('Move to Recycle Bin') : t('Move to Trash');
+    const action = this.deps.deletesPermanently
+      ? changes.length === 1 ? t('Delete File') : t('Delete All {0} Files', changes.length)
+      : this.platform() === 'win32' ? t('Move to Recycle Bin') : t('Move to Trash');
     if ((await this.deps.ask({ severity: 'danger', message, detail, actions: [action], cancelLabel: t('Cancel') })) !== 0) return false;
     await this.runDiscard(entry, changes);
     return true;
   }
 
-  // Untracked files always go to the OS trash, so VS Code's discardUntrackedChangesToTrash wording applies, whose {1} is empty.
+  // VS Code's discardUntrackedChangesToTrash wording, whose {1} is empty when the files go to the OS trash.
   private untrackedQuestion(changes: readonly Change[]): [string, string] {
     const t = this.deps.t;
     const message = changes.length === 1
       ? t('Are you sure you want to DELETE the following untracked file: \'{0}\'?', visibleText(path.basename(changes[0]!.path)))
       : t('Are you sure you want to DELETE the {0} untracked files?', changes.length);
+    if (this.deps.deletesPermanently) {
+      return [message, changes.length === 1 ? t('This is IRREVERSIBLE!\nThis file will be FOREVER LOST if you proceed.') : t('This is IRREVERSIBLE!\nThese files will be FOREVER LOST if you proceed.')];
+    }
     const windows = this.platform() === 'win32';
     const detail = changes.length === 1
       ? windows ? t('You can restore this file from the Recycle Bin.') : t('You can restore this file from the Trash.')
@@ -1701,6 +1708,7 @@ export class ScmService implements Disposable {
 
   // Where a tracked discard puts the working copies it replaces; none for a deletion or a submodule, which have none to trash.
   private trackedQuestionDetail(changes: readonly Change[]): string | undefined {
+    if (this.deps.deletesPermanently) return undefined;
     const trashed = changes.filter((change) => change.status !== 'DELETED' && !change.submodule).length;
     if (trashed === 0) return undefined;
     const t = this.deps.t;
@@ -1725,6 +1733,11 @@ export class ScmService implements Disposable {
     const t = this.deps.t;
     const windows = this.platform() === 'win32';
     const reason = errorText(failed[0]!.error);
+    if (this.deps.deletesPermanently) {
+      return failed.length > 1
+        ? t('{0} files could not be deleted, so their changes were not discarded: {1}', failed.length, reason)
+        : t('\'{0}\' could not be deleted, so its changes were not discarded: {1}', path.basename(failed[0]!.path), reason);
+    }
     if (failed.length > 1) {
       return windows
         ? t('{0} files could not be moved to the Recycle Bin, so their changes were not discarded: {1}', failed.length, reason)

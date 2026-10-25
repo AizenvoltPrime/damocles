@@ -7,6 +7,7 @@ import type { MemorySubCallRunner } from '../subcall-runner';
 import { estimateTokens } from '../token-estimate';
 import { USEFULNESS_RUBRIC } from '../rubric';
 import { neutralizeTags } from '../injection/render';
+import { globalMemoryUnavailableReason, userScopeRemote } from '../../user-scope';
 
 export type ProfileScope = 'project' | 'global';
 export type ProfileSection = 'static' | 'dynamic';
@@ -126,6 +127,8 @@ export class ProfileManager {
 
   /** Read both sections for one scope; missing sections resolve to ''. Pass workspace='' for global. */
   getProfile(scope: ProfileScope, workspace: string): UserProfile {
+    // global memory is the client's, so a daemon's core reads no global profile
+    if (scope === 'global' && userScopeRemote()) return { static: '', dynamic: '' };
     const rows = this.db
       .prepare('SELECT section, content FROM memory_profile WHERE scope = ? AND workspace = ?')
       .all(scope, workspace) as ProfileSectionRow[];
@@ -140,6 +143,7 @@ export class ProfileManager {
 
   /** Upsert one section's content under the write queue. */
   setProfileSection(scope: ProfileScope, workspace: string, section: ProfileSection, content: string): Promise<void> {
+    if (scope === 'global' && userScopeRemote()) return Promise.reject(new Error(globalMemoryUnavailableReason()));
     return this.writeQueue.run(() => {
       this.upsertSection(scope, workspace, section, content);
     });
@@ -152,6 +156,7 @@ export class ProfileManager {
    */
   async updateProfile(scope: ProfileScope, workspace: string): Promise<void> {
     if (!this.isEnabled()) return;
+    if (scope === 'global' && userScopeRemote()) return;
     const prior = this.getProfile(scope, workspace);
 
     // CAS: snapshot each section's updated_at before the ~45s LLM call. A concurrent user edit bumps

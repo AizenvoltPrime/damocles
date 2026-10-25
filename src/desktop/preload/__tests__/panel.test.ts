@@ -2,7 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PANEL_CHANNELS } from '../panel-channels';
 
 const H = vi.hoisted(() => ({
-  exposed: undefined as undefined | { getState(): unknown; setState(next: unknown): void; onMessage(listener: (message: unknown) => void): () => void },
+  exposed: undefined as undefined | {
+    getState(): unknown;
+    setState(next: unknown): void;
+    onMessage(listener: (message: unknown) => void): () => void;
+    getHost(): { name: string } | undefined;
+    onHost(listener: (host: { name: string }) => void): () => void;
+  },
   handlers: new Map<string, (event: unknown, payload: unknown) => void>(),
   initAnswers: [] as unknown[],
   sent: [] as Array<[string, unknown]>,
@@ -40,6 +46,21 @@ describe('panel preload', () => {
     bridge.setState({ sessionId: 's2' });
     expect(bridge.getState()).toEqual({ sessionId: 's2' });
     expect(H.sent).toEqual([['damocles:panel:set-state', { sessionId: 's2' }]]);
+  });
+
+  it('tells a page that read no host before main answered its init the host once main does, and listens on no channel without a sender', async () => {
+    vi.resetModules();
+    await import('../panel');
+    const bridge = H.exposed!;
+    const heard: string[] = [];
+    bridge.onHost((host) => heard.push(host.name));
+    H.initAnswers.push(null);
+    expect(bridge.getHost()).toBeUndefined();
+    H.initAnswers.push({ state: null, theme: { kind: 'dark', css: '', reducedMotion: false }, host: { hostId: 'h1', name: 'prod-1' } });
+    expect(bridge.getState()).toBeNull();
+    expect(heard).toEqual(['prod-1']);
+    expect(bridge.getHost()).toEqual({ hostId: 'h1', name: 'prod-1' });
+    expect([...H.handlers.keys()].sort()).toEqual([PANEL_CHANNELS.message, PANEL_CHANNELS.theme].sort());
   });
 
   it('hands the page each host message, drops text that is not JSON and says so in the page console', async () => {

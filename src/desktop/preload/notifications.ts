@@ -26,6 +26,8 @@ export interface NotificationChat {
   readonly project: NotificationProject;
   // '' is a chat with no title yet, which renderers label "New chat"
   readonly title: string;
+  // a remote chat's host as this computer's host store names it, never a name a core sent
+  readonly host?: string;
 }
 
 export type NotificationBody =
@@ -46,8 +48,9 @@ export type NotificationBody =
       readonly resetsAt?: number;
       readonly planName?: string;
     }
-  // A core NotificationService call: its text is already localized, and an action answers the caller.
-  | { readonly kind: 'notice'; readonly severity: NoticeSeverity; readonly message: string; readonly actions: readonly string[] };
+  // A core NotificationService call: its text is already localized, and an action answers the caller. host: a remote core's,
+  // named by this computer's host store
+  | { readonly kind: 'notice'; readonly severity: NoticeSeverity; readonly message: string; readonly actions: readonly string[]; readonly host?: string };
 
 export interface NotificationEntry {
   // issued by main

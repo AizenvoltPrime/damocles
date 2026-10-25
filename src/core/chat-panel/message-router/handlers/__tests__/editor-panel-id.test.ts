@@ -41,6 +41,6 @@ describe('editor requests from the router name the originating panel', () => {
 
     await handlers.openMcpToolInfo!({ type: 'openMcpToolInfo', piName: 'mcp-docs-lookup' }, { ...ctx(os.tmpdir()), session } as unknown as HandlerContext);
 
-    expect(platform.editor.markdownPreviews).toEqual([{ path: path.join(os.tmpdir(), 'damocles-mcp-docs-lookup.md'), options: { panelId: 'host-3' } }]);
+    expect(platform.editor.markdownPreviews).toEqual([{ path: path.join(os.tmpdir(), 'damocles-mcp-docs-lookup.md'), options: { panelId: 'host-3', content: '# lookup' } }]);
   });
 });

@@ -1,5 +1,6 @@
+import type { RemoteTerminalRecord } from '../remote/remote-state';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MAX_HOST_ENV_CHARS, MAX_HOST_ENV_ENTRIES, parseHostRequest, TERMINAL_BATCH_CHARS, TERMINAL_BATCH_MS, type HostMessage } from '../../pty-host/protocol';
+import { MAX_HOST_ENV_CHARS, MAX_HOST_ENV_ENTRIES, parseHostRequest, TERMINAL_BATCH_CHARS, TERMINAL_BATCH_MS, type HostMessage, type HostRequest } from '../../pty-host/protocol';
 import { CONPTY_SPACING_MS, CONPTY_THROTTLE_MS, createPtySessions, EXIT_FLUSH_MS, PROCESS_NAME_THROTTLE_MS, type Pty, type PtySpawnOptions } from '../../pty-host/sessions';
 import {
   MAX_TERMINAL_GROUP_PANES,
@@ -10,11 +11,22 @@ import {
   TERMINAL_LIST_MAX_REM,
   TERMINAL_LOW_WATERMARK_CHARS,
   type TerminalData,
+  type TerminalScreen,
   type TerminalState,
 } from '../../preload/terminal-channels';
 import type { OverlayAnswer } from '../../preload/overlay-channels';
 import { pickNewTerminal } from '../terminal-pick';
-import type { TerminalProfile } from '../terminal/profiles';
+import type { TerminalProfile } from '../../workspace/terminal/profiles';
+import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import type { PtyHostExit, PtyHostProcess } from '../../workspace/host-starters';
+import { createTerminalBackend, type LiveTerminal, type TerminalBackend } from '../../workspace/terminal/terminal-backend';
+import type { ProjectWorkspace } from '../../workspace/project-workspace';
+import type { Endpoint } from '../../core-protocol/endpoint';
+import type { ClientToWorkspace, WorkspaceToClient } from '../../workspace/messages';
+import { createRemoteWorkspace } from '../workspace/remote-workspace';
+import { NotConnectedError } from '../workspace/workspaces';
+import { createPtyScreen } from '../../pty-host/screen';
+import { testWorkspaces } from './test-workspaces';
 import { detectedProfile, type LaunchProfile } from '../terminal/user-profiles';
 import {
   DEFAULT_PERSISTED_TERMINALS,
@@ -24,8 +36,6 @@ import {
   TerminalService,
   type PersistedTerminal,
   type PersistedTerminals,
-  type PtyHostExit,
-  type PtyHostProcess,
   type TerminalProject,
   type KillListEntry,
   type TerminalServiceSettings,
@@ -100,11 +110,16 @@ const stored = (profileId: string, projectKey: string | null): PersistedTerminal
 
 interface Harness {
   readonly service: TerminalService;
+  // the workspace's terminal backend every terminal of the harness runs on
+  readonly backend: TerminalBackend;
   readonly ptys: FakePty[];
   readonly states: TerminalState[];
   readonly data: TerminalData[];
+  readonly screens: TerminalScreen[];
   readonly focused: string[];
   readonly persisted: PersistedTerminals[];
+  // each list of remote terminals main gave remote-state.json
+  readonly remote: RemoteTerminalRecord[][];
   readonly hosts: { count: number; killed: number };
   readonly posted: unknown[];
   readonly asked: KillListEntry[][];
@@ -112,6 +127,8 @@ interface Harness {
   answer: boolean;
   settings: Partial<TerminalServiceSettings>;
   profiles: Array<TerminalProfile | LaunchProfile>;
+  // the shells of the loopback host, which its terminals start with
+  hostProfiles: TerminalProfile[];
   profilesReady: boolean;
   // folders that exist, for a split's inherited working directory
   readonly directories: Set<string>;
@@ -128,18 +145,22 @@ interface Harness {
   hostSend(message: unknown): void;
 }
 
-function harness(options: { saved?: PersistedTerminals; throttleConpty?: boolean; defaultProfile?: string; platform?: NodeJS.Platform; readProcessName?: boolean } = {}): Harness {
+// remote: the loopback host's workspace while it is connected; it throws while it is not
+function harness(options: { saved?: PersistedTerminals; throttleConpty?: boolean; defaultProfile?: string; platform?: NodeJS.Platform; readProcessName?: boolean; remote?: () => ProjectWorkspace } = {}): Harness {
   const ptys: FakePty[] = [];
   const posted: unknown[] = [];
   let exitHost: (exit: PtyHostExit) => void = () => undefined;
   let hostSend: (message: unknown) => void = () => undefined;
   const h: Harness = {
     service: undefined as unknown as TerminalService,
+    backend: undefined as unknown as TerminalBackend,
     ptys,
     states: [],
     data: [],
+    screens: [],
     focused: [],
     persisted: [],
+    remote: [],
     hosts: { count: 0, killed: 0 },
     posted,
     asked: [],
@@ -147,6 +168,7 @@ function harness(options: { saved?: PersistedTerminals; throttleConpty?: boolean
     answer: true,
     settings: {},
     profiles: [PWSH, BASH],
+    hostProfiles: [PWSH, BASH],
     profilesReady: true,
     directories: new Set([ALPHA.fsPath, BETA.fsPath]),
     projects: [ALPHA, BETA],
@@ -175,6 +197,8 @@ function harness(options: { saved?: PersistedTerminals; throttleConpty?: boolean
       },
       throttleConpty: options.throttleConpty ?? false,
       readProcessName: options.readProcessName ?? false,
+      screen: createPtyScreen,
+      log: (line) => h.logs.push(line),
     });
     const exit = (hostExit: PtyHostExit): void => {
       if (!alive) return;
@@ -201,19 +225,32 @@ function harness(options: { saved?: PersistedTerminals; throttleConpty?: boolean
     };
   };
   let saved = options.saved ?? DEFAULT_PERSISTED_TERMINALS;
+  const backend = createTerminalBackend({
+    starters: { startPtyHost: spawnHost },
+    platform: options.platform ?? 'win32',
+    scriptsDir: SCRIPTS_DIR,
+    zshDotDir: 'C:\\Users\\me\\AppData\\Roaming\\Damocles\\shell-integration\\zsh',
+    homedir: 'C:\\Users\\me',
+    env: {},
+    log: (line) => h.logs.push(line),
+    copyFiles: (files) => h.copied.push(...files.map(({ dest }) => dest)),
+  });
+  const workspaces = testWorkspaces({ watchers: createFakePlatform().fileWatchers, terminals: backend });
+  const local = { ...workspaces.local, files: { ...workspaces.local.files, isDirectory: (folder: string) => Promise.resolve(h.directories.has(folder)) } };
   const service = new TerminalService({
-    spawnHost,
-    profiles: () => h.profiles.map((profile) => ('source' in profile ? profile : detectedProfile(profile))),
+    workspaces: { ...workspaces, local, forProject: (key) => (options.remote && key?.startsWith('loopback|') ? options.remote() : local) },
+    profiles: (key) => (key?.startsWith('loopback|') ? h.hostProfiles.map(detectedProfile) : h.profiles.map((profile) => ('source' in profile ? profile : detectedProfile(profile)))),
     profilesReady: () => h.profilesReady,
-    isDirectory: (folder) => Promise.resolve(h.directories.has(folder)),
     projects: () => h.projects,
     pickerProjects: () => h.projects,
     currentProjectKey: () => h.current,
     rootEnv: (key) => h.rootEnv[key] ?? {},
     settings: () => ({ ...SETTINGS, defaultProfile: options.defaultProfile ?? '', ...h.settings }),
-    env: () => h.env,
+    env: async () => h.env,
+    osOf: () => 'linux',
+    persistRemote: (terminals) => h.remote.push([...terminals]),
     screenReader: () => h.screenReader,
-    windowsBuild: 19045,
+    windowsBuild: (projectKey) => (projectKey?.startsWith('loopback|') ? null : 19045),
     passKeys: (splitActive) => (splitActive ? ['CmdOrCtrl+P', 'Alt+Left', 'Alt+Right'] : ['CmdOrCtrl+P']),
     persisted: () => saved,
     persist: (terminals) => {
@@ -225,10 +262,7 @@ function harness(options: { saved?: PersistedTerminals; throttleConpty?: boolean
     launchFailed: (failure) => `The shell could not start: ${JSON.stringify(failure)}`,
     log: (line) => h.logs.push(line),
     platform: options.platform ?? 'win32',
-    scriptsDir: SCRIPTS_DIR,
     homedir: 'C:\\Users\\me',
-    zshDotDir: 'C:\\Users\\me\\AppData\\Roaming\\Damocles\\shell-integration\\zsh',
-    copyFiles: (files) => h.copied.push(...files.map(({ dest }) => dest)),
     confirmKill: (entries) => {
       h.asked.push([...entries]);
       return Promise.resolve(h.answer);
@@ -236,8 +270,8 @@ function harness(options: { saved?: PersistedTerminals; throttleConpty?: boolean
     now: () => 1000,
     shutdownTimeoutMs: 1000,
   });
-  service.attach({ state: (state) => h.states.push(state), data: (data) => h.data.push(data), focus: (id) => h.focused.push(id) });
-  return Object.assign(h, { service });
+  service.attach({ state: (state) => h.states.push(state), data: (data) => h.data.push(data), screen: (screen) => h.screens.push(screen), focus: (id) => h.focused.push(id) });
+  return Object.assign(h, { service, backend });
 }
 
 const settle = async (ms = 0): Promise<void> => {
@@ -373,13 +407,24 @@ describe('create validation', () => {
 });
 
 describe('terminal platform state', () => {
-  it('publishes Chromium\'s accessibility support as it changes, and the Windows build', () => {
+  it('publishes Chromium\'s accessibility support as it changes', () => {
     const h = harness();
     h.service.create({ profileId: null, target: { current: true } }, false);
-    expect(lastState(h)).toMatchObject({ screenReader: false, windowsBuild: 19045 });
+    expect(lastState(h)).toMatchObject({ screenReader: false });
     h.screenReader = true;
     h.service.publish();
     expect(lastState(h).screenReader).toBe(true);
+  });
+
+  it('gives each terminal the Windows build of the host its pty runs on, none for a host off Windows', () => {
+    const h = harness();
+    const remote: TerminalProject = { key: 'loopback|/srv/app', name: 'app', fsPath: '/srv/app' };
+    h.projects = [ALPHA, remote];
+    h.service.create({ profileId: null, target: { project: ALPHA.key } }, false);
+    h.service.create({ profileId: null, target: { project: remote.key } }, false);
+    expect(lastState(h).terminals.map((terminal) => [terminal.projectKey, terminal.windowsBuild])).toEqual([[ALPHA.key, 19045], [remote.key, null]]);
+    // the paths a shell prints follow its host's rules: this Windows computer's, and the Linux target's
+    expect(lastState(h).terminals.map((terminal) => terminal.pathFlavor)).toEqual(['win32', 'posix']);
   });
 });
 
@@ -814,6 +859,298 @@ describe('exit, kill and restart', () => {
     await quit;
     expect(pty.killed).toBe(true);
     expect(h.hosts.killed).toBe(0);
+  });
+});
+
+describe('remote terminals', () => {
+  const REMOTE: TerminalProject = { key: 'loopback|c:\\work\\remote', name: 'remote', fsPath: 'C:\\work\\remote' };
+
+  it('keeps a remote terminal in remote-state.json only, with a daemon-unique id, and leaves it out of the quit question', async () => {
+    const h = harness();
+    h.projects = [ALPHA, REMOTE];
+    h.service.create({ profileId: 'pwsh', target: { project: ALPHA.key } }, false);
+    const remote = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    await settle();
+    if (!remote.ok) throw new Error('no remote terminal');
+    expect(remote.id).toMatch(/^term-[1-9]\d{14}$/);
+    expect(h.persisted.at(-1)!.terminals).toEqual([stored('pwsh', ALPHA.key)]);
+    expect(h.persisted.at(-1)!.groups).toHaveLength(1);
+    expect(h.remote.at(-1)).toEqual([expect.objectContaining({ id: remote.id, projectKey: REMOTE.key, startCwd: REMOTE.fsPath, profile: expect.objectContaining({ id: 'pwsh' }) })]);
+    expect(h.remote.at(-1)![0]!.nonce).not.toBe('');
+    expect(h.service.quitIds()).toEqual(['term-1']);
+  });
+
+  it('detaches from a remote host when the window closes and at quit, killing none of its terminals', async () => {
+    const h = harness();
+    h.projects = [REMOTE];
+    h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    await settle();
+    h.posted.length = 0;
+    h.service.closeWindow();
+    await settle();
+    expect(h.posted).toEqual([]);
+    expect(h.ptys.every((pty) => !pty.killed)).toBe(true);
+    expect(h.hosts.killed).toBe(1);
+  });
+
+  it('reattaches the kept terminals the backend still lists, each with its screen, and drops the ones that ended', async () => {
+    const h = harness();
+    h.projects = [REMOTE];
+    const created = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    await settle();
+    if (!created.ok) throw new Error('no remote terminal');
+    const kept = h.remote.at(-1)!;
+    const gone = { ...kept[0]!, id: 'term-123456789012345' };
+    const toDaemon: unknown[] = [];
+    const backend: TerminalBackend = {
+      ...h.backend,
+      startHost: () => ({ postMessage: (message: unknown) => toDaemon.push(message), onMessage: () => undefined, onExit: () => undefined, kill: () => undefined }),
+      list: async () => [{ id: created.id, pid: 1, cols: 90, rows: 20 }],
+    };
+    h.service.closeWindow();
+    h.service.attach({ state: (state) => h.states.push(state), data: (data) => h.data.push(data), screen: (screen) => h.screens.push(screen), focus: (id) => h.focused.push(id) });
+    await h.service.reattach(backend, [...kept, gone]);
+    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status, terminal.restoring])).toEqual([[created.id, 'running', true]]);
+    // the daemon's screen keeps enough scrollback for this client's view once it attached
+    expect(toDaemon).toEqual([{ type: 'clearAck', id: created.id }, { type: 'serialize', id: created.id }, { type: 'scrollback', id: created.id, scrollback: SETTINGS.scrollback }]);
+    expect(h.remote.at(-1)!.map((record) => record.id)).toEqual([created.id]);
+  });
+});
+
+// A loopback connection's workspace over a fake endpoint: the daemon's answers, the posts it got and its pushes.
+interface FakeConnection {
+  readonly workspace: ProjectWorkspace;
+  // the requests the client posted to the daemon's pty host, in order
+  readonly posts: HostRequest[];
+  // the nonce of the last shell-integration injection asked for
+  nonce: string;
+  daemon(message: HostMessage): void;
+  close(reason: string): void;
+}
+
+function fakeConnection(live: readonly LiveTerminal[] = []): FakeConnection {
+  const events = new Map<string, Set<(payload: unknown) => void>>();
+  const closeListeners = new Set<(reason: string) => void>();
+  let closed: string | undefined;
+  const posts: HostRequest[] = [];
+  const answer = (method: string, params: { request?: { nonce: string } }): unknown => {
+    switch (method) {
+      case 'terminals.environment': return { PATH: '/bin' };
+      case 'terminals.injection':
+        connection.nonce = params.request!.nonce;
+        return { args: ['--init'], env: {} };
+      case 'terminals.list': return live;
+      case 'files.isDirectory': return true;
+      default: throw new Error(`the fake daemon has no answer for ${method}`);
+    }
+  };
+  const endpoint = {
+    request: async (method: string, params: { request?: { nonce: string } }) => {
+      if (closed !== undefined) throw new Error(`The connection closed: ${closed}`);
+      return answer(method, params);
+    },
+    onEvent: (name: string, listener: (payload: unknown) => void) => {
+      const listeners = events.get(name) ?? new Set();
+      events.set(name, listeners);
+      listeners.add(listener);
+      return { dispose: () => listeners.delete(listener) };
+    },
+    emit: (name: string, payload: { request: HostRequest }) => {
+      if (name === 'terminals.post') posts.push(payload.request);
+    },
+  } as unknown as Endpoint<ClientToWorkspace, WorkspaceToClient>;
+  const workspace = createRemoteWorkspace({
+    endpoint,
+    authorityKey: 'loopback',
+    projectOfCwd: () => undefined,
+    onClose: (listener) => {
+      if (closed !== undefined) {
+        listener(closed);
+        return { dispose: () => undefined };
+      }
+      closeListeners.add(listener);
+      return { dispose: () => closeListeners.delete(listener) };
+    },
+    notConnected: () => new NotConnectedError('Local daemon is not connected.'),
+    log: () => undefined,
+  });
+  const connection: FakeConnection = {
+    workspace,
+    posts,
+    nonce: '',
+    daemon: (message) => events.get('terminals.message')?.forEach((listener) => listener({ message })),
+    close: (reason) => {
+      closed = reason;
+      for (const listener of [...closeListeners]) listener(reason);
+    },
+  };
+  return connection;
+}
+
+describe('remote terminals across connections', () => {
+  const REMOTE: TerminalProject = { key: 'loopback|/srv/app', name: 'app', fsPath: '/srv/app' };
+  const statusOf = (h: Harness, id: string): string | undefined => lastState(h).terminals.find((terminal) => terminal.id === id)?.status;
+  const spawned = (connection: FakeConnection): Array<Extract<HostRequest, { type: 'spawn' }>> => connection.posts.flatMap((request) => (request.type === 'spawn' ? [request] : []));
+
+  it('restarts a remote terminal and its split pane after the connection closed: a start error while it is down, a spawn on the next connection', async () => {
+    let connection: FakeConnection | undefined = fakeConnection();
+    const h = harness({
+      remote: () => {
+        if (!connection) throw new Error('Local daemon is not connected.');
+        return connection.workspace;
+      },
+    });
+    h.projects = [REMOTE];
+    h.settings = { shellIntegration: true };
+    const created = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    if (!created.ok) throw new Error('no remote terminal');
+    await settle();
+    const first = connection;
+    first.daemon({ type: 'ready', id: created.id, pid: 5 });
+    first.daemon({ type: 'data', id: created.id, data: `\x1b]633;P;Cwd=/srv/app/sub;${first.nonce}\x07` });
+    await h.service.split(created.id);
+    await settle();
+    const pane = lastState(h).activeId!;
+    expect(spawned(first).map((request) => [request.id, request.cwd])).toEqual([[created.id, '/srv/app'], [pane, '/srv/app/sub']]);
+    first.close('network');
+    connection = undefined;
+    expect([statusOf(h, created.id), statusOf(h, pane)]).toEqual(['exited', 'exited']);
+
+    await h.service.restart(pane);
+    await h.service.restart(created.id);
+    await settle();
+    expect([statusOf(h, created.id), statusOf(h, pane)]).toEqual(['exited', 'exited']);
+    expect(h.data.filter((batch) => batch.data.includes('Local daemon is not connected.')).map((batch) => batch.id)).toEqual([pane, created.id]);
+
+    const second = fakeConnection();
+    connection = second;
+    await h.service.restart(created.id);
+    await settle();
+    expect(spawned(second).map((request) => request.id)).toEqual([created.id]);
+    second.daemon({ type: 'ready', id: created.id, pid: 7 });
+    expect(statusOf(h, created.id)).toBe('running');
+  });
+
+  it('lists the current project\'s host\'s shells, and only that host\'s projects, for New Terminal', () => {
+    const h = harness({ remote: () => fakeConnection().workspace });
+    h.projects = [ALPHA, REMOTE];
+    h.hostProfiles = [{ id: 'bash', name: 'bash', file: '/usr/bin/bash', args: [], icon: 'bash' }];
+    h.current = REMOTE.key;
+    h.service.publish();
+    expect(lastState(h).profiles.map((profile) => [profile.id, profile.isDefault])).toEqual([['bash', true]]);
+    expect(h.service.profileOptions(REMOTE.key).map((profile) => profile.id)).toEqual(['bash']);
+    expect(h.service.projectOptions().map((option) => option.key)).toEqual([REMOTE.key]);
+    h.current = ALPHA.key;
+    h.service.publish();
+    expect(lastState(h).profiles.map((profile) => profile.id)).toEqual(['pwsh', 'git-bash']);
+    expect(h.service.projectOptions().map((option) => option.key)).toEqual([ALPHA.key]);
+  });
+
+  it('starts, splits and restarts a remote terminal with its host\'s own shells, while a local project\'s pick lists this computer\'s', async () => {
+    const connection = fakeConnection();
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [ALPHA, REMOTE];
+    h.hostProfiles = [{ id: 'bash', name: 'bash', file: '/usr/bin/bash', args: [], icon: 'bash' }];
+    expect(h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false)).toEqual({ ok: false, reason: 'unknownProfile' });
+    const created = h.service.create({ profileId: null, target: { project: REMOTE.key } }, false);
+    if (!created.ok) throw new Error('no remote terminal');
+    await settle();
+    connection.daemon({ type: 'ready', id: created.id, pid: 5 });
+    await h.service.split(created.id);
+    await settle();
+    expect(spawned(connection).map((request) => request.file)).toEqual(['/usr/bin/bash', '/usr/bin/bash']);
+    connection.daemon({ type: 'exit', id: created.id, exitCode: 0 });
+    h.hostProfiles = [];
+    await h.service.restart(created.id);
+    expect(h.logs).toContain(`[terminal] not restarting ${created.id}: its profile bash is no longer listed`);
+    expect(lastState(h).profiles.map((profile) => profile.id)).toEqual(['pwsh', 'git-bash']);
+  });
+
+  it('puts each terminal a reconnect reattaches back in its exited tab\'s place, its split and its name kept', async () => {
+    let connection = fakeConnection();
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    const first = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    if (!first.ok) throw new Error('no remote terminal');
+    await settle();
+    connection.daemon({ type: 'ready', id: first.id, pid: 5 });
+    await h.service.split(first.id);
+    await settle();
+    const pane = lastState(h).activeId!;
+    const last = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    if (!last.ok) throw new Error('no remote terminal');
+    await settle();
+    h.service.rename(pane, 'server');
+    h.service.select(pane);
+    const before = lastState(h).groups;
+    const kept = h.remote.at(-1)!;
+    connection.close('network');
+    expect(lastState(h).terminals.map((terminal) => terminal.status)).toEqual(['exited', 'exited', 'exited']);
+    connection = fakeConnection([first.id, pane, last.id].map((id) => ({ id, pid: 5, cols: 80, rows: 24 })));
+    await h.service.reattach(connection.workspace.terminals, kept);
+    const after = lastState(h);
+    expect(after.groups).toEqual(before);
+    expect(after.terminals.map((terminal) => [terminal.id, terminal.status, terminal.name])).toEqual([[first.id, 'running', null], [pane, 'running', 'server'], [last.id, 'running', null]]);
+    expect(after.activeId).toBe(pane);
+  });
+
+  it('counts the shell\'s sequences on from a reattached screen, so the next reload\'s marks land on their commands', async () => {
+    const first = fakeConnection();
+    let connection = first;
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    const created = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    if (!created.ok) throw new Error('no remote terminal');
+    await settle();
+    const kept = h.remote.at(-1)!;
+    h.service.closeWindow();
+    h.service.attach({ state: (state) => h.states.push(state), data: (data) => h.data.push(data), screen: (screen) => h.screens.push(screen), focus: (id) => h.focused.push(id) });
+    connection = fakeConnection([{ id: created.id, pid: 5, cols: 80, rows: 24 }]);
+    await h.service.reattach(connection.workspace.terminals, kept);
+    // the daemon's screen holds five sequences the shell printed before this client attached
+    connection.daemon({ type: 'screen', id: created.id, data: '$ ', cols: 80, rows: 24, marks: [], sequences: 5 });
+    connection.daemon({ type: 'data', id: created.id, data: `\r\n\x1b]633;A;${kept[0]!.nonce}\x07$ ` });
+    h.service.shellLoaded();
+    connection.daemon({ type: 'screen', id: created.id, data: '$ \r\n$ ', cols: 80, rows: 24, marks: [{ index: 5, line: 1 }], sequences: 6 });
+    expect(h.screens.at(-1)!.marks).toEqual([{ line: 1, event: { kind: 'promptStart' } }]);
+  });
+});
+
+describe('a reload of the shell page with several terminals', () => {
+  it('gives every live terminal its own screen, an inactive one and one on the alternate screen included, and no output twice', async () => {
+    const h = harness();
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    await settle();
+    const [one, two] = h.ptys;
+    one!.emit('normal line\r\n\x1b[?1049h\x1b[Hfull screen');
+    two!.emit('second');
+    await settle(TERMINAL_BATCH_MS);
+    expect(lastState(h).activeId).toBe('term-2');
+    h.data.length = 0;
+    h.service.shellLoaded();
+    await settle(50);
+    const screens = new Map(h.screens.map((screen) => [screen.id, screen.data]));
+    expect([...screens.keys()].sort()).toEqual(['term-1', 'term-2']);
+    expect(screens.get('term-1')).toMatch(/normal line[\s\S]*\[\?1049h[\s\S]*full screen/);
+    expect(screens.get('term-2')).toContain('second');
+    expect(lastState(h).terminals.map((terminal) => terminal.restoring)).toEqual([false, false]);
+    one!.emit(' after');
+    await settle(TERMINAL_BATCH_MS);
+    expect(h.data.map((batch) => [batch.id, batch.data])).toEqual([['term-1', ' after']]);
+  });
+});
+
+describe('settings the pty host keeps', () => {
+  it('gives each live terminal\'s screen a new scrollback once per change', async () => {
+    const h = harness();
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    await settle();
+    h.posted.length = 0;
+    h.settings = { scrollback: 5000 };
+    h.service.settingsChanged();
+    h.service.settingsChanged();
+    expect(h.posted.filter((message) => (message as HostRequest).type === 'scrollback')).toEqual([{ type: 'scrollback', id: 'term-1', scrollback: 5000 }]);
   });
 });
 

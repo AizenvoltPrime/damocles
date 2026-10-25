@@ -3,7 +3,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { BrowserService } from '../index';
 import { createFakePlatform, type FakePanelHost } from '../../../__mocks__/fake-platform';
 import { BrowserPanel } from '../browser-panel';
-import { BROWSER_WEBVIEW_SCRIPT } from '../browser-webview-script';
+import { BROWSER_WEBVIEW_SCRIPT } from '../../../shared/browser-page-html';
 import { installLogSink } from '../../logger';
 
 /**

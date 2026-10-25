@@ -85,6 +85,9 @@ function setup(width = 1200) {
   const views = new PanelViews({
     window: window as never,
     preloadPath: 'preload-panel.js',
+    resourceRoot: '/app',
+    pageStrings: () => { throw new Error('no page is built here'); },
+    hostLabel: () => undefined,
     states,
     pages: tabs,
     log: () => undefined,

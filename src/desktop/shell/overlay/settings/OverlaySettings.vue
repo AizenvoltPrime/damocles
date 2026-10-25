@@ -1,18 +1,20 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, provide, ref, shallowRef } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { FileCode2, FolderSearch, GitBranch, Info, Palette, SquareTerminal } from 'lucide-vue-next';
 import type { SettingsAccountId, SettingsSectionId, SettingsTarget } from '@shared/settings-sections';
 import type { ExtensionToWebviewMessage, SettingsFileScope } from '@shared/types/messages';
-import SettingsModal from '@/components/settings/SettingsModal.vue';
+import SettingsModal, { type SettingsFooter } from '@/components/settings/SettingsModal.vue';
 import ExtensionUiDialog from '@/components/ExtensionUiDialog.vue';
-import type { HostSettings } from '@/components/settings/settings-rows';
+import { NO_HOST_SETTINGS, type HostSettings, type SettingsScopeView } from '@/components/settings/settings-rows';
 import { useSettingWritesStore } from '@/components/settings/settings-writes';
 import { settingsViewHandlers, type SettingsHandlerContext, type SettingsViewHandlers } from '@/composables/message-handler/handlers/settings-handlers';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useExtensionUiStore } from '@/stores/useExtensionUiStore';
 import { useVoiceJarvisStore } from '@/stores/useVoiceJarvisStore';
-import type { DamoclesOverlayApi } from '../../../preload/overlay-channels';
+import type { DamoclesOverlayApi, OverlaySettingsScope, OverlaySettingsScopes } from '../../../preload/overlay-channels';
+import SettingsScopeTabs from './SettingsScopeTabs.vue';
 import AboutSection from './AboutSection.vue';
 import AppearanceSection from './AppearanceSection.vue';
 import EditorSection from './EditorSection.vue';
@@ -111,12 +113,14 @@ const props = defineProps<{
   section?: SettingsSectionId | undefined;
   account?: SettingsAccountId | undefined;
   release?: string | undefined;
+  scopes?: OverlaySettingsScopes | undefined;
 }>();
 
 const emit = defineEmits<{
   (e: 'closed'): void;
 }>();
 
+const { t } = useI18n();
 const settingsStore = useSettingsStore();
 const extensionUiStore = useExtensionUiStore();
 const writes = useSettingWritesStore();
@@ -205,7 +209,7 @@ const GIT_SETTINGS = [
   GIT_BLAME_EDITOR_DECORATION_SETTING,
 ] as const;
 
-const DESKTOP = computed((): HostSettings => ({
+const DESKTOP_SETTINGS = computed((): HostSettings => ({
   sections: [{
     id: 'appearance',
     label: 'settingsHost.sections.appearance.label',
@@ -304,6 +308,67 @@ const DESKTOP = computed((): HostSettings => ({
 
 // Changes on every re-attach, so the page remounts, nothing typed for the previous chat survives, and the modal asks for the new chat's state.
 const attachment = ref(props.generation);
+// A remote chat's tabs, as main attached the modal: active is always the tab of the attached core.
+const scopes = shallowRef<OverlaySettingsScopes | undefined>(props.scopes);
+// the tab clicked while main re-attaches the modal to that tab's core; the page lists nothing meanwhile
+const pending = ref<OverlaySettingsScope | undefined>();
+// the tab main could not attach the modal to, until the next attach
+const failed = ref<OverlaySettingsScope | undefined>();
+const shownScope = computed(() => (scopes.value === undefined ? undefined : pending.value ?? scopes.value.active));
+
+function tabName(scope: OverlaySettingsScope): string {
+  if (scope === 'machine') return scopes.value?.host.name ?? '';
+  return scope === 'user' ? t('settingsScope.user') : t('settingsScope.project');
+}
+
+// The desktop app's own settings are this computer's, so only the User tab lists them.
+const DESKTOP = computed((): HostSettings => (shownScope.value === undefined || shownScope.value === 'user' ? DESKTOP_SETTINGS.value : NO_HOST_SETTINGS));
+
+// Voice runs on this computer whatever host the chat is on, so only the User tab lists it.
+const USER_TAB_SECTIONS: ReadonlySet<SettingsSectionId> = new Set(['voice']);
+
+// Each tab lists only what it writes: the User tab every file setting (the chat's own rows are the remote chat's, on its
+// host tab), the host and Project tabs the keys core says they may write, the host tab also the attached chat's rows.
+const scopeView = computed((): SettingsScopeView | undefined => {
+  const current = scopes.value;
+  const tab = shownScope.value;
+  if (current === undefined || tab === undefined) return undefined;
+  const writable = settingsStore.writableKeys;
+  const hidden = tab === 'user' ? {} : { hidden: USER_TAB_SECTIONS };
+  if (pending.value !== undefined || (tab !== 'user' && writable === undefined)) {
+    return { listed: () => false, loading: t('settingsScope.loading', { tab: tabName(tab) }), ...hidden };
+  }
+  if (tab === 'user') {
+    return {
+      listed: (meta) => meta.section !== 'chat',
+      empty: (section) => (section === 'chat' ? t('settingsScope.chatOnHost', { host: current.host.name }) : undefined),
+    };
+  }
+  return { listed: (meta) => (tab === 'machine' && meta.section === 'chat') || (meta.keys ?? []).some((key) => writable!.has(key)), ...hidden };
+});
+
+// Edit settings.json offers the files of the tab shown: the host tab's user file is its host's machine file.
+const footer = computed((): SettingsFooter => {
+  const current = scopes.value;
+  if (current === undefined) return { kind: 'settingsFiles' };
+  if (current.active === 'machine') return { kind: 'settingsFiles', files: [{ scope: 'user', label: t('settingsScope.editHostFile', { host: current.host.name }) }] };
+  return { kind: 'settingsFiles', files: current.active === 'user' ? [{ scope: 'user' }] : [{ scope: 'project' }, { scope: 'local' }] };
+});
+
+async function selectScope(scope: OverlaySettingsScope): Promise<void> {
+  const current = scopes.value;
+  if (!current || pending.value !== undefined || current.active === scope) return;
+  pending.value = scope;
+  failed.value = undefined;
+  try {
+    const answer = await props.api.setSettingsScope(scope);
+    if (answer.ok && scopes.value) scopes.value = { ...scopes.value, active: answer.value };
+  } catch {
+    failed.value = scope;
+  } finally {
+    pending.value = undefined;
+  }
+}
 const target = shallowRef<SettingsTarget>({
   ...(props.section !== undefined ? { section: props.section } : {}),
   ...(props.account !== undefined ? { account: props.account } : {}),
@@ -329,7 +394,12 @@ function attach(generation: number): void {
 const stops: Array<() => void> = [];
 attach(props.generation);
 stops.push(props.bridge.onMessage(dispatch));
-stops.push(props.api.onSettingsAttached(({ generation }) => attach(generation)));
+stops.push(props.api.onSettingsAttached(({ generation, scopes: next }) => {
+  scopes.value = next;
+  // a re-attach of the previous tab follows a failed switch, which stays reported
+  if (next === undefined || next.active === failed.value) failed.value = undefined;
+  attach(generation);
+}));
 stops.push(props.api.onSettingsTarget((next) => (target.value = next)));
 
 onBeforeUnmount(() => {
@@ -350,12 +420,76 @@ const modal = ref<InstanceType<typeof SettingsModal> | null>(null);
   <SettingsModal
     ref="modal"
     :page-key="attachment"
+    :scope-view="scopeView"
     :host="DESKTOP"
-    :footer="{ kind: 'settingsFiles' }"
+    :footer="footer"
     backdrop="dim"
     :target="target"
     @closed="emit('closed')"
     @edit-settings-file="editSettingsFile"
-  />
+  >
+    <template
+      v-if="scopes"
+      #scope
+    >
+      <SettingsScopeTabs
+        :scopes="scopes"
+        :pending="pending"
+        @select="selectScope"
+      />
+    </template>
+    <template
+      v-if="scopes"
+      #scopeBanner="{ section: pageSection }"
+    >
+      <p
+        class="text-11.5 leading-[1.45] text-(--d-danger-text)"
+        role="status"
+        data-testid="settings-scope-failed"
+      >
+        <span
+          v-if="failed"
+          class="mb-1 block px-2.5"
+        >{{ t('settingsScope.switchFailed', { tab: tabName(failed) }) }}</span>
+      </p>
+      <div
+        v-if="!scopeView?.loading"
+        class="mb-1 flex items-center gap-2 rounded-lg bg-(--d-panel) px-2.5 py-2 text-11.5 leading-[1.45] text-(--d-muted)"
+        data-testid="settings-scope-banner"
+        role="note"
+      >
+        <span v-if="scopes.active === 'machine' && pageSection === 'chat'">{{ t('settingsScope.chatBanner', { host: scopes.host.name }) }}</span>
+        <!-- {hostAgain}: i18n-t renders each slot once, and the host is named twice -->
+        <i18n-t
+          v-else-if="scopes.active === 'machine'"
+          keypath="settingsScope.machineBanner"
+          tag="span"
+        >
+          <template #host>
+            <b class="font-semibold text-(--d-text)">{{ scopes.host.name }}</b>
+          </template>
+          <template #file>
+            <span class="font-mono">~/.damocles/settings.json</span>
+          </template>
+          <template #hostAgain>
+            {{ scopes.host.name }}
+          </template>
+        </i18n-t>
+        <i18n-t
+          v-else-if="scopes.active === 'project'"
+          keypath="settingsScope.projectBanner"
+          tag="span"
+        >
+          <template #file>
+            <span class="font-mono">{{ scopes.projectFile ?? '.damocles/settings.json' }}</span>
+          </template>
+          <template #host>
+            {{ scopes.host.name }}
+          </template>
+        </i18n-t>
+        <span v-else>{{ t('settingsScope.userBanner') }}</span>
+      </div>
+    </template>
+  </SettingsModal>
   <ExtensionUiDialog />
 </template>

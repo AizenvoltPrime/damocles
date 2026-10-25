@@ -44,9 +44,11 @@ export function refusedStatus(denial: DenialFeedback): "blocked" | "denied" {
  * The status a replayed call carries, from the only two facts the transcript keeps: whether a result
  * was recorded at all, and whether it was an error. An error is a refusal only when it carries a denial
  * marker, the same signal the live path reads off the error text; anything else errored on its own. A
- * stored feedback with no marker in the result is the human's.
+ * stored feedback with no marker in the result is the human's. A call a joining view's replay marks `live` has no outcome
+ * yet, and the live messages after the replay set it.
  */
 function historyToolStatus(tool: HistoryToolCall, denial: DenialFeedback | undefined): ToolCall["status"] {
+  if (tool.live === true) return "pending";
   if (tool.abandoned !== undefined) return "abandoned";
   if (tool.isError === true) return denial !== undefined ? refusedStatus(denial) : "failed";
   if (tool.result === undefined) return "unrecorded";

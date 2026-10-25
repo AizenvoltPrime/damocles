@@ -13,6 +13,8 @@ import { mapPiToolName, normalizeToolInput, denormalizeToolInput, toolCategory }
 import { classifyReadOnlyShellCommand } from './readonly-shell';
 import { worktreeIsolationBlock, type WorktreeIsolation } from './worktree-isolation';
 import { GATEABLE_MODULE_NAMES } from './tools/tool-catalog';
+import { userScopeToolNames } from './tools/deferred-tools';
+import { browserUnavailableReason, userScopeRemote } from '../user-scope';
 import type { DeferrableSnapshot } from './tools/tool-search-tool';
 import type { ResourceReadReach } from './mcp/content';
 import type { ShellCancelRegistry } from './tools/shell-cancel-registry';
@@ -333,6 +335,9 @@ async function decideToolCall(
     const blocked = worktreeIsolationBlock(damoclesName, normalizeToolInput(event.toolName, event.input as Record<string, unknown>), isolation);
     return blocked === undefined ? undefined : { block: true, reason: formatPolicyBlockReason(blocked) };
   };
+
+  // a tool whose user-scope service this core cannot reach never runs, in any mode, before any hook
+  if (userScopeToolNames(!userScopeRemote()).has(event.toolName)) return { block: true, reason: formatPolicyBlockReason(browserUnavailableReason()) };
 
   if (preToolUse) {
     const result = await preToolUse.run(event, callSignal);

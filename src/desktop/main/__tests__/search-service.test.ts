@@ -9,8 +9,13 @@ import { getRipgrepSearchOptions, resolveRgPath } from '../../../core/chat-panel
 import { MAX_SEARCH_RESULTS, type SearchQuery, type SearchRange } from '../../../shared/text-search';
 import type { SearchDone, SearchFileUpdate, SearchResultsBatch } from '../../preload/shell-channels';
 import { DEFAULT_FILES_EXCLUDE, DEFAULT_SEARCH_EXCLUDE } from '../../local-services/desktop-configuration';
-import { excludeSettingGlobs } from '../search/rg-args';
-import { findBufferMatches, LIVE_UPDATE_MS, lstatMtime, MAX_RG_EVENT_BYTES, relativeResultPath, SearchService, type BufferDocument, type EditorRunResult, type RgProcess, type SearchServiceDeps, type SearchSettings } from '../search/search-service';
+import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { excludeSettingGlobs } from '../../workspace/search/rg-args';
+import { MAX_RG_EVENT_BYTES, type RgProcess } from '../../workspace/search/search-runner';
+import type { WorkspaceFileSystem } from '../../workspace/file-system';
+import { findBufferMatches, LIVE_UPDATE_MS, relativeResultPath, SearchService, type BufferDocument, type EditorRunResult, type SearchServiceDeps, type SearchSettings } from '../search/search-service';
+import { NotConnectedError } from '../workspace/workspaces';
+import { testWorkspaces } from './test-workspaces';
 
 const SEARCH_DEBOUNCE_MS = 300;
 
@@ -63,10 +68,23 @@ let updates: SearchFileUpdate[];
 let buffers: BufferDocument[];
 let settings: SearchSettings;
 
-function service(overrides: Partial<SearchServiceDeps> = {}): SearchService {
+// mtimes: the result files' modification times, as the workspace's files read them
+function service(overrides: Partial<SearchServiceDeps> & { readonly mtimes?: WorkspaceFileSystem['mtimes'] } = {}): SearchService {
+  const { mtimes, ...rest } = overrides;
+  const workspaces = testWorkspaces({
+    watchers: createFakePlatform().fileWatchers,
+    rgPath: async () => 'rg',
+    spawnSearchRg: (_rgPath, args, cwd) => {
+      const rg = new FakeRg(args, cwd);
+      spawned.push(rg);
+      return rg;
+    },
+  });
+  const local = mtimes ? { ...workspaces.local, files: { ...workspaces.local.files, mtimes } } : workspaces.local;
   return new SearchService({
     folder: () => ({ projectKey: 'p', fsPath: '/proj' }),
-    rgPath: async () => 'rg',
+    workspaces: { ...workspaces, local, forProject: () => local },
+    osOf: () => process.platform,
     ignoreArgs: () => [],
     excludeSettings: () => ['**/node_modules'],
     settings: () => settings,
@@ -75,12 +93,7 @@ function service(overrides: Partial<SearchServiceDeps> = {}): SearchService {
     sendFileUpdate: (update) => updates.push(update),
     sendDone: (done) => dones.push(done),
     log: () => undefined,
-    spawnRg: (_rgPath, args, cwd) => {
-      const rg = new FakeRg(args, cwd);
-      spawned.push(rg);
-      return rg;
-    },
-    ...overrides,
+    ...rest,
   });
 }
 
@@ -285,7 +298,8 @@ describe('search service with the bundled ripgrep', () => {
     const done = new Promise<void>((resolve) => {
       const search = new SearchService({
         folder: () => ({ projectKey: 'p', fsPath: project }),
-        rgPath: () => resolveRgPath({ resourceRoot: process.cwd(), unpackedRoot: process.cwd() }),
+        osOf: () => process.platform,
+        workspaces: testWorkspaces({ watchers: createFakePlatform().fileWatchers, rgPath: () => resolveRgPath({ resourceRoot: process.cwd(), unpackedRoot: process.cwd() }) }),
         ignoreArgs: () => getRipgrepSearchOptions({ get: () => undefined } as never),
         excludeSettings: () => [...excludeSettingGlobs(DEFAULT_FILES_EXCLUDE), ...excludeSettingGlobs(DEFAULT_SEARCH_EXCLUDE)],
         settings: () => settings,
@@ -452,8 +466,8 @@ describe('search service over open buffers', () => {
   it('reads each result file\'s modification time only for the modified sort order', async () => {
     settings = { ...settings, sortOrder: 'modified' };
     buffers = [buffer('d1', 'open.ts', 'needle', 42)];
-    const stats: string[] = [];
-    const search = service({ mtime: async (fsPath) => { stats.push(fsPath); return 7; } });
+    const stats: Array<[string, readonly string[]]> = [];
+    const search = service({ mtimes: async (folder, relativePaths) => { stats.push([folder, relativePaths]); return relativePaths.map(() => 7); } });
     search.start(1, query({ pattern: 'needle' }), true);
     await settle();
     spawned[0]!.emitJson(begin('src/a.ts'));
@@ -462,12 +476,92 @@ describe('search service over open buffers', () => {
     spawned[0]!.close(0);
     await settle();
     expect(batches.flatMap((batch) => batch.files).map((file) => (file.kind === 'file' ? [file.relativePath, file.mtimeMs] : []))).toEqual([['open.ts', 42], ['src/a.ts', 7]]);
-    expect(stats).toEqual([path.join('/proj', 'src', 'a.ts')]);
+    expect(stats).toEqual([['/proj', ['src/a.ts']]]);
     settings = { ...settings, sortOrder: 'default' };
     batches = [];
     search.start(2, query({ pattern: 'needle', onlyOpenEditors: true }), true);
     await settle();
     expect(batches[0]!.files[0]).not.toHaveProperty('mtimeMs');
+  });
+
+  it('reads the modification times of a batch\'s files in one request to the workspace', async () => {
+    settings = { ...settings, sortOrder: 'modified' };
+    const requests: Array<readonly string[]> = [];
+    const search = service({ mtimes: async (_folder, relativePaths) => { requests.push(relativePaths); return relativePaths.map((_, index) => index + 1); } });
+    search.start(1, query({ pattern: 'needle' }), true);
+    await settle();
+    for (const file of ['a.ts', 'b.ts', 'c.ts']) {
+      spawned[0]!.emitJson(begin(file));
+      spawned[0]!.emitJson(match(file, 1, { text: 'needle\n' }, [[0, 6]]));
+      spawned[0]!.emitJson(end(file));
+    }
+    spawned[0]!.close(0);
+    await settle();
+    expect(requests).toEqual([['a.ts', 'b.ts', 'c.ts']]);
+    expect(batches.flatMap((batch) => batch.files).map((file) => (file.kind === 'file' ? file.mtimeMs : undefined))).toEqual([1, 2, 3]);
+  });
+
+  it('sends a file whose host cannot answer for its modification time without one, and still finishes', async () => {
+    settings = { ...settings, sortOrder: 'modified' };
+    const search = service({ mtimes: () => Promise.reject(new Error('The connection to the host ended')) });
+    search.start(1, query({ pattern: 'needle' }), true);
+    await settle();
+    spawned[0]!.emitJson(begin('a.ts'));
+    spawned[0]!.emitJson(match('a.ts', 1, { text: 'needle\n' }, [[0, 6]]));
+    spawned[0]!.emitJson(end('a.ts'));
+    spawned[0]!.close(0);
+    await settle();
+    expect(paths(batches)).toEqual(['a.ts']);
+    expect(batches[0]!.files[0]).not.toHaveProperty('mtimeMs');
+    expect(dones).toEqual([{ searchId: 1, resultCount: 1, fileCount: 1, limitHit: false }]);
+  });
+
+  it('finishes a search of a project whose host is not connected with the reason, at once and after the debounce', async () => {
+    const unreachable = (): never => { throw new NotConnectedError('Local daemon is not connected.'); };
+    const workspaces = testWorkspaces({ watchers: createFakePlatform().fileWatchers });
+    const search = service({ workspaces: { ...workspaces, forProject: unreachable } });
+    search.start(1, query({ pattern: 'needle' }), true);
+    await settle();
+    expect(dones).toEqual([{ searchId: 1, resultCount: 0, fileCount: 0, limitHit: false, error: 'Local daemon is not connected.' }]);
+    vi.useFakeTimers();
+    try {
+      search.start(2, query({ pattern: 'needle' }), false);
+      vi.advanceTimersByTime(settings.debounceMs);
+    } finally {
+      vi.useRealTimers();
+    }
+    await settle();
+    expect(dones.at(-1)).toEqual({ searchId: 2, resultCount: 0, fileCount: 0, limitHit: false, error: 'Local daemon is not connected.' });
+    expect(search.viewState().running).toBe(false);
+  });
+
+  it('reads ripgrep\'s paths and names result files in the path rules of the host that holds the project', async () => {
+    for (const [os, printed, label] of [['win32', 'src\\a.ts', 'src\\a.ts'], ['linux', 'src/a.ts', 'src/a.ts']] as const) {
+      batches = [];
+      spawned = [];
+      const search = service({ osOf: () => os });
+      search.start(1, query({ pattern: 'needle' }), true);
+      await settle();
+      spawned[0]!.emitJson(begin(printed));
+      spawned[0]!.emitJson(match(printed, 1, { text: 'needle\n' }, [[0, 6]]));
+      spawned[0]!.emitJson(end(printed));
+      spawned[0]!.close(0);
+      await settle();
+      expect(paths(batches)).toEqual(['src/a.ts']);
+      expect(search.viewResults(1)?.files.map((file) => file.label)).toEqual([label]);
+    }
+    // a backslash is part of a POSIX file name, so the file is not one of the target's 'dir/a.ts'
+    batches = [];
+    spawned = [];
+    const posix = service({ osOf: () => 'linux' });
+    posix.start(1, query({ pattern: 'needle' }), true);
+    await settle();
+    spawned[0]!.emitJson(begin('dir\\a.ts'));
+    spawned[0]!.emitJson(match('dir\\a.ts', 1, { text: 'needle\n' }, [[0, 6]]));
+    spawned[0]!.emitJson(end('dir\\a.ts'));
+    spawned[0]!.close(0);
+    await settle();
+    expect(paths(batches)).toEqual([]);
   });
 
   it('stops ripgrep on Cancel Search, keeps what it sent and says it was cancelled', async () => {
@@ -719,8 +813,8 @@ describe('what main takes from ripgrep', () => {
   });
 
   it('reads a file whose modification time cannot be read as having none', async () => {
-    expect(await lstatMtime('a\0b')).toBeUndefined();
-    expect(await lstatMtime(path.join(os.tmpdir(), 'dm-no-such-file'))).toBeUndefined();
+    const { files } = testWorkspaces({ watchers: createFakePlatform().fileWatchers }).local;
+    expect(await files.mtimes(os.tmpdir(), ['a\0b', 'dm-no-such-file'])).toEqual([undefined, undefined]);
   });
 });
 

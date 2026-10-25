@@ -19,6 +19,8 @@ files:
   - dist/webview/**
   # Damocles Core's bundle, forked from inside app.asar and never unpacked (coreHostEntryPath).
   - dist/core-host.js
+  # dist/daemon.js, the loopback daemon, is dev and e2e only and never ships; verify-desktop-package.mjs checks it is absent.
+  # dist/subscription-plugin/ is its core's, so it never ships either.
   - dist/compass-worker.js
   - dist/usage-stats-worker.js
   - dist/sentinel.js

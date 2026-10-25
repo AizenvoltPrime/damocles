@@ -20,6 +20,10 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    outputs:
+      server-node-version: ${{ steps.server-node.outputs.version }}
+      server-alpine-build-image: ${{ steps.server-node.outputs.alpine-build-image }}
+      server-alpine-target-image: ${{ steps.server-node.outputs.alpine-target-image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -82,6 +86,16 @@ jobs:
       # on benign cross-OS dependency-closure drift — this only flags a committed file that drifted.
       - name: Verify .vscodeignore allowlist is in sync
         run: node scripts/sync-vscodeignore.mjs --check
+
+      # The server packages bundle the Node the shipped Electron embeds; this fails while its archives and Alpine image are not
+      # pinned in scripts/server-targets.mjs. The Alpine legs cannot run Electron, so every leg takes the version from here.
+      # The assignment stands alone so a failing derivation fails the step; inside echo's arguments it would not.
+      - name: Derive the server packages' Node version and Alpine images
+        id: server-node
+        run: |
+          npx --no install-electron
+          outputs=$(node scripts/server-targets.mjs --github-outputs)
+          echo "$outputs" >> "$GITHUB_OUTPUT"
 
   package:
     needs: verify
@@ -229,10 +243,113 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # One server package per target, each built, verified and self-tested on its own target and uploaded as a workflow artifact
+  # only; `release` publishes them. Keep this matrix in step with SERVER_TARGETS in scripts/server-targets.mjs
+  # (server-targets.test.ts fails on drift). The Alpine legs build in the pinned node:<derived>-alpine image, where node-pty is
+  # compiled for musl, and self-test in a clean pinned Alpine.
+  package-server:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: alpine-x64
+            runner: ubuntu-latest
+            alpine: true
+          - target: alpine-arm64
+            runner: ubuntu-24.04-arm
+            alpine: true
+          # macos-15-intel is GitHub's Intel image until August 2027 (actions/runner-images#13045).
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: darwin-arm64
+            runner: macos-latest
+          - target: win32-x64
+            runner: windows-latest
+          - target: win32-arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      NODE_VERSION: ${{ needs.verify.outputs.server-node-version }}
+      ALPINE_BUILD_IMAGE: ${{ needs.verify.outputs.server-alpine-build-image }}
+      ALPINE_TARGET_IMAGE: ${{ needs.verify.outputs.server-alpine-target-image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: ${{ !matrix.alpine }}
+        with:
+          node-version: 24
+          cache: npm
+
+      # The packages carry the Compass grammars; the Alpine container copies the workspace, these files included.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: fetched-assets
+
+      - name: Build, verify and self-test the package
+        if: ${{ !matrix.alpine }}
+        run: |
+          npm ci
+          npm run build:server -- --target ${{ matrix.target }} --node-version "$NODE_VERSION"
+          node scripts/verify-server-package.mjs --target ${{ matrix.target }} --node-version "$NODE_VERSION" --require-self-test dist/server-packages/damocles-server-*-${{ matrix.target }}.*
+
+      - name: Build and verify the package in an Alpine container
+        if: ${{ matrix.alpine }}
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/work" \
+            -w /work \
+            -e NODE_VERSION \
+            "$ALPINE_BUILD_IMAGE" sh -c '
+              set -e
+              apk add --no-cache git python3 make g++ linux-headers libc6-compat binutils
+              cp -a /work /build
+              cd /build
+              npm ci
+              (cd node_modules/node-pty && node /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild)
+              pty=node_modules/node-pty/build/Release/pty.node
+              npm run build:server -- --target ${{ matrix.target }} --node-version "$NODE_VERSION" --node-pty-binary "$pty"
+              node scripts/verify-server-package.mjs --target ${{ matrix.target }} --node-version "$NODE_VERSION" --node-pty-binary "$pty" --skip-self-test dist/server-packages/damocles-server-*-${{ matrix.target }}.tar.gz
+              mkdir -p /work/dist/server-packages
+              cp dist/server-packages/damocles-server-*-${{ matrix.target }}.tar.gz /work/dist/server-packages/
+            '
+
+      # The build image's compilers and libc6-compat could hide a missing library or a glibc link; a target has only these.
+      - name: Self-test the package on a clean Alpine
+        if: ${{ matrix.alpine }}
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/dist/server-packages:/packages:ro" \
+            "$ALPINE_TARGET_IMAGE" sh -c '
+              set -e
+              apk add --no-cache libstdc++ libgcc
+              mkdir /server
+              tar -xzf /packages/damocles-server-*-${{ matrix.target }}.tar.gz -C /server
+              /server/bin/damocles-server self-test
+            '
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: server-${{ matrix.target }}
+          path: dist/server-packages/damocles-server-*-${{ matrix.target }}.*
+          retention-days: 7
+          if-no-files-found: error
+
   # Keep this matrix in step with DESKTOP_TARGETS in scripts/release-targets.mjs (release-targets.test.ts fails on drift).
   # Every electron-builder call names its targets: without them, the `arch` lists in electron-builder.yml add architectures the runner cannot build.
   package-desktop:
-    needs: verify
+    needs: [verify, package-server]
     strategy:
       # Each leg is a separate platform; `release` still needs every leg, so a failure reports all of them without publishing.
       fail-fast: false
@@ -318,6 +435,16 @@ jobs:
       - name: Build desktop
         run: npm run build:desktop
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: server-packages
+          pattern: server-*
+          merge-multiple: true
+
+      # dist/desktop/server-manifest.json lands inside app.asar, which is integrity-checked on macOS and Windows.
+      - name: Write the server package manifest
+        run: node scripts/build-server.mjs --write-manifest server-packages
+
       # Windows builds only the unpacked app here; sign-windows signs it and builds the installer from it (docs/desktop-signing.md).
       # The nsis target is required here: only it makes electron-builder write resources/app-update.yml, and --dir or --prepackaged never do.
       # The unsigned installer this also writes is never uploaded.
@@ -330,7 +457,7 @@ jobs:
         run: npx electron-builder --${{ matrix.builder }} ${{ matrix.targets }} --${{ matrix.arch }} --publish never
 
       - name: Verify desktop package integrity and fuses
-        run: node scripts/verify-desktop-package.mjs --platform ${{ matrix.os }} --arch ${{ matrix.arch }} --app "${{ matrix.appDir }}"
+        run: node scripts/verify-desktop-package.mjs --platform ${{ matrix.os }} --arch ${{ matrix.arch }} --app "${{ matrix.appDir }}" --server-packages server-packages
 
       # Ubuntu 24.04 restricts unprivileged user namespaces for binaries without an AppArmor profile, so Chromium needs its setuid helper; the sandbox stays on.
       - name: Enable the setuid sandbox helper of the packaged app
@@ -610,7 +737,7 @@ jobs:
   # The dev end-to-end suite, split into Playwright shards beside package-desktop, which runs only the packaged-app suite.
   # Keep each target's runner equal to its package-desktop leg (release-targets.test.ts fails on drift).
   e2e-desktop:
-    needs: verify
+    needs: [verify, package-server]
     strategy:
       # Every shard reports all its failures; attest and release still need every shard.
       fail-fast: false
@@ -627,25 +754,30 @@ jobs:
             runner: windows-latest
             os: win32
             shards: 3
+            serverTarget: win32-x64
           - target: win-arm64
             runner: windows-11-arm
             os: win32
             shards: 3
+            serverTarget: win32-arm64
           - target: mac-arm64
             runner: macos-latest
             os: darwin
             shards: 3
+            serverTarget: darwin-arm64
           - target: linux-x64
             runner: ubuntu-latest
             os: linux
             shards: 2
+            serverTarget: linux-x64
           - target: linux-arm64
             runner: ubuntu-24.04-arm
             os: linux
             shards: 2
+            serverTarget: linux-arm64
     runs-on: ${{ matrix.runner }}
-    # npm ci, the suite step's limit and the report upload (docs/release.md "Time limits").
-    timeout-minutes: 90
+    # npm ci, the suite step's limit, the server package's loopback run and the report upload (docs/release.md "Time limits").
+    timeout-minutes: 110
     defaults:
       run:
         shell: bash
@@ -698,6 +830,26 @@ jobs:
             xvfb-run -a -s '-screen 0 1920x1080x24' sh -c 'openbox & exec npm run test:desktop -- --shard="$SHARD"'
           else
             npm run test:desktop -- --shard="$SHARD"
+          fi
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: matrix.shard == 1
+        with:
+          name: server-${{ matrix.serverTarget }}
+          path: server-package
+
+      # The loopback specs once more, the daemon unpacked from this leg's server package and run by its own Node.
+      - name: Loopback specs against this leg's server package
+        if: matrix.shard == 1
+        timeout-minutes: 20
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then export TEMP="$RUNNER_TEMP" TMP="$RUNNER_TEMP"; fi
+          DAMOCLES_LOOPBACK_PACKAGE=$(node -p "require('path').resolve('server-package', require('fs').readdirSync('server-package').find((f) => f.startsWith('damocles-server-')))")
+          export DAMOCLES_LOOPBACK_PACKAGE
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a -s '-screen 0 1920x1080x24' sh -c 'openbox & exec npx playwright test --config playwright.desktop.config.ts --project dev --grep @loopback'
+          else
+            npx playwright test --config playwright.desktop.config.ts --project dev --grep @loopback
           fi
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -1038,7 +1190,7 @@ jobs:
   # Checks the run produced every release artifact and writes the release notes. A manual run runs it too, so a dry run checks
   # everything release reads; release only publishes.
   release-notes:
-    needs: [package, package-desktop, sign-windows, e2e-desktop, verify-desktop-install, verify-desktop-install-windows, desktop-update-test, desktop-update-test-windows]
+    needs: [package, package-server, package-desktop, sign-windows, e2e-desktop, verify-desktop-install, verify-desktop-install-windows, desktop-update-test, desktop-update-test-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1072,6 +1224,15 @@ jobs:
             if (missing.length) { console.error('Missing VSIXes: ' + missing.join(', ')); process.exit(1); }
           "
           node scripts/release-targets.mjs --check-desktop-artifacts all dist-artifacts
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: server-artifacts
+          pattern: server-*
+          merge-multiple: true
+
+      - name: Verify the run produced every server package
+        run: node scripts/release-targets.mjs --check-server-artifacts all server-artifacts
 
       - name: Extract changelog section
         run: |
@@ -1117,7 +1278,7 @@ jobs:
   # Build provenance for every file the release attaches. The OIDC token this job can mint signs attestations, so the job
   # holds no secret and installs and runs no package. Its subject-path list must equal the asset list in "Create GitHub Release".
   attest:
-    needs: [package, package-desktop, sign-windows, e2e-desktop, verify-desktop-install, verify-desktop-install-windows, desktop-update-test, desktop-update-test-windows, release-notes]
+    needs: [package, package-server, package-desktop, sign-windows, e2e-desktop, verify-desktop-install, verify-desktop-install-windows, desktop-update-test, desktop-update-test-windows, release-notes]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -1137,6 +1298,12 @@ jobs:
           pattern: desktop-*
           merge-multiple: true
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist-artifacts
+          pattern: server-*
+          merge-multiple: true
+
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
@@ -1144,13 +1311,14 @@ jobs:
             dist-artifacts/*.exe
             dist-artifacts/*.dmg
             dist-artifacts/*.zip
+            dist-artifacts/*.tar.gz
             dist-artifacts/*.deb
             dist-artifacts/*.rpm
             dist-artifacts/*.blockmap
             dist-artifacts/latest*.yml
 
   release:
-    needs: [package, package-desktop, sign-windows, e2e-desktop, verify-desktop-install, verify-desktop-install-windows, desktop-update-test, desktop-update-test-windows, release-notes, attest]
+    needs: [package, package-server, package-desktop, sign-windows, e2e-desktop, verify-desktop-install, verify-desktop-install-windows, desktop-update-test, desktop-update-test-windows, release-notes, attest]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # Only this job writes: `gh release create` authenticates with the job's own GITHUB_TOKEN.
@@ -1184,6 +1352,12 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          path: dist-artifacts
+          pattern: server-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
           name: release-notes
           path: ${{ runner.temp }}/release-notes
 
@@ -1197,6 +1371,7 @@ jobs:
             dist-artifacts/*.exe
             dist-artifacts/*.dmg
             dist-artifacts/*.zip
+            dist-artifacts/*.tar.gz
             dist-artifacts/*.deb
             dist-artifacts/*.rpm
             dist-artifacts/*.blockmap

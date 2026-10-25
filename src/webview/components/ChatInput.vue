@@ -27,6 +27,9 @@ import ImageThumbnailStrip from "./ImageThumbnailStrip.vue";
 import ElementAttachmentStrip from "./ElementAttachmentStrip.vue";
 import TerminalAttachmentStrip from "./TerminalAttachmentStrip.vue";
 import ModelEffortPopover from "./composer/ModelEffortPopover.vue";
+import HostBadge from "./HostBadge.vue";
+import { useChatHost } from "@/composables/useChatHost";
+import { useYoloRefusal } from "@/composables/useYoloRefusal";
 
 const { t } = useI18n();
 const uiStore = useUIStore();
@@ -376,6 +379,13 @@ function toggleDangerouslySkipPermissions() {
   emit("toggleDangerouslySkipPermissions");
 }
 
+// A remote host's policy may keep YOLO off; the composer says so calmly, naming the host as this computer names it
+const chatHost = useChatHost();
+const yoloRefused = useYoloRefusal();
+const yoloTooltip = computed(() => (settingsStore.hostCapabilities.bypassPermissions === false && chatHost.value
+  ? t("chatInput.yolo.notAllowedOnHost", { host: chatHost.value.name })
+  : t("chatInput.yolo.tooltip")));
+
 const ideContextLabel = computed(() => {
   const ctx = uiStore.ideContext;
   if (!ctx) return t("common.noFile");
@@ -619,6 +629,32 @@ onUnmounted(() => {
       @close="closeSlashCommand"
     />
 
+    <!-- the live region stays in the page, so a screen reader announces the notice that appears in it -->
+    <div role="status">
+      <p
+        v-if="yoloRefused"
+        data-testid="yolo-refused"
+        class="mb-1.5 flex min-w-0 items-center gap-1.5 px-1 text-xs text-(--d-muted) animate-[d-fade_0.2s_var(--ease-out)]"
+      >
+        <LockOpen
+          class="size-3 shrink-0"
+          aria-hidden="true"
+        />
+        <i18n-t
+          v-if="chatHost"
+          keypath="chatInput.yolo.refusedOnHost"
+          tag="span"
+          class="flex min-w-0 flex-wrap items-center gap-1"
+          scope="global"
+        >
+          <template #host>
+            <HostBadge :name="chatHost.name" />
+          </template>
+        </i18n-t>
+        <span v-else>{{ t("chatInput.yolo.refused") }}</span>
+      </p>
+    </div>
+
     <div
       ref="cardRef"
       class="group/composer relative rounded-2xl border border-(--d-border2) bg-(--d-input) shadow-[0_1px_2px_rgb(0_0_0/.15)] transition-colors duration-200 focus-within:border-(--d-accent)"
@@ -727,7 +763,7 @@ onUnmounted(() => {
             ? 'bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)] text-(--d-danger-text)'
             : 'text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text)'"
           :aria-pressed="dangerouslySkipPermissions"
-          :title="t('chatInput.yolo.tooltip')"
+          :title="yoloTooltip"
           data-testid="composer-yolo"
           @click="toggleDangerouslySkipPermissions"
         >

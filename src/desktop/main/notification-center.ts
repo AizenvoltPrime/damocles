@@ -140,7 +140,7 @@ function bounded(text: string | undefined): string | undefined {
 }
 
 function chatOf(ref: ChatRef): NotificationChat {
-  return { project: ref.project, title: ref.title };
+  return { project: ref.project, title: ref.title, ...(ref.host !== undefined ? { host: ref.host } : {}) };
 }
 
 /** The entry and action a pending prompt raises: a prompt a team agent raised is the team's, whatever it asks. */
@@ -328,10 +328,10 @@ export class NotificationCenter {
     this.deps.recordUsageWarning(crossing);
   }
 
-  /** A core notification: always an entry and a toast, answered with one of its actions or undefined. */
-  notice(severity: NoticeSeverity, message: string, actions: readonly string[]): Promise<string | undefined> {
+  /** A core notification: always an entry and a toast, answered with one of its actions or undefined; host names a remote core's. */
+  notice(severity: NoticeSeverity, message: string, actions: readonly string[], host?: string): Promise<string | undefined> {
     return new Promise((resolve) => {
-      this.raise({ kind: 'notice', severity, message, actions: [...actions] }, { kind: 'none' }, { answer: resolve });
+      this.raise({ kind: 'notice', severity, message, actions: [...actions], ...(host !== undefined ? { host } : {}) }, { kind: 'none' }, { answer: resolve });
     });
   }
 

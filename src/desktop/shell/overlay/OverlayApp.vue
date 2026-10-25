@@ -198,6 +198,7 @@ onBeforeUnmount(() => {
             :section="entry.request.section"
             :account="entry.request.account"
             :release="entry.request.release"
+            :scopes="entry.request.scopes"
             @closed="answer(entry.id, { kind: 'settings', closed: true })"
           />
         </div>

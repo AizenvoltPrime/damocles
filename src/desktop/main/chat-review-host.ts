@@ -21,12 +21,12 @@ import type { EditorPane } from './editor-pane';
 export type ReviewSession = Pick<ChatSession, 'chatReviewSnapshot' | 'chatReviewFileDiff' | 'chatReviewAnchor' | 'chatReviewStale' | 'submitReview'>;
 
 export interface ChatReviewHostDeps {
-  // the loaded chat's review reads, by core panel id
-  readonly session: (panelId: string) => ReviewSession | undefined;
+  // the loaded chat's review reads, by chat key
+  readonly session: (chatKey: string) => ReviewSession | undefined;
   // the chat's stored session id, which its drafts are kept under; undefined before its first message
-  readonly sessionId: (panelId: string) => string | undefined;
+  readonly sessionId: (chatKey: string) => string | undefined;
   // the chat's title, '' for a new chat
-  readonly title: (panelId: string) => string;
+  readonly title: (chatKey: string) => string;
   readonly editorPane: () => EditorPane;
   readonly warn: (message: string) => void;
   readonly t: (message: string, ...args: Array<string | number>) => string;
@@ -39,7 +39,7 @@ export interface ChatReviewHostDeps {
 const MAX_NAMED_STALE = 3;
 
 interface Review {
-  readonly panelId: string;
+  readonly chatKey: string;
   scope: ChatScope;
   // the latest read asked for this review, and the latest one that reached its tab, with that read's generation
   serial: number;
@@ -71,7 +71,7 @@ const sameComment = (a: ChatReviewComment, b: ChatReviewComment): boolean =>
 export class ChatReviewHost {
   private readonly deps: ChatReviewHostDeps;
   private readonly reviews = new Map<string, Review>();
-  // each chat's drafts for the run, by its stored session id (the panel id until it has one)
+  // each chat's drafts for the run, by its stored session id (the chat key until it has one)
   private readonly drafts = new Map<string, readonly Draft[]>();
   private readonly totals = new Map<string, ChatChangeTotals>();
 
@@ -80,12 +80,12 @@ export class ChatReviewHost {
   }
 
   /** Opens or focuses the chat's review tab in a scope (EditorService.showChatReview, Chat: Review Changes, the counter). */
-  async show(panelId: string, scope: ChatScope): Promise<void> {
-    const session = this.deps.session(panelId);
+  async show(chatKey: string, scope: ChatScope): Promise<void> {
+    const session = this.deps.session(chatKey);
     if (!session) throw new Error('The chat is not loaded');
-    const existing = this.reviewIdOf(panelId);
+    const existing = this.reviewIdOf(chatKey);
     const reviewId = existing ?? randomUUID();
-    const review = (existing !== undefined ? this.reviews.get(existing) : undefined) ?? { panelId, scope, serial: 0, landed: 0, generation: undefined, marks: 0 };
+    const review = (existing !== undefined ? this.reviews.get(existing) : undefined) ?? { chatKey, scope, serial: 0, landed: 0, generation: undefined, marks: 0 };
     review.scope = scope;
     this.reviews.set(reviewId, review);
     try {
@@ -97,30 +97,30 @@ export class ChatReviewHost {
   }
 
   /** The totals core published for a chat; its open review tab lists the files again unless it shows that generation. */
-  chatChanged(panelId: string, totals: ChatChangeTotals, generation: number): void {
-    const before = this.totals.get(panelId)?.files ?? 0;
-    this.totals.set(panelId, totals);
+  chatChanged(chatKey: string, totals: ChatChangeTotals, generation: number): void {
+    const before = this.totals.get(chatKey)?.files ?? 0;
+    this.totals.set(chatKey, totals);
     if ((before > 0) !== (totals.files > 0)) this.deps.menuChanged();
-    const reviewId = this.reviewIdOf(panelId);
+    const reviewId = this.reviewIdOf(chatKey);
     const review = reviewId !== undefined ? this.reviews.get(reviewId) : undefined;
     if (reviewId !== undefined && review && review.generation !== generation) void this.refresh(reviewId);
   }
 
   /** Other chats joined or left the chat's worktree: its open review tab reads the count again. */
-  sharingChanged(panelId: string): void {
-    const reviewId = this.reviewIdOf(panelId);
+  sharingChanged(chatKey: string): void {
+    const reviewId = this.reviewIdOf(chatKey);
     if (reviewId !== undefined) void this.refresh(reviewId);
   }
 
   /** The chat changed files (Chat: Review Changes is enabled). */
-  hasChanges(panelId: string | undefined): boolean {
-    return panelId !== undefined && (this.totals.get(panelId)?.files ?? 0) > 0;
+  hasChanges(chatKey: string | undefined): boolean {
+    return chatKey !== undefined && (this.totals.get(chatKey)?.files ?? 0) > 0;
   }
 
   /** A chat closed: its review tab closes; its drafts stay for the run under its session. */
-  async panelClosed(panelId: string): Promise<void> {
-    this.totals.delete(panelId);
-    const reviewId = this.reviewIdOf(panelId);
+  async panelClosed(chatKey: string): Promise<void> {
+    this.totals.delete(chatKey);
+    const reviewId = this.reviewIdOf(chatKey);
     if (reviewId === undefined) return;
     this.reviews.delete(reviewId);
     await this.deps.editorPane().closeReview(reviewId);
@@ -135,7 +135,7 @@ export class ChatReviewHost {
     const request = parseReviewFileDiff(raw);
     if (!request) throw new Error('Malformed review diff request from the shell');
     const review = this.reviews.get(request.reviewId);
-    const session = review ? this.deps.session(review.panelId) : undefined;
+    const session = review ? this.deps.session(review.chatKey) : undefined;
     if (!review || !session) return { kind: 'missing' };
     return session.chatReviewFileDiff(review.scope, request.path);
   }
@@ -155,15 +155,15 @@ export class ChatReviewHost {
     if (!request) throw new Error('Malformed review drafts from the shell');
     const review = this.reviews.get(request.reviewId);
     if (!review) return;
-    const key = this.draftKey(review.panelId);
+    const key = this.draftKey(review.chatKey);
     const held = [...(this.drafts.get(key) ?? [])];
-    const session = this.deps.session(review.panelId);
+    const session = this.deps.session(review.chatKey);
     const next = request.comments.map((comment): Draft => {
       const index = held.findIndex((draft) => !draft.failed && sameComment(draft.comment, comment));
       return index >= 0 ? held.splice(index, 1)[0]! : draftOf(session, comment);
     });
     this.drafts.set(key, next);
-    this.updateComments(request.reviewId, review.panelId);
+    this.updateComments(request.reviewId, review.chatKey);
     await this.markStale(request.reviewId);
   }
 
@@ -172,8 +172,8 @@ export class ChatReviewHost {
     if (!request) throw new Error('Malformed review request from the shell');
     const review = this.reviews.get(request.reviewId);
     if (!review) return;
-    this.drafts.delete(this.draftKey(review.panelId));
-    this.updateComments(request.reviewId, review.panelId);
+    this.drafts.delete(this.draftKey(review.chatKey));
+    this.updateComments(request.reviewId, review.chatKey);
     await this.markStale(request.reviewId);
   }
 
@@ -182,9 +182,9 @@ export class ChatReviewHost {
     const request = parseReviewRef(raw);
     if (!request) throw new Error('Malformed review request from the shell');
     const review = this.reviews.get(request.reviewId);
-    const session = review ? this.deps.session(review.panelId) : undefined;
+    const session = review ? this.deps.session(review.chatKey) : undefined;
     if (!review || !session) return { ok: false, reason: 'missing' };
-    const key = this.draftKey(review.panelId);
+    const key = this.draftKey(review.chatKey);
     // a draft whose anchor read failed reads it again; the revision check keeps that anchor to the diff the comment was made on
     const kept = (this.drafts.get(key) ?? []).map((draft) => (draft.failed ? draftOf(session, draft.comment) : draft));
     this.drafts.set(key, kept);
@@ -205,7 +205,7 @@ export class ChatReviewHost {
     // only the drafts that were sent go: a comment added while the send ran stays
     if (this.drafts.get(key) === kept) this.drafts.delete(key);
     else this.drafts.set(key, (this.drafts.get(key) ?? []).filter((draft) => !kept.includes(draft)));
-    this.updateComments(request.reviewId, review.panelId);
+    this.updateComments(request.reviewId, review.chatKey);
     return { ok: true };
   }
 
@@ -235,10 +235,10 @@ export class ChatReviewHost {
    */
   private async markStale(reviewId: string): Promise<void> {
     const review = this.reviews.get(reviewId);
-    const session = review ? this.deps.session(review.panelId) : undefined;
+    const session = review ? this.deps.session(review.chatKey) : undefined;
     if (!review || !session) return;
     const mark = ++review.marks;
-    const kept = this.drafts.get(this.draftKey(review.panelId)) ?? [];
+    const kept = this.drafts.get(this.draftKey(review.chatKey)) ?? [];
     const anchored = (await Promise.allSettled(kept.map((draft) => draft.anchor))).flatMap((anchor, index) =>
       anchor.status === 'fulfilled' ? [{ draft: kept[index]!, checked: { ...kept[index]!.comment, anchor: anchor.value } }] : []);
     let stale: readonly DraftComment[];
@@ -255,8 +255,8 @@ export class ChatReviewHost {
     if (tab) this.deps.editorPane().updateReview({ ...tab, staleComments });
   }
 
-  private reviewIdOf(panelId: string): string | undefined {
-    for (const [reviewId, review] of this.reviews) if (review.panelId === panelId) return reviewId;
+  private reviewIdOf(chatKey: string): string | undefined {
+    for (const [reviewId, review] of this.reviews) if (review.chatKey === chatKey) return reviewId;
     return undefined;
   }
 
@@ -264,16 +264,16 @@ export class ChatReviewHost {
     return this.deps.editorPane().reviewTabs().some((tab) => tab.reviewId === reviewId);
   }
 
-  private draftKey(panelId: string): string {
-    return this.deps.sessionId(panelId) ?? panelId;
+  private draftKey(chatKey: string): string {
+    return this.deps.sessionId(chatKey) ?? chatKey;
   }
 
-  private commentsOf(panelId: string): ChatReviewComment[] {
-    return (this.drafts.get(this.draftKey(panelId)) ?? []).map((draft) => draft.comment);
+  private commentsOf(chatKey: string): ChatReviewComment[] {
+    return (this.drafts.get(this.draftKey(chatKey)) ?? []).map((draft) => draft.comment);
   }
 
-  private tabOf(reviewId: string, panelId: string, scope: ChatScope, snapshot: ChatReviewSnapshot): ChatReviewTab {
-    const title = this.deps.title(panelId);
+  private tabOf(reviewId: string, chatKey: string, scope: ChatScope, snapshot: ChatReviewSnapshot): ChatReviewTab {
+    const title = this.deps.title(chatKey);
     return {
       reviewId,
       title: this.deps.t('Changes: {0}', title === '' ? this.deps.t('New chat') : title),
@@ -289,8 +289,8 @@ export class ChatReviewHost {
         commentable: isCommentable(file),
       })),
       shellChangesNotListed: snapshot.shellChangesNotListed,
-      draftsKey: this.draftKey(panelId),
-      comments: this.commentsOf(panelId),
+      draftsKey: this.draftKey(chatKey),
+      comments: this.commentsOf(chatKey),
       staleComments: this.reviewTabOf(reviewId)?.staleComments ?? [],
       ...(snapshot.sharedWith !== undefined && snapshot.sharedWith > 0 ? { sharedWith: snapshot.sharedWith } : {}),
     };
@@ -298,7 +298,7 @@ export class ChatReviewHost {
 
   private async refresh(reviewId: string): Promise<void> {
     const review = this.reviews.get(reviewId);
-    const session = review ? this.deps.session(review.panelId) : undefined;
+    const session = review ? this.deps.session(review.chatKey) : undefined;
     if (!review || !session) return;
     await this.read(reviewId, review, session, { focus: false, fresh: false });
   }
@@ -318,10 +318,10 @@ export class ChatReviewHost {
     const open = this.isOpen(reviewId);
     if (opts.focus || !open) {
       // a later read that already filled the tab is kept, and the open only focuses it
-      const tab = current || !open ? this.tabOf(reviewId, review.panelId, scope, snapshot) : pane.reviewTabs().find((candidate) => candidate.reviewId === reviewId)!;
+      const tab = current || !open ? this.tabOf(reviewId, review.chatKey, scope, snapshot) : pane.reviewTabs().find((candidate) => candidate.reviewId === reviewId)!;
       pane.showReview(tab, { focus: opts.focus });
     } else if (current) {
-      pane.updateReview(this.tabOf(reviewId, review.panelId, scope, snapshot));
+      pane.updateReview(this.tabOf(reviewId, review.chatKey, scope, snapshot));
     }
     // A tab opened again shows marks for drafts kept while it was closed, so every read that reaches the tab marks it.
     if (current || opts.focus || !open) await this.markStale(reviewId);
@@ -331,8 +331,8 @@ export class ChatReviewHost {
     return this.deps.editorPane().reviewTabs().find((candidate) => candidate.reviewId === reviewId);
   }
 
-  private updateComments(reviewId: string, panelId: string): void {
+  private updateComments(reviewId: string, chatKey: string): void {
     const tab = this.deps.editorPane().reviewTabs().find((candidate) => candidate.reviewId === reviewId);
-    if (tab) this.deps.editorPane().updateReview({ ...tab, draftsKey: this.draftKey(panelId), comments: this.commentsOf(panelId) });
+    if (tab) this.deps.editorPane().updateReview({ ...tab, draftsKey: this.draftKey(chatKey), comments: this.commentsOf(chatKey) });
   }
 }

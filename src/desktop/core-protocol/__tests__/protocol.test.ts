@@ -101,10 +101,10 @@ describe('the endpoint', () => {
   it('delivers mirror deltas in version order', () => {
     const { main, core } = pair();
     const patches: unknown[] = [];
-    core.onMirror('theme', (patch) => patches.push(patch));
-    main.publish('theme', { css: 'a' });
-    main.publish('theme', { css: 'b' });
-    expect(patches).toEqual([{ css: 'a' }, { css: 'b' }]);
+    core.onMirror('language', (patch) => patches.push(patch));
+    main.publish('language', { language: 'en' });
+    main.publish('language', { language: 'el' });
+    expect(patches).toEqual([{ language: 'en' }, { language: 'el' }]);
   });
 
   it('sends a delta before the reply that depends on it', async () => {
@@ -157,7 +157,7 @@ describe('a protocol violation', () => {
 
   it('includes a skipped mirror version', () => {
     const { transports } = pair();
-    expect(() => transports.main.post({ kind: 'mirror', topic: 'theme', version: 2, patch: { css: '' } })).toThrow(/expected v1/);
+    expect(() => transports.main.post({ kind: 'mirror', topic: 'language', version: 2, patch: { language: 'en' } })).toThrow(/expected v1/);
   });
 
   it('includes a result outside the contract, which also rejects the call', async () => {

@@ -45,13 +45,15 @@ const HEAD_REFS = { head: { id: 'refs/heads/main', name: 'main', revision: HASH_
 const PAIR: CommitPairDiff = { left: HASH_A, entries: [{ change: { path: 'src/a.ts', status: 'MODIFIED', letter: 'M', tone: 'modified', strike: false }, right: HASH_B }] };
 
 // confinedEntry fails as fs.realpath does for a path whose folder is gone
-function fakeRepo(root: string, repoStatus: RepositoryStatus = status, show: Repository['show'] = async () => Buffer.from('index text'), gone: readonly string[] = []): Repository {
+function fakeRepo(root: string, repoStatus: RepositoryStatus = status, show: Repository['show'] = async () => Buffer.from('index text'), gone: readonly string[] = [], authority = 'local', answers?: (relative: string) => string): Repository {
   return {
     root,
+    authority,
     // main composes no git argv: every git call it needs is core's
     read: async (args: readonly string[]) => Promise.reject(new Error(`main ran git ${args.join(' ')}`)),
     lastStatus: repoStatus,
     confinedEntry: async (relative: string) => {
+      if (answers) return answers(relative);
       if (gone.some((folder) => relative.startsWith(`${folder}/`))) throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${relative}'`), { code: 'ENOENT' });
       return path.join(root, ...relative.split('/'));
     },
@@ -108,6 +110,8 @@ interface SetupOptions {
   // HEAD's refs core reads, and what its cherry-pick answers
   headRefs?: Awaited<ReturnType<ScmService['headRefs']>>;
   cherryPick?: 'ok' | 'conflict' | 'empty' | Error;
+  // repo-1 published by a remote core, whose confinedEntry answers what the target chooses
+  remote?: { readonly authority: string; readonly answers: (relative: string) => string };
 }
 
 function setup(overrides: SetupOptions = {}) {
@@ -119,7 +123,7 @@ function setup(overrides: SetupOptions = {}) {
     unsafe: [],
     parents: [],
   };
-  const repos = new Map([['repo-1', fakeRepo(projectPath, overrides.status, overrides.show, overrides.gone)], ['repo-2', fakeRepo(nestedRoot)]]);
+  const repos = new Map([['repo-1', fakeRepo(projectPath, overrides.status, overrides.show, overrides.gone, overrides.remote?.authority, overrides.remote?.answers)], ['repo-2', fakeRepo(nestedRoot)]]);
   const coreListeners: Array<(event: ScmEvent) => void> = [];
   const checkouts = [...(overrides.checkouts ?? [])];
   const deletes = [...(overrides.deletes ?? [])];
@@ -246,8 +250,13 @@ function setup(overrides: SetupOptions = {}) {
     notices.push({ severity, message, actions });
     return undefined;
   };
+  const revealed: string[] = [];
+  const mentioned: unknown[] = [];
   const host = new ScmHost({
     service,
+    // the target's project: /srv/app on a POSIX host
+    remoteFileRef: (authority, targetPath) => (authority === 'ssh+h1' && targetPath.startsWith('/srv/app/') && !targetPath.includes('..') ? { projectKey: 'ssh+h1|/srv/app', relativePath: targetPath.slice('/srv/app/'.length) } : undefined),
+    hostName: () => 'prod-1',
     documents: { get: () => undefined, all: () => [] } as unknown as DocumentService,
     settings: {
       get: (key: string) => {
@@ -267,7 +276,7 @@ function setup(overrides: SetupOptions = {}) {
     t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)])),
     showGitLog: () => undefined,
     copy: async (text) => void copied.push(text),
-    reveal: async () => undefined,
+    reveal: async (absolute) => void revealed.push(absolute),
     openExternal: async () => undefined,
     pickFolder: async (defaultPath, title, buttonLabel) => {
       folderRequests.push({ defaultPath, ...(title !== undefined ? { title } : {}), ...(buttonLabel !== undefined ? { buttonLabel } : {}) });
@@ -304,7 +313,7 @@ function setup(overrides: SetupOptions = {}) {
       inputRequests.push(request);
       return inputs.shift();
     },
-    mention: async () => undefined,
+    mention: async (target) => void mentioned.push(target),
     addToChat: async (projectKey, attachment, prompt) => void chatAdds.push({ projectKey, attachment, prompt }),
     send: {
       view: (view) => void sent.views.push(view),
@@ -327,7 +336,7 @@ function setup(overrides: SetupOptions = {}) {
   const settingsChanged = (): void => {
     for (const listener of settingListeners) listener();
   };
-  return { host, saved, notices, copied, chatAdds, editorPane, service, questions, inputRequests, setInputs, commands, mainLog, repos, sent, emit, settingsChanged, menuChanges: () => menuChanges, folderRequests, added, selectedProjects, removedProjects, pickRequests, artifactsChanged, settingReads: () => settingReads };
+  return { host, revealed, mentioned, saved, notices, copied, chatAdds, editorPane, service, questions, inputRequests, setInputs, commands, mainLog, repos, sent, emit, settingsChanged, menuChanges: () => menuChanges, folderRequests, added, selectedProjects, removedProjects, pickRequests, artifactsChanged, settingReads: () => settingReads };
 }
 
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
@@ -700,7 +709,7 @@ describe('source control host: deleted, gone and linked', () => {
   it('opens a deleted change whose folder is gone as its HEAD side, and copies its path', async () => {
     const { host, editorPane, notices, copied } = setup({ status: withDeleted, gone: ['gone'] });
     expect(await host.run({ op: 'openChanges', repoId: 'repo-1', path: 'gone/x.ts', group: 'workingTree' })).toEqual({ ok: true });
-    expect(vi.mocked(editorPane.openReadOnly)).toHaveBeenCalledWith('x.ts (Deleted)', 'index text', 'x.ts');
+    expect(vi.mocked(editorPane.openReadOnly)).toHaveBeenCalledWith('x.ts (Deleted)', 'index text', 'x.ts', true);
     await host.copy({ repoId: 'repo-1', kind: 'path', value: 'gone/x.ts' });
     await host.copy({ repoId: 'repo-1', kind: 'relativePath', value: 'gone/x.ts' });
     expect(copied).toEqual([path.join(projectPath, 'gone', 'x.ts'), ['gone', 'x.ts'].join(path.sep)]);
@@ -766,7 +775,7 @@ describe('source control host: sides, palette and pushes', () => {
 
     const bom = setup({ status: indexed, show: async () => Buffer.from([0xef, 0xbb, 0xbf, 0x68, 0x69]) });
     await bom.host.run({ op: 'openChanges', repoId: 'repo-1', path: 'src/staged.ts', group: 'index' });
-    expect(vi.mocked(bom.editorPane.openReadOnly)).toHaveBeenCalledWith('staged.ts (Index)', 'hi', 'staged.ts');
+    expect(vi.mocked(bom.editorPane.openReadOnly)).toHaveBeenCalledWith('staged.ts (Index)', 'hi', 'staged.ts', true);
   });
 
   it('opens every working tree change but deleted ones and submodules in one background open', async () => {
@@ -2074,5 +2083,75 @@ describe('source control host: repository text in questions and notices', () => 
     const text = shown(h);
     expect(text).toContain('\\u{202E}');
     expect(text).not.toContain(R);
+  });
+});
+
+describe('source control host: a remote repository', () => {
+  const remote = (answer: string) => ({ remote: { authority: 'ssh+h1', answers: () => answer } });
+
+  it('opens and mentions a remote change only as a file of that host\'s projects, through the editor\'s project path', async () => {
+    const { host, editorPane, mentioned } = setup(remote('/srv/app/src/a.ts'));
+    await host.runRequest({ op: 'openFile', repoId: 'repo-1', path: 'src/a.ts' });
+    expect(editorPane.openFromUser).toHaveBeenCalledWith('ssh+h1|/srv/app', 'src/a.ts');
+    await host.runRequest({ op: 'mention', repoId: 'repo-1', path: 'src/a.ts' });
+    expect(mentioned).toEqual([{ projectKey: 'ssh+h1|/srv/app', relativePath: 'src/a.ts' }]);
+    expect(editorPane.openPath).not.toHaveBeenCalled();
+  });
+
+  it('names a remote change the editor could not open in the user\'s language', async () => {
+    const { host, editorPane, notices } = setup(remote('/srv/app/src/a.ts'));
+    Object.assign(host.deps, { t: (message: string, ...args: string[]) => `«${message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]))}»` });
+    vi.mocked(editorPane.openFromUser).mockResolvedValueOnce({ ok: false, reason: 'missing' } as never);
+    await host.runRequest({ op: 'openFile', repoId: 'repo-1', path: 'src/a.ts' });
+    expect(notices.at(-1)).toMatchObject({ severity: 'error', message: '«a.ts could not be opened.»' });
+  });
+
+  it('refuses a path the target answers outside its projects: this computer\'s file, a UNC path, another authority\'s', async () => {
+    for (const answer of [path.resolve('/home/me/.ssh/id_rsa'), '\\\\attacker\\share\\x', '/srv/other/a.ts', '/srv/app/../../etc/passwd']) {
+      const { host, editorPane, mentioned, revealed } = setup(remote(answer));
+      await expect(host.runRequest({ op: 'openFile', repoId: 'repo-1', path: 'src/a.ts' })).resolves.not.toEqual({ ok: true });
+      await host.runRequest({ op: 'mention', repoId: 'repo-1', path: 'src/a.ts' });
+      await host.runRequest({ op: 'reveal', repoId: 'repo-1', path: 'src/a.ts' });
+      expect(editorPane.openFromUser).not.toHaveBeenCalled();
+      expect(editorPane.openPath).not.toHaveBeenCalled();
+      expect(mentioned).toEqual([]);
+      expect(revealed).toEqual([]);
+    }
+    const { host } = setup({ remote: { authority: 'ssh+other', answers: () => '/srv/app/src/a.ts' } });
+    await expect(host.runRequest({ op: 'openFile', repoId: 'repo-1', path: 'src/a.ts' })).resolves.not.toEqual({ ok: true });
+  });
+
+  it('never shows a remote repository\'s path in the file manager, opens no diff of it and matches none of this computer\'s buffers', async () => {
+    const { host, editorPane, revealed, service } = setup({ ...remote('/srv/app/src/a.ts'), dirty: [path.join(projectPath, 'a.ts')] });
+    await host.runRequest({ op: 'reveal', repoId: 'repo-1', path: 'src/a.ts' });
+    expect(revealed).toEqual([]);
+    await expect(host.openChanges('repo-1', 'a.ts', 'workingTree')).rejects.toThrow('not available on prod-1 yet');
+    await expect(host.openAllChanges('repo-1')).rejects.toThrow('not available on prod-1 yet');
+    await expect(host.quickDiffBase({ repoId: 'repo-1', path: 'a.ts' })).rejects.toThrow('not available on prod-1 yet');
+    await expect(host.mergeInputs({ repoId: 'repo-1', path: 'a.ts' })).rejects.toThrow('not available on prod-1 yet');
+    expect(editorPane.showDiff).not.toHaveBeenCalled();
+    // a commit saves no local buffer under the target's root
+    await host.commit({ repoId: 'repo-1', message: 'm', variant: PLAIN });
+    expect(editorPane.saveDocuments).not.toHaveBeenCalled();
+    expect(service.commit).toHaveBeenCalled();
+  });
+});
+
+describe('source control host: a remote project', () => {
+  it('opens no repository of it through this computer\'s folder picker', async () => {
+    const h = setup({ folder: '/srv/app/lib' });
+    Object.assign(h.host.deps, { projects: () => [{ key: 'ssh+h1|/srv/app', fsPath: '/srv/app', name: 'app' }] });
+    await expect(h.host.openRepository('ssh+h1|/srv/app')).rejects.toThrow('not available on prod-1 yet');
+    expect(h.folderRequests).toEqual([]);
+  });
+});
+
+describe('source control host: a remote repository\'s worktrees', () => {
+  it('creates and deletes no worktree of a remote repository, whose paths would land in this computer\'s records', async () => {
+    const { host, service } = setup({ remote: { authority: 'ssh+h1', answers: () => '/srv/app/a.ts' } });
+    expect(await host.runRequest({ op: 'createWorktree', repoId: 'repo-1' })).not.toEqual({ ok: true });
+    expect(await host.runRequest({ op: 'deleteWorktree', repoId: 'repo-1' })).not.toEqual({ ok: true });
+    expect(service.addWorktree).not.toHaveBeenCalled();
+    expect(service.removeWorktree).not.toHaveBeenCalled();
   });
 });

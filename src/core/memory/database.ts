@@ -1,8 +1,10 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import { sqliteJournalMode } from '../network-fs';
 import { DatabaseSync } from 'node:sqlite';
 import { log } from '../logger';
+import { localOnly } from './local-only';
 import type { DatabaseInstance, PreparedStatement, RunResult } from './types';
 
 type NodeDatabaseSync = InstanceType<typeof DatabaseSync>;
@@ -371,8 +373,8 @@ function getLegacyV2Path(): string {
   return path.join(os.homedir(), '.damocles', 'memory.v2.db');
 }
 
-function applyPragmas(raw: NodeDatabaseSync): void {
-  raw.exec('PRAGMA journal_mode = WAL');
+function applyPragmas(raw: NodeDatabaseSync, dbPath: string): void {
+  raw.exec(`PRAGMA journal_mode = ${sqliteJournalMode(dbPath)}`);
   raw.exec('PRAGMA synchronous = NORMAL');
   raw.exec('PRAGMA busy_timeout = 5000');
   raw.exec('PRAGMA foreign_keys = ON');
@@ -422,7 +424,7 @@ export function openAndMigrate(dbPath: string, options?: OpenDatabaseOptions): {
       log(`[Memory] ${dbPath} has a newer schema than this build (v${CURRENT_VERSION}); opening it read only`);
       return { db: createWrapper(new DatabaseSync(dbPath, { readOnly: true, timeout: 5000 }), options?.onPersistFailure), readOnly: true };
     }
-    applyPragmas(raw);
+    applyPragmas(raw, dbPath);
     const wrapped = createWrapper(raw, options?.onPersistFailure);
     runMigrations(wrapped);
     return { db: wrapped, readOnly: false };
@@ -591,13 +593,13 @@ export function getUnexpandedMemoryRows(
     return db
       .prepare(
         `SELECT id, updated_at FROM memories
-          WHERE search_terms = '[]'
+          WHERE search_terms = '[]'${localOnly()}
             AND (updated_at < ? OR (updated_at = ? AND id < ?))
           ORDER BY updated_at DESC, id DESC LIMIT ?`,
       )
       .all(after.updated_at, after.updated_at, after.id, limit) as UnexpandedRow[];
   }
   return db
-    .prepare("SELECT id, updated_at FROM memories WHERE search_terms = '[]' ORDER BY updated_at DESC, id DESC LIMIT ?")
+    .prepare(`SELECT id, updated_at FROM memories WHERE search_terms = '[]'${localOnly()} ORDER BY updated_at DESC, id DESC LIMIT ?`)
     .all(limit) as UnexpandedRow[];
 }

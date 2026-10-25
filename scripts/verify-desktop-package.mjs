@@ -5,16 +5,20 @@ import { dirname, join, posix, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FuseState, FuseV1Options, getCurrentFuseWire } from '@electron/fuses';
 import { ASAR_UNPACK, asarUnpackFor } from '../src/desktop/main/platform/unpacked-assets.ts';
+import { parseServerManifest } from '../src/desktop/main/remote/server-manifest-format.ts';
 import { asarFiles, readAsarFile, readAsarHeader } from './asar-archive.mjs';
+import { serverManifest } from './build-server.mjs';
 import { isEntryPoint } from './entry-point.mjs';
+import { SERVER_TARGETS } from './server-targets.mjs';
 
 // Checks one electron-builder output (the unpacked app directory, or the .app on macOS) for everything the
 // packaged desktop app loads from disk, and reads the fuse wire back from its binary.
 
-const USAGE = `Usage: node scripts/verify-desktop-package.mjs --platform <win32|darwin|linux> --arch <x64|arm64> --app <dir or .app>
+const USAGE = `Usage: node scripts/verify-desktop-package.mjs --platform <win32|darwin|linux> --arch <x64|arm64> --app <dir or .app> [--server-packages <dir>]
 
-  --app   win32: dist-desktop/win-unpacked (or win-arm64-unpacked); linux: dist-desktop/linux-unpacked
-          (or linux-arm64-unpacked); darwin: dist-desktop/mac-arm64/Damocles.app`;
+  --app              win32: dist-desktop/win-unpacked (or win-arm64-unpacked); linux: dist-desktop/linux-unpacked
+                     (or linux-arm64-unpacked); darwin: dist-desktop/mac-arm64/Damocles.app
+  --server-packages  the release's eight server packages, which the app's server manifest must name exactly`;
 
 // Must equal electronFuses in electron-builder.yml; see docs/invariants.md "Desktop packaging and updates". Every other fuse the wire carries is reported, and one this script does not know fails.
 export const EXPECTED_FUSES = {
@@ -39,8 +43,12 @@ const PACKED_NOTICES = ['LICENSE', 'THIRD-PARTY-NOTICES.md'];
 const RESOURCE_NOTICES = ['monaco-editor-ThirdPartyNotices.txt'];
 // Damocles Core's bundle: utilityProcess.fork loads it from inside app.asar, so it stays under asar integrity (coreHostEntryPath).
 export const CORE_HOST_BUNDLE = 'dist/core-host.js';
+// The loopback daemon is dev and e2e only: electron-builder never lists it.
+export const DAEMON_BUNDLE = 'dist/daemon.js';
 // Settings › About's What's new reads it (src/desktop/main/release-notes.ts); the desktop build copies it from the repo root.
 const PACKED_CHANGELOG = 'dist/desktop/CHANGELOG.md';
+// readServerManifest reads it beside main.js; package-desktop writes it from the release's server packages
+export const PACKED_SERVER_MANIFEST = 'dist/desktop/server-manifest.json';
 const LINUX_INSTALL_BINARY = '/opt/Damocles/damocles';
 // Packages and paths that must never ship inside app.asar: sources, tests, build tooling and desktop-irrelevant bundles.
 const FORBIDDEN_ASAR_PREFIXES = [
@@ -229,6 +237,26 @@ export function checkCoreHost(entries, unpackedFiles) {
   return [problems.length === 0 ? pass('core host', `${CORE_HOST_BUNDLE} is inside app.asar only`) : fail('core host', problems.join('; '))];
 }
 
+/** The packed server manifest parses as the app reads it, is for `version` and names exactly the packages of `expected`. */
+export function checkServerManifest(packed, version, expected) {
+  if (packed === undefined) return [fail('server manifest', `${PACKED_SERVER_MANIFEST} is not in app.asar`)];
+  const manifest = parseServerManifest(JSON.parse(packed));
+  if (manifest === undefined) return [fail('server manifest', `${PACKED_SERVER_MANIFEST} does not parse as the app reads it`)];
+  const same = (a, b) => a !== undefined && a.file === b.file && a.sha256 === b.sha256 && a.size === b.size;
+  const problems = [
+    ...(manifest.version === version ? [] : [`it is for ${manifest.version}, the app is ${version}`]),
+    ...(manifest.protocolVersion === expected.protocolVersion ? [] : [`it names protocol ${manifest.protocolVersion}, the build ${expected.protocolVersion}`]),
+    ...Object.entries(expected.packages).filter(([target, pkg]) => !same(manifest.packages[target], pkg)).map(([target, pkg]) => `${target} is not ${pkg.file} with its SHA-256 and size`),
+  ];
+  return [problems.length === 0 ? pass('server manifest', `names the ${Object.keys(expected.packages).length} release packages`) : fail('server manifest', problems.join('; '))];
+}
+
+/** The loopback daemon ships neither in app.asar nor beside it. */
+export function checkNoDaemon(entries, unpackedFiles) {
+  const found = [...entries.filter(({ path }) => path === DAEMON_BUNDLE).map(() => 'in app.asar'), ...(unpackedFiles.includes(DAEMON_BUNDLE) ? ['in app.asar.unpacked'] : [])];
+  return [found.length === 0 ? pass('loopback daemon', `${DAEMON_BUNDLE} does not ship`) : fail('loopback daemon', `${DAEMON_BUNDLE} ships ${found.join(' and ')}`)];
+}
+
 function listFiles(dir) {
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { recursive: true, withFileTypes: true })
@@ -337,8 +365,11 @@ function watcherPackage(platform, arch) {
   return `@parcel/watcher-${platform}-${arch}${platform === 'linux' ? '-glibc' : ''}`;
 }
 
-/** Runs every check on one packaged app; `readFuseWire` defaults to @electron/fuses reading the binary. */
-export async function verifyPackage({ platform, arch, app, repoRoot, readFuseWire = getCurrentFuseWire, codesign = codesignVerify }) {
+/**
+ * Runs every check on one packaged app; `readFuseWire` defaults to @electron/fuses reading the binary. With `serverPackages`,
+ * the folder of the release's server packages, the app's server manifest must name them.
+ */
+export async function verifyPackage({ platform, arch, app, repoRoot, serverPackages, readFuseWire = getCurrentFuseWire, codesign = codesignVerify }) {
   const { binary, fuseTarget, resources } = layoutFor(platform, app);
   const asarPath = join(resources, 'app.asar');
   const unpacked = join(resources, 'app.asar.unpacked');
@@ -371,10 +402,16 @@ export async function verifyPackage({ platform, arch, app, repoRoot, readFuseWir
   const changelogEntry = entries.find(({ path, entry }) => path === PACKED_CHANGELOG && !entry.unpacked);
   const packedChangelog = changelogEntry === undefined ? undefined : readAsarFile(asarPath, dataOffset, changelogEntry.entry);
   results.push(...checkChangelog(packedChangelog, readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf8'), repoVersion, process.env.GITHUB_REF_TYPE === 'tag'));
+  if (serverPackages !== undefined) {
+    const manifestFile = entries.find(({ path, entry }) => path === PACKED_SERVER_MANIFEST && !entry.unpacked);
+    const packed = manifestFile === undefined ? undefined : readAsarFile(asarPath, dataOffset, manifestFile.entry);
+    results.push(...checkServerManifest(packed, repoVersion, serverManifest(serverPackages, repoVersion, Object.keys(SERVER_TARGETS))));
+  }
 
   const unpackedFiles = listFiles(unpacked);
   results.push(...checkUnpackedSet(unpackedFiles, asarUnpackFor(platform)));
   results.push(...checkCoreHost(entries, unpackedFiles));
+  results.push(...checkNoDaemon(entries, unpackedFiles));
   const unpackedScripts = unpackedFiles.filter((file) => /\.(c|m)?js$/.test(file));
   results.push(pass('unpacked scripts (outside asar integrity)', unpackedScripts.join(', ')));
 
@@ -465,7 +502,8 @@ async function main(argv) {
     return 2;
   }
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-  const results = await verifyPackage({ platform, arch, app, repoRoot });
+  const serverPackages = readArg(argv, 'server-packages');
+  const results = await verifyPackage({ platform, arch, app, repoRoot, ...(serverPackages !== undefined ? { serverPackages } : {}) });
   for (const result of results) console.log(`${result.ok ? 'PASS' : 'FAIL'}  ${result.check}  ${result.detail}`);
   const failed = results.filter((result) => !result.ok).length;
   console.log(failed === 0 ? `\nOK  ${platform}-${arch}  ${results.length} checks passed` : `\nFAILED  ${platform}-${arch}  ${failed} of ${results.length} checks failed`);

@@ -2,6 +2,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { testWorkspaces } from './test-workspaces';
+import { folderKey } from '../../../core/workspace-folders/folder-key';
 
 const H = vi.hoisted(() => ({ trail: [] as string[], folderState: 'worktree' as 'worktree' | 'leftover' | 'gone', removeError: undefined as Error | undefined, applyOutcome: undefined as unknown, uncommitted: [] as Array<{ path: string; letter: string }>, unmerged: [] as Array<{ hash: string; subject: string }>, contained: false }));
 vi.mock('electron', () => ({ WebContentsView: vi.fn(), nativeTheme: { shouldUseDarkColors: true, on: vi.fn(), off: vi.fn() }, protocol: {}, dialog: { showMessageBox: vi.fn() } }));
@@ -44,6 +46,7 @@ import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { DocumentService, type TextDocument } from '../documents/document-service';
 import { EditorPane } from '../editor-pane';
 import { closeWorktreeRoot, type CloseWorktreeDeps } from '../worktrees/close-worktree';
+import { LOCAL_PROJECT_KEYS } from '../remote/remote-project-keys';
 
 const PROJECT = process.platform === 'win32' ? 'C:\\work\\alpha' : '/work/alpha';
 const KEY = process.platform === 'win32' ? PROJECT.toLowerCase() : PROJECT;
@@ -85,7 +88,7 @@ function controller(overrides: Partial<WorktreeControllerDeps> & { readonly regi
   const holds = createFinishHolds();
   const call = coreCalls(registry, holds);
   const engine = worktreeEngine(call);
-  roots = new WorktreeRoots({ projects: () => [{ key: KEY, fsPath: PROJECT, name: 'alpha' }], registry: () => registry });
+  roots = new WorktreeRoots({ projects: () => [{ key: KEY, fsPath: PROJECT, name: 'alpha' }], registry: () => registry, osOf: () => process.platform });
   const askDialog = (async (dialog: unknown) => {
     dialogs.push(dialog);
     H.trail.push(`dialog:${(dialog as { dialog: string }).dialog}`);
@@ -96,6 +99,8 @@ function controller(overrides: Partial<WorktreeControllerDeps> & { readonly regi
     return undefined;
   };
   return new WorktreeController({
+    authority: 'local',
+    projectKeyOf: (projectPath) => folderKey(projectPath),
     records: registry as unknown as WorktreeRecordReader,
     engine,
     roots,
@@ -418,7 +423,7 @@ describe('WorktreeController', () => {
     const holds = createFinishHolds();
     const { main, core } = createLoopback();
     const mainEndpoint = createMainEndpoint(main, () => undefined);
-    const client = new CoreClient(mainEndpoint, (_view, attach) => attach());
+    const client = new CoreClient(mainEndpoint, (_view, attach) => attach(), LOCAL_PROJECT_KEYS);
     const endpoint = createCoreEndpoint(core, () => undefined);
     const call = coreCalls(recordRegistry(), holds);
     let given: string | undefined;
@@ -611,8 +616,9 @@ describe('Delete with a dirty editor tab of the worktree', () => {
     fs.writeFileSync(path.join(folder, 'b.ts'), 'disk');
     let worktrees!: WorktreeController;
     const documents = new DocumentService({
+      authorityOs: () => process.platform,
       projects: () => roots.all(),
-      watchers: platform.fileWatchers,
+      workspaces: testWorkspaces({ watchers: platform.fileWatchers }),
       ask,
       t,
       log: () => undefined,
@@ -621,6 +627,7 @@ describe('Delete with a dirty editor tab of the worktree', () => {
       settings: { locate: () => undefined, save: async () => ({ ok: false, error: 'unused', conflict: false }) },
     });
     const pane: EditorPane = new EditorPane({
+      authorityOs: () => process.platform,
       documents,
       settings: platform.settings,
       ask,

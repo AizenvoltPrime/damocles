@@ -8,8 +8,11 @@ import type { PanelOptions } from '../../../platform/window-service';
 import { PANEL_CHANNELS } from '../../preload/panel-channels';
 import type { PanelStateStore } from '../panel-state-store';
 import { PanelViews, type DesktopPanel, type PagesHost } from '../views';
+import { ERROR_PAGE_STRINGS } from '../../../shared/panel-html';
+import type { BrowserPageStrings } from '../../../shared/browser-page-html';
 import { contentsOf, fakeStates, fakeWindow, viewOf } from './fake-views-electron';
 
+const BROWSER_STRINGS: BrowserPageStrings = { back: 'Back', forward: 'Forward', reload: 'Reload', pickElement: 'Pick', devTools: 'Tools', newTab: 'New Tab', urlPlaceholder: 'URL', notSecure: 'Not secure', notSecureDetail: 'Detail', waiting: 'Waiting' };
 const CHAT: PanelOptions = { kind: 'chat', title: 'Damocles', localResourceRoots: [] };
 
 function pageOptions(owner: unknown): PanelOptions {
@@ -41,6 +44,9 @@ function views(width = 1200): PanelViews {
   return new PanelViews({
     window: window as never,
     preloadPath: 'preload-panel.js',
+    resourceRoot: '/app',
+    pageStrings: () => ({ error: ERROR_PAGE_STRINGS, browser: BROWSER_STRINGS }),
+    hostLabel: () => undefined,
     states,
     pages,
     log: (line) => lines.push(line),
@@ -131,12 +137,55 @@ describe('PanelViews teardown', () => {
   });
 });
 
+// The CSPs main builds, pinned in src/shared/__tests__/panel-html.test.ts to core's at 6dd3c95d, with main's own parts.
+describe('PanelViews pages', () => {
+  const csp = (html: string | undefined): string => /http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(html ?? '')![1]!.replace(/'nonce-[^']+'/g, "'nonce-NONCE'");
+
+  it('builds the chat, error and browser pages itself, with a fresh nonce each time', () => {
+    const tabs = views();
+    const chat = open(tabs);
+    chat.showPage({ kind: 'chat' });
+    const first = tabs.htmlFor(chat.panelId);
+    expect(csp(first)).toBe("default-src 'none'; style-src app://damocles 'unsafe-inline'; script-src 'nonce-NONCE' 'wasm-unsafe-eval'; font-src app://damocles; img-src app://damocles data: https:; form-action 'none'; worker-src app://damocles/webview/assets/;");
+    chat.showPage({ kind: 'chat' });
+    expect(tabs.htmlFor(chat.panelId)).not.toBe(first);
+    chat.showPage({ kind: 'error' });
+    expect(csp(tabs.htmlFor(chat.panelId))).toBe("default-src 'none'; style-src 'unsafe-inline'; img-src app://damocles;");
+    const page = tabs.create({ options: pageOptions(chat) });
+    page.showPage({ kind: 'browser', toolbar: false });
+    expect(csp(tabs.htmlFor(page.panelId))).toBe("default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-NONCE';");
+  });
+
+  it('refuses a page of another panel kind, and loads no HTML a core produced', () => {
+    const tabs = views();
+    const chat = open(tabs);
+    const page = tabs.create({ options: pageOptions(chat) });
+    expect(() => chat.showPage({ kind: 'browser', toolbar: true })).toThrow('cannot show');
+    expect(() => page.showPage({ kind: 'chat' })).toThrow('cannot show');
+    expect(() => chat.showPage({ kind: 'script' } as never)).toThrow('cannot show');
+    expect(() => chat.setHtml()).toThrow('showPage');
+    expect(tabs.htmlFor(chat.panelId)).toBeUndefined();
+  });
+
+  it('keeps a remote chat out of panels.json and closes it as a detach while its authority is retained', () => {
+    const tabs = views();
+    const remote = tabs.create({ options: CHAT, restore: { panelId: 'remote-1', state: { sessionId: 's', panelToken: '6f1c2a9e-0d4b-4c1e-9a1f-1b2c3d4e5f60' } }, authority: 'loopback' });
+    expect(states.get('remote-1')).toBeUndefined();
+    expect(remote.panelToken).toBe('6f1c2a9e-0d4b-4c1e-9a1f-1b2c3d4e5f60');
+    expect(remote.closeReason).toBe('user');
+    tabs.retainAuthorityOnClose('loopback', true);
+    expect(remote.closeReason).toBe('detach');
+    expect(() => tabs.create({ options: CHAT, authority: 'loopback' })).toThrow('closing');
+    expect(tabs.create({ options: CHAT }).closeReason).toBe('user');
+  });
+});
+
 describe('PanelViews chats', () => {
   it('creates a chat hidden and unselected, and selects and focuses it only when shown', () => {
     const tabs = views();
     const first = open(tabs);
     const created = tabs.create({ options: CHAT, restore: { panelId: 'saved', state: { sessionId: 's' } } });
-    created.setHtml('<html></html>');
+    created.showPage({ kind: 'chat' });
     expect(tabs.selected()).toBe(first);
     expect(created.visible).toBe(false);
     expect(contentsOf(created).focus).not.toHaveBeenCalled();
@@ -153,23 +202,23 @@ describe('PanelViews chats', () => {
   it('focuses a chat shown before its page committed once it commits, unless focus went elsewhere first', () => {
     const tabs = views();
     const first = open(tabs);
-    first.setHtml('<html></html>');
+    first.showPage({ kind: 'chat' });
     const created = tabs.create({ options: CHAT });
     tabs.show(created.panelId, { focus: true });
     expect(contentsOf(created).focus).not.toHaveBeenCalled();
-    created.setHtml('<html></html>');
+    created.showPage({ kind: 'chat' });
     expect(contentsOf(created).focus).toHaveBeenCalledTimes(1);
 
     const unfocused = tabs.create({ options: CHAT });
     tabs.show(unfocused.panelId, { focus: true });
     tabs.focused(contentsOf(first));
-    unfocused.setHtml('<html></html>');
+    unfocused.showPage({ kind: 'chat' });
     expect(contentsOf(unfocused).focus).not.toHaveBeenCalled();
 
     const replaced = tabs.create({ options: CHAT });
     tabs.show(replaced.panelId, { focus: true });
     tabs.show(first.panelId, { focus: true });
-    replaced.setHtml('<html></html>');
+    replaced.showPage({ kind: 'chat' });
     expect(contentsOf(replaced).focus).not.toHaveBeenCalled();
     expect(tabs.selected()).toBe(first);
   });
@@ -181,13 +230,13 @@ describe('PanelViews chats', () => {
     tabs.show(activating.panelId, { focus: true });
     tabs.focused(window.webContents as never);
     window.emit('focus');
-    activating.setHtml('<html></html>');
+    activating.showPage({ kind: 'chat' });
     expect(contentsOf(activating).focus).toHaveBeenCalledTimes(1);
 
     const left = tabs.create({ options: CHAT });
     tabs.show(left.panelId, { focus: true });
     tabs.focused(window.webContents as never);
-    left.setHtml('<html></html>');
+    left.showPage({ kind: 'chat' });
     expect(contentsOf(left).focus).not.toHaveBeenCalled();
 
     window.emit('blur');
@@ -195,7 +244,7 @@ describe('PanelViews chats', () => {
     tabs.show(reactivating.panelId, { focus: true });
     tabs.focused(window.webContents as never);
     window.emit('focus');
-    reactivating.setHtml('<html></html>');
+    reactivating.showPage({ kind: 'chat' });
     expect(contentsOf(reactivating).focus).toHaveBeenCalledTimes(1);
   });
 
@@ -205,7 +254,7 @@ describe('PanelViews chats', () => {
     window.isFocused = () => false;
     const chat = tabs.create({ options: CHAT });
     tabs.show(chat.panelId, { focus: true });
-    chat.setHtml('<html></html>');
+    chat.showPage({ kind: 'chat' });
     expect(contentsOf(chat).focus).not.toHaveBeenCalled();
 
     window.isFocused = () => true;
@@ -222,7 +271,7 @@ describe('PanelViews chats', () => {
     tabs.show(chat.panelId, { focus: 'whenReady' });
     tabs.focused(contentsOf(other));
     expect(contentsOf(chat).focus).not.toHaveBeenCalled();
-    chat.setHtml('<html></html>');
+    chat.showPage({ kind: 'chat' });
     expect(contentsOf(chat).focus).toHaveBeenCalledTimes(1);
 
     window.emit('focus');
@@ -235,7 +284,7 @@ describe('PanelViews chats', () => {
     window.isFocused = () => false;
     const chat = tabs.create({ options: CHAT });
     tabs.show(chat.panelId, { focus: 'whenReady' });
-    chat.setHtml('<html></html>');
+    chat.showPage({ kind: 'chat' });
     expect(contentsOf(chat).focus).not.toHaveBeenCalled();
 
     window.isFocused = () => true;
@@ -249,7 +298,7 @@ describe('PanelViews chats', () => {
     window.isMinimized = () => true;
     const chat = tabs.create({ options: CHAT });
     tabs.show(chat.panelId, { focus: 'whenReady' });
-    chat.setHtml('<html></html>');
+    chat.showPage({ kind: 'chat' });
     window.emit('focus');
     expect(contentsOf(chat).focus).not.toHaveBeenCalled();
 
@@ -263,13 +312,13 @@ describe('PanelViews chats', () => {
     const chat = tabs.create({ options: CHAT });
     tabs.show(chat.panelId, { focus: 'whenReady' });
     tabs.userInput();
-    chat.setHtml('<html></html>');
+    chat.showPage({ kind: 'chat' });
     expect(contentsOf(chat).focus).not.toHaveBeenCalled();
 
     window.isFocused = () => false;
     const reopened = tabs.create({ options: CHAT });
     tabs.show(reopened.panelId, { focus: 'whenReady' });
-    reopened.setHtml('<html></html>');
+    reopened.showPage({ kind: 'chat' });
     tabs.userInput();
     window.isFocused = () => true;
     window.emit('focus');
@@ -283,12 +332,12 @@ describe('PanelViews chats', () => {
     const other = tabs.create({ options: CHAT });
     tabs.show(other.panelId, { focus: false });
     tabs.show(chat.panelId, { focus: false });
-    chat.setHtml('<html></html>');
+    chat.showPage({ kind: 'chat' });
     expect(contentsOf(chat).focus).not.toHaveBeenCalled();
 
     popupOpen = true;
     tabs.show(other.panelId, { focus: 'whenReady' });
-    other.setHtml('<html></html>');
+    other.showPage({ kind: 'chat' });
     popupOpen = false;
     window.emit('focus');
     expect(contentsOf(other).focus).not.toHaveBeenCalled();
@@ -296,7 +345,7 @@ describe('PanelViews chats', () => {
     const asked = tabs.create({ options: CHAT });
     tabs.show(asked.panelId, { focus: 'whenReady' });
     tabs.focusChat();
-    asked.setHtml('<html></html>');
+    asked.showPage({ kind: 'chat' });
     window.emit('focus');
     expect(contentsOf(asked).focus).toHaveBeenCalledTimes(1);
   });
@@ -338,7 +387,7 @@ describe('panel IPC', () => {
     const tabs = views();
     const panel = open(tabs);
     expect(H.webContentsOptions.every((options) => !Object.hasOwn(options as object, 'additionalArguments'))).toBe(true);
-    panel.setHtml('<html></html>');
+    panel.showPage({ kind: 'chat' });
     await Promise.resolve();
     const contents = contentsOf(panel);
     const received = vi.fn();
@@ -388,7 +437,7 @@ describe('renderer crashes', () => {
   it('reloads a crashed chat until the crash limit, then reports it once and can be restarted', async () => {
     const tabs = views();
     const panel = open(tabs);
-    panel.setHtml('<html></html>');
+    panel.showPage({ kind: 'chat' });
     const contents = contentsOf(panel);
     const crash = (): void => {
       contents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 });

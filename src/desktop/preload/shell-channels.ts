@@ -5,6 +5,7 @@ import type { NotificationBell } from './notifications';
 import type { SettingsSectionId } from '../../shared/settings-sections';
 import type { UpdateAction, UpdateSnapshot } from './updates';
 import type { SettingsFileScope } from '../../shared/types/messages';
+import type { AuthorityKind } from '../../shared/project-location';
 import type { SearchFileKey, SearchFileResult, SearchQuery, SearchRange, SearchSortOrder } from '../../shared/text-search';
 import type { DamoclesTerminalApi } from './terminal-channels';
 import type { DamoclesScmApi, ScmChangesTab } from './scm-channels';
@@ -242,11 +243,29 @@ export type ShellWindowState = 'normal' | 'maximized' | 'fullScreen';
 // waiting = the chat needs the user (requires_action)
 export type ChatStatus = 'running' | 'waiting' | 'idle';
 
+// How main reaches a project's authority; a local project is always connected.
+export const PROJECT_CONNECTIONS = ['connecting', 'connected', 'failed', 'offline'] as const;
+export type ProjectConnection = (typeof PROJECT_CONNECTIONS)[number];
+
+export interface ShellProjectAuthority {
+  readonly kind: AuthorityKind;
+  // the host store's id; absent for local and loopback projects
+  readonly hostId?: string;
+  // the host's name as the badge shows it
+  readonly name: string;
+  readonly color?: string;
+}
+
 export interface ShellProject {
   readonly key: string;
   readonly name: string;
+  // the folder as its authority names it
   readonly fsPath: string;
   readonly trusted: boolean;
+  readonly authority: ShellProjectAuthority;
+  // the OS the project's files are on
+  readonly platform: ShellPlatform;
+  readonly connection: ProjectConnection;
   // the project's branch from git's HEAD file (D42); undefined outside git
   readonly branch?: string;
   // a linked worktree opened as its own project (an adopted record): the name of the project holding its main worktree, or of
@@ -1221,6 +1240,14 @@ export interface ShellSidebarSettings {
   readonly alwaysShowHeaderActions: boolean;
 }
 
+// A remote host's engine: the daemon's core phase, or restarting while a Restart the user asked for is in flight.
+export interface ShellEngine {
+  readonly authority: string;
+  // the host's name as this computer names it
+  readonly name: string;
+  readonly state: 'starting' | 'running' | 'restarting' | 'halted';
+}
+
 export interface ShellState {
   // counts the states main gave this page; a chat list or search names the one its project key came from
   readonly revision: number;
@@ -1257,6 +1284,8 @@ export interface ShellState {
   readonly notifications: NotificationBell;
   // the engine stopped after its fourth crash in 5 minutes and waits for Restart Engine
   readonly engineHalted: boolean;
+  // each remote host's engine, the daemon's core as main last heard of it
+  readonly engines: readonly ShellEngine[];
   readonly search: ShellSearchSettings;
   readonly sidebar: ShellSidebarSettings;
 }
@@ -1311,7 +1340,8 @@ export interface DamoclesShellApi {
   openAppMenu(anchor: { readonly x: number; readonly y: number }): Promise<void>;
   toggleTheme(): Promise<void>;
   // a new engine replaces the halted or running one (the Restart Engine command)
-  restartEngine(): Promise<void>;
+  // authority names a remote host's engine; none restarts the local one
+  restartEngine(authority?: string): Promise<void>;
   toggleSidebar(): Promise<void>;
   // resolves once main showed the sidebar; the state that says so follows
   showSidebar(): Promise<void>;

@@ -5,6 +5,8 @@ export type SettingsScope = 'user' | 'project' | 'local';
 export interface SettingInspection<T> {
   readonly defaultValue?: T;
   readonly userValue?: T;
+  // a daemon's core only: the value in its host's ~/.damocles/settings.json, which overrides the user-scope value
+  readonly machineValue?: T;
   readonly projectValue?: T;
   // reported only where update(key, value, 'local') can write it, so a settings toggle may write where it reads
   readonly localValue?: T;

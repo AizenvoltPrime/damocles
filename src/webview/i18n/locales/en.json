@@ -74,7 +74,10 @@
     "yolo": {
       "tooltip": "YOLO mode. Approves every tool call automatically, except plan approval and questions.",
       "active": "YOLO",
-      "inactive": "YOLO"
+      "inactive": "YOLO",
+      "notAllowedOnHost": "Not allowed on {host}",
+      "refusedOnHost": "YOLO is off for your turns on {host}.",
+      "refused": "YOLO is off for your turns on this host."
     },
     "voice": {
       "startRecording": "Start voice recording",
@@ -413,10 +416,20 @@
       "projectDesc": "Shared with the team through git (.damocles/settings.json)",
       "global": "Global",
       "globalDesc": "All your projects (~/.damocles/settings.json)",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "allowOnHost": "Always allow on {host}",
+      "denyOnHost": "Always deny on {host}",
+      "onHostDesc": "Saved in {host}'s settings, so it applies to every device that uses {host}."
     },
     "sendToClaude": "Send to Damocles",
-    "ariaLabel": "Permission request"
+    "ariaLabel": "Permission request",
+    "onHost": {
+      "runCommand": "Run this command on {host}?",
+      "generateImage": "Generate an image and save it as this new file on {host}?",
+      "useTool": "Allow {tool} with this input on {host}?",
+      "allowCreate": "Allow creating this file on {host}?",
+      "allowEdit": "Allow this edit on {host}?"
+    }
   },
   "question": {
     "title": "Damocles has a question",
@@ -1698,6 +1711,10 @@
     "signIn": "Sign In",
     "sessionExpired": "Your Claude session needs to be renewed. Sign in to continue."
   },
+  "allowanceBanner": {
+    "title": "Claude requests here bill extra usage",
+    "message": "You chose your subscription's included allowance, but this host could not load the plugin that bills it, so this chat's Claude requests bill extra usage. Update Damocles on this host to restore the allowance."
+  },
   "openai": {
     "authRequiredToast": "Sign in to OpenAI to use this model.",
     "codexSessionExpired": "Session expired. Please sign in again.",
@@ -2343,6 +2360,7 @@
     "search": "Search settings",
     "clearSearch": "Clear search",
     "empty": "No settings match \"{q}\"",
+    "emptyScope": "Nothing on this page is saved in this scope. Change it on the User tab.",
     "editSettingsJson": "Edit settings.json",
     "close": "Close (Esc)",
     "back": "Back to all settings",
@@ -2955,7 +2973,11 @@
     "mentionList": "Files and agents to mention",
     "commandList": "Commands",
     "agentList": "Agents to steer",
-    "dropToMention": "Drop to mention in chat"
+    "dropToMention": "Drop to mention in chat",
+    "modelUnavailable": "Not reachable from {host}",
+    "modelUnavailableLoopback": "{endpoint} is on this computer, so {host} cannot reach it.",
+    "modelUnavailableHere": "Not reachable here",
+    "modelUnavailableLoopbackHere": "{endpoint} is on this computer, so this chat cannot reach it."
   },
   "emptyState": {
     "title": "What should we work on in {project}?",

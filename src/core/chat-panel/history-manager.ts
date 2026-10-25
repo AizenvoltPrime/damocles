@@ -4,7 +4,7 @@ import type { Result } from "../pi-session/checkpoints";
 import type { ChatSession } from "../chat-session";
 import type { PanelHost } from "../../platform/window-service";
 import { loadPiSessionHistory, getPiRewindHistory, getPiFileCheckpointContent, getPiSkippedFiles } from "../pi-session/session-store";
-import type { ModelReasonsLookup } from "../pi-session/session-store/history-loader";
+import { replayContext, replayLiveBranch, type ModelReasonsLookup, type ReplayContext } from "../pi-session/session-store/history-loader";
 
 export interface HistoryManagerConfig {
   postMessage: (host: PanelHost, message: ExtensionToWebviewMessage) => void;
@@ -51,6 +51,23 @@ export class HistoryManager {
     }
 
     return ctrl;
+  }
+
+  /** What a live replay reads asynchronously, loaded before the live conversation is captured. */
+  liveReplayContext(): Promise<ReplayContext> {
+    return replayContext(this.modelReasons?.());
+  }
+
+  /**
+   * A joining view's replay of the conversation `session` holds, from the branch `liveConversation` captured; posts go to
+   * `post`, never through the panel, whose own posts wait while the view joins.
+   */
+  async replayLive(context: ReplayContext, cwd: string, session: ChatSession, post: (message: ExtensionToWebviewMessage) => void, live: NonNullable<ReturnType<ChatSession["liveConversation"]>>): Promise<void> {
+    await replayLiveBranch(context, cwd, live.sessionId, live.sessionManager, live.branch, post, session.fileCheckpoints, live.snapshot.liveToolCallIds);
+    for (const message of live.snapshot.messages) post(message);
+    post({ type: "sessionStarted", sessionId: live.sessionId, stored: live.stored });
+    // The joining view's store has no account state, and the replay contract carries none.
+    session.publishAccountInfo();
   }
 
   /** Resolves to the session's rewindable user entry ids, read in the same pass as the replay, or null when its file was not read. */

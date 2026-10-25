@@ -33,7 +33,10 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
         ...(msg.updatedPermissions?.length ? { updatedPermissions: msg.updatedPermissions } : {}),
       });
       if (settled && msg.updatedPermissions?.length) {
-        const failures = await syncPermissionRulesToSettings(msg.updatedPermissions, settled.workspacePath);
+        const saving = syncPermissionRulesToSettings(msg.updatedPermissions, settled.workspacePath);
+        // before this handler yields: the approved call already runs, and its turn's next call must see the rule
+        ctx.permissionHandler.savingPermissionRules(saving);
+        const failures = await saving;
         for (const failure of failures) void platform.notifications.warn(failure);
       }
     },

@@ -93,7 +93,7 @@ vi.mock('../core-process', () => ({
 }));
 
 import { startDesktopCore, type CoreConnectionDeps } from '../bootstrap';
-import { createDesktopKeyValueState } from '../platform/key-value-state';
+import { createDesktopKeyValueState } from '../../local-services/key-value-state';
 import type { DesktopPlatform } from '../platform';
 import type { TrustStore } from '../trust-store';
 
@@ -111,10 +111,9 @@ function deps(closeTimeoutMs = 1_000, readyTimeoutMs = 60_000): CoreConnectionDe
   return {
     platform,
     trust: { trustedFolders: () => [], onDidGrant: () => ({ dispose: () => undefined }), requestTrust: async () => false } as unknown as TrustStore,
-    theme: { css: () => '', onDidChange: () => ({ dispose: () => undefined }) },
     terminalToggle: () => ({ shown: false, shortcut: 'Ctrl+`' }),
     resolveProxy: async () => 'DIRECT',
-    createView: (panelId, create) => Object.assign(main.window.createPanel(create) as FakePanelHost, { panelId, postJson: () => undefined }),
+    createView: (panelId, create) => Object.assign(main.window.createPanel(create) as FakePanelHost, { panelId, postJson: () => undefined, showPage: () => undefined, closeReason: 'user' as const }),
     git: { available: false, reason: 'no git' },
     e2eHooks: false,
     ...hostExtras(),

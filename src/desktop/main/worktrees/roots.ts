@@ -3,9 +3,10 @@
 // never a root.
 import type { ChatWorktreeRecord } from '../../../core/worktrees/registry';
 import type { WorktreeRecordReader } from './records';
-import { folderKey } from '../../../core/workspace-folders/folder-key';
+import { folderKeyOn } from '../../../core/workspace-folders/folder-key';
 import { parseRootKey, rootKey, type FolderRoot } from '../../preload/folder-root';
 import type { Project } from '../../local-services/confine';
+import { authorityKeyOfProject, targetFolderKeyOf } from '../../../shared/project-location';
 
 export interface RootProject extends Project {
   readonly root: FolderRoot;
@@ -14,9 +15,12 @@ export interface RootProject extends Project {
 }
 
 export interface WorktreeRootsDeps {
-  // the open projects, keyed by folderKey
+  // the open projects, local ones keyed by folderKey and remote ones by their remote key
   readonly projects: () => readonly Project[];
-  readonly registry: () => WorktreeRecordReader | undefined;
+  // the registry of the core that holds an authority's worktrees: this computer's, or a remote host's
+  readonly registry: (authority: string) => WorktreeRecordReader | undefined;
+  // the OS a project's paths are on: this computer's, or its remote host's
+  readonly osOf: (projectKey: string) => NodeJS.Platform;
 }
 
 export class WorktreeRoots {
@@ -39,11 +43,11 @@ export class WorktreeRoots {
     return record ? worktreeRoot(project, record) : undefined;
   }
 
-  /** The root of a live chat worktree of an open project. */
-  ofWorktree(worktreeId: string): RootProject | undefined {
-    const record = this.deps.registry()?.get(worktreeId);
+  /** The root of a live chat worktree of an open project of the authority whose core holds it. */
+  ofWorktree(worktreeId: string, authority: string = 'local'): RootProject | undefined {
+    const record = this.deps.registry(authority)?.get(worktreeId);
     if (record?.kind !== 'chat') return undefined;
-    const project = this.deps.projects().find((candidate) => candidate.key === folderKey(record.projectPath));
+    const project = this.deps.projects().find((candidate) => authorityKeyOfProject(candidate.key) === authority && this.holdsProject(candidate.key, record.projectPath));
     return project ? this.resolve(rootKey({ projectKey: project.key, worktreeId })) : undefined;
   }
 
@@ -54,12 +58,10 @@ export class WorktreeRoots {
 
   /** Every project folder, then every live chat worktree of the open projects. */
   all(): RootProject[] {
-    const projects = this.deps.projects();
     const roots = this.projectRoots();
-    const registry = this.deps.registry();
-    if (!registry) return roots;
-    for (const project of projects) {
-      for (const record of registry.liveChatRecords(project.fsPath)) {
+    // each project's worktrees come from its own host's registry, never from another's that names the same path
+    for (const project of this.deps.projects()) {
+      for (const record of this.deps.registry(authorityKeyOfProject(project.key))?.liveChatRecords(project.fsPath) ?? []) {
         if (!this.closing.has(record.id)) roots.push(worktreeRoot(project, record));
       }
     }
@@ -70,8 +72,8 @@ export class WorktreeRoots {
   branchOf(key: string): string | undefined {
     const root = parseRootKey(key);
     if (root?.worktreeId === undefined) return undefined;
-    const record = this.deps.registry()?.get(root.worktreeId);
-    return record?.kind === 'chat' && folderKey(record.projectPath) === root.projectKey ? record.branch : undefined;
+    const record = this.deps.registry(authorityKeyOfProject(root.projectKey))?.get(root.worktreeId);
+    return record?.kind === 'chat' && this.holdsProject(root.projectKey, record.projectPath) ? record.branch : undefined;
   }
 
   /** Closes the worktree's root for a delete; dispose reopens it when the delete failed and the worktree is still live. */
@@ -80,11 +82,16 @@ export class WorktreeRoots {
     return { dispose: () => this.closing.delete(worktreeId) };
   }
 
+  // A record names its project by the path on its own host; a remote key carries the folder key computed there.
+  private holdsProject(projectKey: string, projectPath: string): boolean {
+    return (targetFolderKeyOf(projectKey) ?? projectKey) === folderKeyOn(this.deps.osOf(projectKey), projectPath);
+  }
+
   private liveChat(worktreeId: string, projectKey: string): ChatWorktreeRecord | undefined {
     if (this.closing.has(worktreeId)) return undefined;
-    const record = this.deps.registry()?.get(worktreeId);
+    const record = this.deps.registry(authorityKeyOfProject(projectKey))?.get(worktreeId);
     if (record?.kind !== 'chat' || record.deletedAt !== undefined) return undefined;
-    return folderKey(record.projectPath) === projectKey ? record : undefined;
+    return this.holdsProject(projectKey, record.projectPath) ? record : undefined;
   }
 }
 

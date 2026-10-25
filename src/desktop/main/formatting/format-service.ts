@@ -1,8 +1,7 @@
-import { promises as fs } from 'node:fs';
 import { EDITOR_FORMAT_TIMEOUT_MS, type EditorFormatReason, type EditorFormatReply } from '../../preload/shell-channels';
-import { isInsideRealRoot, type Project } from '../../local-services/confine';
-import type { HostOutcome, HostRoot } from './formatter-hosts';
-import { isPrettierConfigured, nearestPrettierConfig, resolvePrettier, supportedMajor } from './prettier-resolve';
+import type { Project } from '../../local-services/confine';
+import { authorityKeyOfProject } from '../../../shared/project-location';
+import type { Workspaces } from '../workspace/workspaces';
 
 // Monaco's built-in formatters in the shell: the TypeScript worker for TS and JS, the JSON worker for JSON.
 const BUILTIN_LANGUAGES: ReadonlySet<string> = new Set(['typescript', 'javascript', 'json']);
@@ -30,10 +29,11 @@ export interface FormatServiceDeps {
   // the listed projects, read on every request
   readonly projects: () => readonly Project[];
   // read on every request: trust is checked when the request arrives and again right before Prettier runs
-  readonly isTrusted: (fsPath: string) => boolean;
-  readonly requestTrust: (fsPath: string) => void;
+  readonly isTrusted: (project: Project) => boolean;
+  readonly requestTrust: (project: Project) => void;
   readonly formatOnSave: () => boolean;
-  readonly hosts: { format(target: HostRoot, request: { readonly prettier: string; readonly config: string | null; readonly file: string; readonly text: string }): Promise<HostOutcome> };
+  // the formatter of the workspace holding each project, which resolves Prettier and runs its host
+  readonly workspaces: Workspaces;
   // a NotificationService notice, which never takes focus
   readonly notify: (severity: 'info' | 'warning', message: string, action?: FormatAction) => void;
   // the Format log sink; show opens it as a log tab (D36)
@@ -101,103 +101,80 @@ export class FormatService {
   private trustedProject(projectKey: string): Project | 'missing' | 'untrusted' {
     const project = this.projectOf(projectKey);
     if (!project) return 'missing';
-    return this.deps.isTrusted(project.fsPath) ? project : 'untrusted';
+    return this.deps.isTrusted(project) ? project : 'untrusted';
   }
 
   private async formatTrusted(project: Project, target: FormatTarget, text: string, reason: EditorFormatReason): Promise<EditorFormatReply> {
-    const realRoot = await fs.realpath(project.fsPath);
-    let realFile: string;
-    try {
-      realFile = await fs.realpath(target.path);
-    } catch (err) {
-      // A file deleted under its editor has no folder to resolve from; the save recreates it unformatted.
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'skipped' };
-      throw err;
-    }
-    if (!isInsideRealRoot(realRoot, realFile)) {
-      this.deps.log(`[format] refused to format ${target.path}: it is no longer inside ${project.fsPath}`);
-      return { kind: 'skipped' };
-    }
-    const nested = await this.untrustedProjectHolding(realRoot, project, realFile);
-    if (nested) {
-      this.untrustedNotice(nested, reason);
-      return { kind: 'skipped' };
-    }
-    const resolved = await resolvePrettier(realRoot, realFile);
-    if (resolved.kind === 'outside') {
-      this.notice(reason, project, `outside\n${resolved.packageDir}`, 'warning',
-        this.deps.t('Prettier was not run on {0}. The nearest Prettier is outside the project, at {1}. Add the folder that holds it as a project to use it.', target.name, resolved.packageDir));
-      this.logLine(project, target, `not formatted: the nearest Prettier is outside the project, at ${resolved.packageDir}`);
-      return { kind: 'skipped' };
-    }
-    if (resolved.kind === 'inside') {
-      const major = supportedMajor(resolved.version);
-      if (major === undefined) {
+    const formatter = this.deps.workspaces.forProject(project.key).format;
+    // Trust is per folder: a listed project nested in this one formats its files only while it is trusted itself. Only the
+    // projects of this one's host can nest in it, and no other host's paths go there.
+    const authority = authorityKeyOfProject(project.key);
+    const untrusted = this.deps.projects().filter((other) => other.key !== project.key && authorityKeyOfProject(other.key) === authority && !this.deps.isTrusted(other));
+    const resolved = await formatter.resolve(project.fsPath, target.path, untrusted.map((other) => other.fsPath));
+    switch (resolved.kind) {
+      case 'missing':
+        return { kind: 'skipped' };
+      case 'outsideRoot':
+        this.deps.log(`[format] refused to format ${target.path}: it is no longer inside ${project.fsPath}`);
+        return { kind: 'skipped' };
+      case 'nestedUntrusted': {
+        const nested = untrusted.find((other) => other.fsPath === resolved.fsPath);
+        if (nested) this.untrustedNotice(nested, reason);
+        return { kind: 'skipped' };
+      }
+      case 'prettierOutside':
+        this.notice(reason, project, `outside\n${resolved.packageDir}`, 'warning',
+          this.deps.t('Prettier was not run on {0}. The nearest Prettier is outside the project, at {1}. Add the folder that holds it as a project to use it.', target.name, resolved.packageDir));
+        this.logLine(project, target, `not formatted: the nearest Prettier is outside the project, at ${resolved.packageDir}`);
+        return { kind: 'skipped' };
+      case 'unsupported': {
         const version = resolved.version === '' ? this.deps.t('of an unknown version') : resolved.version;
         this.notice(reason, project, `version\n${resolved.version}`, 'warning', this.deps.t('Prettier {0} was not run on {1}. Format on save runs Prettier 2 and 3.', version, target.name));
         this.logLine(project, target, `not formatted: Prettier ${resolved.version || 'of an unknown version'} is not supported`);
         return { kind: 'skipped' };
       }
-      // A config past the root, or the plugins it names, is code the user never trusted; the host loads only this one.
-      const config = await nearestPrettierConfig(realRoot, realFile, major);
-      if (config && !config.inside) {
-        this.notice(reason, project, `configOutside\n${config.path}`, 'warning',
-          this.deps.t('Prettier was not run on {0}. Its nearest config is outside the project, at {1}. Add a Prettier config to this project, or add the folder that holds that config as a project.', target.name, config.path));
-        this.logLine(project, target, `not formatted: the nearest Prettier config is outside the project, at ${config.path}`);
+      case 'configOutside':
+        this.notice(reason, project, `configOutside\n${resolved.path}`, 'warning',
+          this.deps.t('Prettier was not run on {0}. Its nearest config is outside the project, at {1}. Add a Prettier config to this project, or add the folder that holds that config as a project.', target.name, resolved.path));
+        this.logLine(project, target, `not formatted: the nearest Prettier config is outside the project, at ${resolved.path}`);
         return { kind: 'skipped' };
-      }
-      // Read again after the awaits above: trust and the project list can change while the resolution runs.
-      if (typeof this.trustedProject(target.projectKey) === 'string') return { kind: 'skipped' };
-      const outcome = await this.deps.hosts.format({ key: project.key, root: realRoot }, { prettier: resolved.entry, config: config?.path ?? null, file: realFile, text });
-      if (outcome.kind === 'formatted') return outcome.text === text ? { kind: 'unchanged' } : { kind: 'formatted', text: outcome.text };
-      if (outcome.kind === 'ignored') return { kind: 'unchanged' };
-      if (outcome.kind === 'refused') {
-        this.notice(reason, project, `refused\n${outcome.path}`, 'warning',
-          this.deps.t('Prettier could not format {0}: it needs {1}, which is outside the project, so it was not loaded. Install it in this project, or add the folder that holds it as a project.', target.name, outcome.path));
-        this.logLine(project, target, `not formatted: Prettier ${resolved.version} needs ${outcome.path}, which is outside the project`);
-        return { kind: 'failed' };
-      }
-      if (outcome.kind === 'timeout') {
-        const logged = outcome.starting
-          ? `Prettier ${resolved.version} took longer than ${EDITOR_FORMAT_TIMEOUT_MS} ms to load; it keeps loading for the next format`
-          : `Prettier ${resolved.version} took longer than ${EDITOR_FORMAT_TIMEOUT_MS} ms and was stopped`;
-        this.failed(project, target, reason, { by: 'prettier', timedOut: true, starting: outcome.starting }, logged);
-        return { kind: 'failed' };
-      }
-      this.failed(project, target, reason, { by: 'prettier', timedOut: false }, `Prettier ${resolved.version} failed: ${loggedError(outcome.message)}`);
+      case 'notInstalled':
+        this.notice(reason, project, 'notInstalled', 'warning',
+          this.deps.t('Prettier is configured in this project but not installed, so {0} was not formatted. Install the project\'s dependencies to format it.', target.name));
+        this.logLine(project, target, 'not formatted: Prettier is configured but not installed');
+        return { kind: 'skipped' };
+      case 'none':
+        return BUILTIN_LANGUAGES.has(target.languageId) ? { kind: 'builtin' } : { kind: 'skipped' };
+      case 'prettier':
+        break;
+    }
+    // Read again after the awaits above: trust and the project list can change while the resolution runs.
+    if (typeof this.trustedProject(target.projectKey) === 'string') return { kind: 'skipped' };
+    const outcome = await formatter.format({ key: project.key, root: resolved.root }, { prettier: resolved.entry, config: resolved.config, file: resolved.file, text });
+    if (outcome.kind === 'formatted') return outcome.text === text ? { kind: 'unchanged' } : { kind: 'formatted', text: outcome.text };
+    if (outcome.kind === 'ignored') return { kind: 'unchanged' };
+    if (outcome.kind === 'refused') {
+      this.notice(reason, project, `refused\n${outcome.path}`, 'warning',
+        this.deps.t('Prettier could not format {0}: it needs {1}, which is outside the project, so it was not loaded. Install it in this project, or add the folder that holds it as a project.', target.name, outcome.path));
+      this.logLine(project, target, `not formatted: Prettier ${resolved.version} needs ${outcome.path}, which is outside the project`);
       return { kind: 'failed' };
     }
-    if (await isPrettierConfigured(realRoot, realFile)) {
-      this.notice(reason, project, 'notInstalled', 'warning',
-        this.deps.t('Prettier is configured in this project but not installed, so {0} was not formatted. Install the project\'s dependencies to format it.', target.name));
-      this.logLine(project, target, 'not formatted: Prettier is configured but not installed');
-      return { kind: 'skipped' };
+    if (outcome.kind === 'timeout') {
+      const logged = outcome.starting
+        ? `Prettier ${resolved.version} took longer than ${EDITOR_FORMAT_TIMEOUT_MS} ms to load; it keeps loading for the next format`
+        : `Prettier ${resolved.version} took longer than ${EDITOR_FORMAT_TIMEOUT_MS} ms and was stopped`;
+      this.failed(project, target, reason, { by: 'prettier', timedOut: true, starting: outcome.starting }, logged);
+      return { kind: 'failed' };
     }
-    return BUILTIN_LANGUAGES.has(target.languageId) ? { kind: 'builtin' } : { kind: 'skipped' };
-  }
-
-  // Trust is per folder: a listed project nested in this one formats its files only while it is trusted itself.
-  private async untrustedProjectHolding(realRoot: string, project: Project, realFile: string): Promise<Project | undefined> {
-    for (const other of this.deps.projects()) {
-      if (other.key === project.key || this.deps.isTrusted(other.fsPath)) continue;
-      let realOther: string;
-      try {
-        realOther = await fs.realpath(other.fsPath);
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
-        throw err;
-      }
-      // An untrusted folder around this project is no concern: its files outside the root never reach the host.
-      if (isInsideRealRoot(realRoot, realOther) && isInsideRealRoot(realOther, realFile)) return other;
-    }
-    return undefined;
+    this.failed(project, target, reason, { by: 'prettier', timedOut: false }, `Prettier ${resolved.version} failed: ${loggedError(outcome.message)}`);
+    return { kind: 'failed' };
   }
 
   private untrustedNotice(project: Project, reason: EditorFormatReason): void {
     const message = reason === 'save'
       ? this.deps.t('Format on save is off in untrusted folders. Trust {0} to format its files.', project.name)
       : this.deps.t('Format Document is off in untrusted folders. Trust {0} to format its files.', project.name);
-    this.notice(reason, project, 'untrusted', 'info', message, { label: this.deps.t('Trust'), run: () => this.deps.requestTrust(project.fsPath) });
+    this.notice(reason, project, 'untrusted', 'info', message, { label: this.deps.t('Trust'), run: () => this.deps.requestTrust(project) });
   }
 
   // A save shows each notice once per project and run; Format Document, which the user asked for, shows it every time.

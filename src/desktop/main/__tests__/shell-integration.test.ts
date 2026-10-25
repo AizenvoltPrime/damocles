@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { Terminal } from '@xterm/headless';
+import { createPtyScreen } from '../../pty-host/screen';
 import { MAX_SHELL_SEQUENCE_CHARS, MAX_TERMINAL_CWD_CHARS, MAX_TERMINAL_TITLE_CHARS } from '../../preload/terminal-channels';
 import { cwdFolderName, deserializeShellValue, newShellNonce, Osc633Stream, parseShellCwd, parseShellSequence, sanitizeTitle } from '../terminal/shell-integration';
 
@@ -57,18 +59,18 @@ describe('Osc633Stream', () => {
     expect(run(`a\x1b]0633;A;${NONCE}\x07b\x9d633;B;${NONCE}\x07c`)).toMatchObject({ data: 'abc', fields: [['A', NONCE], ['B', NONCE]] });
   });
 
-  it('never ends a sequence at C1 ST, and aborts one at ESC, CAN or SUB without trusting it', () => {
-    expect(run(`\x1b]633;E;a\x9c\x1b]633;A;${NONCE}\x07z`)).toMatchObject({ data: 'z', fields: [['A', NONCE]] });
+  it('ends a sequence at C1 ST as at BEL, and aborts one at ESC, CAN or SUB without trusting it', () => {
+    expect(run(`\x1b]633;A;${NONCE}\x9cz`)).toMatchObject({ data: 'z', fields: [['A', NONCE]] });
     expect(run(`\x1b]633;E;evil\x1b[31mred`)).toMatchObject({ data: '\x1b[31mred', fields: [] });
     expect(run(`\x1b]633;E;evil\x18after`)).toMatchObject({ data: 'after', fields: [] });
     expect(run(`\x1b]633;E;evil\x1aafter`)).toMatchObject({ data: 'after', fields: [] });
   });
 
-  it('drops a sequence holding a raw C0 control or DEL, which the scripts always escape, and leaves a raw C1 one to its field', () => {
+  it('drops a sequence holding a raw C0 control or DEL, which the scripts always escape, and cancels one at any other C1 control', () => {
     expect(run(`\x1b]633;E;a\rb;${NONCE}\x07ok`)).toMatchObject({ data: 'ok', fields: [] });
     expect(run(`\x1b]633;E;a\x7fb;${NONCE}\x07ok`)).toMatchObject({ data: 'ok', fields: [] });
-    expect(run(`\x1b]633;P;Cwd=/a\x85b;${NONCE}\x07ok`)).toMatchObject({ data: 'ok', fields: [['P', 'Cwd=/a\x85b', NONCE]] });
-    expect(parseShellSequence(['P', 'Cwd=/a\x85b', NONCE], NONCE, 'posix')).toEqual({ type: 'cwd', cwd: null });
+    expect(run(`\x1b]633;P;Cwd=/a\x85b;x\x07ok`)).toMatchObject({ data: '\x85b;x\x07ok', fields: [] });
+    expect(parseShellSequence(['P', 'Cwd=/a\\x85b', NONCE], NONCE, 'posix')).toEqual({ type: 'cwd', cwd: null });
     expect(run(`\x1b]633\x07ok`)).toMatchObject({ data: 'ok', fields: [] });
   });
 
@@ -95,6 +97,82 @@ describe('Osc633Stream', () => {
     const stream = new Osc633Stream();
     expect(stream.push(`\x1b]633;E;${'x'.repeat(100_000)}`).stripped).toBe(`\x1b]633;E;${'x'.repeat(100_000)}`.length);
     expect(stream.push('y'.repeat(50_000)).stripped).toBe(50_000);
+  });
+});
+
+describe('sequence indexes, as the screen in the pty host counts them', () => {
+  const ESC = '\x1b';
+  // well-formed, aborted by an ESC, with no fields, cancelled by CAN, then well-formed again
+  const output = `${ESC}]633;A;${NONCE}\x07a${ESC}]633;B;${NONCE}${ESC}[0mb${ESC}]633\x07c${ESC}]633;C;x\x18d${ESC}]633;D;0;${NONCE}${ESC}\\e${ESC}]0;title\x07`;
+
+  it('counts every sequence xterm hands its 633 handler, and only those', () => {
+    const stream = new Osc633Stream();
+    const sequences = [...output].flatMap((char) => stream.push(char).sequences);
+    expect(sequences.map(({ index, fields }) => [index, fields[0]])).toEqual([[0, 'A'], [3, 'D']]);
+  });
+
+  it('gives each sequence the index the screen gives the same output, chunked anyhow', async () => {
+    const screen = createPtyScreen({ cols: 40, rows: 5, scrollback: 10 });
+    for (const piece of [output.slice(0, 7), output.slice(7, 30), output.slice(30)]) screen.write(piece);
+    const { marks } = await screen.serialize();
+    screen.dispose();
+    expect(marks.map((mark) => mark.index)).toEqual([0, 1, 3]);
+  });
+});
+
+describe('the stream against xterm\'s own parser', () => {
+  const written = (xterm: Terminal, data: string): Promise<void> => new Promise((resolve) => xterm.write(data, resolve));
+  const rows = (xterm: Terminal): string[] => Array.from({ length: xterm.buffer.active.length }, (_, y) => xterm.buffer.active.getLine(y)!.translateToString(true));
+
+  // What xterm hands its 633 handler for the raw output, and whether the stream's forwarded text draws the same rows.
+  async function compare(output: string): Promise<{ handled: string[]; next: number; sequences: Array<[number, string]>; rows: string[][] }> {
+    const raw = new Terminal({ cols: 60, rows: 4, allowProposedApi: true });
+    const handled: string[] = [];
+    raw.parser.registerOscHandler(633, (data) => {
+      handled.push(data);
+      return false;
+    });
+    const stream = new Osc633Stream();
+    const parsed = [...output].map((char) => stream.push(char));
+    const forwarded = new Terminal({ cols: 60, rows: 4, allowProposedApi: true });
+    await written(raw, output);
+    await written(forwarded, parsed.map((chunk) => chunk.data).join(''));
+    const result = { handled, next: stream.next, sequences: parsed.flatMap((chunk) => chunk.sequences.map(({ index, fields }): [number, string] => [index, fields.join(';')])), rows: [rows(raw), rows(forwarded)] };
+    raw.dispose();
+    forwarded.dispose();
+    return result;
+  }
+
+  it.each([
+    ['C1 ST ends a sequence', `a\x1b]633;A;${NONCE}\x9cb`],
+    ['another C1 control cancels one and acts outside it', `a\x1b]633;P;Cwd=/a\x85b;x\x07ok\x1b]633;B\x9b31mred`],
+    ['a C1 control after 633 cancels it', 'a\x9d633\x85b'],
+    ['a C0 control inside the ident is ignored', `a\x1b]6\x013\x1f3;A;${NONCE}\x07b`],
+    ['a C0 control after a lone ESC runs and the ESC still starts the OSC', `a\x1b\x05]633;A;${NONCE}\x07b\x1b\x7f]633;B\x07`],
+    ['leading zeros past the held digits, then 633', `a\x1b]${'0'.repeat(20)}633;A\x07b`],
+    ['leading zeros past the held digits, then another number', `a\x1b]${'0'.repeat(20)}634;A\x07b`],
+    ['leading zeros past the held digits, then an abort', `a\x1b]${'0'.repeat(20)}633x;A\x07b\x1b]${'0'.repeat(20)}63\x1b\\c`],
+    ['a body past the bound', `a\x1b]633;E;${'x'.repeat(MAX_SHELL_SEQUENCE_CHARS + 5)}\x07b`],
+  ])('counts and strips as xterm does: %s', async (_name, output) => {
+    const { handled, next, sequences, rows: [raw, forwarded] } = await compare(output);
+    expect(next).toBe(handled.length);
+    for (const [index, data] of sequences) expect(data).toBe(handled[index]);
+    expect(forwarded).toEqual(raw);
+  });
+
+  it('leaves a payload past xterm\'s limit uncounted, as its handler never sees it', () => {
+    const limit = 10_000_000;
+    const stream = new Osc633Stream();
+    stream.push(`\x1b]633;E;${'x'.repeat(limit - 2)}\x07`);
+    expect(stream.next).toBe(1);
+    stream.push(`\x1b]633;E;${'x'.repeat(limit - 1)}\x07`);
+    expect(stream.next).toBe(1);
+  });
+
+  it('starts counting at the index it is given', () => {
+    const stream = new Osc633Stream(7);
+    expect(stream.push(`\x1b]633;A;${NONCE}\x07`).sequences.map((sequence) => sequence.index)).toEqual([7]);
+    expect(stream.next).toBe(8);
   });
 });
 

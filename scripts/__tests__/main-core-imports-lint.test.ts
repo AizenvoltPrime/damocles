@@ -54,6 +54,26 @@ describe.each([
   }, 60_000);
 });
 
+describe.each([
+  ['src/desktop/main/workspace-imports-probe.ts', '../workspace'],
+  ['src/desktop/main/search/workspace-imports-probe.ts', '../../workspace'],
+])('a value import of the workspace modules from %s', (filePath, workspace) => {
+  it('fails for a workspace service, which main reaches through workspaces.forProject', async () => {
+    expect(await findings(filePath, `import { createFileSystem } from '${workspace}/file-system';\nexport const probe = createFileSystem;\n`)).toBe(1);
+    expect(await findings(filePath, `export const probe = import('${workspace}/file-system');\n`)).toBe(1);
+  }, 60_000);
+
+  it('passes for an allowlisted export and for a type', async () => {
+    expect(await findings(filePath, `import { WriteRefusedError } from '${workspace}/file-system';\nexport const probe = WriteRefusedError;\n`)).toBe(0);
+    expect(await findings(filePath, `import type { WorkspaceFileSystem } from '${workspace}/file-system';\nexport type Probe = WorkspaceFileSystem;\n`)).toBe(0);
+  }, 60_000);
+});
+
+it('lets main\'s own workspace folder import the workspace modules', async () => {
+  expect(await findings('src/desktop/main/workspace/workspace-imports-probe.ts', "import { createFileSystem } from '../../workspace/file-system';\nexport const probe = createFileSystem;\n")).toBe(0);
+  expect(await findings('src/desktop/main/search/workspace-imports-probe.ts', "import { createLocalWorkspace } from '../workspace/local-workspace';\nexport const probe = createLocalWorkspace;\n")).toBe(0);
+}, 60_000);
+
 it('allowlists only modules that exist', () => {
   const missing = MAIN_CORE_IMPORTS.filter((module) => !existsSync(join(ROOT, 'src/core', `${module}.ts`)) && !existsSync(join(ROOT, 'src/core', module, 'index.ts')));
   expect(missing).toEqual([]);

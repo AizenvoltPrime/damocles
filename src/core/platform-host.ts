@@ -13,3 +13,8 @@ export function platform(): Platform {
   }
   return installed;
 }
+
+/** The installed platform, or undefined in a worker or before the host installed it. */
+export function installedPlatform(): Platform | undefined {
+  return installed;
+}

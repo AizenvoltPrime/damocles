@@ -93,6 +93,8 @@ export interface HistoryToolCall {
   abandoned?: ToolAbandonReason;
   /** pi's measured `execute()` time; absent for a call that never ran and for sessions recorded before pi 1.1.0. */
   durationMs?: number;
+  /** A joining view's replay only: the live run still owns the call, so its card is pending until the live messages settle it. */
+  live?: true;
   agentToolCalls?: HistoryToolCall[];
   agentModel?: string;
   agentTemplatePath?: string;

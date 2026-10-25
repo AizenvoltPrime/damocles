@@ -1,4 +1,5 @@
-import type { HandlerDependencies, HandlerRegistry } from "../types";
+import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
+import type { ViewJoinGate } from "../../types";
 import type { HostInstance } from "../../types";
 import { log } from "../../../logger";
 import { t } from "../../../l10n";
@@ -15,6 +16,62 @@ import { postVoiceRuntimeStatus } from "./voice-stream-handlers";
 
 // Past the moment a lease turns stale, so the retried claim takes it over.
 const RESTORE_RETRY_MARGIN_MS = 1_000;
+
+/**
+ * A view joining a panel's chat (views.join): the state `ready` posts, then, once a pending resume settled,
+ * the conversation pi holds replayed from its in-memory branch, the adapter's live snapshot and `sessionStarted`, and only
+ * then the panel's live events, which wait meanwhile. The panel's token, which feeds the lease owner record, is untouched.
+ */
+export function createViewJoin(deps: HandlerDependencies): (ctx: HandlerContext, gate: ViewJoinGate) => Promise<void> {
+  const { storageManager, settingsManager, historyManager, getLanguagePreference } = deps;
+  return async (ctx, gate) => {
+    gate.post({ type: "hostCapabilities", capabilities: deps.platform.capabilities });
+    if (deps.platform.capabilities.windowLayout) gate.post({ type: "terminalShown", ...deps.platform.window.terminalToggle() });
+    const pendingAttachments = ctx.terminalAttachments.displayInfo();
+    if (pendingAttachments.length > 0) gate.post({ type: "terminalAttachmentsUpdate", attachments: pendingAttachments });
+    await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+    settingsManager.sendMcpConfig(ctx.host, ctx.folder.key);
+    gate.post({ type: "toolStatus", data: ctx.session.getToolStatus() });
+    settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
+    settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
+    gate.post({ type: "languageChange", locale: getLanguagePreference() });
+    postVoiceRuntimeStatus(deps, ctx.host);
+    deps.postWorkspaceFolderState(ctx.panelId);
+
+    await ctx.session.whenConversationSettled();
+    const context = await historyManager.liveReplayContext();
+    // The capture and the hold are one synchronous step, so every live event the view waits for comes after the snapshot.
+    gate.hold();
+    const live = ctx.session.liveConversation();
+    try {
+      if (live) {
+        await historyManager.replayLive(context, ctx.folder.fsPath, ctx.session, gate.post, live);
+      }
+    } finally {
+      gate.release(live?.snapshot.seq ?? ctx.session.eventSeq);
+    }
+    // No runtime holds a conversation: the stored one replays from its file, as a restore that has not started does.
+    const stored = live ? undefined : ctx.session.storedSessionId;
+    if (stored) {
+      const rewindable = await historyManager.loadSessionHistory(ctx.folder.fsPath, stored, ctx.host, ctx.session);
+      deps.postMessage(ctx.host, { type: "sessionStarted", sessionId: stored, stored: rewindable !== null });
+    }
+    if (live) ctx.session.replayLiveAgents(live.sessionId);
+    // The new page's dialog queue and stores are empty: its prompts, state and worktree state are posted again.
+    ctx.session.onWebviewReady();
+    deps.webviewPrompts.repost(ctx.panelId);
+    try {
+      const { sessions, hasMore, nextOffset } = await storageManager.getStoredSessions();
+      deps.postMessage(ctx.host, { type: "storedSessions", sessions, hasMore, nextOffset, isFirstPage: true });
+      const { history, hasMore: moreHistory } = await storageManager.getPromptHistory(0);
+      deps.postMessage(ctx.host, { type: "promptHistory", history, hasMore: moreHistory });
+    } catch (err) {
+      log("[SessionHandlers] posting the session list to a joining view failed: %O", err);
+    }
+    await settingsManager.sendAvailableModels(ctx.session, ctx.host);
+    settingsManager.sendImageGenerationSettings(ctx.host);
+  };
+}
 
 export function createSessionHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, storageManager, settingsManager, getLanguagePreference, sessionCatalog } = deps;

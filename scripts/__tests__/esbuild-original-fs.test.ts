@@ -151,6 +151,7 @@ describe('the original-fs redirect', () => {
       'src/desktop/local-services/localization-service.ts',
       'src/desktop/main/protocol.ts',
       'src/desktop/main/release-notes.ts',
+      'src/desktop/main/remote/server-manifest.ts',
     ]);
   });
 });

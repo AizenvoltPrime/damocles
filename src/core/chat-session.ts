@@ -13,6 +13,8 @@ import type { ChatScope } from './pi-session/chat-changes';
 import type { SessionWorktree } from './pi-session/session-worktree';
 import type { McpUserResourcePort } from './pi-session/mcp/tool-source';
 import type { ChatAttachmentInfo } from '../shared/types/chat-attachment';
+import type { AgentSession, SessionEntry } from '@earendil-works/pi-coding-agent';
+import type { LiveSnapshot } from './pi-session/pi-stream-adapter';
 
 /** What the transcript shows for a sent message: the typed text, its images and the attachments sent with it. */
 export interface UserBroadcast {
@@ -132,6 +134,13 @@ export interface ChatSession extends ActivitySource {
   onWebviewReady(): void;
   /** A replay of `sessionId` rebuilt its subagent cards from their files; when it is the bound conversation, its live runs are posted again. */
   replayLiveAgents(sessionId: string): void;
+  /** The count of live events emitted so far, and a live event's own number; undefined for any other message. */
+  readonly eventSeq: number;
+  eventSeqOf(message: object): number | undefined;
+  /** Settles once no resume, restore or hand-off switch is pending (`openResumeTarget`'s outcome). */
+  whenConversationSettled(): Promise<void>;
+  /** The conversation pi holds with its in-memory branch and live snapshot, read in one step; undefined with no runtime. */
+  liveConversation(): { readonly sessionId: string; readonly stored: boolean; readonly branch: readonly SessionEntry[]; readonly sessionManager: AgentSession["sessionManager"]; readonly snapshot: LiveSnapshot } | undefined;
 
   /**
    * Claims the session's one send for a message whose content still needs reading, so a Stop, New chat, resume

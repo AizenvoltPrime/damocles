@@ -1,4 +1,5 @@
 import type { Disposable } from './disposable';
+import type { PageSpec } from '../shared/panel-html';
 import type { SettingsAccountId, SettingsSectionId } from '../shared/settings-sections';
 
 export interface PanelHost {
@@ -15,6 +16,8 @@ export interface PanelHost {
   // CSS text that fills the --d-* design tokens (desktop palettes and fonts); '' where tokens.css maps the host's own theme variables.
   themeCssSource(): string;
   setHtml(html: string): void;
+  // A host that builds the page itself from what it is told to show (desktop: main); core then sends no HTML.
+  showPage?(page: PageSpec): void;
   postMessage(message: unknown): Promise<boolean>;
   onMessage(listener: (message: unknown) => void): Disposable;
   // Never called for a listener added after the host closed (VS Code's semantics), so subscribe before any await.

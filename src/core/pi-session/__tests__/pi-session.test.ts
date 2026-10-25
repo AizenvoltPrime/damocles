@@ -185,6 +185,8 @@ const H = vi.hoisted(() => {
         hasConfiguredAuth: () => true,
         getModels: () => [{ id: 'claude-opus-5-5', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
         refresh: vi.fn(),
+        // a daemon's core registers its anthropic transport at init
+        registerProvider: vi.fn(),
       },
       resourceLoader: {
         reload: vi.fn(async () => undefined),
@@ -258,6 +260,8 @@ const H = vi.hoisted(() => {
     SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })), create: vi.fn(() => ({ kind: 'settings', drainErrors: () => [] })) },
     ModelRuntime: { create: vi.fn(async () => services.modelRuntime) },
     DefaultPackageManager: class { getInstalledPath(): string | undefined { return undefined; } },
+    // a daemon's core loads its bundled subscription plugin at init; none here
+    discoverAndLoadExtensions: vi.fn(async () => ({ extensions: [], errors: [], runtime: { pendingProviderRegistrations: [] } })),
     defineTool: vi.fn((tool: unknown) => tool),
     createEditToolDefinition: vi.fn(() => ({ execute: vi.fn(async () => ({ content: [], details: undefined })) })),
     // The bash override spreads its metadata from a delegate built at construction, so this must answer
@@ -443,7 +447,7 @@ import { installWorktreeProjectLookup } from '../../worktrees/personal-config';
 import type { WorktreeHostServices } from '../../worktrees/host';
 import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_INTERRUPTION_NOTICE, DAMOCLES_TURN_STOPPED_ENTRY, DAMOCLES_USER_RENAMED_ENTRY } from '../session-store/constants';
 import { FORK_AT_SECOND_PROMPT, FORK_PROMPT_COUNT, STORED_CONVERSATION, STORED_PROMPT_COUNT, withPrompt } from '../session-store/__tests__/prompt-index-fixtures';
-import type { SessionEntry } from '@earendil-works/pi-coding-agent';
+import type { AgentSession, SessionEntry } from '@earendil-works/pi-coding-agent';
 import * as fsSync from 'fs';
 // The on-disk-invariant suite drives the REAL SessionManager. `pi-loader` is mocked, so nothing else
 // pulls this package in, and loading it takes most of a second. Imported statically so that cost is
@@ -460,6 +464,9 @@ import type { HostInstance } from '../../chat-panel/types';
 import { TerminalAttachmentManager } from '../../chat-panel/terminal-attachment-manager';
 import { createHarness, folderEntry, makeFakeHost } from '../../chat-panel/__tests__/panel-manager-harness';
 import { folderKey } from '../../workspace-folders/folder-key';
+import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
+import { runPin, type ClientPin } from '../../client-snapshots';
+import { installPlatform } from '../../platform-host';
 
 /** The platform every session here reads through, also served by the host accessor; fresh per test. */
 let testPlatform: FakePlatform;
@@ -515,6 +522,58 @@ const FAKE_SECRETS = {
   delete: async () => undefined,
   onDidChange: () => ({ dispose: () => undefined }),
 } as unknown as NonNullable<SessionOptions['secrets']>;
+
+describe('a daemon\'s core pins every run a panel\'s pi session starts', () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    H.setSessionSetup(null);
+    await PiRuntime.disposeInstance();
+  });
+
+  it('runs a prompt or a triggerTurn started outside every pin as a turn of the client acting at its start', async () => {
+    const host = createFakeRemoteHost();
+    const seen: Array<ClientPin | undefined> = [];
+    H.setSessionSetup((built) => {
+      const fake = built as unknown as Record<'prompt' | 'sendCustomMessage', ReturnType<typeof vi.fn>>;
+      for (const start of ['prompt', 'sendCustomMessage'] as const) {
+        const original = fake[start].getMockImplementation() as ((...args: unknown[]) => unknown) | undefined;
+        fake[start].mockImplementation(async (...args: unknown[]) => {
+          seen.push(runPin());
+          return original?.(...args);
+        });
+      }
+    });
+    const panel = new PiSession(makeOptions([], { platform: { ...testPlatform, remote: host.remote }, panelId: 'panel-1' }));
+    await panel.initializeEarly();
+    const session = H.getLastSession() as unknown as AgentSession;
+    seen.length = 0;
+    await session.prompt('a cancel note');
+    await session.sendCustomMessage({ customType: 'probe', content: 'go', display: false }, { triggerTurn: true });
+    expect(seen).toEqual([expect.objectContaining({ kind: 'turn', clientId: 'client-a', run: 'panel-1' }), expect.objectContaining({ kind: 'turn', clientId: 'client-a', run: 'panel-1' })]);
+    const nested = await (panel as unknown as { trackedNestedSessions: (folder: FolderRuntime) => { createSession: (opts: unknown) => Promise<AgentSession> } })
+      .trackedNestedSessions(cwdFolder()!)
+      .createSession({ cwd: '/cwd', systemPrompt: 'probe', tools: [], customTools: [], extensionFactory: () => {}, store: { kind: 'memory' } });
+    seen.length = 0;
+    await nested.prompt('a steer to an idle subagent');
+    expect(seen).toEqual([expect.objectContaining({ kind: 'turn', clientId: 'client-a', run: 'panel-1' })]);
+    await panel.dispose();
+  });
+
+  it('logs which models a loopback endpoint makes unavailable once per change, not on every model list read', async () => {
+    const panel = new PiSession(makeOptions([], { platform: { ...testPlatform, remote: createFakeRemoteHost().remote }, panelId: 'panel-1' }));
+    await panel.initializeEarly();
+    const lines: string[] = [];
+    installLogSink({ appendLine: (line: string) => void lines.push(line), show: () => {}, dispose: () => {} });
+    await panel.getSupportedModels();
+    await panel.getSupportedModels();
+    expect(lines.filter((line) => line.includes('remote model list'))).toHaveLength(1);
+    await panel.dispose();
+  });
+});
 
 describe('PiSession lifecycle (US-P1-4)', () => {
   beforeEach(() => {
@@ -4854,6 +4913,27 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     cfg.mockRestore();
     await session.dispose();
   });
+
+  it('on a daemon\'s core keeps the browser tools eligible, but off the snapshot and off what a reopened chat restores, since the browser is the client\'s', async () => {
+    const cfg = subsystemsOn();
+    installPlatform({ ...testPlatform, remote: createFakeRemoteHost().remote });
+    try {
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      stubPanelMcp({ allToolNames: () => [], getServerStatuses: () => [], getAllToolDescriptors: () => [] } as unknown as McpToolSource);
+      const internals = session as unknown as { fullActiveToolNames: () => string[]; deferrableNow: () => Set<string> };
+      const names = session.deferrableToolsSnapshot().names;
+      for (const n of BROWSER_PI_TOOL_NAMES) {
+        expect(internals.fullActiveToolNames(), n).toContain(n);
+        expect(names, n).not.toContain(n);
+        expect(internals.deferrableNow().has(n), n).toBe(false);
+      }
+      await session.dispose();
+    } finally {
+      installPlatform(testPlatform);
+      cfg.mockRestore();
+    }
+  });
 });
 
 /**
@@ -4977,6 +5057,25 @@ describe('PiSession.buildTeamEngine — team agents get uniform deferral (Slice 
 
     cfg.mockRestore();
     await session.dispose();
+  });
+
+  it('on a daemon\'s core a team agent\'s ToolSearch cannot load the browser, which is the client\'s', async () => {
+    const cfg = configWith({ browser: true, team: true });
+    installPlatform({ ...testPlatform, remote: createFakeRemoteHost().remote });
+    try {
+      const session = await teamSession();
+      const nested = nestedPi(['read', TOOL_TOOL_SEARCH]);
+      const engine = session.buildTeamEngine();
+      const { mcp } = engine.buildAgentToolset(spawnCtx('agent-1'));
+      engine.buildExtensionFactory(spawnCtx('agent-1'), mcp, false)(nested.api);
+      const result = await nested.registered.get(TOOL_TOOL_SEARCH)!.execute('tc-1', { tools: ['browser'] }, undefined, undefined, execCtx);
+      expect(result.details?.matches ?? []).toEqual([]);
+      for (const n of BROWSER_PI_TOOL_NAMES) expect(nested.active(), n).not.toContain(n);
+      await session.dispose();
+    } finally {
+      installPlatform(testPlatform);
+      cfg.mockRestore();
+    }
   });
 
   it('reads live panel state at SPAWN — a subsystem toggled on mid-run reaches the next agent', async () => {
@@ -9124,6 +9223,19 @@ describe('PiSession account state publication', () => {
     session.publishAccountInfo();
 
     expect(published(messages)).toEqual({ model: 'claude-opus-5-5', dollarBilled: true });
+    await session.dispose();
+  });
+
+  it('says a Claude chat bills extra usage because the host could not load the allowance plugin', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    vi.spyOn(PiRuntime.get('/fake/agent'), 'getClaudeAuthStatus').mockReturnValue({ mode: 'extra', allowanceUnavailable: true });
+
+    session.publishAccountInfo();
+
+    const last = messages.filter((m) => m.type === 'accountInfo').at(-1);
+    expect(last && 'data' in last ? last.data : undefined).toEqual({ model: 'claude-opus-5-5', dollarBilled: true, allowanceUnavailable: true });
     await session.dispose();
   });
 

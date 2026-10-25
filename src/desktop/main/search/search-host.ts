@@ -1,4 +1,3 @@
-import * as path from 'node:path';
 import type { SettingsStore } from '../../../platform/settings-store';
 import { MAX_EDITOR_TEXT_CHARS } from '../../preload/shell-channels';
 import { folderGlob, matchingPattern, MAX_SEARCH_RESULTS, replaceRegExp, type SearchQuery } from '../../../shared/text-search';
@@ -50,13 +49,16 @@ import {
   SEARCH_USE_REPLACE_PREVIEW_SETTING,
 } from '../../local-services/desktop-configuration';
 import type { Project } from '../../local-services/confine';
+import { pathFor } from '../../../shared/project-location';
 import type { DocumentService, TextDocument } from '../documents/document-service';
 import type { EditorPane } from '../editor-pane';
 import type { SearchMenuState } from '../menu';
 import type { AskMessage } from '../message-dialog';
-import { applyEdits, createReplacer, planReplacements, planWithin, REPLACE_REGEX_TIMEOUT_MS, type Replacer } from './replace';
+import { applyEdits, createReplacer, planReplacements, planWithin, REPLACE_REGEX_TIMEOUT_MS, type Replacer } from '../../workspace/search/replace';
+import type { SearchFolder } from '../../workspace/search/types';
+import type { Workspaces } from '../workspace/workspaces';
 import { DEFAULT_SEARCH_EDITOR_CONFIG, serializeSearchResults, type EditorFileResult, type ResultSummaryLabels } from './search-editor-format';
-import { SearchService, type BufferDocument, type EditorRunResult, type SearchFolder, type SearchSettings } from './search-service';
+import { SearchService, type BufferDocument, type EditorRunResult, type SearchSettings } from './search-service';
 
 export interface SearchHostDeps {
   readonly settings: SettingsStore;
@@ -65,7 +67,9 @@ export interface SearchHostDeps {
   readonly projects: () => readonly Project[];
   // the selected project's shown folder
   readonly selectedFolder: () => SearchFolder | undefined;
-  readonly rgPath: () => Promise<string>;
+  readonly workspaces: Workspaces;
+  // the OS a project's files are on: this computer's, or its remote host's
+  readonly osOf: (projectKey: string) => NodeJS.Platform;
   readonly ignoreArgs: () => readonly string[];
   readonly excludeSettings: () => readonly string[];
   readonly ask: AskMessage;
@@ -167,7 +171,8 @@ export class SearchHost {
     this.deps = deps;
     this.service = new SearchService({
       folder: () => deps.selectedFolder(),
-      rgPath: () => deps.rgPath(),
+      workspaces: deps.workspaces,
+      osOf: (projectKey) => deps.osOf(projectKey),
       ignoreArgs: () => deps.ignoreArgs(),
       excludeSettings: () => deps.excludeSettings(),
       settings: () => this.searchSettings(),
@@ -237,8 +242,9 @@ export class SearchHost {
   async copy(request: SearchCopyRequest): Promise<void> {
     const search = this.service.recorded(request.searchId);
     if (!search) throw new Error('Unknown or superseded search');
+    const flavor = pathFor({ os: this.deps.osOf(search.folder.projectKey) });
     const pathOf = (key: { kind: 'file'; relativePath: string } | { kind: 'untitled'; documentId: string }, title: string | undefined): string =>
-      key.kind === 'file' ? path.join(search.folder.fsPath, ...key.relativePath.split('/')) : (title ?? '');
+      key.kind === 'file' ? flavor.join(search.folder.fsPath, ...key.relativePath.split('/')) : (title ?? '');
     await this.deps.copy(this.service.copyText(request.searchId, request.target, pathOf, this.deps.lineDelimiter));
   }
 

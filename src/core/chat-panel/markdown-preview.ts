@@ -17,7 +17,7 @@ export async function openMarkdownPreview(platform: Pick<Platform, 'editor' | 'n
   try {
     const file = path.join(os.tmpdir(), `damocles-${slugify(slug)}.md`);
     await fs.promises.writeFile(file, content, 'utf8');
-    await platform.editor.showMarkdownPreview(file, { panelId });
+    await platform.editor.showMarkdownPreview(file, { panelId, content });
   } catch (err) {
     log('[markdownPreview] failed to open preview for %s: %O', slug, err);
     void platform.notifications.error('Damocles: could not open the document preview.');

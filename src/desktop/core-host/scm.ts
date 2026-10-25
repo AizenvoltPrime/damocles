@@ -1,5 +1,6 @@
 // Damocles Core's source control: the one git runner, askpass server and ScmService of the app (one process owns every git
 // queue), served to desktop main over scm.* with a mirror of what main reads synchronously (docs/invariants.md "Desktop host").
+import { promises as fs } from 'node:fs';
 import { PiRuntime } from '../../core/pi-session/pi-runtime';
 import { createAskpassServer, removeAbandonedSocketFolders, type AskpassServer } from '../../core/scm/askpass/askpass-server';
 import { generateCommitMessage } from '../../core/scm/commit-message';
@@ -86,7 +87,10 @@ export function startCoreScm(platform: CorePlatform, gitLog: LogSink, log: (line
     globalState: platform.state.global,
     ask: (question) => endpoint.request('dialogs.ask', question),
     notify: (message, ...actions) => platform.notifications.info(message, ...actions),
-    trash: (absolutePath) => endpoint.request('shell.trash', { path: absolutePath }),
+    // a daemon's core has no trash: it deletes permanently after the question says so, and never asks for shell.trash
+    ...(init.remote
+      ? { trash: (absolutePath: string) => fs.rm(absolutePath, { recursive: true }), deletesPermanently: true }
+      : { trash: (absolutePath: string) => endpoint.request('shell.trash', { path: absolutePath }) }),
     t,
     log,
   });

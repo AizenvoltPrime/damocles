@@ -6,6 +6,8 @@ import type {
   ClaudeAccountProfile,
 } from '../../shared/types/usage';
 import type { PiRuntime } from './pi-runtime';
+import { installedPlatform } from '../platform-host';
+import { t } from '../l10n';
 
 const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const CLAUDE_PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile';
@@ -348,6 +350,11 @@ async function fetchWhamUsage(token: string, chatgpt: boolean): Promise<Provider
 }
 
 export async function fetchSubscriptionUsage(runtime: PiRuntime): Promise<SubscriptionUsageData> {
+  // usage windows are user scope: this computer's core reads them, and a daemon's core never pulls a client's tokens for them
+  if (installedPlatform()?.remote) {
+    const elsewhere: ProviderUsage = { status: 'error', bars: [], error: t('Subscription usage is read on your computer, not on a remote host') };
+    return { claude: elsewhere, gpt: elsewhere, fetchedAt: Date.now() };
+  }
   const [claudeResult, gptResult] = await Promise.allSettled([
     fetchClaudeUsage(runtime),
     fetchGptUsage(runtime),

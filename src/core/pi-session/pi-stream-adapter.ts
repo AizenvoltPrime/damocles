@@ -57,6 +57,8 @@ export interface PiStreamAdapterDeps {
   /** The turn's own lifecycle moved. PiSession derives and emits `sessionStateChanged` from it, so
    *  the adapter never emits that message itself and a pending prompt can outrank this. */
   onTurnStateChanged: (...change: TurnChange) => void;
+  /** Whether the session's turn runs; a Stop, or a send the session gives back or pi refuses, ends it before pi settles the run. */
+  turnRunning: () => boolean;
   onAssistantTextFinal?: (text: string) => void;
 }
 
@@ -77,6 +79,23 @@ interface ToolRecord {
   name: string;
   /** pi emitted `tool_execution_start`, so it will end the call itself. */
   started: boolean;
+  /** The card's input once pi started the call, and its latest live output, for a view that joins mid-call. */
+  input?: Record<string, unknown>;
+  output?: { readonly text: string; readonly truncated: boolean };
+}
+
+/** A user message the chat shows before pi stores its entry; `text` is what pi delivers it as when known (a note), else null (a prompt pi may expand). */
+export interface UserEcho {
+  readonly message: Extract<ExtensionToWebviewMessage, { type: 'userMessage' }>;
+  readonly text: string | null;
+}
+
+/** What a view that joins mid-turn needs beyond the stored branch, as of the adapter's event `seq` (views.join). */
+export interface LiveSnapshot {
+  readonly seq: number;
+  readonly messages: readonly ExtensionToWebviewMessage[];
+  /** The calls whose outcome the live run still owns, which the branch replay leaves to `messages` and the live events. */
+  readonly liveToolCallIds: ReadonlySet<string>;
 }
 
 /** Detect auth-shaped error text so the webview can show the renewal banner rather than a raw error. */
@@ -188,11 +207,18 @@ export function latestCompactionEntryId(session: AgentSession): string | null {
  */
 export class PiStreamAdapter {
   private _initEmitted = false;
+  /** Every message this adapter emitted, counted; a joining view's live snapshot names the count it reflects. */
+  private _eventSeq = 0;
+  /** A turn's live content is shown: from `beginTurn` until this adapter lowers the spinner; the session's turn can end first (`turnRunning`). */
+  private _turnOpen = false;
+  /** An assistant message streams: from its `message_start` until its `message_end`, after which pi has stored it. */
+  private _assistantOpen = false;
   private _turnSeq = 0;
   private _assistantSeq = 0;
   private _aborted = false;
-  /** This turn's settled cards: a Stop and the call it aborted both name the same calls, and each card settles once. */
-  private readonly _abandoned = new Set<string>();
+  /** This turn's abandoned cards, each settled once, though a Stop and the call it aborted both name it; a joining view gets
+   *  them again, since pi records a Stop's only once the run settled. */
+  private readonly _abandoned = new Map<string, ExtensionToWebviewMessage>();
   /** The tool calls of the turn's latest assistant message, and every call of the turn pi reported a result for. */
   private _batch: Array<{ id: string; name: string }> = [];
   /** An error stop no Stop preceded, decided at its `turn_end` by the wind-down record (`decideErrorStop`), with the
@@ -242,6 +268,12 @@ export class PiStreamAdapter {
    *  so it cannot publish or trip the budget on the panel's new conversation. */
   private _boundSession: AgentSession | null = null;
   private readonly _tools = new Map<string, ToolRecord>();
+  /** Ended calls whose toolResult pi has not stored yet, with the messages that ended their cards: pi stores a parallel batch's results only once every call ended. */
+  private readonly _unstoredResults = new Map<string, ExtensionToWebviewMessage[]>();
+  /** The turn's user echoes whose user entry pi has not stored yet. */
+  private _userEchoes: UserEcho[] = [];
+  /** The status line the chat shows from this adapter's `statusUpdate`s, or null. */
+  private _status: Extract<ExtensionToWebviewMessage, { type: 'statusUpdate' }> | null = null;
   /** Live shell output frames only. Elapsed-only progress stays uncoalesced so its cadence is unchanged. */
   private readonly _outputCoalescer = new ToolOutputCoalescer<ExtensionToWebviewMessage>((m) => this.emit(m));
 
@@ -249,6 +281,57 @@ export class PiStreamAdapter {
 
   constructor(deps: PiStreamAdapterDeps) {
     this.deps = deps;
+  }
+
+  /** The number of messages emitted so far; each message's own number is the count once it was emitted. */
+  get eventSeq(): number {
+    return this._eventSeq;
+  }
+
+  /**
+   * What the stored branch does not hold yet: the user echoes, the status line, the in-flight assistant message as cumulative
+   * content, the ended tool cards whose results pi has not stored, the abandoned ones and the running ones with their partial
+   * output, and the calls whose outcome the run still owns; a turn's pending prompts are reposted by their own owner.
+   */
+  liveSnapshot(): LiveSnapshot {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const running = this.deps.turnRunning();
+    if (this._turnOpen) messages.push(...this._userEchoes.map((echo) => echo.message));
+    if (running) messages.push({ type: 'processing', isProcessing: true });
+    // a lowered spinner ends a retry wait, as `emit` records it
+    if (this._status && (running || this._status.status !== 'retrying')) messages.push(this._status);
+    if (this._turnOpen) {
+      if (this._assistantOpen) {
+        const thinking = this._thinkingStart !== null && this._thinkingDuration === null && this._streamingText === '';
+        if (this._streamingThinking !== '' || this._streamingText !== '') {
+          this.snapshotPartial(messages, {
+            ...(this._streamingThinking !== '' ? { streamingThinking: this._streamingThinking } : {}),
+            ...(this._streamingText !== '' ? { streamingText: this._streamingText } : {}),
+            isThinking: thinking,
+            ...(this._thinkingDuration !== null ? { thinkingDuration: this._thinkingDuration } : {}),
+          });
+        }
+        const blocks: ContentBlock[] = [];
+        for (const block of this._streamingBlocks) {
+          blocks.push(block);
+          if (block.type === 'tool_use') messages.push({ type: 'toolStreaming', messageId: this._currentAssistantId ?? '', tool: { id: block.id, name: block.name, input: block.input }, contentBlocks: [...blocks] });
+        }
+      }
+      for (const ended of this._unstoredResults.values()) messages.push(...ended);
+      messages.push(...this._abandoned.values());
+      for (const [toolUseId, rec] of this._tools) {
+        if (!rec.started) continue;
+        const toolName = mapPiToolName(rec.name);
+        messages.push({ type: 'toolPending', toolUseId, toolName, input: rec.input ?? {}, parentToolUseId: null });
+        if (rec.output) messages.push({ type: 'toolProgress', toolUseId, toolName, parentToolUseId: null, elapsedTimeSeconds: this.elapsed(toolUseId), output: rec.output.text, outputTruncated: rec.output.truncated });
+      }
+    }
+    const liveToolCallIds = new Set(this._turnOpen ? [...this._tools.keys(), ...this._unstoredResults.keys()] : []);
+    return { seq: this._eventSeq, messages, liveToolCallIds };
+  }
+
+  private snapshotPartial(into: ExtensionToWebviewMessage[], extra: { streamingText?: string; streamingThinking?: string; isThinking?: boolean; thinkingDuration?: number }): void {
+    into.push({ type: 'partial', data: { type: 'partial', content: [], session_id: this.deps.sessionId(), messageId: this._currentAssistantId, ...extra } });
   }
 
   /** Total per-turn cost summed across the session (host-side reader for `getAccumulatedCost`). */
@@ -322,10 +405,10 @@ export class PiStreamAdapter {
   }
 
   /**
-   * Mark the start of a user turn: reset streaming state, arm processing/running, emit the
+   * Mark the start of a user turn: reset streaming state, show the message that opens it, arm processing/running, emit the
    * once-per-session init payloads, and correlate the user message.
    */
-  beginTurn(correlationId?: string): void {
+  beginTurn(correlationId?: string, echo?: UserEcho): void {
     this._turnSeq += 1;
     this._assistantSeq = 0;
     this._aborted = false;
@@ -344,6 +427,7 @@ export class PiStreamAdapter {
     this._thinkingStart = null;
     this._thinkingDuration = null;
     this._tools.clear();
+    this._unstoredResults.clear();
     this._abandoned.clear();
     this._batch = [];
     this._answered.clear();
@@ -357,6 +441,10 @@ export class PiStreamAdapter {
     this._currentAssistantId = `${sid}:a:${this._turnSeq}:0`;
 
     this._agentRunObserved = false;
+    this._turnOpen = true;
+    this._assistantOpen = false;
+    this._userEchoes = [];
+    if (echo) this.echoUser(echo);
     this.emit({ type: 'processing', isProcessing: true });
     this.deps.onTurnStateChanged('running');
     this.emitSessionStartOnce();
@@ -368,6 +456,24 @@ export class PiStreamAdapter {
     this._userIdEmitted = false;
     // A delivery whose run aborted before its resolving assistant message_start may belong to a replaced session.
     this._midStreamPending = [];
+  }
+
+  /** Show a user message pi has accepted but not stored; a joining view is shown it until its user `message_end`. */
+  echoUser(echo: UserEcho): void {
+    this._userEchoes.push(echo);
+    this.emit(echo.message);
+  }
+
+  /** The session gave the prompt `correlationId` back to the composer before pi took it, so its echo is no longer shown. */
+  withdrawEcho(correlationId: string): void {
+    this._userEchoes = this._userEchoes.filter((echo) => echo.message.correlationId !== correlationId);
+  }
+
+  /** pi stores a user message right after its `message_end`: a note's echo by its text, else, unless a queued batch, the prompt's. */
+  private settleUserEcho(text: string, queued: boolean): void {
+    const byText = this._userEchoes.findIndex((echo) => echo.text === text);
+    const settled = byText !== -1 || queued ? byText : this._userEchoes.findIndex((echo) => echo.text === null);
+    if (settled !== -1) this._userEchoes.splice(settled, 1);
   }
 
   /**
@@ -423,6 +529,8 @@ export class PiStreamAdapter {
   /** The one lifecycle transition every turn-ending path owes the webview, kept in one place so
    *  "lower the spinner exactly once" is greppable rather than restated per path. */
   private lowerSpinner(outcome: TurnOutcome): void {
+    this._turnOpen = false;
+    this._assistantOpen = false;
     this.emit({ type: 'processing', isProcessing: false });
     this.deps.onTurnStateChanged('idle', outcome);
   }
@@ -469,13 +577,18 @@ export class PiStreamAdapter {
   private abandonTool(toolCallId: string, piName: string, reason: ToolAbandonReason): void {
     this._tools.delete(toolCallId);
     if (this._abandoned.has(toolCallId)) return;
-    this._abandoned.add(toolCallId);
+    const abandoned: ExtensionToWebviewMessage = { type: 'toolAbandoned', toolUseId: toolCallId, toolName: mapPiToolName(piName), parentToolUseId: null, reason };
+    this._abandoned.set(toolCallId, abandoned);
     // An aborted tool may never emit tool_execution_end, so this is the only cancel on that path.
     this._outputCoalescer.cancel(toolCallId);
-    this.emit({ type: 'toolAbandoned', toolUseId: toolCallId, toolName: mapPiToolName(piName), parentToolUseId: null, reason });
+    this.emit(abandoned);
   }
 
   private emit(m: ExtensionToWebviewMessage): void {
+    // As the webview's status line: `ready` clears it, and processing ending clears a retry wait.
+    if (m.type === 'statusUpdate') this._status = m.status === 'ready' ? null : m;
+    else if (m.type === 'processing' && !m.isProcessing && this._status?.status === 'retrying') this._status = null;
+    this._eventSeq += 1;
     this.deps.onMessage(m);
   }
 
@@ -527,6 +640,7 @@ export class PiStreamAdapter {
         if (event.message.role === 'assistant') {
           this.endRetryWait();
           this.startAssistantMessage();
+          this._assistantOpen = true;
         }
         break;
       case 'message_update':
@@ -542,6 +656,7 @@ export class PiStreamAdapter {
           });
         }
         if (event.message.role === 'assistant') {
+          this._assistantOpen = false;
           const { stopReason } = event.message;
           this._lastAssistantError = stopReason === 'error' ? failedCallError(event.message.errorMessage) : null;
           const shown = this.emitAssistantMessage(event.message.content, publishedEffort(event.message.thinkingLevel, session.model?.reasoning));
@@ -565,24 +680,30 @@ export class PiStreamAdapter {
             }
           }
           this._batch = event.message.content.flatMap((block) => (block.type === 'toolCall' ? [{ id: block.id, name: block.name }] : []));
-        } else if (event.message.role === 'user' && !this._aborted) {
+        } else if (event.message.role === 'user') {
+          const text = userMessageText(event.message.content);
           // pi emits this for a run's opening prompt too, which the session reports as its own only
           // when a cancel note opened the run. Collapse the queued chips now, and if a real batch or a
           // cancel note was delivered, owe it a mid-stream marker at the next assistant message_start.
-          if (this.deps.onUserMessageDelivered(userMessageText(event.message.content), event.message)) this._midStreamPending.push(event.message);
+          const queued = !this._aborted && this.deps.onUserMessageDelivered(text, event.message);
+          if (queued) this._midStreamPending.push(event.message);
+          this.settleUserEcho(text, queued);
+        } else if (event.message.role === 'toolResult') {
+          this._unstoredResults.delete(event.message.toolCallId);
         }
         break;
       case 'tool_execution_start': {
         const args = (event.args ?? {}) as Record<string, unknown>;
         this.ensureToolStreaming(event.toolCallId, event.toolName, args);
-        this._tools.set(event.toolCallId, { startedAt: Date.now(), streamed: true, name: event.toolName, started: true });
+        const input = normalizeToolInput(event.toolName, args);
+        this._tools.set(event.toolCallId, { startedAt: Date.now(), streamed: true, name: event.toolName, started: true, input });
         // pi emits this before `beforeToolCall`, where the gate runs, so the card shows running while the
         // gate decides; a prompt moves it to awaiting approval, and the gate reports it running again.
         this.emit({
           type: 'toolPending',
           toolUseId: event.toolCallId,
           toolName: mapPiToolName(event.toolName),
-          input: normalizeToolInput(event.toolName, args),
+          input,
           parentToolUseId: null,
         });
         break;
@@ -595,6 +716,8 @@ export class PiStreamAdapter {
         }
         // pi omits `truncation` entirely on an untruncated partial frame, so the boolean is derived, not read.
         const details = (event.partialResult as { details?: { truncation?: { truncated?: boolean } } } | undefined)?.details;
+        const running = this._tools.get(event.toolCallId);
+        if (running) running.output = { text: joinResultText(event.partialResult), truncated: Boolean(details?.truncation?.truncated) };
         // Built at emit time so a frame held for the whole window reports the elapsed time the card is
         // showing, not the one it had when the frame was pushed.
         this._outputCoalescer.push(event.toolCallId, () => ({
@@ -799,17 +922,26 @@ export class PiStreamAdapter {
     const toolName = mapPiToolName(piName);
     const details = (result as { details?: unknown } | undefined)?.details;
     const metadata = details && typeof details === 'object' ? normalizeToolDetails(details as Record<string, unknown>) : undefined;
+    const ended = this.toolEndMessages(toolCallId, toolName, result, isError, metadata, durationMs);
+    this._unstoredResults.set(toolCallId, ended);
+    for (const message of ended) this.emit(message);
+  }
+
+  private toolEndMessages(toolUseId: string, toolName: string, result: unknown, isError: boolean, metadata: Record<string, unknown> | undefined, durationMs: number | undefined): ExtensionToWebviewMessage[] {
     const duration = durationMs === undefined ? {} : { durationMs };
     // A stopped call lands as completed, and its marker alone tells the card apart from a success.
     if (isError && metadata?.[CANCELLED_TOOL_DETAIL_KEY] !== true) {
-      this.emit({ type: 'toolFailed', toolUseId: toolCallId, toolName, error: joinResultText(result) || 'Tool failed', ...duration });
       // An error result keeps the details a tool returned with it (a thrown error's are empty), and a reload shows them.
-      if (metadata && Object.keys(metadata).length > 0) this.emit({ type: 'toolMetadata', toolUseId: toolCallId, metadata });
-      return;
+      return [
+        { type: 'toolFailed', toolUseId, toolName, error: joinResultText(result) || 'Tool failed', ...duration },
+        ...(metadata && Object.keys(metadata).length > 0 ? [{ type: 'toolMetadata' as const, toolUseId, metadata }] : []),
+      ];
     }
     const imageCount = resultImageCount(result);
-    this.emit({ type: 'toolCompleted', toolUseId: toolCallId, toolName, result: joinResultText(result), ...duration, ...(imageCount > 0 ? { imageCount } : {}) });
-    if (metadata) this.emit({ type: 'toolMetadata', toolUseId: toolCallId, metadata });
+    return [
+      { type: 'toolCompleted', toolUseId, toolName, result: joinResultText(result), ...duration, ...(imageCount > 0 ? { imageCount } : {}) },
+      ...(metadata ? [{ type: 'toolMetadata' as const, toolUseId, metadata }] : []),
+    ];
   }
 
   /**
@@ -990,6 +1122,8 @@ export class PiStreamAdapter {
       stop_reason: null,
     };
     this.emit({ type: 'done', data: result });
+    this._turnOpen = false;
+    this._assistantOpen = false;
     this.emit({ type: 'processing', isProcessing: false });
     this.deps.onTurnStateChanged('idle', this.settledOutcome());
     this.emit({ type: 'stopInfo', ...(finalText ? { lastAssistantMessage: finalText } : {}) });

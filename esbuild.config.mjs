@@ -3,6 +3,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync } from 'nod
 import { EXTENSION_EXTERNALS } from './scripts/extension-externals.mjs';
 import { DESKTOP_EXTERNALS } from './scripts/desktop-externals.mjs';
 import { originalFs } from './scripts/esbuild-original-fs.mjs';
+import { isEntryPoint } from './scripts/entry-point.mjs';
 
 const isWatch = process.argv.includes('--watch');
 // --desktop builds the Electron main and preload plus the workers they spawn, and never the extension bundle.
@@ -161,6 +162,14 @@ const coreHostOptions = {
 };
 
 /** @type {esbuild.BuildOptions} */
+const daemonOptions = {
+  ...desktopMainOptions,
+  entryPoints: ['src/desktop/daemon/main.ts'],
+  // The loopback daemon (dev and e2e only): plain Node or Electron as Node, from the checkout; electron-builder never lists it.
+  outfile: 'dist/daemon.js',
+};
+
+/** @type {esbuild.BuildOptions} */
 const desktopPreloadOptions = {
   entryPoints: ['src/desktop/preload/panel.ts'],
   bundle: true,
@@ -238,13 +247,33 @@ const askpassMainOptions = {
 
 // git and ssh execute the askpass scripts, so the packaged mode comes from here, never from the checkout's file mode. The
 // folder is the list: verify-desktop-package.mjs's ASKPASS_SCRIPTS is tested against it.
-function copyAskpassScripts() {
-  mkdirSync('dist/askpass', { recursive: true });
+export function copyAskpassScripts(dir = 'dist/askpass') {
+  mkdirSync(dir, { recursive: true });
   for (const name of readdirSync('resources/askpass')) {
-    copyFileSync(`resources/askpass/${name}`, `dist/askpass/${name}`);
-    chmodSync(`dist/askpass/${name}`, 0o755);
+    copyFileSync(`resources/askpass/${name}`, `${dir}/${name}`);
+    chmodSync(`${dir}/${name}`, 0o755);
   }
 }
+
+/**
+ * The bundles a server package carries in dist/ (scripts/build-server.mjs): the daemon, Damocles Core, the hosts the daemon
+ * forks, every worker in CoreInit.paths.workers, the watch worker and the askpass helper.
+ */
+export const SERVER_BUNDLES = [
+  daemonOptions,
+  coreHostOptions,
+  ptyHostOptions,
+  formatterHostOptions,
+  processLauncherWorkerOptions,
+  sentinelOptions,
+  sessionMetaIndexWorkerOptions,
+  memoryIntegrityWorkerOptions,
+  usageStatsWorkerOptions,
+  workerOptions,
+  voiceExtractWorkerOptions,
+  watchWorkerOptions,
+  askpassMainOptions,
+];
 
 async function buildDesktop() {
   await Promise.all([
@@ -255,6 +284,7 @@ async function buildDesktop() {
     esbuild.build(askpassMainOptions),
     esbuild.build(desktopMainOptions),
     esbuild.build(coreHostOptions),
+    esbuild.build(daemonOptions),
     esbuild.build(desktopPreloadOptions),
     esbuild.build(desktopShellPreloadOptions),
     esbuild.build(desktopOverlayPreloadOptions),
@@ -269,7 +299,10 @@ async function buildDesktop() {
   // Settings › About's What's new reads it next to main.js (src/desktop/main/release-notes.ts).
   copyFileSync('CHANGELOG.md', 'dist/desktop/CHANGELOG.md');
   copyAskpassScripts();
-  console.log('Desktop main + core host + preload + formatter host + pty host + askpass helper + workers + sentinel build complete');
+  // the loopback daemon's core loads it from the checkout's dist/, as a server package's core does from its own
+  const { vendorSubscriptionPlugin } = await import('./scripts/subscription-plugin.mjs');
+  await vendorSubscriptionPlugin('dist/subscription-plugin');
+  console.log('Desktop main + core host + preload + formatter host + pty host + askpass helper + workers + sentinel + subscription plugin build complete');
 }
 
 async function build() {
@@ -305,7 +338,10 @@ async function build() {
   }
 }
 
-build().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Gated so scripts/build-server.mjs can import the options without building.
+if (isEntryPoint(import.meta.url)) {
+  build().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

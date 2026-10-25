@@ -7,6 +7,7 @@ import { personalConfigRoot } from "../../worktrees/personal-config";
 import { writeJsonConfig } from "../../config/json-config-write";
 import { parseSettingsText } from "../../config/settings-file";
 import { t } from "../../l10n";
+import { settingsViewWriteScope } from "../settings-view-scope";
 import type { PermissionUpdate, PermissionRuleValue, PermissionUpdateDestination } from "../../../shared/types/permissions";
 import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW, TEAM_EFFORT_LEVELS, thinkingDisableApplies } from "../../../shared/types/constants";
 import type { EffortLevel } from "../../../shared/types/settings";
@@ -86,8 +87,8 @@ export interface SettingWrite {
 
 /**
  * Writes at `home` (D37: the section's scope), or where the value that wins is read from when that file ranks higher, so
- * the change always takes effect. `folder` is the chat's for a key read per chat, else undefined. A store reports a local
- * value only where it can write one.
+ * the change always takes effect; from the host or Project tab, that tab's file (settingsViewWriteScope). `folder` is the
+ * chat's for a key read per chat, else undefined. A store reports a local value only where it can write one.
  */
 export async function updateConfigAtEffectiveScope<T>(
   platform: Pick<Platform, "settings">,
@@ -95,6 +96,11 @@ export async function updateConfigAtEffectiveScope<T>(
   value: T,
   options: { home?: SettingsScope; folder?: SettingsFolder | undefined } = {},
 ): Promise<SettingWrite> {
+  const tab = settingsViewWriteScope(options.folder !== undefined);
+  if (tab !== undefined) {
+    await platform.settings.update(key, value, tab, options.folder);
+    return { key, home: tab };
+  }
   const home = options.home ?? "user";
   const held = effectiveScope(platform, key, options.folder);
   const scope = held !== undefined && SCOPE_RANK[held] > SCOPE_RANK[home] ? held : home;

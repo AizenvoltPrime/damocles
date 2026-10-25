@@ -27,6 +27,9 @@ interface FakeXterm {
   linkProviders: ILinkProvider[];
   keyHandler: ((event: KeyboardEvent) => boolean) | undefined;
   lines: string[];
+  // what the view wrote, in order, since the last reset
+  written: string[];
+  resets: number;
   buffer: { active: { cursorX: number; type: 'normal' | 'alternate' } };
   typed(data: string): void;
   csi(params: number[]): void;
@@ -47,12 +50,14 @@ vi.mock('@xterm/xterm', () => {
     linkProviders: ILinkProvider[] = [];
     keyHandler: ((event: KeyboardEvent) => boolean) | undefined;
     lines: string[] = [];
+    written: string[] = [];
     buffer = {
       active: {
         type: 'normal' as 'normal' | 'alternate',
         viewportY: 0,
         baseY: 0,
         cursorX: 10,
+        cursorY: 0,
         getNullCell: () => ({}),
         getLine: (y: number) => {
           const text = this.lines[y];
@@ -86,8 +91,9 @@ vi.mock('@xterm/xterm', () => {
       this.linkProviders.push(provider);
       return disposable;
     }
-    registerMarker(): FakeMarker {
-      const marker: FakeMarker = { line: 0, isDisposed: false, dispose: () => { marker.isDisposed = true; } };
+    // the buffer's base and the cursor's row are 0, so a marker's line is its offset
+    registerMarker(offset = 0): FakeMarker {
+      const marker: FakeMarker = { line: offset, isDisposed: false, dispose: () => { marker.isDisposed = true; } };
       this.markers.push(marker);
       return marker;
     }
@@ -114,10 +120,21 @@ vi.mock('@xterm/xterm', () => {
       this.element.append(screen);
       parent.append(this.element);
     }
-    write(_data: string, callback?: () => void): void {
+    write(data: string, callback?: () => void): void {
+      this.written.push(data);
       callback?.();
     }
+    resize(cols: number, rows: number): void {
+      this.cols = cols;
+      this.rows = rows;
+    }
     clear(): void {
+      for (const marker of this.markers) marker.dispose();
+    }
+    resets = 0;
+    reset(): void {
+      this.resets++;
+      this.written = [];
       for (const marker of this.markers) marker.dispose();
     }
     focus(): void {}
@@ -161,15 +178,19 @@ afterEach(() => {
 });
 
 const info: TerminalInfo = {
-  id: 'term-1', title: 'bash', name: null, profileId: 'bash', icon: 'bash', customIcon: null, color: null, projectKey: 'alpha', projectName: 'alpha', status: 'running', exitCode: null, description: null, running: null, integrated: true,
+  id: 'term-1', title: 'bash', name: null, profileId: 'bash', icon: 'bash', customIcon: null, color: null, projectKey: 'alpha', projectName: 'alpha', status: 'running', exitCode: null, description: null, running: null, integrated: true, restoring: false, windowsBuild: null, pathFlavor: 'posix',
 };
 
 interface MountOptions {
   platform?: ShellPlatform;
   settings?: Partial<TerminalSettings>;
   screenReader?: boolean;
-  windowsBuild?: number;
+  windowsBuild?: number | null;
+  pathFlavor?: TerminalInfo['pathFlavor'];
   integrated?: boolean;
+  restoring?: boolean;
+  // a screen waits in the store for this view
+  screenWaits?: () => boolean;
 }
 
 async function mountView(options: MountOptions = {}): Promise<{ api: FakeShellApi; xterm: FakeXterm | undefined; sinks: TerminalSink[]; requestFocus: ReturnType<typeof vi.fn> }> {
@@ -182,6 +203,7 @@ async function mountView(options: MountOptions = {}): Promise<{ api: FakeShellAp
     pasteRequest: shallowRef(null),
     actionRequest: shallowRef(null),
     requestFocus,
+    screenWaits: options.screenWaits ?? (() => false),
     attach: (_id: string, sink: TerminalSink) => {
       sinks.push(sink);
       return () => undefined;
@@ -190,14 +212,13 @@ async function mountView(options: MountOptions = {}): Promise<{ api: FakeShellAp
   wrapper = mount(TerminalView, {
     props: {
       api,
-      terminal: { ...info, integrated: options.integrated ?? true },
+      terminal: { ...info, integrated: options.integrated ?? true, restoring: options.restoring ?? false, windowsBuild: options.windowsBuild ?? null, pathFlavor: options.pathFlavor ?? 'posix' },
       shown: true,
       settings: { ...TERMINAL_STATE.settings, ...options.settings },
       passKeys: [],
       platform: options.platform ?? 'linux',
       splitShortcut: 'Ctrl+Shift+5',
       screenReader: options.screenReader ?? false,
-      windowsBuild: options.windowsBuild ?? 0,
     },
     global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: store } },
     attachTo: document.body,
@@ -268,9 +289,85 @@ describe('the terminal menu\'s Clear', () => {
     wrapper!.get('.terminal-host').element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
     await flushPromises();
     expect(xterm!.markers.every((marker) => marker.isDisposed)).toBe(false);
+    expect(api.terminal.clear).toHaveBeenCalledWith('term-1');
     shellEvents(sinks[0]!, { kind: 'commandExecuted', commandId: 1, commandLine: 'ls', time: 1 });
     expect(xterm!.decorated).toHaveLength(1);
     expect(xterm!.decorated[0]!.isDisposed).toBe(false);
+  });
+});
+
+describe('a screen restored after the page loaded again', () => {
+  it('stays hidden until the screen is written, puts the marks on the normal buffer before the alternate screen, then shows', async () => {
+    const { xterm, sinks } = await mountView({ restoring: true });
+    const host = wrapper!.get('.terminal-host');
+    expect(host.classes()).toContain('invisible');
+    sinks[0]!({
+      screen: {
+        id: 'term-1',
+        data: '$ ls\r\na\r\n$ vim\x1b[?1049h\x1b[Hfull screen',
+        cols: 100,
+        rows: 30,
+        marks: [
+          { line: 0, event: { kind: 'promptStart' } },
+          { line: 0, event: { kind: 'commandExecuted', commandId: 1, commandLine: 'ls', time: 1 } },
+          { line: 2, event: { kind: 'commandFinished', commandId: 1, exitCode: 0, time: 2 } },
+        ],
+      },
+    });
+    await flushPromises();
+    expect(xterm!.written.slice(0, 2)).toEqual(['$ ls\r\na\r\n$ vim', '\x1b[?1049h\x1b[Hfull screen']);
+    expect(xterm!.decorated.map((marker) => marker.line)).toEqual([0]);
+    expect(xterm!.markers.map((marker) => marker.line)).toEqual([0, 0, 2]);
+    expect(wrapper!.get('.terminal-host').classes()).not.toContain('invisible');
+  });
+
+  it('replaces what it shows with a screen a daemon sends unasked, after the live data it held back', async () => {
+    const { xterm, sinks } = await mountView({});
+    sinks[0]!({ data: 'old output\r\n' });
+    await flushPromises();
+    sinks[0]!({ screen: { id: 'term-1', data: 'fresh screen', cols: 100, rows: 30, marks: [] } });
+    await flushPromises();
+    expect(xterm!.resets).toBe(1);
+    expect(xterm!.written[0]).toBe('fresh screen');
+  });
+
+  it('shows what it has once main stops waiting without a screen', async () => {
+    await mountView({ restoring: true });
+    expect(wrapper!.get('.terminal-host').classes()).toContain('invisible');
+    await wrapper!.setProps({ terminal: { ...info, restoring: false } });
+    await flushPromises();
+    expect(wrapper!.get('.terminal-host').classes()).not.toContain('invisible');
+  });
+
+  it('shows a new terminal at once', async () => {
+    await mountView();
+    expect(wrapper!.get('.terminal-host').classes()).not.toContain('invisible');
+  });
+
+  // The page's first state can come before main asked for the screens.
+  it('hides again when main starts waiting for its screen after the view mounted, until the screen is written', async () => {
+    const { sinks } = await mountView();
+    await wrapper!.setProps({ terminal: { ...info, restoring: true } });
+    expect(wrapper!.get('.terminal-host').classes()).toContain('invisible');
+    sinks[0]!({ screen: { id: 'term-1', data: '$ ', cols: 80, rows: 24, marks: [] } });
+    await flushPromises();
+    expect(wrapper!.get('.terminal-host').classes()).not.toContain('invisible');
+  });
+
+  it('stays hidden when main stops waiting while its screen still waits in the store for the view to open', async () => {
+    let fontLoaded: () => void = () => undefined;
+    fontsLoad.mockImplementation(() => new Promise((resolve) => {
+      fontLoaded = () => resolve([]);
+    }));
+    const { sinks } = await mountView({ restoring: true, screenWaits: () => true });
+    await wrapper!.setProps({ terminal: { ...info, restoring: false } });
+    await flushPromises();
+    expect(wrapper!.get('.terminal-host').classes()).toContain('invisible');
+    fontLoaded();
+    await flushPromises();
+    sinks[0]!({ screen: { id: 'term-1', data: '$ ', cols: 80, rows: 24, marks: [] } });
+    await flushPromises();
+    expect(wrapper!.get('.terminal-host').classes()).not.toContain('invisible');
   });
 });
 
@@ -308,13 +405,33 @@ describe('platform options', () => {
     expect(xterm!.options.screenReaderMode).toBe(false);
   });
 
-  it('tells xterm the Windows build its conpty runs on', async () => {
-    const { xterm } = await mountView({ platform: 'win32', windowsBuild: 19045 });
+  it('tells xterm the Windows build of the host whose conpty runs the terminal, whatever this computer runs', async () => {
+    const { xterm } = await mountView({ platform: 'linux', windowsBuild: 19045 });
     expect(xterm!.options.windowsPty).toEqual({ backend: 'conpty', buildNumber: 19045 });
+    wrapper!.unmount();
+    const posix = await mountView({ platform: 'win32', windowsBuild: null });
+    expect(posix.xterm!.options.windowsPty).toBeUndefined();
   });
 });
 
 describe('link resolution', () => {
+  it('reads paths in the path rules of the host the shell runs on, whatever this computer runs', async () => {
+    for (const [platform, pathFlavor, line, path] of [
+      // a drive path after a word is a Windows link only; a slash after a drive letter starts a POSIX path
+      ['linux', 'win32', 'at C:\\x\\y.ts', 'C:\\x\\y.ts'],
+      ['win32', 'posix', 'C:/x/y.ts', '/x/y.ts'],
+    ] as const) {
+      const { api, xterm } = await mountView({ platform, pathFlavor });
+      vi.mocked(api.terminal.resolveLinks).mockResolvedValue([]);
+      xterm!.lines = [line];
+      xterm!.linkProviders[0]!.provideLinks(1, () => undefined);
+      await flushPromises();
+      expect(vi.mocked(api.terminal.resolveLinks).mock.calls[0]?.[0].paths).toContain(path);
+      wrapper!.unmount();
+      wrapper = undefined;
+    }
+  });
+
   it('treats a failed resolution as no links, without an unhandled rejection', async () => {
     const rejections: unknown[] = [];
     const onRejection = (reason: unknown): void => void rejections.push(reason);

@@ -4,6 +4,7 @@ import type { ObservationCursor } from '@shared/types/memory';
 import { log } from '../../logger';
 import type { DatabaseInstance, MemoryRow } from '../types';
 import { normalizedContentHash, rowToEntry } from '../types';
+import { localOnly } from '../local-only';
 
 /** Server-side content bound; the prose-JSON fallback bypasses schema validation, so clamp here too to avoid a megabyte FTS row. */
 const MAX_CONTENT_CHARS = 20000;
@@ -62,7 +63,7 @@ export class ObservationManager {
    */
   normalizeStoredFilePaths(): void {
     const rows = this.db.prepare(
-      "SELECT id, files_read, files_modified FROM memories WHERE files_read GLOB '*\\*' OR files_modified GLOB '*\\*'"
+      `SELECT id, files_read, files_modified FROM memories WHERE (files_read GLOB '*\\*' OR files_modified GLOB '*\\*')${localOnly()}`
     ).all() as Pick<MemoryRow, 'id' | 'files_read' | 'files_modified'>[];
     if (rows.length === 0) return;
 

@@ -38,7 +38,7 @@ import { attachmentInfo, splitTerminalAttachments } from '../../terminal-attachm
 import type { ChatAttachmentInfo } from '../../../shared/types/chat-attachment';
 import { toImageBlocks } from '../branch-text';
 import { resultImageCount } from '../tool-result-text';
-import { sessionUsageMessage, type SessionUsageMessage } from '../session-usage';
+import { sessionUsageMessage, type ConversationEntrySource, type SessionUsageMessage } from '../session-usage';
 import { contextSnapshotOf, emptyContextSnapshot, type ContextSnapshot } from '../context-snapshot';
 import { publishedEffort, type EffortBadgeLevel } from '../../../shared/effort-badge';
 
@@ -162,6 +162,7 @@ export function reconstructMessages(
   branch: readonly SessionEntry[],
   modelReasons: ModelReasonsLookup = () => undefined,
   isContextOverflow: OverflowTest = () => false,
+  liveToolCallIds: ReadonlySet<string> = new Set(),
 ): { messages: ReplayMessage[]; usage: ContextSnapshot } {
   const originalInputs = extractOriginalInputs(branch);
   const attachmentCounts = extractTerminalAttachmentCounts(branch);
@@ -305,6 +306,11 @@ export function reconstructMessages(
         const toolName = mapPiToolName(b.name);
         const input = normalizeToolInput(b.name, b.arguments ?? {});
         const recorded = toolResults.get(b.id);
+        if (!recorded && liveToolCallIds.has(b.id)) {
+          tools.push({ id: b.id, name: toolName, input, live: true });
+          contentBlocks.push({ type: 'tool_use', id: b.id, name: toolName, input });
+          continue;
+        }
         // A Stop abandons the calls it cut short, and the live view shows the late end only of one pi executed.
         const stoppedUnexecuted = stopped.toolCallIds.has(b.id) && recorded?.durationMs === undefined;
         const abandoned = stoppedUnexecuted ? 'stopped' : unexecuted;
@@ -534,6 +540,17 @@ export async function loadPiSessionHistory(
 
   const approxChars = perfDebugEnabled() ? approxStringLength(messages) : undefined;
   const postSpan = perfSpan('replay.post');
+  postReplayMessages(messages, post);
+  postSpan.end({ items: messages.length, approxChars });
+  if (signal?.aborted) return checkpointUserIds;
+
+  postReplayTotals(usage, sessionUsage, checkpointUserIds, post);
+  finish();
+  totalSpan.end({ items: messages.length });
+  return checkpointUserIds;
+}
+
+function postReplayMessages(messages: readonly ReplayMessage[], post: (m: ExtensionToWebviewMessage) => void): void {
   for (const msg of messages) {
     if (msg.kind === 'user') {
       post({
@@ -585,9 +602,9 @@ export async function loadPiSessionHistory(
       });
     }
   }
-  postSpan.end({ items: messages.length, approxChars });
-  if (signal?.aborted) return checkpointUserIds;
+}
 
+function postReplayTotals(usage: ContextSnapshot, sessionUsage: SessionUsageMessage, checkpointUserIds: readonly string[], post: (m: ExtensionToWebviewMessage) => void): void {
   post({
     type: 'tokenUsageUpdate',
     inputTokens: usage.input,
@@ -595,10 +612,42 @@ export async function loadPiSessionHistory(
     cacheReadTokens: usage.cacheRead,
   });
   post(sessionUsage);
-  if (checkpointUserIds.length > 0) {
-    post({ type: 'checkpointInfo', userMessageIds: checkpointUserIds });
-  }
-  finish();
-  totalSpan.end({ items: messages.length });
+  if (checkpointUserIds.length > 0) post({ type: 'checkpointInfo', userMessageIds: [...checkpointUserIds] });
+}
+
+/** What reconstructing a branch needs that loads asynchronously; read before a live branch is captured. */
+export interface ReplayContext {
+  readonly reasons: ModelReasonsLookup | undefined;
+  readonly isContextOverflow: OverflowTest | undefined;
+}
+
+export async function replayContext(modelReasons?: ModelReasonsLookup | Promise<ModelReasonsLookup | undefined>): Promise<ReplayContext> {
+  const piAi = await loadPiAi();
+  return { reasons: await modelReasons, isContextOverflow: piAi ? (message) => piAi.isContextOverflow(message) : undefined };
+}
+
+/**
+ * A live conversation's transcript, from the branch pi holds in memory, posted as a replay of its file posts it. The branch
+ * and its usage are read before the first await, so the caller's capture and this replay describe one moment. A call in
+ * `liveToolCallIds` with no stored result is posted `live`, since the live snapshot and events decide its card.
+ */
+export async function replayLiveBranch(
+  context: ReplayContext,
+  cwd: string,
+  sessionId: string,
+  sm: ConversationEntrySource,
+  branch: readonly SessionEntry[],
+  post: (m: ExtensionToWebviewMessage) => void,
+  fileCheckpoints: boolean,
+  liveToolCallIds: ReadonlySet<string>,
+): Promise<string[]> {
+  const { messages, usage } = reconstructMessages(branch, context.reasons, context.isContextOverflow, liveToolCallIds);
+  const sessionUsage = sessionUsageMessage(sm);
+  const checkpointUserIds = fileCheckpoints ? rewindableUserIdsOnBranch(branch) : promptUserIdsOnBranch(branch);
+  post({ type: 'sessionCleared', sessionId });
+  await hydrateSubagentCards(cwd, sessionId, branch, messages);
+  postReplayMessages(messages, post);
+  postReplayTotals(usage, sessionUsage, checkpointUserIds, post);
+  post({ type: 'done', data: { type: 'result', session_id: sessionId, is_done: true } });
   return checkpointUserIds;
 }

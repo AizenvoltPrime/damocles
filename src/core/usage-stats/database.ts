@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { sqliteJournalMode } from '../network-fs';
 import { DatabaseSync } from 'node:sqlite';
 
 /** The usage index is the only record of deleted conversations' spend, so it is never rebuilt: migrations are additive only. */
@@ -114,7 +115,7 @@ function openAndMigrate(dbPath: string, log: (message: string) => void, quickChe
   const db = new DatabaseSync(dbPath, { timeout: 5000 });
   try {
     if (!isIndexAhead(db)) {
-      db.exec('PRAGMA journal_mode = WAL');
+      db.exec(`PRAGMA journal_mode = ${sqliteJournalMode(dbPath)}`);
       db.exec('PRAGMA synchronous = NORMAL');
       db.exec('PRAGMA busy_timeout = 5000');
       // Zeroes a cleared title instead of leaving it in free page space.

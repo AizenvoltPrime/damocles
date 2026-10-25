@@ -140,6 +140,8 @@ const PASSTHROUGH_ENV = [
   'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
   'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS', 'OS',
   'DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'LANG', 'LC_ALL', 'SHELL', 'TERM',
+  // a server package archive the loopback daemon runs from instead of the checkout's dist/daemon.js
+  'DAMOCLES_LOOPBACK_PACKAGE',
 ];
 
 function appData(h: Pick<HermeticHome, 'home'>): string {

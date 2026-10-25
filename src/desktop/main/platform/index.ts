@@ -22,7 +22,7 @@ import type { EditorPane } from '../editor-pane';
 import { createDesktopFileConfinement } from '../../local-services/file-confinement';
 import { DesktopFileWatcherFactory } from '../../local-services/file-watcher-factory';
 import { createDesktopHostLifecycle } from './host-lifecycle';
-import type { DesktopKeyValueState } from './key-value-state';
+import type { DesktopKeyValueState } from '../../local-services/key-value-state';
 import type { DesktopLocalizationService } from '../../local-services/localization-service';
 import { createDesktopSecretsStore } from './secrets-store';
 import { DesktopSettingsStore, type ChatFolders } from '../../local-services/settings-store';

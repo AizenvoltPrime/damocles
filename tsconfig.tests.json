@@ -44,6 +44,7 @@
     "src/desktop/shell",
     "src/core/browser/__tests__",
     "src/core/pi-session/__tests__/nested-mcp-elicitation.test.ts",
+    "src/core/pi-session/__tests__/live-snapshot.test.ts",
     "src/core/team/__tests__/redispatch-parity.test.ts",
     "src/core/chat-panel/message-router/handlers/__tests__/consolidation-replay-parity.test.ts",
     // Parser input, not project code: multi-language sample files read off disk as text by the

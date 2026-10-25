@@ -1,19 +1,23 @@
 import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { readContributedConfiguration } from '../../core/config/read-contributed-configuration';
+import { settingsViewScope } from '../../core/chat-panel/settings-view-scope';
 import { DAMOCLES_HOME_DIR } from '../../core/paths';
 import { defaultProjectPath, DEFAULT_WORKSPACE_FOLDER_STATE_KEY } from '../../core/workspace-folders/folder-registry';
 import type { AppPaths } from '../../platform/app-paths';
 import type { Disposable } from '../../platform/disposable';
 import type { SettingsFolder } from '../../platform/settings-store';
 import type { CoreInit } from '../core-protocol';
-import { desktopHostCapabilities } from '../local-services/capabilities';
+import { currentPin } from '../../core/client-snapshots';
+import { desktopHostCapabilities, remoteHostCapabilities } from '../local-services/capabilities';
 import { Emitter } from '../local-services/emitter';
 import { createDesktopFileConfinement } from '../local-services/file-confinement';
 import { DesktopFileWatcherFactory } from '../local-services/file-watcher-factory';
 import { createDesktopLocalizationService, type DesktopLocalizationService } from '../local-services/localization-service';
 import type { DesktopLogSinkFactory } from '../local-services/log-sink';
-import { DesktopSettingsStore } from '../local-services/settings-store';
+import { DesktopSettingsStore, type DesktopSettingsStoreDeps } from '../local-services/settings-store';
+import type { SettingsObject } from '../../core/config/settings-file';
+import type { RemoteHost } from '../../platform/remote-host';
 import { createWorkerTreeHost } from '../local-services/watch-worker-host';
 import type { CoreLocalServices, CoreShared } from './platform';
 
@@ -38,6 +42,17 @@ export interface CoreLocal extends CoreLocalServices, Disposable {
   setPlatform(platform: NodeJS.Platform | undefined): void;
 }
 
+/** A daemon's core's user layer: the pinned (else acting) client's clientUser settings, which change with that client. */
+export function remoteSettings(remote: RemoteHost): NonNullable<DesktopSettingsStoreDeps['remote']> {
+  return {
+    fromHostTab: () => settingsViewScope() === 'machine',
+    clientSettings: () => currentPin(remote).user?.settings as SettingsObject | undefined,
+    onDidChangeClientSettings: (cb) => remote.clients.onDidChange((change) => {
+      if (change.topic === 'clientUser' || change.topic === 'actingClient') cb();
+    }),
+  };
+}
+
 /** The services core's process holds its own instance of (docs/invariants.md "Platform boundary"), over the mirrors of main's. */
 export function createCoreLocal(shared: CoreShared, logSinks: DesktopLogSinkFactory, log: (line: string) => void): CoreLocal {
   const { init } = shared;
@@ -53,19 +68,26 @@ export function createCoreLocal(shared: CoreShared, logSinks: DesktopLogSinkFact
     fileWatchers,
     projects: shared.workspaceFolders,
     trust: shared.trust,
-    defaultProject: {
-      folder: () => defaultProjectPath(shared.workspaceFolders, shared.state.workspace),
-      onDidChange: (cb) => shared.state.onDidChange('workspace', DEFAULT_WORKSPACE_FOLDER_STATE_KEY, cb),
-    },
     chatFolders: { folders: () => chatFolders(), onDidChange: (cb) => chatFoldersChanged.add(cb) },
     notifications: shared.notifications,
     localization,
     log,
+    ...(shared.remote
+      ? { remote: remoteSettings(shared.remote) }
+      : {
+          defaultProject: {
+            folder: () => defaultProjectPath(shared.workspaceFolders, shared.state.workspace),
+            onDidChange: (cb) => shared.state.onDidChange('workspace', DEFAULT_WORKSPACE_FOLDER_STATE_KEY, cb),
+          },
+        }),
   });
   const language = shared.endpoint.onMirror('language', (patch) => localization.setLanguage(patch.language));
   let platform: NodeJS.Platform | undefined;
   return {
-    capabilities: () => desktopHostCapabilities(platform ?? process.platform),
+    capabilities: () => {
+      const capabilities = desktopHostCapabilities(platform ?? process.platform);
+      return shared.remote ? remoteHostCapabilities(capabilities, currentPin(shared.remote).policy) : capabilities;
+    },
     settings,
     fileWatchers,
     confinement: createDesktopFileConfinement(),

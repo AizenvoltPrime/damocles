@@ -15,17 +15,21 @@ export interface SettingsPage {
   /** Normalized; '' when no search is active. */
   readonly query: string;
   meta(id: string): SettingsRowMeta | undefined;
+  /** Whether the row belongs on this page at all: a desktop scope tab lists only the rows of the keys it may write. */
+  listed(meta: SettingsRowMeta): boolean;
   /** Taken by a row each time it is shown; a row's stagger delay comes from it. */
   nextIndex(): number;
   /** The rows on screen per section, which the search header counts and the empty state reads. */
   readonly shown: ShallowRef<ReadonlyMap<string, SettingsSectionId>>;
   show(id: string, section: SettingsSectionId): void;
   hide(id: string): void;
+  /** Whether a group's heading belongs on the page: no search runs and one of its rows is on screen. */
+  groupShown(ids: readonly string[]): boolean;
 }
 
 const PAGE: InjectionKey<SettingsPage> = Symbol('settingsPage');
 
-export function provideSettingsPage(query: () => string, rows: ReadonlyMap<string, SettingsRowMeta>): SettingsPage {
+export function provideSettingsPage(query: () => string, rows: ReadonlyMap<string, SettingsRowMeta>, listed: () => ((meta: SettingsRowMeta) => boolean) | undefined = () => undefined): SettingsPage {
   let index = 0;
   // Runs before the rows' watchers and before the rows the new query mounts, which take their slots from zero.
   watch(query, () => (index = 0));
@@ -35,6 +39,7 @@ export function provideSettingsPage(query: () => string, rows: ReadonlyMap<strin
       return query();
     },
     meta: (id) => rows.get(id),
+    listed: (meta) => listed()?.(meta) ?? true,
     nextIndex: () => index++,
     shown,
     show(id, section) {
@@ -47,6 +52,7 @@ export function provideSettingsPage(query: () => string, rows: ReadonlyMap<strin
       next.delete(id);
       shown.value = next;
     },
+    groupShown: (ids) => query() === '' && ids.some((id) => shown.value.has(id)),
   };
   provide(PAGE, page);
   return page;

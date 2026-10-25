@@ -3,9 +3,16 @@ import { i18n } from "@/i18n";
 import type { HandlerRegistry } from "../types";
 import { PLAN_VERSION_DETAIL_KEY, type ToolCall } from "@shared/types/session";
 import { TOOL_EDIT, TOOL_WRITE, TOOL_GENERATE_IMAGE } from "@shared/tool-names";
+import { showYoloRefusal } from "@/composables/useYoloRefusal";
 
 export function createPermissionHandlers(): Partial<HandlerRegistry> {
   return {
+    // the host's policy kept YOLO off, a forged change included: the toggle shows core's state and the composer says why
+    permissionModeRefused: (msg, ctx) => {
+      if (msg.mode !== "dangerouslySkipPermissions" || msg.reason !== "remote-host") return;
+      ctx.stores.settingsStore.setDangerouslySkipPermissions(false);
+      showYoloRefusal();
+    },
     requestPermission: (msg, ctx) => {
       const { streamingStore, sessionStore, subagentStore, permissionStore } = ctx.stores;
       const { owner, parentToolUseId } = msg;

@@ -272,7 +272,7 @@ describe('Edit menu paste in the terminal pane', () => {
 describe('terminal store', () => {
   it('starts the palette\'s rename, routes main\'s paste request, and ends a rename whose terminal left', async () => {
     const api = fakeShellApi();
-    const info = { id: 'term-1', title: 'cmd', name: null, profileId: 'cmd', icon: 'cmd' as const, customIcon: null, color: null, projectKey: 'a', projectName: 'a', status: 'running' as const, exitCode: null, description: null, running: null, integrated: false };
+    const info = { id: 'term-1', title: 'cmd', name: null, profileId: 'cmd', icon: 'cmd' as const, customIcon: null, color: null, projectKey: 'a', projectName: 'a', status: 'running' as const, exitCode: null, description: null, running: null, integrated: false, restoring: false, windowsBuild: null, pathFlavor: 'posix' as const };
     api.terminal.getState = async () => ({ ...TERMINAL_STATE, terminals: [info], activeId: 'term-1' });
     const store = createTerminalStore(api);
     await store.start();

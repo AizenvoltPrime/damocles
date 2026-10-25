@@ -14,10 +14,19 @@ export interface PanelTheme {
   readonly fileIconTheme: FileIconTheme;
 }
 
+// A remote chat's host as this computer's host store names it; core never names it.
+export interface PanelHostLabel {
+  readonly hostId: string;
+  readonly name: string;
+  readonly color?: string;
+}
+
 // Answer to the synchronous init request the preload sends once at load.
 export interface PanelInit {
   readonly state: unknown;
   readonly theme: PanelTheme;
+  // present only for a chat of a remote core
+  readonly host?: PanelHostLabel;
 }
 
 export const PANEL_CHANNELS = {

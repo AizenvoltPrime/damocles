@@ -18,6 +18,11 @@ import type { SecretResolver } from '../custom-providers';
 import { LEGACY_SUBSCRIPTION_REPOS, SUBSCRIPTION_SOURCE, classifySubscriptionSource } from '../subscription';
 import { SUBCALL_USAGE_LEDGER_PATH } from '../../paths';
 import { SUBCALL_THINKING, type StructuredSubCallPurpose } from '../subcall-model';
+import { installPlatform } from '../../platform-host';
+import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
+import { dollarBilled, subscriptionProvider } from '../account-billing';
+import { DEFAULT_MODELS } from '../../../shared/types/constants';
+import type { HeldAuthEntry } from '../../../shared/remote-user';
 
 /** Lets a test make pi-ai fail to load; every other test loads the real module. */
 const piAiLoad = vi.hoisted(() => ({ fail: false }));
@@ -1059,6 +1064,63 @@ describe('subscription plugin migration', () => {
     expect(diskSources(h)).toEqual([]);
     expect(fs.existsSync(h.cloneDir(CURRENT))).toBe(false);
     expect(h.providers.has('anthropic')).toBe(false);
+  });
+
+  // A daemon's core bills Claude through its bundled plugin (allowance-transport.ts), never the host's pi packages.
+  describe('on a daemon\'s core', () => {
+    const CLAUDE = DEFAULT_MODELS.find((m) => m.value === 'claude-sonnet-5-5');
+    const SUBSCRIPTION: HeldAuthEntry = { type: 'oauth', expires: Date.now() + 3_600_000, hasKey: false, flatFee: false };
+    const ALLOWANCE: HeldAuthEntry = { ...SUBSCRIPTION, allowance: true };
+    const PREVIOUS = 'https://github.com/gotgenes/pi-anthropic-auth@fc183fc54171c1fc511570733d8f86b9f66426f6';
+
+    afterEach(() => {
+      installFakePlatform();
+    });
+
+    function remoteSetup(anthropic: HeldAuthEntry, packages: Entry[] = [], folders: string[] = []): { h: Harness; remote: ReturnType<typeof createFakeRemoteHost> } {
+      const remote = createFakeRemoteHost();
+      installPlatform({ ...createFakePlatform(), remote: remote.remote });
+      remote.set('clientAuth', 'client-a', { providers: { anthropic } });
+      const h = setup({ packages, clones: packages.map(sourceOf), folders });
+      return { h, remote };
+    }
+
+    /** The account state's billing of a Claude chat, from the runtime's live auth inputs. */
+    function billing(h: Harness): { dollarBilled: boolean; subscription: string | undefined } {
+      const deps = {
+        modelValue: CLAUDE!.value,
+        modelInfo: CLAUDE,
+        claudeAuthMode: h.runtime.getClaudeAuthStatus().mode,
+        openaiAuthStatus: h.runtime.getOpenAIAuthStatus(),
+        preferApiKey: false,
+        flatFeeKeyProviders: h.runtime.flatFeeKeyProviders(),
+      };
+      return { dollarBilled: dollarBilled(deps), subscription: subscriptionProvider(deps) };
+    }
+
+    // Locally the first folder would re-pin a stale and a legacy plugin: an install, settings writes and clone removals.
+    it('opens a folder for an allowance client without installing, writing settings or removing a clone on the host', async () => {
+      const { h } = remoteSetup(ALLOWANCE, [PREVIOUS, LEGACY]);
+
+      const folder = await h.runtime.folder(path.join(h.runtime.agentDir, 'ws', 'A'));
+
+      expect(h.runtime.folders()).toContain(folder);
+      expect(h.calls.filter((c) => /^(install|remove|addSettings|removeSettings):/.test(c) || c === 'setPackages' || c === 'flush')).toEqual([]);
+      expect(diskSources(h)).toEqual([PREVIOUS, LEGACY]);
+      expect(fs.existsSync(h.cloneDir(LEGACY))).toBe(true);
+    });
+
+    it('republishes the account state when another client acts, since a view reads the acting client', () => {
+      const { h, remote } = remoteSetup(SUBSCRIPTION, [], ['A']);
+      const publishAccountInfo = vi.fn();
+      h.runtime.registerSessionMutator('sess-remote', { publishAccountInfo } as unknown as LiveSessionMutator);
+      remote.set('clientAuth', 'client-b', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false } } });
+
+      remote.setActing('client-b');
+
+      expect(publishAccountInfo).toHaveBeenCalledTimes(1);
+      expect(billing(h)).toEqual({ dollarBilled: true, subscription: undefined });
+    });
   });
 });
 

@@ -1,5 +1,5 @@
 // Damocles Core's entry (dist/core-host.js): desktop main forks it as the "Damocles Core" utility process and talks to it over
-// process.parentPort, the one ordered channel (docs/invariants.md "Desktop host"). Main's first message is the init.
+// its parent channel, the one ordered channel (docs/invariants.md "Desktop host"). Main's first message is the init.
 import * as path from 'node:path';
 import { installLogSink, log } from '../../core/logger';
 import { installPlatform } from '../../core/platform-host';
@@ -16,7 +16,8 @@ import { startCoreService } from './core-service';
 import { createCoreLocal, type CoreLocal } from './local';
 import { installCaCertificates } from './network/ca-certificates';
 import { httpIdleTimeoutMs, installProxyDispatcher } from './network/proxy-dispatcher';
-import { createParentPortTransport, type ParentPort } from './parent-port';
+import { parentChannel, type ParentChannel } from '../local-services/parent-channel';
+import { createParentPortTransport } from './parent-port';
 import { createCorePlatform, type CorePlatform } from './platform';
 import { startCoreScm } from './scm';
 import { createFinishHolds, startCoreWorktrees } from './worktrees';
@@ -25,6 +26,8 @@ import { createFinishHolds, startCoreWorktrees } from './worktrees';
 const EXIT_NO_PARENT_PORT = 2;
 const EXIT_PROTOCOL_VIOLATION = 3;
 const EXIT_START_FAILED = 4;
+// main's CLOSE_TIMEOUT_MS: how long a parent that went away leaves core's shutdown steps before core exits anyway
+const CLOSE_TIMEOUT_MS = 3_000;
 
 // Core's own failure is told on stderr, whose tail main logs: its log may not exist yet, and a violation never reaches it.
 function exit(code: number, message: string): never {
@@ -41,7 +44,7 @@ function onViolation(error: CoreProtocolError): never {
   exit(EXIT_PROTOCOL_VIOLATION, error.message);
 }
 
-async function start(port: ParentPort): Promise<void> {
+async function start(port: ParentChannel): Promise<void> {
   const transport = createParentPortTransport(port);
   const init = parseCoreInit(await transport.init);
   if (init === INVALID) exit(EXIT_PROTOCOL_VIOLATION, 'Core protocol violation: init');
@@ -87,7 +90,7 @@ async function start(port: ParentPort): Promise<void> {
   const worktrees = startCoreWorktrees(platform, scm, finishHolds, (line) => log(line));
   platform.setWorktrees(worktrees.services);
 
-  startCoreService(platform, {
+  const service = startCoreService(platform, {
     finishHolds,
     chatFolders: coreLocal.chatFolders,
     setPlatform: (next) => coreLocal.setPlatform(next),
@@ -102,10 +105,17 @@ async function start(port: ParentPort): Promise<void> {
     // main kills core once core.shutdown answers, so a line logged after this is written before its log call returns
     flushLogs: () => logSinks.endAsyncWrites(),
   });
+  shutdown = service.shutdown;
   // Every request main sent meanwhile is answered from here on, by the services just registered.
   transport.open();
 }
 
-const parentPort = (process as NodeJS.Process & { readonly parentPort?: ParentPort }).parentPort;
-if (!parentPort) exit(EXIT_NO_PARENT_PORT, 'Damocles Core runs only as a utility process of desktop main');
-start(parentPort).catch((err: unknown) => exit(EXIT_START_FAILED, `Damocles Core could not start: ${errorText(err)}`));
+// set once the services serve; a parent gone before then leaves nothing to shut down
+let shutdown: (() => Promise<void>) | undefined;
+const channel = parentChannel();
+if (!channel) exit(EXIT_NO_PARENT_PORT, 'Damocles Core runs only as a child of desktop main or the daemon');
+channel.onDisconnect(() => {
+  const steps = shutdown?.().catch((err: unknown) => log(`[core] shutting down after the parent went away failed: ${errorText(err)}`)) ?? Promise.resolve();
+  void Promise.race([steps, new Promise((resolve) => setTimeout(resolve, CLOSE_TIMEOUT_MS))]).then(() => process.exit(0));
+});
+start(channel).catch((err: unknown) => exit(EXIT_START_FAILED, `Damocles Core could not start: ${errorText(err)}`));

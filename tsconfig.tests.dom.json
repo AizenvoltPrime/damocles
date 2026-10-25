@@ -17,6 +17,8 @@
     // Joins the extension's UI bridge to the webview handler that answers it, so it links webview
     // modules that need the DOM globals.
     "src/core/pi-session/__tests__/nested-mcp-elicitation.test.ts",
+    // Same reason: it feeds a joining view's replay and live snapshot to the real chat page stores.
+    "src/core/pi-session/__tests__/live-snapshot.test.ts",
     // Same reason: it drives the runner and feeds its webview messages to the real team store.
     "src/core/team/__tests__/redispatch-parity.test.ts",
     // Same reason: it feeds the memory handler's overlay replay to the real consolidation store.

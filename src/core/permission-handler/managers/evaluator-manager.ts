@@ -15,6 +15,8 @@ import { resolveToCwd } from '../../pi-session/tools/search-tools';
 import { MCP_TOOL_PREFIX } from '../../pi-session/mcp/naming';
 import { matchesToolPattern } from '../../pi-session/mcp/exposure';
 import { READ_MCP_RESOURCE, uriRuleCovers, type McpResourceRuleFilter } from '../mcp-resource-rule';
+import { bypassAllowed, currentPin } from '../../client-snapshots';
+import type { PermissionRuleLists } from '../../../shared/remote-user';
 
 /** Every built-in tool that edits a file; an `Edit` rule covers each of them. */
 const EDIT_RULE_TOOLS: ReadonlySet<string> = new Set([TOOL_EDIT, TOOL_WRITE, TOOL_GENERATE_IMAGE]);
@@ -24,6 +26,9 @@ const SEARCH_TOOLS: ReadonlySet<string> = new Set([TOOL_GREP, TOOL_GLOB, TOOL_LS
 
 /** `Tool` or `Tool(specifier)`, where the tool name may hold `*` wildcards. */
 const RULE_SHAPE = /^([\w*-]+)(?:\((.+)\))?$/;
+
+/** A pin with no client user rules; one shared value, since the permissions cache compares rule lists by identity. */
+const NO_CLIENT_RULES: readonly PermissionRuleLists[] = Object.freeze([]);
 
 /** pi's `resolveReadPath` (`dist/core/tools/path-utils.js`), which its package does not export; keep the two in step. */
 function resolveReadPath(resolved: string): string {
@@ -99,23 +104,36 @@ export class EvaluatorManager {
   private state: PermissionState;
   private cachedPermissions: FilePermissions[] | null = null;
   private cachedFor: string | null = null;
+  private cachedClientRules: readonly PermissionRuleLists[] | undefined;
   private cacheTime = 0;
   private readonly CACHE_TTL_MS = 5000;
+  private ruleSaves: Promise<void> = Promise.resolve();
   private settingsWatchers: FileWatcher[] = [];
-  private readonly platform: Pick<Platform, 'trust' | 'fileWatchers'>;
+  private readonly platform: Pick<Platform, 'trust' | 'fileWatchers' | 'remote'>;
 
   /** Windows path rules for file rules: case-insensitive names and NTFS stream syntax. */
   private readonly windowsPaths: boolean;
 
   constructor(
     state: PermissionState,
-    platform: Pick<Platform, 'trust' | 'fileWatchers'>,
+    platform: Pick<Platform, 'trust' | 'fileWatchers' | 'remote'>,
     windowsPaths: boolean = process.platform === 'win32',
   ) {
     this.state = state;
     this.platform = platform;
     this.windowsPaths = windowsPaths;
     this.setupSettingsWatcher();
+  }
+
+  /**
+   * "Always allow" is saving a rule while its call already runs: the next decision waits for the write and reads the files
+   * again, as a watcher may report the write late or, for a home file, never.
+   */
+  savingRules(save: Promise<unknown>): void {
+    const saved = save.then(() => undefined, () => undefined);
+    this.ruleSaves = Promise.all([this.ruleSaves, saved]).then(() => {
+      this.cachedPermissions = null;
+    });
   }
 
   private setupSettingsWatcher(): void {
@@ -144,7 +162,7 @@ export class EvaluatorManager {
    * (`matchRule`). Synchronous, so an open prompt can be decided again the moment the mode changes.
    */
   decide(toolName: string, input: Record<string, unknown>, rule: PermissionBehavior | null): PermissionBehavior {
-    if (this.state.dangerouslySkipPermissions) {
+    if (this.bypassing()) {
       return 'allow';
     }
 
@@ -185,7 +203,7 @@ export class EvaluatorManager {
    * overrides the user's own deny or ask.
    */
   async matchRule(toolName: string, input: Record<string, unknown>, workspacePath: string | null, mcpTool?: McpToolIdentity): Promise<PermissionBehavior | null> {
-    if (this.state.dangerouslySkipPermissions) {
+    if (this.bypassing()) {
       return null;
     }
     const permissions = await this.getPermissions(this.trustedWorkspace(workspacePath));
@@ -197,7 +215,7 @@ export class EvaluatorManager {
    * it out of a search rooted above it. Nothing is covered under YOLO.
    */
   async readRuleFilter(workspacePath: string | null): Promise<(filePath: string) => boolean> {
-    if (this.state.dangerouslySkipPermissions) return () => false;
+    if (this.bypassing()) return () => false;
     const permissions = await this.getPermissions(this.trustedWorkspace(workspacePath));
     const resolvers = pathResolvers();
     return (filePath) => permissions.some((file) =>
@@ -211,7 +229,7 @@ export class EvaluatorManager {
    * Nothing is covered under YOLO.
    */
   async mcpResourceRuleFilter(toolName: string, workspacePath: string | null): Promise<McpResourceRuleFilter> {
-    if (this.state.dangerouslySkipPermissions) {
+    if (this.bypassing()) {
       return { serverCovered: () => false, resourceDenied: () => false, resourceDenyRule: () => undefined, contentCovered: () => false };
     }
     const permissions = await this.getPermissions(this.trustedWorkspace(workspacePath));
@@ -238,6 +256,11 @@ export class EvaluatorManager {
       resourceDenyRule,
       contentCovered: (server, uri, readUri) => resourceDenyRule(server, uri) !== undefined || coveredByAnotherAsk(server, uri, readUri),
     };
+  }
+
+  // YOLO as set, re-checked against the pinned client's policy at each decision
+  private bypassing(): boolean {
+    return this.state.dangerouslySkipPermissions && bypassAllowed(this.platform);
   }
 
   /**
@@ -276,16 +299,21 @@ export class EvaluatorManager {
    * previous workspace would answer with another project's rules.
    */
   private async getPermissions(workspacePath: string | null): Promise<FilePermissions[]> {
+    // the turn's pinned client's user rules on a daemon's core
+    const clientRules = this.platform.remote ? (currentPin(this.platform.remote).user?.permissionRules ?? NO_CLIENT_RULES) : undefined;
+    await this.ruleSaves;
     const now = Date.now();
     if (
       this.cachedPermissions &&
       this.cachedFor === workspacePath &&
+      this.cachedClientRules === clientRules &&
       (now - this.cacheTime) < this.CACHE_TTL_MS
     ) {
       return this.cachedPermissions;
     }
-    this.cachedPermissions = await loadPermissionsByPriority(workspacePath);
+    this.cachedPermissions = await loadPermissionsByPriority(workspacePath, clientRules);
     this.cachedFor = workspacePath;
+    this.cachedClientRules = clientRules;
     this.cacheTime = now;
     return this.cachedPermissions;
   }

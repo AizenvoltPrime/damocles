@@ -112,6 +112,9 @@ export const useSettingsStore = defineStore('settings', () => {
     return baseAvailableModels.value.length > 0 ? baseAvailableModels.value : DEFAULT_MODELS;
   });
   const accountInfo = ref<AccountInfo | null>(null);
+  /** The user closed the allowance notice; it shows again once the account state stops reporting it and reports it anew. */
+  const allowanceNoticeDismissed = ref(false);
+  const showAllowanceNotice = computed(() => accountInfo.value?.allowanceUnavailable === true && !allowanceNoticeDismissed.value);
   const mcpServers = ref<McpServerStatusInfo[]>([]);
   /** Live `damocles.mcp.enabled` — the MCP-panel master switch. */
   const mcpEnabled = ref<boolean>(true);
@@ -140,6 +143,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const settingSources = ref<Record<string, SettingSource>>({});
   // False in an untrusted folder, whose Workspace section core refuses to write.
   const workspaceWritable = ref<boolean>(true);
+  // The keys a desktop settings tab may write, which core names for a view attached with a scope; undefined: every key.
+  const writableKeys = ref<ReadonlySet<string> | undefined>(undefined);
   const voiceControlsAvailable = computed(() => hostCapabilities.value.voice || hostCapabilities.value.hostSpeechExtensions);
   const budgetWarning = ref<BudgetWarningState | null>(null);
   const contextWarning = ref<ContextWarningState | null>(null);
@@ -179,6 +184,10 @@ export const useSettingsStore = defineStore('settings', () => {
   function updateSettings(settings: ExtensionSettings, sources?: Record<string, SettingSource>) {
     currentSettings.value = settings;
     settingSources.value = sources ?? {};
+  }
+
+  function setWritableKeys(keys: readonly string[] | undefined) {
+    writableKeys.value = keys === undefined ? undefined : new Set(keys);
   }
 
   function setWorkspaceWritable(writable: boolean) {
@@ -238,6 +247,11 @@ export const useSettingsStore = defineStore('settings', () => {
   // buildAccountInfo returns a whole snapshot, so it replaces the previous one rather than merging into it.
   function setAccountInfo(info: AccountInfo | null) {
     accountInfo.value = info;
+    if (info?.allowanceUnavailable !== true) allowanceNoticeDismissed.value = false;
+  }
+
+  function dismissAllowanceNotice() {
+    allowanceNoticeDismissed.value = true;
   }
 
   function setMcpServers(servers: McpServerStatusInfo[]) {
@@ -497,8 +511,10 @@ export const useSettingsStore = defineStore('settings', () => {
     currentSettings.value = { ...DEFAULT_SETTINGS };
     settingSources.value = {};
     workspaceWritable.value = true;
+    writableKeys.value = undefined;
     baseAvailableModels.value = [];
     accountInfo.value = null;
+    allowanceNoticeDismissed.value = false;
     mcpServers.value = [];
     mcpEnabled.value = true;
     mcpConfigErrors.value = [];
@@ -544,6 +560,7 @@ export const useSettingsStore = defineStore('settings', () => {
     currentSettings,
     availableModels,
     accountInfo,
+    showAllowanceNotice,
     mcpServers,
     mcpConfigErrors,
     mcpLocalUnignored,
@@ -559,6 +576,8 @@ export const useSettingsStore = defineStore('settings', () => {
     settingSources,
     workspaceWritable,
     setWorkspaceWritable,
+    writableKeys,
+    setWritableKeys,
     voiceControlsAvailable,
     setHostCapabilities,
     budgetWarning,
@@ -582,6 +601,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setIdeContextEnabledDefault,
     setAvailableModels,
     setAccountInfo,
+    dismissAllowanceNotice,
     setMcpServers,
     reconcileMcpServers,
     setMcpConfigErrors,

@@ -23,6 +23,8 @@ export const TERMINAL_CHANNELS = {
   kill: 'damocles:terminal:kill',
   // TerminalRef: an exited terminal only; a new process with the same id, profile and project
   restart: 'damocles:terminal:restart',
+  // TerminalRef: the menu's Clear, which the screen the pty host keeps follows
+  clear: 'damocles:terminal:clear',
   // TerminalRef: the active terminal, persisted; its group becomes the active group
   select: 'damocles:terminal:select',
   // TerminalRef: a new pane right of that one, with its profile and working directory, which takes keyboard focus
@@ -58,6 +60,8 @@ export const TERMINAL_CHANNELS = {
   state: 'damocles:terminal:state',
   // TerminalData, the pty host's 5 ms / 64 KB batches
   data: 'damocles:terminal:data',
+  // TerminalScreen: a live terminal's screen after the page loaded again, ahead of its next data
+  screen: 'damocles:terminal:screen',
   // TerminalRef after a user action in main (Ctrl+`, New Terminal, the quick pick's accept); restored terminals never get it
   focus: 'damocles:terminal:focus',
   // TerminalRef: the palette's Rename...; the shell starts the inline rename of that terminal
@@ -89,6 +93,12 @@ export const MAX_TERMINAL_TITLE_CHARS = 100;
 export const MAX_SHELL_SEQUENCE_CHARS: number = 16 * 1024;
 // Characters of a reported working directory after unescaping.
 export const MAX_TERMINAL_CWD_CHARS = 4096;
+// Characters of a serialized screen; a larger one is sent without its scrollback.
+export const MAX_TERMINAL_SCREEN_CHARS: number = 32 * 1024 * 1024;
+// Commands one terminal keeps, with their marks in the shell and their facts in main; the oldest leaves first.
+export const MAX_TRACKED_COMMANDS = 100;
+// Command marks a screen carries: prompt start, command start, executed and finished for each tracked command.
+export const MAX_TERMINAL_SCREEN_MARKS: number = 4 * MAX_TRACKED_COMMANDS;
 
 // Flow control (VS Code's FlowControlConstants): the host pauses a pty once more than TERMINAL_HIGH_WATERMARK_CHARS of its
 // output are unacknowledged and resumes it below TERMINAL_LOW_WATERMARK_CHARS; the shell acks every TERMINAL_ACK_CHARS.
@@ -146,6 +156,13 @@ export interface TerminalInfo {
   readonly running: string | null;
   // a trusted shell-integration sequence arrived since the process started
   readonly integrated: boolean;
+  // main waits for the screen the page loaded again shows first (TerminalScreen); the view stays hidden until it is written
+  readonly restoring: boolean;
+  // the Windows build of the host whose conpty runs the terminal, which xterm reads for reflow and wrapped lines as the pty
+  // host's screen does; null off Windows
+  readonly windowsBuild: number | null;
+  // the path rules of the host the shell runs on, which the paths it prints follow
+  readonly pathFlavor: 'win32' | 'posix';
 }
 
 export interface TerminalSettings {
@@ -197,8 +214,6 @@ export interface TerminalState {
   readonly profiles: readonly TerminalProfileOption[];
   // Chromium's accessibility support is on (a screen reader is running), which xterm's screenReaderMode follows
   readonly screenReader: boolean;
-  // the Windows build from os.release(), which xterm reads for conpty's reflow and wrapped lines; 0 outside Windows
-  readonly windowsBuild: number;
 }
 
 export interface TerminalResizePanes {
@@ -295,6 +310,21 @@ export interface TerminalData {
   readonly data: string;
   // the trusted sequences, in stream order; offset: where in data each stood (0..data.length, non-decreasing)
   readonly events?: readonly TerminalShellEventAt[];
+}
+
+// A live terminal's screen, which a fresh xterm takes before it shows: SerializeAddon's sequences that redraw the buffer,
+// cursor and modes at cols × rows, and main's shell events at the absolute buffer line each stood on, in stream order.
+export interface TerminalScreen {
+  readonly id: string;
+  readonly data: string;
+  readonly cols: number;
+  readonly rows: number;
+  readonly marks: readonly TerminalScreenMark[];
+}
+
+export interface TerminalScreenMark {
+  readonly line: number;
+  readonly event: TerminalShellEvent;
 }
 
 export interface TerminalShellEventAt {
@@ -411,6 +441,7 @@ export interface DamoclesTerminalApi {
   // returns the unsubscribe
   onState(listener: (state: TerminalState) => void): () => void;
   onData(listener: (data: TerminalData) => void): () => void;
+  onScreen(listener: (screen: TerminalScreen) => void): () => void;
   onFocus(listener: (id: string) => void): () => void;
   onStartRename(listener: (id: string) => void): () => void;
   onRequestPaste(listener: (id: string) => void): () => void;
@@ -423,6 +454,7 @@ export interface DamoclesTerminalApi {
   ack(ack: TerminalAck): void;
   kill(id: string): void;
   restart(id: string): void;
+  clear(id: string): void;
   select(id: string): void;
   split(id: string): void;
   unsplit(id: string): void;

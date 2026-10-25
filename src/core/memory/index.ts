@@ -59,9 +59,13 @@ import type { NotificationService } from '../../platform/notification-service';
 import type { FileWatcherFactory } from '../../platform/file-watcher';
 import type { AppPaths } from '../../platform/app-paths';
 import { notifySchemaAhead } from '../schema-skew';
+import { globalMemoryUnavailableReason, userScopeRemote } from '../user-scope';
+import { localOnly } from './local-only';
+import { USER_SCOPE_UNAVAILABLE } from '../../shared/remote-user';
 import type {
   MemoryEntry,
   MemoryScope,
+  MemoryTier,
   ObservationInput,
   SearchQuery,
   SearchResult,
@@ -102,6 +106,33 @@ const AUDIT_FAILURE_CODES: Record<AuditRunFailure, MemoryAuditErrorCode> = {
 
 /** Rows of one version chain, bound as (root, root); the OR arms use idx_memories_root and the primary key, which COALESCE(root_id, id) cannot. */
 const CHAIN_WHERE = 'root_id = ? OR (root_id IS NULL AND id = ?)';
+
+// the tiers of global rows: a global fact, preference or episode, and a note
+const GLOBAL_TIERS: ReadonlySet<MemoryTier> = new Set(['global', 'note']);
+
+/** Global memory is the client's: on a daemon's core an operation that names a global row is refused, before it enters the write queue. */
+function refuseGlobalRow(db: DatabaseInstance, id: string): void {
+  if (!userScopeRemote()) return;
+  const row = db.prepare('SELECT scope FROM memories WHERE id = ?').get(id) as { scope: string } | undefined;
+  if (row?.scope === 'global') throw new Error(globalMemoryUnavailableReason());
+}
+
+/**
+ * Global memory is the client's: on a daemon's core any statement that would add, change or delete a global memory or profile row aborts. Each
+ * write path leaves global rows out in its own statement, so these only stop one that does not. TEMP triggers live
+ * only in this connection, so the store's file and schema stay as they are.
+ */
+function refuseGlobalRows(db: DatabaseInstance): void {
+  const refuse = `BEGIN SELECT RAISE(ABORT, '${USER_SCOPE_UNAVAILABLE}'); END`;
+  db.exec(`
+    CREATE TEMP TRIGGER IF NOT EXISTS remote_global_memory_insert BEFORE INSERT ON main.memories WHEN NEW.scope = 'global' ${refuse};
+    CREATE TEMP TRIGGER IF NOT EXISTS remote_global_memory_update BEFORE UPDATE ON main.memories WHEN OLD.scope = 'global' OR NEW.scope = 'global' ${refuse};
+    CREATE TEMP TRIGGER IF NOT EXISTS remote_global_memory_delete BEFORE DELETE ON main.memories WHEN OLD.scope = 'global' ${refuse};
+    CREATE TEMP TRIGGER IF NOT EXISTS remote_global_profile_insert BEFORE INSERT ON main.memory_profile WHEN NEW.scope = 'global' ${refuse};
+    CREATE TEMP TRIGGER IF NOT EXISTS remote_global_profile_update BEFORE UPDATE ON main.memory_profile WHEN OLD.scope = 'global' OR NEW.scope = 'global' ${refuse};
+    CREATE TEMP TRIGGER IF NOT EXISTS remote_global_profile_delete BEFORE DELETE ON main.memory_profile WHEN OLD.scope = 'global' ${refuse};
+  `);
+}
 
 function chainRoot(db: DatabaseInstance, id: string): string | null {
   return (db.prepare('SELECT COALESCE(root_id, id) AS root FROM memories WHERE id = ?').get(id) as { root: string } | undefined)?.root ?? null;
@@ -394,6 +425,7 @@ export class MemoryService {
     }
 
     this.db = opened.db;
+    if (userScopeRemote()) refuseGlobalRows(opened.db);
     let readOnly: ReadOnlyReason | null = null;
     if (opened.readOnly) {
       readOnly = 'ahead';
@@ -616,6 +648,8 @@ export class MemoryService {
   }
 
   async addNote(content: string, tags?: string[]): Promise<MemoryEntry | null> {
+    // a note is global
+    if (userScopeRemote()) throw new Error(globalMemoryUnavailableReason());
     await this.ensureInitialized();
     const db = this.db, writeQueue = this.writeQueue, noteManager = this.noteManager;
     if (!db || !writeQueue || !noteManager) return null;
@@ -652,6 +686,7 @@ export class MemoryService {
     sessionId?: string;
     workspace?: string;
   }): Promise<MemoryEntry | null> {
+    if (args.scope === 'global' && userScopeRemote()) throw new Error(globalMemoryUnavailableReason());
     await this.ensureInitialized();
     if (!this.db || !this.writeQueue || !this.factGraph) return null;
 
@@ -694,7 +729,7 @@ export class MemoryService {
       `SELECT * FROM memories
        WHERE is_latest = 1
          AND kind IN ('fact','preference','episode','note')
-         AND (scope = 'global' OR workspace = ? OR (session_id = ? AND scope = 'session'))
+         AND (scope = 'global' OR workspace = ? OR (session_id = ? AND scope = 'session'))${localOnly()}
        ORDER BY updated_at DESC`
     ).all(workspace, sessionId ?? '') as MemoryRow[];
     return rows.map(rowToEntry);
@@ -711,6 +746,7 @@ export class MemoryService {
     if (!db || !writeQueue) return null;
     const old = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as MemoryRow | undefined;
     if (!old) return null;
+    refuseGlobalRow(db, id);
 
     const content = contentRaw.slice(0, MAX_CONTENT_CHARS);
     let targetId = id;
@@ -734,6 +770,7 @@ export class MemoryService {
     await this.ensureInitialized();
     const db = this.db, writeQueue = this.writeQueue;
     if (!db || !writeQueue) return false;
+    refuseGlobalRow(db, id);
     return this.fileChangeTracker ? await this.fileChangeTracker.resetStaleness(id) : false;
   }
 
@@ -741,6 +778,7 @@ export class MemoryService {
     await this.ensureInitialized();
     const db = this.db, writeQueue = this.writeQueue;
     if (!db || !writeQueue) return false;
+    refuseGlobalRow(db, id);
     const changed = await writeQueue.run(() => {
       const row = db.prepare('SELECT id, parent_id, is_latest FROM memories WHERE id = ?').get(id) as
         { id: string; parent_id: string | null; is_latest: number } | undefined;
@@ -763,6 +801,8 @@ export class MemoryService {
   }
 
   listNotes(tags?: string[]): MemoryEntry[] {
+    // every note is global
+    if (userScopeRemote()) throw new Error(globalMemoryUnavailableReason());
     return this.noteManager?.list(tags) ?? [];
   }
 
@@ -795,6 +835,8 @@ export class MemoryService {
   }
 
   async searchMemories(query: SearchQuery): Promise<SearchResult[]> {
+    // global memory is the client's, so a daemon's core reads no global row, its own host account's included, so retrieval's query leaves them out
+    if (userScopeRemote() && query.tiers !== undefined && query.tiers.length > 0 && query.tiers.every((tier) => GLOBAL_TIERS.has(tier))) throw new Error(globalMemoryUnavailableReason());
     return this.whileOpen([], async () => (await this.retrievalManager?.search(query)) ?? []);
   }
 
@@ -814,12 +856,12 @@ export class MemoryService {
     const db = this.db, writeQueue = this.writeQueue;
     if (!db || ids.length === 0) return [];
     const ph = ids.map(() => '?').join(',');
-    const read = (): MemoryEntry[] => (db.prepare(`SELECT * FROM memories WHERE id IN (${ph})`).all(...ids) as MemoryRow[]).map(rowToEntry);
+    const read = (): MemoryEntry[] => (db.prepare(`SELECT * FROM memories WHERE id IN (${ph})${localOnly()}`).all(...ids) as MemoryRow[]).map(rowToEntry);
     // A read-only store still answers; it just records no access.
     if (!writeQueue) return read();
     return writeQueue.run(() => {
       // Don't bump access on a forgotten row, but still resolve it — an explicit fetch of a surfaced forgotten hit must return.
-      db.prepare(`UPDATE memories SET access_count = access_count + 1 WHERE id IN (${ph}) AND forgotten = 0`).run(...ids);
+      db.prepare(`UPDATE memories SET access_count = access_count + 1 WHERE id IN (${ph}) AND forgotten = 0${localOnly()}`).run(...ids);
       return read();
     }).catch((err: unknown) => {
       if (err instanceof MemoryReadOnlyError) return read();
@@ -829,13 +871,17 @@ export class MemoryService {
 
   /** Version chain for a fact, root→latest, for the panel's version drill-down. */
   getMemoryHistory(id: string): MemoryEntry[] {
-    return this.factGraph?.getVersionHistory(id).map(rowToEntry) ?? [];
+    if (!this.db || !this.factGraph) return [];
+    refuseGlobalRow(this.db, id);
+    return this.factGraph.getVersionHistory(id).map(rowToEntry);
   }
 
   /** Fact-graph neighbors reached over UPDATES/EXTENDS/DERIVES/SUPERSEDES edges (default depth 2). */
   getRelatedMemories(id: string, maxDepth?: number): MemoryEntry[] {
+    if (!this.db || !this.factGraph) return [];
+    refuseGlobalRow(this.db, id);
     const kinds: EdgeKind[] = ['UPDATES', 'EXTENDS', 'DERIVES', 'SUPERSEDES'];
-    return this.factGraph?.getRelated(id, kinds, maxDepth ?? 2).map(rowToEntry) ?? [];
+    return this.factGraph.getRelated(id, kinds, maxDepth ?? 2).map(rowToEntry);
   }
 
   /**
@@ -845,7 +891,7 @@ export class MemoryService {
    * row whose id is stale (superseded/version-forked) reports "not found" instead of silently
    * content-matching and forgetting an unrelated memory.
    */
-  forgetMemory(
+  async forgetMemory(
     idOrContent: string,
     scope: 'version' | 'chain',
     exactId = false,
@@ -853,7 +899,8 @@ export class MemoryService {
     const db = this.db;
     const factGraph = this.factGraph;
     const writeQueue = this.writeQueue;
-    if (!db || !factGraph || !writeQueue) return Promise.resolve({ forgotten: 0 });
+    if (!db || !factGraph || !writeQueue) return { forgotten: 0 };
+    refuseGlobalRow(db, idOrContent);
 
     return writeQueue.run(() => {
       const targetId = exactId
@@ -900,10 +947,11 @@ export class MemoryService {
   }
 
   /** Restore a forgotten memory. `chain` (default) restores every version sharing the root. */
-  unforgetMemory(id: string, scope: 'version' | 'chain' = 'chain'): Promise<{ restored: number }> {
+  async unforgetMemory(id: string, scope: 'version' | 'chain' = 'chain'): Promise<{ restored: number }> {
     const db = this.db;
     const writeQueue = this.writeQueue;
-    if (!db || !writeQueue) return Promise.resolve({ restored: 0 });
+    if (!db || !writeQueue) return { restored: 0 };
+    refuseGlobalRow(db, id);
 
     return writeQueue.run(() => {
       const root = scope === 'chain' ? chainRoot(db, id) : null;
@@ -956,7 +1004,7 @@ export class MemoryService {
         `SELECT m.id FROM memories_fts fts
            JOIN memories m ON m.rowid = fts.rowid
           WHERE memories_fts MATCH ?
-            AND m.is_latest = 1 AND m.forgotten = 0
+            AND m.is_latest = 1 AND m.forgotten = 0${localOnly('m.')}
           ORDER BY fts.rank
           LIMIT 1`,
       )
@@ -974,7 +1022,7 @@ export class MemoryService {
     const db = this.db, writeQueue = this.writeQueue;
     if (db && writeQueue) {
       await writeQueue.run(() => {
-        db.prepare('UPDATE memories SET session_id = ? WHERE session_id = ?').run(newId, oldId);
+        db.prepare(`UPDATE memories SET session_id = ? WHERE session_id = ?${localOnly()}`).run(newId, oldId);
         db.prepare('UPDATE memory_candidates SET session_id = ? WHERE session_id = ?').run(newId, oldId);
       });
     }
@@ -1025,6 +1073,7 @@ export class MemoryService {
     await this.ensureInitialized();
     const db = this.db, writeQueue = this.writeQueue, injectionManager = this.injectionManager;
     if (!db || !writeQueue || !injectionManager) return false;
+    refuseGlobalRow(db, id);
     return writeQueue.run(() => injectionManager.pinMemory(id));
   }
 
@@ -1032,6 +1081,7 @@ export class MemoryService {
     await this.ensureInitialized();
     const db = this.db, writeQueue = this.writeQueue, injectionManager = this.injectionManager;
     if (!db || !writeQueue || !injectionManager) return false;
+    refuseGlobalRow(db, id);
     return writeQueue.run(() => injectionManager.unpinMemory(id));
   }
 

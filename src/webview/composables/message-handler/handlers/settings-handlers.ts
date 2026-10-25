@@ -29,6 +29,7 @@ export const settingsViewHandlers: SettingsViewHandlers = {
   settingsUpdate: (msg, ctx) => {
     ctx.stores.settingsStore.updateSettings(msg.settings, msg.settingSources);
     ctx.stores.settingsStore.setWorkspaceWritable(msg.workspaceWritable);
+    ctx.stores.settingsStore.setWritableKeys(msg.writableKeys);
     ctx.stores.uiStore.setIdeContextDefault(msg.settings.ideContextEnabled);
   },
   accountInfo: (msg, ctx) => {

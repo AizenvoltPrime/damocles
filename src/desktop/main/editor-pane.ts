@@ -5,7 +5,7 @@ import type { Disposable } from '../../platform/disposable';
 import type { ActiveEditorContext, DiffSide } from '../../platform/editor-service';
 import type { SettingsStore } from '../../platform/settings-store';
 import type { SettingsFileScope } from '../../shared/types/messages';
-import { folderKey } from '../../core/workspace-folders/folder-key';
+import { folderKey, folderKeyOn } from '../../core/workspace-folders/folder-key';
 import { visibleText } from '../../shared/visible-text';
 import {
   type EditorCommand,
@@ -37,6 +37,7 @@ import {
 import type { ScmChangesTab } from '../preload/scm-channels';
 import type { ChatReviewTab } from '../preload/review-channels';
 import { parseRootKey } from '../preload/folder-root';
+import { authorityKeyOfProject, pathFor } from '../../shared/project-location';
 import {
   EDITOR_AUTO_SAVES,
   EDITOR_AUTO_SAVE_SETTING,
@@ -59,6 +60,12 @@ import { projectOfPath, type Project } from '../local-services/confine';
 import { languageIdForName } from './platform/editor-document';
 import type { BrowserTabsEditor } from './browser-tabs';
 import type { AskMessage } from './message-dialog';
+
+// A path a remote project's file has names the target's file, never one this computer's git or file manager may act on.
+function isLocalLocation(location: { readonly projectKey?: string; readonly host?: string }): boolean {
+  if (location.host !== undefined) return false;
+  return location.projectKey === undefined || authorityKeyOfProject(location.projectKey) === 'local';
+}
 
 // Recent files Quick Open lists first, most recent first.
 export const MAX_RECENT_FILES = 50;
@@ -191,6 +198,8 @@ export interface EditorPaneDeps {
   readonly showPaneBeside: () => void;
   // every root a tab may name a file in, keyed by root key (folder-root.ts): the open projects and their chat worktrees
   readonly projects: () => readonly Project[];
+  // the OS whose path rules an authority's paths follow: this computer's, or the target's
+  readonly authorityOs: (authority: string) => NodeJS.Platform;
   // the branch of a chat worktree's root key, for the tab's chip; undefined for a project folder
   readonly worktreeBranch: (rootKey: string) => string | undefined;
   readonly copy: (text: string) => Promise<void>;
@@ -273,10 +282,6 @@ function fileRefOf(document: Document): FileRef | undefined {
   return location?.projectKey !== undefined && location.relativePath !== undefined ? { projectKey: location.projectKey, relativePath: location.relativePath } : undefined;
 }
 
-function sameSubject(a: DiffSubject, b: DiffSubject): boolean {
-  if ('documentId' in a || 'documentId' in b) return 'documentId' in a && 'documentId' in b && a.documentId === b.documentId;
-  return a.place.projectKey === b.place.projectKey && a.place.relativePath === b.place.relativePath && folderKey(a.place.path) === folderKey(b.place.path);
-}
 
 // The one place a tab's title reaches the shell, which shows it in the strip, the menus and as the tab's accessible name.
 // displayPath stays raw because the shell splits it on separators, and escapes it where it shows it; a page's title is the
@@ -599,7 +604,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     if (tab.diff?.scmGit) return tab.diff.scmGit.group === 'index' ? 'indexDiff' : 'workingTreeDiff';
     if (tab.kind !== 'code' || tab.documentId === undefined) return null;
     const location = this.deps.documents.get(tab.documentId)?.location;
-    return location && this.deps.gitOf(location.path) ? 'file' : null;
+    return location && isLocalLocation(location) && this.deps.gitOf(location.path) ? 'file' : null;
   }
 
   /** A path core named (a tool card click, the agent): shown in the pane, focused only for a user's click. */
@@ -617,10 +622,17 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   }
 
   /** A core-originated read-only text (a git side such as HEAD:path) in its own tab, titled title, coloured as fileName. */
-  openReadOnly(title: string, content: string, fileName: string): void {
+  openReadOnly(title: string, content: string, fileName: string, focus: boolean): void {
     const document = this.deps.documents.openMemory(title, content, { untitled: false, languageId: languageIdForName(fileName) });
     const tab = this.addTab({ id: randomUUID(), kind: 'code', documentId: document.id });
-    this.afterOpen(tab, { focus: true });
+    this.afterOpen(tab, { focus });
+  }
+
+  /** A core-originated Markdown text (a remote core's system prompt, an MCP tool's schema) as a rendered preview tab titled title. */
+  openMarkdownText(title: string, content: string, focus: boolean): void {
+    const document = this.deps.documents.openMemory(title, content, { untitled: false, languageId: 'markdown' });
+    const tab = this.addTab({ id: randomUUID(), kind: 'markdownPreview', documentId: document.id });
+    this.afterOpen(tab, { focus });
   }
 
   openUntitled(content: string, name: string, languageId: string, opts: { readonly focus: boolean }): void {
@@ -649,6 +661,41 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     this.afterOpen(tab, { focus: opts.focus });
     const closed = new Promise<void>((resolve) => this.diffClosed.set(tab.id, resolve));
     // Edits the user made to the file in this tab are asked about, as VS Code's tabGroups.close asks before closing a dirty editor.
+    return { close: () => this.closeTabs([tab.id], { ask: true }), closed };
+  }
+
+  /** A project file's disk text by FileRef, through its project's workspace; '' for a file not on disk yet. */
+  async projectFileText(file: FileRef): Promise<string> {
+    if (!this.deps.projects().some((project) => project.key === file.projectKey)) throw new Error(`${file.projectKey} is not an open project`);
+    const read = await this.deps.documents.readClosedFile(file.projectKey, file.relativePath);
+    if (read.kind === 'readOnly') throw new Error(`${file.relativePath} cannot be shown as text`);
+    return read.kind === 'text' ? read.text : '';
+  }
+
+  /**
+   * A remote core's diff: its file sides are project files of that host, opened by FileRef through its workspace, so a target
+   * path is never matched against this computer's files or editors; a file side not on disk yet shows empty.
+   */
+  async showRemoteDiff(
+    title: (fileName: string) => string,
+    file: FileRef,
+    left: { readonly file: FileRef } | { readonly name: string; readonly content: string },
+    right: { readonly file: FileRef } | { readonly name: string; readonly content: string },
+    opts: { readonly focus: boolean },
+  ): Promise<{ close(): void; readonly closed: Promise<void> }> {
+    const side = async (diffSide: typeof left): Promise<Document> => {
+      if (!('file' in diffSide)) return this.deps.documents.openMemory(diffSide.name, diffSide.content, { untitled: false });
+      const opened = await this.deps.documents.openProjectFile(diffSide.file.projectKey, diffSide.file.relativePath);
+      if (opened.ok) return opened.document;
+      if (opened.reason !== 'missing') throw new Error(`${diffSide.file.relativePath} cannot be shown: ${opened.reason}`);
+      return this.deps.documents.openMemory(path.posix.basename(diffSide.file.relativePath), '', { untitled: false });
+    };
+    const [original, modified] = await Promise.all([side(left), side(right)]);
+    const fileSide = 'file' in right ? modified : 'file' in left ? original : undefined;
+    const subject: DiffSubject = fileSide ? { documentId: fileSide.id } : { place: this.placeOfFile(file) };
+    const tab = this.openDiffTab(title, original, modified, subject);
+    this.afterOpen(tab, { focus: opts.focus });
+    const closed = new Promise<void>((resolve) => this.diffClosed.set(tab.id, resolve));
     return { close: () => this.closeTabs([tab.id], { ask: true }), closed };
   }
 
@@ -760,7 +807,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   async dirtyFiles(): Promise<ReadonlyArray<{ readonly documentId: string; readonly path: string }>> {
     await this.flush();
     return this.dirtyDocuments().flatMap((document) =>
-      document.untitled || document.settingsScope !== undefined || document.searchEditor || !document.location ? [] : [{ documentId: document.id, path: document.location.path }],
+      document.untitled || document.settingsScope !== undefined || document.searchEditor || !document.location || document.location.host !== undefined ? [] : [{ documentId: document.id, path: document.location.path }],
     );
   }
 
@@ -779,7 +826,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   /** Search's replace preview of a project file or an untitled buffer: one read-only diff tab per file, which a later preview of that file takes over. */
   openReplacePreview(file: FileRef | { readonly documentId: string }, original: string, modified: string): void {
     const subject: DiffSubject = 'documentId' in file ? { documentId: file.documentId } : { place: this.placeOfFile(file) };
-    const previous = this.tabs.find((tab) => tab.diff?.replacePreview === true && sameSubject(tab.diff.subject, subject));
+    const previous = this.tabs.find((tab) => tab.diff?.replacePreview === true && this.sameSubject(tab.diff.subject, subject));
     if (previous) void this.closeTabs([previous.id], { ask: false });
     const name = this.subjectName(subject);
     const sides = [original, modified].map((text) => this.deps.documents.openMemory(name, text, { untitled: false }));
@@ -791,6 +838,15 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   async openSettingsFile(scope: SettingsFileScope, key?: string): Promise<void> {
     const document = await this.deps.documents.openSettingsFile(scope);
     if (!document) throw new Error(this.deps.t('This settings file does not apply now.'));
+    this.showSettings(document, key);
+  }
+
+  /** Edit settings.json for a host's machine scope: its own ~/.damocles/settings.json as a settings tab titled title. */
+  async openHostSettingsFile(authority: string, title: string, key?: string): Promise<void> {
+    this.showSettings(await this.deps.documents.openHostSettings(authority, title), key);
+  }
+
+  private showSettings(document: Document, key: string | undefined): void {
     const existing = this.tabs.find((tab) => tab.documentId === document.id && tab.kind === 'settings');
     const tab = existing ?? this.addTab({ id: randomUUID(), kind: 'settings', documentId: document.id });
     const line = key !== undefined && document.kind === 'text' ? settingLine(document.text, key) : undefined;
@@ -834,18 +890,22 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
         this.afterOpen(this.showDocument(document, document.kind === 'text' ? 'code' : undefined), { focus: true });
         return;
       case 'openChanges':
-        if (document?.location) await this.deps.openChanges(document.location.path);
+        if (!document?.location) return;
+        if (!isLocalLocation(document.location)) this.deps.warn(this.deps.t('The file is not on this computer.'));
+        else await this.deps.openChanges(document.location.path);
         return;
       case 'copyPath':
       case 'copyRelativePath': {
         const location = document?.location;
         if (!location) return;
         const relative = action === 'copyRelativePath' && location.relativePath !== undefined;
-        await this.deps.copy(relative ? location.relativePath!.split('/').join(path.sep) : location.path);
+        await this.deps.copy(relative ? location.relativePath!.split('/').join(this.flavorOf(location).sep) : location.path);
         return;
       }
       case 'revealInExplorer':
-        if (document?.location) await this.deps.reveal(document.location.path);
+        if (!document?.location) return;
+        if (!isLocalLocation(document.location)) this.deps.warn(this.deps.t('The file is not on this computer.'));
+        else await this.deps.reveal(document.location.path);
         return;
     }
   }
@@ -956,6 +1016,12 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     const range = this.selection?.documentId === document.id ? this.selection.range : null;
     const selection = range && document.kind === 'text' ? selectionText(document.text, range) : undefined;
     return { filePath: document.location?.path, selection };
+  }
+
+  /** The project key of the document activeContext describes; undefined for one outside every project. */
+  activeProjectKey(): string | undefined {
+    const tab = this.tabs.find((candidate) => candidate.id === this.activeId);
+    return tab?.documentId !== undefined ? this.deps.documents.get(tab.documentId)?.location?.projectKey : undefined;
   }
 
   onDidChangeActiveContext(listener: (context: ActiveEditorContext | undefined) => void): Disposable {
@@ -1115,6 +1181,11 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       document = located;
       // A settings buffer belongs to the file it was opened from; the scope names another once the default project moved.
       if (!document.location || folderKey(document.location.path) !== folderKey(target.path)) return this.refuseBackup(document, this.deps.t('That settings file does not apply now.'));
+    } else if (target.kind === 'hostSettings') {
+      // throws while the host is not connected, which keeps the text in an untitled editor
+      document = await this.deps.documents.openHostSettings(target.authority, backup.name);
+      const os = this.deps.authorityOs(target.authority);
+      if (!document.location || folderKeyOn(os, document.location.path) !== folderKeyOn(os, target.path)) return this.refuseBackup(document, this.deps.t('That settings file does not apply now.'));
     } else {
       if (this.liveProjectKey(target.projectKey) === undefined) {
         return parseRootKey(target.projectKey)?.worktreeId !== undefined ? this.deps.t('Its worktree no longer exists.') : this.deps.t('Its project is no longer open.');
@@ -1130,7 +1201,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     // A second backup of one file (a crash between two sessions) never overwrites the text the first restored.
     if (isDocumentDirty(document)) return this.refuseBackup(document, this.deps.t('Another backup of it was restored first.'));
     this.deps.documents.restoreBuffer(document.id, backup.text, backup.backupId);
-    const kind = target.kind === 'settings' ? 'settings' : this.kindFor(document, preferred === 'markdownPreview' ? preferred : undefined);
+    const kind = target.kind === 'settings' || target.kind === 'hostSettings' ? 'settings' : this.kindFor(document, preferred === 'markdownPreview' ? preferred : undefined);
     return this.tabs.find((tab) => tab.documentId === document.id && tab.kind === kind) ?? this.addTab({ id: randomUUID(), kind, documentId: document.id }, false);
   }
 
@@ -1177,12 +1248,28 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
 
   private placeOfFile(file: FileRef): Place {
     const project = this.deps.projects().find((candidate) => candidate.key === file.projectKey);
-    return { path: path.join(project?.fsPath ?? '', ...file.relativePath.split('/')), projectKey: file.projectKey, relativePath: file.relativePath };
+    return { path: this.flavorOf(file).join(project?.fsPath ?? '', ...file.relativePath.split('/')), projectKey: file.projectKey, relativePath: file.relativePath };
   }
 
   private subjectName(subject: DiffSubject): string {
-    if ('place' in subject) return path.basename(subject.place.path);
+    if ('place' in subject) return this.flavorOf(subject.place).basename(subject.place.path);
     return this.deps.documents.get(subject.documentId)?.name ?? '';
+  }
+
+  private sameSubject(a: DiffSubject, b: DiffSubject): boolean {
+    if ('documentId' in a || 'documentId' in b) return 'documentId' in a && 'documentId' in b && a.documentId === b.documentId;
+    if (a.place.projectKey !== b.place.projectKey || a.place.relativePath !== b.place.relativePath) return false;
+    const os = this.osOf(a.place);
+    return folderKeyOn(os, a.place.path) === folderKeyOn(os, b.place.path);
+  }
+
+  // The OS a project's file is on; this computer's outside every project.
+  private osOf(place: { readonly projectKey?: string }): NodeJS.Platform {
+    return this.deps.authorityOs(place.projectKey === undefined ? 'local' : authorityKeyOfProject(place.projectKey));
+  }
+
+  private flavorOf(place: { readonly projectKey?: string }): path.PlatformPath {
+    return pathFor({ os: this.osOf(place) });
   }
 
   // The diff's original side goes with it; the edited document stays, shown by the new tab.
@@ -1443,8 +1530,9 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     }
     const document = this.deps.documents.get(tab.documentId!)!;
     const readOnlyReason = document.kind === 'text' ? document.readOnlyReason : undefined;
-    const settingsScope = tab.kind === 'settings' && document.kind === 'text' ? document.settingsScope : undefined;
-    const git = tab.kind === 'code' && document.location ? this.deps.gitOf(document.location.path) : undefined;
+    // a host's own settings file validates as its user file does
+    const settingsScope = tab.kind === 'settings' && document.kind === 'text' ? document.settingsScope ?? (document.location?.host !== undefined ? 'user' : undefined) : undefined;
+    const git = tab.kind === 'code' && document.location && isLocalLocation(document.location) ? this.deps.gitOf(document.location.path) : undefined;
     return {
       id: tab.id,
       kind: tab.kind,
@@ -1490,6 +1578,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   }
 
   private settingsTitle(document: Document): string {
+    if (document.location?.host !== undefined) return document.name;
     const scope = document.kind === 'text' ? document.settingsScope : undefined;
     return scope === 'local' ? 'settings.local.json' : 'settings.json';
   }

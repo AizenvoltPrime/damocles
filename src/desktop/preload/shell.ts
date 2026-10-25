@@ -76,6 +76,7 @@ import {
   type DamoclesTerminalApi,
   type TerminalCreateResult,
   type TerminalData,
+  type TerminalScreen,
   type TerminalLinkKind,
   type TerminalRunAction,
   type TerminalState,
@@ -119,6 +120,7 @@ const terminal: DamoclesTerminalApi = {
   getState: () => ipcRenderer.invoke(TERMINAL_CHANNELS.getState) as Promise<TerminalState>,
   onState: (listener) => subscribe<TerminalState>(TERMINAL_CHANNELS.state, listener),
   onData: (listener) => subscribe<TerminalData>(TERMINAL_CHANNELS.data, listener),
+  onScreen: (listener) => subscribe<TerminalScreen>(TERMINAL_CHANNELS.screen, listener),
   onFocus: (listener) => subscribe<{ id: string }>(TERMINAL_CHANNELS.focus, (message) => listener(message.id)),
   onStartRename: (listener) => subscribe<{ id: string }>(TERMINAL_CHANNELS.startRename, (message) => listener(message.id)),
   onRequestPaste: (listener) => subscribe<{ id: string }>(TERMINAL_CHANNELS.requestPaste, (message) => listener(message.id)),
@@ -142,6 +144,9 @@ const terminal: DamoclesTerminalApi = {
   },
   restart: (id) => {
     ipcRenderer.send(TERMINAL_CHANNELS.restart, { id });
+  },
+  clear: (id) => {
+    ipcRenderer.send(TERMINAL_CHANNELS.clear, { id });
   },
   select: (id) => {
     ipcRenderer.send(TERMINAL_CHANNELS.select, { id });
@@ -253,7 +258,7 @@ const api: DamoclesShellApi = {
   requestOverlay: (request) => ipcRenderer.invoke(SHELL_CHANNELS.overlayRequest, request) as Promise<OverlayAnswer>,
   openAppMenu: (anchor) => ipcRenderer.invoke(SHELL_CHANNELS.appMenu, { x: anchor.x, y: anchor.y }) as Promise<void>,
   toggleTheme: () => ipcRenderer.invoke(SHELL_CHANNELS.toggleTheme) as Promise<void>,
-  restartEngine: () => ipcRenderer.invoke(SHELL_CHANNELS.restartEngine) as Promise<void>,
+  restartEngine: (authority) => ipcRenderer.invoke(SHELL_CHANNELS.restartEngine, authority) as Promise<void>,
   toggleSidebar: () => ipcRenderer.invoke(SHELL_CHANNELS.toggleSidebar) as Promise<void>,
   showSidebar: () => ipcRenderer.invoke(SHELL_CHANNELS.showSidebar) as Promise<void>,
   windowControl: (control) => ipcRenderer.invoke(SHELL_CHANNELS.windowControl, control) as Promise<void>,

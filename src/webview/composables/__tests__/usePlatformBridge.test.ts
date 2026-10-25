@@ -16,7 +16,7 @@ describe('usePlatformBridge host selection', () => {
   it('uses the VS Code API when acquireVsCodeApi is a function, and receives window message events', async () => {
     const api = { postMessage: vi.fn(), getState: vi.fn(() => ({ a: 1 })), setState: vi.fn() };
     g.acquireVsCodeApi = vi.fn(() => api);
-    window.damoclesBridge = { postMessage: vi.fn(), onMessage: vi.fn(() => () => {}), getState: vi.fn(), setState: vi.fn() };
+    window.damoclesBridge = { postMessage: vi.fn(), onMessage: vi.fn(() => () => {}), getState: vi.fn(), setState: vi.fn(), getHost: vi.fn(), onHost: vi.fn(() => () => {}) };
     const { usePlatformBridge } = await import('../usePlatformBridge');
     const bridge = usePlatformBridge();
     usePlatformBridge().postMessage({ type: 'cancelSession' });
@@ -51,6 +51,8 @@ describe('usePlatformBridge host selection', () => {
       }),
       getState: vi.fn(() => ({ tab: 'x' })),
       setState: vi.fn(),
+      getHost: vi.fn(),
+      onHost: vi.fn(() => () => {}),
     };
     window.damoclesBridge = desktop;
     const { usePlatformBridge } = await import('../usePlatformBridge');

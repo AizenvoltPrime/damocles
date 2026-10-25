@@ -66,13 +66,17 @@ export const WORKER_ONLY_FILES = [
   'src/core/usage-stats/queries.ts',
   'src/core/usage-stats/usage-stats-worker.ts',
 ];
-// UI-thread and extension-host code, where a synchronous call freezes the window or every chat (docs/perf.md).
+// UI-thread, extension-host and daemon code, where a synchronous call freezes the window, every chat or every remote client
+// (docs/perf.md).
 export const NO_SYNC_FILES = [
   'src/core/**/*.ts',
   'src/desktop/main/**/*.ts',
   'src/desktop/core-host/**/*.ts',
   'src/desktop/core-protocol/**/*.ts',
   'src/desktop/local-services/**/*.ts',
+  'src/desktop/workspace/**/*.ts',
+  'src/desktop/daemon/**/*.ts',
+  'src/remote/**/*.ts',
   'src/platform/**/*.ts',
   'src/shared/**/*.ts',
   'src/vscode/**/*.ts',
@@ -85,6 +89,8 @@ const NO_ELECTRON_WORKER = 'The Quick Open and watch workers are plain Node work
 const NO_ELECTRON_CORE = 'Damocles Core reaches the host only through the core protocol (src/desktop/core-protocol), never electron.';
 const NO_MAIN_IN_CORE = 'Damocles Core never imports desktop main; it reaches main only through the core protocol.';
 const NO_CORE_HOST_IN_MAIN = 'Desktop main reaches Damocles Core only through the core protocol (core-client.ts); import a type.';
+const NO_HOST_IN_REMOTE = 'The wire (src/remote) runs in the app and on every target: it imports only Node built-ins, never vscode, electron, src/core or src/desktop.';
+const NO_ELECTRON_NODE_HOST = 'The pty and formatter hosts also run as plain Node children of the daemon on a target, so they never import electron.';
 
 // no-restricted-imports misses dynamic import(), typeof import() and vi.mock, so these selectors close the same boundary.
 function moduleSyntax(pattern, message) {
@@ -118,15 +124,27 @@ const OUTSIDE_DESKTOP = electronBan(NO_ELECTRON);
 const IN_SHELL = electronBan(NO_ELECTRON_SHELL);
 const IN_WORKER = electronBan(NO_ELECTRON_WORKER);
 const IN_CORE_HOST = electronBan(NO_ELECTRON_CORE);
+const IN_NODE_HOST = electronBan(NO_ELECTRON_NODE_HOST);
 // desktop main by any relative path; an esquery regex cannot contain a raw slash, hence \u002F
 const MAIN_FROM_CORE = {
   pattern: { regex: '^(?:\\.\\./)+(?:desktop/)?main(?:/|$)', message: NO_MAIN_IN_CORE },
   syntax: moduleSyntax('/^(?:\\.\\.\\u002F)+(?:desktop\\u002F)?main(\\u002F|$)/', NO_MAIN_IN_CORE),
 };
+// src/core and src/desktop by any relative path from src/remote; an esquery regex cannot contain a raw slash, hence \u002F
+const HOST_FROM_REMOTE = {
+  pattern: { regex: '^(?:\\.\\./)+(?:core|desktop)(?:/|$)', message: NO_HOST_IN_REMOTE },
+  syntax: moduleSyntax('/^(?:\\.\\.\\u002F)+(?:core|desktop)(\\u002F|$)/', NO_HOST_IN_REMOTE),
+};
+const IN_REMOTE = electronBan(NO_HOST_IN_REMOTE);
 // Damocles Core's own code from desktop main; type imports stay allowed
 const CORE_HOST_FROM_MAIN = {
   pattern: { regex: '^(?:\\.\\./)+(?:desktop/)?core-host(?:/|$)', message: NO_CORE_HOST_IN_MAIN, allowTypeImports: true },
   syntax: valueImportSyntax('/^(?:\\.\\.\\u002F)+(?:desktop\\u002F)?core-host(\\u002F|$)/', NO_CORE_HOST_IN_MAIN),
+};
+// From a folder below src/desktop/main, ../core-host is main's own core-host.ts; src/desktop/core-host is two levels up or more.
+const CORE_HOST_FROM_MAIN_SUBFOLDER = {
+  pattern: { regex: '^(?:\\.\\./){2,}(?:desktop/)?core-host(?:/|$)', message: NO_CORE_HOST_IN_MAIN, allowTypeImports: true },
+  syntax: valueImportSyntax('/^(?:\\.\\.\\u002F){2,}(?:desktop\\u002F)?core-host(\\u002F|$)/', NO_CORE_HOST_IN_MAIN),
 };
 
 // Process starts go through src/core/process-launcher, whose workers keep a slow CreateProcessW off the UI and chat threads.
@@ -163,12 +181,16 @@ export const PROCESS_STARTERS_CORE = [
   // runs on the Compass worker thread
   'src/core/compass/git.ts',
 ];
-// Electron utility processes
+// the pty and formatter hosts: main's Electron utility processes, and the daemon's plain Node children on a target
 export const PROCESS_STARTERS_DESKTOP = ['src/desktop/formatter-host/**/*.ts', 'src/desktop/pty-host/**/*.ts'];
+const NODE_HOST_ROOTS = PROCESS_STARTERS_DESKTOP.map((glob) => glob.replace(/\/\*\*\/\*\.ts$/, ''));
+// the daemon's forks, whose IPC channel belongs to its main thread, and the bridge's detached daemon start (docs/perf.md)
+export const PROCESS_STARTERS_DAEMON = ['src/desktop/daemon/process-starts.ts'];
 const testsUnder = (root) => [`${root}/**/__tests__/**`, `${root}/**/*.test.ts`, `${root}/**/*.bench.ts`];
 const WORKER_ROOTS = ['src/desktop/quick-open-worker', 'src/desktop/watch-worker', 'src/desktop/askpass'];
-// Damocles Core, its protocol and the per-process services both main and Core load
-const CORE_HOST_ROOTS = ['src/desktop/core-host', 'src/desktop/core-protocol', 'src/desktop/local-services'];
+// Damocles Core, its protocol, the per-process services both main and Core load, the host-neutral workspace modules and the
+// daemon that hosts them on a target
+const CORE_HOST_ROOTS = ['src/desktop/core-host', 'src/desktop/core-protocol', 'src/desktop/local-services', 'src/desktop/workspace', 'src/desktop/daemon'];
 const WORKER_TREES = WORKER_ROOTS.map((root) => `${root}/**/*.ts`);
 const CORE_HOST_TREES = CORE_HOST_ROOTS.map((root) => `${root}/**/*.ts`);
 
@@ -180,14 +202,12 @@ export const MAIN_CORE_IMPORTS = [
   'browser/net-guard',
   'chat-panel/ripgrep',
   'chat-panel/settings-file-editor',
-  'config/bom',
   'config/json-config-write',
   'config/legacy-settings-migrations',
   'config/read-contributed-configuration',
   'config/retired-secrets',
   'config/settings-file',
   'executable-path',
-  'git-executable',
   'logger',
   'paths',
   'pi-session/chat-changes',
@@ -213,12 +233,46 @@ export const MAIN_CORE_IMPORTS = [
   'workspace-folders/folder-registry',
   'worktrees/environment',
   'worktrees/slug',
-  // the errors main rebuilds off the core protocol, git's version text and the worktree record rule main checks core's mirror by
+  // the errors main rebuilds off the core protocol and the worktree record rule main checks core's mirror by
   'scm/errors',
-  'scm/git-version',
   'worktrees/records',
 ];
 const NO_CORE_IN_MAIN = 'Desktop main reaches the engine only through the core protocol (core-client.ts); import a type, or add a stateless helper to MAIN_CORE_IMPORTS.';
+
+// Desktop main reaches the workspace modules (src/desktop/workspace) only through workspaces.forProject (main/workspace/,
+// exempt); outside it, a value import from them must name an export listed here: constants, pure helpers and the contract.
+export const MAIN_WORKSPACE_IMPORTS = [
+  // the workspace channel's contract
+  'CLIENT_TO_WORKSPACE',
+  'WORKSPACE_MAX_MESSAGE_BYTES',
+  'WORKSPACE_TO_CLIENT',
+  // the error main rebuilds off the workspace channel
+  'WriteRefusedError',
+  // pure helpers and constants
+  'NONCE_ENV',
+  'REPLACE_REGEX_TIMEOUT_MS',
+  'applyEdits',
+  'createReplacer',
+  'excludeSettingGlobs',
+  'excludeTest',
+  'keepMatchText',
+  'lineStarts',
+  'parseGlobList',
+  'planReplacements',
+  'planWithin',
+  'rgSearchArgs',
+  'runWithin',
+  'windowsBuildNumber',
+];
+const NO_WORKSPACE_IN_MAIN = 'Desktop main reaches the workspace modules through workspaces.forProject (main/workspace/); import a type, or add a pure helper to MAIN_WORKSPACE_IMPORTS.';
+// src/desktop/workspace from a file of main (`up`: one or more ../) or of a main subfolder (two or more, as ../workspace is
+// main's own); an esquery regex cannot contain a raw slash, hence \u002F
+const workspaceFromMain = (up) => ({
+  pattern: { regex: `^(?:\\.\\./)${up}(?:desktop/)?workspace(?:/|$)`, message: NO_WORKSPACE_IN_MAIN, allowTypeImports: true, allowImportNames: MAIN_WORKSPACE_IMPORTS },
+  syntax: valueImportSyntax(`/^(?:\\.\\.\\u002F)${up}(?:desktop\\u002F)?workspace(\\u002F|$)/`, NO_WORKSPACE_IN_MAIN),
+});
+const WORKSPACE_FROM_MAIN = workspaceFromMain('+');
+const WORKSPACE_FROM_MAIN_SUBFOLDER = workspaceFromMain('{2,}');
 const CORE_FROM_MAIN = (() => {
   const regex = String.raw`^(?:\.\./)+core/(?!(?:${MAIN_CORE_IMPORTS.join('|')})$)`;
   return {
@@ -395,11 +449,34 @@ export default [
     rules: {
       '@typescript-eslint/no-restricted-imports': ['error', {
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, ...PROCESS_BAN.paths],
-        patterns: [CORE_FROM_MAIN.pattern, CORE_HOST_FROM_MAIN.pattern],
+        patterns: [CORE_FROM_MAIN.pattern, CORE_HOST_FROM_MAIN.pattern, WORKSPACE_FROM_MAIN.pattern],
       }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...PROCESS_BAN.syntax, ...CORE_FROM_MAIN.syntax, ...CORE_HOST_FROM_MAIN.syntax, ...FS_BUILTIN_BAN],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...PROCESS_BAN.syntax, ...CORE_FROM_MAIN.syntax, ...CORE_HOST_FROM_MAIN.syntax, ...WORKSPACE_FROM_MAIN.syntax, ...FS_BUILTIN_BAN],
       // verbatimModuleSyntax keeps `import { type X } from 'm'` as `import 'm'`, which bundles m into main
       '@typescript-eslint/no-import-type-side-effects': 'error',
+    },
+  },
+  {
+    files: ['src/desktop/main/*/**/*.ts'],
+    ignores: testsUnder('src/desktop/main'),
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }, ...PROCESS_BAN.paths],
+        patterns: [CORE_FROM_MAIN.pattern, CORE_HOST_FROM_MAIN_SUBFOLDER.pattern, WORKSPACE_FROM_MAIN_SUBFOLDER.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...PROCESS_BAN.syntax, ...CORE_FROM_MAIN.syntax, ...CORE_HOST_FROM_MAIN_SUBFOLDER.syntax, ...WORKSPACE_FROM_MAIN_SUBFOLDER.syntax, ...FS_BUILTIN_BAN],
+    },
+  },
+  {
+    // workspaces.forProject, main's one way to the workspace modules
+    files: ['src/desktop/main/workspace/**/*.ts'],
+    ignores: testsUnder('src/desktop/main'),
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }, ...PROCESS_BAN.paths],
+        patterns: [CORE_FROM_MAIN.pattern, CORE_HOST_FROM_MAIN_SUBFOLDER.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...PROCESS_BAN.syntax, ...CORE_FROM_MAIN.syntax, ...CORE_HOST_FROM_MAIN_SUBFOLDER.syntax, ...FS_BUILTIN_BAN],
     },
   },
   {
@@ -421,6 +498,17 @@ export default [
         patterns: [IN_CORE_HOST.pattern, MAIN_FROM_CORE.pattern],
       }],
       'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_CORE_HOST.syntax, ...MAIN_FROM_CORE.syntax, ...PROCESS_BAN.syntax, ...FS_BUILTIN_BAN],
+    },
+  },
+  {
+    // the daemon's one file of direct starts keeps its tree's electron, vscode and desktop-main bans
+    files: PROCESS_STARTERS_DAEMON,
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_CORE_HOST.path],
+        patterns: [IN_CORE_HOST.pattern, MAIN_FROM_CORE.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_CORE_HOST.syntax, ...MAIN_FROM_CORE.syntax, ...FS_BUILTIN_BAN],
     },
   },
   {
@@ -455,14 +543,25 @@ export default [
     },
   },
   {
-    files: [...PROCESS_STARTERS_DESKTOP, ...testsUnder('src/desktop')],
+    files: testsUnder('src/desktop'),
     // the trees below keep their own electron and desktop-main bans
-    ignores: ['src/desktop/shell/**', ...WORKER_ROOTS.map((root) => `${root}/**`), ...CORE_HOST_ROOTS.map((root) => `${root}/**`)],
+    ignores: ['src/desktop/shell/**', ...[...WORKER_ROOTS, ...CORE_HOST_ROOTS, ...NODE_HOST_ROOTS].map((root) => `${root}/**`)],
     rules: {
       '@typescript-eslint/no-restricted-imports': ['error', {
         paths: [{ name: 'vscode', message: VSCODE_ONLY }],
       }],
       'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...FS_BUILTIN_BAN],
+    },
+  },
+  {
+    // the pty and formatter hosts and their tests start processes and keep the electron ban
+    files: PROCESS_STARTERS_DESKTOP,
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_NODE_HOST.path],
+        patterns: [IN_NODE_HOST.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_NODE_HOST.syntax, ...FS_BUILTIN_BAN],
     },
   },
   {
@@ -493,6 +592,26 @@ export default [
         patterns: [IN_CORE_HOST.pattern, MAIN_FROM_CORE.pattern],
       }],
       'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_CORE_HOST.syntax, ...MAIN_FROM_CORE.syntax, ...FS_BUILTIN_BAN],
+    },
+  },
+  {
+    files: ['src/remote/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: NO_HOST_IN_REMOTE }, IN_REMOTE.path, ...PROCESS_BAN.paths],
+        patterns: [IN_REMOTE.pattern, HOST_FROM_REMOTE.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...moduleSyntax("'vscode'", NO_HOST_IN_REMOTE), ...IN_REMOTE.syntax, ...HOST_FROM_REMOTE.syntax, ...PROCESS_BAN.syntax, ...FS_BUILTIN_BAN],
+    },
+  },
+  {
+    files: testsUnder('src/remote'),
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: NO_HOST_IN_REMOTE }, IN_REMOTE.path],
+        patterns: [IN_REMOTE.pattern, HOST_FROM_REMOTE.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...moduleSyntax("'vscode'", NO_HOST_IN_REMOTE), ...IN_REMOTE.syntax, ...HOST_FROM_REMOTE.syntax, ...FS_BUILTIN_BAN],
     },
   },
   {

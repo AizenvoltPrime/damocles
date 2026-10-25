@@ -126,6 +126,8 @@ describe("the main chat's Stop while a handler pi awaits holds its run's wind-do
     const first = panel.sendMessage('first', target, 'c1', { content: 'first' });
     await within(settle.waiting, 10_000, 'the agent_settled handler');
     await panel.interrupt();
+    // a view that joins while pi winds the stopped run down is shown it stopped, as a watching view is
+    expect(panel.liveConversation()?.snapshot.messages.filter((m) => m.type === 'processing')).toEqual([]);
     const second = panel.sendMessage('second', target, 'c2', { content: 'second' });
 
     await sleep(WIND_DOWN_NOTICE_MS - 1_000);

@@ -19,7 +19,7 @@ vi.mock('electron', async () => {
   };
 });
 
-import { CORE_GONE_WAIT_MS, CORE_KILL_GRACE_MS, CORE_SERVICE_NAME, forkCore, restartDecision, RESTART_LIMIT, RESTART_WINDOW_MS } from '../core-process';
+import { CORE_GONE_WAIT_MS, CORE_KILL_GRACE_MS, CORE_SERVICE_NAME, forkCore } from '../core-process';
 
 type FakeChild = EventEmitter & { pid: number | undefined; stderr: PassThrough; postMessage: ReturnType<typeof vi.fn>; kill: ReturnType<typeof vi.fn> };
 const lastChild = (): FakeChild => H.children.at(-1)!.child as FakeChild;
@@ -27,26 +27,6 @@ const lastChild = (): FakeChild => H.children.at(-1)!.child as FakeChild;
 afterEach(() => {
   H.children.length = 0;
   vi.useRealTimers();
-});
-
-describe('restartDecision', () => {
-  it('restarts the first three crashes in five minutes and not the fourth', () => {
-    let crashes: readonly number[] = [];
-    const counts: Array<number | 'down'> = [];
-    for (const at of [0, 1_000, 2_000, 3_000]) {
-      const decision = restartDecision(crashes, at);
-      crashes = decision.crashes;
-      counts.push(decision.restart ? decision.count : 'down');
-    }
-    expect(counts).toEqual([1, 2, 3, 'down']);
-    expect(RESTART_LIMIT).toBe(3);
-  });
-
-  it('counts only the crashes of the rolling window', () => {
-    const decision = restartDecision([0, 1_000, 2_000], RESTART_WINDOW_MS + 1_500);
-    expect(decision).toEqual({ restart: true, count: 2, crashes: [2_000, RESTART_WINDOW_MS + 1_500] });
-    expect(restartDecision([0, 1_000, 2_000], RESTART_WINDOW_MS - 1).restart).toBe(false);
-  });
 });
 
 describe('forkCore', () => {

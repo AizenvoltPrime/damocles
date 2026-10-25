@@ -16,6 +16,10 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isEntryPoint } from './entry-point.mjs';
+import { SERVER_TARGETS, serverArtifact } from './server-targets.mjs';
+
+// The server package legs (the workflow's `package-server` matrix) are defined beside their Node archives.
+export { SERVER_TARGETS };
 
 export const MIN_VSIX_BYTES = 30_000_000;
 
@@ -91,26 +95,49 @@ export function desktopArtifactProblems(targets, version, present) {
   };
 }
 
+/** File names the release uploads from the package-server legs. */
+export const SERVER_ARTIFACT_PATTERN = /^damocles-server-/;
+
+/** Missing and unexpected server packages in `present` (file names) for `targets` at `version`. */
+export function serverArtifactProblems(targets, version, present) {
+  const expected = new Set(targets.map((target) => serverArtifact(target, version)));
+  const found = new Set(present.filter((name) => SERVER_ARTIFACT_PATTERN.test(name)));
+  return {
+    missing: [...expected].filter((name) => !found.has(name)).sort(),
+    unexpected: [...found].filter((name) => !expected.has(name)).sort(),
+  };
+}
+
+const CHECKS = {
+  '--check-desktop-artifacts': { kind: 'desktop', targets: DESKTOP_TARGETS, problems: desktopArtifactProblems, count: (targets, version) => targets.flatMap((t) => desktopArtifacts(t, version)).length },
+  '--check-server-artifacts': { kind: 'server', targets: SERVER_TARGETS, problems: serverArtifactProblems, count: (targets) => targets.length },
+};
+
 /**
- * `node scripts/release-targets.mjs --check-desktop-artifacts <target[,target...]|all> <dir>` exits 1 when `<dir>`
- * lacks an artifact the target(s) must produce, or holds one no target names.
+ * `node scripts/release-targets.mjs --check-desktop-artifacts|--check-server-artifacts <target[,target...]|all> <dir>`
+ * exits 1 when `<dir>` lacks an artifact the target(s) must produce, or holds one no target names.
  */
 function main() {
-  const flag = process.argv.indexOf('--check-desktop-artifacts');
-  const [target, dir] = flag === -1 ? [] : process.argv.slice(flag + 1);
-  if (!target || !dir) {
-    console.error('Usage: node scripts/release-targets.mjs --check-desktop-artifacts <target[,target...]|all> <dir>');
+  const flag = Object.keys(CHECKS).find((name) => process.argv.includes(name));
+  const [target, dir] = flag === undefined ? [] : process.argv.slice(process.argv.indexOf(flag) + 1);
+  if (!flag || !target || !dir) {
+    console.error('Usage: node scripts/release-targets.mjs --check-desktop-artifacts|--check-server-artifacts <target[,target...]|all> <dir>');
     process.exit(1);
   }
+  const check = CHECKS[flag];
   const root = join(dirname(fileURLToPath(import.meta.url)), '..');
   const { version } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-  const targets = target === 'all' ? Object.keys(DESKTOP_TARGETS) : target.split(',');
-  const { missing, unexpected } = desktopArtifactProblems(targets, version, readdirSync(dir));
-  if (missing.length) console.error(`Missing desktop artifacts in ${dir}: ${missing.join(', ')}`);
-  if (unexpected.length) console.error(`Desktop artifacts in ${dir} that no target in scripts/release-targets.mjs names: ${unexpected.join(', ')}`);
+  const targets = target === 'all' ? Object.keys(check.targets) : target.split(',');
+  const unknown = targets.filter((name) => !check.targets[name]);
+  if (unknown.length) {
+    console.error(`Unknown ${check.kind} targets: ${unknown.join(', ')}; known: ${Object.keys(check.targets).join(', ')}`);
+    process.exit(1);
+  }
+  const { missing, unexpected } = check.problems(targets, version, readdirSync(dir));
+  if (missing.length) console.error(`Missing ${check.kind} artifacts in ${dir}: ${missing.join(', ')}`);
+  if (unexpected.length) console.error(`${check.kind === 'desktop' ? 'Desktop' : 'Server'} artifacts in ${dir} that no target in scripts/release-targets.mjs names: ${unexpected.join(', ')}`);
   if (missing.length || unexpected.length) process.exit(1);
-  const count = targets.flatMap((t) => desktopArtifacts(t, version)).length;
-  console.log(`All ${count} desktop artifacts for ${targets.join(', ')} at ${version} are in ${dir}.`);
+  console.log(`All ${check.count(targets, version)} ${check.kind} artifacts for ${targets.join(', ')} at ${version} are in ${dir}.`);
 }
 
 // Gated so importing the module never runs the check.

@@ -199,19 +199,20 @@ describe("approveEdit — saving an always-allow rule", () => {
     const { deps, ctx, platform } = setup();
     const permissionHandler = {
       resolveApproval: manager.resolveApproval.bind(manager),
+      savingPermissionRules: vi.fn(),
     };
     const approveEdit = createPermissionHandlers(deps).approveEdit!;
     const answer = (toolUseId: string) => approveEdit(
       { type: "approveEdit", toolUseId, approved: true, updatedPermissions: RULE } as never,
       { ...ctx, permissionHandler } as unknown as HandlerContext,
     );
-    return { state, manager, answer, platform };
+    return { state, manager, answer, platform, permissionHandler };
   }
 
   const shellCall = (toolUseID: string) => ({ signal: new AbortController().signal, toolUseID, parentToolUseId: null });
 
   it("saves to the folder the prompt was raised in, not the one the panel shows when the click lands", async () => {
-    const { state, manager, answer } = approvalSetup();
+    const { state, manager, answer, permissionHandler } = approvalSetup();
     state.workspacePath = "/folder-a";
     const toolCall = manager.handleShellPermission("Bash", { command: "git status" }, shellCall("t1"));
     state.workspacePath = "/folder-b";
@@ -220,6 +221,22 @@ describe("approveEdit — saving an always-allow rule", () => {
 
     expect((await toolCall).behavior).toBe("allow");
     expect(syncRules).toHaveBeenCalledWith(RULE, "/folder-a");
+    // the chat's next call waits for this write, not the evaluator's cached files
+    expect(permissionHandler.savingPermissionRules).toHaveBeenCalledExactlyOnceWith(syncRules.mock.results[0]!.value);
+  });
+
+  it("hands the evaluator the write before it lands, since the approved call already runs", async () => {
+    const { state, manager, answer, permissionHandler } = approvalSetup();
+    let land!: (failures: string[]) => void;
+    syncRules.mockReturnValueOnce(new Promise((resolve) => (land = resolve)));
+    state.workspacePath = "/folder-a";
+    const toolCall = manager.handleShellPermission("Bash", { command: "git status" }, shellCall("t1"));
+
+    const answered = answer("t1");
+    expect((await toolCall).behavior).toBe("allow");
+    await vi.waitFor(() => expect(permissionHandler.savingPermissionRules).toHaveBeenCalledOnce());
+    land([]);
+    await answered;
   });
 
   it("tells the user about each rule that was not saved", async () => {

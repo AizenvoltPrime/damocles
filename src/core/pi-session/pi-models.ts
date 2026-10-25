@@ -219,6 +219,34 @@ export function resolvePiModel(
   return { model, authed: registry.hasConfiguredAuth(model.provider) };
 }
 
+/**
+ * Whether an endpoint URL names the machine it is reached from: localhost (a trailing dot included), 127.0.0.0/8, ::1, its
+ * IPv4-mapped form, or the unspecified 0.0.0.0 and ::, which a connect treats as this machine. The URL parser already wrote
+ * IPv4 in dotted decimal and IPv6 in its shortest form.
+ */
+export function isLoopbackEndpoint(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/\.$/, '');
+  } catch {
+    return false;
+  }
+  return host === 'localhost' || host.endsWith('.localhost') || host === '[::1]' || host === '[::]' || host === '0.0.0.0'
+    || /^127(?:\.\d{1,3}){3}$/.test(host) || /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(host);
+}
+
+/**
+ * A remote chat's model list: a model whose provider's endpoint is a loopback address is marked unavailable, not hidden,
+ * unless the target shares the client's loopback (sharedLoopback, ClientPolicy).
+ */
+export function markLoopbackEndpoints(models: readonly ModelInfo[], registry: ModelLookup, openai: OpenAIAuthStatus, preferApiKey: boolean, sharedLoopback: boolean): ModelInfo[] {
+  if (sharedLoopback) return [...models];
+  return models.map((info) => {
+    const endpoint = resolvePiModel(info.value, registry, openai, preferApiKey).model?.baseUrl;
+    return endpoint !== undefined && isLoopbackEndpoint(endpoint) ? { ...info, unavailable: { reason: 'loopback-endpoint', endpoint } } : info;
+  });
+}
+
 /** The catalog value a pi model recorded in a session file names, the inverse of resolvePiModel; undefined outside the catalog. */
 export function modelValueOfPiModel(provider: string, modelId: string): string | undefined {
   return DEFAULT_MODELS.find((info) => {

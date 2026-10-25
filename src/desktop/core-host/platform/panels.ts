@@ -3,7 +3,8 @@ import { log } from '../../../core/logger';
 import type { Disposable } from '../../../platform/disposable';
 import type { PanelHost, PanelOptions } from '../../../platform/window-service';
 import { APP_ORIGIN, appResourceUri, CHAT_WORKER_SRC } from '../../app-urls';
-import type { CoreEndpoint, CoreInit, MirrorTopics, PanelCreate } from '../../core-protocol';
+import type { CoreEndpoint, MirrorTopics, PanelCreate } from '../../core-protocol';
+import { createForeignViews } from './foreign-views';
 import { Listeners } from './listeners';
 
 interface PanelProxy {
@@ -20,11 +21,14 @@ export interface CorePanels extends Disposable {
   // the proxy for a view id while its panel is open, and back
   get(viewId: string): PanelHost | undefined;
   idOf(host: PanelHost): string | undefined;
+  // a remote chat's view on this computer's core, whose voice service posts to it (foreign-views.ts)
+  attachForeign(authority: string, viewId: string): PanelHost;
+  detachForeign(viewId: string): void;
+  foreign(viewId: string): PanelHost | undefined;
 }
 
 export interface CorePanelsDeps {
   readonly endpoint: CoreEndpoint;
-  readonly init: CoreInit;
   readonly resourceRoot: string;
 }
 
@@ -32,14 +36,14 @@ const isBinary = (value: unknown): boolean => value instanceof ArrayBuffer || Ar
 
 /**
  * Every panel core holds is a proxy named by its view's id: one core creates gets a core-issued id at once and main creates
- * the view when the create envelope arrives; one main created is attached by the id main gave it. View state, the theme and
+ * the view when the create envelope arrives; one main created is attached by the id main gave it. View state and
  * the page's messages come back from main; every call goes out as a panel envelope.
  */
 export function createCorePanels(deps: CorePanelsDeps): CorePanels {
   const { endpoint, resourceRoot } = deps;
   const proxies = new Map<string, PanelProxy>();
   const ids = new WeakMap<PanelHost, string>();
-  let themeCss = deps.init.mirrors.theme.css;
+  const foreignViews = createForeignViews(endpoint);
 
   const proxy = (panelId: string, kind: PanelOptions['kind']): PanelProxy => {
     let state: MirrorTopics['panel'] = { panelId, visible: false, active: false };
@@ -74,8 +78,12 @@ export function createCorePanels(deps: CorePanelsDeps): CorePanels {
       },
       cspSource: APP_ORIGIN,
       ...(kind === 'chat' ? { workerSrc: CHAT_WORKER_SRC } : {}),
-      themeCssSource: () => themeCss,
-      setHtml: (html) => post(panelId, 'setHtml', { html }),
+      // main builds every page with its own theme (showPage)
+      themeCssSource: () => '',
+      setHtml: () => {
+        throw new Error('Desktop pages are built by main: use showPage');
+      },
+      showPage: (page) => post(panelId, 'showPage', { page }),
       postMessage: (message) => {
         if (closed) return Promise.resolve(false);
         // Binary travels only as a top-level field (a browser page's frame); JSON text would turn it into {}.
@@ -126,9 +134,6 @@ export function createCorePanels(deps: CorePanelsDeps): CorePanels {
       else panel.disposed(envelope.payload.error);
     }),
     endpoint.onMirror('panel', (patch) => proxies.get(patch.panelId)?.viewState(patch)),
-    endpoint.onMirror('theme', (patch) => {
-      themeCss = patch.css;
-    }),
   ];
 
   return {
@@ -155,8 +160,12 @@ export function createCorePanels(deps: CorePanelsDeps): CorePanels {
     attach: (viewId) => proxies.get(viewId)?.host ?? proxy(viewId, 'chat').host,
     get: (viewId) => proxies.get(viewId)?.host,
     idOf: (host) => ids.get(host),
+    attachForeign: (authority, viewId) => foreignViews.attach(authority, viewId),
+    detachForeign: (viewId) => foreignViews.detach(viewId),
+    foreign: (viewId) => foreignViews.get(viewId),
     dispose: () => {
       for (const subscription of subscriptions) subscription.dispose();
+      foreignViews.dispose();
     },
   };
 }

@@ -4,11 +4,13 @@ import { useI18n } from 'vue-i18n';
 import { FolderPlus, FolderTree, ShieldAlert } from 'lucide-vue-next';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import HostBadge from '@/components/HostBadge.vue';
 import { visibleText } from '@shared/visible-text';
 import type { DamoclesShellApi, ShellProject } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import SidebarSection from './SidebarSection.vue';
 import ProjectAvatar from './ProjectAvatar.vue';
+import HostStatusDot from './HostStatusDot.vue';
 
 const props = defineProps<{
   api: DamoclesShellApi;
@@ -107,6 +109,11 @@ function badge(project: ShellProject): { text: string; title: string; waiting: b
   return undefined;
 }
 
+// The host and its state as one phrase ("Local daemon, Connecting"), for the dot's name and the badge's tooltip.
+function hostState(project: ShellProject): string {
+  return t('projects.hostState', { host: project.authority.name, state: t(`projects.connection.${project.connection}`) });
+}
+
 defineExpose({
   focus: (): boolean => {
     if (!listbox.value || props.collapsed) return false;
@@ -171,7 +178,7 @@ defineExpose({
         role="option"
         :aria-selected="project.key === selectedKey"
         :data-project-key="project.key"
-        :title="project.fsPath"
+        :title="project.authority.kind === 'local' ? project.fsPath : t('projects.remoteTitle', { host: project.authority.name, path: project.fsPath })"
         class="group/row flex h-8.5 shrink-0 cursor-pointer items-center gap-2.5 rounded-lg px-2 transition-colors hover:bg-(--d-hover)"
         :class="[
           project.key === selectedKey ? 'bg-(--d-accent-soft) font-semibold' : '',
@@ -233,6 +240,19 @@ defineExpose({
           />
           {{ badge(project)?.text }}
         </Badge>
+        <HostBadge
+          v-if="project.authority.kind !== 'local'"
+          data-testid="host-badge"
+          :name="project.authority.name"
+          :title="hostState(project)"
+        >
+          <template #leading>
+            <HostStatusDot
+              :connection="project.connection"
+              :label="hostState(project)"
+            />
+          </template>
+        </HostBadge>
       </div>
     </div>
     <p

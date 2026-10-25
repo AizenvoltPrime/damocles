@@ -4,6 +4,8 @@ import { installLogSink } from '../../logger';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import type { AuthOperationOptions } from '@earendil-works/pi-ai';
 import { CUSTOM_PROVIDER_DEFS, customProviderDef, flatFeeKeyProviders, keyProviderOfSecret, providerKeyStored, syncCustomProviders } from '../custom-providers';
+import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
+import { runPinnedTurn } from '../../client-snapshots';
 import { DEFAULT_MODELS } from '../../../shared/types/constants';
 
 /**
@@ -602,5 +604,22 @@ describe('providerKeyStored', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('flatFeeKeyProviders on a daemon\'s core', () => {
+  it('reads the pinned client\'s flatFee flags, since no key is applied there', async () => {
+    const host = createFakeRemoteHost();
+    host.set('clientAuth', 'client-a', { providers: { minimax: { type: 'api_key', hasKey: true, flatFee: true }, deepseek: { type: 'api_key', hasKey: true, flatFee: false } } });
+    host.set('clientAuth', 'client-b', { providers: { minimax: { type: 'api_key', hasKey: true, flatFee: false } } });
+    const runtime = {} as ModelRuntime;
+    expect(flatFeeKeyProviders(runtime, host.remote)).toEqual(new Set(['minimax']));
+    const pinned = runPinnedTurn(host.remote, 'p1', async () => {
+      await Promise.resolve();
+      host.setActing('client-b');
+      return flatFeeKeyProviders(runtime, host.remote);
+    });
+    expect(await pinned).toEqual(new Set(['minimax']));
+    expect(flatFeeKeyProviders(runtime, host.remote)).toEqual(new Set());
   });
 });

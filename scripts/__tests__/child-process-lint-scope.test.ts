@@ -3,7 +3,7 @@ import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { ESLint } from 'eslint';
 import * as esbuild from 'esbuild';
-import { PROCESS_STARTERS_CORE, PROCESS_STARTERS_DESKTOP } from '../../eslint.config.mjs';
+import { PROCESS_STARTERS_CORE, PROCESS_STARTERS_DAEMON, PROCESS_STARTERS_DESKTOP } from '../../eslint.config.mjs';
 
 /**
  * A process start blocks the thread that makes it (CreateProcessW), so the UI thread, Damocles Core's thread and the extension
@@ -20,6 +20,9 @@ const TREE_ROOTS = [
   'src/desktop/core-host',
   'src/desktop/core-protocol',
   'src/desktop/local-services',
+  'src/desktop/workspace',
+  'src/desktop/daemon',
+  'src/remote',
   'src/desktop/quick-open-worker',
   'src/desktop/watch-worker',
   'src/desktop/askpass',
@@ -31,7 +34,15 @@ const TREE_ROOTS = [
   'src/webview',
 ] as const;
 const HOST_ENTRIES = ['src/desktop/main/index.ts', 'src/desktop/core-host/index.ts', 'src/vscode/extension.ts'];
-const CORE_HOST_PROBES = ['src/desktop/core-host/probe.ts', 'src/desktop/core-host/platform/probe.ts', 'src/desktop/core-protocol/probe.ts', 'src/desktop/local-services/probe.ts'];
+const CORE_HOST_PROBES = [
+  'src/desktop/core-host/probe.ts',
+  'src/desktop/core-host/platform/probe.ts',
+  'src/desktop/core-protocol/probe.ts',
+  'src/desktop/local-services/probe.ts',
+  'src/desktop/workspace/probe.ts',
+  'src/desktop/daemon/probe.ts',
+  ...PROCESS_STARTERS_DAEMON,
+];
 const SKIPPED = new Set(['__tests__', '__mocks__', 'fixtures']);
 
 const FOLDERS = TREE_ROOTS.flatMap((root) => [
@@ -121,10 +132,25 @@ describe('Damocles Core, its protocol and the per-process services', () => {
     expect(await mainFindings(file)).toBe(4);
   }, 60_000);
 
-  it.each(TEST_PROBES)('%s, a test, starts processes and keeps both bans', async (file) => {
+  it.each(TEST_PROBES.filter((file) => file.endsWith('.test.ts')))('%s, a test, starts processes and keeps both bans', async (file) => {
     expect(await processFindings(file)).toBe(0);
     expect(await hostModuleFindings(file)).toBe(3);
     expect(await mainFindings(file)).toBe(4);
+  }, 60_000);
+});
+
+describe('the wire', () => {
+  const HOST_PROBE = [
+    "import { a } from '../core/logger';",
+    "import { b } from '../desktop/core-protocol/endpoint';",
+    "import { c } from '../../core/paths';",
+    "export const probe = [a, b, c, import('../desktop/daemon/main')];",
+  ].join('\n');
+  const hostFindings = async (file: string): Promise<number> => (await findings(HOST_PROBE, file)).filter((message) => message.message.includes('src/remote')).length;
+
+  it.each(['src/remote/probe.ts', 'src/remote/__tests__/probe.test.ts'])('%s imports no vscode, electron, src/core or src/desktop', async (file) => {
+    expect(await hostModuleFindings(file)).toBe(3);
+    expect(await hostFindings(file)).toBe(4);
   }, 60_000);
 });
 
@@ -148,9 +174,9 @@ describe('the files allowed to start processes', () => {
     expect(await hostModuleFindings(file)).toBe(3);
   }, 60_000);
 
-  it.each(['src/desktop/pty-host/probe.ts', 'src/desktop/formatter-host/probe.ts'])('%s, an Electron utility process, starts processes and keeps the vscode ban', async (file) => {
+  it.each(['src/desktop/pty-host/probe.ts', 'src/desktop/formatter-host/probe.ts', 'src/desktop/pty-host/__tests__/probe.test.ts'])('%s, a host the daemon also runs as plain Node, starts processes and keeps the vscode and electron bans', async (file) => {
     expect(await processFindings(file)).toBe(0);
-    expect(await hostModuleFindings(file)).toBe(1);
+    expect(await hostModuleFindings(file)).toBe(3);
   }, 60_000);
 
   it('tests start processes and keep their tree\'s bans', async () => {
@@ -167,8 +193,16 @@ describe('the files allowed to start processes', () => {
     expect(await hostModuleFindings('src/desktop/quick-open-worker/__tests__/probe.test.ts')).toBe(3);
   }, 60_000);
 
+  it.each(PROCESS_STARTERS_DAEMON)('%s, the daemon\'s one file of direct starts, starts processes and keeps its tree\'s bans', async (file) => {
+    expect(await processFindings(file)).toBe(0);
+  }, 60_000);
+
+  it('rejects a child_process import in any other daemon file', async () => {
+    for (const file of ['src/desktop/daemon/connections.ts', 'src/desktop/daemon/attach.ts', 'src/desktop/daemon/serve.ts']) expect(await processFindings(file)).toBe(PROCESS_FINDINGS);
+  }, 60_000);
+
   it('lists only files and folders that exist', () => {
-    const paths = [...PROCESS_STARTERS_CORE, ...PROCESS_STARTERS_DESKTOP.map((glob: string) => glob.replace(/\/\*\*\/\*\.ts$/, ''))];
+    const paths = [...PROCESS_STARTERS_CORE, ...PROCESS_STARTERS_DAEMON, ...PROCESS_STARTERS_DESKTOP.map((glob: string) => glob.replace(/\/\*\*\/\*\.ts$/, ''))];
     expect(paths.filter((file: string) => !existsSync(join(ROOT, file)))).toEqual([]);
   });
 

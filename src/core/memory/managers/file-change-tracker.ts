@@ -2,6 +2,7 @@ import * as path from 'path';
 import { log } from '../../logger';
 import type { DatabaseInstance, MemoryRow } from '../types';
 import type { MemoryWriteQueue } from '../write-queue';
+import { localOnly } from '../local-only';
 import { folderKey } from '../../workspace-folders/folder-key';
 import { isWithinRoot } from '../../compass/util';
 import type { Disposable } from '../../../platform/disposable';
@@ -235,7 +236,7 @@ export class FileChangeTracker {
       void this.writeQueue.run(() => {
         const placeholders = batch.map(() => '?').join(',');
         db.prepare(
-          `UPDATE memories SET file_change_count = file_change_count + 1 WHERE id IN (${placeholders})`
+          `UPDATE memories SET file_change_count = file_change_count + 1 WHERE id IN (${placeholders})${localOnly()}`
         ).run(...batch);
       });
       log('[FileChangeTracker] Incremented staleness for %d observations', batch.length);

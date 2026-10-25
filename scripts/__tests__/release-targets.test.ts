@@ -208,7 +208,9 @@ describe('the time limits keep a hung suite\'s report (docs/release.md "Time lim
       const stepMinutes = steps[0]!['timeout-minutes'];
       expect(stepMinutes, 'the suite step sets timeout-minutes').toBeTypeOf('number');
       expect(stepMinutes! * 60_000).toBeGreaterThanOrEqual(globalTimeout! + BUILD_AND_REPORT_BUDGET_MIN * 60_000);
-      expect(workflow.jobs[job]!['timeout-minutes']).toBeGreaterThanOrEqual(INSTALL_BUDGET_MIN + stepMinutes! + after);
+      // every other step with its own limit, such as e2e-desktop's server package loopback run
+      const otherSteps = workflow.jobs[job]!.steps.filter((step) => step !== steps[0]).reduce((total, step) => total + (step['timeout-minutes'] ?? 0), 0);
+      expect(workflow.jobs[job]!['timeout-minutes']).toBeGreaterThanOrEqual(INSTALL_BUDGET_MIN + stepMinutes! + otherSteps + after);
     });
   }
 });

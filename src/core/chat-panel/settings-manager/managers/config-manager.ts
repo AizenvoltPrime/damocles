@@ -362,7 +362,8 @@ export class ConfigManager {
     return updateConfigAtEffectiveScope(this.platform, "damocles.browser.headless", headless);
   }
 
-  handleSetDangerouslySkipPermissions(permissionHandler: PermissionHandler, enabled: boolean): void {
-    permissionHandler.setDangerouslySkipPermissions(enabled);
+  /** False when the host's policy refused YOLO. */
+  handleSetDangerouslySkipPermissions(permissionHandler: PermissionHandler, enabled: boolean): boolean {
+    return permissionHandler.setDangerouslySkipPermissions(enabled);
   }
 }

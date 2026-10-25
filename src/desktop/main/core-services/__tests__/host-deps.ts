@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import type { Disposable } from '../../../../platform/disposable';
-import type { HostServicesDeps, HostUi } from '../host-services';
+import { NO_USER_RELAYS, type HostServicesDeps, type HostUi } from '../host-services';
 
 const none = (): Disposable => ({ dispose: () => undefined });
 const refuse = (): never => {
@@ -8,7 +8,7 @@ const refuse = (): never => {
 };
 
 /** What HostServices needs besides main's services that these tests do not exercise: paths, logs, language, power and UI. */
-export function hostExtras(overrides: { readonly ui?: Partial<HostUi>; readonly endedCores?: HostServicesDeps['endedCores'] } = {}): Pick<HostServicesDeps, 'paths' | 'logs' | 'endedCores' | 'worktreeRecords' | 'language' | 'power' | 'ui'> {
+export function hostExtras(overrides: { readonly ui?: Partial<HostUi>; readonly endedCores?: HostServicesDeps['endedCores'] } = {}): Pick<HostServicesDeps, 'paths' | 'logs' | 'endedCores' | 'worktreeRecords' | 'language' | 'power' | 'ui' | 'divert' | 'user' | 'refusedPosts'> {
   const dist = (name: string): string => path.resolve('/app/dist', name);
   return {
     paths: {
@@ -47,5 +47,8 @@ export function hostExtras(overrides: { readonly ui?: Partial<HostUi>; readonly 
       },
       ...overrides.ui,
     },
+    divert: () => false,
+    user: NO_USER_RELAYS,
+    refusedPosts: new Set(),
   };
 }

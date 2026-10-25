@@ -2,7 +2,7 @@ import type { AuthInteraction } from "@earendil-works/pi-ai";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import type { Platform } from "../../../../platform/platform";
 import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
-import { PiRuntime } from "../../../pi-session/pi-runtime";
+import { PiRuntime, remoteSignInRefusal } from "../../../pi-session/pi-runtime";
 import { PI_AGENT_DIR } from "../../../pi-session/agent-dir";
 import {
   OPENAI_API_KEY_SECRET,
@@ -13,6 +13,7 @@ import {
   type OpenAIAuthStatus,
 } from "../../../pi-session/openai-auth";
 import { describeAuthError } from "../../../pi-session/describe-error";
+import { clientHasKey } from "../../../client-snapshots";
 import { buildAuthInteraction } from "./auth-interaction";
 import { republishAccountInfo } from "./account-info";
 import { log } from "../../../logger";
@@ -83,6 +84,8 @@ function toSnapshot(status: OpenAIAuthStatus): OpenAIAuthSnapshot {
 /** Live status once init's first key sync has run. Before that, the disk part plus a direct secret read. */
 async function readStatus(platform: Platform): Promise<OpenAIAuthStatus> {
   if (PiRuntime.exists && PiRuntime.get().openaiStatusReady) return PiRuntime.get().getOpenAIAuthStatus();
+  // a daemon's core: the key is the client's, known from its clientAuth, never read
+  if (platform.remote) return openaiAuthStatus(readOpenAIAuthFromDisk(PI_AGENT_DIR), clientHasKey(platform.remote, "openai"));
   const secret = await platform.secrets.get(OPENAI_API_KEY_SECRET);
   return openaiAuthStatus(readOpenAIAuthFromDisk(PI_AGENT_DIR), secret !== undefined && secret !== "");
 }
@@ -136,6 +139,11 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
   return {
     setOpenAIApiKey: async (msg, ctx) => {
       if (msg.type !== "setOpenAIApiKey") return;
+      // before the probe, so the key never reaches OpenAI from a daemon's core
+      if (platform.remote) {
+        postMessage(ctx.host, { type: "setOpenAIApiKeyAck", requestId: msg.requestId, ok: false, error: remoteSignInRefusal() });
+        return;
+      }
       const key = msg.key.trim();
       if (!key) {
         postMessage(ctx.host, {
@@ -210,6 +218,10 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
 
     clearOpenAIApiKey: async (msg, ctx) => {
       if (msg.type !== "clearOpenAIApiKey") return;
+      if (platform.remote) {
+        postMessage(ctx.host, { type: "clearOpenAIApiKeyAck", requestId: msg.requestId, ok: false, error: remoteSignInRefusal() });
+        return;
+      }
       signInAbort?.abort();
       try {
         await runtime().clearOpenAIApiKey();

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { TerminalShellEvent } from '../../preload/terminal-channels';
+import { MAX_TRACKED_COMMANDS, type TerminalShellEvent } from '../../preload/terminal-channels';
 import {
-  MAX_TRACKED_COMMANDS,
   commandStatus,
   createCommandModel,
   durationParts,

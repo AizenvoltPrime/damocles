@@ -11,6 +11,8 @@ import {
   checkAskpassScripts,
   checkChangelog,
   checkCoreHost,
+  checkNoDaemon,
+  checkServerManifest,
   checkFuses,
   checkNodePtyLayout,
   checkShellIntegrationScripts,
@@ -43,9 +45,9 @@ afterEach(() => {
 });
 
 describe('WORKERS', () => {
-  it('names every top-level dist script the build writes but the extension and Damocles Core, which stays packed', () => {
+  it('names every top-level dist script the build writes but the extension, Damocles Core, which stays packed, and the loopback daemon, which never ships', () => {
     const config = readFileSync(join(__dirname, '..', '..', 'esbuild.config.mjs'), 'utf8');
-    const outfiles = [...config.matchAll(/outfile: 'dist\/([^/']+\.js)'/g)].map((match) => match[1]).filter((name) => name !== 'extension.js' && name !== 'core-host.js');
+    const outfiles = [...config.matchAll(/outfile: 'dist\/([^/']+\.js)'/g)].map((match) => match[1]).filter((name) => name !== 'extension.js' && name !== 'core-host.js' && name !== 'daemon.js');
     expect(outfiles).toContain('process-launcher-worker.js');
     expect([...WORKERS].sort()).toEqual(outfiles.sort());
   });
@@ -111,6 +113,33 @@ describe('checkAsarEntries', () => {
     for (const entry of ['src/core/x.ts', 'dist/desktop/main.js.map', 'node_modules/esbuild/package.json', 'node_modules/electron/index.js', 'e2e/desktop/a.spec.ts']) {
       expect(failures(checkAsarEntries([entry])), entry).toEqual(['asar contents']);
     }
+  });
+});
+
+describe('checkNoDaemon', () => {
+  it('passes a package without the loopback daemon and fails one that ships it, packed or unpacked', () => {
+    expect(failures(checkNoDaemon([{ path: 'dist/core-host.js', entry: { unpacked: false } }], []))).toEqual([]);
+    expect(checkNoDaemon([{ path: 'dist/daemon.js', entry: { unpacked: false } }], [])[0].detail).toBe('dist/daemon.js ships in app.asar');
+    expect(checkNoDaemon([], ['dist/daemon.js'])[0].detail).toBe('dist/daemon.js ships in app.asar.unpacked');
+  });
+});
+
+describe('checkServerManifest', () => {
+  const release = (version: string, sha: string) => ({
+    version,
+    protocolVersion: 1,
+    packages: Object.fromEntries(['linux-x64', 'win32-x64'].map((target) => [target, { file: `damocles-server-${version}-${target}.${target.startsWith('win32') ? 'zip' : 'tar.gz'}`, sha256: sha.repeat(64), size: 10 }])),
+  });
+
+  it('passes a manifest naming exactly the release packages', () => {
+    expect(failures(checkServerManifest(JSON.stringify(release('3.7.0', 'a')), '3.7.0', release('3.7.0', 'a')))).toEqual([]);
+  });
+
+  it('fails a missing manifest, one the app cannot read, another version\'s and one whose hashes differ', () => {
+    expect(checkServerManifest(undefined, '3.7.0', release('3.7.0', 'a'))[0].detail).toBe('dist/desktop/server-manifest.json is not in app.asar');
+    expect(checkServerManifest(JSON.stringify({ ...release('3.7.0', 'a'), version: '..' }), '3.7.0', release('3.7.0', 'a'))[0].detail).toMatch(/does not parse/);
+    expect(checkServerManifest(JSON.stringify(release('3.6.0', 'a')), '3.7.0', release('3.7.0', 'a'))[0].detail).toMatch(/it is for 3\.6\.0, the app is 3\.7\.0/);
+    expect(checkServerManifest(JSON.stringify(release('3.7.0', 'b')), '3.7.0', release('3.7.0', 'a'))[0].detail).toBe('linux-x64 is not damocles-server-3.7.0-linux-x64.tar.gz with its SHA-256 and size; win32-x64 is not damocles-server-3.7.0-win32-x64.zip with its SHA-256 and size');
   });
 });
 

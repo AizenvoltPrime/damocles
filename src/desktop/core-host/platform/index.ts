@@ -7,11 +7,13 @@ import type { FileWatcherFactory } from '../../../platform/file-watcher';
 import type { LocalizationService } from '../../../platform/localization-service';
 import type { LogSinkFactory } from '../../../platform/log-sink';
 import type { NotificationService } from '../../../platform/notification-service';
+import type { RemoteHost } from '../../../platform/remote-host';
 import type { SettingsStore } from '../../../platform/settings-store';
 import type { TrustService } from '../../../platform/trust-service';
 import type { WorkspaceFolders } from '../../../platform/workspace-folders';
 import type { HostCapabilities } from '../../../shared/types/messages';
 import { createCoreEndpoint, type CoreEndpoint, type CoreInit, type CoreProtocolError, type CoreTransport } from '../../core-protocol';
+import { createClientSnapshots, createRemoteHost } from './clients';
 import { createEditorProxy } from './editor';
 import { createFoldersMirror, createStateMirror, createTrustMirror, type StateMirror } from './mirrored';
 import { createCorePanels, type CorePanels } from './panels';
@@ -38,6 +40,8 @@ export interface CoreShared {
   readonly trust: TrustService;
   readonly state: StateMirror;
   readonly notifications: NotificationService;
+  // set only for a daemon's core
+  readonly remote: RemoteHost | undefined;
 }
 
 export interface CorePlatform extends PlatformWithWorktrees {
@@ -73,13 +77,16 @@ export function createCorePlatform(
   const state = createStateMirror(endpoint, init);
   const workspaceFolders = createFoldersMirror(endpoint, init);
   const notifications = createNotificationsProxy(endpoint);
-  const local = createLocal({ endpoint, init, workspaceFolders, trust, state, notifications });
-  const panels = createCorePanels({ endpoint, init, resourceRoot: local.paths.resourceRoot });
+  const clients = createClientSnapshots(endpoint, init);
+  // panels exists by the time a reply is spoken
+  const remote = init.remote ? createRemoteHost(endpoint, { ...init, remote: init.remote }, clients, (host) => panels.idOf(host)) : undefined;
+  const local = createLocal({ endpoint, init, workspaceFolders, trust, state, notifications, remote });
+  const panels = createCorePanels({ endpoint, resourceRoot: local.paths.resourceRoot });
   const secrets = createSecretsProxy(endpoint, init);
   const editor = createEditorProxy(endpoint, init);
   const window = createWindowProxy(endpoint, init, panels);
   let prompts: ChatPrompts | undefined;
-  const owned = [panels, trust, state, workspaceFolders, secrets, editor, window];
+  const owned = [panels, trust, state, workspaceFolders, secrets, editor, window, clients];
   return {
     get capabilities() {
       return local.capabilities();
@@ -94,6 +101,7 @@ export function createCorePlatform(
     notifications,
     paths: local.paths,
     appInfo: init.appInfo,
+    ...(remote ? { remote } : {}),
     localization: local.localization,
     clipboard: createClipboardProxy(endpoint),
     shell: createShellProxy(endpoint),

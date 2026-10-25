@@ -11,12 +11,17 @@ export class SkillManager {
   private state: PermissionState;
   private getPostMessage: () => PostMessageFn | null;
 
+  // the host policy's YOLO check (PermissionHandler), re-read at each decision
+  private readonly bypassAllowed: () => boolean;
+
   constructor(
     state: PermissionState,
-    getPostMessage: () => PostMessageFn | null
+    getPostMessage: () => PostMessageFn | null,
+    bypassAllowed: () => boolean = () => true,
   ) {
     this.state = state;
     this.getPostMessage = getPostMessage;
+    this.bypassAllowed = bypassAllowed;
   }
 
   preApproveSkill(skillName: string): void {
@@ -33,7 +38,7 @@ export class SkillManager {
   ): Promise<PermissionResult> {
     const skillName = typeof input['skill'] === 'string' ? input['skill'] : '';
 
-    if (this.state.autoApprovedSkills.has(skillName) || this.state.dangerouslySkipPermissions) {
+    if (this.state.autoApprovedSkills.has(skillName) || (this.state.dangerouslySkipPermissions && this.bypassAllowed())) {
       return buildAllowResult(input);
     }
 

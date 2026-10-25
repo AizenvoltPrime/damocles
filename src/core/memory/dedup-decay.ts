@@ -8,6 +8,7 @@ import type { MemoryWriteQueue } from './write-queue';
 import type { MemorySubCallRunner } from './subcall-runner';
 import { buildFtsMatchQuery, tokenize } from './text-tokenize';
 import { addMemoryEdge } from './managers/fact-graph-manager';
+import { localOnly } from './local-only';
 
 /** Time-to-live an episodic memory survives before the decay sweep forgets it. */
 export const EPISODE_TTL_MS: number = 30 * 24 * 60 * 60 * 1000;
@@ -328,7 +329,7 @@ export function applyDecaySweep(
       .prepare(
         `UPDATE memories SET forgotten = 1, forget_reason = 'episode_decay'
           WHERE kind = 'episode' AND forget_after IS NOT NULL AND forget_after < ?
-            AND pinned = 0 AND forgotten = 0`,
+            AND pinned = 0 AND forgotten = 0${localOnly()}`,
       )
       .run(now);
     return { forgotten: result.changes };
@@ -350,7 +351,7 @@ export function promoteEpisodes(
     const result = db
       .prepare(
         `UPDATE memories SET forget_after = NULL
-          WHERE kind = 'episode' AND forget_after IS NOT NULL AND forgotten = 0
+          WHERE kind = 'episode' AND forget_after IS NOT NULL AND forgotten = 0${localOnly()}
             AND (
               access_count >= ?
               OR (source_count >= ? AND (updated_at - created_at) >= ?)
@@ -403,7 +404,7 @@ export function purgeForgottenRows(db: DatabaseInstance, writeQueue: MemoryWrite
         `SELECT id FROM memories
           WHERE forgotten = 1
             AND forget_reason IN ('episode_decay', 'merged')
-            AND MAX(updated_at, COALESCE(forget_after, 0)) < ?`,
+            AND MAX(updated_at, COALESCE(forget_after, 0)) < ?${localOnly()}`,
       )
       .all(cutoff) as { id: string }[];
     const ids = rows.map(r => r.id);

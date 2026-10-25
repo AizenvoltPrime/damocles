@@ -29,6 +29,8 @@ import type { ConsolidationExtractedMemory, ConsolidationPhaseEvent, Consolidati
 import { subCallSpy, type SubCallSpy } from './subcall-spy';
 import { USEFULNESS_RUBRIC } from '../rubric';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
+import { installPlatform } from '../../platform-host';
 
 const BUDGET_CHARS = CANDIDATE_TOKEN_BUDGET * 4;
 
@@ -276,6 +278,34 @@ describe('runConsolidation', () => {
     const prompt = (extractCall![0] as MemorySubCallRequest).prompt;
     expect(prompt).toContain('Already-stored memories');
     expect(prompt).toContain('The bundler is Vite, not esbuild');
+  });
+
+  it('tells the extractor about global memories only on this computer\'s core, since global memory is the client\'s', async () => {
+    const now = Date.now();
+    for (const [scope, content] of [['project', 'The bundler is Vite, not esbuild'], ['global', 'The user builds with Vite everywhere']] as const) {
+      const id = crypto.randomUUID();
+      db.prepare(
+        `INSERT INTO memories (id, kind, scope, content, content_hash, root_id, workspace, created_at, updated_at)
+         VALUES (?, 'fact', ?, ?, '', ?, ?, ?, ?)`,
+      ).run(id, scope, content, id, scope === 'project' ? WORKSPACE : null, now, now);
+    }
+    const extractPrompt = async (): Promise<string> => {
+      seedCandidate(db, SESSION_ID, 'How is it built with Vite?', 'Vite bundles it.');
+      const { runner, run } = makeRunner({ memories: [] });
+      await runConsolidation(makeCtx(db, runner));
+      const extractCall = run.mock.calls.find(([req]) => (req as MemorySubCallRequest).purpose === 'extract');
+      return (extractCall![0] as MemorySubCallRequest).prompt;
+    };
+
+    expect(await extractPrompt()).toContain('The user builds with Vite everywhere');
+    installPlatform({ ...createFakePlatform(), remote: createFakeRemoteHost().remote });
+    try {
+      const remotePrompt = await extractPrompt();
+      expect(remotePrompt).toContain('The bundler is Vite, not esbuild');
+      expect(remotePrompt).not.toContain('The user builds with Vite everywhere');
+    } finally {
+      installPlatform(createFakePlatform());
+    }
   });
 
   it('stops claiming once the token budget is hit, leaving older-fitting turns for the next pass', async () => {

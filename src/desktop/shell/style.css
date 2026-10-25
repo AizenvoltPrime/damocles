@@ -5,6 +5,7 @@
 @source "../../webview/components/SegmentedToggle.vue";
 @source "../../webview/components/RollingNumber.vue";
 @source "../../webview/components/icons/ProviderLogo.vue";
+@source "../../webview/components/HostBadge.vue";
 
 @theme {
   --font-mono: var(--d-mono);
@@ -67,6 +68,16 @@
 .update-pill-enter-active,
 .engine-pill-enter-active {
   animation: d-scale-in 0.32s var(--ease-spring) both;
+}
+
+/* A host's engine pill fades in (d-fade); its Restart turns the icon until the core is back, then the pill fades out. */
+.engine-host-pill-enter-active {
+  animation: d-fade 0.2s var(--ease-out) both;
+}
+
+.engine-host-pill-leave-active {
+  pointer-events: none;
+  animation: d-fade 0.16s ease-in reverse both;
 }
 
 .update-pill-leave-active,

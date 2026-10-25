@@ -4,6 +4,7 @@ import type { ExtensionToWebviewMessage } from "../../../../shared/types/message
 import { customProviderDef, providerKeyStored } from "../../../pi-session/custom-providers";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { log } from "../../../logger";
+import { clientHasKey } from "../../../client-snapshots";
 
 /** Awaited, so a status read next (memory judge, image generation's OpenRouter check) sees the new key. */
 async function resyncCustomProvidersNow(platform: Platform): Promise<void> {
@@ -30,6 +31,8 @@ export async function providerAuthStatus(
   platform: Platform,
   provider: KeyProviderId,
 ): Promise<Extract<ExtensionToWebviewMessage, { type: "providerAuthStatusChanged" }> | undefined> {
+  // a daemon's core: the key is the client's, known from its clientAuth, never read
+  if (platform.remote) return { type: "providerAuthStatusChanged", provider, configured: clientHasKey(platform.remote, customProviderDef(provider).provider), external: null };
   const stored = await providerKeyStored((k) => platform.secrets.get(k), customProviderDef(provider).secretKey);
   if (stored === undefined) {
     log("[ProviderKeys] the secret store did not answer for the %s key; its status is unchanged", provider);

@@ -1,5 +1,3 @@
-import { StringDecoder } from 'node:string_decoder';
-import { processLauncher } from '../../core/process-launcher';
 import { parseQuickOpenQuery } from '../../core/quick-open/fuzzy-match';
 import type { WebContents } from 'electron';
 import {
@@ -15,14 +13,13 @@ import {
   type QuickOpenScope,
 } from '../preload/overlay-channels';
 import type { FileRef } from '../preload/shell-channels';
-import { parseWorkerReply, ripgrepFileArgs, type WorkerReply, type WorkerRequest } from '../quick-open-worker/protocol';
+import { parseWorkerReply, type WorkerReply, type WorkerRequest } from '../quick-open-worker/protocol';
 import type { Project } from '../local-services/confine';
+import type { ProjectWorkspace } from '../workspace/project-workspace';
+import type { FileListing } from '../workspace/quick-open-listing';
 import type { MenuState } from './menu';
-import type { RgProcess } from './search/search-service';
 import { tickDeadline } from './tick-deadline';
-
-// Characters of a listing's ripgrep stderr kept for the log and the failure.
-const MAX_LISTING_STDERR_CHARS = 4096;
+import { NotConnectedError, type Workspaces } from './workspace/workspaces';
 
 // A worker that posts nothing for this long while a query waits is stuck and replaced; a listing that still prints a file
 // posts progress every WORKER_PROGRESS_INTERVAL_MS, so it is never cut short.
@@ -39,21 +36,16 @@ export interface QuickOpenWorker {
 
 export interface QuickOpenDeps {
   readonly projects: () => readonly Project[];
-  readonly rgPath: () => Promise<string>;
+  readonly workspaces: Workspaces;
   // ripgrep's ignore switches from the search.use*IgnoreFiles settings
   readonly ignoreArgs: () => readonly string[];
   // damocles.desktop.files.exclude globs that hide files
   readonly excludes: () => readonly string[];
-  // keeps the project's watcher running, whose creates and deletes invalidate its list
-  readonly watch: (project: Project) => void;
+  // keeps the project's watcher running, whose creates and deletes invalidate its list; false while its host is not connected
+  readonly watch: (project: Project) => boolean;
   // starts dist/quick-open-worker.js
   readonly startWorker: () => QuickOpenWorker;
   readonly log: (line: string) => void;
-  readonly spawnRg?: (rgPath: string, args: readonly string[]) => RgProcess;
-}
-
-function spawnRipgrep(rgPath: string, args: readonly string[]): RgProcess {
-  return processLauncher().launch({ file: rgPath, args, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
 export interface QuickOpenContext {
@@ -92,8 +84,9 @@ function itemOf(relativePath: string): { label: string; description: string } {
 export class QuickOpenIndex {
   private readonly deps: QuickOpenDeps;
   private worker: QuickOpenWorker | undefined;
-  // main runs every listing's ripgrep, since terminating a worker thread leaves the processes it spawned running
-  private readonly listings = new Set<RgProcess>();
+  // main holds every listing the worker asked for, on the workspace of its project, since terminating a worker thread leaves
+  // the processes it spawned running
+  private readonly listings = new Set<FileListing>();
   private readonly pending = new Map<number, Pending>();
   private nextId = 0;
   // the open requests' search ids
@@ -139,8 +132,8 @@ export class QuickOpenIndex {
     let id: number | undefined;
     try {
       const { scope } = context;
-      const projects = this.deps.projects();
-      for (const project of projects) if (scope === undefined || project.key === scope.projectKey) this.deps.watch(project);
+      // a project whose host is not connected is left out of this query
+      const projects = this.deps.projects().filter((project) => (scope !== undefined && project.key !== scope.projectKey) || this.deps.watch(project));
       if (!this.searches.has(search.id)) return undefined;
       const worker = this.started();
       const queryId = this.nextId++;
@@ -204,7 +197,7 @@ export class QuickOpenIndex {
     }
     if (reply.kind === 'progress') return;
     if (reply.kind === 'list') {
-      void this.list(worker, reply.listing, reply.projectKey);
+      this.list(worker, reply.listing, reply.projectKey);
       return;
     }
     const pending = this.pending.get(reply.id);
@@ -234,46 +227,30 @@ export class QuickOpenIndex {
     return results;
   }
 
-  // ripgrep for a project of main's list, its output streamed to the worker that asked.
-  private async list(worker: QuickOpenWorker, listing: number, projectKey: string): Promise<void> {
+  // The project's file listing on the workspace that holds it, streamed to the worker that asked; main holds every listing,
+  // since terminating a worker thread leaves the processes it spawned running.
+  private list(worker: QuickOpenWorker, listing: number, projectKey: string): void {
     const project = this.deps.projects().find((candidate) => candidate.key === projectKey);
     if (!project) {
       worker.postMessage({ kind: 'listEnd', listing, error: 'not a project' });
       return;
     }
-    let rgPath: string;
+    let workspace: ProjectWorkspace;
     try {
-      rgPath = await this.deps.rgPath();
+      workspace = this.deps.workspaces.forProject(project.key);
     } catch (err) {
-      worker.postMessage({ kind: 'listEnd', listing, error: err instanceof Error ? err.message : String(err) });
+      if (!(err instanceof NotConnectedError)) throw err;
+      worker.postMessage({ kind: 'listEnd', listing, error: err.message });
       return;
     }
-    // A worker stopped meanwhile has nobody left to kill a ripgrep started for it.
-    if (this.worker !== worker) return;
-    const rg = (this.deps.spawnRg ?? spawnRipgrep)(rgPath, ripgrepFileArgs(project.fsPath, this.deps.ignoreArgs(), this.deps.excludes()));
-    this.listings.add(rg);
-    let stderr = '';
-    let ended = false;
-    const end = (error: string | undefined): void => {
-      if (ended) return;
-      ended = true;
-      this.listings.delete(rg);
-      worker.postMessage({ kind: 'listEnd', listing, ...(error !== undefined ? { error } : {}) });
-    };
-    rg.onData('stdout', (data) => worker.postMessage({ kind: 'listOutput', listing, data }));
-    const decoder = new StringDecoder('utf8');
-    rg.onData('stderr', (chunk) => {
-      if (stderr.length < MAX_LISTING_STDERR_CHARS) stderr += decoder.write(chunk).slice(0, MAX_LISTING_STDERR_CHARS - stderr.length);
+    const running: FileListing = workspace.quickOpen.list(project.fsPath, this.deps.ignoreArgs(), this.deps.excludes(), {
+      data: (data) => worker.postMessage({ kind: 'listOutput', listing, data }),
+      end: (error) => {
+        this.listings.delete(running);
+        worker.postMessage({ kind: 'listEnd', listing, ...(error !== undefined ? { error } : {}) });
+      },
     });
-    Promise.all([rg.exited, rg.closed]).then(([{ code }]) => {
-      // 1 is ripgrep's "nothing found".
-      if (code !== 0 && code !== 1) {
-        end(`ripgrep exited with ${String(code)}: ${stderr.trim()}`);
-        return;
-      }
-      if (stderr.trim() !== '') this.deps.log(`[quick-open] ripgrep: ${stderr.trim().slice(0, 500)}`);
-      end(undefined);
-    }, (err: Error) => end(err.message));
+    this.listings.add(running);
   }
 
   // Every message from the worker restarts the deadline; it runs only while a query waits.
@@ -295,8 +272,8 @@ export class QuickOpenIndex {
   private stop(): void {
     this.cancelSilence?.();
     this.cancelSilence = undefined;
-    // ripgrep starts no process (its Windows console host ends with it), so this kill through the handle is the whole tree.
-    for (const rg of this.listings) rg.kill();
+    for (const listing of this.listings) listing.kill();
+    this.listings.clear();
     const worker = this.worker;
     this.worker = undefined;
     worker?.terminate().catch((err: unknown) => this.deps.log(`[quick-open] stopping the worker failed: ${err instanceof Error ? err.message : String(err)}`));

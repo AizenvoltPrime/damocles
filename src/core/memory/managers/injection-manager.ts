@@ -35,6 +35,8 @@ import { LLM_RERANK_MIN_MS, RERANK_QUERY_CHARS, classifierRerank } from '../clas
 import type { ContextInjectionDetailsV1, LiveInjections, LiveMemory } from '../injection/details';
 import { QUALITY_AUDIT_FORGET_REASON } from '@shared/types/memory-audit';
 import { isStaleMemory } from '@shared/memory-staleness';
+import { userScopeRemote } from '../../user-scope';
+import { localOnly } from '../local-only';
 import {
   BUDGETS,
   DEFAULT_TIER_LIMITS,
@@ -545,7 +547,9 @@ export class InjectionManager {
       stmt.run(id, bucket, now);
     }
     const cutoff = now - THIRTY_DAYS_MS;
-    this.db.prepare('DELETE FROM memory_retrievals WHERE retrieved_at < ?').run(cutoff);
+    // global memory is the client's, so a daemon's core leaves the global memories' retrievals alone
+    const local = userScopeRemote() ? ` AND workspace != '${GLOBAL_RETRIEVAL_WORKSPACE}'` : '';
+    this.db.prepare(`DELETE FROM memory_retrievals WHERE retrieved_at < ?${local}`).run(cutoff);
   }
 
   getRetrievalCounts(workspace: string): Map<string, number> {
@@ -568,7 +572,9 @@ export class InjectionManager {
    */
   private loadVisible(now: number, sessionId: string, workspace: string): Map<number, VisibleRow> {
     const rows = this.db.prepare(VISIBLE_SQL).all(workspace, now, now, sessionId, now) as Array<VisibleRow & { rowid: number }>;
-    return new Map(rows.map(r => [r.rowid, { id: r.id, kind: r.kind, scope: r.scope }]));
+    // global memory is the client's, so a daemon's core injects no global row
+    const remote = userScopeRemote();
+    return new Map(rows.filter((r) => !remote || r.scope !== 'global').map(r => [r.rowid, { id: r.id, kind: r.kind, scope: r.scope }]));
   }
 
   private loadRows(ids: readonly string[]): Map<string, Loaded> {
@@ -576,7 +582,7 @@ export class InjectionManager {
     for (let i = 0; i < ids.length; i += SQL_CHUNK) {
       const chunk = ids.slice(i, i + SQL_CHUNK);
       const rows = this.db
-        .prepare(`SELECT * FROM memories WHERE id IN (${chunk.map(() => '?').join(',')})`)
+        .prepare(`SELECT * FROM memories WHERE id IN (${chunk.map(() => '?').join(',')})${localOnly()}`)
         .all(...chunk) as MemoryRow[];
       for (const row of rows) out.set(row.id, toLoaded(row));
     }
@@ -590,7 +596,7 @@ export class InjectionManager {
   private chainHead(row: MemoryRow): Loaded | null {
     const root = row.root_id ?? row.id;
     const head = this.db.prepare(
-      `SELECT * FROM memories WHERE (root_id = ? OR (root_id IS NULL AND id = ?)) AND +is_latest = 1 AND +forgotten = 0
+      `SELECT * FROM memories WHERE (root_id = ? OR (root_id IS NULL AND id = ?)) AND +is_latest = 1 AND +forgotten = 0${localOnly()}
         ORDER BY updated_at DESC LIMIT 1`,
     ).get(root, root) as MemoryRow | undefined;
     return head ? toLoaded(head) : null;
@@ -657,7 +663,8 @@ export class InjectionManager {
          AND (workspace = ? OR (session_id = ? AND scope = 'session') OR scope = 'global')
        ORDER BY updated_at DESC`,
     ).all(workspace, sessionId) as MemoryRow[];
-    return rows.map(toLoaded);
+    const remote = userScopeRemote();
+    return rows.filter((row) => !remote || row.scope !== 'global').map(toLoaded);
   }
 
   private loadVisibleWhere(visible: ReadonlyMap<number, VisibleRow>, keep: (v: VisibleRow) => boolean): Loaded[] {

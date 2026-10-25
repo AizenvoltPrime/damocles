@@ -24,6 +24,7 @@ import { modelVendor, type ModelVendor } from '@/composables/useModelIdentity';
 import { KEY_PROVIDER_NAMES } from '@shared/settings-sections';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { remPx } from '@/composables/useRemPx';
+import { useChatHost } from '@/composables/useChatHost';
 
 const { t } = useI18n();
 const { postMessage } = usePlatformBridge();
@@ -72,6 +73,14 @@ function selectEffort(value: AcceptableValue): void {
 }
 
 const currentVendor = computed(() => (current.value ? modelVendor(current.value) : undefined));
+
+// A remote chat's model whose endpoint is on this computer's loopback (core marks it): shown, muted, never picked.
+const host = useChatHost();
+function unavailableTitle(model: ModelInfo): string | undefined {
+  if (!model.unavailable) return model.description;
+  const { endpoint } = model.unavailable;
+  return host.value ? t('composer.modelUnavailableLoopback', { endpoint, host: host.value.name }) : t('composer.modelUnavailableLoopbackHere', { endpoint });
+}
 </script>
 
 <template>
@@ -131,15 +140,29 @@ const currentVendor = computed(() => (current.value ? modelVendor(current.value)
             v-for="model in group.models"
             :key="model.value"
             :value="model.value"
-            :title="model.description"
-            class="gap-2.25 rounded-7 px-2.25 py-1.5 text-13 text-(--d-text) focus:bg-(--d-hover) focus:text-(--d-text) data-[state=checked]:bg-(--d-accent-soft) [&>span:first-child]:hidden"
+            :title="unavailableTitle(model)"
+            :disabled="model.unavailable !== undefined"
+            :data-unavailable="model.unavailable?.reason"
+            class="gap-2.25 rounded-7 px-2.25 py-1.5 text-13 text-(--d-text) focus:bg-(--d-hover) focus:text-(--d-text) data-[state=checked]:bg-(--d-accent-soft) data-disabled:pointer-events-auto data-disabled:cursor-default data-disabled:opacity-100 [&>span:first-child]:hidden"
             data-testid="composer-model-option"
           >
+            <!-- an unavailable model dims its logo and name only, so its reason keeps its token's contrast (palette-contrast.test.ts) -->
             <ProviderLogo
               :provider="group.vendor"
               class="size-3.75"
+              :class="model.unavailable && 'opacity-50'"
             />
-            <span class="flex-1 truncate">{{ model.displayName }}</span>
+            <span class="flex min-w-0 flex-1 flex-col">
+              <span
+                class="truncate"
+                :class="model.unavailable && 'opacity-50'"
+              >{{ model.displayName }}</span>
+              <!-- on its own line, so the model it marks keeps its name at any width -->
+              <span
+                v-if="model.unavailable"
+                class="truncate text-11 text-(--d-faint-text)"
+              >{{ host ? t('composer.modelUnavailable', { host: host.name }) : t('composer.modelUnavailableHere') }}</span>
+            </span>
             <Check
               class="size-3.25 shrink-0 text-(--d-accent) transition-opacity"
               :class="model.value === chatModel ? 'opacity-100' : 'opacity-0'"

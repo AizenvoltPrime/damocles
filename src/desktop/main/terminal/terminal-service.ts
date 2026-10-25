@@ -1,8 +1,11 @@
+import { randomInt } from 'node:crypto';
 import * as path from 'node:path';
 import { isHostEnvEntry, MAX_HOST_ENV_ENTRIES, parseHostMessage, type HostMessage, type HostRequest } from '../../pty-host/protocol';
 import {
   MAX_TERMINAL_ACK_CHARS,
   MAX_TERMINAL_GROUP_PANES,
+  MAX_TERMINAL_SCREEN_MARKS,
+  MAX_TRACKED_COMMANDS,
   MAX_TERMINAL_NAME_LENGTH,
   MIN_TERMINAL_PANE_FRACTION,
   TERMINAL_COLORS,
@@ -20,7 +23,9 @@ import {
   type TerminalInfo,
   type TerminalProfileOption,
   type TerminalProjectOption,
+  type TerminalScreen,
   type TerminalSettings,
+  type TerminalShellEvent,
   type TerminalShellEventAt,
   type TerminalState,
   type TerminalStatus,
@@ -48,26 +53,16 @@ import {
 import { terminalsToConfirm } from './kill-confirmation';
 import { MAX_OVERLAY_LABEL_LENGTH } from '../../preload/overlay-channels';
 import { cwdFolderName, newShellNonce, Osc633Stream, parseShellSequence, sanitizeDisplayText, sanitizeTitle } from './shell-integration';
-import { NONCE_ENV, shellIntegrationInjection } from './shell-integration-injection';
+import type { PtyHostProcess } from '../../workspace/host-starters';
+import { NONCE_ENV } from '../../workspace/terminal/shell-integration-injection';
+import type { TerminalBackend } from '../../workspace/terminal/terminal-backend';
+import type { Workspaces } from '../workspace/workspaces';
 import { linkPathStyle, type LinkBase, type LinkPathStyle } from './terminal-links';
 import { pasteChunks } from './terminal-paste';
+import { authorityKeyOfProject } from '../../../shared/project-location';
+import type { RemoteTerminalRecord } from '../remote/remote-state';
 import type { TerminalAppearance } from '../terminal-pick';
 import type { LaunchProfile } from './user-profiles';
-
-/** How the pty host ended: its exit code, the reason Electron gave for an abnormal exit, and the last error it printed. */
-export interface PtyHostExit {
-  readonly code: number;
-  readonly reason: string | null;
-  readonly error: string | null;
-}
-
-/** The pty host's utility process as main sees it; pty-host-process.ts adapts Electron's UtilityProcess. */
-export interface PtyHostProcess {
-  postMessage(message: HostRequest): void;
-  onMessage(listener: (message: unknown) => void): void;
-  onExit(listener: (exit: PtyHostExit) => void): void;
-  kill(): void;
-}
 
 export interface TerminalProject {
   readonly key: string;
@@ -143,18 +138,20 @@ export function parsePaneSizes(sizes: readonly unknown[], panes: number): number
 export interface TerminalShell {
   state(state: TerminalState): void;
   data(data: TerminalData): void;
+  // a live terminal's screen after the page loaded again, ahead of the terminal's next data
+  screen(screen: TerminalScreen): void;
   // keyboard focus moves to the shell page, which focuses the terminal
   focus(id: string): void;
 }
 
 export interface TerminalServiceDeps {
-  readonly spawnHost: () => PtyHostProcess;
-  // the visible detected shells and the valid user profiles, in quick pick order
-  readonly profiles: () => readonly LaunchProfile[];
+  // the workspace of each terminal's root key (null: the home folder), whose backend runs its pty host
+  readonly workspaces: Workspaces;
+  // the shells a terminal of this root key (null: the home folder) starts with, in quick pick order: this computer's visible
+  // detected shells and valid user profiles, or a remote host's own detected shells
+  readonly profiles: (projectKey: string | null) => readonly LaunchProfile[];
   // shell detection has settled (TerminalState.profilesReady)
   readonly profilesReady: () => boolean;
-  // whether a folder a shell reported still exists, for a split that starts in it; never blocks main on a slow share
-  readonly isDirectory: (folder: string) => Promise<boolean>;
   // every folder a terminal may start in, by root key (folder-root.ts): the open projects and their chat worktrees
   readonly projects: () => readonly TerminalProject[];
   // the New Terminal picker's folders: the open projects, with the current root in place of its project's folder
@@ -165,14 +162,18 @@ export interface TerminalServiceDeps {
   readonly rootEnv: (projectKey: string) => Readonly<Record<string, string>>;
   // defaultProfile: a profile id, '' for the first detected
   readonly settings: () => TerminalServiceSettings;
-  // a terminal's environment, read at each spawn
-  readonly env: () => Record<string, string>;
+  // a terminal's environment from its project's backend (null: the home folder), read at each spawn
+  readonly env: (projectKey: string | null) => Promise<Record<string, string>>;
+  // a remote project's OS, which its shells' paths and exit codes follow
+  readonly osOf: (projectKey: string) => NodeJS.Platform;
+  // the terminals on remote hosts, kept in remote-state.json; called on every change of the list
+  readonly persistRemote: (terminals: readonly RemoteTerminalRecord[]) => void;
   // the skip list's accelerators (TerminalState.passKeys); splitActive: the active group has more than one pane
   readonly passKeys: (splitActive: boolean) => readonly string[];
   // Chromium's accessibility support (TerminalState.screenReader), read at each publish
   readonly screenReader: () => boolean;
-  // TerminalState.windowsBuild
-  readonly windowsBuild: number;
+  // TerminalInfo.windowsBuild: the conpty build of the host a terminal of this root key runs on; null off Windows
+  readonly windowsBuild: (projectKey: string | null) => number | null;
   readonly persisted: () => PersistedTerminals;
   readonly persist: (terminals: PersistedTerminals) => void;
   // the list or the active terminal's status changed (menu enablement)
@@ -182,15 +183,10 @@ export interface TerminalServiceDeps {
   // the same for a Windows shell whose exit code is a CreateProcess error
   readonly launchFailed: (failure: WindowsLaunchFailure) => string;
   readonly log: (line: string) => void;
-  // picks how a terminal's shell writes paths (terminal links)
+  // this computer's OS: how a local terminal's shell writes paths (terminal links)
   readonly platform: NodeJS.Platform;
-  // the app's own shell-integration scripts (resources, unpacked); the user's home, the default ZDOTDIR and the folder a
-  // terminal starts in while no project is open
-  readonly scriptsDir: string;
+  // the folder a terminal starts in while no project is open
   readonly homedir: string;
-  // zsh's ZDOTDIR in the user's app data, and the synchronous copy of its startup files there (throws on failure)
-  readonly zshDotDir: string;
-  readonly copyFiles: (files: ReadonlyArray<{ readonly source: string; readonly dest: string }>) => void;
   // the one D41 question before a kill; resolves true to kill
   readonly confirmKill: (terminals: readonly KillListEntry[]) => Promise<boolean>;
   readonly now?: () => number;
@@ -233,15 +229,14 @@ export const HOST_SHUTDOWN_TIMEOUT_MS = 2000;
 // The size a pty starts at until the shell reports its own.
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
-// Commands per terminal whose line and exit code main keeps for Add to Chat labels; the oldest leaves first.
-export const TRACKED_COMMANDS = 100;
 // Characters of a dropped environment variable's name the log keeps.
 const MAX_LOGGED_ENV_NAME_CHARS = 100;
 
 // One shell process's integration state; a restart starts a fresh one.
 interface ShellSession {
   readonly nonce: string;
-  readonly stream: Osc633Stream;
+  // counts OSC 633 sequences as the pty host's screen does; a screen of output main never parsed sets its count again
+  stream: Osc633Stream;
   // a trusted sequence arrived
   integrated: boolean;
   // the last trusted E, until its C
@@ -252,10 +247,18 @@ interface ShellSession {
   cwd: string | null;
   // node-pty's foreground process name (macOS and Linux)
   processName: string | null;
+  // the spawn of this process was posted, so the pty host keeps its screen
+  spawned: boolean;
+  // the trusted events of each OSC 633 sequence by its index since the spawn, the latest MAX_TERMINAL_SCREEN_MARKS, which a
+  // screen's marks name
+  readonly marks: Map<number, TerminalShellEvent[]>;
 }
 
 interface Terminal {
   readonly id: string;
+  // the backend whose pty host runs its process, looked up at each spawn since a remote host's workspace is a new one after
+  // each reconnect; undefined until its first spawn is posted
+  backend: TerminalBackend | undefined;
   // re-read from the listed profiles at each restart
   profile: LaunchProfile;
   // null: the home folder, where a terminal started while no project was open stays (VS Code keeps a terminal's folder)
@@ -265,7 +268,7 @@ interface Terminal {
   // the folder each spawn starts in: startCwd, or for a split the folder its source reported
   readonly launchCwd: string;
   shell: ShellSession;
-  // commandId → facts, insertion ordered, at most TRACKED_COMMANDS
+  // commandId → facts, insertion ordered, at most MAX_TRACKED_COMMANDS
   readonly commands: Map<number, CommandFacts>;
   nextCommandId: number;
   status: TerminalStatus;
@@ -277,6 +280,10 @@ interface Terminal {
   color: TerminalColor | null;
   // input for a restart still checking its folder, which the host would drop before the spawn
   held?: string[] | undefined;
+  // requests posted while its spawn waits on the backend's environment and injection, sent right after the spawn
+  pending?: HostRequest[] | undefined;
+  // screens asked for since the shell page loaded again and not yet answered; data before the last one is in it, so dropped
+  restoring: number;
   // a task tab main runs (the worktree Setup, D32): never persisted, split or restarted by itself
   task?: TerminalTask;
 }
@@ -312,6 +319,12 @@ interface TerminalTask {
 interface Host {
   readonly process: PtyHostProcess;
   readonly exited: Promise<void>;
+  // a remote daemon's pty host, whose terminals outlive this app: closing and quitting detach from it, never kill
+  readonly persistent: boolean;
+}
+
+function isRemoteKey(projectKey: string | null): boolean {
+  return projectKey !== null && authorityKeyOfProject(projectKey) !== 'local';
 }
 
 // A tab of side-by-side panes (VS Code's TerminalGroup); every terminal is in exactly one.
@@ -346,7 +359,7 @@ export function terminalSettings(settings: SettingsStore): TerminalServiceSettin
 }
 
 function newShellSession(cwd: string): ShellSession {
-  return { nonce: newShellNonce(), stream: new Osc633Stream(), integrated: false, commandLine: null, running: null, cwd, processName: null };
+  return { nonce: newShellNonce(), stream: new Osc633Stream(), integrated: false, commandLine: null, running: null, cwd, processName: null, spawned: false, marks: new Map() };
 }
 
 // The shell's own executable name, which a foreground process name equal to it means idle.
@@ -371,15 +384,19 @@ export class TerminalService {
   private activeId: string | null = null;
   private nextGroupId = 1;
   private listWidthRem: number;
-  private host: Host | undefined;
+  // one pty host per backend, started on its first spawn
+  private readonly hosts = new Map<TerminalBackend, Host>();
   private shell: TerminalShell | undefined;
   // The window layout's terminals as the window opened; a terminal started before restore() runs rewrites the saved list.
   private toRestore: PersistedTerminals | undefined;
   private nextId = 1;
+  // the scrollback of every live terminal's screen in its pty host
+  private scrollback: number;
 
   constructor(deps: TerminalServiceDeps) {
     this.deps = deps;
     this.listWidthRem = clampListWidth(deps.persisted().listWidthRem);
+    this.scrollback = deps.settings().scrollback;
   }
 
   state(): TerminalState {
@@ -401,6 +418,9 @@ export class TerminalService {
         description: this.description(terminal),
         running: this.running(terminal),
         integrated: terminal.status !== 'exited' && terminal.shell.integrated,
+        restoring: terminal.restoring > 0,
+        windowsBuild: this.deps.windowsBuild(terminal.projectKey),
+        pathFlavor: this.osOf(terminal) === 'win32' ? 'win32' : 'posix',
       })),
       groups: this.groups.map((group): TerminalGroupInfo => ({ id: group.id, paneIds: [...group.paneIds], activePaneId: group.activePaneId, sizes: [...group.sizes] })),
       activeId: this.activeId,
@@ -418,21 +438,21 @@ export class TerminalService {
       canCreate: this.canCreate(),
       profilesReady: this.deps.profilesReady(),
       passKeys: [...this.deps.passKeys(this.splitActive())],
-      profiles: this.profileOptions(),
+      // the New Terminal dropdown's, which start in the current project
+      profiles: this.profileOptions(this.deps.currentProjectKey() ?? null),
       screenReader: this.deps.screenReader(),
-      windowsBuild: this.deps.windowsBuild,
     };
   }
 
   /** A terminal can start: a profile is listed. Without a project it starts in the home folder. */
   canCreate(): boolean {
-    return this.deps.profiles().length > 0;
+    return this.deps.profiles(null).length > 0;
   }
 
-  /** The listed profiles for the quick pick and Settings › Terminal, the default marked. */
-  profileOptions(): TerminalProfileOption[] {
-    const fallback = this.defaultProfile();
-    return this.deps.profiles().map((profile) => ({
+  /** The listed profiles of a project's host, this computer's for null, the default marked. */
+  profileOptions(projectKey: string | null = null): TerminalProfileOption[] {
+    const fallback = this.defaultProfile(projectKey);
+    return this.deps.profiles(projectKey).map((profile) => ({
       id: profile.id,
       name: profile.name,
       // display copies: a file or argument name may hold bidi or control characters; spawn uses profile.file and args
@@ -446,10 +466,16 @@ export class TerminalService {
     }));
   }
 
-  /** The open projects for the quick pick, the current one first; none while no project is open (the home folder). */
+  /**
+   * The open projects for the quick pick, the current one first; none while no project is open (the home folder). Only the
+   * current project's host's, since the pick's profiles are that host's shells.
+   */
   projectOptions(): TerminalProjectOption[] {
     const current = this.deps.currentProjectKey();
-    const options = this.deps.pickerProjects().map((project) => ({ key: project.key, name: project.name, path: project.fsPath, current: project.key === current }));
+    const host = current === undefined ? 'local' : authorityKeyOfProject(current);
+    const options = this.deps.pickerProjects()
+      .filter((project) => authorityKeyOfProject(project.key) === host)
+      .map((project) => ({ key: project.key, name: project.name, path: project.fsPath, current: project.key === current }));
     return [...options.filter((option) => option.current), ...options.filter((option) => !option.current)];
   }
 
@@ -510,14 +536,14 @@ export class TerminalService {
   // The task tab takes the icon of the profile running the same shell.
   private taskProfile(request: TerminalTaskRequest): LaunchProfile {
     const fold = (file: string): string => (this.deps.platform === 'win32' ? file.toLowerCase() : file);
-    const icon = this.deps.profiles().find((profile) => fold(profile.file) === fold(request.file))?.icon ?? 'shell';
+    const icon = this.deps.profiles(request.projectKey).find((profile) => fold(profile.file) === fold(request.file))?.icon ?? 'shell';
     return { id: `task:${request.key}`, name: request.name, file: request.file, args: [], icon, source: 'detected', customIcon: null, color: null };
   }
 
   // A new terminal at the end of the terminal array, in no group yet, with its process starting; the caller groups it and
   // publishes the change. A null profileId is the default profile; a null projectKey the home folder.
   private start(profileId: string | null, projectKey: string | null): TerminalCreateResult {
-    const profile = profileId === null ? this.defaultProfile() : this.listedProfile(profileId);
+    const profile = profileId === null ? this.defaultProfile(projectKey) : this.listedProfile(profileId, projectKey);
     if (!profile) return { ok: false, reason: profileId === null ? 'noProfile' : 'unknownProfile' };
     const folder = this.folderOf(projectKey);
     if (folder === undefined) return { ok: false, reason: 'unknownProject' };
@@ -534,7 +560,9 @@ export class TerminalService {
   private launch(profile: LaunchProfile, projectKey: string | null, startCwd: string, launchCwd: string, task?: TerminalTask): Terminal {
     const terminal: Terminal = {
       ...(task ? { task } : {}),
-      id: `term-${this.nextId++}`,
+      // a daemon's terminal ids are unique across its clients, so a remote terminal draws one no other client holds
+      id: isRemoteKey(projectKey) ? `term-${randomInt(1e14, 2 ** 48)}` : `term-${this.nextId++}`,
+      backend: undefined,
       profile,
       projectKey,
       startCwd,
@@ -549,6 +577,7 @@ export class TerminalService {
       name: null,
       customIcon: profile.customIcon,
       color: profile.color,
+      restoring: 0,
     };
     this.terminals.push(terminal);
     this.spawn(terminal);
@@ -624,9 +653,10 @@ export class TerminalService {
   }
 
   private send(id: string, data: string): void {
-    const held = this.find(id)?.held;
-    if (held) held.push(data);
-    else this.post({ type: 'input', id, data });
+    const terminal = this.find(id);
+    if (!terminal) return;
+    if (terminal.held) terminal.held.push(data);
+    else this.post(terminal, { type: 'input', id, data });
   }
 
   /** The user's name for the terminal; null restores the automatic title. */
@@ -709,6 +739,11 @@ export class TerminalService {
     return this.terminals.map((terminal) => terminal.id);
   }
 
+  /** The terminals a quit ends: a remote one outlives the app, so the quit's question leaves it out. */
+  quitIds(): string[] {
+    return this.terminals.filter((terminal) => !isRemoteKey(terminal.projectKey)).map((terminal) => terminal.id);
+  }
+
   /** The ids of the terminals in projectKey. */
   idsIn(projectKey: string): string[] {
     return this.terminals.filter((terminal) => terminal.projectKey === projectKey).map((terminal) => terminal.id);
@@ -738,7 +773,7 @@ export class TerminalService {
     const source = this.find(id);
     if (!source || this.splitRefused(id)) return;
     const group = this.groupOf(id)!;
-    const profile = this.listedProfile(source.profile.id);
+    const profile = this.listedProfile(source.profile.id, source.projectKey);
     const open = this.folderOf(source.projectKey) !== undefined;
     if (!profile || !open) {
       this.deps.log(`[terminal] not splitting ${id}: ${profile ? 'its project is closed' : `its profile ${source.profile.id} is no longer listed`}`);
@@ -790,11 +825,18 @@ export class TerminalService {
     if (!terminal) return;
     terminal.cols = cols;
     terminal.rows = rows;
-    if (this.live(id)) this.post({ type: 'resize', id, cols, rows });
+    if (this.live(id)) this.post(terminal, { type: 'resize', id, cols, rows });
   }
 
   ack(id: string, chars: number): void {
-    if (this.live(id)) this.post({ type: 'ack', id, chars });
+    const terminal = this.find(id);
+    if (terminal && this.live(id)) this.post(terminal, { type: 'ack', id, chars });
+  }
+
+  /** The menu's Clear, which the shell ran on its xterm; the screen the pty host keeps follows. */
+  clear(id: string): void {
+    const terminal = this.find(id);
+    if (terminal && this.live(id)) this.post(terminal, { type: 'clear', id });
   }
 
   /**
@@ -806,7 +848,7 @@ export class TerminalService {
     if (index < 0) return;
     const [terminal] = this.terminals.splice(index, 1);
     if (terminal!.status !== 'exited') {
-      this.post({ type: 'kill', id });
+      this.post(terminal!, { type: 'kill', id });
       terminal!.task?.onExit(null);
     }
     const group = this.groupOf(id)!;
@@ -831,7 +873,7 @@ export class TerminalService {
       terminal.task.onRestart();
       return;
     }
-    const profile = this.listedProfile(terminal.profile.id);
+    const profile = this.listedProfile(terminal.profile.id, terminal.projectKey);
     if (!profile) {
       this.deps.log(`[terminal] not restarting ${id}: its profile ${terminal.profile.id} is no longer listed`);
       return;
@@ -850,7 +892,7 @@ export class TerminalService {
     if (this.find(id) !== terminal || terminal.shell !== shell || terminal.status !== 'starting') return;
     shell.cwd = cwd;
     this.spawn(terminal, cwd);
-    for (const data of held) this.post({ type: 'input', id, data });
+    for (const data of held) this.post(terminal, { type: 'input', id, data });
   }
 
   /** The tab running the task named key, kept after its process ended until the tab closes; undefined without one. */
@@ -874,10 +916,73 @@ export class TerminalService {
     this.changed(true);
   }
 
-  /** A newly loaded shell page holds no terminal output, so nothing it was sent will be acknowledged. */
+  /**
+   * A newly loaded shell page holds no terminal output, so nothing it was sent will be acknowledged. Each live terminal's
+   * screen is asked for; its output until that screen arrives is in it, so the page gets the screen and the output after.
+   */
   shellLoaded(): void {
-    for (const terminal of this.terminals) if (terminal.status !== 'exited') this.post({ type: 'clearAck', id: terminal.id });
+    for (const terminal of this.terminals) {
+      if (terminal.status === 'exited') continue;
+      this.post(terminal, { type: 'clearAck', id: terminal.id });
+      if (!terminal.shell.spawned) continue;
+      terminal.restoring++;
+      this.post(terminal, { type: 'serialize', id: terminal.id });
+    }
     this.publish();
+  }
+
+  /**
+   * The terminals a daemon kept while this window or app was away (remote-state.json): each one its backend still lists gets
+   * its tab back, in a group of its own, and its screen through serialize, which attaches this client to it again (wezterm's
+   * list then attach); one present only as exited takes its place back, in its group and with its name, icon and color, and one
+   * already live is left alone.
+   */
+  async reattach(backend: TerminalBackend, records: readonly RemoteTerminalRecord[]): Promise<void> {
+    const live = new Map((await backend.list()).map((terminal) => [terminal.id, terminal]));
+    let added = false;
+    for (const record of records) {
+      const found = live.get(record.id);
+      const existing = this.find(record.id);
+      if (!found || (existing && existing.status !== 'exited') || !this.deps.projects().some((project) => project.key === record.projectKey)) continue;
+      const shell = { ...newShellSession(record.startCwd), nonce: record.nonce, spawned: true };
+      const terminal: Terminal = {
+        id: record.id,
+        backend,
+        profile: { ...record.profile, source: 'detected', customIcon: null, color: null },
+        projectKey: record.projectKey,
+        startCwd: record.startCwd,
+        launchCwd: record.startCwd,
+        shell,
+        commands: new Map(),
+        nextCommandId: 1,
+        status: 'running',
+        exitCode: null,
+        cols: found.cols,
+        rows: found.rows,
+        name: existing ? existing.name : record.name,
+        customIcon: existing ? existing.customIcon : record.customIcon,
+        color: existing ? existing.color : record.color,
+        restoring: 1,
+      };
+      this.ensureHost(backend, record.projectKey);
+      if (existing) {
+        this.terminals[this.terminals.indexOf(existing)] = terminal;
+      } else {
+        this.terminals.push(terminal);
+        this.groups.push(this.newGroup([terminal.id]));
+      }
+      this.post(terminal, { type: 'clearAck', id: terminal.id });
+      this.post(terminal, { type: 'serialize', id: terminal.id });
+      // after the serialize, which attaches this client: the hub takes a scrollback only from an attached one
+      this.post(terminal, { type: 'scrollback', id: terminal.id, scrollback: this.scrollback });
+      added = true;
+    }
+    if (added) {
+      this.order();
+      this.activeId ??= this.terminals.at(-1)?.id ?? null;
+    }
+    // the kept list drops the terminals that ended while away
+    if (records.length > 0) this.changed(true);
   }
 
   /**
@@ -893,8 +998,20 @@ export class TerminalService {
 
   /** The window closed: every terminal is killed, and the window layout keeps the list for the next window or launch. */
   closeWindow(): void {
-    if (this.terminals.some((terminal) => terminal.status !== 'exited')) this.post({ type: 'killAll' });
+    const live = new Set(this.terminals.filter((terminal) => terminal.status !== 'exited').flatMap((terminal) => terminal.backend ?? []));
+    for (const backend of live) {
+      const host = this.hosts.get(backend);
+      if (host && !host.persistent) host.process.postMessage({ type: 'killAll' });
+    }
+    // a remote host keeps its terminals for the next window, which reattaches them
+    for (const [backend, host] of [...this.hosts]) {
+      if (!host.persistent) continue;
+      this.hosts.delete(backend);
+      host.process.kill();
+    }
     for (const terminal of this.terminals) if (terminal.status !== 'exited') terminal.task?.onExit(null);
+    // a spawn still waiting on its environment is never posted
+    for (const terminal of this.terminals) terminal.pending = undefined;
     this.terminals = [];
     this.groups = [];
     this.activeId = null;
@@ -907,33 +1024,47 @@ export class TerminalService {
     this.shell?.state(this.state());
   }
 
-  /** Quit: the host kills every pty and ends; one that does not end in time is killed. */
-  async dispose(): Promise<void> {
-    const host = this.host;
-    this.shell = undefined;
-    if (!host) return;
-    host.process.postMessage({ type: 'shutdown' });
-    let timer: NodeJS.Timeout | undefined;
-    const timeoutMs = this.deps.shutdownTimeoutMs ?? HOST_SHUTDOWN_TIMEOUT_MS;
-    const timedOut = new Promise<boolean>((resolve) => {
-      timer = setTimeout(() => resolve(true), timeoutMs);
-    });
-    if (await Promise.race([host.exited.then(() => false), timedOut])) {
-      this.deps.log(`[terminal] the pty host did not end within ${timeoutMs} ms; killing it`);
-      host.process.kill();
+  /**
+   * Settings › Terminal changed: the views apply it, and each screen a pty host keeps is told the new scrollback; a daemon's
+   * shared screen keeps the largest its attached clients asked for.
+   */
+  settingsChanged(): void {
+    const { scrollback } = this.deps.settings();
+    if (scrollback !== this.scrollback) {
+      this.scrollback = scrollback;
+      for (const terminal of this.terminals) if (this.live(terminal.id) && terminal.shell.spawned) this.post(terminal, { type: 'scrollback', id: terminal.id, scrollback });
     }
-    clearTimeout(timer);
+    this.publish();
   }
 
-  private defaultProfile(): LaunchProfile | undefined {
-    const profiles = this.deps.profiles();
+  /** Quit: each host kills every pty and ends; one that does not end in time is killed. */
+  async dispose(): Promise<void> {
+    this.shell = undefined;
+    for (const host of this.hosts.values()) if (host.persistent) host.process.kill();
+    await Promise.all([...this.hosts.values()].filter((host) => !host.persistent).map(async (host) => {
+      host.process.postMessage({ type: 'shutdown' });
+      let timer: NodeJS.Timeout | undefined;
+      const timeoutMs = this.deps.shutdownTimeoutMs ?? HOST_SHUTDOWN_TIMEOUT_MS;
+      const timedOut = new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(true), timeoutMs);
+      });
+      if (await Promise.race([host.exited.then(() => false), timedOut])) {
+        this.deps.log(`[terminal] the pty host did not end within ${timeoutMs} ms; killing it`);
+        host.process.kill();
+      }
+      clearTimeout(timer);
+    }));
+  }
+
+  private defaultProfile(projectKey: string | null): LaunchProfile | undefined {
+    const profiles = this.deps.profiles(projectKey);
     const configured = this.deps.settings().defaultProfile;
     return profiles.find((profile) => profile.id === configured) ?? profiles[0];
   }
 
-  // A profile is launched only while it is listed, so a hidden, removed or now-invalid one never starts again.
-  private listedProfile(id: string): LaunchProfile | undefined {
-    return this.deps.profiles().find((profile) => profile.id === id);
+  // A profile is launched only while its host lists it, so a hidden, removed or now-invalid one never starts again.
+  private listedProfile(id: string, projectKey: string | null): LaunchProfile | undefined {
+    return this.deps.profiles(projectKey).find((profile) => profile.id === id);
   }
 
   private find(id: string): Terminal | undefined {
@@ -969,16 +1100,26 @@ export class TerminalService {
     return true;
   }
 
+  // Whether a folder a shell reported still exists; never blocks main on a slow share. forProject throws while a remote
+  // project's host is not connected.
+  private isDirectory(terminal: Terminal, folder: string): Promise<boolean> {
+    return Promise.resolve().then(() => this.deps.workspaces.forProject(terminal.projectKey).files.isDirectory(folder)).catch((err: unknown) => {
+      const code = (err as NodeJS.ErrnoException).code;
+      this.deps.log(`[terminal] cannot read the folder a shell reported: ${code ?? (err instanceof Error ? err.message : String(err))}`);
+      return false;
+    });
+  }
+
   // The folder the source's shell last reported while it still exists, else the source's project or home folder.
   private async splitCwd(source: Terminal): Promise<string> {
     const reported = source.shell.cwd;
-    if (reported !== null && (await this.deps.isDirectory(reported))) return reported;
+    if (reported !== null && (await this.isDirectory(source, reported))) return reported;
     this.deps.log(`[terminal] starting a split of ${source.id} in its start folder: ${reported === null ? 'the folder its shell reported was refused' : `${reported} no longer exists`}`);
     return source.startCwd;
   }
 
   private async restartCwd(terminal: Terminal): Promise<string> {
-    if (terminal.launchCwd === terminal.startCwd || (await this.deps.isDirectory(terminal.launchCwd))) return terminal.launchCwd;
+    if (terminal.launchCwd === terminal.startCwd || (await this.isDirectory(terminal, terminal.launchCwd))) return terminal.launchCwd;
     this.deps.log(`[terminal] restarting ${terminal.id} in its start folder: ${terminal.launchCwd} no longer exists`);
     return terminal.startCwd;
   }
@@ -989,33 +1130,42 @@ export class TerminalService {
   }
 
   // The shell starts with its integration script when the setting allows and VS Code's rules inject into it.
+  // The environment and the injection come from the terminal's backend, a daemon's over its connection, so what is posted
+  // meanwhile waits in pending and follows the spawn.
   private spawn(terminal: Terminal, cwd: string = terminal.launchCwd): void {
-    const env = { ...this.deps.env(), ...(terminal.projectKey !== null ? this.deps.rootEnv(terminal.projectKey) : {}), ...terminal.task?.env };
+    const { shell } = terminal;
+    shell.spawned = true;
+    const pending: HostRequest[] = [];
+    terminal.pending = pending;
+    // a kill posted meanwhile follows the spawn, so it finds its pty; a restart or a host exit meanwhile drops the spawn
+    const current = (): boolean => terminal.pending === pending && terminal.shell === shell && terminal.status !== 'exited';
+    // forProject throws while a remote project's host is not connected, which fails this spawn as a start error
+    Promise.resolve().then(async () => {
+      const backend = this.deps.workspaces.forProject(terminal.projectKey).terminals;
+      return { backend, request: await this.spawnRequest(terminal, backend, cwd) };
+    }).then(({ backend, request }) => {
+      if (!current()) return;
+      terminal.pending = undefined;
+      terminal.backend = backend;
+      this.ensureHost(backend, terminal.projectKey);
+      this.post(terminal, request);
+      for (const message of pending) this.post(terminal, message);
+    }, (err: unknown) => {
+      if (!current()) return;
+      terminal.pending = undefined;
+      const message = err instanceof Error ? err.message : String(err);
+      this.apply(terminal, { type: 'error', id: terminal.id, message });
+    });
+  }
+
+  private async spawnRequest(terminal: Terminal, backend: TerminalBackend, cwd: string): Promise<HostRequest> {
+    const env = { ...(await this.deps.env(terminal.projectKey)), ...(terminal.projectKey !== null ? this.deps.rootEnv(terminal.projectKey) : {}), ...terminal.task?.env };
+    const { scrollback, shellIntegration } = this.deps.settings();
     if (terminal.task) {
-      this.ensureHost().process.postMessage({ type: 'spawn', id: terminal.id, file: terminal.profile.file, args: [...terminal.task.args], cwd, env: { ...this.hostEnv(terminal, env, 1), [NONCE_ENV]: terminal.shell.nonce }, cols: terminal.cols, rows: terminal.rows });
-      return;
+      return { type: 'spawn', id: terminal.id, file: terminal.profile.file, args: [...terminal.task.args], cwd, env: { ...this.hostEnv(terminal, env, 1), [NONCE_ENV]: terminal.shell.nonce }, cols: terminal.cols, rows: terminal.rows, scrollback };
     }
-    let injection = this.deps.settings().shellIntegration
-      ? shellIntegrationInjection({
-        platform: this.deps.platform,
-        file: terminal.profile.file,
-        args: terminal.profile.args,
-        scriptsDir: this.deps.scriptsDir,
-        zshDotDir: this.deps.zshDotDir,
-        nonce: terminal.shell.nonce,
-        env,
-        homedir: this.deps.homedir,
-      })
-      : undefined;
-    if (injection?.filesToCopy) {
-      try {
-        this.deps.copyFiles(injection.filesToCopy);
-      } catch (err) {
-        this.deps.log(`[terminal] starting ${terminal.profile.file} without shell integration: its startup files could not be copied: ${err instanceof Error ? err.message : String(err)}`);
-        injection = undefined;
-      }
-    }
-    this.ensureHost().process.postMessage({
+    const injection = shellIntegration ? await backend.injection({ file: terminal.profile.file, args: terminal.profile.args, nonce: terminal.shell.nonce, env }) : undefined;
+    return {
       type: 'spawn',
       id: terminal.id,
       file: terminal.profile.file,
@@ -1024,7 +1174,8 @@ export class TerminalService {
       env: { ...this.hostEnv(terminal, env, Object.keys(injection?.env ?? {}).length), ...injection?.env },
       cols: terminal.cols,
       rows: terminal.rows,
-    });
+      scrollback,
+    };
   }
 
   // The host ends on a spawn outside its limits, which would end every terminal, so a variable it refuses (or one past its
@@ -1046,7 +1197,12 @@ export class TerminalService {
   }
 
   private pathStyle(terminal: Terminal): LinkPathStyle {
-    return linkPathStyle(this.deps.platform, terminal.profile.file);
+    return linkPathStyle(this.osOf(terminal), terminal.profile.file);
+  }
+
+  // The OS the terminal's shell runs on: this computer's, or its remote project's.
+  private osOf(terminal: Terminal): NodeJS.Platform {
+    return terminal.projectKey !== null && isRemoteKey(terminal.projectKey) ? this.deps.osOf(terminal.projectKey) : this.deps.platform;
   }
 
   // What runs: the command between a trusted C and its D; without integration on macOS and Linux, a foreground process
@@ -1056,7 +1212,7 @@ export class TerminalService {
     if (terminal.status === 'exited') return null;
     if (terminal.task) return terminal.name ?? terminal.profile.name;
     if (shell.integrated) return shell.running && (sanitizeTitle(shell.running.commandLine) ?? '');
-    if (shell.processName === null || shell.processName === shellName(terminal.profile.file, this.deps.platform)) return null;
+    if (shell.processName === null || shell.processName === shellName(terminal.profile.file, this.osOf(terminal))) return null;
     return sanitizeTitle(shell.processName) ?? '';
   }
 
@@ -1081,14 +1237,17 @@ export class TerminalService {
   private output(terminal: Terminal, data: string): void {
     const { shell } = terminal;
     const parsed = shell.stream.push(data);
-    for (let left = parsed.stripped; left > 0; left -= MAX_TERMINAL_ACK_CHARS) this.post({ type: 'ack', id: terminal.id, chars: Math.min(left, MAX_TERMINAL_ACK_CHARS) });
+    // Output the screen being restored already holds never reaches the page, so it is acknowledged here too.
+    const unseen = parsed.stripped + (terminal.restoring > 0 ? parsed.data.length : 0);
+    for (let left = unseen; left > 0; left -= MAX_TERMINAL_ACK_CHARS) this.post(terminal, { type: 'ack', id: terminal.id, chars: Math.min(left, MAX_TERMINAL_ACK_CHARS) });
     const events: TerminalShellEventAt[] = [];
     const before = JSON.stringify([this.title(terminal), this.description(terminal), this.running(terminal), shell.integrated]);
     const now = this.deps.now ?? Date.now;
-    for (const { offset, fields } of parsed.sequences) {
+    for (const { offset, fields, index } of parsed.sequences) {
       const sequence = parseShellSequence(fields, shell.nonce, this.pathStyle(terminal));
       if (!sequence) continue;
       shell.integrated = true;
+      const firstEvent = events.length;
       switch (sequence.type) {
         case 'promptStart':
           // a prompt while a command still runs: its D never arrived
@@ -1107,7 +1266,7 @@ export class TerminalService {
           shell.commandLine = null;
           shell.running = { id: commandId, commandLine };
           terminal.commands.set(commandId, { commandLine, exitCode: null });
-          if (terminal.commands.size > TRACKED_COMMANDS) terminal.commands.delete(terminal.commands.keys().next().value!);
+          if (terminal.commands.size > MAX_TRACKED_COMMANDS) terminal.commands.delete(terminal.commands.keys().next().value!);
           events.push({ offset, event: { kind: 'commandExecuted', commandId, commandLine, time: now() } });
           terminal.task?.onCommandStart?.();
           break;
@@ -1119,8 +1278,9 @@ export class TerminalService {
           shell.cwd = sequence.cwd;
           break;
       }
+      if (events.length > firstEvent) this.recordMarks(shell, index, events.slice(firstEvent).map(({ event }) => event));
     }
-    if (parsed.data.length > 0 || events.length > 0) this.shell?.data({ id: terminal.id, data: parsed.data, ...(events.length > 0 ? { events } : {}) });
+    if (terminal.restoring === 0 && (parsed.data.length > 0 || events.length > 0)) this.shell?.data({ id: terminal.id, data: parsed.data, ...(events.length > 0 ? { events } : {}) });
     if (JSON.stringify([this.title(terminal), this.description(terminal), this.running(terminal), shell.integrated]) !== before) this.changed(false);
   }
 
@@ -1131,30 +1291,59 @@ export class TerminalService {
     return { kind: 'commandFinished', commandId: running?.id ?? null, exitCode, time };
   }
 
-  private post(message: HostRequest): void {
-    this.host?.process.postMessage(message);
+  // The latest MAX_TERMINAL_SCREEN_MARKS sequences with events, oldest first.
+  private recordMarks(shell: ShellSession, index: number, events: TerminalShellEvent[]): void {
+    shell.marks.set(index, events);
+    if (shell.marks.size > MAX_TERMINAL_SCREEN_MARKS) shell.marks.delete(shell.marks.keys().next().value!);
   }
 
-  private ensureHost(): Host {
-    if (this.host) return this.host;
-    const process = this.deps.spawnHost();
+  // A screen the page asked for: an older one, asked before another reload, is dropped as its output was.
+  // A screen nobody asked for comes from a daemon that stopped sending this client a terminal's live data while it lagged:
+  // it replaces the view as a reattach does.
+  private restored(terminal: Terminal, message: Extract<HostMessage, { type: 'screen' }>): void {
+    const { shell } = terminal;
+    // A reattach or a lag screen holds output main never parsed, so main's count restarts at the screen's, in ground state.
+    if (shell.stream.next !== message.sequences) shell.stream = new Osc633Stream(message.sequences);
+    if (terminal.restoring > 0) terminal.restoring--;
+    if (terminal.restoring > 0) return;
+    const { marks } = shell;
+    this.shell?.screen({
+      id: terminal.id,
+      data: message.data,
+      cols: message.cols,
+      rows: message.rows,
+      marks: message.marks.flatMap(({ index, line }) => (marks.get(index) ?? []).map((event) => ({ line, event }))),
+    });
+    this.publish();
+  }
+
+  private post(terminal: Terminal, message: HostRequest): void {
+    if (terminal.pending) terminal.pending.push(message);
+    else if (terminal.backend) this.hosts.get(terminal.backend)?.process.postMessage(message);
+  }
+
+  private ensureHost(backend: TerminalBackend, projectKey: string | null): Host {
+    const running = this.hosts.get(backend);
+    if (running) return running;
+    const process: PtyHostProcess = backend.startHost();
     let ended: () => void = () => undefined;
-    const host: Host = { process, exited: new Promise((resolve) => { ended = resolve; }) };
-    this.host = host;
+    const host: Host = { process, exited: new Promise((resolve) => { ended = resolve; }), persistent: isRemoteKey(projectKey) };
+    this.hosts.set(backend, host);
     process.onMessage((raw) => {
-      if (this.host === host) this.receive(host, raw);
+      if (this.hosts.get(backend) === host) this.receive(host, backend, raw);
     });
     process.onExit((exit) => {
       ended();
-      if (this.host !== host) return;
-      this.host = undefined;
+      if (this.hosts.get(backend) !== host) return;
+      this.hosts.delete(backend);
       const reason = exit.reason === null ? '' : ` (${exit.reason})`;
       const error = exit.error === null ? '' : `; last error: ${JSON.stringify(exit.error)}`;
       this.deps.log(`[terminal] the pty host exited with code ${exit.code}${reason}${error}`);
       for (const terminal of this.terminals) {
-        if (terminal.status === 'exited') continue;
+        if (terminal.backend !== backend || terminal.status === 'exited') continue;
         terminal.status = 'exited';
         terminal.exitCode = null;
+        terminal.restoring = 0;
         terminal.task?.onExit(null);
       }
       this.changed(false);
@@ -1164,7 +1353,7 @@ export class TerminalService {
   }
 
   // The host is main's own code: a message outside the contract is a bug, and stopping it marks every terminal exited.
-  private receive(host: Host, raw: unknown): void {
+  private receive(host: Host, backend: TerminalBackend, raw: unknown): void {
     const message = parseHostMessage(raw);
     if (!message) {
       this.deps.log('[terminal] stopping the pty host: it sent a message outside the contract');
@@ -1173,7 +1362,7 @@ export class TerminalService {
     }
     // Output, an exit or an error of a terminal that was killed meanwhile.
     const terminal = this.find(message.id);
-    if (!terminal || terminal.status === 'exited') return;
+    if (!terminal || terminal.backend !== backend || terminal.status === 'exited') return;
     this.apply(terminal, message);
   }
 
@@ -1181,6 +1370,9 @@ export class TerminalService {
     switch (message.type) {
       case 'data':
         this.output(terminal, message.data);
+        return;
+      case 'screen':
+        this.restored(terminal, message);
         return;
       case 'process': {
         // Linux reports argv[0], which may be a path; macOS the command name.
@@ -1197,11 +1389,12 @@ export class TerminalService {
         return;
       case 'exit': {
         // still starting: a Windows pty reports ready only with its first output
-        const reason = this.deps.platform === 'win32' && terminal.status === 'starting' && Object.hasOwn(WINDOWS_LAUNCH_ERRORS, message.exitCode)
+        const reason = this.osOf(terminal) === 'win32' && terminal.status === 'starting' && Object.hasOwn(WINDOWS_LAUNCH_ERRORS, message.exitCode)
           ? WINDOWS_LAUNCH_ERRORS[message.exitCode as keyof typeof WINDOWS_LAUNCH_ERRORS]
           : undefined;
         terminal.status = 'exited';
         terminal.exitCode = message.exitCode;
+        terminal.restoring = 0;
         terminal.task?.onExit(message.exitCode);
         if (reason !== undefined) {
           const cwd = terminal.shell.cwd ?? terminal.launchCwd;
@@ -1215,6 +1408,7 @@ export class TerminalService {
         this.deps.log(`[terminal] ${terminal.profile.file} could not start: ${message.message}`);
         terminal.status = 'exited';
         terminal.exitCode = null;
+        terminal.restoring = 0;
         terminal.task?.onExit(null);
         this.shell?.data({ id: terminal.id, data: `${this.deps.spawnFailed(message.message)}\r\n` });
         this.changed(false);
@@ -1225,9 +1419,21 @@ export class TerminalService {
   // persist: the list, its groups, the active terminal or the list width changed, which the window layout keeps.
   private changed(persist: boolean): void {
     if (persist) {
-      // a task tab is always alone in its group and never restored
-      const kept = this.terminals.filter((terminal) => !terminal.task);
-      const groups = this.groups.filter((group) => !group.paneIds.some((id) => this.find(id)?.task));
+      // a task tab is always alone in its group and never restored; a remote terminal is kept in remote-state.json, never in
+      // window-layout.json, and reattached in a new window with its group of one
+      const isKept = (terminal: Terminal | undefined): boolean => terminal !== undefined && !terminal.task && !isRemoteKey(terminal.projectKey);
+      const groups = this.groups.filter((group) => group.paneIds.every((id) => isKept(this.find(id))));
+      const kept = groups.flatMap((group) => group.paneIds.map((id) => this.find(id)!));
+      this.deps.persistRemote(this.terminals.filter((terminal) => !terminal.task && isRemoteKey(terminal.projectKey)).map((terminal) => ({
+        id: terminal.id,
+        projectKey: terminal.projectKey!,
+        profile: { id: terminal.profile.id, name: terminal.profile.name, file: terminal.profile.file, args: [...terminal.profile.args], icon: terminal.profile.icon },
+        startCwd: terminal.startCwd,
+        nonce: terminal.shell.nonce,
+        name: terminal.name,
+        customIcon: terminal.customIcon,
+        color: terminal.color,
+      })));
       const active = kept.findIndex((terminal) => terminal.id === this.activeId);
       this.deps.persist({
         terminals: kept.map((terminal) => ({

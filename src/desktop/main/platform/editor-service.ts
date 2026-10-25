@@ -22,6 +22,8 @@ export interface HostDiffView extends DiffView {
 
 export interface DesktopEditorService extends EditorService {
   showDiff(req: DiffRequest): Promise<HostDiffView>;
+  // the project key of the document getActiveContext describes, read in the same turn as it; undefined outside every project
+  activeProjectKey(): string | undefined;
 }
 
 /**
@@ -80,6 +82,7 @@ export function createDesktopEditorService(
     // A rendered preview tab in the pane, never the OS, so a model-named file is not launched.
     showMarkdownPreview: (filePath) => pane().openPath(filePath, { focus: true, preview: true }),
     getActiveContext: () => pane().activeContext(),
+    activeProjectKey: () => pane().activeProjectKey(),
     onDidChangeActiveContext: (listener): Disposable => pane().onDidChangeActiveContext(listener),
     // The app settings open at the section; their search box is the user's, so the query (a setting key) is not forwarded.
     openHostSettings: (_query, section) => {

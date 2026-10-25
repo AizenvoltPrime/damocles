@@ -19,6 +19,24 @@ let activeProcess: Recorder | null = null;
 let tempFilePath = "";
 let tempScriptPath = "";
 let recording = false;
+// e2e hooks only (e2e.fakeVoice): a stand-in recorder started through the same launcher, so it is this core's child
+let e2eTranscript: string | undefined;
+let e2eStarts = 0;
+let e2eRecorderPid: number | null = null;
+
+/** e2e hooks only: from now on recording starts a stand-in recorder and the transcript is `transcript`. */
+export function fakeVoiceForE2e(transcript: string): void {
+  e2eTranscript = transcript;
+}
+
+/** e2e hooks only: the stand-in transcript, undefined while recording is real. */
+export function e2eFakeTranscript(): string | undefined {
+  return e2eTranscript;
+}
+
+export function e2eVoiceRecorder(): { starts: number; recorderPid: number | null } {
+  return { starts: e2eStarts, recorderPid: e2eRecorderPid };
+}
 
 export function isRecording(): boolean {
   return recording;
@@ -29,7 +47,9 @@ export async function startRecording(): Promise<void> {
 
   tempFilePath = path.join(os.tmpdir(), `damocles-voice-${Date.now()}.wav`);
 
-  if (process.platform === "win32") {
+  if (e2eTranscript !== undefined) {
+    await startFakeRecording(tempFilePath);
+  } else if (process.platform === "win32") {
     await startWindowsRecording(tempFilePath);
   } else if (process.platform === "darwin") {
     await startMacRecording(tempFilePath);
@@ -75,9 +95,18 @@ function cleanupTempFiles(): void {
   }
 }
 
-function spawnRecorder(command: string, args: string[]): Promise<void> {
+// writes a 44-byte empty 16 kHz mono WAV at argv[1] once stdin has a line
+const FAKE_RECORDER = `const fs=require('fs');process.stdout.write('RECORDING_STARTED\\n');process.stdin.once('data',()=>{const h=Buffer.alloc(44);h.write('RIFF',0);h.writeUInt32LE(36,4);h.write('WAVE',8);h.write('fmt ',12);h.writeUInt32LE(16,16);h.writeUInt16LE(1,20);h.writeUInt16LE(1,22);h.writeUInt32LE(16000,24);h.writeUInt32LE(32000,28);h.writeUInt16LE(2,32);h.writeUInt16LE(16,34);h.write('data',36);h.writeUInt32LE(0,40);fs.writeFileSync(process.argv[1],h);process.exit(0);});`;
+
+async function startFakeRecording(outputPath: string): Promise<void> {
+  await spawnRecorder(process.execPath, ["-e", FAKE_RECORDER, outputPath], { ...process.env, ELECTRON_RUN_AS_NODE: "1" });
+  e2eStarts++;
+  e2eRecorderPid = activeProcess ? await activeProcess.process.pid : null;
+}
+
+function spawnRecorder(command: string, args: string[], env?: Readonly<Record<string, string | undefined>>): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = processLauncher().launch({ file: command, args, stdio: ["pipe", "pipe", "pipe"] });
+    const proc = processLauncher().launch({ file: command, args, stdio: ["pipe", "pipe", "pipe"], ...(env ? { env } : {}) });
     const recorder: Recorder = { process: proc, exited: false };
     activeProcess = recorder;
 

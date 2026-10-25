@@ -115,6 +115,25 @@ describe('SettingsModal structure', () => {
     expect(row('damocles.desktop.theme')).not.toBeNull();
   });
 
+  it('under a scope tab, shows a group heading only over its listed rows, and an empty page points to the User tab', async () => {
+    const withFilter = async (listed: (meta: { id: string }) => boolean): Promise<string[]> => {
+      mounted.push(mount(SettingsModal, {
+        props: { host: NO_HOST_SETTINGS, footer: { kind: 'hostSettings' }, backdrop: 'blur', scopeView: { listed } },
+        attachTo: document.body,
+        global: { plugins: [i18n] },
+      }));
+      await nextTick();
+      await nextTick();
+      return [...document.querySelectorAll('.sm-group-head')].map((el) => el.textContent?.trim() ?? '');
+    };
+    expect(await withFilter((meta) => meta.id === 'permission-mode')).toEqual([t('settingsModal.groups.model')]);
+    expect(document.querySelector('[data-testid="settings-scope-empty"]')).toBeNull();
+    mounted.pop()!.unmount();
+
+    expect(await withFilter(() => false)).toEqual([]);
+    expect(document.querySelector('[data-testid="settings-scope-empty"]')!.textContent).toContain(t('settingsModal.emptyScope'));
+  });
+
   it('moves between sections with Up and Down', async () => {
     await open();
     const chat = document.querySelector<HTMLElement>('[data-testid="settings-nav-chat"]')!;

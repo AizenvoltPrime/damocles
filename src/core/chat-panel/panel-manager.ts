@@ -13,7 +13,7 @@ import { perfSpan, type PerfSpan } from "../perf";
 import type { ChatSession } from "../chat-session";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../shared/types/messages";
 import type { ForkContext, ForkSpawnArgs, StoredSession } from "../../shared/types/session";
-import type { AttachedView, HostInstance } from "./types";
+import type { AttachedView, HostInstance, ViewJoinGate } from "./types";
 import type { PromptTarget } from "./webview-prompts";
 import { claimStoredSession } from "./session-ownership";
 import { PanelWorktrees, type PanelWorktreeStateEvent, type WorktreeOptIn } from "./panel-worktrees";
@@ -22,7 +22,9 @@ import { folderContains } from "../worktrees/records";
 import type { ChatPlace, WorktreeAction, WorktreeFinishAction } from "../../shared/types/messages";
 import type { UserContentBlock } from "../../shared/types/content";
 import { settingsFolderOf, type FolderChange, type FolderTarget, type WorkspaceFolderRegistry } from "../workspace-folders/folder-registry";
-import { HOST_THEME_STYLE_ID } from "../../shared/host-theme";
+import { chatPageHtml, ERROR_PAGE_STRINGS, errorPageHtml } from "../../shared/panel-html";
+import { readContributedConfiguration } from "../config/read-contributed-configuration";
+import { writableKeysOf } from "./settings-view-scope";
 import { PanelActivity, type PanelActivityListener, type PanelChatChangesListener, type PanelTurnSettledListener, type UsageThresholdListener } from "./activity";
 import type { UsageThresholdCrossing } from "../pi-session/usage-thresholds";
 import { SETTINGS_VIEW_MESSAGE_TYPES, SETTINGS_VIEW_REQUEST_TYPES } from "../../shared/settings-view-messages";
@@ -93,6 +95,7 @@ export interface PanelManagerConfig {
   releaseFolder: (key: string) => Promise<void>;
   /** `view` is set for a message an attached view sent through `dispatchFromView`. */
   handleWebviewMessage: (message: WebviewToExtensionMessage, panelId: string, view?: AttachedView) => Promise<void>;
+  joinView: (panelId: string, gate: ViewJoinGate) => Promise<void>;
   sendCurrentSettings: (host: PanelHost, permissionHandler: PermissionHandler, folder: FolderTarget) => Promise<void>;
   getStoredSessions: () => Promise<{ sessions: StoredSession[]; hasMore: boolean; nextOffset: number }>;
   invalidateSessionsCache: () => void;
@@ -131,6 +134,9 @@ export class PanelManager {
   private readonly platform: PlatformWithWorktrees;
   private readonly createSessionForPanel: PanelManagerConfig["createSessionForPanel"];
   private readonly handleWebviewMessage: PanelManagerConfig["handleWebviewMessage"];
+  private readonly joinViewOf: PanelManagerConfig["joinView"];
+  /** The panel posts waiting while a view joins its host, each with the session whose live events it may hold. */
+  private readonly joins = new Map<PanelHost, { readonly session: ChatSession; held: ExtensionToWebviewMessage[] | undefined }>();
   private readonly sendCurrentSettings: PanelManagerConfig["sendCurrentSettings"];
   private readonly getStoredSessions: PanelManagerConfig["getStoredSessions"];
   private readonly initPanelModel: PanelManagerConfig["initPanelModel"];
@@ -168,6 +174,7 @@ export class PanelManager {
     this.resourceRoot = config.platform.paths.resourceRoot;
     this.createSessionForPanel = config.createSessionForPanel;
     this.handleWebviewMessage = config.handleWebviewMessage;
+    this.joinViewOf = config.joinView;
     this.sendCurrentSettings = config.sendCurrentSettings;
     this.getStoredSessions = config.getStoredSessions;
     this.initPanelModel = config.initPanelModel;
@@ -321,7 +328,7 @@ export class PanelManager {
       title: "Damocles",
       localResourceRoots: this.getLocalResourceRoots(),
     });
-    host.setHtml(this.getHtmlContent(host));
+    this.showChatPage(host);
     host.setIcon(path.join(this.resourceRoot, "resources", "icon.png"));
 
     return this.initializeHost(host);
@@ -377,7 +384,7 @@ export class PanelManager {
       localResourceRoots: this.getLocalResourceRoots(),
       ...(sourceColumn !== undefined ? { column: sourceColumn } : {}),
     });
-    host.setHtml(this.getHtmlContent(host));
+    this.showChatPage(host);
     host.setIcon(path.join(this.resourceRoot, "resources", "icon.png"));
 
     const newPanelId = await this.initializeHost(host, {
@@ -419,7 +426,7 @@ export class PanelManager {
   }
 
   async restorePanel(host: PanelHost, workspaceFolderKey: string | undefined, permissions?: ChatPermissions): Promise<void> {
-    host.setHtml(this.getHtmlContent(host));
+    this.showChatPage(host);
     try {
       await this.initializeHost(host, {
         ...(workspaceFolderKey !== undefined ? { initialFolderKey: workspaceFolderKey } : {}),
@@ -427,7 +434,7 @@ export class PanelManager {
       });
     } catch (err) {
       log(`[PanelManager] Failed to restore panel: ${err}`);
-      host.setHtml(this.getErrorHtml(host));
+      this.showErrorPage(host);
     }
   }
 
@@ -437,7 +444,7 @@ export class PanelManager {
    * refused or the session cannot start.
    */
   async startInWorktree(host: PanelHost, projectKey: string, worktreeId: string): Promise<string> {
-    host.setHtml(this.getHtmlContent(host));
+    this.showChatPage(host);
     return this.initializeHost(host, { worktree: { projectKey, worktreeId } });
   }
 
@@ -1096,12 +1103,62 @@ export class PanelManager {
   }
 
   postMessage(host: PanelHost, message: ExtensionToWebviewMessage): void {
+    const held = this.joins.get(host)?.held;
+    if (held) {
+      held.push(message);
+      return;
+    }
+    this.deliver(host, message);
+  }
+
+  private deliver(host: PanelHost, message: ExtensionToWebviewMessage): void {
     try {
       void host.postMessage(message);
     } catch {
       // Host was disposed - will be cleaned up by onDidDispose handler
     }
-    if (this.attachments.size > 0 && SETTINGS_VIEW_MESSAGE_TYPES.has(message.type)) this.viewOfHost(host)?.post(message);
+    if (this.attachments.size === 0 || !SETTINGS_VIEW_MESSAGE_TYPES.has(message.type)) return;
+    const view = this.viewOfHost(host);
+    // a scope tab lists only the keys its scope writes
+    if (view?.scope !== undefined && message.type === "settingsUpdate") view.post({ ...message, writableKeys: writableKeysOf(view.scope, readContributedConfiguration(this.resourceRoot)) });
+    else view?.post(message);
+  }
+
+  /**
+   * A view main made for this panel's host joins its chat (views.join): `viewKey` must be the panel's token. Resolves the
+   * panel id, or undefined when no open panel holds that host and token. Never changes the panel's token.
+   */
+  async joinView(host: PanelHost, viewKey: string): Promise<string | undefined> {
+    const found = [...this.panels].find(([, instance]) => instance.host === host);
+    if (!found || found[1].panelToken === null || found[1].panelToken !== viewKey) return undefined;
+    const [panelId, instance] = found;
+    if (this.joins.has(host)) throw new Error("A view is already joining this chat");
+    const join: { readonly session: ChatSession; held: ExtensionToWebviewMessage[] | undefined } = { session: instance.session, held: undefined };
+    this.joins.set(host, join);
+    let released = false;
+    const gate: ViewJoinGate = {
+      post: (message) => this.deliver(host, message),
+      hold: () => {
+        join.held ??= [];
+      },
+      release: (snapshotSeq) => {
+        if (released) return;
+        released = true;
+        const held = join.held ?? [];
+        this.joins.delete(host);
+        for (const message of held) {
+          const seq = join.session.eventSeqOf(message);
+          if (seq === undefined || seq > snapshotSeq) this.deliver(host, message);
+        }
+      },
+    };
+    try {
+      await this.joinViewOf(panelId, gate);
+    } finally {
+      // a join that failed before its release delivers everything it held
+      gate.release(-1);
+    }
+    return panelId;
   }
 
   /**
@@ -1223,69 +1280,41 @@ export class PanelManager {
     ];
   }
 
+  // The `panel.html→ready` span starts where the page is handed to the host.
+  private showChatPage(host: PanelHost): void {
+    if (!host.showPage) {
+      host.setHtml(this.getHtmlContent(host));
+      return;
+    }
+    htmlToReadySpans.set(host, perfSpan("panel.html→ready"));
+    host.showPage({ kind: "chat" });
+  }
+
+  private showErrorPage(host: PanelHost): void {
+    if (host.showPage) {
+      host.showPage({ kind: "error" });
+      return;
+    }
+    host.setHtml(errorPageHtml({
+      cspSource: host.cspSource,
+      logoUri: host.asResourceUri(path.join(this.resourceRoot, "resources", "icon.png")),
+      themeCss: host.themeCssSource(),
+      strings: ERROR_PAGE_STRINGS,
+    }));
+  }
+
   /** Starts the `panel.html→ready` span; its result must be what is given to `host.setHtml`. */
   getHtmlContent(host: PanelHost): string {
     htmlToReadySpans.set(host, perfSpan("panel.html→ready"));
-    const scriptUri = host.asResourceUri(path.join(this.resourceRoot, "dist", "webview", "assets", "index.js"));
-    const styleUri = host.asResourceUri(path.join(this.resourceRoot, "dist", "webview", "assets", "index.css"));
-    const logoUri = host.asResourceUri(path.join(this.resourceRoot, "resources", "icon.png"));
-
-    const nonce = this.getNonce();
-    // style-src allows 'unsafe-inline', so the element needs no nonce.
-    const themeCss = host.themeCssSource();
-    const themeStyle = themeCss === "" ? "" : `\n  <style id="${HOST_THEME_STYLE_ID}">${themeCss}</style>`;
-    const workerSrc = host.workerSrc === undefined ? "" : ` worker-src ${host.workerSrc};`;
-
-    // CSP: `script-src` stays nonce-locked (no inline/remote script — no RCE). `img-src ... https:` is
-    // a deliberate widening so WebFetch can render inline images from extracted web pages. The tradeoff
-    // is that any rendered markdown can load remote https images (a tracking/IP-leak vector); this is the
-    // standard posture for chat webviews that render web content, and the web tools are opt-in.
-    // form-action does not fall back to default-src, so it is named; every form in the webview handles submit in script.
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${host.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' 'wasm-unsafe-eval'; font-src ${host.cspSource}; img-src ${host.cspSource} data: https:; form-action 'none';${workerSrc}">
-  <link href="${styleUri}" rel="stylesheet">${themeStyle}
-  <title>Damocles</title>
-</head>
-<body>
-  <div id="app" data-logo-uri="${logoUri}"></div>
-  <script nonce="${nonce}" type="module" src="${scriptUri}"></script>
-</body>
-</html>`;
-  }
-
-  // Reads the desktop design tokens from the host theme style first and VS Code's theme variables otherwise.
-  private getErrorHtml(host: PanelHost): string {
-    const logoUri = host.asResourceUri(path.join(this.resourceRoot, "resources", "icon.png"));
-    const themeCss = host.themeCssSource();
-    const themeStyle = themeCss === "" ? "" : `
-  <style id="${HOST_THEME_STYLE_ID}">${themeCss}</style>`;
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src ${host.cspSource};">
-  <title>Damocles</title>
-  <style>
-    body { display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: var(--d-bg, var(--vscode-editor-background)); color: var(--d-text, var(--vscode-foreground)); font-family: var(--d-font, var(--vscode-font-family, system-ui, sans-serif)); }
-    .error-container { text-align: center; max-width: 360px; }
-    img { width: 48px; height: 48px; opacity: 0.5; margin-bottom: 16px; }
-    h2 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
-    p { font-size: 12px; opacity: 0.7; margin: 0; }
-  </style>${themeStyle}
-</head>
-<body>
-  <div class="error-container">
-    <img src="${logoUri}" alt="">
-    <h2>Session failed to restore</h2>
-    <p>Close this tab and open a new Damocles panel.</p>
-  </div>
-</body>
-</html>`;
+    return chatPageHtml({
+      cspSource: host.cspSource,
+      ...(host.workerSrc !== undefined ? { workerSrc: host.workerSrc } : {}),
+      nonce: this.getNonce(),
+      scriptUri: host.asResourceUri(path.join(this.resourceRoot, "dist", "webview", "assets", "index.js")),
+      styleUri: host.asResourceUri(path.join(this.resourceRoot, "dist", "webview", "assets", "index.css")),
+      logoUri: host.asResourceUri(path.join(this.resourceRoot, "resources", "icon.png")),
+      themeCss: host.themeCssSource(),
+    });
   }
 
   newSession(): void {

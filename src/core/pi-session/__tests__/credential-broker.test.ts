@@ -1,0 +1,396 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createFauxCore, fauxAssistantMessage, type Credential } from '@earendil-works/pi-ai';
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type AgentSession, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import type { ClientSnapshots, ClientTopic, RemoteHost } from '../../../platform/remote-host';
+import { CREDENTIAL_CLIENT_ABSENT, MAX_BROKER_EXPIRES_IN_MS, type BrokerAnswer, type HeldAuth } from '../../../shared/remote-user';
+import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
+import { runPinnedSubcall, runPinnedTurn } from '../../client-snapshots';
+import { installPlatform } from '../../platform-host';
+import { BrokeredCredentialStore, MIN_VALIDITY_MS, oauthAnswerOf, pinRunStarts, STATUS_ONLY_KEY } from '../credential-broker';
+import { sessionNoteDelivery } from '../note-delivery';
+import { PiRuntime } from '../pi-runtime';
+import { withSettingsPolicy } from '../settings-policy';
+
+const HOUR = 60 * 60 * 1000;
+
+function remoteHost(answer: (provider: string, clientId: string) => Promise<BrokerAnswer>) {
+  let acting: string | undefined = 'client-a';
+  const auth = new Map<string, HeldAuth>();
+  const listeners = new Set<(change: { topic: ClientTopic; clientId?: string; before?: unknown }) => void>();
+  const clients: ClientSnapshots = {
+    acting: () => acting,
+    auth: (id) => auth.get(id),
+    user: () => undefined,
+    policy: () => undefined,
+    onDidChange: (cb) => {
+      listeners.add(cb);
+      return { dispose: () => listeners.delete(cb) };
+    },
+  };
+  const credentials = vi.fn(answer);
+  const runProviders = vi.fn();
+  const remote: RemoteHost = { hostId: 'h', clients, credentials, speak: vi.fn(), runProviders };
+  return {
+    remote,
+    credentials,
+    runProviders,
+    setActing: (id: string | undefined) => { acting = id; },
+    setAuth: (clientId: string, value: HeldAuth | undefined) => {
+      const before = auth.get(clientId);
+      if (value === undefined) auth.delete(clientId);
+      else auth.set(clientId, value);
+      for (const cb of listeners) cb({ topic: 'clientAuth', clientId, before });
+    },
+  };
+}
+
+const oauth = (access: string, expiresIn: number): BrokerAnswer => ({ type: 'oauth', access, expiresIn, refresh: '', accountId: 'acct-1' });
+
+describe('BrokeredCredentialStore', () => {
+  it('never calls modify\'s fn, which would refresh with the empty refresh token, and asks the client instead', async () => {
+    const host = remoteHost(async () => oauth('fresh', HOUR));
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    const fn = vi.fn(async (current: Credential | undefined) => current);
+    const result = await runPinnedTurn(host.remote, 'panel-1', () => broker.modify('anthropic', fn));
+    expect(fn).not.toHaveBeenCalled();
+    expect(host.credentials).toHaveBeenCalledWith('anthropic', 'client-a');
+    expect(result).toMatchObject({ type: 'oauth', access: 'fresh', refresh: '' });
+  });
+
+  it('serves the cached credential while it stays valid past pi\'s 5 minute minimum, then asks again', async () => {
+    let now = 1_000_000;
+    let n = 0;
+    const host = remoteHost(async () => oauth(`token-${++n}`, MIN_VALIDITY_MS + 60_000));
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn(), now: () => now });
+    const read = () => runPinnedTurn(host.remote, 'panel-1', () => broker.read('anthropic'));
+    expect(await read()).toMatchObject({ access: 'token-1' });
+    expect(await read()).toMatchObject({ access: 'token-1' });
+    expect(host.credentials).toHaveBeenCalledTimes(1);
+    now += 61_000;
+    expect(await read()).toMatchObject({ access: 'token-2' });
+    expect(host.credentials).toHaveBeenCalledTimes(2);
+  });
+
+  it('asks once for concurrent reads of one provider', async () => {
+    const host = remoteHost(async () => oauth('one', HOUR));
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    await runPinnedTurn(host.remote, 'panel-1', () => Promise.all([broker.read('openai'), broker.read('openai'), broker.read('openai')]));
+    expect(host.credentials).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([HOUR, -HOUR])('keeps expiresIn valid for the same span on a target clock %d ms off the client\'s', async (skew) => {
+    const clientNow = 5_000_000_000;
+    const targetNow = clientNow + skew;
+    const host = remoteHost(async () => oauth('t', 30 * 60 * 1000));
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn(), now: () => targetNow });
+    const credential = await runPinnedTurn(host.remote, 'panel-1', () => broker.read('anthropic'));
+    expect(credential).toMatchObject({ type: 'oauth', expires: targetNow + 30 * 60 * 1000 });
+  });
+
+  it('keeps the non-secret extras, empties refresh, and sets expires after them so no extra overrides it', async () => {
+    const host = remoteHost(async () => ({ ...oauth('t', HOUR), expires: 1 } as unknown as BrokerAnswer));
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn(), now: () => 100 });
+    const credential = await runPinnedTurn(host.remote, 'panel-1', () => broker.read('openai-codex'));
+    expect(credential).toEqual({ type: 'oauth', access: 't', refresh: '', accountId: 'acct-1', expires: 100 + HOUR });
+  });
+
+  it('caches an API key until a clientAuth delta changes that provider, and keeps it across a detach', async () => {
+    let n = 0;
+    const host = remoteHost(async () => ({ type: 'api_key', key: `key-${++n}` }));
+    const changed = vi.fn();
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: changed });
+    const read = (provider: string) => runPinnedTurn(host.remote, 'panel-1', () => broker.read(provider));
+    host.setAuth('client-a', { providers: { openai: { type: 'api_key', hasKey: true, flatFee: false }, deepseek: { type: 'api_key', hasKey: true, flatFee: false } } });
+    expect(await read('openai')).toEqual({ type: 'api_key', key: 'key-1' });
+    expect(await read('deepseek')).toEqual({ type: 'api_key', key: 'key-2' });
+    host.setAuth('client-a', undefined);
+    expect(await read('openai')).toEqual({ type: 'api_key', key: 'key-1' });
+    host.setAuth('client-a', { providers: { openai: { type: 'api_key', hasKey: true, flatFee: false }, deepseek: { type: 'none', hasKey: false, flatFee: false } } });
+    expect(changed).toHaveBeenCalledTimes(2);
+    expect(await read('openai')).toEqual({ type: 'api_key', key: 'key-1' });
+    expect(await read('deepseek')).toEqual({ type: 'api_key', key: 'key-3' });
+  });
+
+  it('keys the cache by client: another client\'s turn asks its own client', async () => {
+    const host = remoteHost(async (_provider, clientId) => oauth(`of-${clientId}`, HOUR));
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    expect(await runPinnedTurn(host.remote, 'p1', () => broker.read('anthropic'))).toMatchObject({ access: 'of-client-a' });
+    host.setActing('client-b');
+    expect(await runPinnedTurn(host.remote, 'p2', () => broker.read('anthropic'))).toMatchObject({ access: 'of-client-b' });
+  });
+
+  it('a turn keeps its pinned client while another client acts', async () => {
+    const host = remoteHost(async (_provider, clientId) => oauth(`of-${clientId}`, HOUR));
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    const turn = runPinnedTurn(host.remote, 'p1', async () => {
+      await Promise.resolve();
+      host.setActing('client-b');
+      return broker.read('anthropic');
+    });
+    expect(await turn).toMatchObject({ access: 'of-client-a' });
+  });
+
+  it('answers none as no credential, so pi falls back to the target\'s own', async () => {
+    const host = remoteHost(async () => ({ type: 'none' }));
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    expect(await runPinnedTurn(host.remote, 'p1', () => broker.read('xai'))).toBeUndefined();
+  });
+
+  it('applies the absent-client policy only when it must ask: a cached credential is served with the client gone', async () => {
+    let attached = true;
+    const host = remoteHost(async () => {
+      if (!attached) throw new Error(CREDENTIAL_CLIENT_ABSENT);
+      return oauth('t', HOUR);
+    });
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    await runPinnedTurn(host.remote, 'p1', () => broker.read('anthropic'));
+    attached = false;
+    expect(await runPinnedTurn(host.remote, 'p1', () => broker.read('anthropic'))).toMatchObject({ access: 't' });
+    const turn = runPinnedTurn(host.remote, 'p1', () => broker.read('openai'));
+    await expect(turn).rejects.toThrow(/not connected/);
+    const subcall = runPinnedSubcall(host.remote, () => broker.read('openai'));
+    await expect(subcall).rejects.toMatchObject({ cause: 'credential' });
+  });
+
+  it('list reads the pinned client\'s clientAuth entry, never a secret', async () => {
+    const host = remoteHost(async () => ({ type: 'none' }));
+    host.setAuth('client-a', { providers: { anthropic: { type: 'oauth', expires: 9, hasKey: false, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false }, xai: { type: 'none', hasKey: false, flatFee: false } } });
+    host.setAuth('client-b', { providers: { deepseek: { type: 'api_key', hasKey: true, flatFee: false } } });
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    expect(await runPinnedTurn(host.remote, 'p1', () => broker.list())).toEqual([
+      { providerId: 'anthropic', type: 'oauth' },
+      { providerId: 'openai', type: 'api_key' },
+    ]);
+  });
+
+  it('refuses delete, so a remote core never signs this computer out', async () => {
+    const host = remoteHost(async () => ({ type: 'none' }));
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    await expect(broker.delete('anthropic')).rejects.toThrow(/User tab/);
+    expect(host.credentials).not.toHaveBeenCalled();
+  });
+
+  it('never caches an answer asked for before a clientAuth delta changed its provider, and asks again after the delta', async () => {
+    let release!: (answer: BrokerAnswer) => void;
+    const stale = new Promise<BrokerAnswer>((resolve) => { release = resolve; });
+    let n = 0;
+    const host = remoteHost(async () => (++n === 1 ? stale : { type: 'api_key', key: 'key-new' }));
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    const read = () => runPinnedTurn(host.remote, 'p1', () => broker.read('minimax'));
+    host.setAuth('client-a', { providers: { minimax: { type: 'api_key', hasKey: true, flatFee: false } } });
+    const inFlight = read();
+    host.setAuth('client-a', { providers: { minimax: { type: 'api_key', hasKey: true, flatFee: true } } });
+    const afterDelta = read();
+    release({ type: 'api_key', key: 'key-old' });
+    expect(await inFlight).toEqual({ type: 'api_key', key: 'key-old' });
+    expect(await afterDelta).toEqual({ type: 'api_key', key: 'key-new' });
+    expect(await read()).toEqual({ type: 'api_key', key: 'key-new' });
+    expect(host.credentials).toHaveBeenCalledTimes(2);
+  });
+
+  it('records the providers each run read, for the run registry', async () => {
+    const host = remoteHost(async () => oauth('t', HOUR));
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    await runPinnedTurn(host.remote, 'p1', async () => {
+      await broker.read('anthropic');
+      await broker.read('anthropic');
+      await broker.read('openai');
+    });
+    expect(host.runProviders.mock.calls).toEqual([['p1', ['anthropic']], ['p1', ['anthropic', 'openai']]]);
+  });
+
+  it('holds nothing once disposed: no credential, clientAuth, run providers or delta count, and no answer that arrives later', async () => {
+    let release!: (answer: BrokerAnswer) => void;
+    const late = new Promise<BrokerAnswer>((resolve) => { release = resolve; });
+    let n = 0;
+    const host = remoteHost(async () => (++n === 1 ? oauth('t', HOUR) : late));
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    host.setAuth('client-a', { providers: { anthropic: { type: 'oauth', expires: 9, hasKey: false, flatFee: false } } });
+    await runPinnedTurn(host.remote, 'p1', () => broker.read('anthropic'));
+    const inFlight = runPinnedTurn(host.remote, 'p2', () => broker.read('openai'));
+    await vi.waitFor(() => expect(host.credentials).toHaveBeenCalledTimes(2));
+    broker.dispose();
+    release({ type: 'api_key', key: 'late' });
+    expect(await inFlight).toEqual({ type: 'api_key', key: 'late' });
+    const held = broker as unknown as Record<'cache' | 'asking' | 'generations' | 'lastAuth' | 'used', Map<string, unknown>>;
+    expect([held.cache, held.asking, held.generations, held.lastAuth, held.used].map((map) => map.size)).toEqual([0, 0, 0, 0, 0]);
+  });
+});
+
+describe('status reads outside a run', () => {
+  it('answer from the client clientAuth entry without a secret, and never ask the client', async () => {
+    const host = remoteHost(async () => oauth('SECRET', HOUR));
+    host.setAuth('client-a', { providers: { anthropic: { type: 'oauth', expires: 42, hasKey: false, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false }, xai: { type: 'none', hasKey: false, flatFee: false } } });
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    expect(await broker.read('anthropic')).toEqual({ type: 'oauth', access: '', refresh: '', expires: 42 });
+    expect(await broker.read('openai')).toEqual({ type: 'api_key', key: STATUS_ONLY_KEY });
+    expect(await broker.read('xai')).toBeUndefined();
+    expect(await broker.modify('anthropic', vi.fn())).toEqual({ type: 'oauth', access: '', refresh: '', expires: 42 });
+    expect(host.credentials).not.toHaveBeenCalled();
+    expect(host.runProviders).not.toHaveBeenCalled();
+  });
+
+  it('pi availability check of every provider asks nothing, and a turn asks once, for its provider only', async () => {
+    const host = remoteHost(async (provider) => (provider === 'openai' ? { type: 'api_key', key: 'sk-turn' } : oauth('SECRET', HOUR)));
+    host.setAuth('client-a', { providers: { anthropic: { type: 'oauth', expires: Date.now() + HOUR, hasKey: false, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false } } });
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    const runtime = await ModelRuntime.create({ credentials: broker, modelsPath: null });
+    await runtime.getAvailable();
+    expect(host.credentials).not.toHaveBeenCalled();
+    expect(runtime.hasConfiguredAuth('anthropic')).toBe(true);
+    expect(runtime.hasConfiguredAuth('openai')).toBe(true);
+    const auth = await runPinnedTurn(host.remote, 'p1', async () => {
+      await runtime.getAuth('openai');
+      return runtime.getAuth('openai');
+    });
+    expect(auth?.auth.apiKey).toBe('sk-turn');
+    expect(host.credentials.mock.calls).toEqual([['openai', 'client-a']]);
+  });
+});
+
+describe('oauthAnswerOf', () => {
+  it('sends only the access token, its validity and the allowlisted extras, never the refresh token', () => {
+    const answer = oauthAnswerOf({ type: 'oauth', access: 'a', refresh: 'SECRET', expires: 1_000 + HOUR, clientId: 'c', scopes: ['s'], enterpriseUrl: 'e', idToken: 'SECRET2' }, 1_000);
+    expect(answer).toEqual({ type: 'oauth', access: 'a', expiresIn: HOUR, refresh: '', clientId: 'c', scopes: ['s'], enterpriseUrl: 'e' });
+    expect(JSON.stringify(answer)).not.toContain('SECRET');
+  });
+
+  it('clamps a never-expiring credential (OpenRouter) and an expired one', () => {
+    expect(oauthAnswerOf({ access: 'a', expires: Number.MAX_SAFE_INTEGER }, 0)).toMatchObject({ expiresIn: MAX_BROKER_EXPIRES_IN_MS });
+    expect(oauthAnswerOf({ access: 'a', expires: 5 }, 10)).toMatchObject({ expiresIn: 0 });
+  });
+});
+
+describe('pi\'s availability refresh inside a turn', () => {
+  const dirs: string[] = [];
+  const tempDir = (prefix: string): string => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+    dirs.push(dir);
+    return dir;
+  };
+
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+    installPlatform(createFakePlatform());
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('asks the client nothing when a folder or a subagent is built inside a turn\'s pin', async () => {
+    const host = createFakeRemoteHost(async () => ({ type: 'api_key', key: 'sk-client' }));
+    host.set('clientAuth', 'client-a', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false } } });
+    installPlatform({ ...createFakePlatform(), remote: host.remote });
+    const workspace = tempDir('damocles-broker-ws-');
+    const runtime = PiRuntime.get(tempDir('damocles-broker-agent-'));
+    await runtime.init();
+    const folder = await runPinnedTurn(host.remote, 'p1', () => runtime.folder(workspace));
+    expect(host.remote.credentials).not.toHaveBeenCalled();
+    const subagent = await runPinnedTurn(host.remote, 'p1', () =>
+      folder.createSubagentSession({ cwd: workspace, systemPrompt: 'probe', tools: [], customTools: [], extensionFactory: () => {}, store: { kind: 'memory' } }));
+    expect(host.remote.credentials).not.toHaveBeenCalled();
+    folder.forgetSubagentSession(subagent);
+  }, 60_000);
+
+  it('asks the client nothing for the pass pi starts itself when a provider is unregistered or registered inside a turn\'s pin', async () => {
+    const host = createFakeRemoteHost(async () => ({ type: 'api_key', key: 'sk-client' }));
+    host.set('clientAuth', 'client-a', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false } } });
+    installPlatform({ ...createFakePlatform(), remote: host.remote });
+    const runtime = PiRuntime.get(tempDir('damocles-broker-agent-'));
+    await runtime.init();
+    const modelRuntime = runtime.modelRuntime!;
+    const refresh = vi.spyOn(modelRuntime, 'refresh');
+    runPinnedTurn(host.remote, 'p1', () => {
+      modelRuntime.unregisterProvider('xai');
+      modelRuntime.registerProvider('xai', { baseUrl: 'https://api.x.ai/v1', api: 'openai-completions', apiKey: 'XAI_API_KEY', models: [] } as never);
+    });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    await Promise.all(refresh.mock.results.map((result) => result.value));
+    expect(host.remote.credentials).not.toHaveBeenCalled();
+  }, 60_000);
+});
+
+describe('a run started outside every pin', () => {
+  const dirs: string[] = [];
+  const sessions: AgentSession[] = [];
+  afterEach(() => {
+    for (const session of sessions.splice(0)) session.dispose();
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A real pi session on the broker, whose scripted anthropic provider records the key each request carries. */
+  async function brokeredSession() {
+    const host = createFakeRemoteHost(async () => ({ type: 'api_key', key: 'sk-client' }));
+    host.set('clientAuth', 'client-a', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false } } });
+    const keys: Array<string | undefined> = [];
+    const faux = createFauxCore({ api: 'anthropic-messages', provider: 'anthropic', models: [{ id: 'claude-opus-5-5' }] });
+    faux.setResponses([(_context, options) => {
+      keys.push(options?.apiKey);
+      return fauxAssistantMessage('done');
+    }]);
+    const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-broker-run-')));
+    dirs.push(cwd);
+    let extension: ExtensionAPI | undefined;
+    const settingsManager = withSettingsPolicy(SettingsManager.inMemory({}, { projectTrusted: true }));
+    const modelRuntime = await ModelRuntime.create({ credentials: new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() }), modelsPath: null });
+    const resourceLoader = new DefaultResourceLoader({
+      cwd,
+      agentDir: cwd,
+      settingsManager,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      extensionFactories: [(pi: ExtensionAPI) => {
+        pi.registerProvider('anthropic', { baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages', streamSimple: faux.streamSimple } as never);
+        extension = pi;
+      }],
+    } as never);
+    await resourceLoader.reload();
+    const { session } = await createAgentSession({
+      cwd,
+      agentDir: cwd,
+      model: modelRuntime.getModel('anthropic', 'claude-opus-5-5'),
+      thinkingLevel: 'off',
+      modelRuntime,
+      settingsManager,
+      resourceLoader,
+      sessionManager: SessionManager.inMemory(cwd),
+      tools: [],
+    } as never);
+    sessions.push(session);
+    pinRunStarts(session, host.remote, 'panel-1');
+    if (!extension) throw new Error('the extension never loaded');
+    return { host, session, keys, extension };
+  }
+
+  it('a cancel note on an idle session runs pinned, so its request carries the client\'s key and never the placeholder', async () => {
+    const { host, session, keys } = await brokeredSession();
+    await sessionNoteDelivery(() => session)('skip it', () => undefined);
+    expect(keys).toEqual(['sk-client']);
+    expect(keys).not.toContain(STATUS_ONLY_KEY);
+    expect(host.remote.credentials).toHaveBeenCalledWith('anthropic', 'client-a');
+    expect(host.remote.runProviders).toHaveBeenCalledWith('panel-1', ['anthropic']);
+  }, 60_000);
+
+  it('a run started inside a turn keeps that turn\'s pin, whoever acts when it starts', async () => {
+    const { host, session, keys } = await brokeredSession();
+    host.set('clientAuth', 'client-b', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false } } });
+    await runPinnedTurn(host.remote, 'panel-1', async () => {
+      host.setActing('client-b');
+      await session.prompt('a subagent task from a tool');
+    });
+    expect(keys).toEqual(['sk-client']);
+    expect(vi.mocked(host.remote.credentials).mock.calls).toEqual([['anthropic', 'client-a']]);
+  }, 60_000);
+
+  it('an extension\'s triggerTurn on an idle session runs pinned, so its request carries the client\'s key', async () => {
+    const { host, session, keys, extension } = await brokeredSession();
+    extension.sendMessage({ customType: 'probe', content: 'go', display: false }, { triggerTurn: true });
+    await vi.waitFor(() => expect(keys).toHaveLength(1));
+    await session.agent.waitForIdle();
+    expect(keys).toEqual(['sk-client']);
+    expect(host.remote.credentials).toHaveBeenCalledWith('anthropic', 'client-a');
+  }, 60_000);
+});

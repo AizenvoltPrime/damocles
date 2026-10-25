@@ -2,6 +2,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { log } from '../logger';
 import { stripBom } from '../config/bom';
+import { currentPin } from '../client-snapshots';
+import { installedPlatform } from '../platform-host';
+import type { RemoteHost } from '../../platform/remote-host';
 
 // pi rewrites auth.json in place (truncate, then one write of the whole JSON object), so a read that lands
 // in between is empty or an unterminated prefix and fails to parse. Retrying briefly lets the write land.
@@ -38,6 +41,8 @@ function parseAuth(text: string, authPath: string): Record<string, unknown> {
  * is none.
  */
 export function readAuthFile(agentDir: string): Record<string, unknown> | undefined {
+  const remote = installedPlatform()?.remote;
+  if (remote) return clientAuthFile(remote);
   const authPath = path.resolve(agentDir, 'auth.json');
   for (let attempt = 1; ; attempt++) {
     let text: string;
@@ -67,6 +72,18 @@ export function readAuthFile(agentDir: string): Record<string, unknown> | undefi
       throw err;
     }
   }
+}
+
+/**
+ * A daemon's core reads no auth.json for account state (its host's holds nothing): the pinned client's clientAuth entries
+ * in auth.json's shape, each provider's credential type and expiry only.
+ */
+function clientAuthFile(remote: RemoteHost): Record<string, unknown> | undefined {
+  const clientId = currentPin(remote).clientId;
+  const auth = clientId === undefined ? undefined : remote.clients.auth(clientId);
+  if (auth === undefined) return undefined;
+  return Object.fromEntries(Object.entries(auth.providers).flatMap(([provider, entry]) =>
+    entry.type === 'none' ? [] : [[provider, { type: entry.type, ...(entry.expires !== undefined ? { expires: entry.expires } : {}) }]]));
 }
 
 /**

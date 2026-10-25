@@ -54,6 +54,7 @@ function makeAdapter(
     onMidStreamEntryCommitted: () => undefined,
     promptEntryId: () => null,
     onTurnStateChanged: () => undefined,
+    turnRunning: () => false,
   });
 }
 

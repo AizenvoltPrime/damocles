@@ -1,6 +1,7 @@
 import type { ASSET_SOURCE_PRECEDENCES, CACHE_WARMING_MODES } from "./constants";
 
-export type PermissionMode = "default" | "acceptEdits" | "plan";
+export const PERMISSION_MODES = ["default", "acceptEdits", "plan"] as const;
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 export type EffortLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
 
@@ -165,6 +166,8 @@ export interface ModelInfo {
    *  enforcement does not apply. Set for StepFun; unset (metered) for DeepSeek, MiniMax and xAI. A MiniMax
    *  model also bills flat while its applied key is a subscription key (`CustomProviderDef.flatFeeKey`). */
   flatFee?: boolean;
+  /** A remote chat cannot reach this model: its provider's endpoint is a loopback address of the client. */
+  unavailable?: { reason: "loopback-endpoint"; endpoint: string };
 }
 
 export interface AccountInfo {
@@ -172,6 +175,8 @@ export interface AccountInfo {
   model?: string;
   /** False on a flat subscription, where a rendered dollar cost is an estimate rather than a charge. */
   dollarBilled: boolean;
+  /** A remote host's Claude chat bills extra usage although its client chose the allowance: the host's bundled plugin did not load. */
+  allowanceUnavailable?: true;
 }
 
 /** A provider that serves a memory-judge classifier: Jev on TypeSafe or OpenRouter, GPT-6 Luna on OpenAI. */

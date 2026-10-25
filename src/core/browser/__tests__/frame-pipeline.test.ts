@@ -8,7 +8,7 @@ import {
   FRAME_ACK_FALLBACK_MS,
 } from '../index';
 import { createFakePlatform, type FakePanelHost } from '../../../__mocks__/fake-platform';
-import { BROWSER_WEBVIEW_SCRIPT } from '../browser-webview-script';
+import { BROWSER_WEBVIEW_SCRIPT } from '../../../shared/browser-page-html';
 import { ScreencastHealth } from '../screencast-health';
 
 /**
