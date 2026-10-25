@@ -30,7 +30,8 @@
     "rootDir": "./src",
     "baseUrl": ".",
     "paths": {
-      "@shared/*": ["./src/shared/*"]
+      "@shared/*": ["./src/shared/*"],
+      "@xterm/xterm": ["./types/xterm-headless.d.ts"]
     }
   },
   "include": ["src/**/*"],

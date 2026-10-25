@@ -30,7 +30,8 @@
     "noPropertyAccessFromIndexSignature": false,
     "paths": {
       "@shared/*": ["./src/shared/*"],
-      "@/*": ["./src/webview/*"]
+      "@/*": ["./src/webview/*"],
+      "@xterm/xterm": ["./types/xterm-headless.d.ts"]
     }
   },
   "include": ["src/**/*"],

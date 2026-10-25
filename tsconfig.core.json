@@ -5,6 +5,7 @@
     "types": ["node"],
     "paths": {
       "@shared/*": ["./src/shared/*"],
+      "@xterm/xterm": ["./types/xterm-headless.d.ts"],
       "vscode": ["./types/no-vscode.d.ts"],
       "electron": ["./types/no-electron.d.ts"],
       "electron/*": ["./types/no-electron.d.ts"]
