@@ -98,6 +98,7 @@ export function createClaudeAuthHandlers(deps: HandlerDependencies): ClaudeAuthH
       broadcast(statusChanged(await op()));
       // Every op here changes the credential the account state is derived from.
       republishAccountInfo(getPanels);
+      broadcast({ type: "authFailureCleared", account: "anthropic" });
     } catch (err) {
       if (cancel?.aborted || (err instanceof Error && err.message === SIGN_IN_CANCELLED)) {
         broadcast({ type: "claudeAuthCancelled" });

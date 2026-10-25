@@ -76,14 +76,18 @@ export function readAuthFile(agentDir: string): Record<string, unknown> | undefi
 
 /**
  * A daemon's core reads no auth.json for account state (its host's holds nothing): the pinned client's clientAuth entries
- * in auth.json's shape, each provider's credential type and expiry only.
+ * in auth.json's shape, each provider's credential type, expiry and plan model list only.
  */
 function clientAuthFile(remote: RemoteHost): Record<string, unknown> | undefined {
   const clientId = currentPin(remote).clientId;
   const auth = clientId === undefined ? undefined : remote.clients.auth(clientId);
   if (auth === undefined) return undefined;
   return Object.fromEntries(Object.entries(auth.providers).flatMap(([provider, entry]) =>
-    entry.type === 'none' ? [] : [[provider, { type: entry.type, ...(entry.expires !== undefined ? { expires: entry.expires } : {}) }]]));
+    entry.type === 'none' ? [] : [[provider, {
+      type: entry.type,
+      ...(entry.expires !== undefined ? { expires: entry.expires } : {}),
+      ...(entry.availableModelIds !== undefined ? { availableModelIds: entry.availableModelIds } : {}),
+    }]]));
 }
 
 /**

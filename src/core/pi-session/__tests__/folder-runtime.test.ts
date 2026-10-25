@@ -37,6 +37,7 @@ function bareFolder(made: FolderRuntime[], cwd = '/tmp/ws'): FolderRuntime {
     cwd,
     agentDir: '/tmp/agent',
     modelRuntime: {} as ModelRuntime,
+    planModelIds: () => undefined,
     userMcp: new McpClientManager({ clientVersion: 'test' }),
     createFolderMcp: (reservedToolNames) => new McpClientManager({ clientVersion: 'test', reservedToolNames }),
     noticeMemory: { has: () => false, add: async () => {} },
@@ -160,6 +161,7 @@ describe('renamed-tool rule migration', () => {
       cwd,
       agentDir: path.join(root, 'agent'),
       modelRuntime: {} as ModelRuntime,
+      planModelIds: () => undefined,
       userMcp,
       createFolderMcp: (reservedToolNames) => new McpClientManager({ clientVersion: 'test', reservedToolNames }),
       noticeMemory,
@@ -917,6 +919,28 @@ describe('createSubagentSession store', () => {
     folder.forgetSubagentSession(session);
 
     const error = `Cannot resume "agent-1": its model ${signedOut.provider}/${signedOut.id} is not configured or not signed in.`;
+    expect(() => folder.assertResumableModel(file, 'agent-1')).toThrow(error);
+    await expect(
+      folder.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'reopen', path: file, agentId: 'agent-1' } }),
+    ).rejects.toThrow(error);
+  }, 60_000);
+
+  it('reopen throws the resume error when the recorded GitHub Copilot model is outside the plan of the stored sign-in', async () => {
+    const workspace = tempDir('damocles-store-ws-');
+    const agentDir = tempDir('damocles-store-agent-');
+    fs.writeFileSync(path.join(agentDir, 'auth.json'), JSON.stringify({
+      'github-copilot': { type: 'oauth', access: 'a', refresh: 'r', expires: 9_999_999_999_999, availableModelIds: ['claude-haiku-5.5'] },
+    }));
+    const storeDir = path.join(workspace, 'sess-1', 'subagents');
+    const runtime = PiRuntime.get(agentDir);
+    const folder = await runtime.folder(workspace);
+
+    const session = await folder.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'file', dir: storeDir, id: 'agent-1' } });
+    session.sessionManager.appendMessage(assistantMessage('github-copilot', 'claude-opus-5.5'));
+    const file = session.sessionManager.getSessionFile()!;
+    folder.forgetSubagentSession(session);
+
+    const error = 'Cannot resume "agent-1": your GitHub Copilot plan does not include Opus 5.5 (GitHub Copilot), the model its session recorded.';
     expect(() => folder.assertResumableModel(file, 'agent-1')).toThrow(error);
     await expect(
       folder.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'reopen', path: file, agentId: 'agent-1' } }),

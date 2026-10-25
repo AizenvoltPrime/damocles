@@ -248,9 +248,14 @@ describe('PiRuntime.init lifecycle', () => {
     const runtime = PiRuntime.get('/agent');
     await runtime.init();
     H.modelRuntime.setRuntimeApiKey.mockClear();
+    // the sync must settle here, or its listeners fire in the next test
+    const synced = vi.fn();
+    const stopSynced = PiRuntime.onCustomProvidersSynced(synced);
 
     await fake.secrets.store('damocles.typesafe.apiKey', 'ts-from-another-window');
     await vi.waitFor(() => expect(H.modelRuntime.setRuntimeApiKey).toHaveBeenCalledWith('typesafe', 'ts-from-another-window', expect.anything()));
+    await vi.waitFor(() => expect(synced).toHaveBeenCalled());
+    stopSynced();
   });
 
   it('tells memory-judge listeners when a folder starts, a provider sync ends, the account republishes or a Memory judge setting changes', async () => {
@@ -662,11 +667,16 @@ describe('PiRuntime.init lifecycle', () => {
   it('republishes the account state of each live session before and after the key sync, once per burst of auth.json events', async () => {
     const runtime = PiRuntime.get('/agent');
     await runtime.init();
-    const first = { publishAccountInfo: vi.fn() };
-    const second = { publishAccountInfo: vi.fn() };
+    // the first key sync always publishes, so it runs before the bursts this counts
+    await runtime.syncCustomProviders(async () => undefined);
+    const first = { publishAccountInfo: vi.fn(), publishAvailableModels: vi.fn() };
+    const second = { publishAccountInfo: vi.fn(), publishAvailableModels: vi.fn() };
     runtime.registerSessionMutator('s1', first as never);
     runtime.registerSessionMutator('s1-displaced-alias', first as never);
     runtime.registerSessionMutator('s2', second as never);
+    // the key-provider sync each burst runs last must settle here, or its listeners fire in the next test
+    const keySyncs = vi.fn();
+    const stopKeySyncs = PiRuntime.onCustomProvidersSynced(keySyncs);
 
     vi.useFakeTimers();
     try {
@@ -686,6 +696,8 @@ describe('PiRuntime.init lifecycle', () => {
     } finally {
       vi.useRealTimers();
     }
+    await vi.waitFor(() => expect(keySyncs).toHaveBeenCalledTimes(2));
+    stopKeySyncs();
 
     await PiRuntime.disposeInstance();
     expect(fake.fileWatchers.watchers.find((w) => w.glob === 'auth.json')?.disposed).toBe(true);
@@ -712,10 +724,14 @@ describe('PiRuntime.init lifecycle', () => {
 
     const runtime = PiRuntime.get();
     await runtime.init();
+    // the first key sync always publishes, so it runs before the burst this counts
+    await runtime.syncCustomProviders(async () => undefined);
     expect(authWatchers()).toHaveLength(1);
-    const session = { publishAccountInfo: vi.fn() };
+    const session = { publishAccountInfo: vi.fn(), publishAvailableModels: vi.fn() };
     runtime.registerSessionMutator('s1', session as never);
     H.modelRuntime.removeRuntimeApiKey.mockClear();
+    const keySyncs = vi.fn();
+    const stopKeySyncs = PiRuntime.onCustomProvidersSynced(keySyncs);
     vi.useFakeTimers();
     try {
       watcherFor('/fake/agent', 'auth.json').fireChange(path.join('/fake/agent', 'auth.json'));
@@ -725,6 +741,8 @@ describe('PiRuntime.init lifecycle', () => {
     } finally {
       vi.useRealTimers();
     }
+    await vi.waitFor(() => expect(keySyncs).toHaveBeenCalledTimes(1));
+    stopKeySyncs();
 
     await PiRuntime.disposeInstance();
     expect(authWatchers()).toHaveLength(1);

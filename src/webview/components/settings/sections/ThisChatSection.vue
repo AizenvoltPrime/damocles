@@ -5,15 +5,17 @@ import { useI18n } from 'vue-i18n';
 import { thinkingDisableApplies } from '@shared/types/constants';
 import type { EffortLevel, PermissionMode } from '@shared/types/settings';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { usePickerModels } from '@/composables/usePickerModels';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import SettingsRow from '../SettingsRow.vue';
 import SettingSelect from '../controls/SettingSelect.vue';
 import SettingSeg from '../controls/SettingSeg.vue';
 import SettingSwitch from '../controls/SettingSwitch.vue';
-import { effortOptions, modelOptions, permissionOptions } from '../model-options';
+import { effortOptions, modelOptions, permissionOptions, useUnavailableHint } from '../model-options';
 import { useSettingsPage } from '../settings-view';
 
 const { t } = useI18n();
+const unavailableHint = useUnavailableHint();
 const page = useSettingsPage();
 const settingsStore = useSettingsStore();
 const { postMessage } = usePlatformBridge();
@@ -28,6 +30,8 @@ const {
   panelWorkspaceFolderKey,
   workspaceFolderSwitchPending,
 } = storeToRefs(settingsStore);
+
+const pickerModels = usePickerModels();
 
 const folderOptions = computed(() => workspaceFolders.value.map((folder) => ({ value: folder.key, label: folder.label, hint: folder.path })));
 
@@ -87,7 +91,7 @@ function setPermissionMode(mode: PermissionMode): void {
   <SettingsRow id="model">
     <SettingSelect
       :model-value="chatModel"
-      :options="modelOptions(availableModels)"
+      :options="modelOptions(pickerModels, unavailableHint)"
       :label="t('settingsModal.rows.model.label')"
       reselectable
       @update:model-value="setModel"

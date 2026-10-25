@@ -15,7 +15,7 @@ function catalogModel(file: string, api: string, id: string): Model<Api> {
   return model;
 }
 
-const PI_CATALOG: Record<string, [file: string, api: string]> = {
+const PI_CATALOG: Record<string, [file: string, api: string, id?: string]> = {
   'claude-fable-5-1': ['anthropic.json', 'anthropic-messages'],
   'claude-haiku-5-5': ['anthropic.json', 'anthropic-messages'],
   'gpt-6-astra': ['openai.json', 'openai-responses'],
@@ -25,6 +25,16 @@ const PI_CATALOG: Record<string, [file: string, api: string]> = {
   'deepseek-flash': ['deepseek.json', 'openai-completions'],
   'MiniMax-M3.1-Flash': ['minimax.json', 'anthropic-messages'],
   'grok-4.7': ['xai.json', 'openai-responses'],
+  k3: ['kimi-coding.json', 'openai-completions'],
+  'kimi-for-coding': ['kimi-coding.json', 'openai-completions'],
+  'muse-spark-1.3': ['meta.json', 'openai-responses'],
+  'muse-wonder-1.0': ['meta.json', 'openai-responses'],
+  'github-copilot/claude-opus-5.5': ['github-copilot.json', 'anthropic-messages', 'claude-opus-5.5'],
+  'github-copilot/claude-sonnet-5.5': ['github-copilot.json', 'anthropic-messages', 'claude-sonnet-5.5'],
+  'github-copilot/claude-haiku-5.5': ['github-copilot.json', 'anthropic-messages', 'claude-haiku-5.5'],
+  'github-copilot/gpt-6-astra': ['github-copilot.json', 'openai-responses', 'gpt-6-astra'],
+  'github-copilot/gpt-6.1-sol': ['github-copilot.json', 'openai-responses', 'gpt-6.1-sol'],
+  'github-copilot/gpt-6-luna': ['github-copilot.json', 'openai-responses', 'gpt-6-luna'],
 };
 
 // The composer labels a chat with no stored effort by this value, so it must be the level pi runs: an unset effort is sent as medium.
@@ -34,9 +44,9 @@ describe('defaultEffortForModel', () => {
   const withoutCatalogDefault = DEFAULT_MODELS.filter((m) => (m.supportedEffortLevels?.length ?? 0) > 0 && !m.defaultEffort && m.value !== SELF_REGISTERED);
 
   it.each(withoutCatalogDefault.map((m) => m.value))('%s shows the level pi clamps medium to', (value) => {
-    const [file, api] = PI_CATALOG[value]!;
+    const [file, api, id] = PI_CATALOG[value]!;
     const effort = defaultEffortForModel(value);
-    expect(effort && effortToPiThinking(effort)).toBe(clampThinkingLevel(catalogModel(file, api, value), 'medium'));
+    expect(effort && effortToPiThinking(effort)).toBe(clampThinkingLevel(catalogModel(file, api, id ?? value), 'medium'));
   });
 
   it('covers every catalog model without a default that pi ships, and Step 5 Preview runs medium', () => {

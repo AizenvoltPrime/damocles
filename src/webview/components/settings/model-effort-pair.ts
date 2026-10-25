@@ -1,6 +1,6 @@
 import { computed, type ComputedRef } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { DEFAULT_MODELS } from '@shared/types/constants';
+import { DEFAULT_MODELS, ROLE_EFFORT_LEVELS } from '@shared/types/constants';
 import type { WebviewToExtensionMessage } from '@shared/types/messages';
 import type { EffortLevel } from '@shared/types/settings';
 import type { SelectOption } from './controls/SettingSelect.vue';
@@ -35,7 +35,7 @@ export interface ModelEffortPair {
 
 /**
  * The model and effort selects of one user setting pair. A model change drops an effort the new model does not take,
- * as the host's `supportedStoredEffort` does, and a failed write puts back only the fields that write changed.
+ * as the host's `supportedRoleEffort` does, and a failed write puts back only the fields that write changed.
  */
 export function useModelEffortPair(options: ModelEffortPairOptions): ModelEffortPair {
   const { t } = useI18n();
@@ -44,7 +44,8 @@ export function useModelEffortPair(options: ModelEffortPairOptions): ModelEffort
   const modelValue = computed(() => options.read().model || UNSET_OPTION);
   const effortValue = computed(() => options.read().effort ?? UNSET_OPTION);
   const effortChoices = computed<SelectOption<string>[]>(() => {
-    const levels = DEFAULT_MODELS.find((model) => model.value === options.read().model)?.supportedEffortLevels ?? [];
+    const supported = DEFAULT_MODELS.find((model) => model.value === options.read().model)?.supportedEffortLevels ?? [];
+    const levels = supported.filter((level) => ROLE_EFFORT_LEVELS.includes(level));
     return levels.length === 0 ? [] : [{ value: UNSET_OPTION, label: options.effortUnsetLabel() }, ...effortOptions(levels, t)];
   });
 
@@ -63,7 +64,7 @@ export function useModelEffortPair(options: ModelEffortPairOptions): ModelEffort
   function setModel(value: string): void {
     const model = value === UNSET_OPTION ? '' : value;
     const { effort } = options.read();
-    const keepsEffort = effort !== null && supportsEffort(model, effort);
+    const keepsEffort = effort !== null && ROLE_EFFORT_LEVELS.includes(effort) && supportsEffort(model, effort);
     set(keepsEffort ? { model } : { model, effort: null }, options.modelKey, options.modelMessage(model));
   }
 

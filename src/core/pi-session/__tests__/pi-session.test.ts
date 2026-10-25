@@ -8,6 +8,7 @@ import { MAX_IMAGE_BASE64_LENGTH } from '../../../shared/types/content';
 import { formatUserSteerPrefix, type UserSteerNote } from '../../../shared/steer';
 import type { ForkSpawnArgs } from '../../../shared/types/session';
 import type { AccountInfo, AutoCompactConfig } from '../../../shared/types/settings';
+import { DEFAULT_MODELS } from '../../../shared/types/constants';
 import type { Agent, AgentTurnContext, AgentTurnDecision, FinishTurn } from '@earendil-works/pi-agent-core';
 
 const H = vi.hoisted(() => {
@@ -115,7 +116,9 @@ const H = vi.hoisted(() => {
       extensionRunner: { getCommand: vi.fn((_name: string): unknown => undefined), hasHandlers: vi.fn(() => false) },
       abort: vi.fn(async () => undefined),
       dispose: vi.fn(),
-      setModel: vi.fn(async () => undefined),
+      // pi's AgentSession.model, set by the factory stub and by setModel as pi's own are.
+      model: undefined as unknown,
+      setModel: vi.fn(async (_model: unknown) => undefined),
       getSessionStats: vi.fn(() => ({ sessionId: id, cost: 0, tokens: { input: 120, output: 40, cacheRead: 30, cacheWrite: 10, total: 200 } })),
       getLastAssistantText: vi.fn(() => 'hi'),
       getContextUsage: vi.fn(() => ({ tokens: 160, contextWindow: 1_000_000, percent: 0 })),
@@ -126,6 +129,7 @@ const H = vi.hoisted(() => {
       sessionManager,
       messages: [],
     };
+    session.setModel.mockImplementation(async (model: unknown) => { session.model = model; });
     // As pi does: a custom message that neither triggers nor joins a running turn is on the branch at once.
     session.sendCustomMessage.mockImplementation(async (...args: unknown[]) => {
       const [message, options] = args as [{ customType: string; content: unknown; display: boolean; details?: unknown }, { triggerTurn?: boolean; deliverAs?: string } | undefined];
@@ -214,10 +218,14 @@ const H = vi.hoisted(() => {
 
   const fakePi = {
     createAgentSessionServices: vi.fn(async () => services),
-    createAgentSessionFromServices: vi.fn(async (opts: { services: unknown; customTools?: Array<{ name: string; execute: (...a: never[]) => Promise<unknown> }> }) => {
+    createAgentSessionFromServices: vi.fn(async (opts: { services: unknown; model?: unknown; customTools?: Array<{ name: string; execute: (...a: never[]) => Promise<unknown> }> }) => {
       captured.services.push(opts.services);
       captured.customTools = opts.customTools ?? [];
-      return { session: makeSession() };
+      const session = makeSession();
+      // As pi's createAgentSession: given no model, it seats the session on one it picks itself, here the first of its
+      // available snapshot (findInitialModel, model-resolver.js:412-425 in pi-coding-agent 1.4.0).
+      session.model = opts.model ?? services.modelRuntime.getAvailableSnapshot()[0];
+      return { session };
     }),
     createAgentSessionRuntime: vi.fn(async (factory: (o: { sessionManager: unknown; cwd: string; agentDir: string }) => Promise<{ session: unknown }>, opts: { cwd: string; agentDir: string; sessionManager: unknown }) => {
       let current = (await factory({ ...opts })).session;
@@ -3509,6 +3517,81 @@ describe('PiSession — subagent model resolution', () => {
     const res = resolve(session, { name: 'Game Designer', description: 'd', model: 'anthropic/claude-opus-5-5' });
     expect(res.error).toBeUndefined();
     expect(res.model).toMatchObject({ id: 'claude-opus-5-5', provider: 'anthropic' });
+    await session.dispose();
+  });
+
+  describe('on GitHub Copilot, whose sign-in lists the plan', () => {
+    const copilotModels = [model('github-copilot', 'gpt-6.1-sol'), model('github-copilot', 'gpt-6-luna'), model('github-copilot', 'claude-haiku-5.5'), model('github-copilot', 'claude-opus-5.5'), model('github-copilot', 'gpt-5-mini'), model('anthropic', 'claude-haiku-5-5')];
+    async function onCopilot(plan: readonly string[], fn: (session: PiSession) => void | Promise<void>): Promise<void> {
+      await withModels(copilotModels, async () => {
+        const session = new PiSession(makeOptions([]));
+        await session.initializeEarly();
+        vi.spyOn(PiRuntime.get('/fake/agent'), 'planModelIds').mockImplementation((provider) => (provider === 'github-copilot' ? new Set(plan) : undefined));
+        await session.setModel('github-copilot/gpt-6.1-sol');
+        expect(session.currentModel).toBe('github-copilot/gpt-6.1-sol');
+        try {
+          await fn(session);
+        } finally {
+          await session.dispose();
+        }
+      });
+    }
+
+    // The spend stays on the user's Copilot plan; Anthropic is signed in too and its Haiku is never picked.
+    it("runs Explore Default from a Copilot GPT chat on Copilot's Haiku 5.5 when the plan includes it", async () => {
+      await onCopilot(['gpt-6.1-sol', 'claude-haiku-5.5'], (session) => {
+        expect(resolve(session, { name: 'Explore', description: 'd' })).toMatchObject({ model: { provider: 'github-copilot', id: 'claude-haiku-5.5' }, thinkingLevel: 'medium' });
+      });
+    });
+
+    it("runs Explore Default on the chat's own model when the plan does not include Copilot's Haiku 5.5", async () => {
+      await onCopilot(['gpt-6.1-sol'], (session) => {
+        expect(resolve(session, { name: 'Explore', description: 'd' }).model).toMatchObject({ provider: 'github-copilot', id: 'gpt-6.1-sol' });
+      });
+    });
+
+    it('fails an Explore spawn on a picked model outside the plan, naming the provider and the model by its label', async () => {
+      await testPlatform.settings.update('damocles.explore.model', 'github-copilot/claude-opus-5.5', 'user');
+      try {
+        await onCopilot(['gpt-6.1-sol'], (session) => {
+          expect(resolve(session, { name: 'Explore', description: 'd' })).toEqual({ error: 'Explore cannot run: your GitHub Copilot plan does not include Opus 5.5 (GitHub Copilot), the model `damocles.explore.model` names. Choose another Explore model in Settings.' });
+        });
+      } finally {
+        await testPlatform.settings.update('damocles.explore.model', undefined, 'user');
+      }
+    });
+
+    it('fails a template pinned outside the plan, by its catalog value or by a direct provider/id pin', async () => {
+      await onCopilot(['gpt-6.1-sol'], (session) => {
+        expect(resolve(session, { name: 'Game Designer', description: 'd', model: 'github-copilot/claude-opus-5.5', filePath: '/agents/gd.md' })).toEqual({
+          error: 'Agent "Game Designer" cannot run: your GitHub Copilot plan does not include Opus 5.5 (GitHub Copilot), the model its `model:` field names. Change that field in /agents/gd.md.',
+        });
+        expect(resolve(session, { name: 'Game Designer', description: 'd', model: 'github-copilot/gpt-5-mini', filePath: '/agents/gd.md' })).toEqual({
+          error: 'Agent "Game Designer" cannot run: your GitHub Copilot plan does not include gpt-5-mini, the model its `model:` field names. Change that field in /agents/gd.md.',
+        });
+      });
+    });
+
+    // The plan can shrink after the chat adopted its model; an inheriting agent is refused before pi calls the API.
+    it("refuses an agent that inherits a chat model the plan no longer includes", async () => {
+      await onCopilot(['gpt-6.1-sol'], (session) => {
+        vi.spyOn(PiRuntime.get('/fake/agent'), 'planModelIds').mockImplementation((provider) => (provider === 'github-copilot' ? new Set(['gpt-6-luna']) : undefined));
+        expect(resolve(session, { name: 'Game Designer', description: 'd' })).toEqual({
+          error: 'Agent "Game Designer" cannot run: your GitHub Copilot plan does not include GPT-6.1 Sol (GitHub Copilot), this chat\'s model. Pick another model for the chat.',
+        });
+      });
+    });
+  });
+
+  // Given no model, pi seats the agent on one it picks itself.
+  it('refuses an agent that would inherit the chat model while the chat has none it can run', async () => {
+    const runtime = H.getServices().modelRuntime;
+    runtime.hasConfiguredAuth = () => false;
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    expect(resolve(session, { name: 'Game Designer', description: 'd' })).toEqual({
+      error: 'Agent "Game Designer" cannot run: this chat has no model it can run. Pick a model for the chat, or set `model:` in the agent\'s template.',
+    });
     await session.dispose();
   });
 
@@ -9134,9 +9217,17 @@ describe('PiSession account state publication', () => {
     await PiRuntime.disposeInstance();
   });
 
-  function published(messages: ExtensionToWebviewMessage[]): AccountInfo | undefined {
+  function publishedWithPicker(messages: ExtensionToWebviewMessage[]): AccountInfo | undefined {
     const last = messages.filter((m) => m.type === 'accountInfo').at(-1);
     return last?.type === 'accountInfo' ? last.data : undefined;
+  }
+
+  // The billing fields only; the picker providers have their own test below and model-picker.test.ts.
+  function published(messages: ExtensionToWebviewMessage[]): AccountInfo | undefined {
+    const data = publishedWithPicker(messages);
+    if (!data) return undefined;
+    const { pickerProviders: _picker, ...billing } = data;
+    return billing;
   }
 
   /** What the builder produces from the session's live inputs, read through its public surface. */
@@ -9168,6 +9259,17 @@ describe('PiSession account state publication', () => {
     await session.initializeEarly();
 
     expect(published(messages)).toEqual({ model: 'claude-opus-5-5', dollarBilled: false });
+    await session.dispose();
+  });
+
+  it('carries the picker providers the runtime reports', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    expect(publishedWithPicker(messages)?.pickerProviders).toEqual(PiRuntime.get('/fake/agent').pickerProviders());
+    vi.spyOn(PiRuntime.get('/fake/agent'), 'pickerProviders').mockReturnValue(['deepseek']);
+    session.publishAccountInfo();
+    expect(publishedWithPicker(messages)).toEqual({ model: 'claude-opus-5-5', dollarBilled: false, pickerProviders: ['deepseek'] });
     await session.dispose();
   });
 
@@ -9234,8 +9336,7 @@ describe('PiSession account state publication', () => {
 
     session.publishAccountInfo();
 
-    const last = messages.filter((m) => m.type === 'accountInfo').at(-1);
-    expect(last && 'data' in last ? last.data : undefined).toEqual({ model: 'claude-opus-5-5', dollarBilled: true, allowanceUnavailable: true });
+    expect(published(messages)).toEqual({ model: 'claude-opus-5-5', dollarBilled: true, allowanceUnavailable: true });
     await session.dispose();
   });
 
@@ -9393,6 +9494,136 @@ describe('the chat model is what pi adopted, published after every switch attemp
     expect(session.currentModel).toBe('claude-opus-5-5');
     expect(reported).toEqual(['claude-opus-5-5']);
     expect(messages.some((m) => m.type === 'openaiAuthRequired')).toBe(true);
+    await session.dispose();
+  });
+
+  // pi's getModel and setModel ignore Copilot's plan filter, so Damocles refuses from the sign-in's own list.
+  it('refuses a GitHub Copilot model outside the user\'s plan, naming the plan', async () => {
+    const opus = H.getServices().modelRuntime.getModel;
+    H.getServices().modelRuntime.getModel = (provider: string, id: string) => (provider === 'github-copilot'
+      ? { id, name: id, api: 'openai-responses', provider, contextWindow: 1_000_000 }
+      : opus(provider, id)) as never;
+    const { session, reported, piSetModel } = await started();
+    vi.spyOn(PiRuntime.get(), 'planModelIds').mockImplementation((provider) => (provider === 'github-copilot' ? new Set(['gpt-6-luna']) : undefined));
+    reported.length = 0;
+
+    await session.setModel('github-copilot/gpt-6.1-sol');
+
+    expect(piSetModel).not.toHaveBeenCalled();
+    expect(session.currentModel).toBe('claude-opus-5-5');
+    expect(reported).toEqual(['claude-opus-5-5']);
+    expect(testPlatform.notifications.calls).toContainEqual(expect.objectContaining({ level: 'warn', message: 'Your GitHub Copilot plan does not include GPT-6.1 Sol (GitHub Copilot)' }));
+
+    await session.setModel('github-copilot/gpt-6-luna');
+    expect(session.currentModel).toBe('github-copilot/gpt-6-luna');
+    await session.dispose();
+  });
+
+  it('marks the models outside the user\'s plan in the list it publishes', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session } = await started(messages);
+    vi.spyOn(PiRuntime.get(), 'planModelIds').mockImplementation((provider) => (provider === 'github-copilot' ? new Set(['gpt-6-luna']) : undefined));
+    messages.length = 0;
+
+    session.publishAvailableModels();
+
+    const models = messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'availableModels' }> => m.type === 'availableModels').at(-1)!.models;
+    expect(models.filter((m) => m.unavailable).map((m) => m.value)).toEqual(DEFAULT_MODELS.filter((m) => m.piProvider === 'github-copilot' && m.piModelId !== 'gpt-6-luna').map((m) => m.value));
+    expect(models.find((m) => m.value === 'github-copilot/gpt-6.1-sol')?.unavailable).toEqual({ reason: 'not-in-plan', provider: 'github-copilot' });
+    await session.dispose();
+  });
+
+  const createdOn = () => (H.fakePi.createAgentSessionFromServices.mock.calls.at(-1)![0] as unknown as { model?: { provider: string; id: string } }).model;
+  const returnedPrompts = (messages: ExtensionToWebviewMessage[]) => messages.filter((m) => m.type === 'promptReturned' || m.type === 'openSettingsPanel');
+
+  /** Only Copilot signed in: pi's available snapshot then holds only Copilot models, which pi's own pick would take. */
+  function copilotOnly(): void {
+    const opus = H.getServices().modelRuntime.getModel;
+    const copilot = (id: string) => ({ id, name: id, api: 'openai-responses', provider: 'github-copilot', contextWindow: 1_000_000 });
+    H.getServices().modelRuntime.getModel = (provider: string, id: string) => (provider === 'github-copilot' ? copilot(id) : opus(provider, id)) as never;
+    H.getServices().modelRuntime.getAvailableSnapshot = () => [copilot('gpt-6.1-sol')] as never;
+    (H.getServices().modelRuntime as { hasConfiguredAuth: (provider: string) => boolean }).hasConfiguredAuth = (provider) => provider === 'github-copilot';
+  }
+
+  // Damocles never seats a chat on GitHub Copilot on its own, and pi given no model picks one itself.
+  it("hands pi the chat's model and refuses sends until one is picked, with only GitHub Copilot signed in", async () => {
+    copilotOnly();
+    const messages: ExtensionToWebviewMessage[] = [];
+    const fresh = await started(messages, { model: 'claude-opus-5-5' });
+    expect(fresh.session.currentModel).toBe('claude-opus-5-5');
+    expect(createdOn()).toMatchObject({ provider: 'anthropic', id: 'claude-opus-5-5' });
+    const live = H.getLastSession()!;
+    expect(live.model).toMatchObject({ provider: 'anthropic', id: 'claude-opus-5-5' });
+
+    expect(await fresh.session.sendMessage('go', undefined, 'c1', { content: 'go' })).toBe('unsent');
+    expect(live.prompt).not.toHaveBeenCalled();
+    expect(returnedPrompts(messages)).toEqual([
+      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: 'Sign in to Anthropic to use Opus 5.5' },
+      { type: 'openSettingsPanel', section: 'chat' },
+    ]);
+
+    await fresh.session.setModel('github-copilot/gpt-6-luna');
+    expect(fresh.session.currentModel).toBe('github-copilot/gpt-6-luna');
+    await fresh.session.sendMessage('go', undefined, 'c2', { content: 'go' });
+    expect(live.prompt).toHaveBeenCalled();
+    await fresh.session.dispose();
+
+    const picked = await started([], { model: 'github-copilot/gpt-6-luna' });
+    expect(picked.session.currentModel).toBe('github-copilot/gpt-6-luna');
+    expect(createdOn()).toMatchObject({ provider: 'github-copilot', id: 'gpt-6-luna' });
+    await picked.session.dispose();
+  });
+
+  it('refuses a send and a compaction with nothing signed in, opening Models & accounts', async () => {
+    (H.getServices().modelRuntime as { hasConfiguredAuth: (provider: string) => boolean }).hasConfiguredAuth = () => false;
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session } = await started(messages);
+    expect(createdOn()).toMatchObject({ provider: 'anthropic', id: 'claude-opus-5-5' });
+    const live = H.getLastSession()!;
+
+    expect(await session.sendMessage('go', undefined, 'c1', { content: 'go' })).toBe('unsent');
+    await session.compact();
+    expect(live.prompt).not.toHaveBeenCalled();
+    expect(live.compact).not.toHaveBeenCalled();
+    expect(returnedPrompts(messages)).toEqual([
+      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelSignInRequired' },
+      { type: 'openSettingsPanel', section: 'accounts' },
+      { type: 'promptReturned', content: [{ type: 'text', text: '/compact' }], reason: 'modelSignInRequired' },
+      { type: 'openSettingsPanel', section: 'accounts' },
+    ]);
+    await session.dispose();
+  });
+
+  // A sign-in after the start makes the model the chat shows runnable, and the next send runs on it.
+  it('runs a send on the shown model once its provider signed in after the start', async () => {
+    const auth = H.getServices().modelRuntime as { hasConfiguredAuth: (provider: string) => boolean };
+    auth.hasConfiguredAuth = () => false;
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session } = await started(messages);
+    const live = H.getLastSession()!;
+    auth.hasConfiguredAuth = () => true;
+
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    expect(live.prompt).toHaveBeenCalled();
+    expect(returnedPrompts(messages)).toEqual([]);
+    expect(live.setModel).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  // pi's setModel ignores the plan, so a model a later plan list dropped would reach the Copilot API.
+  it('refuses a send on a chat model the plan no longer includes, naming the plan', async () => {
+    copilotOnly();
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session } = await started(messages, { model: 'github-copilot/gpt-6.1-sol' });
+    const live = H.getLastSession()!;
+    vi.spyOn(PiRuntime.get(), 'planModelIds').mockImplementation((provider) => (provider === 'github-copilot' ? new Set(['gpt-6-luna']) : undefined));
+
+    expect(await session.sendMessage('go', undefined, 'c1', { content: 'go' })).toBe('unsent');
+    expect(live.prompt).not.toHaveBeenCalled();
+    expect(returnedPrompts(messages)).toEqual([
+      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: 'Your GitHub Copilot plan does not include GPT-6.1 Sol (GitHub Copilot)' },
+      { type: 'openSettingsPanel', section: 'chat' },
+    ]);
     await session.dispose();
   });
 
@@ -10829,15 +11060,15 @@ describe('a resumed conversation continues on the model and thinking level its f
     await PiRuntime.disposeInstance();
   });
 
-  async function restore(branch: unknown[], hasConfiguredAuth = true) {
+  async function restore(branch: unknown[], hasConfiguredAuth: boolean | ((provider: string) => boolean) = true, messages: ExtensionToWebviewMessage[] = []) {
     (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => ({ kind: 'opened', getBranch: () => branch });
-    H.getServices().modelRuntime.hasConfiguredAuth = () => hasConfiguredAuth;
+    (H.getServices().modelRuntime as { hasConfiguredAuth: (provider: string) => boolean }).hasConfiguredAuth = typeof hasConfiguredAuth === 'function' ? hasConfiguredAuth : () => hasConfiguredAuth;
     const restored = vi.fn();
-    const session = new PiSession(makeOptions([], { onRecordedSelection: restored }));
+    const session = new PiSession(makeOptions(messages, { onRecordedSelection: restored }));
     session.setResumeSession('stored');
     await session.initializeEarly();
-    const created = H.fakePi.createAgentSessionFromServices.mock.calls.at(-1)![0] as unknown as { model?: { id: string }; thinkingLevel?: string };
-    return { session, restored, createdOn: created.model?.id, createdAt: created.thinkingLevel, modelValue: (session as unknown as { modelValue: string }).modelValue };
+    const created = H.fakePi.createAgentSessionFromServices.mock.calls.at(-1)![0] as unknown as { model?: { id: string; provider: string }; thinkingLevel?: string };
+    return { session, restored, createdOn: created.model?.id, createdWith: created.model?.provider, createdAt: created.thinkingLevel, modelValue: (session as unknown as { modelValue: string }).modelValue };
   }
 
   it('hands pi the recorded model and reports it with the recorded level, so the panel shows and resolves them', async () => {
@@ -10850,10 +11081,26 @@ describe('a resumed conversation continues on the model and thinking level its f
     await session.dispose();
   });
 
+  // GitHub Copilot serves gpt-6-luna under its own provider; the recorded provider decides which catalog value it was.
+  it('continues a recorded GitHub Copilot model on its Copilot value, never on OpenAI\'s', async () => {
+    const opus = H.getServices().modelRuntime.getModel;
+    const LUNA = { id: 'gpt-6-luna', name: 'GPT-6 Luna', api: 'openai-responses', provider: 'github-copilot', contextWindow: 1_000_000 };
+    H.getServices().modelRuntime.getModel = (provider: string, id: string) => (provider === 'github-copilot' && id === LUNA.id ? LUNA : opus(provider, id)) as never;
+    const { session, restored, createdOn, modelValue } = await restore(recorded('github-copilot', 'gpt-6-luna', 'high'));
+    expect(createdOn).toBe('gpt-6-luna');
+    expect(modelValue).toBe('github-copilot/gpt-6-luna');
+    expect(restored).toHaveBeenCalledExactlyOnceWith('github-copilot/gpt-6-luna', 'high');
+    await session.dispose();
+  });
+
   it('keeps the panel model when the recorded one is no longer signed in, or not in the catalog', async () => {
-    const unsigned = await restore(recorded('anthropic', 'claude-sonnet-5-5', 'xhigh'), false);
+    const opus = H.getServices().modelRuntime.getModel;
+    const LUNA = { id: 'gpt-6-luna', name: 'GPT-6 Luna', api: 'openai-responses', provider: 'github-copilot', contextWindow: 1_000_000 };
+    H.getServices().modelRuntime.getModel = (provider: string, id: string) => (provider === 'github-copilot' && id === LUNA.id ? LUNA : opus(provider, id)) as never;
+    const unsigned = await restore(recorded('github-copilot', 'gpt-6-luna', 'xhigh'), (provider) => provider === 'anthropic');
     expect(unsigned.restored).not.toHaveBeenCalled();
     expect(unsigned.modelValue).toBe('claude-opus-5-5');
+    expect(unsigned.createdOn).toBe('claude-opus-5-5');
     await unsigned.session.dispose();
     await PiRuntime.disposeInstance();
 
@@ -10861,6 +11108,42 @@ describe('a resumed conversation continues on the model and thinking level its f
     expect(unknown.restored).not.toHaveBeenCalled();
     expect(unknown.createdOn).toBe('claude-opus-5-5');
     await unknown.session.dispose();
+  });
+
+  // pi restores a recorded model itself when given none, checking neither Damocles' catalog rules nor the plan.
+  it('shows a recorded model nothing signed in can run, hands it to pi, and refuses sends', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, createdOn, createdWith, modelValue } = await restore(recorded('anthropic', 'claude-sonnet-5-5', 'xhigh'), false, messages);
+    expect([createdWith, createdOn]).toEqual(['anthropic', 'claude-sonnet-5-5']);
+    expect(modelValue).toBe('claude-sonnet-5-5');
+    expect(await session.sendMessage('go', H.getLastSession()!.sessionId, 'c1', { content: 'go' })).toBe('unsent');
+    expect(H.getLastSession()!.prompt).not.toHaveBeenCalled();
+    expect(messages.filter((m) => m.type === 'promptReturned')).toEqual([{ type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelSignInRequired' }]);
+    await session.dispose();
+  });
+
+  it('resumes a recorded GitHub Copilot model the plan no longer includes, with nothing else signed in, refusing sends naming the plan', async () => {
+    const opus = H.getServices().modelRuntime.getModel;
+    const copilot = (id: string) => ({ id, name: id, api: 'anthropic-messages', provider: 'github-copilot', contextWindow: 1_000_000 });
+    H.getServices().modelRuntime.getModel = (provider: string, id: string) => (provider === 'github-copilot' ? copilot(id) : opus(provider, id)) as never;
+    H.getServices().modelRuntime.getAvailableSnapshot = () => [copilot('gpt-6-luna')] as never;
+    vi.spyOn(PiRuntime.get('/fake/agent'), 'planModelIds').mockImplementation((provider) => (provider === 'github-copilot' ? new Set(['gpt-6-luna']) : undefined));
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, restored, createdOn, createdWith, modelValue } = await restore(recorded('github-copilot', 'claude-opus-5.5', 'high'), (provider) => provider === 'github-copilot', messages);
+
+    expect([createdWith, createdOn]).toEqual(['github-copilot', 'claude-opus-5.5']);
+    expect(modelValue).toBe('github-copilot/claude-opus-5.5');
+    expect(restored).toHaveBeenCalledExactlyOnceWith('github-copilot/claude-opus-5.5', 'high');
+    const accounts = messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'accountInfo' }> => m.type === 'accountInfo');
+    expect(accounts.at(-1)?.data.model).toBe('github-copilot/claude-opus-5.5');
+
+    expect(await session.sendMessage('go', H.getLastSession()!.sessionId, 'c1', { content: 'go' })).toBe('unsent');
+    expect(H.getLastSession()!.prompt).not.toHaveBeenCalled();
+    expect(messages.filter((m) => m.type === 'promptReturned' || m.type === 'openSettingsPanel')).toEqual([
+      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: 'Your GitHub Copilot plan does not include Opus 5.5 (GitHub Copilot)' },
+      { type: 'openSettingsPanel', section: 'chat' },
+    ]);
+    await session.dispose();
   });
 
   it('publishes the account of the recorded model when a started panel switches to the conversation', async () => {

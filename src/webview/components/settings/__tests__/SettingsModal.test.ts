@@ -8,6 +8,7 @@ import { i18n, initLocaleMessaging } from '@/i18n';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { VSCODE_HOST_CAPABILITIES, type WebviewToExtensionMessage } from '@shared/types/messages';
 import { KEY_PROVIDER_IDS, type SettingsSectionId } from '@shared/settings-sections';
+import { DEFAULT_MODELS } from '@shared/types/constants';
 import type { EffortLevel } from '@shared/types/settings';
 import { settingsViewHandlers, type SettingsHandlerContext } from '@/composables/message-handler/handlers/settings-handlers';
 import { useUIStore } from '@/stores/useUIStore';
@@ -166,7 +167,7 @@ describe('state', () => {
     const ctx = context();
     settingsViewHandlers.claudeAuthStatusChanged({ type: 'claudeAuthStatusChanged', mode: 'allowance' }, ctx);
     settingsViewHandlers.openaiAuthStatusChanged({ type: 'openaiAuthStatusChanged', status: { chatgpt: { signedIn: true }, codex: { signedIn: false }, apikey: { configured: false } }, preferApiKey: false }, ctx);
-    for (const provider of KEY_PROVIDER_IDS) settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider, configured: true, external: null }, ctx);
+    for (const provider of KEY_PROVIDER_IDS) settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider, configured: true, external: null, signedIn: false, preferApiKey: false }, ctx);
     settingsViewHandlers.memoryJudgeStatus({ type: 'memoryJudgeStatus', memoryJudge: { kind: 'unknown' }, classifierCredentials: { typesafe: 'ok', openrouter: 'ok', openai: 'no-key' } }, ctx);
     await nextTick();
     const status = (provider: string): string => row(`account-${provider}`)!.querySelector('[role="status"]')!.textContent!.trim();
@@ -838,7 +839,7 @@ describe('Models & accounts model and effort rows', () => {
     const store = useSettingsStore();
     store.setClaudeAuthMode('apikey');
     store.setOpenAIAuthStatus({ chatgpt: { signedIn: true }, codex: { signedIn: false }, apikey: { configured: false } }, false);
-    for (const provider of KEY_PROVIDER_IDS) store.setKeyProviderConfigured(provider, true, null);
+    for (const provider of KEY_PROVIDER_IDS) store.setKeyProviderStatus(provider, { configured: true, external: null, signedIn: false, preferApiKey: false });
   }
 
   const trigger = (rowId: string, label: string): HTMLElement => row(rowId)!.querySelector<HTMLElement>(`button[aria-label="${label}"]`)!;
@@ -875,6 +876,15 @@ describe('Models & accounts model and effort rows', () => {
     expect(posted.filter((message) => message.type === pair.modelMessage)).toHaveLength(2);
   });
 
+  // A hand-edited file can hold `none`, which these settings refuse even for a model that takes it in a chat.
+  it.each(PAIRS)('$name: a model change drops a None effort, even for a model whose chat effort takes it', async (pair) => {
+    signInEverywhere();
+    setPair(pair, 'claude-sonnet-5-5', 'none');
+    await open(NO_HOST_SETTINGS, 'accounts');
+    await choose(pair.id, pair.model, 'GPT-6 Luna');
+    expect(readPair(pair)).toEqual({ model: 'gpt-6-luna', effort: null });
+  });
+
   it.each(PAIRS)('$name: a failed model write puts back only the fields it changed', async (pair) => {
     signInEverywhere();
     setPair(pair, 'claude-sonnet-5-5', 'high');
@@ -893,7 +903,7 @@ describe('Models & accounts model and effort rows', () => {
   });
 
   it.each(PAIRS)('$name: a model whose provider is signed out is listed disabled with the reason, and shows it when selected', async (pair) => {
-    useSettingsStore().setKeyProviderConfigured('stepfun', true, null);
+    useSettingsStore().setKeyProviderStatus('stepfun', { configured: true, external: null, signedIn: false, preferApiKey: false });
     setPair(pair, 'claude-sonnet-5-5', null);
     await open(NO_HOST_SETTINGS, 'accounts');
     const selected = trigger(pair.id, pair.model);
@@ -914,8 +924,40 @@ describe('Models & accounts model and effort rows', () => {
     expect(trigger(pair.id, pair.model).textContent).not.toContain(t('settings.modelNotSignedIn'));
   });
 
+  it.each(PAIRS)('$name: a GitHub Copilot model core marks outside the plan is listed disabled with that reason', async (pair) => {
+    signInEverywhere();
+    const store = useSettingsStore();
+    store.setKeyProviderStatus('github-copilot', { configured: false, external: null, signedIn: true, preferApiKey: false });
+    store.setAvailableModels(DEFAULT_MODELS.map((model) => (model.value === 'github-copilot/gpt-6-luna' ? { ...model, unavailable: { reason: 'not-in-plan', provider: 'github-copilot' } } : model)));
+    setPair(pair, 'claude-sonnet-5-5', null);
+    await open(NO_HOST_SETTINGS, 'accounts');
+    await openSelect(pair.id, pair.model);
+    expect(option('GPT-6 Luna (GitHub Copilot)').getAttribute('aria-disabled')).toBe('true');
+    expect(option('GPT-6 Luna (GitHub Copilot)').textContent).toContain(t('settings.modelNotInPlan'));
+    expect(option('Haiku 5.5 (GitHub Copilot)').getAttribute('aria-disabled') === 'true').toBe(false);
+  });
+
+  it.each([
+    ['a remote chat names its host', 'devbox', 'Not reachable from devbox'],
+    ['a local chat names no host', undefined, 'Not reachable here'],
+  ] as const)('a model on a loopback endpoint: %s', async (_case, chatHost, hint) => {
+    signInEverywhere();
+    const store = useSettingsStore();
+    store.setAvailableModels(DEFAULT_MODELS.map((model) => (model.value === 'step-5-preview' ? { ...model, unavailable: { reason: 'loopback-endpoint', endpoint: 'http://127.0.0.1:8080' } } : model)));
+    setPair(PAIRS[0]!, 'claude-sonnet-5-5', null);
+    mounted.push(mount(SettingsModal, {
+      props: { host: NO_HOST_SETTINGS, footer: { kind: 'hostSettings' }, backdrop: 'blur', target: { section: 'accounts' }, chatHost },
+      attachTo: document.body,
+      global: { plugins: [i18n] },
+    }));
+    await nextTick();
+    await openSelect(PAIRS[0]!.id, PAIRS[0]!.model);
+    expect(option('Step 5 Preview').getAttribute('aria-disabled')).toBe('true');
+    expect(option('Step 5 Preview').textContent).toContain(hint);
+  });
+
   it('keeps an unavailable option reachable by keyboard, announces its reason, and never selects it', async () => {
-    useSettingsStore().setKeyProviderConfigured('stepfun', true, null);
+    useSettingsStore().setKeyProviderStatus('stepfun', { configured: true, external: null, signedIn: false, preferApiKey: false });
     setPair(PAIRS[0]!, 'step-5-preview', null);
     await open(NO_HOST_SETTINGS, 'accounts');
     await openSelect(PAIRS[0]!.id, PAIRS[0]!.model);
@@ -932,9 +974,9 @@ describe('Models & accounts model and effort rows', () => {
   // pi runs a model on a key from the environment or its own config, and Automatic picks it, so the choices count it as signed in.
   it('counts a key pi reads outside Damocles as signed in, and names where it comes from apart from a saved key', async () => {
     const ctx = context();
-    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'minimax', configured: false, external: 'environment' }, ctx);
-    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'stepfun', configured: false, external: 'piConfig' }, ctx);
-    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'xai', configured: true, external: 'environment' }, ctx);
+    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'minimax', configured: false, external: 'environment', signedIn: false, preferApiKey: false }, ctx);
+    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'stepfun', configured: false, external: 'piConfig', signedIn: false, preferApiKey: false }, ctx);
+    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'xai', configured: true, external: 'environment', signedIn: false, preferApiKey: false }, ctx);
     setPair(PAIRS[0]!, 'claude-sonnet-5-5', null);
     await open(NO_HOST_SETTINGS, 'accounts');
     const status = (provider: string): Element => row(`account-${provider}`)!.querySelector('[role="status"]')!;
@@ -949,6 +991,38 @@ describe('Models & accounts model and effort rows', () => {
     expect(option('MiniMax M3.1 Flash').getAttribute('aria-disabled') === 'true').toBe(false);
     expect(option('Grok 4.7').getAttribute('aria-disabled') === 'true').toBe(false);
     expect(option('DeepSeek V4 Pro').getAttribute('aria-disabled') === 'true').toBe(true);
+  });
+
+  it('counts a stored sign-in as signed in, and names the saved key only while it is the active credential', async () => {
+    const ctx = context();
+    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'stepfun', configured: false, external: null, signedIn: true, preferApiKey: false, active: 'signIn' }, ctx);
+    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'xai', configured: true, external: null, signedIn: true, preferApiKey: false, active: 'signIn' }, ctx);
+    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'minimax', configured: true, external: null, signedIn: true, preferApiKey: true, active: 'apiKey' }, ctx);
+    setPair(PAIRS[0]!, 'claude-sonnet-5-5', null);
+    await open(NO_HOST_SETTINGS, 'accounts');
+    const status = (provider: string): Element => row(`account-${provider}`)!.querySelector('[role="status"]')!;
+    expect(status('stepfun').textContent!.trim()).toBe(t('settingsModal.account.signedIn'));
+    expect(status('stepfun').getAttribute('data-state')).toBe('ok');
+    expect(status('xai').textContent!.trim()).toBe(t('settingsModal.account.signedIn'));
+    expect(status('minimax').textContent!.trim()).toBe(t('settingsModal.account.keySaved'));
+
+    await openSelect(PAIRS[0]!.id, PAIRS[0]!.model);
+    expect(option('Step 5 Preview').getAttribute('aria-disabled') === 'true').toBe(false);
+  });
+
+  it('shows a sign-in provider row as busy while its flow runs, and its credential once the flow ends', async () => {
+    const ctx = context();
+    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'xai', configured: true, external: null, signedIn: false, preferApiKey: false }, ctx);
+    settingsViewHandlers.providerSignInState({ type: 'providerSignInState', provider: 'xai', state: { phase: 'deviceCode', userCode: 'ABCD-1234', verificationUri: 'https://accounts.x.ai/device' } }, ctx);
+    await open(NO_HOST_SETTINGS, 'accounts');
+    const status = (): Element => row('account-xai')!.querySelector('[role="status"]')!;
+    expect(status().getAttribute('data-state')).toBe('busy');
+    expect(status().textContent!.trim()).toBe(t('settingsModal.account.signingIn'));
+
+    settingsViewHandlers.providerSignInState({ type: 'providerSignInState', provider: 'xai', state: { phase: 'idle' } }, ctx);
+    await flush();
+    expect(status().getAttribute('data-state')).toBe('ok');
+    expect(status().textContent!.trim()).toBe(t('settingsModal.account.keySaved'));
   });
 
   it('lists a classifier whose credential cannot serve it as disabled, with the reason', async () => {
@@ -1069,6 +1143,202 @@ describe('Prefer API key', () => {
     expect(label.textContent!.trim()).toBe(t('openai.preferApiKey.label'));
     label.click();
     expect(posted).toContainEqual(expect.objectContaining({ type: 'setOpenAIPreferApiKey', preferApiKey: true }));
+  });
+});
+
+describe('Show in model picker', () => {
+  const pickerSwitch = (provider: string): HTMLElement | null => document.querySelector<HTMLElement>(`[data-testid="model-picker-switch-${provider}"]`);
+  const expand = async (provider: string): Promise<void> => {
+    row(`account-${provider}`)!.querySelector<HTMLElement>('button[aria-expanded]')!.click();
+    await nextTick();
+  };
+
+  it("shows core's visibility, sends a toggle, and holds it until core acknowledges", async () => {
+    const store = useSettingsStore();
+    store.setAccountInfo({ dollarBilled: true, pickerProviders: ['anthropic'] });
+    await open(NO_HOST_SETTINGS, 'accounts');
+    await expand('deepseek');
+    const toggle = pickerSwitch('deepseek')!;
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect(document.getElementById(toggle.getAttribute('aria-labelledby')!)!.textContent!.trim()).toBe(t('settingsModal.account.showInPicker'));
+
+    toggle.click();
+    await nextTick();
+    const sent = posted.find((message) => message.type === 'setModelPickerProvider');
+    expect(sent).toEqual({ type: 'setModelPickerProvider', provider: 'deepseek', shown: true, requestId: expect.any(String) });
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+
+    store.setAccountInfo({ dollarBilled: true, pickerProviders: ['anthropic', 'deepseek'] });
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'setModelPickerProviderAck', provider: 'deepseek', requestId: (sent as { requestId: string }).requestId, ok: true } }));
+    await nextTick();
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it("returns to core's value when the write fails", async () => {
+    useSettingsStore().setAccountInfo({ dollarBilled: true, pickerProviders: ['anthropic'] });
+    await open(NO_HOST_SETTINGS, 'accounts');
+    await expand('anthropic');
+    const toggle = pickerSwitch('anthropic')!;
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    toggle.click();
+    await nextTick();
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    const sent = posted.find((message) => message.type === 'setModelPickerProvider') as { requestId: string };
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'setModelPickerProviderAck', provider: 'anthropic', requestId: sent.requestId, ok: false } }));
+    await nextTick();
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('is offered only for a provider with chat models, GitHub Copilot included', async () => {
+    useSettingsStore().setAccountInfo({ dollarBilled: true, pickerProviders: ['anthropic'] });
+    await open(NO_HOST_SETTINGS, 'accounts');
+    await expand('openai');
+    expect(pickerSwitch('openai')).not.toBeNull();
+    await expand('kimi-coding');
+    expect(pickerSwitch('kimi-coding')).not.toBeNull();
+    await expand('meta');
+    expect(pickerSwitch('meta')).not.toBeNull();
+    // offered signed out too, off until a sign-in or a choice turns it on
+    await expand('github-copilot');
+    expect(pickerSwitch('github-copilot')!.getAttribute('aria-checked')).toBe('false');
+    await expand('openrouter');
+    expect(pickerSwitch('openrouter')).toBeNull();
+    await expand('typesafe');
+    expect(pickerSwitch('typesafe')).toBeNull();
+  });
+});
+
+describe('Show in model picker before core has said', () => {
+  const pickerSwitch = (provider: string): HTMLElement | null => document.querySelector<HTMLElement>(`[data-testid="model-picker-switch-${provider}"]`);
+  const expand = async (provider: string): Promise<void> => {
+    row(`account-${provider}`)!.querySelector<HTMLElement>('button[aria-expanded]')!.click();
+    await nextTick();
+  };
+
+  // core leaves pickerProviders out until pi has started; a guessed value would snap back after the ack
+  it('waits for the picker providers core publishes', async () => {
+    const store = useSettingsStore();
+    store.setAccountInfo({ dollarBilled: true });
+    await open(NO_HOST_SETTINGS, 'accounts');
+    await expand('deepseek');
+    expect(pickerSwitch('deepseek')).toBeNull();
+
+    store.setAccountInfo({ dollarBilled: true, pickerProviders: ['deepseek'] });
+    await nextTick();
+    expect(pickerSwitch('deepseek')!.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('is hidden on a scope that cannot write the picker setting', async () => {
+    const store = useSettingsStore();
+    store.setAccountInfo({ dollarBilled: true, pickerProviders: ['deepseek'] });
+    store.setWritableKeys(['damocles.model']);
+    await open(NO_HOST_SETTINGS, 'accounts');
+    await expand('deepseek');
+    expect(row('account-deepseek')!.querySelector('[data-testid="deepseek-auth-panel"]')).not.toBeNull();
+    expect(pickerSwitch('deepseek')).toBeNull();
+
+    store.setWritableKeys(['damocles.model', 'damocles.modelPicker.providers']);
+    await nextTick();
+    expect(pickerSwitch('deepseek')).not.toBeNull();
+  });
+});
+
+describe('account row status', () => {
+  const ctx = (): SettingsHandlerContext => context();
+  const status = (provider: string): Element => row(`account-${provider}`)!.querySelector('[role="status"]')!;
+
+  // A daemon's core omits `active`; the row then names what exists without choosing the active credential.
+  it('names both a sign-in and a saved key when core does not say which is active', async () => {
+    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'xai', configured: true, external: null, signedIn: true, preferApiKey: true }, ctx());
+    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'meta', configured: false, external: null, signedIn: true, preferApiKey: false }, ctx());
+    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'deepseek', configured: true, external: null, signedIn: false, preferApiKey: false }, ctx());
+    await open(NO_HOST_SETTINGS, 'accounts');
+    expect(status('xai').textContent!.trim()).toBe(t('settingsModal.account.signedInAndKeySaved'));
+    expect(status('meta').textContent!.trim()).toBe(t('settingsModal.account.signedIn'));
+    expect(status('deepseek').textContent!.trim()).toBe(t('settingsModal.account.keySaved'));
+  });
+
+  it('announces a finished sign-in in one live region only', async () => {
+    await open(NO_HOST_SETTINGS, 'accounts');
+    row('account-xai')!.querySelector<HTMLElement>('button[aria-expanded]')!.click();
+    await nextTick();
+    settingsViewHandlers.providerSignInState({ type: 'providerSignInState', provider: 'xai', state: { phase: 'finishing' } }, ctx());
+    await nextTick();
+    settingsViewHandlers.providerSignInState({ type: 'providerSignInState', provider: 'xai', state: { phase: 'idle' } }, ctx());
+    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'xai', configured: false, external: null, signedIn: true, preferApiKey: false, active: 'signIn' }, ctx());
+    await nextTick();
+    const announcing = [...row('account-xai')!.querySelectorAll('[role="status"], [aria-live]')].filter((region) => region.textContent!.trim() === t('settingsModal.account.signedIn'));
+    expect(announcing).toHaveLength(1);
+    expect(row('account-xai')!.querySelector('[data-testid="provider-sign-in-signed-in"]')!.textContent!.trim()).toBe(t('providerAuth.signIn.signedIn'));
+  });
+});
+
+describe('GPT-6 Luna effort None', () => {
+  const thinking = { thinkingDisabled: false, effort: null };
+  const segments = (rowId: string): string[] => [...row(rowId)!.querySelectorAll('button')].map((button) => button.textContent!.trim());
+
+  async function selectOptions(rowId: string, label: string): Promise<string[]> {
+    const button = row(rowId)!.querySelector<HTMLElement>(`button[aria-label="${label}"]`)!;
+    button.focus();
+    press('Enter', {}, button);
+    await flush();
+    const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')].map((el) => el.querySelector('.sm-option-text > span')!.textContent!.trim());
+    press('Escape', {}, document.activeElement ?? document.body);
+    await flush();
+    return options;
+  }
+
+  it('is offered in This chat', async () => {
+    const store = useSettingsStore();
+    store.setModelState('gpt-6-luna', 'gpt-6-luna');
+    store.setPanelThinking(thinking, 'gpt-6-luna');
+    await open(NO_HOST_SETTINGS, 'chat');
+    expect(segments('effort')[0]).toBe(t('settingsModal.effort.none'));
+  });
+
+  it('is offered in Defaults', async () => {
+    const store = useSettingsStore();
+    store.setModelState('', 'gpt-6-luna');
+    store.setDefaultThinking(thinking, 'gpt-6-luna');
+    await open(NO_HOST_SETTINGS, 'defaults');
+    expect(segments('damocles.effortByModel')[0]).toBe(t('settingsModal.effort.none'));
+  });
+
+  it('is not offered to a team role', async () => {
+    const store = useSettingsStore();
+    store.setTeamSettings({ ...store.currentSettings.team, leadModel: 'gpt-6-luna' });
+    await open(NO_HOST_SETTINGS, 'teams');
+    const options = await selectOptions('damocles.team.leadModel', t('settingsModal.rows.teamEffort.label', { role: t('settingsModal.rows.teamLead.label') }));
+    expect(options).toContain(t('settingsModal.effort.low'));
+    expect(options).not.toContain(t('settingsModal.effort.none'));
+  });
+
+  it.each([
+    ['Explore', 'damocles.explore.model', 'Explore reasoning effort'],
+    ['Background', 'damocles.background.model', 'Background reasoning effort'],
+    ['Memory judge', 'damocles.memory.judge', 'Memory judge reasoning effort'],
+  ] as const)('is not offered to %s', async (name, rowId, label) => {
+    const store = useSettingsStore();
+    if (name === 'Explore') store.setExploreSettings({ model: 'gpt-6-luna', effort: null });
+    else if (name === 'Background') store.setBackgroundSettings({ model: 'gpt-6-luna', effort: null });
+    else store.setJudgeSettings({ choice: 'gpt-6-luna', effort: null });
+    await open(NO_HOST_SETTINGS, 'accounts');
+    const options = await selectOptions(rowId, label);
+    expect(options).toContain(t('settingsModal.effort.low'));
+    expect(options).not.toContain(t('settingsModal.effort.none'));
+  });
+});
+
+describe('This chat model list', () => {
+  it("lists the picker providers' models and the chat's current one", async () => {
+    const store = useSettingsStore();
+    store.setModelState('claude-opus-5-5', 'claude-opus-5-5');
+    store.setAccountInfo({ dollarBilled: true, pickerProviders: ['deepseek'] });
+    await open(NO_HOST_SETTINGS, 'chat');
+    press('Enter', {}, row('model')!.querySelector<HTMLElement>('button[role="combobox"]')!);
+    await flush();
+    const names = [...document.querySelectorAll<HTMLElement>('[role="option"]')].map((el) => el.textContent?.trim());
+    expect(names).toEqual(['Opus 5.5', 'DeepSeek V4 Pro', 'DeepSeek V4.1 Flash']);
   });
 });
 

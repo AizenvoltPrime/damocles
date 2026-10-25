@@ -176,14 +176,15 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
     },
 
     authFailure: (msg, ctx) => {
-      console.warn('[Damocles] SDK auth failure:', msg.message);
-      ctx.stores.uiStore.setAuthFailure(t("authBanner.sessionExpired"));
+      console.warn('[Damocles] SDK auth failure:', msg.account, msg.message);
+      ctx.stores.uiStore.setAuthFailure(msg);
     },
 
-    authFailureCleared: (_msg, ctx) => {
+    authFailureCleared: (msg, ctx) => {
       const { uiStore, streamingStore } = ctx.stores;
-      uiStore.dismissAuthFailure();
-      if (streamingStore.streamingMessageId) {
+      uiStore.clearAuthFailure(msg.account);
+      // Only the reload path, which names no account, ends a stream; a key saved mid-turn must not.
+      if (msg.account === undefined && streamingStore.streamingMessageId) {
         streamingStore.finalizeStreamingMessage();
       }
     },

@@ -6,7 +6,7 @@ import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { corePid } from './support/app';
 import { expect, test } from './support/fixtures';
 import { git, initRepo } from './support/git';
-import { writeAuth, type HermeticHome } from './support/hermetic';
+import { writeAuth, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { attachDaemonLogs, credentialRequests, filesHolding, mergeJson, newLoopbackChat, sendPrompt, servedProviders, startLoopbackStub, systemPrompts, targetAgentDir, targetDamoclesDir, witnessCommand, witnessed, WITNESS } from './support/loopback-agent';
 import { cleanUp, daemonPid, endLeftoverDaemon, filesUnder, listRuns, LOCAL_DAEMON, loopbackHome, LOOPBACK_ENV, LOOPBACK_TAG, processTree, REVIEW_SHOTS, shutdownDaemon } from './support/loopback';
 import { chatRequests, type OpenAIStub, type StubReply } from './support/openai-stub';
@@ -727,6 +727,8 @@ test('a loopback chat\'s UI: a remote toast and bell row name the host, and the 
   const models = path.join(targetAgentDir(home), 'models.json');
   const providers = (JSON.parse(read(models)) as { providers: Record<string, unknown> }).providers;
   mergeJson(models, { providers: { ...providers, deepseek: { baseUrl: 'http://127.0.0.1:9/v1' } } });
+  // DeepSeek has no credential, so the picker lists it only when asked to
+  writeUserSettings(home, { 'damocles.modelPicker.providers': { deepseek: true } });
   const folder = remoteFolder(home);
   await initRepo(home, folder, { 'a.ts': 'export const a = 1;\n' });
   let app: ElectronApplication | undefined;
@@ -800,6 +802,8 @@ test('a loopback chat\'s sign-in opens the settings overlay on the User tab, ser
   const models = path.join(targetAgentDir(home), 'models.json');
   const providers = (JSON.parse(read(models)) as { providers: Record<string, unknown> }).providers;
   mergeJson(models, { providers: { ...providers, deepseek: { baseUrl: stub.baseUrl } } });
+  // signed out of both, so the picker lists them only when asked to
+  writeUserSettings(home, { 'damocles.modelPicker.providers': { openai: true, deepseek: true } });
   const DEEPSEEK_KEY = 'sk-e2e-deepseek-key';
   const folder = remoteFolder(home);
   await initRepo(home, folder, { 'a.ts': 'export const a = 1;\n' });
@@ -813,7 +817,10 @@ test('a loopback chat\'s sign-in opens the settings overlay on the User tab, ser
     // Picking a GPT model with no OpenAI sign-in is refused, and its sign-in opens settings on the User tab at the OpenAI account.
     const pick = async (model: string): Promise<void> => {
       await tab.getByTestId('composer-model').click();
-      await tab.getByTestId('composer-model-menu').locator('[data-testid="composer-model-option"]').filter({ hasText: model }).click();
+      const options = tab.getByTestId('composer-model-menu').locator('[data-testid="composer-model-option"]');
+      // the picker lists every model until the chat's account state arrives, the GitHub Copilot copies included
+      await expect(options.filter({ hasText: 'Gemini 4 Argon' })).toHaveCount(0);
+      await options.filter({ hasText: model }).click();
     };
     await pick('GPT-6 Astra');
     await expect.poll(async () => (await hostMessages(tab, 'openaiAuthRequired')).length, { timeout: 30_000 }).toBeGreaterThan(0);

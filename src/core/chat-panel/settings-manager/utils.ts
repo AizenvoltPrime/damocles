@@ -9,7 +9,7 @@ import { parseSettingsText } from "../../config/settings-file";
 import { t } from "../../l10n";
 import { settingsViewWriteScope } from "../settings-view-scope";
 import type { PermissionUpdate, PermissionRuleValue, PermissionUpdateDestination } from "../../../shared/types/permissions";
-import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW, TEAM_EFFORT_LEVELS, thinkingDisableApplies } from "../../../shared/types/constants";
+import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW, ROLE_EFFORT_LEVELS, thinkingDisableApplies } from "../../../shared/types/constants";
 import type { EffortLevel } from "../../../shared/types/settings";
 
 /** The permission arrays a rule may be filed under; also the guard against a hostile `behavior`. */
@@ -24,8 +24,21 @@ export function assertEffortSupported(model: string, effort: EffortLevel | null)
   if (effort === null) return;
   const modelInfo = DEFAULT_MODELS.find(m => m.value === model);
   if (!modelInfo?.supportedEffortLevels?.includes(effort)) {
-    throw new Error(`Effort "${effort}" is not supported by model "${model}"`);
+    throw new Error(t("Effort \"{0}\" is not supported by model \"{1}\"", effort, model));
   }
+}
+
+/** {@link assertEffortSupported} for a team role, Explore, Background or memory-judge effort, which refuses `none` too. */
+export function assertRoleEffortSupported(model: string, effort: EffortLevel | null): void {
+  if (effort !== null && !ROLE_EFFORT_LEVELS.includes(effort)) {
+    throw new Error(t("Effort \"{0}\" is not supported for a team role, Explore, Background or the memory judge", effort));
+  }
+  assertEffortSupported(model, effort);
+}
+
+/** {@link coerceEffortForModel} for a team role's stored effort, which drops `none`. */
+export function coerceRoleEffortForModel(model: string, effort: EffortLevel | null): EffortLevel | null {
+  return effort !== null && ROLE_EFFORT_LEVELS.includes(effort) ? coerceEffortForModel(model, effort) : null;
 }
 
 /**
@@ -49,7 +62,7 @@ export function coerceEffortForModel(model: string, effort: EffortLevel | null):
 export function defaultEffortForModel(model: string): EffortLevel | null {
   const info = DEFAULT_MODELS.find(m => m.value === model);
   const levels = info?.supportedEffortLevels ?? [];
-  const fromMedium = TEAM_EFFORT_LEVELS.slice(TEAM_EFFORT_LEVELS.indexOf('medium'));
+  const fromMedium = ROLE_EFFORT_LEVELS.slice(ROLE_EFFORT_LEVELS.indexOf('medium'));
   return coerceEffortForModel(model, info?.defaultEffort ?? null)
     ?? fromMedium.find(level => levels.includes(level))
     ?? levels.at(-1)

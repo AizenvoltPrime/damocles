@@ -2,7 +2,7 @@ import type { Api, Model, ModelThinkingLevel, ThinkingLevel } from '@earendil-wo
 import type { SubCallPurpose } from '../usage-stats/subcall-ledger';
 import type { SettingsStore } from '../../platform/settings-store';
 import type { EffortLevel } from '../../shared/types/settings';
-import { DEFAULT_MODELS, migrateLegacyModelValue, supportedStoredEffort } from '../../shared/types/constants';
+import { DEFAULT_MODELS, migrateLegacyModelValue, supportedRoleEffort } from '../../shared/types/constants';
 import type { OpenAIAuthStatus } from './openai-auth';
 import { effortToPiThinking, resolvePiModel, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI, type ModelLookup } from './pi-models';
 import { CUSTOM_PROVIDER_DEFS } from './custom-providers';
@@ -41,7 +41,7 @@ export const BACKGROUND_EFFORT_SETTING = 'damocles.background.effort';
 export const AUTOMATIC_BACKGROUND_MODELS: readonly string[] = [
   PI_SMALL_FAST_ANTHROPIC,
   PI_SMALL_FAST_OPENAI,
-  ...CUSTOM_PROVIDER_DEFS.flatMap((d) => d.cheapModelId ?? []),
+  ...CUSTOM_PROVIDER_DEFS.flatMap((d) => (d.pickedOnly ? [] : (d.cheapModel ?? []))),
 ];
 
 /** The model a sub-call runs on, and the effort that replaces every purpose's `SUBCALL_THINKING` level when set. */
@@ -64,9 +64,11 @@ export function resolveAutomaticModel(registry: ModelLookup, openai: OpenAIAuthS
   return null;
 }
 
+/** Why a picked model cannot run: outside the catalog, its provider signed out, or outside the plan of its provider's sign-in. */
+export type PickedModelUnavailable = 'unrecognized' | 'signed-out' | 'not-in-plan';
+
 /**
- * A picked catalog model and its stored effort when supported. A value outside the catalog, or one that does not
- * resolve or is signed out, gives `null`, never another provider's model.
+ * A picked catalog model and its stored effort when supported, else why it cannot run; never another provider's model.
  */
 export function resolvePickedModel(
   picked: string,
@@ -74,12 +76,13 @@ export function resolvePickedModel(
   registry: ModelLookup,
   openai: OpenAIAuthStatus,
   preferApiKey: boolean,
-): SubCallModel | null {
-  if (!DEFAULT_MODELS.some((m) => m.value === picked)) return null;
-  const model = signedInModel(picked, registry, openai, preferApiKey);
-  if (!model) return null;
-  const effort = supportedStoredEffort(picked, storedEffort);
-  return effort === null ? { model } : { model, effort };
+): SubCallModel | { unavailable: PickedModelUnavailable } {
+  if (!DEFAULT_MODELS.some((m) => m.value === picked)) return { unavailable: 'unrecognized' };
+  const resolved = resolvePiModel(picked, registry, openai, preferApiKey);
+  if (resolved.notInPlan) return { unavailable: 'not-in-plan' };
+  if (!resolved.model || !resolved.authed) return { unavailable: 'signed-out' };
+  const effort = supportedRoleEffort(picked, storedEffort);
+  return effort === null ? { model: resolved.model } : { model: resolved.model, effort };
 }
 
 /** The Background model (`damocles.background.*`, user settings only). Automatic ignores the stored effort. */
@@ -91,7 +94,8 @@ export function resolveBackgroundModel(
 ): SubCallModel | null {
   const picked = migrateLegacyModelValue(settings.get<string>(BACKGROUND_MODEL_SETTING, ''));
   if (picked === '') return resolveAutomaticModel(registry, openai, preferApiKey);
-  return resolvePickedModel(picked, settings.get<string>(BACKGROUND_EFFORT_SETTING, ''), registry, openai, preferApiKey);
+  const resolved = resolvePickedModel(picked, settings.get<string>(BACKGROUND_EFFORT_SETTING, ''), registry, openai, preferApiKey);
+  return 'unavailable' in resolved ? null : resolved;
 }
 
 /** The level a sub-call of `purpose` requests before pi's clamp: the explicit effort when set, else the purpose's own. */

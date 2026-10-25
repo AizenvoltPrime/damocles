@@ -5,14 +5,14 @@ import type { PermissionHandler } from "../../../permission-handler";
 import type { PanelHost } from "../../../../platform/window-service";
 import type { ExtensionSettings, PermissionMode, AutoCompactConfig, CacheWarmingMode, EffortLevel, TeamRoleSettings } from "../../../../shared/types/settings";
 import type { PostMessageFn } from "../types";
-import { updateConfigAtEffectiveScope, assertEffortSupported, coerceEffortForModel, type SettingWrite } from "../utils";
+import { updateConfigAtEffectiveScope, assertEffortSupported, assertRoleEffortSupported, coerceRoleEffortForModel, type SettingWrite } from "../utils";
 import {
   migrateLegacyModelValue,
   migrateLegacyEffortValue,
   parseEffortLevel,
   parseCacheWarmingMode,
   parseAssetSourcePrecedence,
-  supportedStoredEffort,
+  supportedRoleEffort,
   effortByModelIds,
   ASSET_SOURCE_PRECEDENCES,
   DEFAULT_MODELS,
@@ -29,6 +29,7 @@ import { readExploreSetting } from "../../../pi-session/subagents/cheap-model";
 import type { SettingSource } from "../../../../shared/types/messages";
 import { readContributedConfiguration } from "../../../config/read-contributed-configuration";
 import { CHAT_SETTING_KEYS } from "../../../config/chat-settings";
+import { MODEL_PICKER_SETTING, isModelVendor } from "../../../../shared/model-vendor";
 import { t } from "../../../l10n";
 
 // A hundred years; the bound keeps a typed number from overflowing the retention arithmetic.
@@ -97,7 +98,7 @@ export class ConfigManager {
       // xhigh → max) migrates rather than dropping to null (parity with the runtime resolver).
       const storedEffort = parsed === null ? null : migrateLegacyEffortValue(effectiveModel, parsed);
       teamModels[role] = model;
-      teamEfforts[role] = coerceEffortForModel(effectiveModel, storedEffort);
+      teamEfforts[role] = coerceRoleEffortForModel(effectiveModel, storedEffort);
     }
     const team: TeamRoleSettings = {
       leadModel: teamModels.lead,
@@ -110,9 +111,9 @@ export class ConfigManager {
 
     // Application scope: read with no folder, since a project file never applies.
     const backgroundModel = migrateLegacyModelValue(config.get<string>(BACKGROUND_MODEL_SETTING, ""));
-    const background = { model: backgroundModel, effort: supportedStoredEffort(backgroundModel, config.get<string>(BACKGROUND_EFFORT_SETTING, "")) };
+    const background = { model: backgroundModel, effort: supportedRoleEffort(backgroundModel, config.get<string>(BACKGROUND_EFFORT_SETTING, "")) };
     const judgeChoice = migrateLegacyModelValue(config.get<string>(MEMORY_JUDGE_SETTING, ""));
-    const judge = { choice: judgeChoice, effort: supportedStoredEffort(judgeChoice, config.get<string>(MEMORY_JUDGE_EFFORT_SETTING, "")) };
+    const judge = { choice: judgeChoice, effort: supportedRoleEffort(judgeChoice, config.get<string>(MEMORY_JUDGE_EFFORT_SETTING, "")) };
 
     const settings: ExtensionSettings = {
       maxBudgetUsd: config.get<number | null>("damocles.maxBudgetUsd", null, folder),
@@ -208,7 +209,7 @@ export class ConfigManager {
     const config = this.platform.settings;
     const storedEffort = parseEffortLevel(config.get<string>(`damocles.team.${role}Effort`, "", folder));
     const effectiveModel = model !== "" ? model : this.workspaceFallbackModel(config);
-    if (storedEffort !== null && coerceEffortForModel(effectiveModel, storedEffort) === null) {
+    if (storedEffort !== null && coerceRoleEffortForModel(effectiveModel, storedEffort) === null) {
       await updateConfigAtEffectiveScope(this.platform, `damocles.team.${role}Effort`, "", { folder });
     }
     return written;
@@ -218,7 +219,7 @@ export class ConfigManager {
     const config = this.platform.settings;
     const roleModel = migrateLegacyModelValue(config.get<string>(`damocles.team.${role}Model`, "", folder));
     const effectiveModel = roleModel !== "" ? roleModel : this.workspaceFallbackModel(config);
-    assertEffortSupported(effectiveModel, effort);
+    assertRoleEffortSupported(effectiveModel, effort);
     return updateConfigAtEffectiveScope(this.platform, `damocles.team.${role}Effort`, effort === null ? "" : effort, { folder });
   }
 
@@ -231,7 +232,7 @@ export class ConfigManager {
     await config.update(BACKGROUND_MODEL_SETTING, model === "" ? undefined : model, "user");
     // Automatic has no effort, and a picked model keeps only an effort it supports.
     const storedEffort = config.get<string>(BACKGROUND_EFFORT_SETTING, "");
-    if (storedEffort !== "" && supportedStoredEffort(model, storedEffort) === null) {
+    if (storedEffort !== "" && supportedRoleEffort(model, storedEffort) === null) {
       await config.update(BACKGROUND_EFFORT_SETTING, undefined, "user");
     }
     return { key: BACKGROUND_MODEL_SETTING, home: "user" };
@@ -240,7 +241,7 @@ export class ConfigManager {
   async handleSetBackgroundEffort(effort: EffortLevel | null): Promise<SettingWrite> {
     const model = migrateLegacyModelValue(this.platform.settings.get<string>(BACKGROUND_MODEL_SETTING, ""));
     if (effort !== null && model === "") throw new Error(t("Automatic sets the effort of each job itself. Choose a model to set one."));
-    assertEffortSupported(model, effort);
+    assertRoleEffortSupported(model, effort);
     await this.platform.settings.update(BACKGROUND_EFFORT_SETTING, effort ?? undefined, "user");
     return { key: BACKGROUND_EFFORT_SETTING, home: "user" };
   }
@@ -254,7 +255,7 @@ export class ConfigManager {
     await config.update(MEMORY_JUDGE_SETTING, choice === "" ? undefined : choice, "user");
     // Only a model takes an effort, and it keeps only one it supports.
     const storedEffort = config.get<string>(MEMORY_JUDGE_EFFORT_SETTING, "");
-    if (storedEffort !== "" && supportedStoredEffort(choice, storedEffort) === null) {
+    if (storedEffort !== "" && supportedRoleEffort(choice, storedEffort) === null) {
       await config.update(MEMORY_JUDGE_EFFORT_SETTING, undefined, "user");
     }
     return { key: MEMORY_JUDGE_SETTING, home: "user" };
@@ -265,7 +266,7 @@ export class ConfigManager {
     if (effort !== null && !DEFAULT_MODELS.some(m => m.value === choice)) {
       throw new Error(t("Only a model chosen as the memory judge takes an effort. Choose a model to set one."));
     }
-    assertEffortSupported(choice, effort);
+    assertRoleEffortSupported(choice, effort);
     await this.platform.settings.update(MEMORY_JUDGE_EFFORT_SETTING, effort ?? undefined, "user");
     return { key: MEMORY_JUDGE_EFFORT_SETTING, home: "user" };
   }
@@ -345,6 +346,16 @@ export class ConfigManager {
     }
     await this.platform.settings.update("damocles.assetSourcePrecedence", precedence, "user");
     return { key: "damocles.assetSourcePrecedence", home: "user" };
+  }
+
+  /** Merges one vendor's switch into the user's object; a caller serializes it with every other read-and-write setter. */
+  async handleSetModelPickerProvider(provider: string, shown: boolean): Promise<SettingWrite> {
+    if (!isModelVendor(provider)) throw new Error(t("\"{0}\" is not a model provider", provider));
+    assertBoolean(shown);
+    const stored = this.platform.settings.inspect<unknown>(MODEL_PICKER_SETTING).userValue;
+    const current = typeof stored === "object" && stored !== null && !Array.isArray(stored) ? stored : {};
+    await this.platform.settings.update(MODEL_PICKER_SETTING, { ...current, [provider]: shown }, "user");
+    return { key: MODEL_PICKER_SETTING, home: "user" };
   }
 
   async handleSetMemoryAutoExtract(enabled: boolean): Promise<SettingWrite> {

@@ -10,6 +10,7 @@ import { PiRuntime } from "../../../pi-session/pi-runtime";
 export function republishAccountInfo(getPanels: () => Map<string, HostInstance>): void {
   for (const [, instance] of getPanels()) {
     instance.session.publishAccountInfo();
+    instance.session.publishAvailableModels();
   }
   PiRuntime.notifyMemoryJudgeChange();
 }

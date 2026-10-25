@@ -1,6 +1,7 @@
 import type { AccountInfo, ModelInfo } from '../../shared/types/settings';
 import { OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER, openaiRuntimeKeyWanted, type OpenAIAuthStatus } from './openai-auth';
 import { isDollarBilled, resolvePiModel, type ModelLookup } from './pi-models';
+import { providerBillsFlat } from './custom-providers';
 import type { SubscriptionProvider } from './usage-thresholds';
 
 /**
@@ -110,13 +111,14 @@ export function resolvedProviderOf(
 /**
  * Whether a resolved pi model bills dollars. A direct `provider/modelId` pin can choose a provider against
  * the panel's preference, so the provider decides first. `openai` bills the subscription only while ChatGPT
- * is its credential and the runtime key does not override it. A model outside the catalog, or `openai`
- * with neither credential, has unknown billing, which reads as a charge: a flat-fee key's plan may not cover that model.
+ * is its credential and the runtime key does not override it. A provider that bills flat with every credential
+ * (`providerBillsFlat`) does so for every model. Any other model outside the catalog, or `openai` with neither
+ * credential, has unknown billing, which reads as a charge: a flat-fee key's plan may not cover that model.
  */
 export function piModelDollarBilled(model: { provider: string; id: string }, deps: ModelBillingDeps): boolean {
-  if (model.provider === OPENAI_CODEX_PROVIDER) return false;
+  if (model.provider === OPENAI_CODEX_PROVIDER || providerBillsFlat(model.provider)) return false;
   if (model.provider === OPENAI_API_PROVIDER) return !deps.openai.chatgpt || openaiRuntimeKeyWanted(deps.openai, deps.preferApiKey);
   if (model.provider === 'anthropic') return isDollarBilled(undefined, deps.claudeAuthMode);
-  const info = deps.supportedModels.find((m) => m.piProvider === model.provider && m.value === model.id);
+  const info = deps.supportedModels.find((m) => m.piProvider === model.provider && (m.piModelId ?? m.value) === model.id);
   return info ? modelDollarBilled(info.value, deps) : true;
 }

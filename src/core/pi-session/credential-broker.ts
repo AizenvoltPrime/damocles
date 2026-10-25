@@ -4,7 +4,7 @@ import type { Credential, CredentialInfo, CredentialStore } from '@earendil-work
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { Disposable } from '../../platform/disposable';
 import type { RemoteHost } from '../../platform/remote-host';
-import { CREDENTIAL_CLIENT_ABSENT, MAX_BROKER_EXPIRES_IN_MS, type BrokerAnswer, type HeldAuth } from '../../shared/remote-user';
+import { CREDENTIAL_CLIENT_ABSENT, MAX_BROKER_EXPIRES_IN_MS, planModelIdsOf, type BrokerAnswer, type HeldAuth } from '../../shared/remote-user';
 import { currentPin, runPin, runPinnedTurn } from '../client-snapshots';
 import { t } from '../l10n';
 import { log } from '../logger';
@@ -58,6 +58,7 @@ const isStrings = (value: unknown): value is string[] => Array.isArray(value) &&
 export function oauthAnswerOf(stored: Record<string, unknown>, now: number): BrokerAnswer {
   const { access, expires } = stored;
   if (typeof access !== 'string' || access === '' || typeof expires !== 'number') throw new Error('The stored OAuth credential has no access token or expiry');
+  const plan = planModelIdsOf(stored['availableModelIds']);
   return {
     type: 'oauth',
     access,
@@ -67,7 +68,7 @@ export function oauthAnswerOf(stored: Record<string, unknown>, now: number): Bro
     ...(isStrings(stored['scopes']) ? { scopes: stored['scopes'] } : {}),
     ...(typeof stored['enterpriseUrl'] === 'string' ? { enterpriseUrl: stored['enterpriseUrl'] } : {}),
     ...(typeof stored['accountId'] === 'string' ? { accountId: stored['accountId'] } : {}),
-    ...(isStrings(stored['availableModelIds']) ? { availableModelIds: stored['availableModelIds'] } : {}),
+    ...(plan ? { availableModelIds: plan } : {}),
   };
 }
 
@@ -151,7 +152,10 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
   private statusOnly(providerId: string): Cached {
     const clientId = currentPin(this.deps.remote).clientId;
     const entry = clientId === undefined ? undefined : this.deps.remote.clients.auth(clientId)?.providers[providerId];
-    if (entry?.type === 'oauth') return { credential: { type: 'oauth', access: '', refresh: '', expires: entry.expires ?? 0 } };
+    if (entry?.type === 'oauth') {
+      const plan = entry.availableModelIds ? { availableModelIds: [...entry.availableModelIds] } : {};
+      return { credential: { type: 'oauth', access: '', refresh: '', expires: entry.expires ?? 0, ...plan } };
+    }
     if (entry?.hasKey) return { credential: { type: 'api_key', key: STATUS_ONLY_KEY } };
     return { credential: undefined };
   }

@@ -13,4 +13,4 @@ export const PROTOCOL_VERSION = 1;
 // may regenerate the snapshot over a breaking change without a bump. Never set back to true once false.
 export const PROTOCOL_PRE_RELEASE: boolean = true;
 
-export const FEATURES: readonly string[] = ['core.attach', 'control.coreState', 'control.restartCore', 'views.join', 'settingsView.scope', 'user.credentials', 'user.voice.speak', 'client.mirrors', 'chat.remotePolicy', 'editor.markdownContent', 'client.sharedLoopback', 'workspace.hostSettings', 'client.allowance', 'account.allowanceUnavailable'];
+export const FEATURES: readonly string[] = ['core.attach', 'control.coreState', 'control.restartCore', 'views.join', 'settingsView.scope', 'user.credentials', 'user.voice.speak', 'client.mirrors', 'chat.remotePolicy', 'editor.markdownContent', 'client.sharedLoopback', 'workspace.hostSettings', 'client.allowance', 'account.allowanceUnavailable', 'account.modelPicker', 'account.providerPrecedence', 'account.providerSignIn', 'client.availableModelIds', 'client.keySaved'];

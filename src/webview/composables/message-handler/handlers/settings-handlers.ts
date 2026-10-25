@@ -20,7 +20,7 @@ export type SettingsViewHandlers = {
 
 const t = i18n.global.t;
 
-// The panel that sent the request listens for its own acknowledgement (OpenAIAuthPanel, CustomProviderAuthPanel).
+// The panel that sent the request listens for its own acknowledgement (OpenAIAuthPanel, CustomProviderAuthPanel, ProviderSignInField, AccountsSection).
 const acknowledgedByPanel = (): void => {};
 
 const OPENAI_SIGN_IN: SettingsTarget = { section: "accounts", account: "openai" };
@@ -82,11 +82,12 @@ export const settingsViewHandlers: SettingsViewHandlers = {
     ctx.stores.voiceJarvisStore.setVoiceFilesBytes(msg.bytes);
   },
   openaiAuthStatusChanged: (msg, ctx) => {
-    ctx.stores.settingsStore.setOpenAIAuthStatus(msg.status, msg.preferApiKey);
+    ctx.stores.settingsStore.setOpenAIAuthStatus(msg.status, msg.preferApiKey, msg.active);
   },
   setOpenAIApiKeyAck: acknowledgedByPanel,
   clearOpenAIApiKeyAck: acknowledgedByPanel,
   setOpenAIPreferApiKeyAck: acknowledgedByPanel,
+  setProviderPreferApiKeyAck: acknowledgedByPanel,
   openaiChatGPTAuthStarted: (_msg, ctx) => {
     ctx.stores.settingsStore.setChatGPTAuthInFlight(true);
   },
@@ -118,11 +119,16 @@ export const settingsViewHandlers: SettingsViewHandlers = {
   claudeSignInWaiting: (msg, ctx) => {
     ctx.stores.settingsStore.setClaudeSignInWaiting(msg.waiting);
   },
-  providerAuthStatusChanged: (msg, ctx) => {
-    ctx.stores.settingsStore.setKeyProviderConfigured(msg.provider, msg.configured, msg.external);
+  providerAuthStatusChanged: ({ type: _type, provider, ...status }, ctx) => {
+    ctx.stores.settingsStore.setKeyProviderStatus(provider, status);
   },
+  providerSignInState: (msg, ctx) => {
+    ctx.stores.settingsStore.setProviderSignInState(msg.provider, msg.state);
+  },
+  providerSignInCopyCodeAck: acknowledgedByPanel,
   setProviderApiKeyAck: acknowledgedByPanel,
   clearProviderApiKeyAck: acknowledgedByPanel,
+  setModelPickerProviderAck: acknowledgedByPanel,
   memoryJudgeStatus: (msg, ctx) => {
     ctx.stores.settingsStore.setMemoryJudgeStatus(msg.memoryJudge, msg.classifierCredentials);
   },

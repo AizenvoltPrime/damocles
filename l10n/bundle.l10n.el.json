@@ -482,6 +482,7 @@
   "Failed to initialize pi session": "Αποτυχία προετοιμασίας της συνεδρίας pi",
   "Finish or stop the current turn before compacting.": "Ολοκληρώστε ή σταματήστε τον τρέχοντα γύρο πριν από τη σύμπτυξη.",
   "Sign in to {0} to use {1}": "Συνδεθείτε στο {0} για να χρησιμοποιήσετε το {1}",
+  "Your {0} plan does not include {1}": "Το πρόγραμμά σας στο {0} δεν περιλαμβάνει το {1}",
   "Model {0} is unavailable on the pi harness": "Το μοντέλο {0} δεν είναι διαθέσιμο στο pi",
   "Some subagent or team history could not be copied into the fork; those cards may be incomplete and cannot be resumed there.": "Μέρος του ιστορικού υποπρακτόρων ή ομάδων δεν αντιγράφηκε στη διακλάδωση· αυτές οι κάρτες μπορεί να είναι ελλιπείς και δεν μπορούν να συνεχιστούν εκεί.",
   "Fork is unavailable": "Η διακλάδωση δεν είναι διαθέσιμη",
@@ -1128,5 +1129,15 @@
   "Global memory": "Η καθολική μνήμη",
   "Resolve the merge conflicts on {0}: {1}": "Επιλύστε τις συγκρούσεις συγχώνευσης στο {0}: {1}",
   "Choosing a file or folder on {0} is not available yet.": "Η επιλογή αρχείου ή φακέλου στο {0} δεν είναι ακόμη διαθέσιμη.",
-  "Subscription usage is read on your computer, not on a remote host": "Η χρήση συνδρομής διαβάζεται στον υπολογιστή σας, όχι σε απομακρυσμένο κεντρικό υπολογιστή"
+  "Subscription usage is read on your computer, not on a remote host": "Η χρήση συνδρομής διαβάζεται στον υπολογιστή σας, όχι σε απομακρυσμένο κεντρικό υπολογιστή",
+  "\"{0}\" is not a model provider": "Το \"{0}\" δεν είναι πάροχος μοντέλων",
+  "Failed to save the model picker setting: {0}": "Η αποθήκευση της ρύθμισης του επιλογέα μοντέλων απέτυχε: {0}",
+  "Code expired. Start the sign-in again.": "Ο κωδικός έληξε. Ξεκινήστε ξανά τη σύνδεση.",
+  "The sign-in was denied.": "Η σύνδεση απορρίφθηκε.",
+  "Could not reach the sign-in service. Check the connection and try again.": "Η υπηρεσία σύνδεσης δεν είναι προσβάσιμη. Ελέγξτε τη σύνδεση και δοκιμάστε ξανά.",
+  "The provider could not complete the sign-in.": "Ο πάροχος δεν μπόρεσε να ολοκληρώσει τη σύνδεση.",
+  "The provider could not complete the sign-in (HTTP {0}).": "Ο πάροχος δεν μπόρεσε να ολοκληρώσει τη σύνδεση (HTTP {0}).",
+  "Could not sign out. Try again.": "Η αποσύνδεση απέτυχε. Δοκιμάστε ξανά.",
+  "Effort \"{0}\" is not supported by model \"{1}\"": "Ο συλλογισμός \"{0}\" δεν υποστηρίζεται από το μοντέλο \"{1}\"",
+  "Effort \"{0}\" is not supported for a team role, Explore, Background or the memory judge": "Ο συλλογισμός \"{0}\" δεν υποστηρίζεται για ρόλο ομάδας, τον Explore, τις εργασίες παρασκηνίου ή τον κριτή μνήμης"
 }

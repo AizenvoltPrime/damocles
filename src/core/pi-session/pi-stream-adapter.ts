@@ -19,6 +19,9 @@ import { contextSnapshotOf, emptyContextSnapshot, type ContextSnapshot } from '.
 import { failedCallError } from './nested-call-failures';
 import { skippedToolCalls } from './abandoned-tool-calls';
 import { windDownRecorded } from './session-store/turn-stopped';
+import { effortBadgeApplies } from './pi-models';
+import { httpStatusOf } from './http-status';
+import { isAccountProviderId, type SettingsAccountId } from '../../shared/settings-sections';
 
 /** A message as pi emits and persists it; the mid-stream marker matches entries to deliveries by its identity. */
 type PiMessage = Extract<AgentSessionEvent, { type: 'message_end' }>['message'];
@@ -102,6 +105,13 @@ export interface LiveSnapshot {
 function isAuthError(message: string): boolean {
   const m = message.toLowerCase();
   return m.includes('401') || m.includes('unauthorized') || m.includes('authentication') || m.includes('invalid api key') || m.includes('oauth');
+}
+
+/** The Accounts row whose credential a pi provider uses; undefined for a provider no row signs in to. */
+function accountOfProvider(provider: string | undefined): SettingsAccountId | undefined {
+  if (provider === 'anthropic') return 'anthropic';
+  if (provider === 'openai' || provider === 'openai-codex') return 'openai';
+  return isAccountProviderId(provider) ? provider : undefined;
 }
 
 /**
@@ -659,7 +669,7 @@ export class PiStreamAdapter {
           this._assistantOpen = false;
           const { stopReason } = event.message;
           this._lastAssistantError = stopReason === 'error' ? failedCallError(event.message.errorMessage) : null;
-          const shown = this.emitAssistantMessage(event.message.content, publishedEffort(event.message.thinkingLevel, session.model?.reasoning));
+          const shown = this.emitAssistantMessage(event.message.content, publishedEffort(event.message.thinkingLevel, effortBadgeApplies(session.model)));
           this.emitContextSnapshot(contextSnapshotOf(event.message));
           this.logRawStopReason(event.message);
           this.maybeEmitCacheMissNotice(session, event.message);
@@ -1237,15 +1247,19 @@ export class PiStreamAdapter {
 
   /**
    * Show the held failure's card. A refusal arrives as an `error` stop whose message is the refusal
-   * text, so it shows as a plain error card (US-023). The sign-in banner names Claude, so only an
-   * Anthropic rejection raises it; `isAuthError` can also match a refusal that mentions "oauth".
+   * text, so it shows as a plain error card (US-023). A rejected credential of a provider with an Accounts row raises
+   * the card naming that account; `isAuthError` can also match a refusal that mentions "oauth". xAI answers 402 to a
+   * credential without API access, which is read from the status, never the body.
    */
   private showPendingFailure(): void {
     const failure = this._pendingFailure;
     if (!failure) return;
     this._pendingFailure = null;
-    if (failure.provider === 'anthropic' && isAuthError(failure.message)) {
-      this.emit({ type: 'authFailure', message: failure.message });
+    const account = accountOfProvider(failure.provider);
+    if (account === 'xai' && httpStatusOf(failure.message) === 402) {
+      this.emit({ type: 'authFailure', message: failure.message, account, reason: 'noApiAccess' });
+    } else if (account && isAuthError(failure.message)) {
+      this.emit({ type: 'authFailure', message: failure.message, account, reason: 'rejected' });
     } else {
       this.emit({ type: 'error', message: failure.message });
     }

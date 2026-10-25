@@ -28,17 +28,38 @@ export type BrokerAnswer =
   | { readonly type: 'none' };
 
 /**
- * One provider's credential state on the client as it crosses machines, never a token or a key. hasKey: an API key is
- * stored or configured; flatFee: that key bills a flat subscription; allowance: the client bills this OAuth sign-in to its
- * subscription's included allowance (Claude's allowance plugin is active there).
+ * One provider's credential state on the client as it crosses machines, never a token or a key. hasKey: pi holds an API
+ * key for the provider (Damocles' runtime key or a stored `api_key`; for OpenAI also the saved key), which the broker
+ * answers and whose change drops its cached credential; keySaved: a key provider's key is saved in Damocles, applied or
+ * outranked by a sign-in (absent before the client's first key sync); flatFee: the applied key bills a flat subscription;
+ * allowance: the client bills this OAuth sign-in to its subscription's included allowance (Claude's allowance plugin is
+ * active there); availableModelIds: the models the OAuth sign-in lists for the user's plan (GitHub Copilot).
  */
 export interface ClientAuthEntry {
   readonly type: 'oauth' | 'api_key' | 'none';
   // ms an OAuth credential stays valid on the sender's clock when sent; the receiver stores Date.now() + expiresIn
   readonly expiresIn?: number;
   readonly hasKey: boolean;
+  readonly keySaved?: boolean;
   readonly flatFee: boolean;
   readonly allowance?: boolean;
+  readonly availableModelIds?: readonly string[];
+}
+
+/** The most model ids a plan list carries across machines, and the longest id. */
+export const MAX_PLAN_MODEL_IDS = 512;
+export const MAX_PLAN_MODEL_ID_CHARS = 128;
+
+/**
+ * A stored sign-in's plan list (`availableModelIds`) as every reader and sender takes it, so a local and a remote core
+ * gate alike: the whole list when it is at most MAX_PLAN_MODEL_IDS non-empty ids of at most MAX_PLAN_MODEL_ID_CHARS,
+ * else none, which gates nothing, as no list does.
+ */
+export function planModelIdsOf(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length > MAX_PLAN_MODEL_IDS) return undefined;
+  const valid = value.every((id) => typeof id === 'string' && id.length > 0 && id.length <= MAX_PLAN_MODEL_ID_CHARS);
+  // a copy, so no holder shares the array a reader cached
+  return valid ? [...(value as string[])] : undefined;
 }
 
 /** Every provider pi knows on the client, by provider id. */
@@ -51,8 +72,10 @@ export interface HeldAuthEntry {
   readonly type: ClientAuthEntry['type'];
   readonly expires?: number;
   readonly hasKey: boolean;
+  readonly keySaved?: boolean;
   readonly flatFee: boolean;
   readonly allowance?: boolean;
+  readonly availableModelIds?: readonly string[];
 }
 
 export interface HeldAuth {

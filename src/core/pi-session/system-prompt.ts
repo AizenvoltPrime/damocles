@@ -1,6 +1,8 @@
 import { COMMENT_RULES_BODY, TEST_RUN_RULES_BODY } from "./code-rules";
 import { PROSE_RULE_BULLETS } from "./prose-rules";
 import { SESSION_MECHANISM_BULLET } from "./delivery-mechanisms";
+import { DEFAULT_MODELS } from "../../shared/types/constants";
+import type { ModelInfo } from "../../shared/types/settings";
 
 interface EnvironmentFacts {
   cwd: string;
@@ -10,49 +12,41 @@ interface EnvironmentFacts {
   osVersion: string;
 }
 
-export function getKnowledgeCutoff(model: string): string | null {
-  const m = model.toLowerCase();
-  if (m.includes("claude-fable-5-1")) return "June 2026";
-  // A retired id in `LEGACY_MODEL_MAP` only migrates where `migrateLegacyModelValue` runs, so it still
-  // reaches here from a session file, a team role, or an un-migrated Explore card. Checks are
-  // `includes`, so the more specific id must come first.
-  if (m.includes("claude-fable-5")) return "January 2026";
-  if (m.includes("claude-opus-5-5")) return "June 2026";
-  if (m.includes("claude-opus-5")) return "May 2026";
-  if (m.includes("claude-opus-4-8")) return "January 2026";
-  if (m.includes("claude-sonnet-5-5")) return "June 2026";
-  if (m.includes("claude-sonnet-5")) return "January 2026";
-  if (m.includes("claude-haiku-5-5")) return "June 2026";
-  if (m.includes("claude-haiku-4")) return "February 2025";
-  if (m.includes("claude-opus-4") || m.includes("claude-sonnet-4")) return "January 2025";
-  if (m.startsWith("gpt-6-astra")) return "April 2026";
-  if (m.startsWith("gpt-6.1-sol")) return "April 2026";
-  if (m.startsWith("gpt-6-sol")) return "April 2026";
-  if (m.startsWith("gpt-6-luna")) return "May 2026";
-  if (m.startsWith("gpt-5.6-sol") || m.startsWith("gpt-5.6-luna")) return "February 2026";
-  return null;
+/**
+ * A retired id: an optional `provider/` pin prefix, the version (`minor` adds any `-N` point release), an optional
+ * dated snapshot and pi's `[1m]` suffix. Never a longer version, so Copilot's `claude-opus-5.5` is not Opus 5.
+ */
+function retiredId(version: string, minor = false): RegExp {
+  const point = minor ? String.raw`(?:-\d)?` : "";
+  return new RegExp(String.raw`^(?:[^/]+/)?${version.replaceAll(".", String.raw`\.`)}${point}(?:-\d{4}-?\d{2}-?\d{2})?(?:\[1m\])?$`, "i");
 }
 
-function getModelDisplayName(model: string): string | null {
-  const m = model.toLowerCase();
-  if (m.includes("claude-fable-5-1")) return "Fable 5.1";
-  if (m.includes("claude-fable-5")) return "Fable 5";
-  if (m.includes("claude-opus-5-5")) return "Opus 5.5";
-  if (m.includes("claude-opus-5")) return "Opus 5";
-  if (m.includes("claude-opus-4-8")) return "Opus 4.8";
-  if (m.includes("claude-sonnet-5-5")) return "Sonnet 5.5";
-  if (m.includes("claude-sonnet-5")) return "Sonnet 5";
-  if (m.includes("claude-sonnet-4-5")) return "Sonnet 4.5";
-  if (m.includes("claude-haiku-5-5")) return "Haiku 5.5";
-  if (m.includes("claude-haiku-4-5")) return "Haiku 4.5";
-  if (m.includes("claude-haiku-4")) return "Haiku 4";
-  if (m.startsWith("gpt-6-astra")) return "GPT-6 Astra";
-  if (m.startsWith("gpt-6.1-sol")) return "GPT-6.1 Sol";
-  if (m.startsWith("gpt-6-sol")) return "GPT-6 Sol";
-  if (m.startsWith("gpt-6-luna")) return "GPT-6 Luna";
-  if (m.startsWith("gpt-5.6-sol")) return "GPT-5.6 Sol";
-  if (m.startsWith("gpt-5.6-luna")) return "GPT-5.6 Luna";
-  return null;
+// Only values outside `DEFAULT_MODELS`, which reach the prompt as a hand-edited `damocles.model` that `resolvePiModel` adopts
+// through its first-party Anthropic lookup. The first matching row wins, so a version comes before the family that would
+// also match it.
+const RETIRED_MODELS: ReadonlyArray<{ id: RegExp; name: string | null; cutoff: string }> = [
+  { id: retiredId("claude-fable-5"), name: "Fable 5", cutoff: "January 2026" },
+  { id: retiredId("claude-opus-5"), name: "Opus 5", cutoff: "May 2026" },
+  { id: retiredId("claude-opus-4-8"), name: "Opus 4.8", cutoff: "January 2026" },
+  { id: retiredId("claude-sonnet-5"), name: "Sonnet 5", cutoff: "January 2026" },
+  { id: retiredId("claude-sonnet-4-5"), name: "Sonnet 4.5", cutoff: "January 2025" },
+  { id: retiredId("claude-haiku-4-5"), name: "Haiku 4.5", cutoff: "February 2025" },
+  { id: retiredId("claude-haiku-4", true), name: "Haiku 4", cutoff: "February 2025" },
+  { id: retiredId("claude-opus-4", true), name: null, cutoff: "January 2025" },
+  { id: retiredId("claude-sonnet-4", true), name: null, cutoff: "January 2025" },
+  { id: retiredId("gpt-6-sol"), name: "GPT-6 Sol", cutoff: "April 2026" },
+  { id: retiredId("gpt-5.6-sol"), name: "GPT-5.6 Sol", cutoff: "February 2026" },
+  { id: retiredId("gpt-5.6-luna"), name: "GPT-5.6 Luna", cutoff: "February 2026" },
+];
+
+function retiredModel(model: string): (typeof RETIRED_MODELS)[number] | undefined {
+  return RETIRED_MODELS.find((row) => row.id.test(model));
+}
+
+/** The catalog entry a model value names. pi's `[1m]` context suffix, which Damocles never constructs, is ignored. */
+function modelCatalogEntry(model: string): ModelInfo | undefined {
+  const value = model.replace(/\[1m\]$/i, "");
+  return DEFAULT_MODELS.find((m) => m.value === value);
 }
 
 const IDENTITY_SECTION = `You are an AI coding agent for software engineering tasks. Use the tools available to assist the user.
@@ -224,12 +218,15 @@ export function buildEnvironmentSection(facts: EnvironmentFacts): string {
   return ["# Environment", "You have been invoked in the following environment: ", ...lines].join("\n");
 }
 
+/** Without a catalog entry for `model`, only a retired id gets a name and cutoff. */
 export function buildModelSection(model: string): string {
-  const displayName = getModelDisplayName(model);
+  const entry = modelCatalogEntry(model);
+  const displayName = entry ? entry.displayName : (retiredModel(model)?.name ?? null);
+  const modelId = entry ? (entry.piModelId ?? entry.value) : model;
   const modelLine = displayName
-    ? `You are powered by the model named ${displayName}. The exact model ID is ${model}.`
-    : `You are powered by the model ${model}.`;
-  const cutoff = getKnowledgeCutoff(model);
+    ? `You are powered by the model named ${displayName}. The exact model ID is ${modelId}.`
+    : `You are powered by the model ${modelId}.`;
+  const cutoff = entry ? entry.knowledgeCutoff : (retiredModel(model)?.cutoff ?? null);
   return cutoff ? `${modelLine}\nAssistant knowledge cutoff is ${cutoff}.` : modelLine;
 }
 

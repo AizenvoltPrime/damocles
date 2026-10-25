@@ -2,7 +2,8 @@ import type { Platform } from "../../../../platform/platform";
 import { PROVIDER_SECRET_KEYS } from "../../../pi-session/explore-providers";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { keyProviderOfSecret, providerKeyStored, TYPESAFE_SECRET_KEY } from "../../../pi-session/custom-providers";
-import { clientHasKey } from "../../../client-snapshots";
+import { clientHasKey, clientKeySaved } from "../../../client-snapshots";
+import { readProviderSignIns } from "../../../pi-session/provider-auth";
 import { CLASSIFIER_ENV_KEYS, CLASSIFIER_MODELS, classifierCredential, classifierModelOf, memoryJudgeOf, pickClassifierModel } from "../../../pi-session/classifier-model";
 import { OPENAI_API_KEY_SECRET, openaiAuthStatus, readOpenAIAuthFromDisk, readPreferOpenAIApiKey } from "../../../pi-session/openai-auth";
 import { PI_AGENT_DIR } from "../../../pi-session/agent-dir";
@@ -12,8 +13,8 @@ import type { ExtensionToWebviewMessage } from "../../../../shared/types/message
 import type { ClassifierCredential, ClassifierProvider, MemoryJudge } from "../../../../shared/types/settings";
 
 /**
- * Until a chat has started pi, the judge is read from the stored keys, the OpenAI auth state and pi's environment
- * keys alone, and a judge model is unknown.
+ * Until a chat has started pi, the judge is read from the stored keys, the stored sign-ins, the OpenAI auth state and
+ * pi's environment keys alone, and a judge model is unknown.
  */
 export async function memoryJudgeStatus(platform: Platform): Promise<Extract<ExtensionToWebviewMessage, { type: "memoryJudgeStatus" }>> {
   if (PiRuntime.exists && PiRuntime.get().memoryJudgeKnown) {
@@ -23,7 +24,10 @@ export async function memoryJudgeStatus(platform: Platform): Promise<Extract<Ext
   // Bounded, as the settings reply waits on this status; a read that did not answer leaves the judge unknown, so this rejects.
   const hasSecret = async (key: string): Promise<boolean> => {
     // a daemon's core: the key is the client's, known from its clientAuth, never read
-    if (platform.remote) return clientHasKey(platform.remote, key === OPENAI_API_KEY_SECRET ? "openai" : (keyProviderOfSecret(key) ?? key));
+    if (platform.remote) {
+      const provider = keyProviderOfSecret(key);
+      return provider ? clientKeySaved(platform.remote, provider) : clientHasKey(platform.remote, key === OPENAI_API_KEY_SECRET ? "openai" : key);
+    }
     const stored = await providerKeyStored((k) => platform.secrets.get(k), key);
     if (stored === undefined) throw new Error(`the secret store did not answer for ${key}`);
     return stored;
@@ -35,9 +39,11 @@ export async function memoryJudgeStatus(platform: Platform): Promise<Extract<Ext
     hasSecret(PROVIDER_SECRET_KEYS.openrouter),
   ]);
   const openai = openaiAuthStatus(readOpenAIAuthFromDisk(PI_AGENT_DIR), openaiKey);
+  // on a daemon's core auth.json reads as the pinned (else acting) client's sign-ins, as for the key status
+  const openrouterSignedIn = readProviderSignIns(PI_AGENT_DIR)?.["openrouter"]?.type === "oauth";
   const keyed: Record<ClassifierProvider, boolean> = {
     typesafe: typesafeKey || inEnv("typesafe"),
-    openrouter: inEnv("openrouter") || openrouterKey,
+    openrouter: inEnv("openrouter") || openrouterKey || openrouterSignedIn,
     openai: openai.apiKey || openai.chatgpt || inEnv("openai"),
   };
   const preferApiKey = readPreferOpenAIApiKey(platform.state);

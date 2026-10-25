@@ -49,6 +49,7 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
     thinkingAlwaysOn: true,
+    knowledgeCutoff: "June 2026",
   },
   {
     value: "claude-opus-5-5",
@@ -60,6 +61,7 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
     defaultEffort: 'high',
     thinkingAlwaysOn: true,
+    knowledgeCutoff: "June 2026",
   },
   {
     value: "claude-sonnet-5-5",
@@ -71,6 +73,7 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
     defaultEffort: 'high',
     thinkingAlwaysOn: true,
+    knowledgeCutoff: "June 2026",
   },
   {
     value: "claude-haiku-5-5",
@@ -80,6 +83,7 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
+    knowledgeCutoff: "June 2026",
   },
   {
     value: "gpt-6-astra",
@@ -91,9 +95,8 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
     backend: "openai",
     openaiModelId: "gpt-6-astra",
-    openaiAuthMode: "any",
     thinkingAlwaysOn: true,
-    openaiReasoningEffort: "medium",
+    knowledgeCutoff: "April 2026",
   },
   {
     value: "gpt-6.1-sol",
@@ -105,9 +108,8 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
     backend: "openai",
     openaiModelId: "gpt-6.1-sol",
-    openaiAuthMode: "any",
     thinkingAlwaysOn: true,
-    openaiReasoningEffort: "medium",
+    knowledgeCutoff: "April 2026",
   },
   {
     value: "gpt-6-luna",
@@ -116,11 +118,10 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     contextWindow: 272_000,
     supportsAdaptiveThinking: true,
     supportsEffort: true,
-    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    supportedEffortLevels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
     backend: "openai",
     openaiModelId: "gpt-6-luna",
-    openaiAuthMode: "any",
-    openaiReasoningEffort: "medium",
+    knowledgeCutoff: "May 2026",
   },
   {
     value: "step-5-preview",
@@ -176,13 +177,165 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     thinkingAlwaysOn: true,
     piProvider: "xai",
   },
+  {
+    value: "k3",
+    displayName: "K3",
+    description: "Kimi Code's most capable model",
+    contextWindow: 1_048_576,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'high', 'max'],
+    thinkingAlwaysOn: true,
+    piProvider: "kimi-coding",
+    flatFee: true,
+  },
+  {
+    value: "kimi-for-coding",
+    displayName: "Kimi for Coding",
+    description: "Fast, cost-efficient Kimi Code model",
+    contextWindow: 1_048_576,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'high', 'max'],
+    thinkingAlwaysOn: true,
+    piProvider: "kimi-coding",
+    flatFee: true,
+  },
+  {
+    value: "muse-spark-1.3",
+    displayName: "Muse Spark 1.3",
+    description: "Fast, cost-efficient Meta Muse reasoning model",
+    contextWindow: 1_048_576,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    thinkingAlwaysOn: true,
+    piProvider: "meta",
+  },
+  {
+    value: "muse-wonder-1.0",
+    displayName: "Muse Wonder 1.0",
+    description: "Meta Muse's most capable model",
+    contextWindow: 1_048_576,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    thinkingAlwaysOn: true,
+    piProvider: "meta",
+  },
+  {
+    value: "github-copilot/claude-opus-5.5",
+    displayName: "Opus 5.5",
+    description: "Anthropic's Opus 5.5 through GitHub Copilot",
+    contextWindow: 1_000_000,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    thinkingAlwaysOn: true,
+    piProvider: "github-copilot",
+    piModelId: "claude-opus-5.5",
+    flatFee: true,
+    knowledgeCutoff: "June 2026",
+  },
+  {
+    value: "github-copilot/claude-sonnet-5.5",
+    displayName: "Sonnet 5.5",
+    description: "Anthropic's Sonnet 5.5 through GitHub Copilot",
+    contextWindow: 1_000_000,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    piProvider: "github-copilot",
+    piModelId: "claude-sonnet-5.5",
+    flatFee: true,
+    knowledgeCutoff: "June 2026",
+  },
+  {
+    value: "github-copilot/claude-haiku-5.5",
+    displayName: "Haiku 5.5",
+    description: "Anthropic's Haiku 5.5 through GitHub Copilot",
+    contextWindow: 1_000_000,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    piProvider: "github-copilot",
+    piModelId: "claude-haiku-5.5",
+    flatFee: true,
+    knowledgeCutoff: "June 2026",
+  },
+  {
+    value: "github-copilot/gpt-6-astra",
+    displayName: "GPT-6 Astra",
+    description: "OpenAI's GPT-6 Astra through GitHub Copilot",
+    contextWindow: 1_000_000,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    thinkingAlwaysOn: true,
+    piProvider: "github-copilot",
+    piModelId: "gpt-6-astra",
+    flatFee: true,
+    knowledgeCutoff: "April 2026",
+  },
+  {
+    value: "github-copilot/gpt-6.1-sol",
+    displayName: "GPT-6.1 Sol",
+    description: "OpenAI's GPT-6.1 Sol through GitHub Copilot",
+    contextWindow: 1_050_000,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    thinkingAlwaysOn: true,
+    piProvider: "github-copilot",
+    piModelId: "gpt-6.1-sol",
+    flatFee: true,
+    knowledgeCutoff: "April 2026",
+  },
+  {
+    value: "github-copilot/gpt-6-luna",
+    displayName: "GPT-6 Luna",
+    description: "OpenAI's GPT-6 Luna through GitHub Copilot",
+    contextWindow: 1_000_000,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    thinkingAlwaysOn: true,
+    piProvider: "github-copilot",
+    piModelId: "gpt-6-luna",
+    flatFee: true,
+    knowledgeCutoff: "May 2026",
+  },
+  {
+    value: "github-copilot/gemini-4-argon",
+    displayName: "Gemini 4 Argon",
+    description: "Google's Gemini 4 Argon through GitHub Copilot",
+    contextWindow: 1_048_576,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    thinkingAlwaysOn: true,
+    piProvider: "github-copilot",
+    piModelId: "gemini-4-argon",
+    flatFee: true,
+  },
+  {
+    value: "github-copilot/gemini-3.8-flash",
+    displayName: "Gemini 3.8 Flash",
+    description: "Google's Gemini 3.8 Flash through GitHub Copilot",
+    contextWindow: 1_000_000,
+    supportsAdaptiveThinking: false,
+    supportsEffort: false,
+    thinkingAlwaysOn: true,
+    piProvider: "github-copilot",
+    piModelId: "gemini-3.8-flash",
+    flatFee: true,
+  },
 ];
 
 /**
- * Maps retired model ids to their successors, across every provider. Used to transparently migrate
- * stored `damocles.model` values (write-back at activation + read-mapping defense-in-depth).
- * Resolved in a single lookup, so every value must be a {@link DEFAULT_MODELS} entry, never another
- * retired id.
+ * Maps retired catalog values to their successors, across every provider. Used to transparently migrate
+ * stored `damocles.model` values (write-back at activation + read-mapping defense-in-depth). Keyed by catalog value,
+ * never by pi id, so retiring `gpt-6-luna` cannot rewrite `github-copilot/gpt-6-luna`. Resolved in a single lookup,
+ * so every value must be a {@link DEFAULT_MODELS} entry, never another retired id.
  */
 export const LEGACY_MODEL_MAP: Record<string, string> = {
   'gpt-5.5': 'gpt-6.1-sol',
@@ -235,10 +388,10 @@ export const LEGACY_EFFORT_VALUE_MAP: Record<string, Partial<Record<EffortLevel,
  *  effort strings. `satisfies` keeps it in lockstep with the type (a new level fails to compile here). */
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
 
-/** The reasoning-effort levels a user can pick for a team role: the `EffortLevel` union minus `none`.
- *  No catalog model advertises `none` in `supportedEffortLevels`, so it would always coerce away — it is
- *  excluded from the team effort enums (drift-guarded by team-settings-contributions.test.ts). */
-export const TEAM_EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
+/** The reasoning-effort levels a team role, Explore, Background or the memory judge may run at: the `EffortLevel`
+ *  union minus `none`. GPT-6 Luna advertises `none` for chats and Defaults only; the role setters refuse it and their
+ *  reads drop it (enums drift-guarded by team-settings-contributions.test.ts). */
+export const ROLE_EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
 
 /** Validate an arbitrary settings string as an `EffortLevel`, returning `null` for `''`/unknown values.
  *  Replaces unchecked `as EffortLevel` casts on raw config reads. */
@@ -296,16 +449,23 @@ export function supportedStoredEffort(model: string, stored: string): EffortLeve
   return DEFAULT_MODELS.find((m) => m.value === model)?.supportedEffortLevels?.includes(effort) ? effort : null;
 }
 
+/** {@link supportedStoredEffort} for a team role, Explore, Background or memory-judge setting, which never runs at `none`. */
+export function supportedRoleEffort(model: string, stored: string): EffortLevel | null {
+  const effort = supportedStoredEffort(model, stored);
+  return effort !== null && ROLE_EFFORT_LEVELS.includes(effort) ? effort : null;
+}
+
 /**
  * An effort stored under a retired id, carried to its successor `model`: renamed before the clamp, which would otherwise
- * lower a renamed level to the successor's lowest. An unsupported level clamps up to the successor's lowest.
+ * lower a renamed level to the successor's lowest. An unsupported level clamps up to the successor's lowest reasoning
+ * level, never to `none`.
  */
 export function carryRetiredEffort(model: string, stored: EffortLevel | null): EffortLevel | null {
   if (stored === null) return null;
   const effort = migrateLegacyEffortValue(model, stored);
   const supported = DEFAULT_MODELS.find((m) => m.value === model)?.supportedEffortLevels;
   if (!supported || supported.includes(effort)) return effort;
-  return supported[0] ?? effort;
+  return supported.find((level) => level !== 'none') ?? effort;
 }
 
 /** The ids `effortByModel` may hold `model`'s entry under: its own, then every retired id that maps to it. */

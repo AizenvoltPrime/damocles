@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { assembleDamoclesSystemPrompt, renderSections } from '../agent-start';
-import { SYSTEM_PROMPT_PREAMBLE } from '../system-prompt';
+import { SYSTEM_PROMPT_PREAMBLE, buildModelSection } from '../system-prompt';
+import { DEFAULT_MODELS } from '../../../shared/types/constants';
 import { COMPASS_SYSTEM_PROMPT } from '../../compass/system-prompt';
 import { PROSE_RULES_BODY } from '../prose-rules';
 import { SESSION_MECHANISM_BULLET, SESSION_TEAM_RULE } from '../delivery-mechanisms';
@@ -741,16 +742,16 @@ describe('the assembled system prompt — Claude 5-gen context-engineering pass'
 
     it('tolerates the pi-side 1M suffix Damocles never constructs', () => {
       const onemPrompt = fullPrompt({ ...baseOptions, model: 'claude-fable-5-1[1m]', compassEnabled: false });
-      expect(onemPrompt).toContain('You are powered by the model named Fable 5.1. The exact model ID is claude-fable-5-1[1m].');
+      expect(onemPrompt).toContain('You are powered by the model named Fable 5.1. The exact model ID is claude-fable-5-1.');
       expect(onemPrompt).toContain('Assistant knowledge cutoff is June 2026.');
     });
   });
 
   /**
    * `LEGACY_MODEL_MAP` only rewrites the id where `migrateLegacyModelValue` runs, which is the
-   * `damocles.model` and `damocles.team.*Model` settings reads. A stored session file, a resumed panel
-   * and an Explore card all hand `buildModelSection` the id verbatim, so the retired one still arrives
-   * here and must still name a model and a cutoff.
+   * `damocles.model` and `damocles.team.*Model` settings reads. A hand-edited retired id the chat adopts
+   * through the first-party Anthropic lookup reaches `buildModelSection` verbatim, so it must still name
+   * a model and a cutoff.
    */
   describe('with the retired bare claude-fable-5 id', () => {
     const prompt = fullPrompt({ ...baseOptions, model: 'claude-fable-5', compassEnabled: false });
@@ -899,5 +900,53 @@ describe('the assembled system prompt — Claude 5-gen context-engineering pass'
       expect(prompt).toContain(`You are powered by the model named ${displayName}. The exact model ID is ${model}.`);
       expect(prompt).toContain('Assistant knowledge cutoff is February 2026.');
     });
+  });
+});
+
+// Every catalog entry names itself from its own fields, so a new entry needs no row in the retired-id tables.
+describe('buildModelSection over the catalog', () => {
+  it.each(DEFAULT_MODELS.map((m) => [m.value, m] as const))('names %s by its own entry', (value, entry) => {
+    const section = buildModelSection(value);
+    expect(section.split('\n')[0]).toBe(`You are powered by the model named ${entry.displayName}. The exact model ID is ${entry.piModelId ?? entry.value}.`);
+    if (entry.knowledgeCutoff) expect(section).toContain(`Assistant knowledge cutoff is ${entry.knowledgeCutoff}.`);
+    else expect(section).not.toContain('knowledge cutoff');
+  });
+
+  it.each([
+    ['k3', 'K3'],
+    ['grok-4.7', 'Grok 4.7'],
+  ])('names %s in the assembled prompt and states no cutoff it does not know', (model, displayName) => {
+    const prompt = fullPrompt({ ...baseOptions, model, compassEnabled: false });
+    expect(prompt).toContain(`You are powered by the model named ${displayName}. The exact model ID is ${model}.`);
+    expect(prompt).not.toContain('knowledge cutoff');
+  });
+
+  // A Copilot value carries a dotted pi id the retired-id tables would match by substring ("claude-opus-5.5" holds "claude-opus-5").
+  it.each([
+    ['github-copilot/gpt-6-luna', 'GPT-6 Luna', 'gpt-6-luna', 'May 2026', 'GPT-5.6'],
+    ['github-copilot/claude-opus-5.5', 'Opus 5.5', 'claude-opus-5.5', 'June 2026', 'May 2026'],
+  ])('names the GitHub Copilot chat on %s by its own entry', (model, displayName, piId, cutoff, retired) => {
+    const prompt = fullPrompt({ ...baseOptions, model, compassEnabled: false });
+    expect(prompt).toContain(`You are powered by the model named ${displayName}. The exact model ID is ${piId}.`);
+    expect(prompt).toContain(`Assistant knowledge cutoff is ${cutoff}.`);
+    expect(prompt).not.toContain(retired);
+    expect(prompt).not.toMatch(/named Opus 5\b(?!\.)/);
+  });
+
+  it('names an id outside the catalog only by its id', () => {
+    expect(buildModelSection('some-new-model')).toBe('You are powered by the model some-new-model.');
+  });
+
+  // Outside the catalog, as a hand-edited setting naming a pi id is: only an exact retired version matches.
+  it('names a retired version, its dated snapshot, pin and [1m] forms, and never a longer version', () => {
+    const name = (model: string) => buildModelSection(model).split('\n');
+    expect(name('claude-opus-5')).toEqual(['You are powered by the model named Opus 5. The exact model ID is claude-opus-5.', 'Assistant knowledge cutoff is May 2026.']);
+    expect(name('claude-haiku-4-5-20251001')[0]).toContain('named Haiku 4.5.');
+    expect(name('anthropic/claude-opus-4-8')[0]).toContain('named Opus 4.8.');
+    expect(name('claude-opus-5[1m]')[0]).toContain('named Opus 5.');
+    expect(name('claude-opus-4-1-20250805')).toEqual(['You are powered by the model claude-opus-4-1-20250805.', 'Assistant knowledge cutoff is January 2025.']);
+    for (const longer of ['claude-opus-5.5', 'claude-opus-5-5-preview', 'gpt-6-sol-mini', 'claude-sonnet-5.5']) {
+      expect(name(longer), longer).toEqual([`You are powered by the model ${longer}.`]);
+    }
   });
 });

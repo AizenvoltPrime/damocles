@@ -941,22 +941,48 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
 });
 
 describe('PiStreamAdapter terminal assistant errors', () => {
-  it('shows the Claude sign-in banner only for an Anthropic auth rejection; another provider gets the error card', () => {
-    const run = (provider: string): ExtensionToWebviewMessage[] => {
-      const out: ExtensionToWebviewMessage[] = [];
-      const adapter = makeAdapter(out);
-      const session = fakeSession([...failedCall('401 {"error":{"message":"Incorrect API key provided","type":"invalid_api_key"}}', false, provider), { type: 'agent_settled' }]);
-      adapter.subscribe(session as never);
-      adapter.beginTurn('c');
-      out.length = 0;
-      session.play();
-      return out;
-    };
+  const run = (provider: string, errorMessage: string): ExtensionToWebviewMessage[] => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([...failedCall(errorMessage, false, provider), { type: 'agent_settled' }]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    session.play();
+    return out.filter((m) => m.type === 'error' || m.type === 'authFailure');
+  };
+  const rejected = '401 {"error":{"message":"Incorrect API key provided","type":"invalid_api_key"}}';
 
-    expect(run('anthropic').map((m) => m.type)).toContain('authFailure');
-    const stepfun = run('stepfun');
-    expect(stepfun.some((m) => m.type === 'authFailure')).toBe(false);
-    expect(stepfun.find((m) => m.type === 'error')).toMatchObject({ message: expect.stringContaining('Incorrect API key provided') });
+  it.each([
+    ['anthropic', 'anthropic'],
+    ['openai', 'openai'],
+    ['openai-codex', 'openai'],
+    ['deepseek', 'deepseek'],
+    ['stepfun', 'stepfun'],
+    ['minimax', 'minimax'],
+    ['xai', 'xai'],
+    ['openrouter', 'openrouter'],
+    ['typesafe', 'typesafe'],
+  ])('raises the rejected-credential card for %s naming the %s account', (provider, account) => {
+    expect(run(provider, rejected)).toEqual([{ type: 'authFailure', message: rejected, account, reason: 'rejected' }]);
+  });
+
+  it('shows a provider with no Accounts row the error card', () => {
+    expect(run('google', rejected)).toEqual([{ type: 'error', message: rejected }]);
+  });
+
+  it('reads an xAI 402 as a credential without API access, by its status alone', () => {
+    // synthetic, modelled on xAI's 402 for a SuperGrok or X Premium token; not a live capture
+    const blocked = 'xai API error (402): personal-team-blocked:spending-limit';
+    expect(run('xai', blocked)).toEqual([{ type: 'authFailure', message: blocked, account: 'xai', reason: 'noApiAccess' }]);
+    expect(run('xai', '402 status code (no body)')).toEqual([{ type: 'authFailure', message: '402 status code (no body)', account: 'xai', reason: 'noApiAccess' }]);
+  });
+
+  it('leaves a 402 of another provider, and a 402-shaped body without that status, as an error card', () => {
+    const deepseek = 'deepseek API error (402): Insufficient Balance';
+    expect(run('deepseek', deepseek)).toEqual([{ type: 'error', message: deepseek }]);
+    const bodyOnly = 'xai API error (400): personal-team-blocked:spending-limit 402';
+    expect(run('xai', bodyOnly)).toEqual([{ type: 'error', message: bodyOnly }]);
   });
 });
 
@@ -1334,7 +1360,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
       { type: 'agent_settled', aborted: false },
     ]));
 
-    expect(cards(out)).toEqual([{ type: 'authFailure', message: '401 authentication_error: OAuth token has expired' }]);
+    expect(cards(out)).toEqual([{ type: 'authFailure', message: '401 authentication_error: OAuth token has expired', account: 'anthropic', reason: 'rejected' }]);
   });
 });
 

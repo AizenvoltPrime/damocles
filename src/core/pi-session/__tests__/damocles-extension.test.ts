@@ -852,6 +852,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
         cwd: '/tmp/ws',
         agentDir: '/tmp/agent',
         modelRuntime: {} as ModelRuntime,
+        planModelIds: () => undefined,
         userMcp: new McpClientManager({ clientVersion: 'test' }),
         createFolderMcp: (reservedToolNames) => new McpClientManager({ clientVersion: 'test', reservedToolNames }),
         noticeMemory: { has: () => false, add: async () => {} },

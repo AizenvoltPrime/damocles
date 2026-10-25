@@ -324,6 +324,8 @@ describe('PiRuntime memory judge', () => {
     chatModel('anthropic.json', 'anthropic-messages', 'claude-haiku-5-5'),
     chatModel('anthropic.json', 'anthropic-messages', 'claude-sonnet-5-5'),
     chatModel('openai.json', 'openai-responses', 'gpt-6-luna'),
+    chatModel('github-copilot.json', 'openai-responses', 'gpt-6-luna'),
+    chatModel('github-copilot.json', 'anthropic-messages', 'claude-haiku-5.5'),
   ];
 
   interface Options {
@@ -451,6 +453,20 @@ describe('PiRuntime memory judge', () => {
   it('a chosen catalog model whose provider is signed out is reported as signed out', () => {
     const { runtime } = judged({ configured: ['typesafe'], settings: { 'damocles.memory.judge': 'claude-sonnet-5-5' } });
     expect(runtime.describeMemoryJudge()).toEqual({ kind: 'none', forced: { choice: 'claude-sonnet-5-5', reason: 'signed-out' } });
+  });
+
+  // Copilot's cheap model serves only a chat already on Copilot; Automatic never bills the user's plan unasked.
+  it('Automatic never judges on a GitHub Copilot model, even when Copilot is the only sign-in', () => {
+    const { runtime } = judged({ configured: ['github-copilot'] });
+    expect(runtime.describeMemoryJudge()).toEqual({ kind: 'none' });
+    expect(runtime.hasAuthedSubCallModel('memory-merge')).toBe(false);
+  });
+
+  it('a chosen GitHub Copilot model outside the plan of the stored sign-in is reported as not in the plan', () => {
+    fs.mkdirSync(PI_AGENT_DIR, { recursive: true });
+    fs.writeFileSync(path.join(PI_AGENT_DIR, 'auth.json'), JSON.stringify({ 'github-copilot': { type: 'oauth', access: 'a', refresh: 'r', expires: 9_999_999_999_999, availableModelIds: ['claude-haiku-5.5'] } }));
+    const { runtime } = judged({ configured: ['github-copilot'], settings: { 'damocles.memory.judge': 'github-copilot/gpt-6-luna' } });
+    expect(runtime.describeMemoryJudge()).toEqual({ kind: 'none', forced: { choice: 'github-copilot/gpt-6-luna', reason: 'not-in-plan' } });
   });
 
   // auth.json is read synchronously with sleeping retries, inside the injection's time cap.

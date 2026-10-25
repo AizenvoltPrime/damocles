@@ -13,6 +13,11 @@ import {
   effortToThinkingLevel,
   effortToPiThinking,
   modelValueOfPiModel,
+  recordedReasoning,
+  recordedModelValue,
+  modelInPlan,
+  markNotInPlan,
+  effortBadgeApplies,
   type ModelLookup,
 } from '../pi-models';
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_MODELS, MODEL_SUBSTITUTES } from '../../../shared/types/constants';
@@ -38,6 +43,7 @@ function registry(pairs: Array<[string, string, Api?]>): ModelLookup {
   return {
     getModel: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
     hasConfiguredAuth: () => true,
+    planModelIds: () => undefined,
   };
 }
 
@@ -108,6 +114,16 @@ describe('effortToThinkingLevel', () => {
   });
 });
 
+describe('recordedReasoning', () => {
+  it('reads a GPT-6 Luna conversation recorded at off as effort none', () => {
+    expect(recordedReasoning('gpt-6-luna', 'off')).toEqual({ effort: 'none' });
+  });
+
+  it('leaves the effort of a GPT model without none to the panel', () => {
+    expect(recordedReasoning('gpt-6.1-sol', 'off')).toEqual({});
+  });
+});
+
 describe('resolvePiModel — GPT two-namespace routing (US-P1-7)', () => {
   it('codex-only: a seeded GPT id resolves to openai-codex; a catalog id absent from the codex seed is unavailable', () => {
     // Only sol is registered on the codex namespace here; luna is a real catalog id that the
@@ -171,7 +187,7 @@ describe('modelValueOfPiModel, the model value a recorded pi model names', () =>
     expect(modelValueOfPiModel('deepseek', 'deepseek-v4-pro')).toBe('deepseek-v4-pro');
     expect(modelValueOfPiModel('stepfun', 'step-5-preview')).toBe('step-5-preview');
     const openai = { codex: true, chatgpt: true, apiKey: true } as never;
-    const all = registry(DEFAULT_MODELS.flatMap((info): Array<[string, string]> => (info.backend === 'openai' ? [['openai', info.openaiModelId ?? info.value]] : [[info.piProvider ?? 'anthropic', info.value]])));
+    const all = registry(DEFAULT_MODELS.flatMap((info): Array<[string, string]> => (info.backend === 'openai' ? [['openai', info.openaiModelId ?? info.value]] : [[info.piProvider ?? 'anthropic', info.piModelId ?? info.value]])));
     for (const info of DEFAULT_MODELS) {
       const resolved = resolvePiModel(info.value, all, openai).model!;
       expect(modelValueOfPiModel(resolved.provider, resolved.id)).toBe(info.value);
@@ -199,6 +215,7 @@ describe('resolvePiModel — piProvider routing (StepFun/DeepSeek)', () => {
     const reg: ModelLookup = {
       getModel: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
       hasConfiguredAuth: () => false,
+      planModelIds: () => undefined,
     };
     const res = resolvePiModel('deepseek-v4-pro', reg, { apiKey: false, chatgpt: false, codex: false });
     expect(res.model?.provider).toBe('deepseek');
@@ -209,11 +226,14 @@ describe('resolvePiModel — piProvider routing (StepFun/DeepSeek)', () => {
   it.each([
     ['MiniMax-M3.1-Flash', 'minimax', 'anthropic-messages'],
     ['grok-4.7', 'xai', 'openai-responses'],
+    ['k3', 'kimi-coding', 'openai-completions'],
+    ['muse-spark-1.3', 'meta', 'openai-responses'],
   ] as const)('routes %s to the %s provider, signed in only with its key', (value, provider, api) => {
     const models = [model(provider, value, api)];
     const lookup = (authed: boolean): ModelLookup => ({
       getModel: (p, id) => models.find((m) => m.provider === p && m.id === id),
       hasConfiguredAuth: (p) => authed && p === provider,
+      planModelIds: () => undefined,
     });
     const none = { apiKey: false, chatgpt: false, codex: false };
     expect(resolvePiModel(value, lookup(true), none)).toEqual({ model: expect.objectContaining({ provider, id: value }), authed: true });
@@ -279,6 +299,32 @@ describe.each([
     expect(info?.displayName).toBe(displayName);
     expect(info?.supportedEffortLevels).toEqual(getSupportedThinkingLevels(entry!).filter((level) => level !== 'off'));
     expect(info?.contextWindow).toBe(entry!.contextWindow);
+  });
+
+  it('carries thinkingAlwaysOn exactly when pi cannot turn thinking off', () => {
+    expect(info?.thinkingAlwaysOn === true).toBe(entry!.thinkingLevelMap?.off === null);
+  });
+});
+
+// `minimal` has no EffortLevel name, so a model whose pi map serves it offers the levels above it.
+describe.each([
+  ['k3', 'K3', 'kimi-coding', 'openai-completions'],
+  ['kimi-for-coding', 'Kimi for Coding', 'kimi-coding', 'openai-completions'],
+  ['muse-spark-1.3', 'Muse Spark 1.3', 'meta', 'openai-responses'],
+  ['muse-wonder-1.0', 'Muse Wonder 1.0', 'meta', 'openai-responses'],
+] as const)('DEFAULT_MODELS: %s agrees with the installed pi catalog', (value, displayName, provider, api) => {
+  const url = new URL(`../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/${provider}.json`, import.meta.url);
+  const entry = readChatCatalog<unknown>(fileURLToPath(url))[api]?.[value] as Model<Api> | undefined;
+  const info = DEFAULT_MODELS.find((m) => m.value === value);
+
+  it("offers every level pi supports except off and minimal, at pi's context window", () => {
+    expect(entry).toBeDefined();
+    expect(info?.displayName).toBe(displayName);
+    expect(info?.piProvider).toBe(provider);
+    expect(info?.supportedEffortLevels).toEqual(getSupportedThinkingLevels(entry!).filter((level) => level !== 'off' && level !== 'minimal'));
+    expect(info?.contextWindow).toBe(entry!.contextWindow);
+    expect(info?.defaultEffort).toBeUndefined();
+    expect(info?.knowledgeCutoff).toBeUndefined();
   });
 
   it('carries thinkingAlwaysOn exactly when pi cannot turn thinking off', () => {
@@ -366,8 +412,8 @@ describe('DEFAULT_MODELS: thinkingAlwaysOn agrees with the installed pi metadata
   });
 });
 
-// `minimal` has no EffortLevel name, and pi's `off` (sent as `none`) is deliberately not offered on any
-// GPT model: the team effort enums exclude it, and a stored `none` clamps up to `low` on migration.
+// `minimal` has no EffortLevel name. pi's `off` is offered as `none` exactly where both catalogs send it as reasoning
+// effort `none`; where `off` is null pi clamps it up to a real level, so offering it would mislabel what runs.
 describe.each(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-luna'])('DEFAULT_MODELS: %s agrees with both installed OpenAI catalogs', (id) => {
   const info = DEFAULT_MODELS.find((m) => m.value === id);
 
@@ -379,16 +425,20 @@ describe.each(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-luna'])('DEFAULT_MODELS: %s 
 
   const apiKeyEntry = catalogEntry('openai.json', 'openai-responses');
   const codexEntry = catalogEntry('openai-codex.json', 'openai-codex-responses');
-  const offered = (levels: readonly string[]) => levels.filter((level) => level !== 'minimal' && level !== 'off');
+  const sendsNone = (entry: Model<Api>) => entry.thinkingLevelMap?.off === 'none';
+  const offered = (entry: Model<Api>) => [
+    ...(sendsNone(apiKeyEntry!) && sendsNone(codexEntry!) ? ['none'] : []),
+    ...getSupportedThinkingLevels(entry).filter((level) => level !== 'minimal' && level !== 'off'),
+  ];
 
   it('declares the API-key provider levels, minus the tiers Damocles does not offer', () => {
     expect(apiKeyEntry).toBeDefined();
-    expect(info?.supportedEffortLevels).toEqual(offered(getSupportedThinkingLevels(apiKeyEntry!)));
+    expect(info?.supportedEffortLevels).toEqual(offered(apiKeyEntry!));
   });
 
   it('declares the Codex provider levels, minus the tiers Damocles does not offer', () => {
     expect(codexEntry).toBeDefined();
-    expect(info?.supportedEffortLevels).toEqual(offered(getSupportedThinkingLevels(codexEntry!)));
+    expect(info?.supportedEffortLevels).toEqual(offered(codexEntry!));
   });
 
   it('carries the smaller of the two catalogs\' windows, so the pre-adoption fallback never overstates headroom', () => {
@@ -397,7 +447,6 @@ describe.each(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-luna'])('DEFAULT_MODELS: %s 
 
   it('routes to the id both catalogs key it by, on either auth mode', () => {
     expect(info?.backend).toBe('openai');
-    expect(info?.openaiAuthMode).toBe('any');
     expect(info?.openaiModelId).toBe(apiKeyEntry?.id);
     expect(info?.openaiModelId).toBe(codexEntry?.id);
   });
@@ -431,6 +480,7 @@ function reachableModelIds(): Set<string> {
   for (const m of DEFAULT_MODELS) {
     ids.add(m.value);
     if (m.openaiModelId) ids.add(m.openaiModelId);
+    if (m.piModelId) ids.add(m.piModelId);
   }
   for (const targets of Object.values(MODEL_SUBSTITUTES)) {
     for (const target of targets) ids.add(target);
@@ -511,6 +561,8 @@ describe('providerDisplayName', () => {
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'deepseek-v4-pro'))).toBe('DeepSeek');
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'MiniMax-M3.1-Flash'))).toBe('MiniMax');
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'grok-4.7'))).toBe('xAI');
+    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'k3'))).toBe('Kimi Code');
+    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'muse-spark-1.3'))).toBe('Meta');
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'claude-opus-5-5'))).toBe('Anthropic');
     expect(providerDisplayName(undefined)).toBe('Anthropic');
   });
@@ -535,11 +587,222 @@ describe('isDollarBilled', () => {
     expect(isDollarBilled(find('grok-4.7'), 'xai')).toBe(true);
   });
 
+  it('treats Kimi Code as flat and Meta as dollar-billed from the catalog', () => {
+    expect(isDollarBilled(find('k3'), 'kimi-coding')).toBe(false);
+    expect(isDollarBilled(find('kimi-for-coding'), 'kimi-coding')).toBe(false);
+    expect(isDollarBilled(find('muse-spark-1.3'), 'meta')).toBe(true);
+    expect(isDollarBilled(find('muse-wonder-1.0'), 'meta')).toBe(true);
+  });
+
   it('classifies first-party credentials by their source label', () => {
     expect(isDollarBilled(find('claude-opus-5-5'), 'apikey')).toBe(true);
     expect(isDollarBilled(find('claude-opus-5-5'), 'extra')).toBe(true);
     expect(isDollarBilled(find('claude-opus-5-5'), 'allowance')).toBe(false);
     expect(isDollarBilled(find('gpt-6.1-sol'), 'openai-api-key')).toBe(true);
     expect(isDollarBilled(find('gpt-6.1-sol'), 'codex-oauth')).toBe(false);
+  });
+});
+
+const COPILOT = DEFAULT_MODELS.filter((m) => m.piProvider === 'github-copilot');
+const NONE = { apiKey: false, chatgpt: false, codex: false };
+
+/** A Copilot registry serving every Copilot pi id, signed in, whose stored sign-in lists `plan` (undefined: no list). */
+function copilotRegistry(plan: readonly string[] | undefined): ModelLookup {
+  const models = COPILOT.map((info) => model('github-copilot', info.piModelId!));
+  return {
+    getModel: (provider, id) => models.find((m) => m.provider === provider && m.id === id) ?? (provider === 'github-copilot' && id === 'gpt-5-mini' ? model(provider, id) : undefined),
+    hasConfiguredAuth: (provider) => provider === 'github-copilot',
+    planModelIds: (provider) => (provider === 'github-copilot' && plan ? new Set(plan) : undefined),
+  };
+}
+
+describe('GitHub Copilot catalog values', () => {
+  it('lists eight flagships, each valued github-copilot/<pi id> and billed flat', () => {
+    expect(COPILOT.map((m) => m.piModelId)).toEqual(['claude-opus-5.5', 'claude-sonnet-5.5', 'claude-haiku-5.5', 'gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-luna', 'gemini-4-argon', 'gemini-3.8-flash']);
+    for (const info of COPILOT) {
+      expect(info.value).toBe(`github-copilot/${info.piModelId}`);
+      expect(info.flatFee).toBe(true);
+      expect(info.description).toContain('GitHub Copilot');
+      expect(info.supportedEffortLevels ?? []).not.toContain('ultracode');
+    }
+  });
+
+  // A Copilot value equal to a first-party one would route an OpenAI or Anthropic chat to Copilot, or the reverse.
+  it('keeps every catalog value unique, and no Copilot value equals another provider\'s value or pi id', () => {
+    const values = DEFAULT_MODELS.map((m) => m.value);
+    expect(new Set(values).size).toBe(values.length);
+    const others = DEFAULT_MODELS.filter((m) => m.piProvider !== 'github-copilot').flatMap((m) => [m.value, m.openaiModelId ?? m.value]);
+    for (const info of COPILOT) expect(others, info.value).not.toContain(info.value);
+  });
+
+  it('resolves each value to its pi id on github-copilot, and maps that pi model back to the value', () => {
+    const reg = copilotRegistry(undefined);
+    for (const info of COPILOT) {
+      const resolved = resolvePiModel(info.value, reg, NONE);
+      expect(resolved).toEqual({ model: expect.objectContaining({ provider: 'github-copilot', id: info.piModelId }), authed: true });
+      expect(modelValueOfPiModel('github-copilot', info.piModelId!)).toBe(info.value);
+      expect(piModelToModelInfo(resolved.model!)).toBe(info);
+    }
+    // the same pi id under OpenAI stays OpenAI's value
+    expect(modelValueOfPiModel('openai', 'gpt-6-luna')).toBe('gpt-6-luna');
+    expect(piModelToModelInfo(model('openai', 'gpt-6-luna')).value).toBe('gpt-6-luna');
+  });
+
+  it('copies each Claude and GPT entry\'s knowledge cutoff from its first-party counterpart', () => {
+    const counterpart: Record<string, string> = {
+      'claude-opus-5.5': 'claude-opus-5-5',
+      'claude-sonnet-5.5': 'claude-sonnet-5-5',
+      'claude-haiku-5.5': 'claude-haiku-5-5',
+      'gpt-6-astra': 'gpt-6-astra',
+      'gpt-6.1-sol': 'gpt-6.1-sol',
+      'gpt-6-luna': 'gpt-6-luna',
+    };
+    for (const info of COPILOT) {
+      const first = counterpart[info.piModelId!];
+      if (first === undefined) expect(info.knowledgeCutoff).toBeUndefined();
+      else expect(info.knowledgeCutoff).toBe(DEFAULT_MODELS.find((m) => m.value === first)!.knowledgeCutoff);
+    }
+  });
+});
+
+describe('recordedModelValue', () => {
+  it('continues a recorded Copilot pi id on its Copilot value, never on the OpenAI or Anthropic one', () => {
+    expect(recordedModelValue('github-copilot', 'gpt-6-luna')).toBe('github-copilot/gpt-6-luna');
+    expect(recordedModelValue('github-copilot', 'claude-opus-5.5')).toBe('github-copilot/claude-opus-5.5');
+    expect(recordedModelValue('openai', 'gpt-6-luna')).toBe('gpt-6-luna');
+  });
+
+  it('migrates a retired value only to a successor the recorded provider serves', () => {
+    expect(recordedModelValue('openai', 'gpt-5.5')).toBe('gpt-6.1-sol');
+    expect(recordedModelValue('anthropic', 'claude-opus-5')).toBe('claude-opus-5-5');
+    expect(recordedModelValue('github-copilot', 'gpt-5.5')).toBeUndefined();
+    expect(recordedModelValue('github-copilot', 'gpt-5-mini')).toBeUndefined();
+  });
+});
+
+describe('plan gating', () => {
+  it('resolves a Copilot model outside the stored sign-in\'s list as not in the plan, never signed in', () => {
+    const reg = copilotRegistry(['gpt-6-luna', 'claude-haiku-5.5']);
+    expect(resolvePiModel('github-copilot/gpt-6-luna', reg, NONE)).toMatchObject({ authed: true });
+    expect(resolvePiModel('github-copilot/gpt-6.1-sol', reg, NONE)).toEqual({ model: expect.objectContaining({ id: 'gpt-6.1-sol' }), authed: false, notInPlan: true });
+  });
+
+  it('gates nothing while the sign-in lists no models, and never a provider that does not limit by plan', () => {
+    expect(resolvePiModel('github-copilot/gpt-6.1-sol', copilotRegistry(undefined), NONE)).toMatchObject({ authed: true });
+    const deepseek: ModelLookup = {
+      getModel: (provider, id) => (provider === 'deepseek' ? model(provider, id) : undefined),
+      hasConfiguredAuth: () => true,
+      planModelIds: () => new Set<string>(),
+    };
+    expect(resolvePiModel('deepseek-v4-pro', deepseek, NONE)).toMatchObject({ authed: true });
+    expect(modelInPlan('deepseek', 'deepseek-v4-pro', deepseek)).toBe(true);
+  });
+
+  // A template's direct provider/modelId pin resolves outside the catalog; it takes the same check.
+  it('refuses a direct pin of a Copilot model outside the plan', () => {
+    const reg = copilotRegistry(['gpt-6-luna']);
+    expect(modelInPlan('github-copilot', 'gpt-5-mini', reg)).toBe(false);
+    expect(modelInPlan('github-copilot', 'gpt-6-luna', reg)).toBe(true);
+    expect(modelInPlan('github-copilot', 'gpt-5-mini', copilotRegistry(undefined))).toBe(true);
+  });
+
+  it('marks the picker\'s models outside the plan with the provider, and leaves the rest', () => {
+    const marked = markNotInPlan(DEFAULT_MODELS, copilotRegistry(['gpt-6-luna']));
+    expect(marked.filter((m) => m.unavailable).map((m) => m.value)).toEqual(COPILOT.filter((m) => m.piModelId !== 'gpt-6-luna').map((m) => m.value));
+    expect(marked.find((m) => m.value === 'github-copilot/gpt-6.1-sol')?.unavailable).toEqual({ reason: 'not-in-plan', provider: 'github-copilot' });
+    expect(markNotInPlan(DEFAULT_MODELS, copilotRegistry(undefined)).some((m) => m.unavailable)).toBe(false);
+  });
+});
+
+describe('effortBadgeApplies', () => {
+  const copilotEntry = (api: Api, id: string) => readChatCatalog<Model<Api>>(fileURLToPath(new URL('../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/github-copilot.json', import.meta.url)))[api]![id]!;
+
+  it('applies to a reasoning model unless its catalog entry offers no effort', () => {
+    expect(effortBadgeApplies(copilotEntry('openai-completions', 'gemini-4-argon'))).toBe(false);
+    expect(effortBadgeApplies(copilotEntry('openai-completions', 'gemini-3.8-flash'))).toBe(false);
+    expect(effortBadgeApplies(copilotEntry('openai-responses', 'gpt-6-luna'))).toBe(true);
+    expect(effortBadgeApplies({ provider: 'anthropic', id: 'claude-sonnet-5-5', reasoning: true })).toBe(true);
+    expect(effortBadgeApplies({ provider: 'openrouter', id: 'some/reasoner', reasoning: true })).toBe(true);
+    expect(effortBadgeApplies({ provider: 'openai', id: 'gpt-4.1-mini', reasoning: false })).toBe(false);
+    expect(effortBadgeApplies(undefined)).toBe(false);
+  });
+
+  // pi sends no level to a model whose compat says it takes no reasoning effort (openai-completions.js:718-727 in pi-ai 1.4.0).
+  it('applies to no model outside the catalog that reasons but takes no effort, by pi\'s own compat', () => {
+    const kimiCoding = readChatCatalog<Model<Api>>(fileURLToPath(new URL('../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/kimi-coding.json', import.meta.url)));
+    const k3 = copilotEntry('openai-completions', 'kimi-k3');
+    const highspeed = kimiCoding['openai-completions']!['kimi-for-coding-highspeed']!;
+    expect([k3.reasoning, highspeed.reasoning]).toEqual([true, true]);
+    expect(effortBadgeApplies(k3)).toBe(false);
+    expect(effortBadgeApplies(highspeed)).toBe(false);
+    expect(effortBadgeApplies({ ...k3, compat: { supportsReasoningEffort: true } } as Model<Api>)).toBe(true);
+  });
+});
+
+describe('piModelToModelInfo for a model outside the catalog', () => {
+  // pi's Copilot also serves grok-4.7, which is xAI's catalog value; xAI's label, levels and billing are not Copilot's.
+  it('never gives a Copilot model another provider\'s entry', () => {
+    const grok = readChatCatalog<Model<Api>>(fileURLToPath(new URL('../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/github-copilot.json', import.meta.url)))['openai-responses']!['grok-4.7']!;
+    const info = piModelToModelInfo(grok);
+    expect(DEFAULT_MODELS).not.toContain(info);
+    expect(info).toMatchObject({ value: 'grok-4.7', description: '' });
+    expect(info.piProvider).toBeUndefined();
+  });
+
+  it('still names a gateway\'s model by the first-party entry of the same id', () => {
+    expect(piModelToModelInfo(model('cloudflare-ai-gateway', 'claude-opus-5-5'))).toBe(DEFAULT_MODELS.find((m) => m.value === 'claude-opus-5-5'));
+  });
+});
+
+// Each Copilot entry agrees with pi's github-copilot catalog: its window, its levels and whether thinking can be turned off.
+describe('DEFAULT_MODELS: GitHub Copilot entries agree with the installed pi catalog', () => {
+  interface CopilotEntry extends Model<Api> {
+    compat?: { supportsReasoningEffort?: boolean };
+  }
+  const catalog = readChatCatalog<CopilotEntry>(fileURLToPath(new URL('../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/github-copilot.json', import.meta.url)));
+  const entryOf = (id: string): CopilotEntry | undefined => Object.values(catalog).map((models) => models[id]).find((entry) => entry !== undefined);
+
+  it.each(COPILOT.map((m) => m.piModelId!))('%s has pi\'s context window', (id) => {
+    const info = COPILOT.find((m) => m.piModelId === id)!;
+    expect(info.contextWindow).toBe(entryOf(id)!.contextWindow);
+  });
+
+  it.each(COPILOT.filter((m) => m.supportsEffort).map((m) => m.piModelId!))('%s offers pi\'s levels except off and minimal', (id) => {
+    const info = COPILOT.find((m) => m.piModelId === id)!;
+    expect(info.supportsAdaptiveThinking).toBe(true);
+    expect(info.supportedEffortLevels).toEqual(getSupportedThinkingLevels(entryOf(id)!).filter((level) => level !== 'off' && level !== 'minimal'));
+  });
+
+  // pi sends a Copilot Gemini model no reasoning parameter (openai-completions.js:718-727 needs compat.supportsReasoningEffort), so no level reaches it.
+  it.each(['gemini-4-argon', 'gemini-3.8-flash'])('%s offers no effort, since pi sends it none', (id) => {
+    const info = COPILOT.find((m) => m.piModelId === id)!;
+    const entry = entryOf(id)!;
+    expect(entry.compat?.supportsReasoningEffort).toBe(false);
+    expect(entry.thinkingLevelMap).toBeUndefined();
+    expect(info.supportsEffort).toBe(false);
+    expect(info.supportsAdaptiveThinking).toBe(false);
+    expect(info.supportedEffortLevels).toBeUndefined();
+    expect(info.thinkingAlwaysOn).toBe(true);
+  });
+
+  // Copilot's responses path sends no reasoning for off (openai-responses.js:303), so Luna reasons at its default although pi maps off to none.
+  it('marks Copilot GPT-6 Luna always thinking and offers no none, unlike OpenAI\'s', () => {
+    const info = COPILOT.find((m) => m.piModelId === 'gpt-6-luna')!;
+    expect(entryOf('gpt-6-luna')!.thinkingLevelMap?.off).toBe('none');
+    expect(info.thinkingAlwaysOn).toBe(true);
+    expect(info.supportedEffortLevels).not.toContain('none');
+  });
+
+  it.each(COPILOT.filter((m) => m.supportsEffort && m.piModelId !== 'gpt-6-luna').map((m) => m.piModelId!))('%s carries thinkingAlwaysOn exactly when pi cannot turn thinking off', (id) => {
+    const info = COPILOT.find((m) => m.piModelId === id)!;
+    expect(info.thinkingAlwaysOn === true).toBe(entryOf(id)!.thinkingLevelMap?.off === null);
+  });
+});
+
+describe('providerDisplayName and billing for GitHub Copilot', () => {
+  it('names GitHub Copilot and bills its models flat', () => {
+    const opus = COPILOT.find((m) => m.piModelId === 'claude-opus-5.5');
+    expect(providerDisplayName(opus)).toBe('GitHub Copilot');
+    expect(isDollarBilled(opus, 'github-copilot')).toBe(false);
   });
 });

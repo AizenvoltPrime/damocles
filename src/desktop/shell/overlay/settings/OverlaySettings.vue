@@ -421,6 +421,7 @@ const modal = ref<InstanceType<typeof SettingsModal> | null>(null);
     ref="modal"
     :page-key="attachment"
     :scope-view="scopeView"
+    :chat-host="scopes && scopes.active !== 'user' ? scopes.host.name : undefined"
     :host="DESKTOP"
     :footer="footer"
     backdrop="dim"

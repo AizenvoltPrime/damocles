@@ -10,7 +10,7 @@ import type { PermissionBehavior } from '../../../shared/types/permissions';
 import { fileRulePattern, loadPermissionsByPriority, usableGitignorePattern, type FilePermissions } from '../permission-settings';
 import { READ_ONLY_TOOLS, ORCHESTRATION_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_READ, TOOL_GENERATE_IMAGE, TOOL_GREP, TOOL_GLOB, TOOL_LS, SHELL_TOOLS } from '../../../shared/tool-names';
 import { isPlanFilePath } from '../../paths';
-import { canonicalPath, spelledPath } from '../../canonical-path';
+import { canonicalPath, rememberedPathQueries, spelledPath } from '../../canonical-path';
 import { resolveToCwd } from '../../pi-session/tools/search-tools';
 import { MCP_TOOL_PREFIX } from '../../pi-session/mcp/naming';
 import { matchesToolPattern } from '../../pi-session/mcp/exposure';
@@ -98,7 +98,10 @@ interface PathResolvers {
   spelled: (target: string) => string;
 }
 
-const pathResolvers = (): PathResolvers => ({ canonical: memoized(canonicalPath), spelled: memoized(spelledPath) });
+const pathResolvers = (): PathResolvers => {
+  const queries = rememberedPathQueries();
+  return { canonical: memoized((target) => canonicalPath(target, queries)), spelled: memoized((target) => spelledPath(target, queries)) };
+};
 
 export class EvaluatorManager {
   private state: PermissionState;

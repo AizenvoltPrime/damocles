@@ -173,4 +173,41 @@ describe("ConfigManager — team role settings", () => {
       });
     });
   });
+
+  // GPT-6 Luna lists none for chats and Defaults; a team role, Explore, Background and the judge never run at it.
+  describe("effort none on GPT-6 Luna", () => {
+    it("refuses none for a team role, Background and the memory judge", async () => {
+      record["team.leadModel"] = "gpt-6-luna";
+      record["background.model"] = "gpt-6-luna";
+      record["memory.judge"] = "gpt-6-luna";
+      // One message names every setting it is thrown for.
+      const refusal = 'Effort "none" is not supported for a team role, Explore, Background or the memory judge';
+      await expect(manager.handleSetTeamRoleEffort("lead", "none", undefined)).rejects.toThrow(refusal);
+      await expect(manager.handleSetBackgroundEffort("none")).rejects.toThrow(refusal);
+      await expect(manager.handleSetMemoryJudgeEffort("none")).rejects.toThrow(refusal);
+    });
+
+    it("reads hand-edited none efforts as unset", async () => {
+      record["team.leadModel"] = "gpt-6-luna";
+      record["team.leadEffort"] = "none";
+      record["background.model"] = "gpt-6-luna";
+      record["background.effort"] = "none";
+      record["memory.judge"] = "gpt-6-luna";
+      record["memory.judgeEffort"] = "none";
+
+      await manager.sendCurrentSettings(hostStub, permStub, undefined);
+
+      const [, msg] = postMessage.mock.calls[0]!;
+      const sent = msg.settings as ExtensionSettings;
+      expect(sent.team.leadEffort).toBeNull();
+      expect(sent.background).toEqual({ model: "gpt-6-luna", effort: null });
+      expect(sent.judge).toEqual({ choice: "gpt-6-luna", effort: null });
+    });
+
+    it("clears a stored none when the Background model changes to Luna", async () => {
+      record["background.effort"] = "none";
+      await manager.handleSetBackgroundModel("gpt-6-luna");
+      expect(record["background.effort"]).toBeUndefined();
+    });
+  });
 });

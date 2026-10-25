@@ -1,4 +1,4 @@
-import { lstatSync, readlinkSync, realpathSync } from 'node:fs';
+import { lstatSync, readlinkSync, realpathSync, type Stats } from 'node:fs';
 import { isIPv6 } from 'node:net';
 import { hostname, networkInterfaces } from 'node:os';
 import * as path from 'node:path';
@@ -6,13 +6,49 @@ import * as path from 'node:path';
 /** How many dangling links `canonicalPath` follows, as the OS bounds a link chain. */
 const MAX_LINK_HOPS = 40;
 
+/** The file system reads the path functions take; a failed read is null, never a throw. */
+export interface PathQueries {
+  realpath(p: string): string | null;
+  lstat(p: string): Stats | null;
+  readlink(p: string): string | null;
+}
+
+function orNull<T>(read: (p: string) => T): (p: string) => T | null {
+  return (p) => {
+    try {
+      return read(p);
+    } catch {
+      return null;
+    }
+  };
+}
+
+const fileSystem: PathQueries = {
+  realpath: orNull((p) => realpathSync.native(p)),
+  lstat: orNull((p) => lstatSync(p)),
+  readlink: orNull((p) => readlinkSync(p)),
+};
+
 /** The target of `linkPath` when it is a link, or null when it is not one or cannot be read. */
-function linkTarget(linkPath: string): string | null {
-  try {
-    return lstatSync(linkPath).isSymbolicLink() ? path.resolve(path.dirname(linkPath), readlinkSync(linkPath)) : null;
-  } catch {
-    return null;
-  }
+function linkTarget(linkPath: string, queries: PathQueries): string | null {
+  if (queries.lstat(linkPath)?.isSymbolicLink() !== true) return null;
+  const target = queries.readlink(linkPath);
+  return target === null ? null : path.resolve(path.dirname(linkPath), target);
+}
+
+function remembered<T>(read: (p: string) => T): (p: string) => T {
+  const answers = new Map<string, T>();
+  return (p) => {
+    if (answers.has(p)) return answers.get(p)!;
+    const answer = read(p);
+    answers.set(p, answer);
+    return answer;
+  };
+}
+
+/** Answers are never refreshed: take one per decision or per search pass, so no answer outlives the state it read. */
+export function rememberedPathQueries(): PathQueries {
+  return { realpath: remembered(fileSystem.realpath), lstat: remembered(fileSystem.lstat), readlink: remembered(fileSystem.readlink) };
 }
 
 /**
@@ -50,28 +86,26 @@ function localDrivePath(target: string): string {
  * The native realpath of the deepest ancestor that resolves plus the segments below it, so a link,
  * junction, 8.3 name or loopback admin share resolves even for a file that does not exist yet.
  */
-export function canonicalPath(target: string): string {
+export function canonicalPath(target: string, queries: PathQueries = fileSystem): string {
   const local = localDrivePath(target);
   const missing: string[] = [];
   let current = local;
   for (let hops = 0; ; ) {
-    try {
-      return path.join(realpathSync.native(current), ...missing);
-    } catch {
-      // A dangling link still leads somewhere: writing through it creates its target.
-      const dangling = hops < MAX_LINK_HOPS ? linkTarget(current) : null;
-      if (dangling !== null) {
-        hops++;
-        current = localDrivePath(dangling);
-        continue;
-      }
-      // Missing, unreadable or looping: a tool opening the path stops at the same segment, and a throw
-      // here would block the call through the gate's error fallback instead of applying the rules.
-      const parent = path.dirname(current);
-      if (parent === current) return local;
-      missing.unshift(path.basename(current));
-      current = parent;
+    const real = queries.realpath(current);
+    if (real !== null) return path.join(real, ...missing);
+    // A dangling link still leads somewhere: writing through it creates its target.
+    const dangling = hops < MAX_LINK_HOPS ? linkTarget(current, queries) : null;
+    if (dangling !== null) {
+      hops++;
+      current = localDrivePath(dangling);
+      continue;
     }
+    // Missing, unreadable or looping: a tool opening the path stops at the same segment, and a throw
+    // here would block the call through the gate's error fallback instead of applying the rules.
+    const parent = path.dirname(current);
+    if (parent === current) return local;
+    missing.unshift(path.basename(current));
+    current = parent;
   }
 }
 
@@ -80,20 +114,18 @@ export function canonicalPath(target: string): string {
  * admin share as its drive) without following any link: the walk keeps every segment from the first
  * link, or the first segment that does not resolve, as written.
  */
-export function spelledPath(target: string): string {
+export function spelledPath(target: string, queries: PathQueries = fileSystem): string {
   const local = localDrivePath(path.resolve(target));
   const { root } = path.parse(local);
   const segments = local.slice(root.length).split(path.sep).filter(Boolean);
   let spelled = root;
   for (let index = 0; index < segments.length; index++) {
     const next = path.join(spelled, segments[index]!);
-    try {
-      if (lstatSync(next).isSymbolicLink()) return path.join(next, ...segments.slice(index + 1));
-      spelled = realpathSync.native(next);
-    } catch {
-      // Missing or unreadable: the tool opening the path stops at this segment too.
-      return path.join(next, ...segments.slice(index + 1));
-    }
+    // A link keeps its spelling; a missing or unreadable segment stops the tool opening the path there too.
+    const stats = queries.lstat(next);
+    const real = stats !== null && !stats.isSymbolicLink() ? queries.realpath(next) : null;
+    if (real === null) return path.join(next, ...segments.slice(index + 1));
+    spelled = real;
   }
   return spelled;
 }

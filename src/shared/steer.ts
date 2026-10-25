@@ -18,12 +18,31 @@ export function wrapSteerMessage(message: string): string {
 }
 
 const RESUME_CONTEXT =
-  'You were interrupted by the operator before finishing. Continue from where you left off; check current state before redoing any step that may have been cut off.';
+  'You were stopped before you finished, and you have been resumed. Continue your task from where you left off, at the same depth as before: finish the steps you had planned, then report. Check current state before redoing any step that may have been cut off.';
 
-/** The prompt that continues a resumed agent. An operator message rides as a steer, marker first. */
-export function buildResumePrompt(message?: string): string {
+/** The note's authority over the agent's planned work; every resume and restart prompt with a note states it. */
+export const RESUME_NOTE_RULES =
+  'The agent that resumed you left the note below; each of its lines is quoted with "> ". Do what the note asks. Where it explicitly changes or replaces a planned step, follow the note. Only an explicit instruction in the note to stop, skip or drop work ends planned work early; a note about how to report or format the result does not shorten the work.';
+
+export const RESUME_NOTE_LABEL = 'Note from the agent that resumed you:';
+
+// Every line is quoted, so no line of the note can open with the steer marker or pose as the label.
+const NOTE_LINE_BREAK = /\r\n|[\r\n\u2028\u2029]/;
+
+/**
+ * `context` (resume text, or the original task on a restart), then the quoted note under its rules. The note is
+ * model-written and never a steer, which would give it operator authority over the agent's plan.
+ */
+export function withResumeNote(context: string, message?: string): string {
   const trimmed = message?.trim();
-  return trimmed ? wrapSteerMessage(`${trimmed}\n\n${RESUME_CONTEXT}`) : RESUME_CONTEXT;
+  if (!trimmed) return context;
+  const quoted = trimmed.split(NOTE_LINE_BREAK).map((line) => (line ? `> ${line}` : '>')).join('\n');
+  return `${context}\n\n${RESUME_NOTE_RULES}\n\n${RESUME_NOTE_LABEL}\n${quoted}`;
+}
+
+/** The prompt that continues a resumed agent. */
+export function buildResumePrompt(message?: string): string {
+  return withResumeNote(RESUME_CONTEXT, message);
 }
 
 /** Remove the priority marker for display (the raw instruction is shown; the UI labels it as steering). */

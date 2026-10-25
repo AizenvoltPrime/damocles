@@ -1361,7 +1361,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ## Provider logos: Lobe Icons — MIT
 
-The model provider logos in `src/webview/components/icons/provider-logos.ts` (Anthropic Claude, OpenAI, DeepSeek, StepFun, MiniMax, xAI, OpenRouter and Google Gemini) are SVGs copied from `@lobehub/icons-static-svg` 1.45.0 (https://github.com/lobehub/lobe-icons), with their `<title>` and sizing attributes removed. The logos are trademarks of their respective owners.
+The model provider logos in `src/webview/components/icons/provider-logos.ts` (Anthropic Claude, OpenAI, DeepSeek, StepFun, MiniMax, xAI, Kimi, Meta, OpenRouter, Google Gemini and GitHub Copilot) are SVGs copied from `@lobehub/icons-static-svg` 1.45.0 (https://github.com/lobehub/lobe-icons), with their `<title>` and sizing attributes removed. The logos are trademarks of their respective owners.
 
 ```
 MIT License

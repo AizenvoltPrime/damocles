@@ -54,6 +54,13 @@ describe("ThinkingManager", () => {
       manager.restoreRecordedLevel("panel-C", GPT, "off");
       expect(manager.resolveDisabled("panel-C", GPT, disabledByDefault as never, undefined)).toBe(false);
     });
+
+    it("brings a GPT-6 Luna conversation recorded at off back at None", () => {
+      const config = makeConfig({ effortByModel: { "gpt-6-luna": "high" } });
+      manager.restoreRecordedLevel("panel-A", "gpt-6-luna", "off");
+      expect(manager.resolveEffort("panel-A", "gpt-6-luna", config as never, undefined)).toBe("none");
+      expect(manager.resolveDisabled("panel-A", "gpt-6-luna", config as never, undefined)).toBe(false);
+    });
   });
 
   describe("resolveDisabled", () => {
@@ -157,6 +164,13 @@ describe("ThinkingManager", () => {
   });
 
   describe("setPanelEffort", () => {
+    it("accepts None on GPT-6 Luna only", () => {
+      const config = makeConfig({});
+      manager.setPanelEffort("panel-A", "gpt-6-luna", "none");
+      expect(manager.resolveEffort("panel-A", "gpt-6-luna", config as never, undefined)).toBe("none");
+      expect(() => manager.setPanelEffort("panel-A", GPT, "none")).toThrow(/not supported/);
+    });
+
     it("throws when effort is not in supportedEffortLevels for the model", () => {
       expect(() => manager.setPanelEffort("panel-A", SONNET, "fake" as EffortLevel)).toThrow(
         /not supported/,

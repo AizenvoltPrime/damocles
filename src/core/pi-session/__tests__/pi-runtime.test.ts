@@ -503,6 +503,7 @@ describe('subscription plugin migration', () => {
           cwd: path.join(root, 'ws', label),
           agentDir: root,
           modelRuntime: modelRuntime as unknown as ModelRuntime,
+          planModelIds: () => undefined,
           userMcp: new McpClientManager({ clientVersion: 'test' }),
           createFolderMcp: (reservedToolNames) => new McpClientManager({ clientVersion: 'test', reservedToolNames }),
           noticeMemory: { has: () => false, add: async () => {} },
@@ -1110,15 +1111,13 @@ describe('subscription plugin migration', () => {
       expect(fs.existsSync(h.cloneDir(LEGACY))).toBe(true);
     });
 
-    it('republishes the account state when another client acts, since a view reads the acting client', () => {
+    // ChatPanelProvider republishes every panel on the change (memory-judge-broadcast.test.ts); the runtime only reads it
+    it('bills the account state a view reads as the acting client chose', () => {
       const { h, remote } = remoteSetup(SUBSCRIPTION, [], ['A']);
-      const publishAccountInfo = vi.fn();
-      h.runtime.registerSessionMutator('sess-remote', { publishAccountInfo } as unknown as LiveSessionMutator);
       remote.set('clientAuth', 'client-b', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false } } });
 
       remote.setActing('client-b');
 
-      expect(publishAccountInfo).toHaveBeenCalledTimes(1);
       expect(billing(h)).toEqual({ dollarBilled: true, subscription: undefined });
     });
   });
@@ -1152,14 +1151,16 @@ describe('PiRuntime.syncCustomProviders', () => {
 
   type FakeRuntime = Record<string, unknown>;
 
+  /** pi's runtime key overlay: a key it holds reports `runtime`, so an unchanged key is not re-applied. */
   function fakeModelRuntime(overrides: FakeRuntime = {}) {
+    const keys = new Set<string>();
     return {
       registerProvider: vi.fn(),
       unregisterProvider: vi.fn(),
-      setRuntimeApiKey: vi.fn(async () => {}),
-      removeRuntimeApiKey: vi.fn(async () => {}),
-      logout: vi.fn(async () => {}),
-      getProviderAuthStatus: vi.fn(() => ({ configured: false })),
+      setRuntimeApiKey: vi.fn(async (provider: string) => void keys.add(provider)),
+      removeRuntimeApiKey: vi.fn(async (provider: string) => void keys.delete(provider)),
+      logout: vi.fn(async (provider: string) => void keys.delete(provider)),
+      getProviderAuthStatus: vi.fn((provider: string) => (keys.has(provider) ? { configured: true, source: 'runtime' } : { configured: false })),
       ...overrides,
     };
   }
@@ -1197,6 +1198,165 @@ describe('PiRuntime.syncCustomProviders', () => {
     return { applyStarted, setRuntimeApiKey };
   }
 
+  describe('a key provider sign-in', () => {
+    const XAI_SECRET = 'damocles.xai.apiKey';
+
+    afterEach(() => {
+      installFakePlatform();
+    });
+
+    function setupSignIn(auth?: Record<string, unknown>) {
+      const platform = installFakePlatform({ secrets: { [XAI_SECRET]: 'xai-key' } });
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-sign-in-'));
+      if (auth) fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify(auth));
+      const runtime = PiRuntime.get(dir);
+      vi.spyOn(runtime, 'init').mockResolvedValue();
+      const publishAccountInfo = vi.fn();
+      runtime.registerSessionMutator('sess-sign-in', { publishAccountInfo, publishAvailableModels: vi.fn() } as unknown as LiveSessionMutator);
+      return { runtime, dir, publishAccountInfo, platform };
+    }
+
+    const interaction = { prompt: async () => '', notify: () => undefined };
+    const signInEntry = (extra: Record<string, unknown> = {}) => ({ type: 'oauth', access: 'a', refresh: 'r', expires: Date.now() + 3_600_000, ...extra });
+
+    // ChatPanelProvider's sync listener reads every key status, and each read checks the prefer flag after an awaited secret read.
+    it('starts no resync when the prefer flag changes during that provider\'s sign-in, and the sign-in\'s own sync applies it', async () => {
+      const { runtime, dir, platform } = setupSignIn({ xai: signInEntry() });
+      let loginStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        loginStarted = resolve;
+      });
+      let finishLogin!: () => void;
+      const login = vi.fn(() => new Promise<void>((resolve) => {
+        finishLogin = () => {
+          fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ xai: signInEntry() }));
+          resolve();
+        };
+        loginStarted();
+      }));
+      const modelRuntime = fakeModelRuntime({ login });
+      attach(runtime, modelRuntime);
+      await runtime.syncCustomProviders((key) => platform.secrets.get(key));
+      expect(modelRuntime.setRuntimeApiKey).not.toHaveBeenCalled();
+
+      const synced = vi.fn();
+      const stop = PiRuntime.onCustomProvidersSynced(() => {
+        synced();
+        void platform.secrets.get(XAI_SECRET)
+          .then(() => new Promise((resolve) => setImmediate(resolve)))
+          .then(() => runtime.preferProviderApiKey('xai'));
+      });
+      try {
+        const signIn = runtime.signInProvider('xai', interaction);
+        await started;
+        await runtime.setProviderPreferApiKey('xai', true);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(synced).toHaveBeenCalledTimes(1);
+        expect(modelRuntime.setRuntimeApiKey).not.toHaveBeenCalled();
+
+        finishLogin();
+        await signIn;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(modelRuntime.setRuntimeApiKey).toHaveBeenCalledWith('xai', 'xai-key', expect.anything());
+        expect(synced).toHaveBeenCalledTimes(2);
+      } finally {
+        stop();
+      }
+    });
+
+    it('writes no prefer flag when init fails, so the status the panel shows stays true', async () => {
+      const { runtime, platform } = setupSignIn();
+      vi.spyOn(runtime, 'init').mockRejectedValue(new Error('pi failed to load'));
+      await expect(runtime.setProviderPreferApiKey('xai', true)).rejects.toThrow('pi failed to load');
+      expect(platform.state.global.get('damocles.xai.preferApiKey', false)).toBe(false);
+    });
+
+    // pi writes the new list, then resynchronizes its snapshot, before its login returns; a model adopted then is never checked again.
+    it('reads a provider\'s plan afresh while it signs in, so the list its login writes gates at once', async () => {
+      const { runtime, dir } = setupSignIn();
+      expect(runtime.planModelIds('github-copilot')).toBeUndefined();
+      let duringLogin: ReadonlySet<string> | undefined;
+      const login = vi.fn(async () => {
+        fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ 'github-copilot': signInEntry({ availableModelIds: ['gpt-6-luna'] }) }));
+        duringLogin = runtime.planModelIds('github-copilot');
+      });
+      attach(runtime, fakeModelRuntime({ login }));
+
+      await runtime.signInProvider('github-copilot', interaction);
+
+      expect(duringLogin).toEqual(new Set(['gpt-6-luna']));
+      expect(runtime.planModelIds('github-copilot')).toEqual(new Set(['gpt-6-luna']));
+    });
+
+    // Reading a directory fails with EISDIR, as a locked auth.json fails with EBUSY or EPERM on Windows.
+    it('refuses every plan model while auth.json cannot be read, and caches no such read', () => {
+      const { runtime, dir } = setupSignIn();
+      fs.mkdirSync(path.join(dir, 'auth.json'));
+      expect(runtime.planModelIds('github-copilot')).toEqual(new Set());
+
+      fs.rmdirSync(path.join(dir, 'auth.json'));
+      fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ 'github-copilot': signInEntry({ availableModelIds: ['gpt-6-luna'] }) }));
+      expect(runtime.planModelIds('github-copilot')).toEqual(new Set(['gpt-6-luna']));
+    });
+
+    it('fails a sign-out while auth.json cannot be read, leaving the sign-in in place', async () => {
+      const { runtime, dir } = setupSignIn();
+      fs.mkdirSync(path.join(dir, 'auth.json'));
+      const modelRuntime = fakeModelRuntime();
+      attach(runtime, modelRuntime);
+
+      await expect(runtime.signOutProvider('xai')).rejects.toThrow('auth.json could not be read');
+      expect(modelRuntime.logout).not.toHaveBeenCalled();
+    });
+
+    it('keeps the key sync off the provider while pi signs it in, counts a stored credential as signed in, then syncs it and republishes', async () => {
+      const { runtime, publishAccountInfo } = setupSignIn();
+      let syncedDuringLogin: unknown[][] = [];
+      const login = vi.fn(async () => {
+        await runtime.syncCustomProviders(secrets({ [XAI_SECRET]: 'xai-key' }));
+        syncedDuringLogin = modelRuntime.setRuntimeApiKey.mock.calls.slice();
+        throw Object.assign(new Error('snapshot sync failed'), { name: 'CredentialSynchronizationError' });
+      });
+      const modelRuntime = fakeModelRuntime({ login });
+      attach(runtime, modelRuntime);
+
+      await runtime.signInProvider('xai', { prompt: async () => '', notify: () => undefined });
+
+      expect(login).toHaveBeenCalledWith('xai', 'oauth', expect.anything());
+      expect(syncedDuringLogin.map((call) => call[0])).not.toContain('xai');
+      expect(modelRuntime.setRuntimeApiKey.mock.calls.map((call) => call[0])).toContain('xai');
+      expect(publishAccountInfo).toHaveBeenCalled();
+      expect(logLines.join('\n')).not.toContain('snapshot sync failed');
+    });
+
+    it('rethrows a failed sign-in after syncing the provider again', async () => {
+      const { runtime } = setupSignIn();
+      const modelRuntime = fakeModelRuntime({ login: vi.fn(async () => { throw new Error('xAI device code expired'); }) });
+      attach(runtime, modelRuntime);
+
+      await expect(runtime.signInProvider('xai', { prompt: async () => '', notify: () => undefined })).rejects.toThrow('xAI device code expired');
+      expect(modelRuntime.setRuntimeApiKey.mock.calls.map((call) => call[0])).toContain('xai');
+    });
+
+    it('signs out only a stored sign-in, then applies the saved key again', async () => {
+      const signedIn = setupSignIn({ xai: { type: 'oauth', access: 'a', refresh: 'r', expires: Date.now() + 3_600_000 } });
+      // pi's logout deletes the stored credential from auth.json
+      const withSignIn = fakeModelRuntime({ logout: vi.fn(async () => fs.writeFileSync(path.join(signedIn.dir, 'auth.json'), '{}')) });
+      attach(signedIn.runtime, withSignIn);
+      await signedIn.runtime.signOutProvider('xai');
+      expect(withSignIn.logout).toHaveBeenCalledWith('xai');
+      expect(withSignIn.setRuntimeApiKey).toHaveBeenCalledWith('xai', 'xai-key', expect.anything());
+      expect(signedIn.publishAccountInfo).toHaveBeenCalled();
+      await PiRuntime.disposeInstance();
+
+      const keyOnly = setupSignIn({ xai: { type: 'api_key', key: 'pi-login-key' } });
+      const withKey = fakeModelRuntime();
+      attach(keyOnly.runtime, withKey);
+      await keyOnly.runtime.signOutProvider('xai');
+      expect(withKey.logout).not.toHaveBeenCalled();
+    });
+  });
+
   it('returns empty lists and no timeout before the runtime is initialized', async () => {
     const runtime = PiRuntime.get();
     const getSecret = vi.fn(async () => 'k');
@@ -1224,6 +1384,45 @@ describe('PiRuntime.syncCustomProviders', () => {
 
     expect(result).toEqual({ wired: ['stepfun', 'deepseek'], notWired: [], timedOut: false });
     expect(timeoutSpy).toHaveBeenCalledWith(3000); // the bound the docstring and CHANGELOG name
+  });
+
+  // Each sync decides from the secrets and auth.json it read before its awaits, so two that overlap can apply a key the newer one removed.
+  it('runs one sync at a time, and every call during a run shares the one follow-up queued behind it', async () => {
+    const runtime = PiRuntime.get();
+    stubTimeout(new AbortController().signal);
+    let applyStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      applyStarted = resolve;
+    });
+    let finishApply!: () => void;
+    const setRuntimeApiKey = vi.fn(async (_provider: string, key: string) => {
+      if (key !== 'ds-1') return;
+      applyStarted();
+      await new Promise<void>((resolve) => {
+        finishApply = resolve;
+      });
+    });
+    attach(runtime, fakeModelRuntime({ setRuntimeApiKey }));
+    const synced = vi.fn();
+    const stop = PiRuntime.onCustomProvidersSynced(synced);
+    try {
+      const first = runtime.syncCustomProviders(secrets({ [DEEPSEEK_SECRET]: 'ds-1' }));
+      await started;
+      const second = runtime.syncCustomProviders(secrets({ [DEEPSEEK_SECRET]: 'ds-2' }));
+      const third = runtime.syncCustomProviders(secrets({ [DEEPSEEK_SECRET]: 'ds-3' }));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(setRuntimeApiKey).toHaveBeenCalledTimes(1);
+
+      finishApply();
+      expect(await first).toEqual({ wired: ['deepseek'], notWired: [], timedOut: false });
+      const [secondOutcome, thirdOutcome] = await Promise.all([second, third]);
+      expect(secondOutcome).toBe(thirdOutcome);
+      expect(secondOutcome).toEqual({ wired: ['deepseek'], notWired: [], timedOut: false });
+      expect(setRuntimeApiKey.mock.calls.map((call) => [call[0], call[1]])).toEqual([['deepseek', 'ds-1'], ['deepseek', 'ds-3']]);
+      expect(synced).toHaveBeenCalledTimes(2);
+    } finally {
+      stop();
+    }
   });
 
   it('reports timedOut when a hanging credential operation is cut short by the deadline', async () => {
@@ -1321,7 +1520,7 @@ describe('PiRuntime.syncCustomProviders', () => {
     const runtime = PiRuntime.get();
     attach(runtime, fakeModelRuntime());
     const publishAccountInfo = vi.fn();
-    runtime.registerSessionMutator('sess-billing', { publishAccountInfo } as unknown as LiveSessionMutator);
+    runtime.registerSessionMutator('sess-billing', { publishAccountInfo, publishAvailableModels: vi.fn() } as unknown as LiveSessionMutator);
     const judge = vi.fn();
     const stop = PiRuntime.onMemoryJudgeChange(judge);
     try {
@@ -1355,24 +1554,40 @@ describe('PiRuntime.syncCustomProviders', () => {
       }),
     );
     const publishAccountInfo = vi.fn();
-    runtime.registerSessionMutator('sess-billing', { publishAccountInfo } as unknown as LiveSessionMutator);
+    runtime.registerSessionMutator('sess-billing', { publishAccountInfo, publishAvailableModels: vi.fn() } as unknown as LiveSessionMutator);
     await runtime.syncCustomProviders(secrets({}));
     expect(publishAccountInfo).toHaveBeenCalledTimes(1);
   });
 
+  // A panel that has not started hears its picker providers only from this republish.
+  it('reports the first sync as an account change though it changed no credential, and no later one', async () => {
+    const runtime = PiRuntime.get();
+    attach(runtime, fakeModelRuntime());
+    const synced = vi.fn();
+    const stop = PiRuntime.onCustomProvidersSynced(synced);
+    try {
+      await runtime.syncCustomProviders(secrets({}));
+      await runtime.syncCustomProviders(secrets({}));
+      expect(synced.mock.calls).toEqual([[{ accountChanged: true }], [{ accountChanged: false }]]);
+    } finally {
+      stop();
+    }
+  });
+
   // The removal drops its cache entry before pi takes it, so a removal that then fails reports no change.
+  // pi still holds the key it failed to remove, which the provider being neither wired nor not wired reflects.
   it('republishes account info when a failed key removal changed the flat-fee providers', async () => {
     const runtime = PiRuntime.get();
     attach(runtime, fakeModelRuntime({ removeRuntimeApiKey: vi.fn(async () => { throw new Error('auth.json is locked'); }) }));
     const publishAccountInfo = vi.fn();
-    runtime.registerSessionMutator('sess-billing', { publishAccountInfo } as unknown as LiveSessionMutator);
+    runtime.registerSessionMutator('sess-billing', { publishAccountInfo, publishAvailableModels: vi.fn() } as unknown as LiveSessionMutator);
     const synced = vi.fn();
     const stop = PiRuntime.onCustomProvidersSynced(synced);
     try {
       await runtime.syncCustomProviders(secrets({ 'damocles.minimax.apiKey': 'sk-cp-x' }));
       expect(publishAccountInfo).toHaveBeenCalledTimes(1);
 
-      expect(await runtime.syncCustomProviders(secrets({}))).toEqual({ wired: [], notWired: ['minimax'], timedOut: false });
+      expect(await runtime.syncCustomProviders(secrets({}))).toEqual({ wired: [], notWired: [], timedOut: false });
       expect(runtime.flatFeeKeyProviders()).toEqual(new Set());
       expect(publishAccountInfo).toHaveBeenCalledTimes(2);
       expect(synced.mock.calls).toEqual([[{ accountChanged: true }], [{ accountChanged: true }]]);
@@ -1416,6 +1631,54 @@ describe('PiRuntime.syncCustomProviders', () => {
 
   it('has no flat-fee key providers before the model runtime exists', () => {
     expect(PiRuntime.get().flatFeeKeyProviders()).toEqual(new Set());
+  });
+
+  // VS Code reports no global-state change from another window, so the billing read that every turn makes is where it is seen.
+  it('re-syncs the keys once when an account read finds a prefer flag another window changed', async () => {
+    const fake = installFakePlatform();
+    const runtime = PiRuntime.get();
+    attach(runtime, fakeModelRuntime());
+    await runtime.syncCustomProviders(secrets({}));
+    const sync = vi.spyOn(runtime, 'syncCustomProviders').mockResolvedValue({ wired: [], notWired: [], timedOut: false });
+    runtime.flatFeeKeyProviders();
+    expect(sync).not.toHaveBeenCalled();
+
+    // DeepSeek has no sign-in, so its flag cannot change which credential pi sends
+    await fake.state.global.update('damocles.deepseek.preferApiKey', true);
+    runtime.flatFeeKeyProviders();
+    expect(sync).not.toHaveBeenCalled();
+
+    await fake.state.global.update('damocles.xai.preferApiKey', true);
+    runtime.flatFeeKeyProviders();
+    runtime.flatFeeKeyProviders();
+    expect(sync).toHaveBeenCalledTimes(1);
+  });
+
+  // pi's stored-credential snapshot follows auth.json only after the refresh; a failed one must not skip the key syncs.
+  it('refreshes availability first on an auth.json change, and still re-applies both key rules when that refresh fails', async () => {
+    const runtime = PiRuntime.get();
+    const getAvailable = vi.fn(async () => {
+      throw new Error('auth.json is locked');
+    });
+    attach(runtime, fakeModelRuntime({ getAvailable }));
+    (runtime as unknown as { _authWatch: { dispose(): void } })._authWatch = { dispose: () => undefined };
+    const openai = vi.spyOn(runtime, 'syncOpenAIRuntimeKey').mockResolvedValue();
+    let synced!: () => void;
+    const customSynced = new Promise<void>((resolve) => {
+      synced = resolve;
+    });
+    const custom = vi.spyOn(runtime, 'syncCustomProviders').mockImplementation(async () => {
+      synced();
+      return { wired: [], notWired: [], timedOut: false };
+    });
+
+    (PiRuntime as unknown as { _authFileChanged(agentDir: string): void })._authFileChanged(runtime.agentDir);
+    await customSynced;
+
+    expect(getAvailable).toHaveBeenCalledWith();
+    expect(getAvailable.mock.invocationCallOrder[0]).toBeLessThan(openai.mock.invocationCallOrder[0]!);
+    expect(openai.mock.invocationCallOrder[0]).toBeLessThan(custom.mock.invocationCallOrder[0]!);
+    expect(logLines.join('\n')).toMatch(/availability refresh after an auth\.json change failed: .*auth\.json is locked/);
   });
 
   it('never writes a credential carried by the failure the outer catch logs (A1)', async () => {
@@ -1578,6 +1841,24 @@ describe('PiRuntime.syncCustomProviders', () => {
       await vi.waitFor(() => expect(pi.fetches).toHaveLength(1));
       expect(pi.catalogRefreshes()).toEqual([{ providers: ['openrouter'], signal: expect.any(AbortSignal) }]);
       expect(pi.catalogRefreshes()[0]).not.toHaveProperty('allowNetwork');
+    });
+
+    it('refreshes the catalog after an OpenRouter sign-in that applied no saved key, and not after a failed one', async () => {
+      const runtime = PiRuntime.get(agentDir);
+      vi.spyOn(runtime, 'init').mockResolvedValue();
+      const pi = new PiOpenRouterModel(path.join(agentDir, 'models-store.json'), true, true);
+      const login = vi.fn(async () => {});
+      attach(runtime, fakeModelRuntime({ refresh: pi.refresh, registerProvider: pi.registerProvider, unregisterProvider: pi.unregisterProvider, login, modelNetworkEnabled: true }));
+      stubTimeout(new AbortController().signal);
+      const interaction = { prompt: async () => '', notify: () => undefined };
+
+      await runtime.signInProvider('openrouter', interaction);
+      await vi.waitFor(() => expect(pi.catalogRefreshes()).toEqual([{ providers: ['openrouter'], signal: expect.any(AbortSignal) }]));
+
+      login.mockRejectedValueOnce(new Error('denied'));
+      await expect(runtime.signInProvider('openrouter', interaction)).rejects.toThrow('denied');
+      await settle();
+      expect(pi.catalogRefreshes()).toHaveLength(1);
     });
 
     it('makes no catalog request while pi is offline, and says so', async () => {

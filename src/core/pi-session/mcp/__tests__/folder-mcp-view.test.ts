@@ -343,6 +343,7 @@ describe('FolderRuntime: one folder manager per folder over the one user manager
       cwd,
       agentDir: '/tmp/agent',
       modelRuntime: {} as ModelRuntime,
+      planModelIds: () => undefined,
       userMcp: user,
       createFolderMcp: (reservedToolNames) =>
         new McpClientManager({ clientVersion: 'test', serverManagerFactory: pool.factory, reservedToolNames }),

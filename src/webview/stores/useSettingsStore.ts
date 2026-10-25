@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, CacheWarmingMode, ContextWarningLevel, PanelThinkingState, MemoryJudge, ClassifierProvider, ClassifierCredential, ImageGenerationSettings } from '@shared/types/settings';
+import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, CacheWarmingMode, ContextWarningLevel, PanelThinkingState, MemoryJudge, ClassifierProvider, ClassifierCredential, ImageGenerationSettings, ProviderSignInState } from '@shared/types/settings';
 import { renamedRuleNoticeKey, type McpConfigError, type McpRenamedToolRuleNotice, type McpServerStatusInfo, type McpToolExposureScope, type McpWriteErrorInfo } from '@shared/types/mcp';
 import type { ToolsSnapshot } from '@shared/types/tools';
 import type { VoiceConfig, VoiceRuntimeStatus } from '@shared/types/voice';
@@ -14,7 +14,7 @@ import {
 } from '@shared/types/voice';
 import { DEFAULT_WAKE_PHRASE } from '@shared/wake-phrase';
 import { DEFAULT_MODELS, DEFAULT_CACHE_WARMING, DEFAULT_SUBAGENT_CONCURRENCY } from '@shared/types/constants';
-import { KEY_PROVIDER_IDS, type ExternalKeySource, type KeyProviderId } from '@shared/settings-sections';
+import { ACCOUNT_PROVIDER_IDS, SIGN_IN_PROVIDER_IDS, type AccountProviderId, type ProviderCredentialActive, type SignInProviderId } from '@shared/settings-sections';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
 /**
@@ -95,12 +95,16 @@ function signedOutOpenAIStatus(): OpenAIAuthStatusView {
   return { chatgpt: { signedIn: false }, codex: { signedIn: false }, apikey: { configured: false } };
 }
 
-function noKeyProviderConfigured(): Record<KeyProviderId, boolean> {
-  return Object.fromEntries(KEY_PROVIDER_IDS.map((provider) => [provider, false])) as Record<KeyProviderId, boolean>;
+export type KeyProviderStatus = Omit<Extract<ExtensionToWebviewMessage, { type: "providerAuthStatusChanged" }>, "type" | "provider">;
+
+function noKeyProviderStatus(): Record<AccountProviderId, KeyProviderStatus> {
+  return Object.fromEntries(
+    ACCOUNT_PROVIDER_IDS.map((provider) => [provider, { configured: false, external: null, signedIn: false, preferApiKey: false }]),
+  ) as Record<AccountProviderId, KeyProviderStatus>;
 }
 
-function noExternalKeySources(): Record<KeyProviderId, ExternalKeySource | null> {
-  return Object.fromEntries(KEY_PROVIDER_IDS.map((provider) => [provider, null])) as Record<KeyProviderId, ExternalKeySource | null>;
+function idleProviderSignIns(): Record<SignInProviderId, ProviderSignInState> {
+  return Object.fromEntries(SIGN_IN_PROVIDER_IDS.map((provider) => [provider, { phase: "idle" }])) as Record<SignInProviderId, ProviderSignInState>;
 }
 
 export const useSettingsStore = defineStore('settings', () => {
@@ -160,15 +164,16 @@ export const useSettingsStore = defineStore('settings', () => {
   const authStatus = ref<{ isAuthenticating: boolean; error?: string } | null>(null);
   const openaiAuthStatus = ref<OpenAIAuthStatusView>(signedOutOpenAIStatus());
   const openaiPreferApiKey = ref(false);
+  // Undefined when core cannot tell, as a daemon's core reports it.
+  const openaiActive = ref<ProviderCredentialActive | undefined>(undefined);
   const openaiChatGPTAuthInFlight = ref(false);
   const openaiChatGPTAuthError = ref<string | null>(null);
   const claudeAuthMode = ref<"none" | "apikey" | "allowance" | "extra">("none");
   const claudeAuthBusy = ref(false);
   const claudeAuthError = ref<string | null>(null);
   const claudeSignInWaiting = ref(false);
-  const keyProviderConfigured = ref(noKeyProviderConfigured());
-  // Where pi's credential for the provider comes from when Damocles did not apply it.
-  const keyProviderExternal = ref(noExternalKeySources());
+  const keyProviderStatus = ref(noKeyProviderStatus());
+  const providerSignInState = ref(idleProviderSignIns());
   const memoryJudge = ref<MemoryJudge | null>(null);
   // Null until the host's first `memoryJudgeStatus`.
   const classifierCredentials = ref<Record<ClassifierProvider, ClassifierCredential> | null>(null);
@@ -449,9 +454,10 @@ export const useSettingsStore = defineStore('settings', () => {
     authStatus.value = status;
   }
 
-  function setOpenAIAuthStatus(status: OpenAIAuthStatusView, preferApiKey: boolean) {
+  function setOpenAIAuthStatus(status: OpenAIAuthStatusView, preferApiKey: boolean, active?: ProviderCredentialActive) {
     openaiAuthStatus.value = status;
     openaiPreferApiKey.value = preferApiKey;
+    openaiActive.value = active;
   }
 
   function setChatGPTAuthInFlight(value: boolean) {
@@ -480,9 +486,12 @@ export const useSettingsStore = defineStore('settings', () => {
     claudeSignInWaiting.value = value;
   }
 
-  function setKeyProviderConfigured(provider: KeyProviderId, configured: boolean, external: ExternalKeySource | null) {
-    keyProviderConfigured.value[provider] = configured;
-    keyProviderExternal.value[provider] = external;
+  function setKeyProviderStatus(provider: AccountProviderId, status: KeyProviderStatus) {
+    keyProviderStatus.value[provider] = status;
+  }
+
+  function setProviderSignInState(provider: SignInProviderId, state: ProviderSignInState) {
+    providerSignInState.value[provider] = state;
   }
 
   function setMemoryJudgeStatus(judge: MemoryJudge, credentials: Record<ClassifierProvider, ClassifierCredential>) {
@@ -539,14 +548,15 @@ export const useSettingsStore = defineStore('settings', () => {
     authStatus.value = null;
     openaiAuthStatus.value = signedOutOpenAIStatus();
     openaiPreferApiKey.value = false;
+    openaiActive.value = undefined;
     openaiChatGPTAuthInFlight.value = false;
     openaiChatGPTAuthError.value = null;
     claudeAuthMode.value = "none";
     claudeAuthBusy.value = false;
     claudeAuthError.value = null;
     claudeSignInWaiting.value = false;
-    keyProviderConfigured.value = noKeyProviderConfigured();
-    keyProviderExternal.value = noExternalKeySources();
+    keyProviderStatus.value = noKeyProviderStatus();
+    providerSignInState.value = idleProviderSignIns();
     memoryJudge.value = null;
     classifierCredentials.value = null;
     imageGeneration.value = null;
@@ -639,15 +649,17 @@ export const useSettingsStore = defineStore('settings', () => {
     setAuthStatus,
     openaiAuthStatus,
     openaiPreferApiKey,
+    openaiActive,
     openaiChatGPTAuthInFlight,
     openaiChatGPTAuthError,
     claudeAuthMode,
     claudeAuthBusy,
     claudeAuthError,
     claudeSignInWaiting,
-    keyProviderConfigured,
-    keyProviderExternal,
-    setKeyProviderConfigured,
+    keyProviderStatus,
+    setKeyProviderStatus,
+    providerSignInState,
+    setProviderSignInState,
     memoryJudge,
     classifierCredentials,
     setMemoryJudgeStatus,

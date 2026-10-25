@@ -87,9 +87,12 @@ export function panelSession(emitted: ExtensionToWebviewMessage[]): PiSession {
 /** Makes `session` the panel's live session without running `start()`. */
 export function bindPanel(panel: PiSession, session: AgentSession): void {
   // `bindSession` binds the session's run lifecycle with its event subscriptions, and lets go of it with them; this binding has no adapter.
-  const internals = panel as unknown as { runtime: unknown; runLifecycle: unknown; unsubscribe: (() => void) | null };
+  const internals = panel as unknown as { runtime: unknown; runLifecycle: unknown; unsubscribe: (() => void) | null; modelValue: string; desiredModel: unknown };
   const run = trackRunLifecycle(session);
   internals.runtime = { session };
+  // The chat's model, which `start()` commits with the session it builds on it; a send without one is refused.
+  internals.desiredModel = session.model;
+  internals.modelValue = session.model?.id ?? '';
   internals.runLifecycle = run;
   internals.unsubscribe = () => {
     if (internals.runLifecycle === run) internals.runLifecycle = null;

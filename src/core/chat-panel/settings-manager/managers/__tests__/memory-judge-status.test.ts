@@ -47,6 +47,18 @@ describe('memory-judge status', () => {
     expect(await memoryJudgeStatus(platform)).toMatchObject({ memoryJudge: { kind: 'unknown' } });
   });
 
+  it('counts a stored OpenRouter sign-in before pi starts', async () => {
+    const platform = createFakePlatform();
+    expect(await memoryJudgeStatus(platform)).toMatchObject({ memoryJudge: { kind: 'unknown' }, classifierCredentials: { openrouter: 'no-key' } });
+
+    writeAuthFile({ openrouter: { type: 'oauth', access: 'a', refresh: 'r', expires: 9_999_999_999_999 } });
+    expect(await memoryJudgeStatus(platform)).toEqual({
+      type: 'memoryJudgeStatus',
+      memoryJudge: { kind: 'classifier', via: 'openrouter' },
+      classifierCredentials: { typesafe: 'no-key', openrouter: 'ok', openai: 'no-key' },
+    });
+  });
+
   it('counts the environment keys pi reads before pi starts', async () => {
     const platform = createFakePlatform();
     vi.stubEnv('OPENAI_API_KEY', 'sk-env');

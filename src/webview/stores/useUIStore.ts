@@ -1,14 +1,16 @@
 import { computed, ref, shallowRef } from 'vue';
 import { defineStore } from 'pinia';
-import type { WorktreeStateData } from '@shared/types/messages';
+import type { ExtensionToWebviewMessage, WorktreeStateData } from '@shared/types/messages';
 import type { UserContentBlock } from '@shared/types/content';
 import type { ChatMessage, RewindHistoryItem, IdeContextDisplayInfo, RestorePoint, SkippedFile, SkippedFilesTarget } from '@shared/types/session';
 import type { MemoryKind } from '@shared/types/memory';
 import type { ChatAttachmentInfo } from '@shared/types/chat-attachment';
-import type { SettingsTarget } from '@shared/settings-sections';
+import type { SettingsAccountId, SettingsTarget } from '@shared/settings-sections';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
 type RewindSource = 'picker' | 'bubble' | null;
+
+export type AuthFailure = Pick<Extract<ExtensionToWebviewMessage, { type: 'authFailure' }>, 'account' | 'reason'>;
 
 export type ExpandedToolSource = 'session' | 'subagent' | 'team';
 
@@ -63,7 +65,7 @@ export const useUIStore = defineStore('ui', () => {
   const retryStatus = ref<{ attempt: number; maxAttempts: number } | null>(null);
   const activeHooks = ref<Map<string, { hookName: string; hookEvent: string }>>(new Map());
   const lastCheckpointTime = ref<number | null>(null);
-  const authFailureMessage = ref<string | null>(null);
+  const authFailure = shallowRef<AuthFailure | null>(null);
   // The desktop window's terminal pane, for the chat header's Terminal toggle (terminalShown); its shortcut's display label.
   const terminalShown = ref(false);
   const toggleTerminalShortcut = ref('');
@@ -286,12 +288,17 @@ export const useUIStore = defineStore('ui', () => {
     lastCheckpointTime.value = time;
   }
 
-  function setAuthFailure(message: string) {
-    authFailureMessage.value = message;
+  function setAuthFailure(failure: AuthFailure) {
+    authFailure.value = { account: failure.account, reason: failure.reason };
   }
 
   function dismissAuthFailure() {
-    authFailureMessage.value = null;
+    authFailure.value = null;
+  }
+
+  // A credential change for one account leaves another account's card up.
+  function clearAuthFailure(account?: SettingsAccountId) {
+    if (account === undefined || authFailure.value?.account === account) authFailure.value = null;
   }
 
   function $reset() {
@@ -322,7 +329,7 @@ export const useUIStore = defineStore('ui', () => {
     retryStatus.value = null;
     activeHooks.value = new Map();
     lastCheckpointTime.value = null;
-    authFailureMessage.value = null;
+    authFailure.value = null;
   }
 
   return {
@@ -390,7 +397,7 @@ export const useUIStore = defineStore('ui', () => {
     isCompacting,
     activeHooks,
     lastCheckpointTime,
-    authFailureMessage,
+    authFailure,
     setCompacting,
     retryStatus,
     setRetryStatus,
@@ -399,6 +406,7 @@ export const useUIStore = defineStore('ui', () => {
     setLastCheckpointTime,
     setAuthFailure,
     dismissAuthFailure,
+    clearAuthFailure,
     $reset,
   };
 });

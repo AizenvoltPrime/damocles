@@ -202,7 +202,7 @@ test('choosing Ελληνικά saves the language and offers Restart now', asyn
   await expect(banner).toHaveCount(0);
 });
 
-const CATALOG = ['Fable 5.1', 'Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'GPT-6 Astra', 'GPT-6.1 Sol', 'GPT-6 Luna', 'Step 5 Preview', 'DeepSeek V4 Pro', 'DeepSeek V4.1 Flash', 'MiniMax M3.1 Flash', 'Grok 4.7'];
+const CATALOG = ['Fable 5.1', 'Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'GPT-6 Astra', 'GPT-6.1 Sol', 'GPT-6 Luna', 'Step 5 Preview', 'DeepSeek V4 Pro', 'DeepSeek V4.1 Flash', 'MiniMax M3.1 Flash', 'Grok 4.7', 'K3', 'Kimi for Coding', 'Muse Spark 1.3', 'Muse Wonder 1.0', 'Opus 5.5 (GitHub Copilot)', 'Sonnet 5.5 (GitHub Copilot)', 'Haiku 5.5 (GitHub Copilot)', 'GPT-6 Astra (GitHub Copilot)', 'GPT-6.1 Sol (GitHub Copilot)', 'GPT-6 Luna (GitHub Copilot)', 'Gemini 4 Argon', 'Gemini 3.8 Flash'];
 const NOT_SIGNED_IN = 'Not signed in';
 
 /** An Anthropic key in pi's auth.json, so Anthropic models are signed in and every other provider is not. */

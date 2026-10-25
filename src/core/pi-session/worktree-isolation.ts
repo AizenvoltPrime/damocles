@@ -2,7 +2,7 @@
 // project folder or another worktree of the project, and git commands aimed there. It reads paths and command text, so it is
 // a guard against wrong-copy mistakes, not a sandbox (docs/worktree-isolation.md).
 import * as path from 'node:path';
-import { canonicalPath, spelledPath } from '../canonical-path';
+import { canonicalPath, rememberedPathQueries, spelledPath } from '../canonical-path';
 import { TOOL_BASH, TOOL_POWERSHELL, WRITE_TOOLS } from '../../shared/tool-names';
 import { folderContains } from '../worktrees/records';
 import { COMPUTED_TEXT, DECLARATION_BUILTINS, MAX_COMMAND_LENGTH, parseShellStructure, type ShellLoop, type ShellPart, type ShellSegment, type ShellStructure } from './readonly-shell';
@@ -1007,6 +1007,8 @@ class IsolationRun {
   private readonly iso: WorktreeIsolation;
   private readonly canonical = new Map<string, string>();
   private readonly forms = new Map<string, readonly string[]>();
+  // Paths a check reads share their prefixes, so the file system is read once per path for the whole check.
+  private readonly paths = rememberedPathQueries();
   private areas: { working: readonly string[]; edits: readonly Area[]; git: readonly Area[] } | undefined;
   private reading: Reading = { resolving: false, sites: new Map(), poisoned: false, resolved: new Set(), invalid: false, deferred: false };
   private readonly textIds = new Map<string, number>();
@@ -1317,7 +1319,7 @@ class IsolationRun {
   private canonicalOf(p: string): string {
     let resolved = this.canonical.get(p);
     if (resolved === undefined) {
-      resolved = canonicalPath(p);
+      resolved = canonicalPath(p, this.paths);
       this.canonical.set(p, resolved);
     }
     return resolved;
@@ -1327,7 +1329,7 @@ class IsolationRun {
   private formsOf(p: string): readonly string[] {
     let result = this.forms.get(p);
     if (result === undefined) {
-      result = [...new Set([this.canonicalOf(p), spelledPath(p), path.resolve(p)])];
+      result = [...new Set([this.canonicalOf(p), spelledPath(p, this.paths), path.resolve(p)])];
       this.forms.set(p, result);
     }
     return result;

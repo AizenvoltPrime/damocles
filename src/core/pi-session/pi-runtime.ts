@@ -18,9 +18,9 @@ import { createMcpAuthProviderFactory, shutdownOAuth } from './mcp/mcp-auth-flow
 import { removeSavedMcpOutputs } from './mcp/content';
 import type { AdditionMemory, NoticeMemory, PersonalToolLists, RenamedRuleNoticeEntry, ToolNameList } from './mcp/tool-name-migration';
 import { inertToolListEntry } from '../permission-handler/mcp-resource-rule';
-import { piSupportedModels } from './pi-models';
+import { piSupportedModels, type ModelLookup } from './pi-models';
 import { piModelDollarBilled } from './account-billing';
-import { flatFeeKeyProviders, keyProviderOfSecret, syncCustomProviders, type SecretResolver } from './custom-providers';
+import { KEYED_PROVIDER_DEFS, flatFeeKeyProviders, keyProviderOfSecret, syncCustomProviders, type SecretResolver } from './custom-providers';
 import {
   resolveAutomaticModel,
   resolveBackgroundModel,
@@ -71,16 +71,16 @@ import {
 } from './openai-auth';
 import { syncOpenAIRuntimeKey } from './openai-runtime-key';
 import { migrateOpenAIApiKey } from './openai-key-migration';
-import { OPENAI_KEY_MOVED_MARKER_PATH } from '../paths';
+import { OPENAI_KEY_MOVED_MARKER_PATH, PROVIDER_KEY_SWEEP_MARKER_PATH } from '../paths';
+import { planModelsOf, providerPreferApiKeyState, readPreferProviderApiKey, readProviderSignIns, type ProviderSignIns } from './provider-auth';
 import { FolderRuntime, type ExtensionLoadError } from './folder-runtime';
 import { MCP_RESOURCE_EXPOSURE_SETTING, MCP_TOOL_EXPOSURE_SETTING, renamedRuleNoticeKey, type McpRenamedToolRuleLocation } from '../../shared/types/mcp';
 import { folderKey } from '../workspace-folders/folder-key';
-import type { ExternalKeySource } from '../../shared/settings-sections';
+import type { ExternalKeySource, KeyProviderId, SignInProviderId } from '../../shared/settings-sections';
 import { withSettingsPolicy } from './settings-policy';
 import { platform } from '../platform-host';
 import type { Platform } from '../../platform/platform';
 import type { Disposable } from '../../platform/disposable';
-import type { RemoteHost } from '../../platform/remote-host';
 import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
 import { IMAGE_SETTINGS_SECTION } from './tools/image-tool-specs';
 import { fetchSubscriptionUsage } from './subscription-usage';
@@ -88,8 +88,9 @@ import { UsageMonitor, type UsageThresholdCrossing } from './usage-thresholds';
 import { BrokeredCredentialStore, oauthAnswerOf } from './credential-broker';
 import { allowanceProvider, builtinAnthropicTransport, clientClaudeAuthStatus, loadAllowanceTransport, subscriptionPluginDir } from './allowance-transport';
 import { logAuthReadFailure, readAuthFile } from './auth-file';
-import { clientHasKey, outsidePins, runPinnedSubcall } from '../client-snapshots';
-import { type BrokerAnswer, type HeldAuth, type HeldAuthEntry } from '../../shared/remote-user';
+import { clientHasAuth, clientHasKey, outsidePins, runPinnedSubcall } from '../client-snapshots';
+import { MODEL_PICKER_SETTING, MODEL_VENDORS, vendorPiProviders, type ModelVendor } from '../../shared/model-vendor';
+import { planModelIdsOf, type BrokerAnswer, type HeldAuth, type HeldAuthEntry } from '../../shared/remote-user';
 
 /**
  * How long the custom-provider credential sync may block before it is cancelled. The sync is offline
@@ -134,6 +135,14 @@ export interface CustomProvidersSynced {
   accountChanged: boolean;
 }
 const customProvidersSyncedListeners = new Set<(sync: CustomProvidersSynced) => void>();
+/** What a custom-provider sync tells its caller; `notWired` is "configured, but not live". */
+export interface CustomProviderSyncOutcome {
+  wired: string[];
+  notWired: string[];
+  timedOut: boolean;
+}
+/** Every plan provider's models are refused while auth.json cannot be read, so an unreadable file never turns plan gating off. */
+const NO_PLAN_MODELS: ReadonlySet<string> = new Set();
 const authFileListeners = new Set<() => void>();
 
 function notifyAuthFileListeners(): void {
@@ -306,6 +315,7 @@ export interface LiveSessionMutator extends LiveSessionMetaSource {
    *  let go, which must abort the delete rather than orphan a live writer on a removed path. */
   detachFromDeletedSession(): Promise<void>;
   publishAccountInfo(): void;
+  publishAvailableModels(): void;
 }
 
 /**
@@ -375,9 +385,20 @@ export class PiRuntime {
   /** The prefer-API-key value the last runtime key sync applied; null before the first. */
   private _appliedPreferApiKey: boolean | null = null;
   private _preferResyncPending = false;
+  /** Each key provider's prefer-API-key value the last custom-provider sync applied; absent before the first. */
+  private readonly _appliedProviderPrefer = new Map<KeyProviderId, boolean>();
+  /** Whether each key provider's key is saved, from the last custom-provider sync that read its secret; absent before. */
+  private readonly _providerKeySaved = new Map<KeyProviderId, boolean>();
+  /** Key providers whose pi sign-in is running; the custom-provider sync leaves them alone until it ends. */
+  private readonly _signingIn = new Set<SignInProviderId>();
+  /** Each provider's plan model ids from auth.json's last read; null until read, and cleared when auth.json or a sign-in changes. */
+  private _planModels: ReadonlyMap<string, ReadonlySet<string>> | null = null;
+  private _providerPreferResyncPending = false;
+  /** The custom-provider sync running now; syncs never overlap, since each decides from inputs read before its awaits. */
+  private _customProviderSyncRun: Promise<CustomProviderSyncOutcome> | null = null;
+  /** The one sync queued behind the running one, which every call made meanwhile shares; it reads with the newest call's resolver. */
+  private _customProviderSyncFollowUp: { getSecret: SecretResolver; outcome: Promise<CustomProviderSyncOutcome> } | null = null;
   private _secretsListener: Disposable | null = null;
-  /** A daemon's core: the acting client decides a view's account state. */
-  private _clientsListener: Disposable | null = null;
   /** A daemon's core: the bundled subscription plugin did not load, so an allowance client's Claude requests bill extra usage. */
   private _allowanceUnavailable = false;
   /** Granting trust admits a folder's project layer, which needs a reload to reach its loader. */
@@ -428,7 +449,6 @@ export class PiRuntime {
     this._agentDir = agentDir;
     this._platform = platform();
     this._classifierBreakers.onChange(notifyMemoryJudgeListeners);
-    this._clientsListener = this._platform.remote ? this._watchClients(this._platform.remote) : null;
   }
 
   /** Get (lazily creating) the process-wide PiRuntime singleton. */
@@ -507,8 +527,9 @@ export class PiRuntime {
 
   private static _authFileChanged(agentDir: string): void {
     const runtime = PiRuntime._instance;
+    if (runtime?._agentDir === agentDir) runtime._planModels = null;
     if (runtime?._authWatch && runtime._agentDir === agentDir) {
-      void runtime._resyncOpenAIAndRepublish('auth.json change').then(notifyAuthFileListeners);
+      void runtime._applyAuthFileChange().then(notifyAuthFileListeners);
       return;
     }
     notifyClientAuthListeners();
@@ -548,7 +569,10 @@ export class PiRuntime {
     };
   }
 
-  /** Fires after every key-provider sync, failed ones included, once the folders' tools reflect it. Subscribing does not create the singleton. */
+  /**
+   * Fires after every key-provider sync that ran, failed ones included, once the folders' tools reflect it; a call before
+   * init or after dispose runs none. Subscribing does not create the singleton.
+   */
   static onCustomProvidersSynced(listener: (sync: CustomProvidersSynced) => void): () => void {
     customProvidersSyncedListeners.add(listener);
     return () => {
@@ -578,6 +602,34 @@ export class PiRuntime {
   /** The model runtime every folder shares, or `null` before `init()` resolves. */
   get modelRuntime(): ModelRuntime | null {
     return this._modelRuntime;
+  }
+
+  /** The model runtime as resolution reads it, with each provider's plan from its stored sign-in; `null` before `init()` resolves. */
+  get modelLookup(): ModelLookup | null {
+    const runtime = this._modelRuntime;
+    if (!runtime) return null;
+    return {
+      getModel: (provider, modelId) => runtime.getModel(provider, modelId),
+      hasConfiguredAuth: (provider) => runtime.hasConfiguredAuth(provider),
+      planModelIds: (provider) => this.planModelIds(provider),
+    };
+  }
+
+  /**
+   * The model ids a provider's stored sign-in lists for the user's plan (`availableModelIds`), never pi's available list,
+   * which pi's getModel and setModel ignore. Empty, and not cached, while auth.json cannot be read. A daemon's core reads
+   * the pinned (else acting) client's clientAuth.
+   */
+  planModelIds(provider: string): ReadonlySet<string> | undefined {
+    if (this._platform.remote) return planModelsOf(readProviderSignIns(this._agentDir)).get(provider);
+    // pi's login may write a new list at any point before it returns, so that provider's reads bypass the cache meanwhile.
+    const signingIn = (this._signingIn as ReadonlySet<string>).has(provider);
+    if (this._planModels && !signingIn) return this._planModels.get(provider);
+    const signIns = readProviderSignIns(this._agentDir);
+    if (signIns === undefined) return NO_PLAN_MODELS;
+    const plans = planModelsOf(signIns);
+    if (!signingIn) this._planModels = plans;
+    return plans.get(provider);
   }
 
   /**
@@ -721,6 +773,7 @@ export class PiRuntime {
       cwd,
       agentDir: this._agentDir,
       modelRuntime: this._modelRuntime,
+      planModelIds: (provider) => this.planModelIds(provider),
       userMcp: this._userMcp,
       createFolderMcp: (reservedToolNames, shellPath) =>
         newMcpManager({ clientVersion: this._platform.appInfo.version, shellPath, reservedToolNames }),
@@ -801,7 +854,7 @@ export class PiRuntime {
   }
 
   /**
-   * Re-sync the OpenAI runtime key and republish every live session's account state when auth.json
+   * Re-sync the OpenAI and key-provider runtime keys and republish every live session's account state when auth.json
    * changes: a login or logout in another Damocles app or a pi CLI, or a token refresh anywhere, lands
    * only in that file.
    */
@@ -809,6 +862,23 @@ export class PiRuntime {
     if (this._platform.remote) return;
     this._authWatch?.dispose();
     this._authWatch = PiRuntime._holdAuthFileWatch(this._platform.fileWatchers, this._agentDir);
+  }
+
+  /**
+   * A login, logout or token refresh outside this process. pi's stored-credential snapshot, which `getProviderAuthStatus`
+   * and both key syncs read, follows auth.json only after an offline availability refresh, so that runs first.
+   */
+  private async _applyAuthFileChange(): Promise<void> {
+    const modelRuntime = this._modelRuntime;
+    if (modelRuntime) {
+      try {
+        await modelRuntime.getAvailable();
+      } catch (err) {
+        log('[PiRuntime] availability refresh after an auth.json change failed: %s', describeAuthError(err));
+      }
+    }
+    await this._resyncOpenAIAndRepublish('auth.json change');
+    await this.syncCustomProviders((key) => this._platform.secrets.get(key));
   }
 
   /**
@@ -842,17 +912,11 @@ export class PiRuntime {
     await this._resyncOpenAIAndRepublish('a clientAuth change', true);
   }
 
-  /** Outside a run, account state reads the acting client, so a new acting client republishes it. */
-  private _watchClients(remote: RemoteHost): Disposable {
-    return remote.clients.onDidChange((change) => {
-      if (change.topic === 'actingClient') this._publishAccountInfoToSessions();
-    });
-  }
-
   private _publishAccountInfoToSessions(): void {
     for (const session of new Set(this._sessionMutators.values())) {
       try {
         session.publishAccountInfo();
+        session.publishAvailableModels();
       } catch (err) {
         log('[PiRuntime] publishing a session\'s account state failed: %O', err);
       }
@@ -1061,33 +1125,82 @@ export class PiRuntime {
   }
 
   /**
-   * Register/authenticate the key-backed providers (`CUSTOM_PROVIDER_DEFS`) on the shared registry
-   * from each one's `CUSTOM_PROVIDER_DEFS` secret (Phase 5, US-018.8). Idempotent and fail-soft: called on
+   * Register/authenticate the key-backed providers (`KEYED_PROVIDER_DEFS`) on the shared registry
+   * from each one's secret (Phase 5, US-018.8). Idempotent and fail-soft: called on
    * session start and on secret change so subagents can reach those models by explicit id (no loopback
    * proxy). No-op when the runtime is not yet initialized.
    *
+   * Syncs run one at a time: a call while one runs queues a single follow-up, which every call made meanwhile
+   * shares and resolves with.
+   *
    * Bounded and cancellable: pi's credential operations take cross-process locks and this gates startup,
-   * so the sync is cancelled after `CUSTOM_PROVIDER_SYNC_TIMEOUT_MS` and on dispose. `timedOut` covers
+   * so each sync is cancelled after `CUSTOM_PROVIDER_SYNC_TIMEOUT_MS` and on dispose. `timedOut` covers
    * the timeout leg only — a disposal abort is not a timeout — so callers can tell "nothing configured"
    * from "gave up", which is what lets `PiSession.start` surface a downgrade instead of hiding it.
-   * `notWired` means "configured, but not live"; a provider in NEITHER list simply has no secret.
+   * `notWired` means "configured, but not live"; a provider in NEITHER list has no secret, or a stored sign-in outranks its key.
    */
-  async syncCustomProviders(getSecret: SecretResolver): Promise<{ wired: string[]; notWired: string[]; timedOut: boolean }> {
+  syncCustomProviders(getSecret: SecretResolver): Promise<CustomProviderSyncOutcome> {
+    const queued = this._customProviderSyncFollowUp;
+    if (queued) {
+      queued.getSecret = getSecret;
+      return queued.outcome;
+    }
+    const running = this._customProviderSyncRun;
+    if (!running) return this._startCustomProviderRun(getSecret);
+    const start = (): Promise<CustomProviderSyncOutcome> => {
+      this._customProviderSyncFollowUp = null;
+      return this._startCustomProviderRun(followUp.getSecret);
+    };
+    const followUp = { getSecret, outcome: running.then(start, start) };
+    this._customProviderSyncFollowUp = followUp;
+    return followUp.outcome;
+  }
+
+  private _startCustomProviderRun(getSecret: SecretResolver): Promise<CustomProviderSyncOutcome> {
+    const run = this._runCustomProviders(getSecret);
+    this._customProviderSyncRun = run;
+    const settled = (): void => {
+      if (this._customProviderSyncRun === run) this._customProviderSyncRun = null;
+    };
+    run.then(settled, settled);
+    return run;
+  }
+
+  private async _runCustomProviders(getSecret: SecretResolver): Promise<CustomProviderSyncOutcome> {
     if (this._disposed || !this._modelRuntime) return { wired: [], notWired: [], timedOut: false };
     // A changed credential can change a key kind's billing (`flatFeeKeyProviders`), and a failed sync may have changed one unreported.
     let republishAccount = true;
-    const flatFeeBefore = this.flatFeeKeyProviders();
+    // `clientAuthSnapshot` sends it, and a key a sign-in outranks changes nothing else the snapshot carries
+    let keySavedChanged = false;
+    const modelRuntime = this._modelRuntime;
+    // read directly, not through `this.flatFeeKeyProviders()`, whose prefer check would schedule a second sync
+    const flatFeeBefore = flatFeeKeyProviders(modelRuntime, this._platform.remote);
+    const preferRead = new Map<KeyProviderId, boolean>();
     try {
-      const { wired, aborted, notWired, changed } = await syncCustomProviders({
-        modelRuntime: this._modelRuntime,
+      const { wired, aborted, notWired, changed, keysSaved } = await syncCustomProviders({
+        modelRuntime,
         getSecret,
         signal: AbortSignal.any([this._syncAbort.signal, AbortSignal.timeout(CUSTOM_PROVIDER_SYNC_TIMEOUT_MS)]),
         ...(this._platform.remote ? { remote: this._platform.remote } : {}),
         beforeCredentialChange: (provider) => {
           if (provider === 'openrouter') this._openRouterCatalogAbort?.abort();
         },
+        agentDir: this._agentDir,
+        preferApiKey: (provider) => {
+          const prefer = readPreferProviderApiKey(this._platform.state, provider);
+          preferRead.set(provider, prefer);
+          return prefer;
+        },
+        sweepMarkerPath: PROVIDER_KEY_SWEEP_MARKER_PATH,
+        signingIn: this._signingIn,
       });
-      republishAccount = changed.length > 0;
+      if (!aborted) for (const [provider, prefer] of preferRead) this._appliedProviderPrefer.set(provider, prefer);
+      for (const [provider, saved] of keysSaved) {
+        if (this._providerKeySaved.get(provider) !== saved) keySavedChanged = true;
+        this._providerKeySaved.set(provider, saved);
+      }
+      // The first sync is the first time the picker providers are known, so panels that have not started hear them too.
+      republishAccount = changed.length > 0 || !this._customProvidersSynced;
       for (const provider of changed) this._classifierBreakers.reset(provider);
       if (changed.includes('openrouter') && wired.includes('openrouter')) this._refreshOpenRouterCatalog();
       if (wired.length > 0) log('[PiRuntime] custom providers wired: %s', wired.join(', '));
@@ -1107,10 +1220,13 @@ export class PiRuntime {
       for (const folder of this.folders()) folder.refreshActiveTools();
       this._customProvidersSynced = true;
       // A removal drops its cache entry before pi takes it, so a failure there changes billing without a `changed` entry.
-      const flatFeeAfter = this.flatFeeKeyProviders();
+      const flatFeeAfter = flatFeeKeyProviders(modelRuntime, this._platform.remote);
       const accountChanged = republishAccount || flatFeeAfter.size !== flatFeeBefore.size || [...flatFeeAfter].some((p) => !flatFeeBefore.has(p));
       if (accountChanged) this._publishAccountInfoToSessions();
-      else notifyMemoryJudgeListeners();
+      else {
+        if (keySavedChanged) notifyClientAuthListeners();
+        notifyMemoryJudgeListeners();
+      }
       // Isolated: a throw in this `finally` would replace the sync's result and skip the listeners after it.
       for (const listener of [...customProvidersSyncedListeners]) {
         try {
@@ -1356,6 +1472,90 @@ export class PiRuntime {
     return prefer;
   }
 
+  /**
+   * A key provider's prefer-API-key flag, global state like the OpenAI one: a read that differs from what the last
+   * custom-provider sync applied (another window changed it) re-applies the keys, whose listeners republish.
+   */
+  preferProviderApiKey(provider: KeyProviderId): boolean {
+    const prefer = readPreferProviderApiKey(this._platform.state, provider);
+    // The sync skips a provider while it signs in, so a resync would not apply the flag; the sign-in's own final sync does.
+    if ((this._signingIn as ReadonlySet<string>).has(provider)) return prefer;
+    const applied = this._appliedProviderPrefer.get(provider);
+    if (applied !== undefined && prefer !== applied && !this._providerPreferResyncPending) {
+      this._providerPreferResyncPending = true;
+      void this.syncCustomProviders((key) => this._platform.secrets.get(key)).finally(() => {
+        this._providerPreferResyncPending = false;
+      });
+    }
+    return prefer;
+  }
+
+  /** Prefer the saved key over a stored sign-in for `provider`, or not, and re-apply the keys. */
+  async setProviderPreferApiKey(provider: KeyProviderId, preferApiKey: boolean): Promise<void> {
+    this._refuseRemoteSignIn();
+    // Written only after init succeeded: a failed init acks failure, and no sync runs to rebroadcast a written flag.
+    await this.init();
+    await this._platform.state.global.update(providerPreferApiKeyState(provider), preferApiKey);
+    await this.syncCustomProviders((key) => this._platform.secrets.get(key));
+  }
+
+  /**
+   * Sign in to a key provider with pi's OAuth flow, driven by `interaction`. pi's login keeps the runtime key Damocles
+   * applied, so the custom-provider sync that follows applies the precedence rule. pi's error text can carry an OAuth
+   * response, so a failure is rethrown for the caller to classify and never logged here.
+   */
+  async signInProvider(provider: SignInProviderId, interaction: AuthInteraction): Promise<void> {
+    this._refuseRemoteSignIn();
+    await this.init();
+    const modelRuntime = this._modelRuntime;
+    if (!modelRuntime) throw new Error('PiRuntime.signInProvider: runtime not initialized');
+    if (this._signingIn.has(provider)) throw new Error(`A ${provider} sign-in is already running`);
+    this._signingIn.add(provider);
+    let signedIn = false;
+    try {
+      try {
+        await modelRuntime.login(provider, 'oauth', interaction);
+      } catch (err) {
+        if (!isCredentialSyncError(err)) throw err;
+        log('[PiRuntime] %s sign-in is stored, but pi could not resynchronize its model snapshot', provider);
+      }
+      log('[PiRuntime] %s sign-in complete', provider);
+      signedIn = true;
+    } finally {
+      this._signingIn.delete(provider);
+      this._planModels = null;
+      await this.syncCustomProviders((key) => this._platform.secrets.get(key));
+      this._publishAccountInfoToSessions();
+    }
+    // The sync reports no change when no saved key was applied, so the minted key's catalog and breaker are refreshed here.
+    if (signedIn && provider === 'openrouter') {
+      this._classifierBreakers.reset(provider);
+      this._refreshOpenRouterCatalog();
+    }
+  }
+
+  /** Remove a key provider's stored sign-in, never a stored key, then re-apply the saved key the sign-in outranked. */
+  async signOutProvider(provider: SignInProviderId): Promise<void> {
+    this._refuseRemoteSignIn();
+    await this.init();
+    const modelRuntime = this._modelRuntime;
+    if (!modelRuntime) throw new Error('PiRuntime.signOutProvider: runtime not initialized');
+    const stored = readProviderSignIns(this._agentDir);
+    if (stored === undefined) throw new Error('auth.json could not be read, so the sign-in was left in place');
+    if (stored[provider]?.type === 'oauth') {
+      try {
+        await modelRuntime.logout(provider);
+      } catch (err) {
+        if (!isCredentialSyncError(err)) throw err;
+        log('[PiRuntime] %s sign-out is stored, but pi could not resynchronize its model snapshot', provider);
+      }
+      log('[PiRuntime] %s signed out', provider);
+    }
+    this._planModels = null;
+    await this.syncCustomProviders((key) => this._platform.secrets.get(key));
+    this._publishAccountInfoToSessions();
+  }
+
   /** Runs on `_openaiCredentialSync`. */
   private async _syncOpenAIRuntimeKeyNow(): Promise<void> {
     if (!this._modelRuntime) throw new Error('PiRuntime: runtime not initialized');
@@ -1554,15 +1754,19 @@ export class PiRuntime {
     const flatFee = this.flatFeeKeyProviders();
     const claudeAllowance = this.getClaudeAuthStatus().mode === 'allowance';
     for (const { id } of runtime.getProviders()) {
-      const stored = file?.[id] as { type?: unknown; expires?: unknown } | undefined;
+      const stored = file?.[id] as { type?: unknown; expires?: unknown; availableModelIds?: unknown } | undefined;
+      const plan = stored?.type === 'oauth' ? planModelIdsOf(stored.availableModelIds) : undefined;
       const type = stored?.type === 'oauth' ? 'oauth' : (listed.get(id) ?? 'none');
       const hasKey = listed.get(id) === 'api_key' || stored?.type === 'api_key' || (id === OPENAI_API_PROVIDER && this._openaiKeyPresent);
+      const keySaved = this._providerKeySaved.get(id as KeyProviderId);
       providers[id] = {
         type,
         hasKey,
+        ...(keySaved !== undefined ? { keySaved } : {}),
         flatFee: flatFee.has(id),
         ...(stored?.type === 'oauth' && typeof stored.expires === 'number' ? { expires: stored.expires } : {}),
         ...(id === 'anthropic' && type === 'oauth' && claudeAllowance ? { allowance: true } : {}),
+        ...(plan ? { availableModelIds: plan } : {}),
       };
     }
     return { providers };
@@ -1905,7 +2109,7 @@ export class PiRuntime {
    * subscription plugin providers are flushed into the model runtime when the first folder's services are created.
    */
   private _resolveBackgroundModel(): SubCallModel | null {
-    const registry = this._modelRuntime;
+    const registry = this.modelLookup;
     if (!registry || this._folders.size === 0) return null;
     return resolveBackgroundModel(registry, this._platform.settings, this.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
   }
@@ -1924,18 +2128,26 @@ export class PiRuntime {
     return this.subCallModelFor(purpose) !== null;
   }
 
-  /** Key providers whose applied key bills a flat subscription (on a daemon's core, the pinned client's); empty before the model runtime exists. */
+  /**
+   * Key providers whose applied key bills a flat subscription (on a daemon's core, the pinned client's); empty before the
+   * model runtime exists. Every account and billing read passes here, so it also picks up a prefer flag another window changed.
+   */
   flatFeeKeyProviders(): ReadonlySet<string> {
-    return this._modelRuntime ? flatFeeKeyProviders(this._modelRuntime, this._platform.remote) : new Set();
+    if (!this._modelRuntime) return new Set();
+    // The flag decides only between a key and a sign-in, so a provider with no sign-in cannot change billing through it.
+    for (const def of KEYED_PROVIDER_DEFS) if (def.signIn) this.preferProviderApiKey(def.provider);
+    return flatFeeKeyProviders(this._modelRuntime, this._platform.remote);
   }
 
   /**
    * Where the credential pi sends `provider` comes from when Damocles did not apply it, or null. pi reports Damocles'
    * runtime key ahead of any other, and a models.json key naming an environment variable as `environment` (model-runtime.js:441-450).
+   * A stored sign-in is no key, and pi resolves it before an environment or models.json key, so it reads as none.
    */
-  externalKeySource(provider: string): ExternalKeySource | null {
+  externalKeySource(provider: string, signIns: ProviderSignIns | undefined = readProviderSignIns(this._agentDir)): ExternalKeySource | null {
     const status = this._modelRuntime?.getProviderAuthStatus(provider);
     if (!status?.configured || status.source === 'runtime') return null;
+    if (signIns?.[provider]?.type === 'oauth') return null;
     return status.source === 'environment' ? 'environment' : 'piConfig';
   }
 
@@ -1957,7 +2169,7 @@ export class PiRuntime {
       claudeAuthMode: this.getClaudeAuthStatus().mode,
       openai: this.getOpenAIAuthStatus(),
       preferApiKey: this.preferOpenAIApiKey(),
-      registry: this._modelRuntime ?? undefined,
+      registry: this.modelLookup ?? undefined,
       flatFeeKeyProviders: this.flatFeeKeyProviders(),
     });
     return { provider: model.provider, id: model.id, inputPerMTok: model.cost.input, outputPerMTok: model.cost.output, dollarBilled, effort };
@@ -2037,6 +2249,24 @@ export class PiRuntime {
     return classifierCredential(provider, (p) => registry.hasConfiguredAuth(p), openai);
   }
 
+  /**
+   * The vendors the chat's model picker lists: each one the setting names, else each with a credential; undefined before
+   * the model runtime exists. A daemon's core reads the acting client's clientAuth, never pi's snapshot, which also counts
+   * the target's environment and changes only on a refresh.
+   */
+  pickerProviders(): ModelVendor[] | undefined {
+    const registry = this._modelRuntime;
+    if (!registry) return undefined;
+    const remote = this._platform.remote;
+    const configured = remote ? (provider: string) => clientHasAuth(remote, provider) : (provider: string) => registry.hasConfiguredAuth(provider);
+    const stored = this._platform.settings.get<unknown>(MODEL_PICKER_SETTING, {});
+    const explicit = typeof stored === 'object' && stored !== null ? (stored as Record<string, unknown>) : {};
+    return MODEL_VENDORS.filter((vendor) => {
+      const shown = explicit[vendor];
+      return typeof shown === 'boolean' ? shown : vendorPiProviders(vendor).some(configured);
+    });
+  }
+
   /** Each classifier provider's credential, for the Memory judge choices. */
   classifierCredentials(): Record<ClassifierProvider, ClassifierCredential> {
     const openai = this._openaiAuthInputs();
@@ -2053,7 +2283,7 @@ export class PiRuntime {
     const settings = this._platform.settings;
     const choice = migrateLegacyModelValue(settings.get<string>(MEMORY_JUDGE_SETTING, ''));
     if (!isKnownMemoryJudgeChoice(choice)) return { kind: 'none', forced: { choice, reason: 'unrecognized' } };
-    const models = this._folders.size > 0 ? registry : null;
+    const models = this._folders.size > 0 ? this.modelLookup : null;
     const classifierOf = (ref: ClassifierModelRef) => registry?.getModelOfType('classifier', ref.provider, ref.id);
     if (choice === '') {
       const automatic = models ? resolveAutomaticModel(models, openai.status, openai.preferApiKey) : null;
@@ -2073,8 +2303,9 @@ export class PiRuntime {
       const model = classifierOf(ref);
       return model ? { kind: 'classifier', ref, model, fallback: null } : { kind: 'none', forced: { choice, reason: 'not-in-catalog' } };
     }
-    const picked = models ? resolvePickedModel(choice, settings.get<string>(MEMORY_JUDGE_EFFORT_SETTING, ''), models, openai.status, openai.preferApiKey) : null;
-    return picked ? { kind: 'model', ...picked } : { kind: 'none', forced: { choice, reason: 'signed-out' } };
+    if (!models) return { kind: 'none', forced: { choice, reason: 'signed-out' } };
+    const picked = resolvePickedModel(choice, settings.get<string>(MEMORY_JUDGE_EFFORT_SETTING, ''), models, openai.status, openai.preferApiKey);
+    return 'unavailable' in picked ? { kind: 'none', forced: { choice, reason: picked.unavailable } } : { kind: 'model', ...picked };
   }
 
   /** The Memory judge the next merge or rerank runs on; a breaker past its cooldown admits its probe. */
@@ -2223,8 +2454,6 @@ export class PiRuntime {
     this._classifierBreakers.dispose();
     this._secretsListener?.dispose();
     this._secretsListener = null;
-    this._clientsListener?.dispose();
-    this._clientsListener = null;
     this._trustListener?.dispose();
     this._trustListener = null;
     this._imageSettingsListener?.dispose();

@@ -15,6 +15,7 @@ import { createTeamHandlers } from "./handlers/team-handlers";
 import { createCompassHandlers } from "./handlers/compass-handlers";
 import { createOpenAIHandlers } from "./handlers/openai-handlers";
 import { createClaudeAuthHandlers } from "./handlers/claude-auth-handlers";
+import { createProviderAccountHandlers } from "./handlers/provider-account-handlers";
 import { createUsageHandlers } from "./handlers/usage-handlers";
 import { createUsageStatsHandlers } from "./handlers/usage-stats-handlers";
 import { createWorkspaceFolderHandlers } from "./handlers/workspace-folder-handlers";
@@ -28,10 +29,12 @@ export function createHandlerRegistry(deps: HandlerDependencies): { readonly han
   const chatDeps: HandlerDependencies = { ...deps, markUserTypedDuringTurn: voiceStream.markUserTypedDuringTurn };
   const settingsFiles = createSettingsFileHandlers(deps);
   const claudeAuth = createClaudeAuthHandlers(deps);
+  const providerAccounts = createProviderAccountHandlers(deps);
   const settingsDeps: HandlerDependencies = {
     ...deps,
     postSettingsFileAvailability: settingsFiles.postAvailability,
     postClaudeAuthState: claudeAuth.postState,
+    postProviderSignInState: providerAccounts.postState,
   };
   const handlers: HandlerRegistry = {
     log: (msg) => {
@@ -56,6 +59,7 @@ export function createHandlerRegistry(deps: HandlerDependencies): { readonly han
     ...createCompassHandlers(deps),
     ...createOpenAIHandlers(deps),
     ...claudeAuth.handlers,
+    ...providerAccounts.handlers,
     ...createUsageHandlers(deps),
     ...createUsageStatsHandlers(deps),
     ...createWorkspaceFolderHandlers(deps),

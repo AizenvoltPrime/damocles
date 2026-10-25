@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createFauxCore, fauxAssistantMessage, type Credential } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type AgentSession, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { ClientSnapshots, ClientTopic, RemoteHost } from '../../../platform/remote-host';
-import { CREDENTIAL_CLIENT_ABSENT, MAX_BROKER_EXPIRES_IN_MS, type BrokerAnswer, type HeldAuth } from '../../../shared/remote-user';
+import { CREDENTIAL_CLIENT_ABSENT, MAX_BROKER_EXPIRES_IN_MS, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, type BrokerAnswer, type HeldAuth } from '../../../shared/remote-user';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { runPinnedSubcall, runPinnedTurn } from '../../client-snapshots';
@@ -192,6 +192,25 @@ describe('BrokeredCredentialStore', () => {
     expect(host.credentials).toHaveBeenCalledTimes(2);
   });
 
+  // pi gates Copilot by the credential's own list, so a cached answer must not outlive a plan change.
+  it('drops a cached sign-in when only its plan model list changes, and asks the client again', async () => {
+    const host = remoteHost(async () => oauth('t', HOUR));
+    const credentialsChanged = vi.fn();
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged });
+    const entry = { type: 'oauth', expires: Date.now() + HOUR, hasKey: false, flatFee: false } as const;
+    const read = () => runPinnedTurn(host.remote, 'p1', () => broker.read('github-copilot'));
+    host.setAuth('client-a', { providers: { 'github-copilot': { ...entry, availableModelIds: ['gpt-6-luna'] } } });
+    await read();
+    await read();
+    expect(host.credentials).toHaveBeenCalledTimes(1);
+
+    host.setAuth('client-a', { providers: { 'github-copilot': { ...entry, availableModelIds: ['gpt-6-luna', 'claude-haiku-5.5'] } } });
+    await read();
+
+    expect(host.credentials).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(credentialsChanged).toHaveBeenCalled());
+  });
+
   it('records the providers each run read, for the run registry', async () => {
     const host = remoteHost(async () => oauth('t', HOUR));
     const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
@@ -234,6 +253,15 @@ describe('status reads outside a run', () => {
     expect(host.runProviders).not.toHaveBeenCalled();
   });
 
+  // pi's Copilot provider filters its available list by the credential's own list, which the status answer must carry.
+  it('pass a sign-in\'s plan model list on, with no secret', async () => {
+    const host = remoteHost(async () => oauth('SECRET', HOUR));
+    host.setAuth('client-a', { providers: { 'github-copilot': { type: 'oauth', expires: 42, hasKey: false, flatFee: false, availableModelIds: ['gpt-6-luna'] } } });
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    expect(await broker.read('github-copilot')).toEqual({ type: 'oauth', access: '', refresh: '', expires: 42, availableModelIds: ['gpt-6-luna'] });
+    expect(host.credentials).not.toHaveBeenCalled();
+  });
+
   it('pi availability check of every provider asks nothing, and a turn asks once, for its provider only', async () => {
     const host = remoteHost(async (provider) => (provider === 'openai' ? { type: 'api_key', key: 'sk-turn' } : oauth('SECRET', HOUR)));
     host.setAuth('client-a', { providers: { anthropic: { type: 'oauth', expires: Date.now() + HOUR, hasKey: false, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false } } });
@@ -257,6 +285,15 @@ describe('oauthAnswerOf', () => {
     const answer = oauthAnswerOf({ type: 'oauth', access: 'a', refresh: 'SECRET', expires: 1_000 + HOUR, clientId: 'c', scopes: ['s'], enterpriseUrl: 'e', idToken: 'SECRET2' }, 1_000);
     expect(answer).toEqual({ type: 'oauth', access: 'a', expiresIn: HOUR, refresh: '', clientId: 'c', scopes: ['s'], enterpriseUrl: 'e' });
     expect(JSON.stringify(answer)).not.toContain('SECRET');
+  });
+
+  it('sends a plan model list whole, and none where planModelIdsOf takes it as no list', () => {
+    const stored = { access: 'a', expires: HOUR };
+    expect(oauthAnswerOf({ ...stored, availableModelIds: ['gpt-6-luna'] }, 0)).toMatchObject({ availableModelIds: ['gpt-6-luna'] });
+    const tooMany = Array.from({ length: MAX_PLAN_MODEL_IDS + 1 }, (_, i) => `m${i}`);
+    for (const ids of [tooMany, ['x'.repeat(MAX_PLAN_MODEL_ID_CHARS + 1)], [''], ['gpt-6-luna', 7]]) {
+      expect(oauthAnswerOf({ ...stored, availableModelIds: ids }, 0)).not.toHaveProperty('availableModelIds');
+    }
   });
 
   it('clamps a never-expiring credential (OpenRouter) and an expired one', () => {

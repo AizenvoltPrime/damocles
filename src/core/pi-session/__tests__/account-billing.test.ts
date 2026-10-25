@@ -1,6 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import type { ModelInfo } from '../../../shared/types/settings';
+import { DEFAULT_MODELS } from '../../../shared/types/constants';
 import type { OpenAIAuthStatus } from '../openai-auth';
+import { flatFeeKeyProviders, providerBillsFlat, syncCustomProviders } from '../custom-providers';
 import {
   apiKeySource,
   openaiTokenSource,
@@ -214,8 +220,73 @@ describe('piModelDollarBilled', () => {
     expect(piModelDollarBilled({ provider: 'deepseek', id: 'deepseek-v4-pro' }, billing())).toBe(true);
   });
 
+  // A Copilot entry's value is not its pi id, so billing must compare the pi id it resolves to.
+  it('bills every GitHub Copilot model flat, by its pi id, while the same id on OpenAI bills as OpenAI does', () => {
+    const copilot = DEFAULT_MODELS.filter((m) => m.piProvider === 'github-copilot');
+    const all = billing({ supportedModels: DEFAULT_MODELS });
+    expect(copilot).toHaveLength(8);
+    for (const info of copilot) {
+      expect(piModelDollarBilled({ provider: 'github-copilot', id: info.piModelId! }, all)).toBe(false);
+      expect(modelDollarBilled(info.value, all)).toBe(false);
+      expect(dollarBilled(deps({ modelValue: info.value, modelInfo: info }))).toBe(false);
+    }
+    expect(piModelDollarBilled({ provider: 'openai', id: 'gpt-6-luna' }, all)).toBe(true);
+  });
+
+  // Copilot and Kimi Code bill a flat plan with every credential, so a template pin outside the catalog bills no dollars.
+  it.each([['github-copilot', 'gpt-5-mini'], ['kimi-coding', 'kimi-k3-preview']])('bills a %s model outside the catalog flat', (provider, id) => {
+    const all = billing({ supportedModels: DEFAULT_MODELS });
+    expect(DEFAULT_MODELS.some((m) => m.piProvider === provider && (m.piModelId ?? m.value) === id)).toBe(false);
+    expect(piModelDollarBilled({ provider, id }, all)).toBe(false);
+  });
+
+  it('agrees with the catalog: a provider bills flat with every credential exactly when each of its catalog models is flatFee', () => {
+    const providers = new Set(DEFAULT_MODELS.flatMap((m) => (m.piProvider ? [m.piProvider] : [])));
+    for (const provider of providers) {
+      const models = DEFAULT_MODELS.filter((m) => m.piProvider === provider);
+      expect([provider, providerBillsFlat(provider)]).toEqual([provider, models.every((m) => m.flatFee === true)]);
+    }
+  });
+
   it('reads a provider outside the catalog as a charge, even for an id the catalog knows elsewhere', () => {
     expect(piModelDollarBilled({ provider: 'openrouter', id: 'step-2' }, billing())).toBe(true);
     expect(piModelDollarBilled({ provider: 'my-gateway', id: 'mystery' }, billing())).toBe(true);
+  });
+
+  // Each provider bills one way with every credential, its sign-in included, so which one the key sync leaves active never changes billing.
+  it.each([
+    ['xai', true],
+    ['kimi-coding', false],
+    ['meta', true],
+  ] as const)('bills every %s model the same whether the sign-in or the saved key is active (per token: %s)', async (provider, metered) => {
+    const providerModels = DEFAULT_MODELS.filter((m) => m.piProvider === provider);
+    expect(providerModels.length).toBeGreaterThan(0);
+    const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), `${provider}-billing-`));
+    fs.writeFileSync(path.join(agentDir, 'auth.json'), JSON.stringify({ [provider]: { type: 'oauth', access: 'a', refresh: 'r', expires: 1 } }));
+    const sweepMarkerPath = path.join(agentDir, 'swept.json');
+    fs.writeFileSync(sweepMarkerPath, '{}');
+    const runtime = {
+      registerProvider: vi.fn(),
+      unregisterProvider: vi.fn(),
+      setRuntimeApiKey: vi.fn(async () => {}),
+      removeRuntimeApiKey: vi.fn(async () => {}),
+      logout: vi.fn(async () => {}),
+      getProviderAuthStatus: vi.fn(() => ({ configured: true, source: 'stored' })),
+    } as unknown as ModelRuntime;
+    for (const preferApiKey of [false, true]) {
+      const result = await syncCustomProviders({
+        modelRuntime: runtime,
+        getSecret: async (key) => (key === `damocles.${provider}.apiKey` ? `${provider}-key` : undefined),
+        agentDir,
+        preferApiKey: () => preferApiKey,
+        sweepMarkerPath,
+      });
+      expect(result.wired.includes(provider)).toBe(preferApiKey);
+      const flat = flatFeeKeyProviders(runtime);
+      for (const model of providerModels) {
+        expect(piModelDollarBilled({ provider, id: model.value }, billing({ supportedModels: DEFAULT_MODELS, flatFeeKeyProviders: flat }))).toBe(metered);
+        expect(dollarBilled(deps({ modelValue: model.value, modelInfo: model, flatFeeKeyProviders: flat }))).toBe(metered);
+      }
+    }
   });
 });

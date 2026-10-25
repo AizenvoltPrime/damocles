@@ -7,7 +7,7 @@ import type { AttachedView } from '../../../types';
 import type { HandlerContext, HandlerDependencies } from '../../types';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../../../../shared/types/messages';
 import type { PanelHost } from '../../../../../platform/window-service';
-import { KEY_PROVIDER_IDS } from '../../../../../shared/settings-sections';
+import { ACCOUNT_PROVIDER_IDS } from '../../../../../shared/settings-sections';
 
 vi.mock('../../../../logger', () => ({ log: vi.fn() }));
 vi.mock('../openai-handlers', () => ({
@@ -109,7 +109,7 @@ describe('requestSettingsState', () => {
       postSettingsFileAvailability,
       postClaudeAuthState,
     } as unknown as HandlerDependencies;
-    const ctx = { host: {}, panelId: 'p1', folder, permissionHandler: {}, session: { publishAccountInfo: vi.fn(), getToolStatus: () => ({ tools: [] }) } } as unknown as HandlerContext;
+    const ctx = { host: {}, panelId: 'p1', folder, permissionHandler: {}, session: { publishAccountInfo: vi.fn(), publishAvailableModels: vi.fn(), getToolStatus: () => ({ tools: [] }) } } as unknown as HandlerContext;
     const handlers = createSettingsHandlers(deps);
     const request = (extra: Partial<HandlerContext> = {}): unknown => handlers.requestSettingsState!({ type: 'requestSettingsState' }, { ...ctx, ...extra });
     return { view, posted, request, settingsManager, postSettingsFileAvailability, platform };
@@ -133,8 +133,8 @@ describe('requestSettingsState', () => {
       'voiceFilesSizeUpdate',
     ]));
     const keyStatusAt = posted.findIndex((message) => message.type === 'providerAuthStatusChanged');
-    expect(posted.slice(keyStatusAt, keyStatusAt + KEY_PROVIDER_IDS.length + 1)).toEqual([
-      ...KEY_PROVIDER_IDS.map((provider) => ({ type: 'providerAuthStatusChanged', provider, configured: false, external: null })),
+    expect(posted.slice(keyStatusAt, keyStatusAt + ACCOUNT_PROVIDER_IDS.length + 1)).toEqual([
+      ...ACCOUNT_PROVIDER_IDS.map((provider) => ({ type: 'providerAuthStatusChanged', provider, configured: false, external: null, signedIn: false, preferApiKey: false, active: 'none' })),
       expect.objectContaining({ type: 'memoryJudgeStatus' }),
     ]);
     for (const send of [
@@ -160,7 +160,8 @@ describe('requestSettingsState', () => {
     }
     await vi.waitFor(() => expect(answered).toBe(true));
     const types = posted.map((message) => message.type);
-    expect(types).not.toContain('providerAuthStatusChanged');
+    // a sign-in-only provider's status reads no secret
+    expect(posted.flatMap((message) => (message.type === 'providerAuthStatusChanged' ? [message.provider] : []))).toEqual(['github-copilot']);
     expect(types).not.toContain('memoryJudgeStatus');
     expect(types).toEqual(expect.arrayContaining(['toolStatus', 'voiceFilesSizeUpdate']));
   });

@@ -1,7 +1,10 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { createFakePlatform, installFakePlatform } from '../../../../../__mocks__/fake-platform';
-import { deleteProviderKey, providerAuthStatus, storeProviderKey } from '../provider-keys';
+import { deleteProviderKey, providerAuthStatus, setProviderPreferApiKey, storeProviderKey } from '../provider-keys';
 import { PiRuntime } from '../../../../pi-session/pi-runtime';
+import { PI_AGENT_DIR } from '../../../../pi-session/agent-dir';
 import { KEY_PROVIDER_IDS } from '../../../../../shared/settings-sections';
 
 const SECRET_NAMES = {
@@ -9,6 +12,8 @@ const SECRET_NAMES = {
   stepfun: 'damocles.explore.apiKey.stepfun',
   minimax: 'damocles.minimax.apiKey',
   xai: 'damocles.xai.apiKey',
+  'kimi-coding': 'damocles.kimi-coding.apiKey',
+  meta: 'damocles.meta.apiKey',
   openrouter: 'damocles.explore.apiKey.openrouter',
   typesafe: 'damocles.typesafe.apiKey',
 } as const;
@@ -20,7 +25,7 @@ function startedRuntime(classify: () => Record<string, unknown>) {
   const fake = {
     hasConfiguredAuth: (p: string) => keys.has(p),
     getModelOfType: (type: string, provider: string, id: string) => ({ type, provider, id, api: 'typesafe-system-one' }),
-    getProviderAuthStatus: (p: string) => ({ configured: keys.has(p), source: 'runtime' }),
+    getProviderAuthStatus: (p: string): { configured: boolean; source?: string } => (keys.has(p) ? { configured: true, source: 'runtime' } : { configured: false }),
     setRuntimeApiKey: vi.fn(async (p: string, key: string) => void keys.set(p, key)),
     removeRuntimeApiKey: vi.fn(async (p: string) => void keys.delete(p)),
     logout: vi.fn(async () => {}),
@@ -31,6 +36,7 @@ function startedRuntime(classify: () => Record<string, unknown>) {
     })),
   };
   (runtime as unknown as { _modelRuntime: unknown })._modelRuntime = fake;
+  (runtime as unknown as { _initPromise: Promise<void> })._initPromise = Promise.resolve();
   return { runtime, fake };
 }
 
@@ -53,35 +59,114 @@ describe('provider keys', () => {
 
   it.each(KEY_PROVIDER_IDS)('stores the trimmed %s key under its unchanged secret name, and its status follows the store', async (provider) => {
     const platform = createFakePlatform();
-    expect(await providerAuthStatus(platform, provider)).toEqual({ type: 'providerAuthStatusChanged', provider, configured: false, external: null });
+    const base = { type: 'providerAuthStatusChanged', provider, external: null, signedIn: false, preferApiKey: false };
+    expect(await providerAuthStatus(platform, provider)).toEqual({ ...base, configured: false, active: 'none' });
 
     await storeProviderKey(platform, provider, '  the-key  ');
     expect(await platform.secrets.get(SECRET_NAMES[provider])).toBe('the-key');
-    expect(await providerAuthStatus(platform, provider)).toEqual({ type: 'providerAuthStatusChanged', provider, configured: true, external: null });
+    expect(await providerAuthStatus(platform, provider)).toEqual({ ...base, configured: true, active: 'apiKey' });
 
     await deleteProviderKey(platform, provider);
     expect(await platform.secrets.get(SECRET_NAMES[provider])).toBeUndefined();
-    expect(await providerAuthStatus(platform, provider)).toEqual({ type: 'providerAuthStatusChanged', provider, configured: false, external: null });
+    expect(await providerAuthStatus(platform, provider)).toEqual({ ...base, configured: false, active: 'none' });
   });
 
   it('marks a credential pi holds that Damocles did not apply, never the key Damocles applied', async () => {
     const platform = installFakePlatform();
     const { fake } = startedRuntime(() => ({}));
+    const base = { type: 'providerAuthStatusChanged', provider: 'minimax', signedIn: false, preferApiKey: false };
     await storeProviderKey(platform, 'minimax', 'sk-cp-x');
-    expect(await providerAuthStatus(platform, 'minimax')).toEqual({ type: 'providerAuthStatusChanged', provider: 'minimax', configured: true, external: null });
+    expect(await providerAuthStatus(platform, 'minimax')).toEqual({ ...base, configured: true, external: null, active: 'apiKey' });
 
     // pi reports its runtime key ahead of an environment key (model-runtime.js:441-450), so the environment shows once the stored key is gone.
     const runtimeStatus = fake.getProviderAuthStatus;
     fake.getProviderAuthStatus = (p: string) => (p === 'minimax' && !runtimeStatus(p).configured ? { configured: true, source: 'environment' } : runtimeStatus(p));
     await deleteProviderKey(platform, 'minimax');
-    expect(await providerAuthStatus(platform, 'minimax')).toEqual({ type: 'providerAuthStatusChanged', provider: 'minimax', configured: false, external: 'environment' });
+    expect(await providerAuthStatus(platform, 'minimax')).toEqual({ ...base, configured: false, external: 'environment', active: 'external' });
   });
 
   it.each([['stored'], ['models_json_key'], ['models_json_command'], ['fallback']])('names a %s credential as pi\'s configuration, not the environment', async (source) => {
     const platform = installFakePlatform();
     const { fake } = startedRuntime(() => ({}));
     fake.getProviderAuthStatus = (p: string) => (p === 'xai' ? { configured: true, source } : { configured: false, source: 'runtime' });
-    expect(await providerAuthStatus(platform, 'xai')).toEqual({ type: 'providerAuthStatusChanged', provider: 'xai', configured: false, external: 'piConfig' });
+    expect(await providerAuthStatus(platform, 'xai')).toEqual({
+      type: 'providerAuthStatusChanged', provider: 'xai', configured: false, external: 'piConfig', signedIn: false, preferApiKey: false, active: 'external',
+    });
+  });
+
+  it.each([['environment', 'environment'], ['models_json_key', 'piConfig']])('reports GitHub Copilot\'s %s credential, which no sign-in made, as external', async (source, external) => {
+    const platform = installFakePlatform();
+    const { fake } = startedRuntime(() => ({}));
+    fake.getProviderAuthStatus = (p: string) => (p === 'github-copilot' ? { configured: true, source } : { configured: false });
+    expect(await providerAuthStatus(platform, 'github-copilot')).toEqual({
+      type: 'providerAuthStatusChanged', provider: 'github-copilot', configured: false, external, signedIn: false, preferApiKey: false, active: 'external',
+    });
+  });
+
+  it('reads auth.json once per key status, and hands that read to the external-key check', async () => {
+    const platform = installFakePlatform();
+    const { runtime } = startedRuntime(() => ({}));
+    const external = vi.spyOn(runtime, 'externalKeySource');
+    await providerAuthStatus(platform, 'xai');
+    await providerAuthStatus(platform, 'github-copilot');
+    expect(external.mock.calls).toEqual([['xai', {}], ['github-copilot', {}]]);
+  });
+
+  describe('beside a stored sign-in', () => {
+    const authPath = path.join(PI_AGENT_DIR, 'auth.json');
+    beforeEach(() => {
+      fs.mkdirSync(PI_AGENT_DIR, { recursive: true });
+      fs.writeFileSync(authPath, JSON.stringify({ xai: { type: 'oauth', access: 'a', refresh: 'r', expires: 7_000 } }));
+    });
+    afterEach(() => {
+      fs.rmSync(authPath, { force: true });
+    });
+
+    it('reads the sign-in from auth.json, and the sign-in is active until prefer is on', async () => {
+      const platform = installFakePlatform();
+      const { fake } = startedRuntime(() => ({}));
+      await storeProviderKey(platform, 'xai', 'xai-key');
+      expect(fake.setRuntimeApiKey).not.toHaveBeenCalled();
+      const signedIn = { type: 'providerAuthStatusChanged', provider: 'xai', configured: true, external: null, signedIn: true, signedInExpiresAt: 7_000 };
+      expect(await providerAuthStatus(platform, 'xai')).toEqual({ ...signedIn, preferApiKey: false, active: 'signIn' });
+
+      await setProviderPreferApiKey('xai', true);
+      expect(fake.setRuntimeApiKey).toHaveBeenCalledWith('xai', 'xai-key', expect.anything());
+      expect(await providerAuthStatus(platform, 'xai')).toEqual({ ...signedIn, preferApiKey: true, active: 'apiKey' });
+
+      await setProviderPreferApiKey('xai', false);
+      expect(fake.removeRuntimeApiKey).toHaveBeenCalledWith('xai', expect.anything());
+      expect(await providerAuthStatus(platform, 'xai')).toEqual({ ...signedIn, preferApiKey: false, active: 'signIn' });
+      expect(fake.logout).not.toHaveBeenCalled();
+    });
+
+    it('reports an environment key beside the sign-in as the sign-in, which pi resolves first', async () => {
+      const platform = installFakePlatform();
+      const { fake } = startedRuntime(() => ({}));
+      fake.getProviderAuthStatus = (p: string) => (p === 'xai' ? { configured: true, source: 'environment' } : { configured: false, source: 'runtime' });
+      expect(await providerAuthStatus(platform, 'xai')).toEqual({
+        type: 'providerAuthStatusChanged', provider: 'xai', configured: false, external: null, signedIn: true, signedInExpiresAt: 7_000, preferApiKey: false, active: 'signIn',
+      });
+    });
+
+    it('reports GitHub Copilot\'s sign-in, which pi resolves before COPILOT_GITHUB_TOKEN', async () => {
+      fs.writeFileSync(authPath, JSON.stringify({ 'github-copilot': { type: 'oauth', access: 'a', refresh: 'r', expires: 9_000 } }));
+      const platform = installFakePlatform();
+      const { fake } = startedRuntime(() => ({}));
+      fake.getProviderAuthStatus = (p: string) => (p === 'github-copilot' ? { configured: true, source: 'environment' } : { configured: false });
+      expect(await providerAuthStatus(platform, 'github-copilot')).toEqual({
+        type: 'providerAuthStatusChanged', provider: 'github-copilot', configured: false, external: null, signedIn: true, signedInExpiresAt: 9_000, preferApiKey: false, active: 'signIn',
+      });
+    });
+
+    it('leaves the sign-in in auth.json when the key is deleted', async () => {
+      const platform = installFakePlatform();
+      const { fake } = startedRuntime(() => ({}));
+      await storeProviderKey(platform, 'xai', 'xai-key');
+      await deleteProviderKey(platform, 'xai');
+      expect(fake.logout).not.toHaveBeenCalled();
+      expect(JSON.parse(fs.readFileSync(authPath, 'utf8')).xai.type).toBe('oauth');
+    });
   });
 
   it('answers nothing when the secret store fails, so the status last posted stands', async () => {

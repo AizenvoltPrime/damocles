@@ -137,6 +137,23 @@ describe('settings scope tabs', () => {
     expect(await files()).toEqual(['user: Edit user settings.json']);
   });
 
+  it.each([
+    ['machine', `Not reachable from ${HOST}`],
+    ['user', 'Not reachable here'],
+  ] as const)('on the %s tab names the chat a loopback model cannot be reached from', async (active, hint) => {
+    await openOn(active, 'defaults');
+    await update(active === 'user' ? undefined : ['damocles.model']);
+    const models = useSettingsStore().availableModels.map((model) => (model.value === 'step-5-preview' ? { ...model, unavailable: { reason: 'loopback-endpoint' as const, endpoint: 'http://127.0.0.1:8080' } } : model));
+    api.settingsMessage({ type: 'availableModels', models });
+    await flushPromises();
+    const select = row('damocles.model')!.querySelector<HTMLElement>('button[aria-label="Default model"]')!;
+    select.focus();
+    press(select, 'Enter');
+    await flushPromises();
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((el) => el.textContent!.includes('Step 5 Preview'))!;
+    expect(option.textContent).toContain(hint);
+  });
+
   it('moves focus with the arrow keys without switching, and names a long host in full in its title', async () => {
     await openOn('machine');
     tab('host').focus();

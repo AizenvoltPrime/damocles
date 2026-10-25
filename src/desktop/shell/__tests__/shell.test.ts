@@ -11,7 +11,7 @@ import RepositoriesSection from '../scm/RepositoriesSection.vue';
 import Sash from '../layout/Sash.vue';
 import { shellI18n } from '../i18n';
 import { LAYOUT_SETTLED_EVENT, watchContentBounds } from '../content-bounds';
-import { chatGroupOf, chatListRows, tagCounts } from '../chat-list';
+import { chatGroupOf, chatListRows, modelLabel, tagCounts } from '../chat-list';
 import { avatarHue, avatarInitial } from '../project-avatar';
 import { providerLogoSvg } from '@/components/icons/provider-logos';
 import { createEditorStore, EDITOR_STORE } from '../editor/editor-store';
@@ -78,6 +78,14 @@ describe('chat list helpers', () => {
     expect(providerLogoSvg('openai-codex')).toBe(providerLogoSvg('openai'));
     expect(providerLogoSvg('my-gateway')).toBeUndefined();
     expect(providerLogoSvg('constructor')).toBeUndefined();
+  });
+
+  it('names a recorded model by its provider and id, qualifying a name two providers share', () => {
+    expect(modelLabel({ provider: 'openai-codex', id: 'gpt-6-astra' })).toBe('GPT-6 Astra');
+    expect(modelLabel({ provider: 'github-copilot', id: 'gpt-6-astra' })).toBe('GPT-6 Astra (GitHub Copilot)');
+    expect(modelLabel({ provider: 'github-copilot', id: 'claude-opus-5.5' })).toBe('Opus 5.5 (GitHub Copilot)');
+    expect(modelLabel({ provider: 'anthropic', id: 'claude-opus-5-5' })).toBe('Opus 5.5');
+    expect(modelLabel({ provider: 'my-gateway', id: 'claude-opus-5-5' })).toBe('claude-opus-5-5');
   });
 });
 

@@ -116,6 +116,17 @@ export function useSettingsTarget(): Readonly<ShallowRef<SettingsTarget | null>>
   return target;
 }
 
+/** The attached chat's host when it is a remote chat, which a model it cannot reach is named against. */
+const CHAT_HOST: InjectionKey<() => string | undefined> = Symbol('settingsChatHost');
+
+export function provideSettingsChatHost(host: () => string | undefined): void {
+  provide(CHAT_HOST, host);
+}
+
+export function useSettingsChatHost(): () => string | undefined {
+  return inject(CHAT_HOST, () => undefined);
+}
+
 /** What the Workspace section's list of values from settings files needs from the modal. */
 export interface SettingsFiles {
   /** The damocles.* keys a row of a shown section writes; a file's value for any other key is listed. */

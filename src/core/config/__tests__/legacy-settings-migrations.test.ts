@@ -231,10 +231,33 @@ describe('migrateLegacyModelSetting — effortByModel re-keying', () => {
     expect(effortUpdate?.value).not.toHaveProperty('gpt-5.5');
   });
 
+  it("carries a 'none' effort to GPT-6 Luna, which offers it", async () => {
+    const { settings, updates } = stub({
+      model: { global: 'gpt-6.1-sol' },
+      effortByModel: { global: { 'gpt-5.2': 'none' } },
+    });
+    await migrateLegacyModelSetting(settings);
+
+    const effortUpdate = updates.find((u) => u.key === 'effortByModel');
+    expect(effortUpdate?.value).toEqual({ 'gpt-6-luna': 'none' });
+  });
+
   it("clamps an unsupported carried effort ('none') to the target model's lowest level ('low')", async () => {
     const { settings, updates } = stub({
       model: { global: 'gpt-6.1-sol' },
-      effortByModel: { global: { 'gpt-5.2': 'none' } }, // gpt-5.2 → luna; 'none' unsupported → 'low'
+      effortByModel: { global: { 'gpt-5.5': 'none' } }, // gpt-5.5 → sol; 'none' unsupported → 'low'
+    });
+    await migrateLegacyModelSetting(settings);
+
+    const effortUpdate = updates.find((u) => u.key === 'effortByModel');
+    expect(effortUpdate?.value).toEqual({ 'gpt-6.1-sol': 'low' });
+  });
+
+  // GPT-6 Luna lists None first, and a clamp never lowers a carried level to None.
+  it("clamps an unsupported carried effort up to the target's lowest reasoning level, never to None", async () => {
+    const { settings, updates } = stub({
+      model: { global: 'gpt-6-luna' },
+      effortByModel: { global: { 'gpt-5.6-luna': 'ultracode' } },
     });
     await migrateLegacyModelSetting(settings);
 

@@ -27,6 +27,13 @@ describe('providerLogoSvg', () => {
     expect(hasProviderLogo('minimax')).toBe(true);
     expect(hasProviderLogo('nobody')).toBe(false);
   });
+
+  it.each(['kimi-coding', 'meta', 'github-copilot'])('gives %s a logo with no gradient ids', (provider) => {
+    const svg = providerLogoSvg(provider)!;
+    expect(svg).toMatch(/^<svg aria-hidden="true" focusable="false" /);
+    expect(ids(svg)).toEqual([]);
+    expect(svg).not.toContain('<title>');
+  });
 });
 
 describe('ProviderLogo', () => {

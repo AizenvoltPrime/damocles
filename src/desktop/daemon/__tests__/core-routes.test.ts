@@ -6,6 +6,8 @@ import { createCoreEndpoint, createLoopback, createMainEndpoint, type MainEndpoi
 import { CLIENT_STATE_KEYS, CORE_TO_MAIN, MAIN_TO_CORE, type ChatEntry, type StateScope } from '../../core-protocol/messages';
 import { LANGUAGE_PREFERENCE_KEY } from '../../../shared/language-preference';
 import { OPENAI_PREFER_API_KEY_STATE } from '../../../core/pi-session/openai-auth';
+import { providerPreferApiKeyState } from '../../../core/pi-session/provider-auth';
+import { KEY_PROVIDER_IDS } from '../../../shared/settings-sections';
 import {
   CORE_EVENT_ROUTES,
   CORE_MIRROR_ROUTES,
@@ -125,7 +127,9 @@ describe('core routes', () => {
   });
 
   it('name the client state keys by the constants core reads them with', () => {
-    expect([...CLIENT_STATE_KEYS].sort()).toEqual([LANGUAGE_PREFERENCE_KEY, OPENAI_PREFER_API_KEY_STATE].sort());
+    expect([...CLIENT_STATE_KEYS].sort()).toEqual([LANGUAGE_PREFERENCE_KEY, OPENAI_PREFER_API_KEY_STATE, ...KEY_PROVIDER_IDS.map(providerPreferApiKeyState)].sort());
+    expect(CLIENT_STATE_KEYS).toContain('damocles.kimi-coding.preferApiKey');
+    expect(CLIENT_STATE_KEYS).not.toContain('damocles.github-copilot.preferApiKey');
   });
 
   it('refuse core\'s clipboard.writeText and shell.trash without asking a client', async () => {

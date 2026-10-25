@@ -38,7 +38,7 @@ import type { TeamRunner } from '../team-runner';
 import type { TeamCheckpoint } from '../types';
 import { copyForkAgentData } from '../../pi-session/fork-agent-data';
 import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_TEAM_DELIVERED_ENTRY } from '../../pi-session/session-store/constants';
-import { buildResumePrompt, formatTeamUserSteerPrefix, wrapSteerMessage } from '../../../shared/steer';
+import { RESUME_NOTE_LABEL, STEER_INSTRUCTION_PREFIX, buildResumePrompt, formatTeamUserSteerPrefix, wrapSteerMessage } from '../../../shared/steer';
 import { buildFailedResumePrompt, buildInterruptedResumePrompt } from '../prompts';
 import { Scratchpad } from '../scratchpad';
 import { PI_EXCLUDED_TOOLS } from '../../pi-session/pi-models';
@@ -486,6 +486,8 @@ describe('a team whose lead failed', () => {
 
     expect(p.stores.at(-1)).toEqual({ kind: 'reopen', path: leadFile, agentId: expect.any(String) });
     expect(p.sessions.at(-1)!.prompts[0]).toBe(buildFailedResumePrompt('try again'));
+    expect(p.sessions.at(-1)!.prompts[0]!.startsWith(STEER_INSTRUCTION_PREFIX)).toBe(false);
+    expect(p.sessions.at(-1)!.prompts[0]).toContain(`${RESUME_NOTE_LABEL}\n> try again`);
     expect(resumed).not.toContain('before completion;');
     expect(teamEnd(p, teamId)).toMatchObject({ status: 'completed' });
   });
@@ -981,6 +983,8 @@ describe('a fork of a session with a team', () => {
     fork.behave.lead = endTurn;
     await expect(fork.service.resumeTeam(teamId, 'fork direction', 'tc-fork-resume')).resolves.not.toContain('before completion;');
     expect(fork.sessions[0]!.prompts[0]).toBe(buildInterruptedResumePrompt('fork direction'));
+    expect(fork.sessions[0]!.prompts[0]!.startsWith(STEER_INSTRUCTION_PREFIX)).toBe(false);
+    expect(fork.sessions[0]!.prompts[0]).toContain(`${RESUME_NOTE_LABEL}\n> fork direction`);
     expect(await stopOf(parent, teamId)).toBe('parent');
   });
 

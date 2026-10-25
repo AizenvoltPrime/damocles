@@ -6,14 +6,17 @@ import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { createClaudeAuthHandlers } from '../../../core/chat-panel/message-router/handlers/claude-auth-handlers';
 import { createOpenAIHandlers } from '../../../core/chat-panel/message-router/handlers/openai-handlers';
+import { createProviderAccountHandlers } from '../../../core/chat-panel/message-router/handlers/provider-account-handlers';
+import { createSettingsHandlers } from '../../../core/chat-panel/message-router/handlers/settings-handlers';
 import type { HandlerContext, HandlerDependencies } from '../../../core/chat-panel/message-router/types';
 import type { HostInstance } from '../../../core/chat-panel/types';
 import { parseContributedConfiguration } from '../../../core/config/contributed-configuration';
 import { installPlatform } from '../../../core/platform-host';
-import { PROVIDER_SECRET_KEYS } from '../../../core/pi-session/explore-providers';
+import { customProviderDef } from '../../../core/pi-session/custom-providers';
 import { BrokeredCredentialStore } from '../../../core/pi-session/credential-broker';
 import { OPENAI_API_KEY_SECRET } from '../../../core/pi-session/openai-auth';
 import { PiRuntime } from '../../../core/pi-session/pi-runtime';
+import { KEY_PROVIDER_IDS } from '../../../shared/settings-sections';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../../shared/types/messages';
 import { createCoreEndpoint, createLoopback, createMainEndpoint } from '../../core-protocol';
 import { CLIENT_STATE_KEYS } from '../../core-protocol/messages';
@@ -21,6 +24,8 @@ import { DesktopSettingsStore } from '../../local-services/settings-store';
 import { createClientMirrors, createCoreRouter, type CoreRouter } from '../core-routes';
 import { createDaemonState } from '../daemon-state';
 import { createRunRegistry } from '../run-registry';
+
+const PROVIDER_KEY_SECRETS = [OPENAI_API_KEY_SECRET, ...KEY_PROVIDER_IDS.map((provider) => customProviderDef(provider).key.secretKey)];
 
 // A daemon's core never writes this computer's files or changes its credentials: every route that could, refuses.
 const quiet = (): void => undefined;
@@ -45,7 +50,7 @@ function attachedClient() {
   router = createCoreRouter({ core: daemonMain, state, registry: createRunRegistry(), mirrors: createClientMirrors(), secrets: new Map(), e2eHooks: false, reload: vi.fn(), log: quiet });
   const loop = createLoopback();
   const main = createMainEndpoint(loop.main, quiet, (error) => { throw error; });
-  const clientSecrets = new Map<string, string>([[`remote/h1/${OPENAI_API_KEY_SECRET}`, 'sk-client'], [`remote/h1/${PROVIDER_SECRET_KEYS.stepfun}`, 'sk-ds'], ['remote/h1/mcp.token', 't']]);
+  const clientSecrets = new Map<string, string>([...PROVIDER_KEY_SECRETS.map((key): [string, string] => [`remote/h1/${key}`, 'sk-client']), ['remote/h1/mcp.token', 't']]);
   const asked = vi.fn();
   main.serve('secrets.get', ({ key }) => { asked('get', key); return clientSecrets.get(key); });
   main.serve('secrets.store', ({ key, value }) => { asked('store', key); clientSecrets.set(key, value); });
@@ -65,7 +70,7 @@ function attachedClient() {
 }
 
 describe('a daemon\'s core cannot write client files or change client credentials', () => {
-  it.each([OPENAI_API_KEY_SECRET, PROVIDER_SECRET_KEYS.stepfun])('provider key %s: get answers undefined unasked, store and delete refuse, keys omit it', async (key) => {
+  it.each(PROVIDER_KEY_SECRETS)('provider key %s: get answers undefined unasked, store and delete refuse, keys omit it', async (key) => {
     const { core, asked, clientSecrets } = attachedClient();
     expect(await core.request('secrets.get', { key })).toBeUndefined();
     await expect(core.request('secrets.store', { key, value: 'sk-evil' })).rejects.toThrow(/client/);
@@ -134,14 +139,31 @@ describe('a daemon\'s core refuses every sign-in and key change before any pi ca
     ['signInChatGPT', (runtime) => runtime.signInChatGPT(interaction)],
     ['signOutChatGPT', (runtime) => runtime.signOutChatGPT()],
     ['signOutCodex', (runtime) => runtime.signOutCodex()],
+    ['setProviderPreferApiKey', (runtime) => runtime.setProviderPreferApiKey('xai', true)],
+    ['signInProvider', (runtime) => runtime.signInProvider('xai', interaction)],
+    ['signOutProvider', (runtime) => runtime.signOutProvider('xai')],
   ])('PiRuntime.%s', async (_name, call) => {
-    remotePlatform();
+    const platform = remotePlatform();
     const runtime = PiRuntime.get(dir);
     const init = vi.spyOn(runtime, 'init');
     const folder = vi.spyOn(runtime, 'folder');
+    const stateWrite = vi.spyOn(platform.state.global, 'update');
     await expect(call(runtime)).rejects.toThrow('Sign-ins change only in the User tab on your computer.');
     expect(init).not.toHaveBeenCalled();
     expect(folder).not.toHaveBeenCalled();
+    expect(stateWrite).not.toHaveBeenCalled();
+  });
+
+  it('the setProviderPreferApiKey route answers the refusal and writes no state', async () => {
+    const platform = remotePlatform();
+    const stateWrite = vi.spyOn(platform.state.global, 'update');
+    const posted: ExtensionToWebviewMessage[] = [];
+    const { deps, ctx } = handlerDeps(platform, posted);
+    const message = { type: 'setProviderPreferApiKey', provider: 'xai', preferApiKey: true, requestId: 'r1' } as WebviewToExtensionMessage;
+    await createSettingsHandlers(deps).setProviderPreferApiKey!(message, ctx);
+    expect(posted).toEqual([{ type: 'setProviderPreferApiKeyAck', provider: 'xai', requestId: 'r1', ok: false, error: 'Sign-ins change only in the User tab on your computer.' }]);
+    expect(stateWrite).not.toHaveBeenCalled();
+    expect(PiRuntime.exists).toBe(false);
   });
 
   it('PiRuntime.resolveCredentialForBroker answers no broker', async () => {
@@ -154,9 +176,9 @@ describe('a daemon\'s core refuses every sign-in and key change before any pi ca
 
   function handlerDeps(platform: ReturnType<typeof remotePlatform>, posted: ExtensionToWebviewMessage[]) {
     const host = { postMessage: (message: ExtensionToWebviewMessage) => posted.push(message) };
-    const session = { publishAccountInfo: () => undefined, openaiSignInEnded: async () => undefined };
+    const session = { publishAccountInfo: () => undefined, publishAvailableModels: () => undefined, openaiSignInEnded: async () => undefined };
     const panels = new Map([['panel-1', { host, session } as unknown as HostInstance]]);
-    const deps = { platform, getPanels: () => panels, postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message) } as unknown as HandlerDependencies;
+    const deps = { platform, getPanels: () => panels, subscriptions: [], postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message) } as unknown as HandlerDependencies;
     return { deps, ctx: { host, panelId: 'panel-1', folder: { fsPath: dir } } as unknown as HandlerContext };
   }
 
@@ -195,5 +217,35 @@ describe('a daemon\'s core refuses every sign-in and key change before any pi ca
     const { deps, ctx } = handlerDeps(platform, posted);
     await createClaudeAuthHandlers(deps).handlers[route as 'claudeSetApiKey']!(message, ctx);
     expect(posted).toContainEqual({ type: 'claudeAuthError', error: 'Sign-ins change only in the User tab on your computer.' });
+  });
+
+  it.each<[string, WebviewToExtensionMessage]>([
+    ['providerSignIn', { type: 'providerSignIn', provider: 'xai' } as WebviewToExtensionMessage],
+    ['providerSignOut', { type: 'providerSignOut', provider: 'xai' } as WebviewToExtensionMessage],
+  ])('the %s route puts the refusal in the sign-in state and never starts pi', async (route, message) => {
+    const platform = remotePlatform();
+    const posted: ExtensionToWebviewMessage[] = [];
+    const { deps, ctx } = handlerDeps(platform, posted);
+    await createProviderAccountHandlers(deps).handlers[route as 'providerSignIn']!(message, ctx);
+    expect(posted).toEqual([
+      { type: 'providerSignInState', provider: 'xai', state: { phase: 'idle', error: { kind: 'remote', message: 'Sign-ins change only in the User tab on your computer.' } } },
+    ]);
+    expect(PiRuntime.exists).toBe(false);
+  });
+
+  it.each<[string, WebviewToExtensionMessage, string]>([
+    ['setProviderApiKey', { type: 'setProviderApiKey', provider: 'xai', key: 'xai-key', requestId: 'r1' } as WebviewToExtensionMessage, 'setProviderApiKeyAck'],
+    ['clearProviderApiKey', { type: 'clearProviderApiKey', provider: 'xai', requestId: 'r1' } as WebviewToExtensionMessage, 'clearProviderApiKeyAck'],
+  ])('the %s route answers the refusal before any secret write', async (route, message, ack) => {
+    const platform = remotePlatform();
+    const store = vi.spyOn(platform.secrets, 'store');
+    const remove = vi.spyOn(platform.secrets, 'delete');
+    const posted: ExtensionToWebviewMessage[] = [];
+    const { deps, ctx } = handlerDeps(platform, posted);
+    await createProviderAccountHandlers(deps).handlers[route as 'setProviderApiKey']!(message, ctx);
+    expect(posted).toEqual([{ type: ack, provider: 'xai', requestId: 'r1', ok: false, error: 'Sign-ins change only in the User tab on your computer.' }]);
+    expect(store).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(PiRuntime.exists).toBe(false);
   });
 });

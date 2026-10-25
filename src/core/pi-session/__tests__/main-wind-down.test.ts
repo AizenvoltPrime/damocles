@@ -38,6 +38,7 @@ function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
 
 interface Internals {
   runtime: { session: AgentSession };
+  desiredModel: unknown;
   startPromise: Promise<void> | null;
   titleGenerationAttempted: boolean;
   budgetLimitForEnforcement: () => number | null;
@@ -49,6 +50,8 @@ function boundPanel(held: HeldSettleSession, emitted: ExtensionToWebviewMessage[
   const panel = panelSession(emitted);
   const inner = panel as unknown as Internals;
   inner.runtime = { session: held.session };
+  // The chat's model, which `start()` commits with the session it builds on it; a send without one is refused.
+  inner.desiredModel = held.session.model;
   inner.subscribeEvents(held.session);
   inner.startPromise = Promise.resolve();
   inner.titleGenerationAttempted = true;

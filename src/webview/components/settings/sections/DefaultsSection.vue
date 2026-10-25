@@ -11,10 +11,11 @@ import SettingsRow from '../SettingsRow.vue';
 import SettingSelect from '../controls/SettingSelect.vue';
 import SettingSeg from '../controls/SettingSeg.vue';
 import SettingSwitch from '../controls/SettingSwitch.vue';
-import { effortOptions, modelOptions, permissionOptions } from '../model-options';
+import { effortOptions, modelOptions, permissionOptions, useUnavailableHint } from '../model-options';
 import { useSettingWrite } from '../settings-writes';
 
 const { t } = useI18n();
+const unavailableHint = useUnavailableHint();
 const settingsStore = useSettingsStore();
 const uiStore = useUIStore();
 const { postMessage } = usePlatformBridge();
@@ -116,7 +117,7 @@ function setIdeContext(enabled: boolean): void {
   <SettingsRow id="damocles.model">
     <SettingSelect
       :model-value="defaultModel"
-      :options="modelOptions(availableModels)"
+      :options="modelOptions(availableModels, unavailableHint)"
       :label="t('settingsModal.rows.defaultModel.label')"
       @update:model-value="setDefaultModel"
     />

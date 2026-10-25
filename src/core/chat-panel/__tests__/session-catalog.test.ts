@@ -91,6 +91,7 @@ async function liveChatOn(file: string, name = 'live'): Promise<LiveSessionMutat
     liveSessionFile: () => undefined,
     storedMetadata: () => null,
     publishAccountInfo: () => undefined,
+    publishAvailableModels: () => undefined,
   };
 }
 

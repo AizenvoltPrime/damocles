@@ -81,7 +81,7 @@ function makeDeps(sent: ExtensionToWebviewMessage[], platform: FakePlatform): {
   const publishAccountInfo = vi.fn();
   const deps = {
     postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => { sent.push(message); },
-    getPanels: () => new Map([["panel-1", { host, session: { publishAccountInfo } }]]) as unknown as Map<string, never>,
+    getPanels: () => new Map([["panel-1", { host, session: { publishAccountInfo, publishAvailableModels: vi.fn() } }]]) as unknown as Map<string, never>,
     platform,
   } as unknown as HandlerDependencies;
   const folder = { key: "/ws/b", fsPath: "/ws/B", name: "B", label: "B", projectScope: true };
@@ -136,6 +136,7 @@ describe("createClaudeAuthHandlers", () => {
     expect(sent).toEqual([
       { type: "claudeAuthBusy", busy: true },
       { type: "claudeAuthStatusChanged", mode: "allowance" },
+      { type: "authFailureCleared", account: "anthropic" },
       { type: "claudeAuthBusy", busy: false },
     ]);
   });
@@ -352,6 +353,23 @@ describe("createClaudeAuthHandlers", () => {
       await handlers.claudeSignOut!({ type: "claudeSignOut" }, ctx);
 
       expect(publishAccountInfo).toHaveBeenCalledTimes(1);
+    });
+
+    it("a completed sign-in, key save or sign-out clears the Anthropic card; a failed sign-in does not", async () => {
+      const cleared = { type: "authFailureCleared", account: "anthropic" };
+      H.runtime.signInSubscription.mockRejectedValueOnce(new Error("token exchange failed"));
+      await handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
+      expect(sent).not.toContainEqual(cleared);
+
+      for (const msg of [
+        { type: "claudeSignIn", useAllowance: true },
+        { type: "claudeSetApiKey", key: "sk-ant-x" },
+        { type: "claudeSignOut" },
+      ] as const) {
+        sent.length = 0;
+        await handlers[msg.type]!(msg, ctx);
+        expect(sent).toContainEqual(cleared);
+      }
     });
 
     it("a failed sign-in leaves the credential untouched, so it does not republish", async () => {

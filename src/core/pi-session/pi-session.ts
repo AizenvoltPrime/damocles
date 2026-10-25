@@ -26,6 +26,7 @@ import {
 } from "../../shared/types/content";
 import {
   DEFAULT_CONTEXT_WINDOW,
+  DEFAULT_FALLBACK_MODEL,
   DEFAULT_MODELS,
   DEFAULT_SUBAGENT_CONCURRENCY,
   MODEL_SUBSTITUTES,
@@ -35,6 +36,7 @@ import {
   parseEffortLevel,
 } from "../../shared/types/constants";
 import { PLAN_MODE_TOOLS, WRITE_TOOLS } from "../../shared/tool-names";
+import { modelLabel } from "../../shared/model-vendor";
 import { ChatReview, type ChatChangeTotals, type ChatReviewSnapshot, type CommentPlace, type DraftComment, type ReviewSubmitOutcome } from "./chat-review";
 import { SessionWorktree } from "./session-worktree";
 import { WORKTREE_ENTRY, worktreeGitOf } from "../worktrees/hand-off";
@@ -65,9 +67,11 @@ import { pendingPromptDescriber, pendingPromptOwners, promptOwnerOf, type Prompt
 import type { SubscriptionProvider, UsageMonitor } from "./usage-thresholds";
 import {
   markLoopbackEndpoints,
+  markNotInPlan,
+  modelInPlan,
   piSupportedModels,
   resolvePiModel,
-  modelValueOfPiModel,
+  recordedModelValue,
   providerDisplayName,
   piModelToModelInfo,
   piContextWindow,
@@ -75,8 +79,11 @@ import {
   recordedReasoning,
   PI_EXCLUDED_TOOLS,
   PLAN_MODE_EXCLUDED_TOOLS,
+  notInPlanClause,
+  refusalNames,
   type ModelResolution,
 } from "./pi-models";
+import { providerPickedOnly } from "./custom-providers";
 import type { OpenAIAuthStatus } from "./openai-auth";
 import { currentPin, runPinnedTurn } from "../client-snapshots";
 import { pinRunStarts } from "./credential-broker";
@@ -204,7 +211,6 @@ import { appendSubCallUsage } from "../usage-stats/subcall-ledger";
 import {
   buildAccountInfo as buildAccountInfoFrom,
   dollarBilled as dollarBilledFrom,
-  modelDollarBilled,
   piModelDollarBilled,
   resolvedProviderOf,
   subscriptionProvider,
@@ -391,11 +397,21 @@ interface QueuedSwitch {
   cancelled: boolean;
 }
 
-/** A stored session's recorded model as this panel's model value, the pi model it resolved to, and the recorded pi thinking level. */
+/**
+ * A stored session's recorded model as this panel's model value, the pi model it resolved to, and the recorded pi thinking
+ * level. `runnable` is false for a model signed out or outside the plan, which the chat shows but sends refuse.
+ */
 interface BuiltSelection {
   readonly value: string;
   readonly model: Model<Api>;
   readonly thinkingLevel: string | undefined;
+  readonly runnable: boolean;
+}
+
+/** Why a model call is refused: `modelSignInRequired` when no model can run at all, else `modelUnavailable` with why. */
+interface ModelRefusal {
+  readonly reason: "modelSignInRequired" | "modelUnavailable";
+  readonly detail?: string;
 }
 
 /** The conversation and prompt a turn's memory candidate is filed under, read when the prompt starts. */
@@ -814,6 +830,8 @@ export class PiSession implements ChatSession {
       this.switchedFromOtherDir = null;
       const sessionManager = reopen !== null ? pi.SessionManager.open(reopen, ensurePiSessionDir(this.cwd), this.cwd) : opts.sessionManager;
       const recorded = this.recordedSelectionOf(sessionManager.getBranch());
+      // A record that cannot run becomes the chat's only while the chat has no model to run instead.
+      const built = recorded && (recorded.runnable || !this.desiredModel) ? recorded : undefined;
       // Built per session so per-session tool state (the task list) resets on reset/newSession.
       const customTools = buildCustomTools({
         pi,
@@ -845,18 +863,19 @@ export class PiSession implements ChatSession {
       // factory runs before `setMcpServers`, a frozen list would permanently exclude later-registered
       // mcp__ tools (the first-connect bug). Omitting it admits every non-excluded tool into the registry;
       // the active set is governed by `applyActiveToolsForMode`. `excludeTools` still drops pi's `edit`.
-      const model = recorded?.model ?? this.desiredModel;
+      // Given no model, pi picks one itself (sdk.js:87-118 in pi-coding-agent 1.4.0), so it always gets the chat's.
+      const model = built?.model ?? this.desiredModel ?? this.shownPiModel();
       // pi runs the given model as it is and the given level clamped to it (sdk.js:87, :121-144 and :252-257 in pi-coding-agent 1.4.0).
       const result = await pi.createAgentSessionFromServices({
         services: shared,
         sessionManager,
-        ...(model ? { model } : {}),
+        model,
         excludeTools: [...PI_EXCLUDED_TOOLS],
         customTools,
-        thinkingLevel: recorded ? this.resolveThinkingLevel(recorded.value, recorded.thinkingLevel) : this.resolveThinkingLevel(),
+        thinkingLevel: built ? this.resolveThinkingLevel(built.value, built.thinkingLevel) : this.resolveThinkingLevel(),
       });
       this.pinRunStarts(result.session);
-      if (recorded) this.builtSelections.set(result.session, recorded);
+      if (built) this.builtSelections.set(result.session, built);
       bound.session = result.session;
       return { ...result, services: shared, diagnostics: shared.diagnostics ?? [] };
     };
@@ -1269,10 +1288,11 @@ export class PiSession implements ChatSession {
   /**
    * Pick the starting model: the saved value if its canonical provider is authed, otherwise the
    * first curated model the user is actually signed in for (so a codex-only user defaults to a GPT
-   * model rather than an unusable Claude/gateway one). Leaves the model unset if nothing is authed.
+   * model rather than an unusable Claude/gateway one), never one of a `pickedOnly` provider. Leaves
+   * `desiredModel` unset when none qualifies, and every send is then refused until the user picks one.
    */
   private resolveInitialModel(piRuntime: PiRuntime): void {
-    const registry = piRuntime.modelRuntime;
+    const registry = piRuntime.modelLookup;
     if (!registry) return;
     const openai = piRuntime.getOpenAIAuthStatus();
 
@@ -1299,25 +1319,36 @@ export class PiSession implements ChatSession {
       if (isCurated(substitute) && trySet(substitute)) return;
     }
     for (const m of this.supportedModelsCache) {
-      if (trySet(m.value)) return;
+      if (!(m.piProvider !== undefined && providerPickedOnly(m.piProvider)) && trySet(m.value)) return;
     }
   }
 
   /**
    * pi resumes a session on the model and thinking level its file recorded (sdk.js createAgentSession), which Damocles
    * otherwise overrides by passing the panel's: a recorded model still curated and signed in is the one the session is
-   * built on, with its level. A retired recorded model continues on its `LEGACY_MODEL_MAP` successor. Anything else keeps
-   * the panel's model. Permission mode and YOLO are never restored.
+   * built on, with its level. A retired recorded model continues on its `LEGACY_MODEL_MAP` successor (`recordedModelValue`).
+   * A recorded model that cannot run is `runnable: false`. Permission mode and YOLO are never restored.
    */
   private recordedSelectionOf(branch: readonly SessionEntry[]): BuiltSelection | undefined {
     const recorded = recordedSelection(branch);
-    const value = recorded?.model ? modelValueOfPiModel(recorded.model.provider, migrateLegacyModelValue(recorded.model.modelId)) : undefined;
+    const value = recorded?.model ? recordedModelValue(recorded.model.provider, recorded.model.modelId) : undefined;
     const piRuntime = PiRuntime.get();
-    const registry = piRuntime.modelRuntime;
+    const registry = piRuntime.modelLookup;
     if (value === undefined || !registry) return undefined;
     const resolution = resolvePiModel(value, registry, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
-    if (!resolution.model || !resolution.authed) return undefined;
-    return { value, model: resolution.model, thinkingLevel: recorded?.thinkingLevel };
+    if (!resolution.model) return undefined;
+    return { value, model: resolution.model, thinkingLevel: recorded?.thinkingLevel, runnable: resolution.authed === true };
+  }
+
+  /** The pi model of the value the chat shows, given to pi while the chat has no model it can run, which every send refuses. */
+  private shownPiModel(): Model<Api> {
+    const piRuntime = PiRuntime.get();
+    const registry = piRuntime.modelLookup;
+    const shown = (value: string): Model<Api> | undefined =>
+      registry ? resolvePiModel(value, registry, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey()).model : undefined;
+    const model = shown(this.modelValue) ?? shown(DEFAULT_FALLBACK_MODEL);
+    if (!model) throw new Error("PiSession: pi's model catalog has no model to give the session");
+    return model;
   }
 
   /** The chat's model and effort become those of the session pi installed, and of no session it only built. */
@@ -1326,7 +1357,7 @@ export class PiSession implements ChatSession {
     if (!built) return;
     this.builtSelections.delete(session);
     this.modelValue = built.value;
-    this.desiredModel = built.model;
+    this.desiredModel = built.runnable ? built.model : undefined;
     this.options.onRecordedSelection?.(built.value, built.thinkingLevel);
     // Published with the record, so what the panel shows never parts from it.
     this.publishAccountInfo();
@@ -1340,7 +1371,7 @@ export class PiSession implements ChatSession {
    * notification never gates startup on an answer.
    *
    * Keyed off `notWired` (configured but not live), never off the absence from `wired`: a provider whose
-   * secret the user deleted is deauthenticated and appears in NEITHER list, and telling that user we
+   * secret the user deleted, or whose key a stored sign-in outranks, appears in NEITHER list, and telling that user we
    * "could not reach" their provider — then offering a reload that cannot help — is a wrong diagnosis.
    */
   private warnCustomProviderFallback(piRuntime: PiRuntime, requested: string, notWired: string[]): void {
@@ -1470,11 +1501,39 @@ export class PiSession implements ChatSession {
   }
 
   /** Give a send core refused back to the composer, with why. */
-  private returnPrompt(prompt: ContentInput, userBroadcast: UserBroadcast | undefined, reason: PromptReturnReason): void {
+  private returnPrompt(prompt: ContentInput, userBroadcast: UserBroadcast | undefined, reason: PromptReturnReason, detail?: string): void {
     const content: UserContentBlock[] = userBroadcast
       ? userBroadcast.contentBlocks ?? [{ type: "text", text: userBroadcast.content }]
       : typeof prompt === "string" ? [{ type: "text", text: prompt }] : prompt;
-    this.emit({ type: "promptReturned", content, reason });
+    this.emit({ type: "promptReturned", content, reason, ...(detail !== undefined ? { detail } : {}) });
+  }
+
+  /** A chat with no model it can run takes the model it shows once that can run (a sign-in since the start), as a pick would. */
+  private async adoptShownModelIfRunnable(): Promise<void> {
+    const piRuntime = PiRuntime.get();
+    const registry = piRuntime.modelLookup;
+    if (this.desiredModel || !registry) return;
+    if (resolvePiModel(this.modelValue, registry, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey()).authed) await this.setModel(this.modelValue);
+  }
+
+  /** Why the chat may not start a model call now, or null: it has no model it can run, or its plan no longer includes it. */
+  private modelRefusal(): ModelRefusal | null {
+    const registry = PiRuntime.exists ? PiRuntime.get().modelLookup : null;
+    const model = this.desiredModel;
+    // A chat model was resolved through the registry, so it exists whenever `desiredModel` is set.
+    if (model) return !registry || modelInPlan(model.provider, model.id, registry) ? null : { reason: "modelUnavailable", detail: this.notInPlanNotice(model) };
+    if (!registry) return { reason: "modelSignInRequired" };
+    const piRuntime = PiRuntime.get();
+    const openai = piRuntime.getOpenAIAuthStatus();
+    const resolve = (value: string): ModelResolution => resolvePiModel(value, registry, openai, this.preferOpenAIApiKey());
+    if (!this.supportedModelsCache.some((info) => resolve(info.value).authed)) return { reason: "modelSignInRequired" };
+    return { reason: "modelUnavailable", detail: this.unavailableModelText(this.modelValue, resolve(this.modelValue), openai) };
+  }
+
+  /** A refused model call goes back to the composer and opens where the user fixes it: the chat's model, or Models & accounts. */
+  private refuseForModel(prompt: ContentInput, userBroadcast: UserBroadcast | undefined, refusal: ModelRefusal): void {
+    this.returnPrompt(prompt, userBroadcast, refusal.reason, refusal.detail);
+    this.emit({ type: "openSettingsPanel", section: refusal.reason === "modelSignInRequired" ? "accounts" : "chat" });
   }
 
   private async promptPi(
@@ -1538,6 +1597,18 @@ export class PiSession implements ChatSession {
     // An extension command commits no user entry, so its echo is injected like every other row that
     // names no prompt, and the next real prompt keeps the index it would have had.
     const isPrompt = !isExtensionCommand(session, text);
+    if (isPrompt) {
+      if (!this.desiredModel) {
+        await this.adoptShownModelIfRunnable();
+        if (this.sendOvertaken(outgoing, session)) return "withdrawn";
+      }
+      const refusal = this.modelRefusal();
+      if (refusal) {
+        this.emit({ type: "processing", isProcessing: false });
+        this.refuseForModel(prompt, userBroadcast, refusal);
+        return "unsent";
+      }
+    }
     // An extension command opens no run, and a prompt pi queues joins one already declared.
     if (isPrompt && !this.runOf(session)?.streaming) {
       try {
@@ -2661,6 +2732,18 @@ export class PiSession implements ChatSession {
         this.emit({ type: "error", message: readOnly });
         return;
       }
+      if (!this.desiredModel) {
+        await this.adoptShownModelIfRunnable();
+        if (this.runtime?.session !== session) {
+          this.returnPrompt(instructions ? `/compact ${instructions}` : "/compact", undefined, "conversationChanged");
+          return;
+        }
+      }
+      const refusal = this.modelRefusal();
+      if (refusal) {
+        this.refuseForModel(instructions ? `/compact ${instructions}` : "/compact", undefined, refusal);
+        return;
+      }
       onAccepted?.();
       const trimmed = instructions?.trim();
       // From here a Stop aborts the compaction through pi (`abort()` runs `abortCompaction()`, agent-session.js:1976).
@@ -3163,7 +3246,7 @@ export class PiSession implements ChatSession {
     await this.ensureStarted().catch((err) => log("[PiSession] model switch found no session: %O", err));
     const session = this.runtime?.session;
     const piRuntime = PiRuntime.get();
-    const modelRuntime = piRuntime.modelRuntime;
+    const modelRuntime = piRuntime.modelLookup;
     if (this._disposed) return;
     if (!session || !modelRuntime) {
       this.publishModel();
@@ -3177,13 +3260,14 @@ export class PiSession implements ChatSession {
       this.publishModel();
       return;
     }
-    // pi appends a model_change entry even for the model it already runs.
-    if (model === this.modelValue && session.model?.provider === target.provider && session.model.id === target.id) {
+    // pi appends a model_change entry even for the model it already runs, which it holds while the chat has none it can run.
+    const piRuns = model === this.modelValue && session.model?.provider === target.provider && session.model.id === target.id;
+    if (piRuns && this.desiredModel) {
       this.publishModel();
       return;
     }
     // pi's setModel rejects when its own auth check fails, and has then not adopted the model.
-    const adopted = await session.setModel(target).then(
+    const adopted = piRuns || await session.setModel(target).then(
       () => true,
       (err: unknown) => {
         log("[PiSession] pi refused model %s: %O", model, err);
@@ -3212,13 +3296,26 @@ export class PiSession implements ChatSession {
       this.emit({ type: "openaiAuthRequired", modelValue: model });
       return;
     }
+    const known = resolution.notInPlan || (!resolution.authRequired && (resolution.model || this.getModelInfo(model)?.piProvider));
+    this.notifyModelRefused(this.unavailableModelText(model, resolution, openaiAuth), known ? "warn" : "error");
+  }
+
+  /** Why a model value cannot run: outside the plan, its provider signed out, or no model pi serves. */
+  private unavailableModelText(model: string, resolution: ModelResolution, openaiAuth: OpenAIAuthStatus): string {
+    if (resolution.notInPlan && resolution.model) return this.notInPlanNotice(resolution.model);
     const info = this.getModelInfo(model);
-    // A catalog model with a known provider is only missing its credential (StepFun pre-key, DeepSeek pre-key).
-    if (!resolution.authRequired && (resolution.model || info?.piProvider)) {
-      this.notifyModelRefused(t("Sign in to {0} to use {1}", providerDisplayName(info), this.modelDisplayName(model)));
-      return;
+    // A catalog model with a known provider is only missing its credential (StepFun pre-key, DeepSeek pre-key), as is a GPT model with no OpenAI credential.
+    const openaiSignedOut = resolution.authRequired && !(openaiAuth.chatgpt || openaiAuth.codex || openaiAuth.apiKey);
+    if (openaiSignedOut || (!resolution.authRequired && (resolution.model || info?.piProvider))) {
+      return t("Sign in to {0} to use {1}", providerDisplayName(info), this.modelDisplayName(model));
     }
-    this.notifyModelRefused(t("Model {0} is unavailable on the pi harness", this.modelDisplayName(model)), "error");
+    return t("Model {0} is unavailable on the pi harness", this.modelDisplayName(model));
+  }
+
+  /** The notice for a model outside the user's plan, in the wording every refusal of one uses. */
+  private notInPlanNotice(model: Model<Api>): string {
+    const names = refusalNames(model);
+    return t("Your {0} plan does not include {1}", names.provider, names.model);
   }
 
   /** A host notice rather than a chat toast, because the pick may come from a settings view laid over the chat. */
@@ -3228,6 +3325,12 @@ export class PiSession implements ChatSession {
 
   private modelDisplayName(model: string): string {
     return this.getModelInfo(model)?.displayName ?? model;
+  }
+
+  /** A model value's label in a flat list or notice (`modelLabel`), else the value. */
+  private modelLabelOf(model: string): string {
+    const info = this.getModelInfo(model);
+    return info ? modelLabel(info) : model;
   }
 
   /** The only report of the chat's model to the panel, which shows no model this session did not commit. */
@@ -3240,14 +3343,25 @@ export class PiSession implements ChatSession {
     return this.modelsForView();
   }
 
-  // a daemon's core marks a model whose provider endpoint is a loopback address the acting client does not share with it
+  /**
+   * Publish the chat's model list with the marks of the models it cannot run. The marks read the stored sign-ins and,
+   * on a daemon's core, the acting client, so every account republish calls this too.
+   */
+  publishAvailableModels(): void {
+    if (this._disposed || !PiRuntime.unlessRetired()) return;
+    this.emit({ type: "availableModels", models: this.modelsForView() });
+  }
+
+  // marks a model outside the user's plan, and on a daemon's core a model whose provider endpoint is a loopback address the acting client does not share with it
   private modelsForView(): ModelInfo[] {
-    const registry = PiRuntime.exists ? PiRuntime.get().modelRuntime : null;
+    const registry = PiRuntime.exists ? PiRuntime.get().modelLookup : null;
+    if (!registry) return this.supportedModelsCache;
+    const inPlan = markNotInPlan(this.supportedModelsCache, registry);
     const remote = this.options.platform.remote;
-    if (!remote || !registry) return this.supportedModelsCache;
+    if (!remote) return inPlan;
     const sharedLoopback = currentPin(remote).policy?.sharedLoopback === true;
-    const models = markLoopbackEndpoints(this.supportedModelsCache, registry, PiRuntime.get().getOpenAIAuthStatus(), this.preferOpenAIApiKey(), sharedLoopback);
-    const unavailable = models.filter((model) => model.unavailable).map((model) => model.value);
+    const models = markLoopbackEndpoints(inPlan, registry, PiRuntime.get().getOpenAIAuthStatus(), this.preferOpenAIApiKey(), sharedLoopback);
+    const unavailable = models.filter((model) => model.unavailable?.reason === "loopback-endpoint").map((model) => model.value);
     const named = unavailable.join(", ");
     if (named !== this.loopbackUnavailable) {
       this.loopbackUnavailable = named;
@@ -3454,6 +3568,8 @@ export class PiSession implements ChatSession {
     // and would suppress the resync as a duplicate. Cleared before the republish, never after.
     this.lastSessionState = null;
     this.publishSessionState();
+    // a fresh webview has no account state, which the model picker filters by, until it hears it again
+    this.publishAccountInfo();
   }
 
   replayLiveAgents(sessionId: string): void {
@@ -4513,11 +4629,12 @@ export class PiSession implements ChatSession {
    */
   private resolveSubagentModel(agentConfig: AgentConfig): ResolvedSubagentModel {
     const piRuntime = PiRuntime.get();
-    const registry = piRuntime.modelRuntime;
-    if (!registry) return { error: "pi runtime not initialized" };
+    const registry = piRuntime.modelLookup;
+    const modelRuntime = piRuntime.modelRuntime;
+    if (!registry || !modelRuntime) return { error: "pi runtime not initialized" };
     const openai = piRuntime.getOpenAIAuthStatus();
     const preferApiKey = this.preferOpenAIApiKey();
-    const scope = resolveEnabledModels(readEnabledModels(this.cwd), registry);
+    const scope = resolveEnabledModels(readEnabledModels(this.cwd), modelRuntime);
 
     // Names the allowlist as the thing to edit: a configured `enabledModels` that resolves to nothing
     // denies every model (fail-closed by design), so one typo there fails every spawn — and a message
@@ -4526,7 +4643,7 @@ export class PiSession implements ChatSession {
       scope && !isModelInScope(model, scope)
         ? `Model ${model.provider}/${model.id} is outside the \`enabledModels\` allowlist in pi's settings.json.`
         : undefined;
-    const label = (model: Model<Api>): string => piModelToModelInfo(model).displayName;
+    const label = (model: Model<Api>): string => modelLabel(piModelToModelInfo(model));
     const thinking = agentConfig.thinking ? { thinkingLevel: agentConfig.thinking } : {};
     const billing = this.modelBillingDeps(openai, preferApiKey);
     const billed = (model: Model<Api>) => ({ dollarBilled: piModelDollarBilled(model, billing) });
@@ -4540,18 +4657,21 @@ export class PiSession implements ChatSession {
       // retrying a value that resolved and failed only on auth would hand back the model auth just
       // rejected, silently undoing the check for any `provider/modelId` template pin.
       let model = curated.authed ? curated.model : undefined;
+      let outsidePlan = curated.notInPlan ? curated.model : undefined;
       if (!model && !curated.model) {
         const slash = explicit.indexOf("/"); // custom-provider / direct provider/modelId
         const direct = slash !== -1 ? registry.getModel(explicit.slice(0, slash), explicit.slice(slash + 1)) : undefined;
-        if (direct && registry.hasConfiguredAuth(direct.provider)) model = direct;
+        if (direct && !modelInPlan(direct.provider, direct.id, registry)) outsidePlan = direct;
+        else if (direct && registry.hasConfiguredAuth(direct.provider)) model = direct;
       }
       // A template naming an unusable model is a config error the user must fix in the template — it is
       // surfaced, never silently downgraded to the session model, which would hide the broken pin. The
       // cause is branched: an unknown id means edit the template, an unauthed one means sign in.
       if (!model) {
         const where = agentConfig.filePath ?? "the agent template";
+        if (outsidePlan) return { error: `Agent "${agentConfig.name}" cannot run: ${notInPlanClause(outsidePlan)}, the model its \`model:\` field names. Change that field in ${where}.` };
         const cause = curated.model
-          ? `its provider (${curated.model.provider}) is not signed in. Sign in to that provider, or change the \`model:\` field in ${where}.`
+          ? `its provider (${refusalNames(curated.model).provider}) is not signed in. Sign in to that provider, or change the \`model:\` field in ${where}.`
           : `that model is not available. Fix the \`model:\` field in ${where}, or remove it to use the session model.`;
         return { error: `Agent "${agentConfig.name}" declares model "${explicit}", but ${cause}` };
       }
@@ -4572,6 +4692,7 @@ export class PiSession implements ChatSession {
         const info = DEFAULT_MODELS.find((m) => m.value === explore.model);
         // A key provider's model is registered only once its key is stored, so a missing one there means signed out.
         if (!info || (!picked.model && !info.piProvider)) return { error: `\`${EXPLORE_MODEL_SETTING}\` is "${explore.model}", which is not a model Damocles offers. Choose another Explore model in Settings.` };
+        if (picked.notInPlan && picked.model) return { error: `Explore cannot run: ${notInPlanClause(picked.model)}, the model \`${EXPLORE_MODEL_SETTING}\` names. Choose another Explore model in Settings.` };
         if (!picked.model || !picked.authed) {
           return { error: `\`${EXPLORE_MODEL_SETTING}\` is ${info.displayName}, but ${providerDisplayName(info)} is not signed in. Sign in to ${providerDisplayName(info)}, or choose another Explore model in Settings.` };
         }
@@ -4587,13 +4708,16 @@ export class PiSession implements ChatSession {
     // 3. Inherit the panel's session model — the default for every agent without a template `model:`.
     //    Its effort comes with it, or pi falls back to whatever default it last persisted, which varies
     //    by machine. A template's own `thinking:` still wins. The spawning model never picks the level.
-    if (this.desiredModel) {
-      const err = scopeError(this.desiredModel);
-      if (err) return { error: err };
-      const thinkingLevel = agentConfig.thinking ?? effortToThinkingLevel(this.options.resolveThinking(this.modelValue));
-      return { model: this.desiredModel, modelLabel: label(this.desiredModel), ...billed(this.desiredModel), thinkingLevel };
+    //    Never spawned without a model, since pi would then choose one itself.
+    const inherited = this.desiredModel;
+    if (!inherited) return { error: `Agent "${agentConfig.name}" cannot run: this chat has no model it can run. Pick a model for the chat, or set \`model:\` in the agent's template.` };
+    if (!modelInPlan(inherited.provider, inherited.id, registry)) {
+      return { error: `Agent "${agentConfig.name}" cannot run: ${notInPlanClause(inherited)}, this chat's model. Pick another model for the chat.` };
     }
-    return { dollarBilled: modelDollarBilled(this.modelValue, billing) };
+    const err = scopeError(inherited);
+    if (err) return { error: err };
+    const thinkingLevel = agentConfig.thinking ?? effortToThinkingLevel(this.options.resolveThinking(this.modelValue));
+    return { model: inherited, modelLabel: label(inherited), ...billed(inherited), thinkingLevel };
   }
 
   private modelBillingDeps(
@@ -4606,7 +4730,7 @@ export class PiSession implements ChatSession {
       claudeAuthMode: piRuntime.getClaudeAuthStatus().mode,
       openai,
       preferApiKey,
-      registry: piRuntime.modelRuntime ?? undefined,
+      registry: piRuntime.modelLookup ?? undefined,
       flatFeeKeyProviders: piRuntime.flatFeeKeyProviders(),
     };
   }
@@ -5221,15 +5345,19 @@ export class PiSession implements ChatSession {
       return;
     }
     const piRuntime = PiRuntime.get();
-    const modelRuntime = piRuntime.modelRuntime;
+    const modelRuntime = piRuntime.modelLookup;
     const folder = this.folder;
     if (!modelRuntime || !folder || !this.runtime) {
       this.emit({ type: "btwError", btwId, message: t("Start a conversation first") });
       return;
     }
     const resolution = resolvePiModel(this.modelValue, modelRuntime, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
-    if (!resolution.model || resolution.authed === false) {
-      this.emit({ type: "btwError", btwId, message: t("Model {0} is unavailable for btw", this.modelValue) });
+    if (resolution.notInPlan && resolution.model) {
+      this.emit({ type: "btwError", btwId, message: this.notInPlanNotice(resolution.model) });
+      return;
+    }
+    if (!resolution.model || !resolution.authed) {
+      this.emit({ type: "btwError", btwId, message: t("Model {0} is unavailable for btw", this.modelLabelOf(this.modelValue)) });
       return;
     }
 
@@ -5316,7 +5444,7 @@ export class PiSession implements ChatSession {
    *  `xhigh → max`) migrates instead of silently coercing to null. */
   private teamModelDeps(): TeamModelDeps {
     const piRuntime = PiRuntime.get();
-    const registry = piRuntime.modelRuntime;
+    const registry = piRuntime.modelLookup;
     if (!registry) throw new Error("pi runtime not initialized");
     const settings = this.options.platform.settings;
     const activeModel = this.modelValue;
@@ -5346,9 +5474,9 @@ export class PiSession implements ChatSession {
     };
   }
 
-  /** Resolve a team role's model + reasoning depth from the user's per-role settings (Slice 1). A
-   *  configured-but-unresolvable/unauthed slot returns `{ error }`; an unset slot fails soft to the
-   *  active panel model. */
+  /** Resolve a team role's model + reasoning depth from the user's per-role settings (Slice 1). A slot
+   *  whose model cannot run returns `{ error }`; an unset slot runs the active panel model, or returns
+   *  `{ error }` when that cannot run. */
   resolveTeamRole(role: TeamRole): ResolvedTeamModel {
     return resolveRoleModel(role, this.teamModelDeps());
   }
@@ -5653,7 +5781,7 @@ export class PiSession implements ChatSession {
 
   /** Snapshot the live auth state the account/billing pure functions consume. */
   private accountBillingDeps(piRuntime: PiRuntime): AccountBillingDeps {
-    const registry = piRuntime.modelRuntime;
+    const registry = piRuntime.modelLookup;
     const openaiAuthStatus = piRuntime.getOpenAIAuthStatus();
     const preferApiKey = this.preferOpenAIApiKey();
     const claude = piRuntime.getClaudeAuthStatus();
@@ -5677,7 +5805,9 @@ export class PiSession implements ChatSession {
    */
   publishAccountInfo(): void {
     const runtime = this._disposed ? null : PiRuntime.unlessRetired();
-    if (runtime) this.emit({ type: "accountInfo", data: buildAccountInfoFrom(this.accountBillingDeps(runtime)) });
+    if (!runtime) return;
+    const pickerProviders = runtime.pickerProviders();
+    this.emit({ type: "accountInfo", data: { ...buildAccountInfoFrom(this.accountBillingDeps(runtime)), ...(pickerProviders ? { pickerProviders } : {}) } });
   }
 
   /** The usage monitor and the subscription the chat's model bills; none for an API key, a custom provider, a disposed session or a retired runtime. */

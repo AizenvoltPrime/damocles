@@ -64,7 +64,7 @@ function openLightbox(block: ImageBlock): void {
   lightboxImageUrl.value = imageBlockToDataUrl(block);
 }
 
-// The marker opens an operator /steer and a resumed lead's prompt alike, so the label must not name a sender.
+// The marker opens an operator /steer, and also a resume prompt that an older build stored, so the label must not name a sender.
 function isSteer(content: string): boolean {
   return content.startsWith(STEER_INSTRUCTION_PREFIX);
 }

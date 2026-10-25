@@ -12,8 +12,8 @@ import type { PickFileOptions, PickFolderOptions, InputBoxOptions } from '../../
 import type { ActiveEditorContext, DiffSide, OpenFileOptions } from '../../platform/editor-service';
 import type { OpenFolder } from '../../platform/workspace-folders';
 import type { PageSpec } from '../../shared/panel-html';
-import { MAX_BROKER_EXPIRES_IN_MS, type BrokerAnswer, type ClientAuth, type ClientPolicy, type ClientUser, type HeldAuth } from '../../shared/remote-user';
-import { SETTINGS_ACCOUNT_IDS, SETTINGS_SECTION_IDS, type SettingsAccountId, type SettingsSectionId } from '../../shared/settings-sections';
+import { MAX_BROKER_EXPIRES_IN_MS, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, type BrokerAnswer, type ClientAuth, type ClientPolicy, type ClientUser, type HeldAuth } from '../../shared/remote-user';
+import { KEY_PROVIDER_IDS, SETTINGS_ACCOUNT_IDS, SETTINGS_SECTION_IDS, type SettingsAccountId, type SettingsSectionId } from '../../shared/settings-sections';
 import { WORKTREE_PHASES, type ChatPlace, type ChatReviewScope, type SettingsFileScope, type WorktreeFinishAction } from '../../shared/types/messages';
 import { MAX_CALL_ARGS, REPOSITORY_CALLS, SCM_CALLS, WORKTREE_CALLS, type RepositoryCall, type ScmCall, type WorktreeCall } from './scm-calls';
 import { arr, bool, bytes, data, dict, either, int, INVALID, maybe, nonEmpty, none, num, obj, oneOf, opt, str, type Parser } from './schema';
@@ -40,8 +40,13 @@ export const DIFF_TITLE_NAME = '\u0000name\u0000';
 export type StateScope = 'global' | 'workspace';
 
 // The key-value state that is the client's on a daemon's core, set in the User tab: the language preference
-// (LANGUAGE_PREFERENCE_KEY) and the prefer-API-key flag (OPENAI_PREFER_API_KEY_STATE). A daemon's core never writes them.
-export const CLIENT_STATE_KEYS: readonly string[] = ['userLanguagePreference', 'damocles.openai.preferApiKey'];
+// (LANGUAGE_PREFERENCE_KEY) and the prefer-API-key flags (OPENAI_PREFER_API_KEY_STATE, providerPreferApiKeyState).
+// A daemon's core never writes them.
+export const CLIENT_STATE_KEYS: readonly string[] = [
+  'userLanguagePreference',
+  'damocles.openai.preferApiKey',
+  ...KEY_PROVIDER_IDS.map((provider) => `damocles.${provider}.preferApiKey`),
+];
 
 /**
  * A panel envelope's panelId is its view's id on both sides: core issues it for a panel core creates, main for a chat view
@@ -636,6 +641,8 @@ const scmRepositoryState = obj({
 });
 const callArgs = arr(value, MAX_CALL_ARGS);
 const strings = arr(label, MAX_ITEMS);
+// accepts exactly what planModelIdsOf accepts, so a list a sender keeps never closes the channel
+const planModelIds = arr(nonEmpty(MAX_PLAN_MODEL_ID_CHARS), MAX_PLAN_MODEL_IDS);
 const brokerAnswer: Parser<BrokerAnswer> = either(
   obj({
     type: oneOf(['oauth'] as const),
@@ -646,16 +653,16 @@ const brokerAnswer: Parser<BrokerAnswer> = either(
     scopes: opt(strings),
     enterpriseUrl: opt(message),
     accountId: opt(label),
-    availableModelIds: opt(strings),
+    availableModelIds: opt(planModelIds),
   }),
   either(obj({ type: oneOf(['api_key'] as const), key: nonEmpty(MAX_MESSAGE_CHARS) }), obj({ type: oneOf(['none'] as const) })),
 );
 const authType = oneOf(['oauth', 'api_key', 'none'] as const);
 const clientAuth: Parser<ClientAuth> = obj({
-  providers: dict(obj({ type: authType, expiresIn: opt(int(0, Number.MAX_SAFE_INTEGER)), hasKey: bool, flatFee: bool, allowance: opt(bool) }), MAX_ID_CHARS, MAX_ITEMS),
+  providers: dict(obj({ type: authType, expiresIn: opt(int(0, Number.MAX_SAFE_INTEGER)), hasKey: bool, keySaved: opt(bool), flatFee: bool, allowance: opt(bool), availableModelIds: opt(planModelIds) }), MAX_ID_CHARS, MAX_ITEMS),
 });
 const heldAuth: Parser<HeldAuth> = obj({
-  providers: dict(obj({ type: authType, expires: opt(num), hasKey: bool, flatFee: bool, allowance: opt(bool) }), MAX_ID_CHARS, MAX_ITEMS),
+  providers: dict(obj({ type: authType, expires: opt(num), hasKey: bool, keySaved: opt(bool), flatFee: bool, allowance: opt(bool), availableModelIds: opt(planModelIds) }), MAX_ID_CHARS, MAX_ITEMS),
 });
 const clientUser: Parser<ClientUser> = obj({
   settings: dict(value, MAX_KEY_CHARS, MAX_ITEMS),

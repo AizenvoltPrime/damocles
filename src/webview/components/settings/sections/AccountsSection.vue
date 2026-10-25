@@ -1,24 +1,27 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
-import { KEY_PROVIDER_IDS, type KeyProviderId, type SettingsAccountId } from '@shared/settings-sections';
-import { DEFAULT_MODELS } from '@shared/types/constants';
+import { ACCOUNT_PROVIDER_IDS, isKeyProviderId, isSignInProviderId, type AccountProviderId, type SettingsAccountId } from '@shared/settings-sections';
 import { MEMORY_JUDGE_CLASSIFIERS } from '@shared/memory-judge';
-import { modelVendor, type ModelVendor } from '@/composables/useModelIdentity';
-import { useSettingsStore } from '@/stores/useSettingsStore';
+import { isModelVendor, modelVendor, MODEL_PICKER_SETTING, type ModelVendor } from '@shared/model-vendor';
+import type { ExtensionToWebviewMessage } from '@shared/types/messages';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { useSettingsStore, type KeyProviderStatus } from '@/stores/useSettingsStore';
 import ClaudeAuthPanel from '@/components/ClaudeAuthPanel.vue';
 import OpenAIAuthPanel from '@/components/OpenAIAuthPanel.vue';
 import CustomProviderAuthPanel from '@/components/CustomProviderAuthPanel.vue';
 import SettingsRow from '../SettingsRow.vue';
 import SettingAccount from '../controls/SettingAccount.vue';
 import SettingSelect from '../controls/SettingSelect.vue';
+import SettingSwitch from '../controls/SettingSwitch.vue';
 import { useMemoryJudgeNames } from '../memory-judge-names';
 import { useModelEffortPair } from '../model-effort-pair';
-import { modelOptions, UNSET_OPTION } from '../model-options';
+import { modelOptions, useUnavailableHint, UNSET_OPTION } from '../model-options';
 import { useSettingsPage, useSettingsTarget } from '../settings-view';
 
 const { t } = useI18n();
+const unavailableHint = useUnavailableHint();
 const page = useSettingsPage();
 const target = useSettingsTarget();
 const settingsStore = useSettingsStore();
@@ -27,16 +30,20 @@ const {
   claudeAuthBusy,
   openaiAuthStatus,
   openaiChatGPTAuthInFlight,
-  keyProviderConfigured,
-  keyProviderExternal,
+  keyProviderStatus,
+  providerSignInState,
   classifierCredentials,
   memoryJudge,
   currentSettings,
+  accountInfo,
+  writableKeys,
+  availableModels,
 } = storeToRefs(settingsStore);
+const { postMessage, onMessage } = usePlatformBridge();
 
 const expanded = ref<SettingsAccountId | null>(null);
 
-// A chat that needs OpenAI sign-in asks for settings with that account row.
+// A chat that needs a sign-in or a new key asks for settings with that account row.
 watch(target, (next) => {
   if (next?.account) expanded.value = next.account;
 }, { immediate: true });
@@ -57,28 +64,53 @@ interface AccountView {
 const vendorSignedIn = computed<Record<ModelVendor, boolean>>(() => ({
   anthropic: claudeAuthMode.value !== 'none',
   openai: openaiAuthStatus.value.chatgpt.signedIn || openaiAuthStatus.value.codex.signedIn || openaiAuthStatus.value.apikey.configured,
-  ...(Object.fromEntries(KEY_PROVIDER_IDS.map((provider) => [provider, keySignedIn(provider)])) as Record<KeyProviderId, boolean>),
+  ...(Object.fromEntries(ACCOUNT_PROVIDER_IDS.map((provider) => [provider, keySignedIn(provider)])) as Record<AccountProviderId, boolean>),
 }));
 
 // pi runs a provider on a key from the environment or its own config too, so that counts as signed in.
-function keySignedIn(provider: KeyProviderId): boolean {
-  return keyProviderConfigured.value[provider] || keyProviderExternal.value[provider] !== null;
+function keySignedIn(provider: AccountProviderId): boolean {
+  const status = keyProviderStatus.value[provider];
+  return status.configured || status.signedIn || status.external !== null;
 }
 
-function keyStatus(provider: KeyProviderId): string {
-  if (keyProviderConfigured.value[provider]) return t('settingsModal.account.keySaved');
-  const external = keyProviderExternal.value[provider];
-  if (external === 'environment') return t('settingsModal.account.keyFromEnvironment');
-  if (external === 'piConfig') return t('settingsModal.account.keyFromPiConfig');
+function externalStatus(status: KeyProviderStatus): string {
+  if (status.external === 'environment') return t('settingsModal.account.keyFromEnvironment');
+  if (status.external === 'piConfig') return t('settingsModal.account.keyFromPiConfig');
   return t('settingsModal.account.notSetUp');
 }
 
-const keyAccount = (provider: KeyProviderId): AccountView => ({
+// Names the credential core says is active; without `active` it lists what exists and never picks between a sign-in and a key.
+function keyStatus(provider: AccountProviderId): string {
+  const status = keyProviderStatus.value[provider];
+  switch (status.active) {
+    case 'signIn': return t('settingsModal.account.signedIn');
+    case 'apiKey': return t('settingsModal.account.keySaved');
+    case 'external': return externalStatus(status);
+    case 'none': return t('settingsModal.account.notSetUp');
+  }
+  if (status.signedIn && status.configured) return t('settingsModal.account.signedInAndKeySaved');
+  if (status.signedIn) return t('settingsModal.account.signedIn');
+  if (status.configured) return t('settingsModal.account.keySaved');
+  return externalStatus(status);
+}
+
+function signInRunning(provider: AccountProviderId): boolean {
+  return isSignInProviderId(provider) && providerSignInState.value[provider].phase !== 'idle';
+}
+
+// A sign-in-only provider has no key to add or replace.
+function keyAction(provider: AccountProviderId): string {
+  const status = keyProviderStatus.value[provider];
+  if (!isKeyProviderId(provider)) return status.signedIn ? t('settingsModal.account.manage') : t('settingsModal.account.signIn');
+  return status.configured ? t('settingsModal.account.replaceKey') : t('settingsModal.account.addKey');
+}
+
+const keyAccount = (provider: AccountProviderId): AccountView => ({
   provider,
   id: `account-${provider}`,
-  state: keySignedIn(provider) ? 'ok' : 'off',
-  status: keyStatus(provider),
-  action: keyProviderConfigured.value[provider] ? t('settingsModal.account.replaceKey') : t('settingsModal.account.addKey'),
+  state: signInRunning(provider) ? 'busy' : keySignedIn(provider) ? 'ok' : 'off',
+  status: signInRunning(provider) ? t('settingsModal.account.signingIn') : keyStatus(provider),
+  action: keyAction(provider),
 });
 
 const accounts = computed<AccountView[]>(() => {
@@ -107,12 +139,44 @@ const accounts = computed<AccountView[]>(() => {
             : t('settingsModal.account.notSetUp'),
       action: openaiConfigured ? t('settingsModal.account.manage') : t('settingsModal.account.signIn'),
     },
-    ...KEY_PROVIDER_IDS.map((provider) => keyAccount(provider)),
+    ...ACCOUNT_PROVIDER_IDS.map((provider) => keyAccount(provider)),
   ];
 });
 
-// The host resolves these settings against the whole catalog, not the chat's model list.
-const catalogChoices = computed(() => modelOptions(DEFAULT_MODELS, (model) => (vendorSignedIn.value[modelVendor(model)] ? undefined : t('settings.modelNotSignedIn'))));
+// A switch shows the value it sent until core acknowledges it, and core's picker providers after.
+const pickerPending = ref<Partial<Record<ModelVendor, { requestId: string; shown: boolean }>>>({});
+
+// A user-only setting: a remote chat's host tab cannot write it.
+const pickerWritable = computed(() => writableKeys.value === undefined || writableKeys.value.has(MODEL_PICKER_SETTING));
+// The switches wait for core's picker providers, which it publishes once pi has started.
+const pickerProviders = computed(() => accountInfo.value?.pickerProviders);
+
+function shownInPicker(vendor: SettingsAccountId): boolean {
+  if (!isModelVendor(vendor)) return false;
+  return pickerPending.value[vendor]?.shown ?? pickerProviders.value?.includes(vendor) ?? false;
+}
+
+function setShownInPicker(vendor: SettingsAccountId, shown: boolean): void {
+  if (!isModelVendor(vendor)) return;
+  const requestId = `model-picker-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  pickerPending.value = { ...pickerPending.value, [vendor]: { requestId, shown } };
+  postMessage({ type: 'setModelPickerProvider', provider: vendor, shown, requestId });
+}
+
+function handlePickerAck(msg: ExtensionToWebviewMessage): void {
+  if (msg.type !== 'setModelPickerProviderAck' || pickerPending.value[msg.provider]?.requestId !== msg.requestId) return;
+  const { [msg.provider]: _settled, ...rest } = pickerPending.value;
+  pickerPending.value = rest;
+}
+
+let stopAcks: (() => void) | null = null;
+onMounted(() => {
+  stopAcks = onMessage(handlePickerAck);
+});
+onUnmounted(() => stopAcks?.());
+
+// The host resolves these settings against the whole catalog, which the chat's model list is, with core's marks.
+const catalogChoices = computed(() => modelOptions(availableModels.value, (model) => (vendorSignedIn.value[modelVendor(model)] ? unavailableHint(model) : t('settings.modelNotSignedIn'))));
 
 const explore = useModelEffortPair({
   read: () => currentSettings.value.explore,
@@ -193,6 +257,21 @@ const judgeWarning = computed(() => {
           v-else
           :provider="account.provider"
         />
+        <label
+          v-if="pickerWritable && pickerProviders !== undefined && isModelVendor(account.provider)"
+          class="sm-field-row mt-3"
+        >
+          <SettingSwitch
+            :model-value="shownInPicker(account.provider)"
+            :aria-labelledby="`settings-account-${account.provider}-picker`"
+            :data-testid="`model-picker-switch-${account.provider}`"
+            @update:model-value="(shown: boolean) => setShownInPicker(account.provider, shown)"
+          />
+          <span
+            :id="`settings-account-${account.provider}-picker`"
+            class="sm-field-label flex-1"
+          >{{ t('settingsModal.account.showInPicker') }}</span>
+        </label>
       </div>
     </template>
   </SettingsRow>

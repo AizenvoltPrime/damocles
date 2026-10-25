@@ -6,11 +6,12 @@ import {
   AUTOMATIC_BACKGROUND_MODELS,
   SUBCALL_THINKING,
   resolveBackgroundModel,
+  resolvePickedModel,
   subCallLevel,
   subCallReasoning,
   type StructuredSubCallPurpose,
 } from '../subcall-model';
-import { CUSTOM_PROVIDER_DEFS } from '../custom-providers';
+import { customProviderDef } from '../custom-providers';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { OpenAIAuthStatus } from '../openai-auth';
 
@@ -29,7 +30,9 @@ const deepseekPro = catalogModel('deepseek.json', 'openai-completions', 'deepsee
 const nonReasoning = catalogModel('openai.json', 'openai-responses', 'gpt-4.1-mini');
 const sonnet = catalogModel('anthropic.json', 'anthropic-messages', 'claude-sonnet-5-5');
 const deepseekFlash = catalogModel('deepseek.json', 'openai-completions', 'deepseek-flash');
-const stepPreview = CUSTOM_PROVIDER_DEFS.find((d) => d.provider === 'stepfun')!.registerConfig!.models!.find((m) => m.id === 'step-5-preview') as unknown as Model<Api>;
+const stepPreview = customProviderDef('stepfun').key.registerConfig!.models!.find((m) => m.id === 'step-5-preview') as unknown as Model<Api>;
+const copilotHaiku = catalogModel('github-copilot.json', 'anthropic-messages', 'claude-haiku-5.5');
+const copilotLuna = catalogModel('github-copilot.json', 'openai-responses', 'gpt-6-luna');
 
 describe('SUBCALL_THINKING', () => {
   it('runs the judging and lookup jobs with thinking off and the writing jobs at low', () => {
@@ -84,11 +87,12 @@ const CHATGPT: OpenAIAuthStatus = { apiKey: false, chatgpt: true, codex: false }
 const stepfunModel = { ...stepPreview, provider: 'stepfun' } as Model<Api>;
 
 /** A model registry holding the four Automatic candidates and Sonnet 5.5, with sign-in per provider. */
-function registry(authed: readonly string[]) {
-  const models = [haiku, sonnet, luna, stepfunModel, deepseekFlash];
+function registry(authed: readonly string[], plans: Readonly<Record<string, readonly string[]>> = {}) {
+  const models = [haiku, sonnet, luna, stepfunModel, deepseekFlash, copilotHaiku, copilotLuna];
   return {
     getModel: (provider: string, id: string) => models.find((m) => m.provider === provider && m.id === id),
     hasConfiguredAuth: (provider: string) => authed.includes(provider),
+    planModelIds: (provider: string) => (plans[provider] ? new Set(plans[provider]) : undefined),
   };
 }
 
@@ -99,7 +103,7 @@ function settings(user: Record<string, unknown> = {}) {
 describe('resolveBackgroundModel', () => {
   // Existing entries stay first, so a user already on Automatic keeps the model they get.
   it('tries Haiku 5.5, GPT-6 Luna, then each key provider cheap model in declaration order', () => {
-    expect(AUTOMATIC_BACKGROUND_MODELS).toEqual(['claude-haiku-5-5', 'gpt-6-luna', 'step-5-preview', 'deepseek-flash', 'MiniMax-M3.1-Flash', 'grok-4.7']);
+    expect(AUTOMATIC_BACKGROUND_MODELS).toEqual(['claude-haiku-5-5', 'gpt-6-luna', 'step-5-preview', 'deepseek-flash', 'MiniMax-M3.1-Flash', 'grok-4.7', 'kimi-for-coding', 'muse-spark-1.3']);
   });
 
   it('takes the first signed-in candidate on Automatic, and null when none is', () => {
@@ -109,6 +113,17 @@ describe('resolveBackgroundModel', () => {
     expect(pick(['stepfun', 'deepseek'], SIGNED_OUT)).toBe('step-5-preview');
     expect(pick(['deepseek'], SIGNED_OUT)).toBe('deepseek-flash');
     expect(pick([], SIGNED_OUT)).toBeNull();
+  });
+
+  // Damocles never chooses a GitHub Copilot model on its own: it bills the user's plan, which they picked it for.
+  it('never lists or picks a GitHub Copilot model on Automatic, even when Copilot is the only sign-in', () => {
+    expect(AUTOMATIC_BACKGROUND_MODELS.filter((value) => value.startsWith('github-copilot/'))).toEqual([]);
+    expect(resolveBackgroundModel(registry(['github-copilot']), settings(), SIGNED_OUT, false)).toBeNull();
+  });
+
+  it('runs a picked GitHub Copilot model, which is the user\'s explicit choice', () => {
+    const user = { 'damocles.background.model': 'github-copilot/gpt-6-luna' };
+    expect(resolveBackgroundModel(registry(['github-copilot']), settings(user), SIGNED_OUT, false)).toEqual({ model: copilotLuna });
   });
 
   it('ignores a stored effort on Automatic', () => {
@@ -135,6 +150,16 @@ describe('resolveBackgroundModel', () => {
       .toEqual({ model: sonnet, effort: 'high' });
     expect(resolveBackgroundModel(registry(['stepfun']), settings({ 'damocles.background.model': 'step-5-preview', 'damocles.background.effort': 'max' }), SIGNED_OUT, false))
       .toEqual({ model: stepfunModel });
+  });
+});
+
+describe('resolvePickedModel', () => {
+  it('says why a picked model cannot run: outside the catalog, signed out, or outside the plan', () => {
+    expect(resolvePickedModel('claude-3-opus', '', registry(['anthropic']), SIGNED_OUT, false)).toEqual({ unavailable: 'unrecognized' });
+    expect(resolvePickedModel('step-5-preview', '', registry([]), SIGNED_OUT, false)).toEqual({ unavailable: 'signed-out' });
+    const plan = registry(['github-copilot'], { 'github-copilot': ['claude-haiku-5.5'] });
+    expect(resolvePickedModel('github-copilot/gpt-6-luna', '', plan, SIGNED_OUT, false)).toEqual({ unavailable: 'not-in-plan' });
+    expect(resolvePickedModel('github-copilot/claude-haiku-5.5', '', plan, SIGNED_OUT, false)).toEqual({ model: copilotHaiku });
   });
 });
 

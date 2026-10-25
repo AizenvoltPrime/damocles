@@ -23,6 +23,9 @@ export const SESSION_META_CACHE_DIR: string = path.join(DAMOCLES_HOME_DIR, "cach
 /** `{ movedAt, by }`: which host moved auth.json's OpenAI API key into its own secret store. Never holds the key. */
 export const OPENAI_KEY_MOVED_MARKER_PATH: string = path.join(DAMOCLES_HOME_DIR, "openai-api-key-moved.json");
 
+/** `{ sweptAt }`: the key sync's one-time removal of plain-text key-provider keys older versions wrote to auth.json ran. */
+export const PROVIDER_KEY_SWEEP_MARKER_PATH: string = path.join(DAMOCLES_HOME_DIR, "provider-key-sweep.json");
+
 /** Root for browser-captured downloads; the browser service saves each launch's files under a per-launch subdir. */
 export const DAMOCLES_BROWSER_DOWNLOADS_DIR: string = path.join(DAMOCLES_HOME_DIR, "browser-downloads");
 

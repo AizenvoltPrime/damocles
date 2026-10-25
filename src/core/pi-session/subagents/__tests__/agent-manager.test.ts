@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { SessionManager, type AgentSession } from '@earendil-works/pi-coding-agent';
 import { AgentManager, isSubagentId, type SubagentEngine, type SpawnRequest } from '../agent-manager';
 import { AgentRegistry } from '../agent-types';
-import { STEER_INSTRUCTION_PREFIX, buildResumePrompt, wrapSteerMessage } from '../../../../shared/steer';
+import { RESUME_NOTE_LABEL, STEER_INSTRUCTION_PREFIX, buildResumePrompt, withResumeNote, wrapSteerMessage } from '../../../../shared/steer';
 import { BROWSER_PI_TOOL_NAMES } from '../../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../../tools/compass-tools';
 import { COMPASS_AGENT_PROMPT, COMPASS_SYSTEM_PROMPT } from '../../../compass/system-prompt';
@@ -2140,7 +2140,7 @@ describe('AgentManager resume', () => {
     expect(sessionOpts[0]!.thinkingLevel).toBeUndefined();
     expect(customEntries).toEqual([{ customType: 'damocles-agent-segment', data: { toolCallId: 'tc-r', message: 'check the tests too' } }]);
     expect(prompts).toEqual([buildResumePrompt('check the tests too')]);
-    expect(prompts[0]!.startsWith(STEER_INSTRUCTION_PREFIX)).toBe(true);
+    expect(prompts[0]).not.toContain(STEER_INSTRUCTION_PREFIX);
 
     gateAt(gates, 0).resolve();
     await record.promise;
@@ -2287,9 +2287,10 @@ describe('AgentManager resume', () => {
       },
       { customType: 'damocles-agent-segment', data: { toolCallId: 'tc-r', message: 'be quick' } },
     ]);
-    // The marker must open the message: the steering protocol honours it only on the first line.
-    expect(prompts).toEqual([wrapSteerMessage('be quick\n\nYour original task:\nfind the bug')]);
-    expect(prompts[0]!.split('\n')[0]).toBe(STEER_INSTRUCTION_PREFIX);
+    // A steer would give the model-written note operator authority, so the re-run carries it as a resume note.
+    expect(prompts).toEqual([withResumeNote('find the bug', 'be quick')]);
+    expect(prompts[0]!.endsWith(`${RESUME_NOTE_LABEL}\n> be quick`)).toBe(true);
+    expect(prompts[0]).not.toContain(STEER_INSTRUCTION_PREFIX);
     mgr.dispose();
   });
 

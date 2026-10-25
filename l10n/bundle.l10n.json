@@ -482,6 +482,7 @@
   "Failed to initialize pi session": "Failed to initialize pi session",
   "Finish or stop the current turn before compacting.": "Finish or stop the current turn before compacting.",
   "Sign in to {0} to use {1}": "Sign in to {0} to use {1}",
+  "Your {0} plan does not include {1}": "Your {0} plan does not include {1}",
   "Model {0} is unavailable on the pi harness": "Model {0} is unavailable on the pi harness",
   "Some subagent or team history could not be copied into the fork; those cards may be incomplete and cannot be resumed there.": "Some subagent or team history could not be copied into the fork; those cards may be incomplete and cannot be resumed there.",
   "Fork is unavailable": "Fork is unavailable",
@@ -1128,5 +1129,15 @@
   "Global memory": "Global memory",
   "Resolve the merge conflicts on {0}: {1}": "Resolve the merge conflicts on {0}: {1}",
   "Choosing a file or folder on {0} is not available yet.": "Choosing a file or folder on {0} is not available yet.",
-  "Subscription usage is read on your computer, not on a remote host": "Subscription usage is read on your computer, not on a remote host"
+  "Subscription usage is read on your computer, not on a remote host": "Subscription usage is read on your computer, not on a remote host",
+  "\"{0}\" is not a model provider": "\"{0}\" is not a model provider",
+  "Failed to save the model picker setting: {0}": "Failed to save the model picker setting: {0}",
+  "Code expired. Start the sign-in again.": "Code expired. Start the sign-in again.",
+  "The sign-in was denied.": "The sign-in was denied.",
+  "Could not reach the sign-in service. Check the connection and try again.": "Could not reach the sign-in service. Check the connection and try again.",
+  "The provider could not complete the sign-in.": "The provider could not complete the sign-in.",
+  "The provider could not complete the sign-in (HTTP {0}).": "The provider could not complete the sign-in (HTTP {0}).",
+  "Could not sign out. Try again.": "Could not sign out. Try again.",
+  "Effort \"{0}\" is not supported by model \"{1}\"": "Effort \"{0}\" is not supported by model \"{1}\"",
+  "Effort \"{0}\" is not supported for a team role, Explore, Background or the memory judge": "Effort \"{0}\" is not supported for a team role, Explore, Background or the memory judge"
 }

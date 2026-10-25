@@ -1,9 +1,11 @@
 import type { Model, Api } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ModelInfo, EffortLevel } from '../../shared/types/settings';
-import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW, thinkingDisableApplies } from '../../shared/types/constants';
+import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW, migrateLegacyModelValue, thinkingDisableApplies } from '../../shared/types/constants';
 import { TOOL_ENTER_PLAN_MODE } from '../../shared/tool-names';
-import { KEY_PROVIDER_NAMES } from '../../shared/settings-sections';
+import { ACCOUNT_PROVIDER_NAMES } from '../../shared/settings-sections';
+import { catalogEntryOfPiModel, modelLabel, MODEL_VENDOR_NAMES, type ModelVendor } from '../../shared/model-vendor';
+import { providerLimitsModelsByPlan } from './custom-providers';
 import { TEAM_MAIN_PI_TOOL_NAMES } from './tools/team-tools';
 import { OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER, type OpenAIAuthStatus } from './openai-auth';
 
@@ -125,17 +127,25 @@ const ANTHROPIC_PROVIDER = 'anthropic';
 export interface ModelLookup {
   getModel(provider: string, modelId: string): Model<Api> | undefined;
   hasConfiguredAuth(providerId: string): boolean;
+  /** The pi model ids the provider's stored sign-in lists for the user's plan; undefined when it lists none. */
+  planModelIds(provider: string): ReadonlySet<string> | undefined;
 }
 
 function isOpenAIProvider(provider: string): boolean {
   return provider === OPENAI_API_PROVIDER || provider === OPENAI_CODEX_PROVIDER;
 }
 
-/** The Damocles `DEFAULT_MODELS` entry whose display/pricing a given pi model should inherit. */
-function defaultInfoForPiModel(model: Model<Api>): ModelInfo | undefined {
+/**
+ * The Damocles `DEFAULT_MODELS` entry whose display/pricing a given pi model should inherit: its own provider's entry. A
+ * provider with catalog entries of its own never borrows another provider's for a model outside them.
+ */
+function defaultInfoForPiModel(model: Pick<Model<Api>, 'provider' | 'id'>): ModelInfo | undefined {
+  const own = catalogEntryOfPiModel(model.provider, model.id);
+  if (own !== undefined) return own;
   if (isOpenAIProvider(model.provider)) {
     return DEFAULT_MODELS.find((m) => m.backend === 'openai' && (m.openaiModelId === model.id || m.value === model.id));
   }
+  if (DEFAULT_MODELS.some((m) => m.piProvider === model.provider)) return undefined;
   return DEFAULT_MODELS.find((m) => m.backend !== 'openai' && m.value === model.id);
 }
 
@@ -180,6 +190,19 @@ export interface ModelResolution {
   authed?: boolean;
   /** Set when the value is a GPT model and no configured OpenAI auth path serves it. */
   authRequired?: boolean;
+  /** The provider's sign-in lists the models of the user's plan and this one is not among them; `authed` is then false. */
+  notInPlan?: boolean;
+}
+
+/**
+ * Whether the user's plan includes a pi model, read from the provider's own stored sign-in: pi's getModel and setModel
+ * ignore the provider's model filter, so pi would adopt and call a model outside the plan. A provider that limits no
+ * models by plan, or a sign-in with no list, includes every model.
+ */
+export function modelInPlan(provider: string, modelId: string, registry: Pick<ModelLookup, 'planModelIds'>): boolean {
+  if (!providerLimitsModelsByPlan(provider)) return true;
+  const plan = registry.planModelIds(provider);
+  return plan === undefined || plan.has(modelId);
 }
 
 /**
@@ -209,8 +232,9 @@ export function resolvePiModel(
   }
 
   if (info?.piProvider) {
-    const model = registry.getModel(info.piProvider, info.value);
+    const model = registry.getModel(info.piProvider, info.piModelId ?? info.value);
     if (!model) return {};                                            // StepFun pre-key: not registered yet
+    if (!modelInPlan(model.provider, model.id, registry)) return { model, authed: false, notInPlan: true };
     return { model, authed: registry.hasConfiguredAuth(model.provider) }; // DeepSeek pre-key: authed=false
   }
 
@@ -247,25 +271,75 @@ export function markLoopbackEndpoints(models: readonly ModelInfo[], registry: Mo
   });
 }
 
+/**
+ * Marks each catalog model whose provider's sign-in lists the user's plan without it. Shown, never hidden, so the
+ * picker can say why it cannot be picked.
+ */
+export function markNotInPlan(models: readonly ModelInfo[], registry: ModelLookup): ModelInfo[] {
+  return models.map((info) => {
+    const provider = info.piProvider;
+    if (provider === undefined || info.unavailable || modelInPlan(provider, info.piModelId ?? info.value, registry)) return info;
+    return { ...info, unavailable: { reason: 'not-in-plan', provider } };
+  });
+}
+
 /** The catalog value a pi model recorded in a session file names, the inverse of resolvePiModel; undefined outside the catalog. */
 export function modelValueOfPiModel(provider: string, modelId: string): string | undefined {
-  return DEFAULT_MODELS.find((info) => {
-    if (info.backend === 'openai') return (provider === OPENAI_API_PROVIDER || provider === OPENAI_CODEX_PROVIDER) && (info.openaiModelId ?? info.value) === modelId;
-    return provider === (info.piProvider ?? ANTHROPIC_PROVIDER) && info.value === modelId;
-  })?.value;
+  return catalogEntryOfPiModel(provider, modelId)?.value;
+}
+
+/**
+ * The catalog value a model recorded in a session file continues on: its own catalog value, else the successor of a
+ * retired value, only when the recorded provider serves that successor. `LEGACY_MODEL_MAP` is keyed by catalog value,
+ * so a pi id another provider shares never migrates through it.
+ */
+export function recordedModelValue(provider: string, modelId: string): string | undefined {
+  const own = modelValueOfPiModel(provider, modelId);
+  if (own !== undefined) return own;
+  const successor = DEFAULT_MODELS.find((info) => info.value === migrateLegacyModelValue(modelId));
+  if (!successor) return undefined;
+  return modelValueOfPiModel(provider, successor.openaiModelId ?? successor.piModelId ?? successor.value) === successor.value ? successor.value : undefined;
 }
 
 /** The human-readable provider name for an unauthed sign-in toast. */
 export function providerDisplayName(info?: ModelInfo): string {
-  if (info?.piProvider) return KEY_PROVIDER_NAMES[info.piProvider];
+  if (info?.piProvider) return ACCOUNT_PROVIDER_NAMES[info.piProvider];
   return info?.backend === 'openai' ? 'OpenAI' : 'Anthropic';
+}
+
+/**
+ * Whether an effort badge applies to a session's pi model: a reasoning model, unless its catalog entry offers no effort
+ * or pi's own compat says it takes none (GitHub Copilot's Gemini and Kimi K3 models reason, but pi sends them no level,
+ * so a badge would name one they never ran at). No model, no badge.
+ */
+export function effortBadgeApplies(model: Pick<Model<Api>, 'provider' | 'id' | 'reasoning' | 'compat'> | undefined): boolean {
+  if (model?.reasoning !== true || defaultInfoForPiModel(model)?.supportsEffort === false) return false;
+  const compat = model.compat;
+  return !(compat !== undefined && 'supportsReasoningEffort' in compat && compat.supportsReasoningEffort === false);
+}
+
+/** A pi provider's display name: the vendor's name for a provider the catalog or Accounts knows, else its pi id. */
+function providerNameOf(provider: string): string {
+  if (isOpenAIProvider(provider)) return 'OpenAI';
+  return Object.hasOwn(MODEL_VENDOR_NAMES, provider) ? MODEL_VENDOR_NAMES[provider as ModelVendor] : provider;
+}
+
+/** The names a model refusal shows: the provider's display name and the model's catalog label (`modelLabel`). */
+export function refusalNames(model: Model<Api>): { provider: string; model: string } {
+  return { provider: providerNameOf(model.provider), model: modelLabel(piModelToModelInfo(model)) };
+}
+
+/** The one wording of a refusal of a model outside the user's plan in an agent or resolver error, which stays English. */
+export function notInPlanClause(model: Model<Api>): string {
+  const names = refusalNames(model);
+  return `your ${names.provider} plan does not include ${names.model}`;
 }
 
 /**
  * Whether the active model's credential is dollar-metered (so `maxBudgetUsd` enforcement applies), as
  * opposed to a flat subscription with no per-call dollar cost. piProvider models (StepFun, DeepSeek,
- * MiniMax, xAI) report their provider id as `apiKeySource`, not a first-party label, so they're classified
- * from the catalog: metered unless `flatFee` (StepFun). The applied key's kind comes first and is not read
+ * MiniMax, xAI, Kimi Code, Meta, GitHub Copilot) report their provider id as `apiKeySource`, not a first-party label, so they're
+ * classified from the catalog: metered unless `flatFee` (StepFun, Kimi Code, GitHub Copilot). The applied key's kind comes first and is not read
  * here: `account-billing.ts` `dollarBilled` answers false for a provider in `flatFeeKeyProviders` (a MiniMax
  * Token Plan key). First-party models fall back to the credential label.
  */

@@ -27,6 +27,7 @@ import { AGENT_PROFILE_MAP, AGENT_PROFILE_CATALOG } from './agent-profiles.gener
 import { ReviewCoverage, coverageStateError, formatRevision, type CoverageView, type RosterMember } from './review-coverage';
 import { addAgentUsage, emptyAgentUsage, subtractAgentUsage, type AgentUsageTotals } from '../../shared/usage-accounting';
 import { sessionEffort } from '../../shared/effort-badge';
+import { effortBadgeApplies } from '../pi-session/pi-models';
 import { stopStopwatch, stopwatchElapsedMs, type Stopwatch } from '../../shared/team-stopwatch';
 import type {
   TeamConfig,
@@ -67,7 +68,7 @@ import type {
 import type { SteerTargetInfo } from '../../shared/types/subagents';
 import type { AgentWindDown } from '../../shared/types/wind-down';
 import type { ImageBlock } from '../../shared/types/content';
-import { buildResumePrompt, wrapSteerMessage } from '../../shared/steer';
+import { buildResumePrompt, withResumeNote, wrapSteerMessage } from '../../shared/steer';
 
 const MAX_AGENTS = 5;
 const SPECIALIST_DRAIN_TIMEOUT_MS = 30_000;
@@ -2512,8 +2513,7 @@ export class TeamRunner {
       let launch: MemberLaunch;
       if (plan.mode === 'restart') {
         const task = isLead ? LEAD_OPENING_TASK : agent.specialization;
-        // The steering protocol honours the marker only on a message's first line.
-        const prompt = isLead && message?.trim() ? wrapSteerMessage(`${message.trim()}\n\nYour original task:\n${task}`) : task;
+        const prompt = isLead ? withResumeNote(task, message) : task;
         launch = { kind: 'fresh', resolution: plan.resolution, prompt, redeliver };
       } else if (plan.mode === 'relaunch') {
         const prompt = !isLead ? buildResumePrompt()
@@ -2641,7 +2641,7 @@ export class TeamRunner {
     }
     const logFilePath = session.sessionManager.getSessionFile() ?? null;
     // The level pi clamped to this session's model; `agent-spawned` is written before it exists.
-    const effort = sessionEffort(session) ?? null;
+    const effort = sessionEffort(session, effortBadgeApplies(session.model)) ?? null;
     this.appendEntry({
       type: 'agent-session-started',
       teamId: this.config.teamId,

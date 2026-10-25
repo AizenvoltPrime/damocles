@@ -44,7 +44,7 @@ function buildAgentSchema(agents: { name: string; description: string }[]) {
       subagent_type: Type.Optional(Type.String({ description: `The agent type to use. One of: ${typeList}. Required unless resuming.` })),
       run_in_background: Type.Optional(Type.Boolean({ description: 'Run asynchronously and return an agent_id to poll with GetSubagentResult.' })),
       resume: Type.Optional(Type.String({ description: 'The id of an interrupted or failed subagent to continue. Pass alone or with message.' })),
-      message: Type.Optional(Type.String({ description: 'With resume: an instruction for the resumed agent.' })),
+      message: Type.Optional(Type.String({ description: 'With resume: an optional note for the resumed agent. The agent continues its planned work (or starts its task again if it stopped before it began) and does what the note asks: it follows the note where the note explicitly changes or replaces a planned step, and ends planned work early only on an explicit instruction in the note to stop, skip or drop it. Omit it for a plain continue.' })),
     },
     { additionalProperties: false },
   );

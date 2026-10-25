@@ -221,7 +221,7 @@ const cancelTeamSchema = Type.Object(
 const resumeTeamSchema = Type.Object(
   {
     team_id: Type.String({ description: 'The team_id of the interrupted team' }),
-    message: Type.Optional(Type.String({ maxLength: MAX_MESSAGE_CONTENT_LENGTH, description: 'Optional instruction for the lead as it continues' })),
+    message: Type.Optional(Type.String({ maxLength: MAX_MESSAGE_CONTENT_LENGTH, description: 'Optional note for the lead. The lead continues its planned work (or starts its task again if it stopped before it began) and does what the note asks: it follows the note where the note explicitly changes or replaces a planned step, and ends planned work early only on an explicit instruction in the note to stop, skip or drop it. Omit it for a plain continue.' })),
   },
   { additionalProperties: false },
 );

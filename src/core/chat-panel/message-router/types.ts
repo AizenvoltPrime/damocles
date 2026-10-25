@@ -73,6 +73,7 @@ export interface HandlerDependencies {
   markUserTypedDuringTurn?: () => void;
   postSettingsFileAvailability?: (ctx: HandlerContext) => void;
   postClaudeAuthState?: (host: PanelHost) => void;
+  postProviderSignInState?: (host: PanelHost) => void;
   folderRegistry: WorkspaceFolderRegistry;
   /**
    * Resolves to the panel's instance on its new folder; a handler continues with it, never with `ctx.session`.

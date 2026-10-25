@@ -14,7 +14,7 @@ import type {
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate, QuestionAnnotations, PromptOwner, PendingPromptOwner, PromptApprover } from './permissions';
 import type { FormSchema, FormValues } from './forms';
-import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, AssetSourcePrecedence, CacheWarmingMode, EffortLevel, PanelThinkingState, TeamRole, MemoryJudge, ClassifierProvider, ClassifierCredential, ImageGenerationSettings } from './settings';
+import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, AssetSourcePrecedence, CacheWarmingMode, EffortLevel, PanelThinkingState, TeamRole, MemoryJudge, ClassifierProvider, ClassifierCredential, ImageGenerationSettings, ProviderSignInState } from './settings';
 import type {
   SystemInitData,
   QueuedMessage,
@@ -38,7 +38,8 @@ import type { UsageStatsQuery, UsageStatsReport } from './usage-stats';
 import type { SteerTargetInfo } from './subagents';
 import type { AgentUsageTotals } from '../usage-accounting';
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult, UserProfile, ObservationCursor } from './memory';
-import type { ExternalKeySource, KeyProviderId } from '../settings-sections';
+import type { AccountProviderId, ExternalKeySource, KeyProviderId, ProviderCredentialActive, SignInProviderId } from '../settings-sections';
+import type { ModelVendor } from '../model-vendor';
 import type { PendingConsolidationCandidate, ConsolidationResult, ConsolidationPhaseEvent } from './consolidation';
 import type { MemoryInjectionDisplay } from './context-injection';
 import type {
@@ -314,8 +315,19 @@ export type WebviewToExtensionMessage =
   | { type: "clearOpenAIApiKey"; requestId: string }
   | { type: "getOpenAIAuthStatus" }
   | { type: "setOpenAIPreferApiKey"; preferApiKey: boolean; requestId: string }
+  | { type: "setProviderPreferApiKey"; provider: KeyProviderId; preferApiKey: boolean; requestId: string }
   | { type: "setProviderApiKey"; provider: KeyProviderId; key: string; requestId: string }
   | { type: "clearProviderApiKey"; provider: KeyProviderId; requestId: string }
+  | { type: "providerSignIn"; provider: SignInProviderId }
+  /** Carries what the user typed for a sign-in prompt (a code or a domain); never log it. Core drops input over 8 KB. */
+  | { type: "providerSignInAnswer"; provider: SignInProviderId; input: string }
+  /** Core opens the https URI it holds for the provider's flow; the webview never opens a URL. */
+  | { type: "providerSignInOpenPage"; provider: SignInProviderId }
+  /** Core copies the code of the provider's device-code flow to the clipboard; the code never goes through the webview's clipboard. */
+  | { type: "providerSignInCopyCode"; provider: SignInProviderId }
+  | { type: "providerSignInCancel"; provider: SignInProviderId }
+  | { type: "providerSignOut"; provider: SignInProviderId }
+  | { type: "setModelPickerProvider"; provider: ModelVendor; shown: boolean; requestId: string }
   | { type: "startChatGPTOAuth" }
   | { type: "signOutChatGPT" }
   | { type: "signOutCodex" }
@@ -426,9 +438,10 @@ export type WorktreeFinishAction = "apply" | "merge" | "update" | "delete";
  * heldPromptWaiting: a send while the first prompt waits for its worktree; worktreeFinishing: a send while a finish action
  * runs on the chat's worktree; heldPromptKept: a held first prompt that will not be sent (the chat left its opt-in, or a
  * draft the host kept across an unload or a quit); mcpResourceUnavailable: an attached MCP resource could not be sent (the
- * message's `detail` says which and why).
+ * message's `detail` says which and why); modelSignInRequired: no signed-in model can run; modelUnavailable: the chat has
+ * no model it can run, or its plan no longer includes the chat's model (`detail` says why).
  */
-export type PromptReturnReason = "heldPromptWaiting" | "worktreeFinishing" | "heldPromptKept" | "mcpResourceUnavailable" | "conversationChanged";
+export type PromptReturnReason = "heldPromptWaiting" | "worktreeFinishing" | "heldPromptKept" | "mcpResourceUnavailable" | "conversationChanged" | "modelSignInRequired" | "modelUnavailable";
 
 /** A chat review's scope (D60): the whole chat, or only its latest turn. */
 export type ChatReviewScope = "chat" | "turn";
@@ -524,8 +537,10 @@ export type ExtensionToWebviewMessage =
   | { type: "toolPending"; toolUseId: string; toolName: string; input: unknown; parentToolUseId?: string | null }
   /** `parentToolUseId` names the nested agent the error belongs to: a subagent's `Agent` call id or a team agent's id. */
   | { type: "error"; message: string; parentToolUseId?: string }
-  | { type: "authFailure"; message: string }
-  | { type: "authFailureCleared" }
+  /** `account`: the Accounts row whose credential the provider refused. `noApiAccess`: xAI answered 402, the account lacks API access. */
+  | { type: "authFailure"; message: string; account: SettingsAccountId; reason: "rejected" | "noApiAccess" }
+  /** With `account`, only that account's card clears: its credential changed. Without, every card clears. */
+  | { type: "authFailureCleared"; account?: SettingsAccountId }
   /** `stored`: the conversation has a session file, so it is what a restart restores. pi writes none before the first prompt. */
   | { type: "sessionStarted"; sessionId: string; stored?: boolean }
   /**
@@ -877,14 +892,18 @@ export type ExtensionToWebviewMessage =
   | { type: "compassBlastRadiusData"; data: CompassBlastRadiusResult }
   | { type: "compassBlastRadiusDismissed" }
   | { type: "compassValidationResult"; data: CompassValidationResult }
-  | { type: "openaiAuthStatusChanged"; status: { chatgpt: { signedIn: boolean; expiresAt?: number }; codex: { signedIn: boolean; expiresAt?: number }; apikey: { configured: boolean } }; preferApiKey: boolean }
+  | { type: "openaiAuthStatusChanged"; status: { chatgpt: { signedIn: boolean; expiresAt?: number }; codex: { signedIn: boolean; expiresAt?: number }; apikey: { configured: boolean } }; preferApiKey: boolean; active?: ProviderCredentialActive }
   | { type: "setOpenAIApiKeyAck"; requestId: string; ok: boolean; validated?: boolean; modelCount?: number; warning?: string; error?: string }
   | { type: "clearOpenAIApiKeyAck"; requestId: string; ok: boolean; error?: string }
   | { type: "setOpenAIPreferApiKeyAck"; requestId: string; ok: boolean; error?: string }
+  | { type: "setProviderPreferApiKeyAck"; provider: KeyProviderId; requestId: string; ok: boolean; error?: string }
   | { type: "setProviderApiKeyAck"; provider: KeyProviderId; requestId: string; ok: boolean; error?: string }
   | { type: "clearProviderApiKeyAck"; provider: KeyProviderId; requestId: string; ok: boolean; error?: string }
-  /** `configured`: a key is in the host secret store. `external`: where pi's credential comes from when Damocles did not apply it. */
-  | { type: "providerAuthStatusChanged"; provider: KeyProviderId; configured: boolean; external: ExternalKeySource | null }
+  | { type: "providerSignInState"; provider: SignInProviderId; state: ProviderSignInState }
+  | { type: "providerSignInCopyCodeAck"; provider: SignInProviderId; ok: boolean }
+  | { type: "setModelPickerProviderAck"; provider: ModelVendor; requestId: string; ok: boolean }
+  /** `configured`: a key is in the host secret store. `external`: where pi's credential comes from when Damocles did not apply it. `signedIn`: `auth.json` holds an oauth credential. `active` is absent when a daemon's core reports it. */
+  | { type: "providerAuthStatusChanged"; provider: AccountProviderId; configured: boolean; external: ExternalKeySource | null; signedIn: boolean; signedInExpiresAt?: number; preferApiKey: boolean; active?: ProviderCredentialActive }
   /** `classifierCredentials`: whether each classifier provider's credential can serve a Memory judge choice. */
   | { type: "memoryJudgeStatus"; memoryJudge: MemoryJudge; classifierCredentials: Record<ClassifierProvider, ClassifierCredential> }
   | { type: "openaiChatGPTAuthStarted" }

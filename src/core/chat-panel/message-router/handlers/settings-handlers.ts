@@ -12,9 +12,10 @@ import {
   toolExposureLayers,
   toolExposureMapForScope,
 } from "../../../pi-session/mcp/exposure";
-import { deleteProviderKey, providerAuthStatus, storeProviderKey } from "../../settings-manager/managers/provider-keys";
+import { providerAuthStatus, setProviderPreferApiKey } from "../../settings-manager/managers/provider-keys";
+import { remoteSignInRefusal } from "../../../pi-session/pi-runtime";
 import { memoryJudgeStatus } from "../../settings-manager/managers/memory-judge-status";
-import { isKeyProviderId, KEY_PROVIDER_IDS } from "../../../../shared/settings-sections";
+import { ACCOUNT_PROVIDER_IDS, isKeyProviderId } from "../../../../shared/settings-sections";
 import { log } from "../../../logger";
 import { isSwitchableToolGroup, TOOL_GROUP_SETTINGS } from "../../../../shared/types/tools";
 import { IMAGE_ENABLED_SETTING, IMAGE_MODEL_SETTING } from "../../../pi-session/tools/image-tool-specs";
@@ -31,6 +32,7 @@ import { directoryChildren, errorText, mimeTypeOf, resourceLabel, resourceRows, 
 import { oneLine } from "../../../pi-session/untrusted-text";
 import { bypassAllowed } from "../../../client-snapshots";
 import { PERMISSION_MODES } from "../../../../shared/types/settings";
+import { MODEL_PICKER_SETTING } from "../../../../shared/model-vendor";
 
 const EXPOSURE_SCOPES: readonly string[] = ["user", "project", "local"] satisfies McpToolExposureScope[];
 
@@ -229,10 +231,11 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       if (ctx.view) deps.webviewPrompts.repost(ctx.panelId, ctx.view);
       deps.postSettingsFileAvailability?.(ctx);
       deps.postClaudeAuthState?.(ctx.host);
+      deps.postProviderSignInState?.(ctx.host);
       postMessage(ctx.host, await openaiAuthStatusMessage(platform));
       // Read together, each bounded, so one secret store read cannot hold the rest of the reply; posted in order, the judge last.
       const [keyStatuses, judgeStatus] = await Promise.all([
-        Promise.all(KEY_PROVIDER_IDS.map((provider) => providerAuthStatus(platform, provider))),
+        Promise.all(ACCOUNT_PROVIDER_IDS.map((provider) => providerAuthStatus(platform, provider))),
         memoryJudgeStatus(platform).catch((err: unknown) => {
           log("[SettingsHandlers] reading the memory judge status failed: %s", err instanceof Error ? err.message : String(err));
           return undefined;
@@ -408,6 +411,15 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       await writeSetting(deps, ctx, "damocles.browser.headless", (detail) => t("Failed to save the headless browser setting: {0}", detail), () =>
         settingsManager.handleSetBrowserHeadless(msg.headless));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+    },
+
+    setModelPickerProvider: async (msg, ctx) => {
+      if (msg.type !== "setModelPickerProvider") return;
+      const saved = await writeSetting(deps, ctx, MODEL_PICKER_SETTING, (detail) => t("Failed to save the model picker setting: {0}", detail), () =>
+        settingsManager.handleSetModelPickerProvider(msg.provider, msg.shown));
+      // Before the ack, which ends the switch's pending state, so it never shows the old value in between.
+      if (saved) ctx.session.publishAccountInfo();
+      postMessage(ctx.host, { type: "setModelPickerProviderAck", provider: msg.provider, requestId: msg.requestId, ok: saved });
     },
 
     setCacheWarming: async (msg, ctx) => {
@@ -831,36 +843,24 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
-    setProviderApiKey: async (msg, ctx) => {
-      if (msg.type !== "setProviderApiKey") return;
+    // Posts no providerAuthStatusChanged: the custom-provider sync it runs republishes every key status.
+    setProviderPreferApiKey: async (msg, ctx) => {
+      if (msg.type !== "setProviderPreferApiKey") return;
       const { provider, requestId } = msg;
       if (!isKeyProviderId(provider)) throw new Error("Unknown key provider");
-      if (typeof msg.key !== "string") throw new Error("Malformed API key");
-      const key = msg.key.trim();
-      if (!key) {
-        postMessage(ctx.host, { type: "setProviderApiKeyAck", provider, requestId, ok: false, error: t("API key cannot be empty") });
+      if (typeof msg.preferApiKey !== "boolean") throw new Error("Malformed preference");
+      if (platform.remote) {
+        postMessage(ctx.host, { type: "setProviderPreferApiKeyAck", provider, requestId, ok: false, error: remoteSignInRefusal() });
         return;
       }
       try {
-        await storeProviderKey(platform, provider, key);
-        postMessage(ctx.host, { type: "setProviderApiKeyAck", provider, requestId, ok: true });
+        await setProviderPreferApiKey(provider, msg.preferApiKey);
+        postMessage(ctx.host, { type: "setProviderPreferApiKeyAck", provider, requestId, ok: true });
+        // the toggle switches the credential pi sends, so the refusal the card names no longer applies
+        for (const [, instance] of getPanels()) postMessage(instance.host, { type: "authFailureCleared", account: provider });
       } catch (err) {
-        log("[SettingsHandlers] Failed to store the %s key:", provider, err);
-        // The store's error text is not localized and can name a keyring path, so only the log carries it.
-        postMessage(ctx.host, { type: "setProviderApiKeyAck", provider, requestId, ok: false, error: t("Failed to store API key") });
-      }
-    },
-
-    clearProviderApiKey: async (msg, ctx) => {
-      if (msg.type !== "clearProviderApiKey") return;
-      const { provider, requestId } = msg;
-      if (!isKeyProviderId(provider)) throw new Error("Unknown key provider");
-      try {
-        await deleteProviderKey(platform, provider);
-        postMessage(ctx.host, { type: "clearProviderApiKeyAck", provider, requestId, ok: true });
-      } catch (err) {
-        log("[SettingsHandlers] Failed to clear the %s key:", provider, err);
-        postMessage(ctx.host, { type: "clearProviderApiKeyAck", provider, requestId, ok: false, error: t("Failed to clear API key") });
+        log("[SettingsHandlers] Failed to apply the %s API key preference:", provider, err);
+        postMessage(ctx.host, { type: "setProviderPreferApiKeyAck", provider, requestId, ok: false, error: t("Failed to apply the preference") });
       }
     },
 

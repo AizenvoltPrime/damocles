@@ -17,10 +17,10 @@ import type { AgentSession, ExtensionFactory, SessionEntry, ToolDefinition } fro
 import type { PermissionHandler } from '../../permission-handler';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { SteerTargetInfo } from '../../../shared/types/subagents';
-import { buildResumePrompt, wrapSteerMessage } from '../../../shared/steer';
+import { buildResumePrompt, withResumeNote, wrapSteerMessage } from '../../../shared/steer';
 import { TEAM_CREATE_TOOL } from '../../../shared/tool-names';
 import { log } from '../../logger';
-import { PI_EXCLUDED_TOOLS } from '../pi-models';
+import { effortBadgeApplies, PI_EXCLUDED_TOOLS } from '../pi-models';
 import type { PiCreateSubagentSessionOptions } from '../folder-runtime';
 import type { CheckpointBaselineGate } from '../permission-gate';
 import type { WorktreeIsolation } from '../worktree-isolation';
@@ -846,9 +846,7 @@ export class AgentManager {
     };
     let prompt = fresh.prompt;
     if (spec.kind === 'resume') {
-      prompt = reopenPath !== null
-        ? buildResumePrompt(spec.message)
-        : spec.message?.trim() ? wrapSteerMessage(`${spec.message.trim()}\n\nYour original task:\n${fresh.prompt}`) : fresh.prompt;
+      prompt = reopenPath !== null ? buildResumePrompt(spec.message) : withResumeNote(fresh.prompt, spec.message);
     }
 
     const result = await runSubagent({
@@ -864,7 +862,7 @@ export class AgentManager {
         // A reopened session runs on the model its file recorded, which may bill differently from the launch.
         const dollarBilled = reopenPath !== null && session.model ? this.engine.modelDollarBilled(session.model) : resolved.dollarBilled;
         // The level pi clamped to this session's model, never the requested one.
-        const effort = sessionEffort(session);
+        const effort = sessionEffort(session, effortBadgeApplies(session.model));
         record.bridgeUnsub = bridge.attach(session, dollarBilled, effort);
         record.windDown = noticeWindDown(run, record.abortController!.signal, (windDown) => this.postWindDown(record, windDown));
         // Appended before prompt(), so each entry precedes this run's messages. A new file is only

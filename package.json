@@ -486,7 +486,19 @@
             "deepseek-v4-pro",
             "deepseek-flash",
             "MiniMax-M3.1-Flash",
-            "grok-4.7"
+            "grok-4.7",
+            "k3",
+            "kimi-for-coding",
+            "muse-spark-1.3",
+            "muse-wonder-1.0",
+            "github-copilot/claude-opus-5.5",
+            "github-copilot/claude-sonnet-5.5",
+            "github-copilot/claude-haiku-5.5",
+            "github-copilot/gpt-6-astra",
+            "github-copilot/gpt-6.1-sol",
+            "github-copilot/gpt-6-luna",
+            "github-copilot/gemini-4-argon",
+            "github-copilot/gemini-3.8-flash"
           ],
           "enumItemLabels": [
             "%configuration.team.modelDefault%",
@@ -501,7 +513,19 @@
             "DeepSeek V4 Pro",
             "DeepSeek V4.1 Flash",
             "MiniMax M3.1 Flash",
-            "Grok 4.7"
+            "Grok 4.7",
+            "K3",
+            "Kimi for Coding",
+            "Muse Spark 1.3",
+            "Muse Wonder 1.0",
+            "Opus 5.5 (GitHub Copilot)",
+            "Sonnet 5.5 (GitHub Copilot)",
+            "Haiku 5.5 (GitHub Copilot)",
+            "GPT-6 Astra (GitHub Copilot)",
+            "GPT-6.1 Sol (GitHub Copilot)",
+            "GPT-6 Luna (GitHub Copilot)",
+            "Gemini 4 Argon",
+            "Gemini 3.8 Flash"
           ],
           "default": "",
           "description": "%configuration.team.leadModel.description%"
@@ -546,7 +570,19 @@
             "deepseek-v4-pro",
             "deepseek-flash",
             "MiniMax-M3.1-Flash",
-            "grok-4.7"
+            "grok-4.7",
+            "k3",
+            "kimi-for-coding",
+            "muse-spark-1.3",
+            "muse-wonder-1.0",
+            "github-copilot/claude-opus-5.5",
+            "github-copilot/claude-sonnet-5.5",
+            "github-copilot/claude-haiku-5.5",
+            "github-copilot/gpt-6-astra",
+            "github-copilot/gpt-6.1-sol",
+            "github-copilot/gpt-6-luna",
+            "github-copilot/gemini-4-argon",
+            "github-copilot/gemini-3.8-flash"
           ],
           "enumItemLabels": [
             "%configuration.team.modelDefault%",
@@ -561,7 +597,19 @@
             "DeepSeek V4 Pro",
             "DeepSeek V4.1 Flash",
             "MiniMax M3.1 Flash",
-            "Grok 4.7"
+            "Grok 4.7",
+            "K3",
+            "Kimi for Coding",
+            "Muse Spark 1.3",
+            "Muse Wonder 1.0",
+            "Opus 5.5 (GitHub Copilot)",
+            "Sonnet 5.5 (GitHub Copilot)",
+            "Haiku 5.5 (GitHub Copilot)",
+            "GPT-6 Astra (GitHub Copilot)",
+            "GPT-6.1 Sol (GitHub Copilot)",
+            "GPT-6 Luna (GitHub Copilot)",
+            "Gemini 4 Argon",
+            "Gemini 3.8 Flash"
           ],
           "default": "",
           "description": "%configuration.team.implementorModel.description%"
@@ -606,7 +654,19 @@
             "deepseek-v4-pro",
             "deepseek-flash",
             "MiniMax-M3.1-Flash",
-            "grok-4.7"
+            "grok-4.7",
+            "k3",
+            "kimi-for-coding",
+            "muse-spark-1.3",
+            "muse-wonder-1.0",
+            "github-copilot/claude-opus-5.5",
+            "github-copilot/claude-sonnet-5.5",
+            "github-copilot/claude-haiku-5.5",
+            "github-copilot/gpt-6-astra",
+            "github-copilot/gpt-6.1-sol",
+            "github-copilot/gpt-6-luna",
+            "github-copilot/gemini-4-argon",
+            "github-copilot/gemini-3.8-flash"
           ],
           "enumItemLabels": [
             "%configuration.team.modelDefault%",
@@ -621,7 +681,19 @@
             "DeepSeek V4 Pro",
             "DeepSeek V4.1 Flash",
             "MiniMax M3.1 Flash",
-            "Grok 4.7"
+            "Grok 4.7",
+            "K3",
+            "Kimi for Coding",
+            "Muse Spark 1.3",
+            "Muse Wonder 1.0",
+            "Opus 5.5 (GitHub Copilot)",
+            "Sonnet 5.5 (GitHub Copilot)",
+            "Haiku 5.5 (GitHub Copilot)",
+            "GPT-6 Astra (GitHub Copilot)",
+            "GPT-6.1 Sol (GitHub Copilot)",
+            "GPT-6 Luna (GitHub Copilot)",
+            "Gemini 4 Argon",
+            "Gemini 3.8 Flash"
           ],
           "default": "",
           "description": "%configuration.team.reviewerModel.description%"
@@ -901,6 +973,42 @@
           "maximum": 16,
           "description": "Maximum number of subagents a chat runs at once, foreground and background together. Further spawns wait until one finishes. Team members are not counted."
         },
+        "damocles.modelPicker.providers": {
+          "scope": "application",
+          "type": "object",
+          "default": {},
+          "additionalProperties": false,
+          "description": "%configuration.modelPicker.providers.description%",
+          "properties": {
+            "anthropic": {
+              "type": "boolean"
+            },
+            "openai": {
+              "type": "boolean"
+            },
+            "stepfun": {
+              "type": "boolean"
+            },
+            "deepseek": {
+              "type": "boolean"
+            },
+            "minimax": {
+              "type": "boolean"
+            },
+            "xai": {
+              "type": "boolean"
+            },
+            "kimi-coding": {
+              "type": "boolean"
+            },
+            "meta": {
+              "type": "boolean"
+            },
+            "github-copilot": {
+              "type": "boolean"
+            }
+          }
+        },
         "damocles.explore.model": {
           "scope": "application",
           "type": "string",
@@ -917,7 +1025,19 @@
             "deepseek-v4-pro",
             "deepseek-flash",
             "MiniMax-M3.1-Flash",
-            "grok-4.7"
+            "grok-4.7",
+            "k3",
+            "kimi-for-coding",
+            "muse-spark-1.3",
+            "muse-wonder-1.0",
+            "github-copilot/claude-opus-5.5",
+            "github-copilot/claude-sonnet-5.5",
+            "github-copilot/claude-haiku-5.5",
+            "github-copilot/gpt-6-astra",
+            "github-copilot/gpt-6.1-sol",
+            "github-copilot/gpt-6-luna",
+            "github-copilot/gemini-4-argon",
+            "github-copilot/gemini-3.8-flash"
           ],
           "enumItemLabels": [
             "%configuration.explore.modelDefault%",
@@ -932,7 +1052,19 @@
             "DeepSeek V4 Pro",
             "DeepSeek V4.1 Flash",
             "MiniMax M3.1 Flash",
-            "Grok 4.7"
+            "Grok 4.7",
+            "K3",
+            "Kimi for Coding",
+            "Muse Spark 1.3",
+            "Muse Wonder 1.0",
+            "Opus 5.5 (GitHub Copilot)",
+            "Sonnet 5.5 (GitHub Copilot)",
+            "Haiku 5.5 (GitHub Copilot)",
+            "GPT-6 Astra (GitHub Copilot)",
+            "GPT-6.1 Sol (GitHub Copilot)",
+            "GPT-6 Luna (GitHub Copilot)",
+            "Gemini 4 Argon",
+            "Gemini 3.8 Flash"
           ],
           "default": "",
           "description": "%configuration.explore.model.description%"
@@ -977,7 +1109,19 @@
             "deepseek-v4-pro",
             "deepseek-flash",
             "MiniMax-M3.1-Flash",
-            "grok-4.7"
+            "grok-4.7",
+            "k3",
+            "kimi-for-coding",
+            "muse-spark-1.3",
+            "muse-wonder-1.0",
+            "github-copilot/claude-opus-5.5",
+            "github-copilot/claude-sonnet-5.5",
+            "github-copilot/claude-haiku-5.5",
+            "github-copilot/gpt-6-astra",
+            "github-copilot/gpt-6.1-sol",
+            "github-copilot/gpt-6-luna",
+            "github-copilot/gemini-4-argon",
+            "github-copilot/gemini-3.8-flash"
           ],
           "enumItemLabels": [
             "%configuration.background.modelAutomatic%",
@@ -992,7 +1136,19 @@
             "DeepSeek V4 Pro",
             "DeepSeek V4.1 Flash",
             "MiniMax M3.1 Flash",
-            "Grok 4.7"
+            "Grok 4.7",
+            "K3",
+            "Kimi for Coding",
+            "Muse Spark 1.3",
+            "Muse Wonder 1.0",
+            "Opus 5.5 (GitHub Copilot)",
+            "Sonnet 5.5 (GitHub Copilot)",
+            "Haiku 5.5 (GitHub Copilot)",
+            "GPT-6 Astra (GitHub Copilot)",
+            "GPT-6.1 Sol (GitHub Copilot)",
+            "GPT-6 Luna (GitHub Copilot)",
+            "Gemini 4 Argon",
+            "Gemini 3.8 Flash"
           ],
           "default": "",
           "description": "%configuration.background.model.description%"
@@ -1040,7 +1196,19 @@
             "deepseek-v4-pro",
             "deepseek-flash",
             "MiniMax-M3.1-Flash",
-            "grok-4.7"
+            "grok-4.7",
+            "k3",
+            "kimi-for-coding",
+            "muse-spark-1.3",
+            "muse-wonder-1.0",
+            "github-copilot/claude-opus-5.5",
+            "github-copilot/claude-sonnet-5.5",
+            "github-copilot/claude-haiku-5.5",
+            "github-copilot/gpt-6-astra",
+            "github-copilot/gpt-6.1-sol",
+            "github-copilot/gpt-6-luna",
+            "github-copilot/gemini-4-argon",
+            "github-copilot/gemini-3.8-flash"
           ],
           "enumItemLabels": [
             "%configuration.background.modelAutomatic%",
@@ -1058,7 +1226,19 @@
             "DeepSeek V4 Pro",
             "DeepSeek V4.1 Flash",
             "MiniMax M3.1 Flash",
-            "Grok 4.7"
+            "Grok 4.7",
+            "K3",
+            "Kimi for Coding",
+            "Muse Spark 1.3",
+            "Muse Wonder 1.0",
+            "Opus 5.5 (GitHub Copilot)",
+            "Sonnet 5.5 (GitHub Copilot)",
+            "Haiku 5.5 (GitHub Copilot)",
+            "GPT-6 Astra (GitHub Copilot)",
+            "GPT-6.1 Sol (GitHub Copilot)",
+            "GPT-6 Luna (GitHub Copilot)",
+            "Gemini 4 Argon",
+            "Gemini 3.8 Flash"
           ],
           "default": "",
           "description": "%configuration.memory.judge.description%"

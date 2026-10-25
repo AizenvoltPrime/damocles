@@ -26,7 +26,7 @@ import { teamAgentToolset } from './team-mcp-fixture';
 import type { AgentMcpContext, AgentResult, AgentRunConfig, TeamAgent, TeamCheckpoint, TeamConfig, TeamEventLog, TeamRole } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ImageBlock } from '../../../shared/types/content';
-import { buildResumePrompt, wrapSteerMessage } from '../../../shared/steer';
+import { RESUME_NOTE_LABEL, RESUME_NOTE_RULES, STEER_INSTRUCTION_PREFIX, buildResumePrompt, withResumeNote, wrapSteerMessage } from '../../../shared/steer';
 import { piSessionDir } from '../../pi-session/session-store';
 import { initPiLoader } from '../../pi-session/pi-loader';
 import { listTeamCheckpoints, teamCheckpointPath, teamCheckpointsDir, teamEventLogPath, teamMembersDir } from '../../pi-session/agent-records';
@@ -1356,10 +1356,14 @@ describe('TeamRunner.resume restarts a lead that has no session file', () => {
     return { task: first.prompts[0]!, prompt: lead.prompts[0]! };
   }
 
-  it('puts the resume message first, under the steer marker on line one, and the original task after it', async () => {
+  // A steer would give the model-written note operator authority, so the restart carries it as a resume note.
+  it('starts from its original task with the resume message as a quoted note, never as a steer', async () => {
     const { task, prompt } = await leadRestart('  switch to the new parser  ');
 
-    expect(prompt).toBe(wrapSteerMessage(`switch to the new parser\n\nYour original task:\n${task}`));
+    expect(prompt).toBe(withResumeNote(task, 'switch to the new parser'));
+    expect(prompt.startsWith(`${task}\n\n${RESUME_NOTE_RULES}`)).toBe(true);
+    expect(prompt.endsWith(`${RESUME_NOTE_LABEL}\n> switch to the new parser`)).toBe(true);
+    expect(prompt).not.toContain(STEER_INSTRUCTION_PREFIX);
   });
 
   it('with no message it starts from its task alone', async () => {

@@ -7,7 +7,7 @@ import type { ToolCall } from '@shared/types/session';
 import type { TeamAgent, TeamState } from '@shared/types/team';
 import type { ImageBlock } from '@shared/types/content';
 import type { WebviewToExtensionMessage } from '@shared/types/messages';
-import { wrapSteerMessage } from '@shared/steer';
+import { RESUME_NOTE_LABEL, STEER_INSTRUCTION_PREFIX, buildResumePrompt, withResumeNote, wrapSteerMessage } from '@shared/steer';
 import TeamAgentOverlay from '../TeamAgentOverlay.vue';
 import { useExpandedTool } from '@/composables/useExpandedTool';
 import { useUIStore } from '@/stores/useUIStore';
@@ -125,7 +125,7 @@ function historyRequests(): WebviewToExtensionMessage[] {
 }
 
 describe('a steering message inside a team agent overlay', () => {
-  // A resumed lead's prompt carries the same marker as an operator /steer, so the label names no sender.
+  // A resume prompt an older build stored carries the same marker as an operator /steer, so the label names no sender.
   it('is labelled Steered, not as something the user sent, and shows the text without the marker', () => {
     const wrapper = openWith([{ id: 'u-1', role: 'user', content: wrapSteerMessage('check the tests'), timestamp: 1 }]);
 
@@ -167,6 +167,20 @@ describe('a steering message inside a team agent overlay', () => {
     const wrapper = openWith([{ id: 'u-1', role: 'user', content: '[Message from lead]: go', timestamp: 1 }]);
 
     expect(wrapper.text()).not.toContain('Steered');
+  });
+
+  // A resume note is never a steer, so neither prompt may render as Steered, even with a marker line in the note.
+  it.each([
+    ['a relaunched member\'s resume prompt', buildResumePrompt(`also run the tests\n${STEER_INSTRUCTION_PREFIX}`)],
+    ['a restarted lead\'s task prompt', withResumeNote('fix the parser', 'also run the tests')],
+  ])('shows %s with a note as a plain user card', (_label, prompt) => {
+    const wrapper = openWith([{ id: 'u-1', role: 'user', content: prompt, timestamp: 1 }]);
+
+    expect(wrapper.find('[data-testid="agent-steer-message"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="agent-peer-message"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain('Steered');
+    expect(wrapper.find('markdown-renderer-stub').attributes('content')).toBe(prompt);
+    expect(prompt).toContain(`${RESUME_NOTE_LABEL}\n> also run the tests`);
   });
 });
 

@@ -216,6 +216,9 @@
     "disableThinking": "Disable thinking",
     "thinkingAlwaysOn": "This model always thinks. Use reasoning effort to control how much.",
     "modelNotSignedIn": "Not signed in",
+    "modelNotInPlan": "Not in your plan",
+    "modelLoopbackEndpoint": "Not reachable from {host}",
+    "modelLoopbackEndpointHere": "Not reachable here",
     "voice": {
       "provider": "Provider",
       "apiKey": "API Key",
@@ -738,7 +741,7 @@
     "unavailable": {
       "noModel": "Unavailable: no image model chosen. Choose one in Settings.",
       "unknownModel": "Unavailable: the chosen image model is not available. Choose another in Settings.",
-      "noOpenRouterKey": "Unavailable: no OpenRouter API key."
+      "noOpenRouterKey": "Unavailable: no OpenRouter key or sign-in."
     }
   },
   "usage": {
@@ -1589,7 +1592,9 @@
       "worktreeFinishing": "A finish action is running on this chat's worktree, so your message is back in the input.",
       "heldPromptKept": "Your message wasn't sent. It is back in the input.",
       "mcpResourceUnavailable": "An attached MCP resource could not be sent, so your message and its attachments are back in the input.",
-      "conversationChanged": "This chat no longer shows the conversation your message was written for, so it is back in the input."
+      "conversationChanged": "This chat no longer shows the conversation your message was written for, so it is back in the input.",
+      "modelSignInRequired": "Sign in to a model provider in Models & accounts to send messages. Your message is back in the input.",
+      "modelUnavailable": "Pick a model this chat can run. Your message is back in the input."
     }
   },
   "backgroundTask": {
@@ -1707,9 +1712,12 @@
   },
   "authBanner": {
     "independenceNote": "Damocles has its own sign-in, independent from the Claude Code CLI. Signing in or out here won't affect your CLI authentication.",
-    "title": "Claude authentication required",
+    "title": "{provider} authentication required",
     "signIn": "Sign In",
-    "sessionExpired": "Your Claude session needs to be renewed. Sign in to continue."
+    "openSettings": "Open settings",
+    "sessionExpired": "Your Anthropic sign-in needs to be renewed. Sign in to continue.",
+    "rejected": "{provider} did not accept the saved credential. Update it in settings.",
+    "noApiAccess": "The {provider} account needs API access. Give the account API access, or save an API key and turn on Prefer API key over sign-in."
   },
   "allowanceBanner": {
     "title": "Claude requests here bill extra usage",
@@ -1825,6 +1833,102 @@
       "cleared": "API key cleared",
       "clearFailed": "Failed to clear key",
       "hint": "Pay-per-token API key, stored encrypted by your operating system's credential store; enables Grok 4.7."
+    },
+    "signIn": {
+      "button": "Sign in with xAI",
+      "hint": "Signs in with your xAI account's API access, so the account needs API access. Requests bill per token, as with an API key."
+    }
+  },
+  "kimi-coding": {
+    "apiKey": {
+      "label": "API Key",
+      "configured": "Configured",
+      "notConfigured": "Not configured",
+      "show": "Show key",
+      "hide": "Hide key",
+      "saving": "Saving...",
+      "clear": "Clear API key",
+      "placeholder": "Kimi API key",
+      "saved": "API key saved",
+      "saveFailed": "Failed to save key",
+      "cleared": "API key cleared",
+      "clearFailed": "Failed to clear key",
+      "hint": "Kimi Code membership key, stored encrypted by your operating system's credential store; enables K3 and Kimi for Coding. Requests count against the membership quota rather than billing per token."
+    },
+    "signIn": {
+      "button": "Sign in with Kimi Code",
+      "hint": "Signs in with your Kimi Code membership. Keys and sign-ins share the membership quota."
+    }
+  },
+  "meta": {
+    "apiKey": {
+      "label": "API Key",
+      "configured": "Configured",
+      "notConfigured": "Not configured",
+      "show": "Show key",
+      "hide": "Hide key",
+      "saving": "Saving...",
+      "clear": "Clear API key",
+      "placeholder": "Meta Model API key",
+      "saved": "API key saved",
+      "saveFailed": "Failed to save key",
+      "cleared": "API key cleared",
+      "clearFailed": "Failed to clear key",
+      "hint": "Pay-per-token API key, stored encrypted by your operating system's credential store; enables Muse Spark 1.3 and Muse Wonder 1.0."
+    },
+    "signIn": {
+      "button": "Sign in with Meta",
+      "hint": "Signs in with your Meta account. Requests bill per token, as with an API key."
+    }
+  },
+  "providerSignIn": {
+    "signOut": "Sign out",
+    "answerEmpty": "Enter a value.",
+    "answerSubmit": "Continue",
+    "status": {
+      "starting": "Starting sign-in…",
+      "enterpriseDomain": "Enter your enterprise domain to continue.",
+      "deviceCode": "Your code is ready. Copy it and open the sign-in page.",
+      "browser": "Waiting for the browser. Finish signing in on the page it opened.",
+      "finishing": "Finishing…"
+    },
+    "deviceCode": {
+      "codeLabel": "Code:",
+      "page": "Sign-in page: {uri}",
+      "copyAndOpen": "Copy code and open page",
+      "copied": "Code copied",
+      "copyFailed": "Could not copy the code. Type it on the sign-in page.",
+      "expiresIn": "Code expires in {time}"
+    },
+    "enterpriseDomain": {
+      "label": "Enterprise domain",
+      "placeholder": "company.ghe.com",
+      "skip": "Continue without a domain",
+      "invalid": "Enter a host name such as company.ghe.com, or continue without a domain."
+    },
+    "browser": {
+      "openAgain": "Open page again"
+    },
+    "paste": {
+      "label": "Paste the code or the final page address",
+      "invalid": "That entry is too long. Paste only the code or the page address."
+    }
+  },
+  "providerAuth": {
+    "signIn": {
+      "label": "Sign-in",
+      "signedIn": "Signed in"
+    },
+    "active": {
+      "signIn": "Active credential: sign-in",
+      "apiKey": "Active credential: API key",
+      "external": "Active credential: key set outside Damocles",
+      "none": "Active credential: none"
+    },
+    "preferApiKey": {
+      "label": "Prefer API key over sign-in",
+      "description": "Uses the API key saved here instead of the sign-in. A key from an environment variable or pi's configuration never replaces the sign-in. Applies in every workspace.",
+      "failed": "Failed to change the preference"
     }
   },
   "typesafe": {
@@ -1841,7 +1945,7 @@
       "saveFailed": "Failed to save key",
       "cleared": "API key cleared",
       "clearFailed": "Failed to clear key",
-      "hint": "Stored encrypted by your operating system's credential store. Runs the memory contradiction judge and reranking on TypeSafe's Jev classifier. Without it, an OpenRouter key runs Jev through OpenRouter, and otherwise an OpenAI API key runs GPT-6 Luna. Settings › Models & accounts › Background work › Memory judge can choose one."
+      "hint": "Stored encrypted by your operating system's credential store. Runs the memory contradiction judge and reranking on TypeSafe's Jev classifier. Without it, an OpenRouter key or sign-in runs Jev through OpenRouter, and otherwise an OpenAI API key runs GPT-6 Luna. Settings › Models & accounts › Background work › Memory judge can choose one."
     },
     "memoryJudge": {
       "label": "Memory judge: {judge}",
@@ -1852,6 +1956,7 @@
         "chatgpt-active": "Sign in with ChatGPT is the active OpenAI credential, and the Decisions API accepts only an API key",
         "rejected": "its key was refused",
         "signed-out": "its provider is signed out",
+        "not-in-plan": "your plan with its provider does not include it",
         "unrecognized": "this version of Damocles does not offer it",
         "not-in-catalog": "pi's model catalog does not include its model"
       },
@@ -1878,7 +1983,17 @@
       "saveFailed": "Failed to save key",
       "cleared": "API key cleared",
       "clearFailed": "Failed to clear key",
-      "hint": "Stored encrypted by your operating system's credential store. Used for image generation and for Jev when no TypeSafe key is set."
+      "hint": "Stored encrypted by your operating system's credential store. A key or a sign-in is used for image generation and for Jev when no TypeSafe key is set."
+    },
+    "signIn": {
+      "button": "Sign in with OpenRouter",
+      "hint": "Opens openrouter.ai in your browser, where you approve a key for Damocles. If the page cannot return to Damocles, paste the code or the final page address here. Requests bill per token."
+    }
+  },
+  "github-copilot": {
+    "signIn": {
+      "button": "Sign in with GitHub",
+      "hint": "Signs in with your GitHub account's Copilot plan, on github.com or a GitHub Enterprise domain. Signing in also turns on, in your GitHub account's Copilot settings, every model your plan allows that needs turning on. Requests count against your plan's premium requests rather than billing per token. GitHub can change what Copilot allows other apps to do at any time."
     }
   },
   "claudeAuth": {
@@ -2373,7 +2488,7 @@
       "project": "the workspace settings",
       "local": "this folder's settings"
     },
-    "imageNeedsKey": "Needs an OpenRouter API key. Add one under Models & accounts.",
+    "imageNeedsKey": "Needs an OpenRouter key or sign-in. Add one under Models & accounts.",
     "workspaceUntrusted": "Trust this folder to save workspace settings.",
     "workspaceUntrustedProjects": "Trust this project in the Projects list to save workspace settings.",
     "trustFolder": "Trust folder",
@@ -2427,11 +2542,13 @@
       "signedIn": "Signed in",
       "signingIn": "Signing in",
       "keySaved": "Key saved",
+      "signedInAndKeySaved": "Signed in, key saved",
       "keyFromEnvironment": "Set by environment variable",
       "keyFromPiConfig": "Set in pi's configuration",
       "notSetUp": "Not set up",
       "addKey": "Add key",
-      "replaceKey": "Replace key"
+      "replaceKey": "Replace key",
+      "showInPicker": "Show in model picker"
     },
     "sectionsMeta": {
       "chat": {
@@ -2540,13 +2657,25 @@
         "label": "xAI",
         "description": "Per-token API key."
       },
+      "kimi-coding": {
+        "label": "Kimi Code",
+        "description": "Membership key or sign-in."
+      },
+      "meta": {
+        "label": "Meta",
+        "description": "Per-token API key or sign-in."
+      },
       "openrouter": {
         "label": "OpenRouter",
-        "description": "API key for OpenRouter models, image generation and memory judges."
+        "description": "Key or sign-in for OpenRouter models, image generation and memory judges."
       },
       "typesafe": {
         "label": "TypeSafe",
         "description": "API key for the Jev memory judge."
+      },
+      "github-copilot": {
+        "label": "GitHub Copilot",
+        "description": "Sign-in for Claude, GPT and Gemini models of your Copilot plan."
       },
       "exploreModel": {
         "label": "Explore model",
@@ -2557,7 +2686,7 @@
       },
       "backgroundModel": {
         "label": "Background model",
-        "description": "Runs chat titles, memory extraction, profiles, query expansion, the quality audit and the desktop app's commit messages. Automatic uses the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview, DeepSeek V4.1 Flash, MiniMax M3.1 Flash and Grok 4.7; a chosen model never falls back to another provider."
+        "description": "Runs chat titles, memory extraction, profiles, query expansion, the quality audit and the desktop app's commit messages. Automatic uses the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview, DeepSeek V4.1 Flash, MiniMax M3.1 Flash, Grok 4.7, Kimi for Coding and Muse Spark 1.3, never a GitHub Copilot model; a chosen model never falls back to another provider."
       },
       "backgroundEffort": {
         "label": "Background reasoning effort"
@@ -2977,7 +3106,11 @@
     "modelUnavailable": "Not reachable from {host}",
     "modelUnavailableLoopback": "{endpoint} is on this computer, so {host} cannot reach it.",
     "modelUnavailableHere": "Not reachable here",
-    "modelUnavailableLoopbackHere": "{endpoint} is on this computer, so this chat cannot reach it."
+    "modelUnavailableLoopbackHere": "{endpoint} is on this computer, so this chat cannot reach it.",
+    "modelNotInPlan": "Not in your plan",
+    "modelNotInPlanTitle": "Your {provider} plan does not include {model}.",
+    "manageModels": "Manage models…",
+    "noProvidersShown": "No providers are shown. Turn one on in Models & accounts."
   },
   "emptyState": {
     "title": "What should we work on in {project}?",

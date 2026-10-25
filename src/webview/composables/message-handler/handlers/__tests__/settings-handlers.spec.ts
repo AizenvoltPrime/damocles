@@ -139,10 +139,15 @@ describe('ChatGPT sign-in messages reaching the settings store', () => {
     const ctx = openaiContext();
     const status = { chatgpt: { signedIn: true, expiresAt: 1 }, codex: { signedIn: false }, apikey: { configured: true } };
 
-    dispatch({ type: 'openaiAuthStatusChanged', status, preferApiKey: true }, ctx);
+    dispatch({ type: 'openaiAuthStatusChanged', status, preferApiKey: true, active: 'apiKey' }, ctx);
 
     expect(ctx.stores.settingsStore.openaiAuthStatus).toEqual(status);
     expect(ctx.stores.settingsStore.openaiPreferApiKey).toBe(true);
+    expect(ctx.stores.settingsStore.openaiActive).toBe('apiKey');
+
+    // A daemon's core leaves `active` out, which must not keep the previous answer.
+    dispatch({ type: 'openaiAuthStatusChanged', status, preferApiKey: true }, ctx);
+    expect(ctx.stores.settingsStore.openaiActive).toBeUndefined();
   });
 
   it('openOpenAIAuthPanel opens Settings and asks it to reveal the OpenAI section', () => {
@@ -163,5 +168,38 @@ describe('ChatGPT sign-in messages reaching the settings store', () => {
     expect(ctx.stores.uiStore.showSettingsModal).toBe(true);
     expect(ctx.stores.uiStore.settingsTarget).toEqual({ section: 'accounts', account: 'openai' });
     expect(ctx.stores.settingsStore.$state).toEqual(before);
+  });
+});
+
+describe('providerAuthStatusChanged reaching the settings store', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('stores every field for its own provider and replaces the previous status', () => {
+    const ctx = context();
+    const registry = buildRegistry();
+
+    dispatch({ type: 'providerAuthStatusChanged', provider: 'xai', configured: true, external: null, signedIn: true, signedInExpiresAt: 1_700_000_000_000, preferApiKey: true, active: 'apiKey' }, ctx, registry);
+    expect(ctx.stores.settingsStore.keyProviderStatus.xai).toEqual({ configured: true, external: null, signedIn: true, signedInExpiresAt: 1_700_000_000_000, preferApiKey: true, active: 'apiKey' });
+    expect(ctx.stores.settingsStore.keyProviderStatus.deepseek).toEqual({ configured: false, external: null, signedIn: false, preferApiKey: false });
+
+    dispatch({ type: 'providerAuthStatusChanged', provider: 'xai', configured: false, external: 'environment', signedIn: false, preferApiKey: false }, ctx, registry);
+    expect(ctx.stores.settingsStore.keyProviderStatus.xai).toStrictEqual({ configured: false, external: 'environment', signedIn: false, preferApiKey: false });
+  });
+});
+
+describe('providerSignInState reaching the settings store', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('starts idle and keeps each state core sends for its provider, replacing the previous one', () => {
+    const ctx = context();
+    const registry = buildRegistry();
+    expect(ctx.stores.settingsStore.providerSignInState.xai).toEqual({ phase: 'idle' });
+
+    const deviceCode = { phase: 'deviceCode', userCode: 'ABCD-1234', verificationUri: 'https://accounts.x.ai/device', expiresAt: 1_700_000_000_000 } as const;
+    dispatch({ type: 'providerSignInState', provider: 'xai', state: deviceCode }, ctx, registry);
+    expect(ctx.stores.settingsStore.providerSignInState.xai).toEqual(deviceCode);
+
+    dispatch({ type: 'providerSignInState', provider: 'xai', state: { phase: 'idle', error: { kind: 'expired', message: 'Code expired' } } }, ctx, registry);
+    expect(ctx.stores.settingsStore.providerSignInState.xai).toStrictEqual({ phase: 'idle', error: { kind: 'expired', message: 'Code expired' } });
   });
 });

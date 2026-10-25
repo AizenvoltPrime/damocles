@@ -1,4 +1,4 @@
-import type { AuthInteraction, AuthPrompt } from "@earendil-works/pi-ai";
+import type { AuthEvent, AuthInteraction, AuthPrompt } from "@earendil-works/pi-ai";
 import type { Platform } from "../../../../platform/platform";
 import { log } from "../../../logger";
 
@@ -15,6 +15,14 @@ export interface AuthInteractionOptions {
    * semantics as the input box below: `cancelSentinel` on a flow abort, the prompt signal's reason on a prompt abort.
    */
   manualCode?: (prompt: Extract<AuthPrompt, { type: "manual_code" }>) => Promise<string>;
+  /** Answers `text` prompts in the caller's own UI, with the same rejection semantics as `manualCode`. */
+  text?: (prompt: Extract<AuthPrompt, { type: "text" }>) => Promise<string>;
+  /** Shows a device code instead of the default toast. */
+  deviceCode?: (event: Extract<AuthEvent, { type: "device_code" }>) => void;
+  /** Takes the sign-in page URL instead of the default, which opens it at once. */
+  authUrl?: (event: Extract<AuthEvent, { type: "auth_url" }>) => void;
+  /** Runs after the progress event is logged; its message carries provider text, so it is never shown. */
+  progress?: (event: Extract<AuthEvent, { type: "progress" }>) => void;
 }
 
 // pi-ai's Anthropic login method ids (`ANTHROPIC_BROWSER_LOGIN_METHOD`, `ANTHROPIC_COPY_CODE_LOGIN_METHOD`), not exported.
@@ -58,22 +66,32 @@ export function buildAuthInteraction(opts: AuthInteractionOptions): AuthInteract
     notify: (event) => {
       switch (event.type) {
         case "auth_url":
-          void opts.platform.shell.openExternal(event.url);
+          if (opts.authUrl) opts.authUrl(event);
+          else void opts.platform.shell.openExternal(event.url);
           return;
         case "device_code":
+          if (opts.deviceCode) {
+            opts.deviceCode(event);
+            return;
+          }
           void opts.platform.notifications.info(
             `Enter code ${event.userCode} at ${event.verificationUri} to finish signing in.`,
           );
           return;
+        // the type only: pi's text can name a loopback callback URL (openrouter.js:124)
         case "info":
+          log("%s %s", opts.logPrefix, event.type);
+          return;
         case "progress":
-          log("%s %s", opts.logPrefix, event.message);
+          log("%s %s", opts.logPrefix, event.type);
+          opts.progress?.(event);
           return;
       }
     },
     prompt: async (p) => {
       if (p.type === "select") return answerSelect(p);
       if (p.type === "manual_code" && opts.manualCode) return opts.manualCode(p);
+      if (p.type === "text" && opts.text) return opts.text(p);
       const dismiss = new AbortController();
       const onAbort = (): void => dismiss.abort();
       p.signal?.addEventListener("abort", onAbort, { once: true });

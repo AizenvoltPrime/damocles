@@ -33,9 +33,9 @@ describe('effort badge visibility', () => {
     expect(publishedEffort('high', undefined)).toBeUndefined();
   });
 
-  it("reads a live session's effective level and its model's reasoning flag", () => {
-    expect(sessionEffort({ thinkingLevel: 'high', model: { reasoning: true } })).toBe('high');
-    expect(sessionEffort({ thinkingLevel: 'off', model: { reasoning: false } })).toBeUndefined();
-    expect(sessionEffort({ thinkingLevel: 'medium', model: undefined })).toBeUndefined();
+  it("reads a live session's effective level, published only where a badge applies to its model", () => {
+    expect(sessionEffort({ thinkingLevel: 'high' }, true)).toBe('high');
+    expect(sessionEffort({ thinkingLevel: 'off' }, false)).toBeUndefined();
+    expect(sessionEffort({ thinkingLevel: 'medium' }, undefined)).toBeUndefined();
   });
 });

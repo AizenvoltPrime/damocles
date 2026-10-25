@@ -5,6 +5,7 @@ import { enableAutoUnmount, mount } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import ModelEffortPopover from '../composer/ModelEffortPopover.vue';
 import { useSettingsStore } from '@/stores/useSettingsStore';
+import { useUIStore } from '@/stores/useUIStore';
 import { settingsViewHandlers, type SettingsHandlerContext } from '@/composables/message-handler/handlers/settings-handlers';
 import { i18n } from '@/i18n';
 
@@ -43,6 +44,16 @@ describe('ModelEffortPopover reasoning effort', () => {
     expect(pills.every((pill) => pill.getAttribute('role') === 'menuitemradio')).toBe(true);
     expect(pills.filter((pill) => pill.getAttribute('aria-checked') === 'true').map((pill) => pill.textContent?.trim())).toEqual(['High']);
     expect(pills[0]?.closest('[role="group"]')?.getAttribute('aria-label')).toBe('Reasoning effort');
+  });
+
+  it('offers None as the leftmost level on GPT-6 Luna', async () => {
+    const settings = useSettingsStore();
+    settings.setModelState('gpt-6-luna', 'gpt-6-luna');
+    settings.setPanelThinking({ thinkingDisabled: false, effort: 'none' }, 'gpt-6-luna');
+    await openMenu();
+    const pills = options();
+    expect(pills.map((pill) => pill.textContent?.trim())).toEqual(['None', 'Low', 'Medium', 'High', 'Extra High', 'Max']);
+    expect(pills[0]?.getAttribute('aria-checked')).toBe('true');
   });
 
   it('posts setPanelEffort for the picked level and keeps the menu open', async () => {
@@ -123,5 +134,110 @@ describe('ModelEffortPopover reasoning effort', () => {
     await openMenu();
     expect(document.body.querySelectorAll('[data-testid="composer-model-menu"] [data-testid="sliding-indicator"]')).toHaveLength(1);
     for (const pill of options()) expect(pill.className).not.toMatch(/data-\[highlighted\]:ring/);
+  });
+});
+
+describe('ModelEffortPopover provider filter', () => {
+  const groupNames = () => [...document.body.querySelectorAll<HTMLElement>('[data-testid="composer-model-group"]')].map((group) => group.textContent?.trim());
+  const modelOptions = () => [...document.body.querySelectorAll<HTMLElement>('[data-testid="composer-model-option"]')];
+  const pickerProviders = (providers: string[] | undefined) =>
+    useSettingsStore().setAccountInfo({ dollarBilled: true, ...(providers ? { pickerProviders: providers as never } : {}) });
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    postMessage.mockClear();
+    useSettingsStore().setModelState('claude-opus-5-5', 'claude-opus-5-5');
+  });
+
+  it('lists every group until core reports the picker providers', async () => {
+    pickerProviders(undefined);
+    await openMenu();
+    expect(groupNames()).toEqual(['Anthropic', 'OpenAI', 'StepFun', 'DeepSeek', 'MiniMax', 'xAI', 'Kimi Code', 'Meta', 'GitHub Copilot']);
+  });
+
+  // Copilot's own group keeps the plain names; only flat lists qualify them.
+  it('lists GitHub Copilot\'s eight models in a group of their own, by their plain names', async () => {
+    pickerProviders(['github-copilot']);
+    await openMenu();
+    expect(groupNames()).toEqual(['Anthropic', 'GitHub Copilot']);
+    expect(modelOptions().slice(1).map((option) => option.textContent?.trim())).toEqual(['Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'GPT-6 Astra', 'GPT-6.1 Sol', 'GPT-6 Luna', 'Gemini 4 Argon', 'Gemini 3.8 Flash']);
+  });
+
+  it('keeps a model outside the user\'s plan listed, muted and not pickable, naming the plan', async () => {
+    const settings = useSettingsStore();
+    const sol = settings.availableModels.find((model) => model.value === 'github-copilot/gpt-6.1-sol')!;
+    const luna = settings.availableModels.find((model) => model.value === 'github-copilot/gpt-6-luna')!;
+    settings.setAvailableModels([luna, { ...sol, unavailable: { reason: 'not-in-plan', provider: 'github-copilot' } }]);
+    await openMenu();
+    const marked = modelOptions().find((option) => option.textContent?.includes('GPT-6.1 Sol'));
+    expect(marked?.getAttribute('data-unavailable')).toBe('not-in-plan');
+    expect(marked?.hasAttribute('data-disabled')).toBe(true);
+    expect(marked?.textContent).toContain('Not in your plan');
+    expect(marked?.getAttribute('title')).toBe('Your GitHub Copilot plan does not include GPT-6.1 Sol.');
+    marked?.click();
+    await flush();
+    expect(postMessage).not.toHaveBeenCalledWith({ type: 'setActiveModel', model: 'github-copilot/gpt-6.1-sol' });
+  });
+
+  // pi sends a Copilot Gemini model no reasoning level, so there is nothing for the control to set.
+  it('shows no effort control on a GitHub Copilot Gemini model', async () => {
+    const settings = useSettingsStore();
+    settings.setModelState('github-copilot/gemini-4-argon', 'github-copilot/gemini-4-argon');
+    settings.setPanelThinking({ thinkingDisabled: false, effort: null }, 'github-copilot/gemini-4-argon');
+    await openMenu();
+    expect(document.body.querySelectorAll('[data-testid="composer-effort-option"]')).toHaveLength(0);
+  });
+
+  it('lists only the groups core shows', async () => {
+    pickerProviders(['anthropic']);
+    await openMenu();
+    expect(groupNames()).toEqual(['Anthropic']);
+    expect(modelOptions().map((option) => option.textContent?.trim())).toEqual(['Fable 5.1', 'Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5']);
+  });
+
+  it('keeps the current model listed and checked when its group is hidden', async () => {
+    pickerProviders(['deepseek']);
+    await openMenu();
+    expect(groupNames()).toEqual(['Anthropic', 'DeepSeek']);
+    const listed = modelOptions();
+    expect(listed.map((option) => option.textContent?.trim())).toEqual(['Opus 5.5', 'DeepSeek V4 Pro', 'DeepSeek V4.1 Flash']);
+    expect(listed[0]?.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('says so when no group is shown', async () => {
+    useSettingsStore().setModelState('retired-model', 'retired-model');
+    pickerProviders([]);
+    await openMenu();
+    expect(groupNames()).toEqual([]);
+    const note = document.body.querySelector<HTMLElement>('[data-testid="composer-no-providers"]')!;
+    expect(note.textContent?.trim()).toBe('No providers are shown. Turn one on in Models & accounts.');
+    // arrow keys reach only menu items, so the item they reach carries the note
+    expect(note.getAttribute('role')).toBe('presentation');
+    expect(document.body.querySelector('[data-testid="composer-manage-models"]')?.getAttribute('aria-describedby')).toBe(note.id);
+  });
+
+  it('describes Manage models with nothing while groups are shown', async () => {
+    await openMenu();
+    expect(document.body.querySelector('[data-testid="composer-manage-models"]')?.hasAttribute('aria-describedby')).toBe(false);
+  });
+
+  it('ends with Manage models, which opens Models & accounts in the panel', async () => {
+    await openMenu();
+    const items = [...document.body.querySelectorAll<HTMLElement>('[data-testid="composer-model-menu"] [role^="menuitem"]')];
+    const manage = items.at(-1);
+    expect(manage?.getAttribute('data-testid')).toBe('composer-manage-models');
+    expect(manage?.textContent?.trim()).toBe('Manage models…');
+    manage?.click();
+    await flush();
+    expect(useUIStore().settingsTarget).toEqual({ section: 'accounts' });
+  });
+
+  it('asks the host for Models & accounts where settings are not in the panel', async () => {
+    const settings = useSettingsStore();
+    settings.setHostCapabilities({ ...settings.hostCapabilities, settingsInPanel: false });
+    await openMenu();
+    document.body.querySelector<HTMLElement>('[data-testid="composer-manage-models"]')?.click();
+    await flush();
+    expect(postMessage).toHaveBeenCalledWith({ type: 'openAppSettings', section: 'accounts' });
   });
 });

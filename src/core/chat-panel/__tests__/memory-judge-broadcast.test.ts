@@ -20,10 +20,11 @@ import { ChatPanelProvider } from "../index";
 import { installLogSink } from "../../logger";
 import { installFakePlatform, type FakePlatform } from "../../../__mocks__/fake-platform";
 import { PiRuntime } from "../../pi-session/pi-runtime";
-import { CUSTOM_PROVIDER_DEFS } from "../../pi-session/custom-providers";
+import { CUSTOM_PROVIDER_DEFS, KEYED_PROVIDER_DEFS } from "../../pi-session/custom-providers";
 import { republishAccountInfo } from "../message-router/handlers/account-info";
 import { folderKey } from "../../workspace-folders/folder-key";
 import { PI_AGENT_DIR } from "../../pi-session/agent-dir";
+import { createFakeRemoteHost } from "../../../__mocks__/fake-remote-host";
 import * as path from "path";
 import type { Disposable } from "../../../platform/disposable";
 import type { ExtensionToWebviewMessage } from "../../../shared/types/messages";
@@ -37,7 +38,7 @@ function addPanel(panels: Map<string, unknown>, id: string): Posted[] {
   const posted: Posted[] = [];
   panels.set(id, {
     host: { postMessage: async (m: Posted) => { posted.push(m); return true; } },
-    session: { publishAccountInfo: vi.fn(), getToolStatus: () => ({ panel: id }) },
+    session: { publishAccountInfo: vi.fn(), publishAvailableModels: vi.fn(), getToolStatus: () => ({ panel: id }) },
     folder: { key: folderKey(fakeWorkspace), fsPath: fakeWorkspace, name: "workspace", label: "workspace", projectScope: true },
     permissionHandler: {},
     ideContextManager: {},
@@ -148,12 +149,13 @@ describe("memory judge status in open panels", () => {
 });
 
 describe("key provider status in open panels", () => {
-  it.each(CUSTOM_PROVIDER_DEFS)("broadcasts $provider's status when its secret is stored or deleted, here or in another window", async ({ provider, secretKey }) => {
+  it.each(KEYED_PROVIDER_DEFS)("broadcasts $provider's status when its secret is stored or deleted, here or in another window", async ({ provider, key: { secretKey } }) => {
     const { posted } = harness();
     await platform.secrets.store(secretKey, "the-key");
-    await vi.waitFor(() => expect(keyStatuses(posted)).toEqual([{ type: "providerAuthStatusChanged", provider, configured: true, external: null }]));
+    const signedOut = { type: "providerAuthStatusChanged", provider, external: null, signedIn: false, preferApiKey: false };
+    await vi.waitFor(() => expect(keyStatuses(posted)).toEqual([{ ...signedOut, configured: true, active: "apiKey" }]));
     await platform.secrets.delete(secretKey);
-    await vi.waitFor(() => expect(keyStatuses(posted).at(-1)).toEqual({ type: "providerAuthStatusChanged", provider, configured: false, external: null }));
+    await vi.waitFor(() => expect(keyStatuses(posted).at(-1)).toEqual({ ...signedOut, configured: false, active: "none" }));
     expect(keyStatuses(posted)).toHaveLength(2);
     expect(JSON.stringify(posted)).not.toContain("the-key");
   });
@@ -211,9 +213,10 @@ describe("key provider status in open panels", () => {
 
     await vi.waitFor(() => expect(keyStatuses(posted)).toHaveLength(CUSTOM_PROVIDER_DEFS.length));
     const byProvider = new Map(keyStatuses(posted).map((status) => [status.provider, status]));
-    expect(byProvider.get("minimax")).toEqual({ type: "providerAuthStatusChanged", provider: "minimax", configured: false, external: 'environment' });
-    expect(byProvider.get("xai")).toEqual({ type: "providerAuthStatusChanged", provider: "xai", configured: true, external: null });
-    expect(byProvider.get("deepseek")).toEqual({ type: "providerAuthStatusChanged", provider: "deepseek", configured: false, external: null });
+    const signedOut = { type: "providerAuthStatusChanged", signedIn: false, preferApiKey: false };
+    expect(byProvider.get("minimax")).toEqual({ ...signedOut, provider: "minimax", configured: false, external: 'environment', active: "external" });
+    expect(byProvider.get("xai")).toEqual({ ...signedOut, provider: "xai", configured: true, external: null, active: "apiKey" });
+    expect(byProvider.get("deepseek")).toEqual({ ...signedOut, provider: "deepseek", configured: false, external: null, active: "none" });
   });
 
   it("republishes the account state in every panel, one whose session has not started included, when a sync changes it", async () => {
@@ -229,5 +232,83 @@ describe("key provider status in open panels", () => {
 
     await runtime.syncCustomProviders(secrets);
     expect(publishes()).toEqual([1, 1]);
+  });
+});
+
+describe("account state in panels that have not started", () => {
+  const publishes = (panels: Map<string, unknown>) =>
+    [...panels.values()].map((panel) => (panel as { session: { publishAccountInfo: ReturnType<typeof vi.fn> } }).session.publishAccountInfo.mock.calls.length);
+  const authPath = path.join(PI_AGENT_DIR, "auth.json");
+  afterEach(() => {
+    fs.rmSync(authPath, { force: true });
+  });
+
+  it("follows a sign-in made outside Damocles before pi starts: every account-provider status and every panel's account state", async () => {
+    const { posted, panels } = harness();
+    addPanel(panels, "p2");
+    fs.mkdirSync(PI_AGENT_DIR, { recursive: true });
+    fs.writeFileSync(authPath, JSON.stringify({ "github-copilot": { type: "oauth", access: "a", refresh: "r", expires: 9_000 } }));
+    platform.fileWatchers.watcher(PI_AGENT_DIR, "auth.json").fireChange(authPath);
+
+    await vi.waitFor(() => expect(keyStatuses(posted)).toHaveLength(CUSTOM_PROVIDER_DEFS.length));
+    expect(keyStatuses(posted).find((status) => status.provider === "github-copilot")).toMatchObject({ signedIn: true, signedInExpiresAt: 9_000, active: "signIn" });
+    expect(publishes(panels)).toEqual([1, 1]);
+    expect(PiRuntime.exists).toBe(false);
+  });
+
+  it("follows a sign-in made outside Damocles once the runtime holds the watch, though the key sync changed nothing", async () => {
+    const { posted, panels } = harness();
+    addPanel(panels, "p2");
+    const runtime = PiRuntime.get();
+    const internals = runtime as unknown as { _modelRuntime: unknown; _initPromise: Promise<void>; _customProvidersSynced: boolean; _authWatch: Disposable | null };
+    internals._initPromise = Promise.resolve();
+    // past its first sync, which republishes every panel on its own
+    internals._customProvidersSynced = true;
+    internals._modelRuntime = {
+      getProviderAuthStatus: () => ({ configured: false }),
+      hasConfiguredAuth: () => false,
+      getModelsOfType: () => [],
+      getAvailable: async () => [],
+    };
+    internals._authWatch = (PiRuntime as unknown as { _holdAuthFileWatch: (factory: unknown, dir: string) => Disposable })._holdAuthFileWatch(platform.fileWatchers, PI_AGENT_DIR);
+    fs.mkdirSync(PI_AGENT_DIR, { recursive: true });
+    fs.writeFileSync(authPath, JSON.stringify({ "github-copilot": { type: "oauth", access: "a", refresh: "r", expires: 9_000 } }));
+    platform.fileWatchers.watcher(PI_AGENT_DIR, "auth.json").fireChange(authPath);
+
+    await vi.waitFor(() => expect(publishes(panels)).toEqual([1, 1]));
+    await vi.waitFor(() => expect(keyStatuses(posted).find((status) => status.provider === "github-copilot")).toMatchObject({ signedIn: true }));
+  });
+
+  it("follows a new acting client on a daemon's core, whose credentials and prefer flags the panels read", async () => {
+    const host = createFakeRemoteHost();
+    Object.assign(platform, { remote: host.remote });
+    host.set("clientAuth", "client-a", { providers: {} });
+    host.set("clientAuth", "client-b", { providers: { xai: { type: "oauth", hasKey: false, keySaved: true, flatFee: false, expires: 5_000 } } });
+    const { posted, panels } = harness();
+    addPanel(panels, "p2");
+
+    host.setActing("client-b");
+
+    expect(publishes(panels)).toEqual([1, 1]);
+    await vi.waitFor(() => expect(keyStatuses(posted)).toHaveLength(CUSTOM_PROVIDER_DEFS.length));
+    expect(keyStatuses(posted).find((status) => status.provider === "xai")).toEqual({
+      type: "providerAuthStatusChanged", provider: "xai", configured: true, external: null, signedIn: true, signedInExpiresAt: 5_000, preferApiKey: false,
+    });
+  });
+
+  // A sign-in on the client changes no key the daemon applies, so the key sync alone would not republish unstarted panels.
+  it("follows the acting client's sign-in on a daemon's core, before pi starts", async () => {
+    const host = createFakeRemoteHost();
+    Object.assign(platform, { remote: host.remote });
+    host.set("clientAuth", "client-a", { providers: {} });
+    host.setActing("client-a");
+    const { posted, panels } = harness();
+    addPanel(panels, "p2");
+
+    host.set("clientAuth", "client-a", { providers: { "github-copilot": { type: "oauth", hasKey: false, flatFee: false, expires: 7_000 } } });
+
+    expect(publishes(panels)).toEqual([1, 1]);
+    await vi.waitFor(() => expect(keyStatuses(posted).find((status) => status.provider === "github-copilot")).toMatchObject({ signedIn: true, signedInExpiresAt: 7_000 }));
+    expect(PiRuntime.exists).toBe(false);
   });
 });

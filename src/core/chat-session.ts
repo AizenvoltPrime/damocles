@@ -205,6 +205,8 @@ export interface ChatSession extends ActivitySource {
   /** Push the account state (model, dollar-metered flag) to the webview.
    *  Callers own the timing: it is derived state with no publisher of its own. */
   publishAccountInfo(): void;
+  /** Push the model list with the marks of models the chat cannot run; called with every account republish. */
+  publishAvailableModels(): void;
 
   getSupportedModels(): Promise<ModelInfo[]>;
   getSupportedCommands(): Promise<SlashCommandInfo[]>;

@@ -15,7 +15,12 @@
   "client.sharedLoopback",
   "workspace.hostSettings",
   "client.allowance",
-  "account.allowanceUnavailable"
+  "account.allowanceUnavailable",
+  "account.modelPicker",
+  "account.providerPrecedence",
+  "account.providerSignIn",
+  "client.availableModelIds",
+  "client.keySaved"
  ],
  "contracts": {
   "CoreRequests": {
@@ -3095,6 +3100,12 @@
                  "optional": true,
                  "type": "boolean"
                 },
+                "availableModelIds": {
+                 "optional": true,
+                 "type": {
+                  "array": "string"
+                 }
+                },
                 "expires": {
                  "optional": true,
                  "type": "number"
@@ -3105,6 +3116,10 @@
                 },
                 "hasKey": {
                  "optional": false,
+                 "type": "boolean"
+                },
+                "keySaved": {
+                 "optional": true,
                  "type": "boolean"
                 },
                 "type": {
@@ -3855,6 +3870,9 @@
          "union": [
           "\"anthropic\"",
           "\"deepseek\"",
+          "\"github-copilot\"",
+          "\"kimi-coding\"",
+          "\"meta\"",
           "\"minimax\"",
           "\"openai\"",
           "\"openrouter\"",
@@ -4373,6 +4391,12 @@
                  "optional": true,
                  "type": "boolean"
                 },
+                "availableModelIds": {
+                 "optional": true,
+                 "type": {
+                  "array": "string"
+                 }
+                },
                 "expiresIn": {
                  "optional": true,
                  "type": "number"
@@ -4383,6 +4407,10 @@
                 },
                 "hasKey": {
                  "optional": false,
+                 "type": "boolean"
+                },
+                "keySaved": {
+                 "optional": true,
                  "type": "boolean"
                 },
                 "type": {
@@ -5011,6 +5039,12 @@
                     "optional": true,
                     "type": "boolean"
                    },
+                   "availableModelIds": {
+                    "optional": true,
+                    "type": {
+                     "array": "string"
+                    }
+                   },
                    "expiresIn": {
                     "optional": true,
                     "type": "number"
@@ -5021,6 +5055,10 @@
                    },
                    "hasKey": {
                     "optional": false,
+                    "type": "boolean"
+                   },
+                   "keySaved": {
+                    "optional": true,
                     "type": "boolean"
                    },
                    "type": {
@@ -7955,6 +7993,12 @@
                        "optional": true,
                        "type": "boolean"
                       },
+                      "availableModelIds": {
+                       "optional": true,
+                       "type": {
+                        "array": "string"
+                       }
+                      },
                       "expiresIn": {
                        "optional": true,
                        "type": "number"
@@ -7965,6 +8009,10 @@
                       },
                       "hasKey": {
                        "optional": false,
+                       "type": "boolean"
+                      },
+                      "keySaved": {
+                       "optional": true,
                        "type": "boolean"
                       },
                       "type": {
@@ -9144,6 +9192,24 @@
          "organization": {
           "optional": true,
           "type": "string"
+         },
+         "pickerProviders": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "\"anthropic\"",
+             "\"deepseek\"",
+             "\"github-copilot\"",
+             "\"kimi-coding\"",
+             "\"meta\"",
+             "\"minimax\"",
+             "\"openai\"",
+             "\"stepfun\"",
+             "\"xai\""
+            ]
+           }
+          }
          }
         }
        }
@@ -9852,9 +9918,36 @@
     },
     "\"authFailure\"": {
      "object": {
+      "account": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"anthropic\"",
+         "\"deepseek\"",
+         "\"github-copilot\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
+         "\"minimax\"",
+         "\"openai\"",
+         "\"openrouter\"",
+         "\"stepfun\"",
+         "\"typesafe\"",
+         "\"xai\""
+        ]
+       }
+      },
       "message": {
        "optional": false,
        "type": "string"
+      },
+      "reason": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"noApiAccess\"",
+         "\"rejected\""
+        ]
+       }
       },
       "type": {
        "optional": false,
@@ -9864,6 +9957,24 @@
     },
     "\"authFailureCleared\"": {
      "object": {
+      "account": {
+       "optional": true,
+       "type": {
+        "union": [
+         "\"anthropic\"",
+         "\"deepseek\"",
+         "\"github-copilot\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
+         "\"minimax\"",
+         "\"openai\"",
+         "\"openrouter\"",
+         "\"stepfun\"",
+         "\"typesafe\"",
+         "\"xai\""
+        ]
+       }
+      },
       "type": {
        "optional": false,
        "type": "\"authFailureCleared\""
@@ -10007,37 +10118,26 @@
            "optional": true,
            "type": "boolean"
           },
-          "openaiAuthMode": {
+          "knowledgeCutoff": {
            "optional": true,
-           "type": {
-            "union": [
-             "\"any\"",
-             "\"apikey\"",
-             "\"codex\""
-            ]
-           }
+           "type": "string"
           },
           "openaiModelId": {
            "optional": true,
            "type": "string"
           },
-          "openaiReasoningEffort": {
+          "piModelId": {
            "optional": true,
-           "type": {
-            "union": [
-             "\"high\"",
-             "\"low\"",
-             "\"medium\"",
-             "\"none\"",
-             "\"xhigh\""
-            ]
-           }
+           "type": "string"
           },
           "piProvider": {
            "optional": true,
            "type": {
             "union": [
              "\"deepseek\"",
+             "\"github-copilot\"",
+             "\"kimi-coding\"",
+             "\"meta\"",
              "\"minimax\"",
              "\"stepfun\"",
              "\"xai\""
@@ -10075,14 +10175,43 @@
           "unavailable": {
            "optional": true,
            "type": {
-            "object": {
-             "endpoint": {
-              "optional": false,
-              "type": "string"
+            "variants": "reason",
+            "of": {
+             "\"loopback-endpoint\"": {
+              "object": {
+               "endpoint": {
+                "optional": false,
+                "type": "string"
+               },
+               "reason": {
+                "optional": false,
+                "type": "\"loopback-endpoint\""
+               }
+              }
              },
-             "reason": {
-              "optional": false,
-              "type": "\"loopback-endpoint\""
+             "\"not-in-plan\"": {
+              "object": {
+               "provider": {
+                "optional": false,
+                "type": {
+                 "union": [
+                  "\"deepseek\"",
+                  "\"github-copilot\"",
+                  "\"kimi-coding\"",
+                  "\"meta\"",
+                  "\"minimax\"",
+                  "\"openrouter\"",
+                  "\"stepfun\"",
+                  "\"typesafe\"",
+                  "\"xai\""
+                 ]
+                }
+               },
+               "reason": {
+                "optional": false,
+                "type": "\"not-in-plan\""
+               }
+              }
              }
             }
            }
@@ -10590,6 +10719,8 @@
        "type": {
         "union": [
          "\"deepseek\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
          "\"minimax\"",
          "\"openrouter\"",
          "\"stepfun\"",
@@ -17312,6 +17443,7 @@
                  "\"chatgpt-active\"",
                  "\"no-key\"",
                  "\"not-in-catalog\"",
+                 "\"not-in-plan\"",
                  "\"rejected\"",
                  "\"signed-out\"",
                  "\"unrecognized\""
@@ -18068,6 +18200,9 @@
         "union": [
          "\"anthropic\"",
          "\"deepseek\"",
+         "\"github-copilot\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
          "\"minimax\"",
          "\"openai\"",
          "\"openrouter\"",
@@ -18130,6 +18265,17 @@
     },
     "\"openaiAuthStatusChanged\"": {
      "object": {
+      "active": {
+       "optional": true,
+       "type": {
+        "union": [
+         "\"apiKey\"",
+         "\"external\"",
+         "\"none\"",
+         "\"signIn\""
+        ]
+       }
+      },
       "preferApiKey": {
        "optional": false,
        "type": "boolean"
@@ -18806,6 +18952,8 @@
          "\"heldPromptKept\"",
          "\"heldPromptWaiting\"",
          "\"mcpResourceUnavailable\"",
+         "\"modelSignInRequired\"",
+         "\"modelUnavailable\"",
          "\"worktreeFinishing\""
         ]
        }
@@ -18818,6 +18966,17 @@
     },
     "\"providerAuthStatusChanged\"": {
      "object": {
+      "active": {
+       "optional": true,
+       "type": {
+        "union": [
+         "\"apiKey\"",
+         "\"external\"",
+         "\"none\"",
+         "\"signIn\""
+        ]
+       }
+      },
       "configured": {
        "optional": false,
        "type": "boolean"
@@ -18832,11 +18991,18 @@
         ]
        }
       },
+      "preferApiKey": {
+       "optional": false,
+       "type": "boolean"
+      },
       "provider": {
        "optional": false,
        "type": {
         "union": [
          "\"deepseek\"",
+         "\"github-copilot\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
          "\"minimax\"",
          "\"openrouter\"",
          "\"stepfun\"",
@@ -18845,9 +19011,173 @@
         ]
        }
       },
+      "signedIn": {
+       "optional": false,
+       "type": "boolean"
+      },
+      "signedInExpiresAt": {
+       "optional": true,
+       "type": "number"
+      },
       "type": {
        "optional": false,
        "type": "\"providerAuthStatusChanged\""
+      }
+     }
+    },
+    "\"providerSignInCopyCodeAck\"": {
+     "object": {
+      "ok": {
+       "optional": false,
+       "type": "boolean"
+      },
+      "provider": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"github-copilot\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
+         "\"openrouter\"",
+         "\"xai\""
+        ]
+       }
+      },
+      "type": {
+       "optional": false,
+       "type": "\"providerSignInCopyCodeAck\""
+      }
+     }
+    },
+    "\"providerSignInState\"": {
+     "object": {
+      "provider": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"github-copilot\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
+         "\"openrouter\"",
+         "\"xai\""
+        ]
+       }
+      },
+      "state": {
+       "optional": false,
+       "type": {
+        "variants": "phase",
+        "of": {
+         "\"browser\"": {
+          "object": {
+           "invalid": {
+            "optional": true,
+            "type": "true"
+           },
+           "paste": {
+            "optional": false,
+            "type": "boolean"
+           },
+           "phase": {
+            "optional": false,
+            "type": "\"browser\""
+           }
+          }
+         },
+         "\"deviceCode\"": {
+          "object": {
+           "expiresAt": {
+            "optional": true,
+            "type": "number"
+           },
+           "phase": {
+            "optional": false,
+            "type": "\"deviceCode\""
+           },
+           "userCode": {
+            "optional": false,
+            "type": "string"
+           },
+           "verificationUri": {
+            "optional": false,
+            "type": "string"
+           }
+          }
+         },
+         "\"finishing\"": {
+          "object": {
+           "phase": {
+            "optional": false,
+            "type": "\"finishing\""
+           }
+          }
+         },
+         "\"idle\"": {
+          "object": {
+           "error": {
+            "optional": true,
+            "type": {
+             "object": {
+              "kind": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"cancelled\"",
+                 "\"denied\"",
+                 "\"expired\"",
+                 "\"network\"",
+                 "\"provider\"",
+                 "\"remote\""
+                ]
+               }
+              },
+              "message": {
+               "optional": false,
+               "type": "string"
+              },
+              "status": {
+               "optional": true,
+               "type": "number"
+              }
+             }
+            }
+           },
+           "phase": {
+            "optional": false,
+            "type": "\"idle\""
+           }
+          }
+         },
+         "\"prompt\"": {
+          "object": {
+           "invalid": {
+            "optional": true,
+            "type": "true"
+           },
+           "phase": {
+            "optional": false,
+            "type": "\"prompt\""
+           },
+           "prompt": {
+            "optional": false,
+            "type": "\"enterpriseDomain\""
+           }
+          }
+         },
+         "\"starting\"": {
+          "object": {
+           "phase": {
+            "optional": false,
+            "type": "\"starting\""
+           }
+          }
+         }
+        }
+       }
+      },
+      "type": {
+       "optional": false,
+       "type": "\"providerSignInState\""
       }
      }
     },
@@ -20764,6 +21094,38 @@
       }
      }
     },
+    "\"setModelPickerProviderAck\"": {
+     "object": {
+      "ok": {
+       "optional": false,
+       "type": "boolean"
+      },
+      "provider": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"anthropic\"",
+         "\"deepseek\"",
+         "\"github-copilot\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
+         "\"minimax\"",
+         "\"openai\"",
+         "\"stepfun\"",
+         "\"xai\""
+        ]
+       }
+      },
+      "requestId": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"setModelPickerProviderAck\""
+      }
+     }
+    },
     "\"setOpenAIApiKeyAck\"": {
      "object": {
       "error": {
@@ -20831,6 +21193,8 @@
        "type": {
         "union": [
          "\"deepseek\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
          "\"minimax\"",
          "\"openrouter\"",
          "\"stepfun\"",
@@ -20846,6 +21210,41 @@
       "type": {
        "optional": false,
        "type": "\"setProviderApiKeyAck\""
+      }
+     }
+    },
+    "\"setProviderPreferApiKeyAck\"": {
+     "object": {
+      "error": {
+       "optional": true,
+       "type": "string"
+      },
+      "ok": {
+       "optional": false,
+       "type": "boolean"
+      },
+      "provider": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"deepseek\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
+         "\"minimax\"",
+         "\"openrouter\"",
+         "\"stepfun\"",
+         "\"typesafe\"",
+         "\"xai\""
+        ]
+       }
+      },
+      "requestId": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"setProviderPreferApiKeyAck\""
       }
      }
     },
@@ -27385,6 +27784,8 @@
        "type": {
         "union": [
          "\"deepseek\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
          "\"minimax\"",
          "\"openrouter\"",
          "\"stepfun\"",
@@ -28393,6 +28794,9 @@
         "union": [
          "\"anthropic\"",
          "\"deepseek\"",
+         "\"github-copilot\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
          "\"minimax\"",
          "\"openai\"",
          "\"openrouter\"",
@@ -28597,6 +29001,130 @@
       "type": {
        "optional": false,
        "type": "\"pinMemory\""
+      }
+     }
+    },
+    "\"providerSignIn\"": {
+     "object": {
+      "provider": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"github-copilot\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
+         "\"openrouter\"",
+         "\"xai\""
+        ]
+       }
+      },
+      "type": {
+       "optional": false,
+       "type": "\"providerSignIn\""
+      }
+     }
+    },
+    "\"providerSignInAnswer\"": {
+     "object": {
+      "input": {
+       "optional": false,
+       "type": "string"
+      },
+      "provider": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"github-copilot\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
+         "\"openrouter\"",
+         "\"xai\""
+        ]
+       }
+      },
+      "type": {
+       "optional": false,
+       "type": "\"providerSignInAnswer\""
+      }
+     }
+    },
+    "\"providerSignInCancel\"": {
+     "object": {
+      "provider": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"github-copilot\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
+         "\"openrouter\"",
+         "\"xai\""
+        ]
+       }
+      },
+      "type": {
+       "optional": false,
+       "type": "\"providerSignInCancel\""
+      }
+     }
+    },
+    "\"providerSignInCopyCode\"": {
+     "object": {
+      "provider": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"github-copilot\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
+         "\"openrouter\"",
+         "\"xai\""
+        ]
+       }
+      },
+      "type": {
+       "optional": false,
+       "type": "\"providerSignInCopyCode\""
+      }
+     }
+    },
+    "\"providerSignInOpenPage\"": {
+     "object": {
+      "provider": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"github-copilot\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
+         "\"openrouter\"",
+         "\"xai\""
+        ]
+       }
+      },
+      "type": {
+       "optional": false,
+       "type": "\"providerSignInOpenPage\""
+      }
+     }
+    },
+    "\"providerSignOut\"": {
+     "object": {
+      "provider": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"github-copilot\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
+         "\"openrouter\"",
+         "\"xai\""
+        ]
+       }
+      },
+      "type": {
+       "optional": false,
+       "type": "\"providerSignOut\""
       }
      }
     },
@@ -29988,6 +30516,38 @@
       }
      }
     },
+    "\"setModelPickerProvider\"": {
+     "object": {
+      "provider": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"anthropic\"",
+         "\"deepseek\"",
+         "\"github-copilot\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
+         "\"minimax\"",
+         "\"openai\"",
+         "\"stepfun\"",
+         "\"xai\""
+        ]
+       }
+      },
+      "requestId": {
+       "optional": false,
+       "type": "string"
+      },
+      "shown": {
+       "optional": false,
+       "type": "boolean"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"setModelPickerProvider\""
+      }
+     }
+    },
     "\"setOpenAIApiKey\"": {
      "object": {
       "key": {
@@ -30150,6 +30710,8 @@
        "type": {
         "union": [
          "\"deepseek\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
          "\"minimax\"",
          "\"openrouter\"",
          "\"stepfun\"",
@@ -30165,6 +30727,37 @@
       "type": {
        "optional": false,
        "type": "\"setProviderApiKey\""
+      }
+     }
+    },
+    "\"setProviderPreferApiKey\"": {
+     "object": {
+      "preferApiKey": {
+       "optional": false,
+       "type": "boolean"
+      },
+      "provider": {
+       "optional": false,
+       "type": {
+        "union": [
+         "\"deepseek\"",
+         "\"kimi-coding\"",
+         "\"meta\"",
+         "\"minimax\"",
+         "\"openrouter\"",
+         "\"stepfun\"",
+         "\"typesafe\"",
+         "\"xai\""
+        ]
+       }
+      },
+      "requestId": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"setProviderPreferApiKey\""
       }
      }
     },

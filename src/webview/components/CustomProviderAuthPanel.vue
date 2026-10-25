@@ -1,24 +1,46 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, useId, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { usePlatformBridge } from "@/composables/usePlatformBridge";
 import { Eye, EyeOff, Trash2 } from "lucide-vue-next";
 import SettingButton from "@/components/settings/controls/SettingButton.vue";
+import SettingSwitch from "@/components/settings/controls/SettingSwitch.vue";
+import ProviderSignInField from "@/components/ProviderSignInField.vue";
 import { useMemoryJudgeNames } from "@/components/settings/memory-judge-names";
 import type { ExtensionToWebviewMessage } from "@shared/types/messages";
-import type { KeyProviderId } from "@shared/settings-sections";
+import { isKeyProviderId, isSignInProviderId, type AccountProviderId } from "@shared/settings-sections";
 
-// Single key-field auth panel shared by the key providers. The provider id doubles as the i18n section key.
-const props = defineProps<{ provider: KeyProviderId }>();
+// The auth panel shared by the account providers: a sign-in, a key field, or both. The provider id doubles as the i18n section key.
+const props = defineProps<{ provider: AccountProviderId }>();
 
 const { t } = useI18n();
 const settingsStore = useSettingsStore();
-const { keyProviderConfigured, memoryJudge } = storeToRefs(settingsStore);
+const { keyProviderStatus, providerSignInState, memoryJudge } = storeToRefs(settingsStore);
 const { postMessage, onMessage } = usePlatformBridge();
 
-const configured = computed(() => keyProviderConfigured.value[props.provider]);
+const status = computed(() => keyProviderStatus.value[props.provider]);
+const configured = computed(() => status.value.configured);
+const signInProvider = computed(() => (isSignInProviderId(props.provider) ? props.provider : null));
+const keyProvider = computed(() => (isKeyProviderId(props.provider) ? props.provider : null));
+
+// The preference decides only between a sign-in and the key saved here, so it shows only when both exist.
+const showPreferSwitch = computed(() => status.value.configured && status.value.signedIn);
+// The key sync leaves a provider alone while it signs in, so the preference waits for the flow to end.
+const signInRunning = computed(() => signInProvider.value !== null && providerSignInState.value[signInProvider.value].phase !== "idle");
+const preferLabelId = useId();
+const preferHintId = useId();
+// The switch shows the value it sent until core acknowledges it, and core's status after.
+const preferPending = ref<{ requestId: string; value: boolean } | null>(null);
+const preferError = ref<string | null>(null);
+const preferValue = computed(() => preferPending.value?.value ?? status.value.preferApiKey);
+
+watch(showPreferSwitch, (shown) => {
+  if (shown) return;
+  preferPending.value = null;
+  preferError.value = null;
+});
 
 const { classifierName, judgeText } = useMemoryJudgeNames();
 
@@ -53,25 +75,40 @@ function makeRequestId(): string {
 
 function handleSave() {
   const key = apiKeyInput.value.trim();
-  if (!key || saving.value) return;
+  const provider = keyProvider.value;
+  if (!key || saving.value || !provider) return;
   const requestId = makeRequestId();
   pendingRequestId.value = requestId;
   saving.value = true;
   inlineMessage.value = null;
-  postMessage({ type: "setProviderApiKey", provider: props.provider, key, requestId });
+  postMessage({ type: "setProviderApiKey", provider, key, requestId });
 }
 
 function handleClear() {
-  if (!configured.value || saving.value) return;
+  const provider = keyProvider.value;
+  if (!configured.value || saving.value || !provider) return;
   const requestId = makeRequestId();
   pendingRequestId.value = requestId;
   saving.value = true;
   inlineMessage.value = null;
-  postMessage({ type: "clearProviderApiKey", provider: props.provider, requestId });
+  postMessage({ type: "clearProviderApiKey", provider, requestId });
+}
+
+function handlePreferenceChange(value: boolean) {
+  const provider = keyProvider.value;
+  if (!provider || signInRunning.value) return;
+  const requestId = makeRequestId();
+  preferPending.value = { requestId, value };
+  preferError.value = null;
+  postMessage({ type: "setProviderPreferApiKey", provider, preferApiKey: value, requestId });
 }
 
 function handleAck(msg: ExtensionToWebviewMessage) {
-  if (msg.type === "setProviderApiKeyAck") {
+  if (msg.type === "setProviderPreferApiKeyAck") {
+    if (msg.provider !== props.provider || msg.requestId !== preferPending.value?.requestId) return;
+    preferPending.value = null;
+    if (!msg.ok) preferError.value = msg.error ?? t("providerAuth.preferApiKey.failed");
+  } else if (msg.type === "setProviderApiKeyAck") {
     if (msg.provider !== props.provider || msg.requestId !== pendingRequestId.value) return;
     pendingRequestId.value = null;
     saving.value = false;
@@ -115,7 +152,32 @@ const messageClass = computed(() => {
 
 <template>
   <div :data-testid="`${provider}-auth-panel`">
-    <div class="sm-field">
+    <p
+      v-if="status.active"
+      class="sm-hint"
+      role="status"
+      data-testid="credential-active"
+    >
+      {{ t(`providerAuth.active.${status.active}`) }}
+    </p>
+    <ProviderSignInField
+      v-if="signInProvider"
+      :provider="signInProvider"
+    />
+    <div
+      v-else-if="status.signedIn"
+      class="sm-field"
+      data-testid="provider-sign-in"
+    >
+      <div class="sm-field-label">
+        {{ t('providerAuth.signIn.label') }}
+        <span class="sm-hint">{{ t('providerAuth.signIn.signedIn') }}</span>
+      </div>
+    </div>
+    <div
+      v-if="keyProvider"
+      class="sm-field"
+    >
       <div class="sm-field-label">
         {{ tk('apiKey.label') }}
         <span class="sm-hint">{{ configured ? tk('apiKey.configured') : tk('apiKey.notConfigured') }}</span>
@@ -204,5 +266,40 @@ const messageClass = computed(() => {
         </p>
       </div>
     </div>
+
+    <template v-if="showPreferSwitch">
+      <!-- The whole row toggles the switch; aria-labelledby keeps the hint out of the switch's name. -->
+      <label class="sm-field-row">
+        <SettingSwitch
+          :model-value="preferValue"
+          :aria-labelledby="preferLabelId"
+          :aria-describedby="preferHintId"
+          :disabled="signInRunning"
+          data-testid="prefer-api-key"
+          @update:model-value="handlePreferenceChange"
+        />
+        <span class="flex-1">
+          <span
+            :id="preferLabelId"
+            class="sm-field-label"
+          >
+            {{ t('providerAuth.preferApiKey.label') }}
+          </span>
+          <span
+            :id="preferHintId"
+            class="sm-hint block"
+          >
+            {{ t('providerAuth.preferApiKey.description') }}
+          </span>
+        </span>
+      </label>
+      <p
+        v-if="preferError"
+        class="sm-hint sm-hint-error"
+        role="alert"
+      >
+        {{ preferError }}
+      </p>
+    </template>
   </div>
 </template>

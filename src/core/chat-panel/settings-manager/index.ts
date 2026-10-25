@@ -336,6 +336,10 @@ export class SettingsManager {
     return this.serializeSettingWrite(() => this.configManager.handleSetMemoryJudgeEffort(effort));
   }
 
+  async handleSetModelPickerProvider(provider: string, shown: boolean): Promise<SettingWrite> {
+    return this.serializeSettingWrite(() => this.configManager.handleSetModelPickerProvider(provider, shown));
+  }
+
   cleanupPanelThinking(panelId: string): void {
     this.thinkingManager.cleanupPanelThinking(panelId);
   }

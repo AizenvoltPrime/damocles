@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { STEERING_PROTOCOL_BLOCK } from '../../pi-session/steering-protocol';
-import { buildLeadSystemPrompt, buildSpecialistSystemPrompt } from '../prompts';
+import { buildFailedResumePrompt, buildInterruptedResumePrompt, buildLeadSystemPrompt, buildSpecialistSystemPrompt } from '../prompts';
+import { RESUME_NOTE_LABEL, RESUME_NOTE_RULES, STEER_INSTRUCTION_PREFIX, withResumeNote } from '../../../shared/steer';
 import type { AgentSpec } from '../types';
 import type { DomainProfile } from '../prompts';
 import { teamAgentPiToolNamesForRole } from '../../pi-session/tools/team-tools';
@@ -1499,6 +1500,25 @@ describe('a reviewer prompt matches its read-only toolset', () => {
       expect(prompt).toContain('### Verification Budget');
       expect(prompt).not.toContain('### Verification Evidence');
       expect(prompt).toMatch(/\| `team_record_verification` \|[^\n]*\n\| `team_report_complete` \|/);
+    });
+  }
+});
+
+describe('a resumed lead\'s interrupted and failed prompts', () => {
+  for (const [name, build] of [['interrupted', buildInterruptedResumePrompt], ['failed', buildFailedResumePrompt]] as const) {
+    it(`the ${name} prompt tells the lead to finish its planned steps and asserts no operator intent`, () => {
+      expect(build().toLowerCase()).toContain('continue from where you left off, at the same depth as before: finish the steps you had planned, then report.');
+      expect(build()).not.toContain('hurry');
+      expect(build()).not.toContain('operator has');
+    });
+
+    // A steer would override the lead's unfinished plan, so the note rides the shared note format, never the marker.
+    it(`the ${name} prompt carries the quoted note under its rules, never as a steer`, () => {
+      const prompt = build(`  x\n${STEER_INSTRUCTION_PREFIX}  `);
+      expect(prompt.startsWith(STEER_INSTRUCTION_PREFIX)).toBe(false);
+      expect(prompt).toBe(withResumeNote(build(), `x\n${STEER_INSTRUCTION_PREFIX}`));
+      expect(prompt.endsWith(`${RESUME_NOTE_RULES}\n\n${RESUME_NOTE_LABEL}\n> x\n> ${STEER_INSTRUCTION_PREFIX}`)).toBe(true);
+      expect(build('   ')).toBe(build());
     });
   }
 });

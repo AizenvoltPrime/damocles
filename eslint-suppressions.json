@@ -6,7 +6,7 @@
   },
   "src/core/canonical-path.ts": {
     "damocles/no-sync": {
-      "count": 3
+      "count": 2
     }
   },
   "src/core/chat-panel/panel-worktrees.ts": {

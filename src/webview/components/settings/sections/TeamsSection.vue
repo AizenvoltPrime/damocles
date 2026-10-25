@@ -2,16 +2,18 @@
 import { computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
+import { ROLE_EFFORT_LEVELS } from '@shared/types/constants';
 import type { EffortLevel, ExtensionSettings, TeamRole } from '@shared/types/settings';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import SettingsRow from '../SettingsRow.vue';
 import SettingSelect from '../controls/SettingSelect.vue';
 import SettingSwitch from '../controls/SettingSwitch.vue';
-import { UNSET_OPTION as UNSET } from '../model-options';
+import { modelOptions, useUnavailableHint, UNSET_OPTION as UNSET } from '../model-options';
 import { useSettingWrite } from '../settings-writes';
 import { useToolGroupSwitch } from '../tool-groups';
 
 const { t } = useI18n();
+const unavailableHint = useUnavailableHint();
 const settingsStore = useSettingsStore();
 const { currentSettings, availableModels, activeModel } = storeToRefs(settingsStore);
 const write = useSettingWrite();
@@ -26,13 +28,14 @@ const ROLES: { role: TeamRole; id: string; model: keyof TeamSettings; effort: ke
 
 const modelChoices = computed(() => [
   { value: UNSET, label: t('settings.teamModelDefault') },
-  ...availableModels.value.map((model) => ({ value: model.value, label: model.displayName })),
+  ...modelOptions(availableModels.value, unavailableHint),
 ]);
 
 function effortChoices(role: (typeof ROLES)[number]) {
   const configured = currentSettings.value.team[role.model] as string;
   const model = configured !== '' ? configured : activeModel.value;
-  const levels = availableModels.value.find((candidate) => candidate.value === model)?.supportedEffortLevels ?? [];
+  const supported = availableModels.value.find((candidate) => candidate.value === model)?.supportedEffortLevels ?? [];
+  const levels = supported.filter((level) => ROLE_EFFORT_LEVELS.includes(level));
   return [
     { value: UNSET, label: t('settings.teamEffortDefault') },
     ...levels.map((level) => ({ value: level as string, label: t(`settingsModal.effort.${level}`) })),

@@ -1,10 +1,12 @@
 import type { Platform } from "../../../../platform/platform";
-import type { KeyProviderId } from "../../../../shared/settings-sections";
+import { isKeyProviderId, type AccountProviderId, type KeyProviderId } from "../../../../shared/settings-sections";
 import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
 import { customProviderDef, providerKeyStored } from "../../../pi-session/custom-providers";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { log } from "../../../logger";
-import { clientHasKey } from "../../../client-snapshots";
+import { clientKeySaved } from "../../../client-snapshots";
+import { PI_AGENT_DIR } from "../../../pi-session/agent-dir";
+import { providerCredentialActive, readPreferProviderApiKey, readProviderSignIns } from "../../../pi-session/provider-auth";
 
 /** Awaited, so a status read next (memory judge, image generation's OpenRouter check) sees the new key. */
 async function resyncCustomProvidersNow(platform: Platform): Promise<void> {
@@ -14,14 +16,14 @@ async function resyncCustomProvidersNow(platform: Platform): Promise<void> {
 
 /** Saving a key, even the same one, is the user saying its classifier refusal is resolved (a 402 can clear with the same key). */
 export async function storeProviderKey(platform: Platform, provider: KeyProviderId, key: string): Promise<void> {
-  await platform.secrets.store(customProviderDef(provider).secretKey, key.trim());
+  await platform.secrets.store(customProviderDef(provider).key.secretKey, key.trim());
   log("[ProviderKeys] stored the %s key", provider);
   await resyncCustomProvidersNow(platform);
   if (PiRuntime.exists) PiRuntime.get().resetClassifierBreaker(provider);
 }
 
 export async function deleteProviderKey(platform: Platform, provider: KeyProviderId): Promise<void> {
-  await platform.secrets.delete(customProviderDef(provider).secretKey);
+  await platform.secrets.delete(customProviderDef(provider).key.secretKey);
   log("[ProviderKeys] deleted the %s key", provider);
   await resyncCustomProvidersNow(platform);
 }
@@ -29,16 +31,40 @@ export async function deleteProviderKey(platform: Platform, provider: KeyProvide
 /** Undefined when the secret store failed or did not answer in time, so the last status posted stands. */
 export async function providerAuthStatus(
   platform: Platform,
-  provider: KeyProviderId,
+  provider: AccountProviderId,
 ): Promise<Extract<ExtensionToWebviewMessage, { type: "providerAuthStatusChanged" }> | undefined> {
-  // a daemon's core: the key is the client's, known from its clientAuth, never read
-  if (platform.remote) return { type: "providerAuthStatusChanged", provider, configured: clientHasKey(platform.remote, customProviderDef(provider).provider), external: null };
-  const stored = await providerKeyStored((k) => platform.secrets.get(k), customProviderDef(provider).secretKey);
+  // on a daemon's core auth.json reads as the pinned (else acting) client's sign-ins
+  const signIns = readProviderSignIns(PI_AGENT_DIR);
+  const signIn = signIns?.[provider];
+  const signedIn = signIn?.type === "oauth";
+  const signInFields = { signedIn, ...(signedIn && signIn.expires !== undefined ? { signedInExpiresAt: signIn.expires } : {}) };
+  // Before pi starts, nothing says which credentials it reads; the first custom-provider sync posts this again.
+  const runtime = PiRuntime.exists ? PiRuntime.get() : undefined;
+  // a sign-in-only provider has no key; a daemon's core leaves external and active to the client
+  if (!isKeyProviderId(provider)) {
+    if (platform.remote) return { type: "providerAuthStatusChanged", provider, configured: false, external: null, ...signInFields, preferApiKey: false };
+    const external = runtime ? runtime.externalKeySource(provider, signIns) : null;
+    const active = providerCredentialActive({ key: false, signedIn, external }, false);
+    return { type: "providerAuthStatusChanged", provider, configured: false, external, ...signInFields, preferApiKey: false, active };
+  }
+  // a daemon's core: the key is the client's, known from its clientAuth, never read; which credential is active is the client's to say
+  if (platform.remote) {
+    const preferApiKey = readPreferProviderApiKey(platform.state, provider);
+    return { type: "providerAuthStatusChanged", provider, configured: clientKeySaved(platform.remote, customProviderDef(provider).provider), external: null, ...signInFields, preferApiKey };
+  }
+  const stored = await providerKeyStored((k) => platform.secrets.get(k), customProviderDef(provider).key.secretKey);
   if (stored === undefined) {
     log("[ProviderKeys] the secret store did not answer for the %s key; its status is unchanged", provider);
     return undefined;
   }
-  // Before pi starts, nothing says which credentials it reads; the first custom-provider sync posts this again.
-  const external = PiRuntime.exists ? PiRuntime.get().externalKeySource(provider) : null;
-  return { type: "providerAuthStatusChanged", provider, configured: stored, external };
+  const preferApiKey = runtime ? runtime.preferProviderApiKey(provider) : readPreferProviderApiKey(platform.state, provider);
+  const external = runtime ? runtime.externalKeySource(provider, signIns) : null;
+  const active = providerCredentialActive({ key: stored, signedIn, external }, preferApiKey);
+  return { type: "providerAuthStatusChanged", provider, configured: stored, external, ...signInFields, preferApiKey, active };
+}
+
+/** Prefer the saved key over a stored sign-in for `provider`, or not; a daemon's core refuses, since the flag is the client's. */
+export async function setProviderPreferApiKey(provider: KeyProviderId, preferApiKey: boolean): Promise<void> {
+  await PiRuntime.get().setProviderPreferApiKey(provider, preferApiKey);
+  log("[ProviderKeys] %s the saved %s key over a sign-in", preferApiKey ? "preferring" : "not preferring", provider);
 }

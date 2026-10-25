@@ -15,17 +15,17 @@ export function effortBadgeLabelKey(level: EffortBadgeLevel): string {
 }
 
 /**
- * The effort to publish for a level pi ran at, or undefined. A model that does not reason
- * (`Model.reasoning` false or unknown) never gets a badge, whatever level pi reports for it.
+ * The effort to publish for a level pi ran at, or undefined. A model `effortBadgeApplies` (`pi-session/pi-models.ts`)
+ * refuses, or one not known, never gets a badge, whatever level pi reports for it.
  */
 export function publishedEffort(level: unknown, modelReasons: boolean | undefined): EffortBadgeLevel | undefined {
   return modelReasons === true && isEffortBadgeLevel(level) ? level : undefined;
 }
 
-/** The effective effort of a live pi session: `thinkingLevel` is the level after pi clamps it to the model. */
-export function sessionEffort(session: {
-  readonly thinkingLevel: unknown;
-  readonly model?: { readonly reasoning?: boolean } | undefined;
-}): EffortBadgeLevel | undefined {
-  return publishedEffort(session.thinkingLevel, session.model?.reasoning);
+/**
+ * The effective effort of a live pi session: `thinkingLevel` is the level after pi clamps it to the model. `modelReasons` is
+ * whether a badge applies to the session's model (`effortBadgeApplies` in core).
+ */
+export function sessionEffort(session: { readonly thinkingLevel: unknown }, modelReasons: boolean | undefined): EffortBadgeLevel | undefined {
+  return publishedEffort(session.thinkingLevel, modelReasons);
 }

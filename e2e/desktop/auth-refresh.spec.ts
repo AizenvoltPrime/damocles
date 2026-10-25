@@ -38,6 +38,8 @@ for (const [provider, secret] of [
   ['deepseek', 'sk-e2e-deepseek-not-real'],
   ['minimax', 'sk-cp-e2e-minimax-not-real'],
   ['xai', 'xai-e2e-not-real'],
+  ['kimi-coding', 'sk-e2e-kimi-not-real'],
+  ['meta', 'meta-e2e-not-real'],
 ] as const) {
   test(`a ${provider} API key entered in the modal reaches the account without ever showing in the page`, async ({ launch }) => {
     const { app } = await launch();

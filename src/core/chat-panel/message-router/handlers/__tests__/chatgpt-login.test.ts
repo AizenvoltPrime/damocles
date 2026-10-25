@@ -95,7 +95,7 @@ describe("Sign in with ChatGPT through pi's real login", () => {
     const host = { id: "panel-1" } as unknown as HandlerContext["host"];
     const deps = {
       postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => sent.push(message),
-      getPanels: () => new Map([["panel-1", { host, session: { publishAccountInfo: () => {}, openaiSignInEnded: async () => {} } }]]),
+      getPanels: () => new Map([["panel-1", { host, session: { publishAccountInfo: () => {}, publishAvailableModels: () => {}, openaiSignInEnded: async () => {} } }]]),
       platform,
     } as unknown as HandlerDependencies;
     handlers = createOpenAIHandlers(deps);

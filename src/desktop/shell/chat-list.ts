@@ -1,4 +1,4 @@
-import { DEFAULT_MODELS } from '@shared/types/constants';
+import { catalogEntryOfPiModel, modelLabel as catalogModelLabel } from '@shared/model-vendor';
 import { NEW_CHAT_ID_PREFIX, type ShellChat } from '../preload/shell-channels';
 
 export type ChatGroup = 'today' | 'yesterday' | 'earlier';
@@ -39,6 +39,8 @@ export function hasSavedConversation(chat: ShellChat): boolean {
   return !chat.id.startsWith(NEW_CHAT_ID_PREFIX);
 }
 
+/** A chat's recorded pi model as the model lists name it; its pi id when it is outside the catalog. */
 export function modelLabel(model: NonNullable<ShellChat['model']>): string {
-  return DEFAULT_MODELS.find((entry) => entry.value === model.id)?.displayName ?? model.id;
+  const entry = catalogEntryOfPiModel(model.provider, model.id);
+  return entry ? catalogModelLabel(entry) : model.id;
 }

@@ -185,6 +185,74 @@ describe('OpenAIAuthPanel prefer-API-key toggle', () => {
     const toggle = wrapper.get('[role="switch"]');
     expect(toggle.attributes('disabled') !== undefined).toBe(disabled);
   });
+
+  const toggle = (wrapper: ReturnType<typeof mountPanel>) => wrapper.get('[data-testid="openai-prefer-api-key"]');
+  const ack = (message: ExtensionToWebviewMessage): void => {
+    for (const fn of listeners) fn(message);
+  };
+
+  it('posts the choice and holds it until its own ack, then shows what core published', async () => {
+    const wrapper = mountPanel(status({ apiKey: true, chatgpt: true }));
+    await toggle(wrapper).trigger('click');
+    expect(posted).toEqual([{ type: 'setOpenAIPreferApiKey', preferApiKey: true, requestId: expect.any(String) }]);
+    await nextTick();
+    expect(toggle(wrapper).attributes('aria-checked')).toBe('true');
+    const sent = posted[0] as Extract<WebviewToExtensionMessage, { type: 'setOpenAIPreferApiKey' }>;
+
+    ack({ type: 'setOpenAIPreferApiKeyAck', requestId: 'stale', ok: true });
+    useSettingsStore().setOpenAIAuthStatus(status({ apiKey: true, chatgpt: true }), true, 'apiKey');
+    ack({ type: 'setOpenAIPreferApiKeyAck', requestId: sent.requestId, ok: true });
+    await nextTick();
+    expect(toggle(wrapper).attributes('aria-checked')).toBe('true');
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+  });
+
+  it('shows a refused change as its own alert, with a fallback text, and the published value', async () => {
+    const wrapper = mountPanel(status({ apiKey: true, chatgpt: true }));
+    await toggle(wrapper).trigger('click');
+    const sent = posted[0] as Extract<WebviewToExtensionMessage, { type: 'setOpenAIPreferApiKey' }>;
+    ack({ type: 'setOpenAIPreferApiKeyAck', requestId: sent.requestId, ok: false });
+    await nextTick();
+    expect(wrapper.get('[data-testid="openai-prefer-error"]').text()).toBe('Failed to change the preference');
+    expect(wrapper.get('[data-testid="openai-prefer-error"]').attributes('role')).toBe('alert');
+    expect(toggle(wrapper).attributes('aria-checked')).toBe('false');
+
+    await toggle(wrapper).trigger('click');
+    const retry = posted[1] as Extract<WebviewToExtensionMessage, { type: 'setOpenAIPreferApiKey' }>;
+    expect(wrapper.find('[data-testid="openai-prefer-error"]').exists()).toBe(false);
+    ack({ type: 'setOpenAIPreferApiKeyAck', requestId: retry.requestId, ok: false, error: 'refused on a remote host' });
+    await nextTick();
+    expect(wrapper.get('[data-testid="openai-prefer-error"]').text()).toBe('refused on a remote host');
+  });
+
+  it('is disabled while a key save runs, whose ack it never takes over', async () => {
+    const wrapper = mountPanel(status({ apiKey: true, chatgpt: true }));
+    await wrapper.get('input[type="password"]').setValue('sk-test');
+    await wrapper.get('input[type="password"]').trigger('keydown.enter');
+    expect(toggle(wrapper).attributes('disabled')).toBeDefined();
+    await toggle(wrapper).trigger('click');
+    expect(typesPosted()).toEqual(['setOpenAIApiKey']);
+
+    const set = posted[0] as { requestId: string };
+    ack({ type: 'setOpenAIApiKeyAck', requestId: set.requestId, ok: true, validated: true, modelCount: 3 });
+    await nextTick();
+    expect(wrapper.get('input[type="password"]').attributes('disabled')).toBeUndefined();
+    expect(toggle(wrapper).attributes('disabled')).toBeUndefined();
+  });
+
+  it('leaves a key save its own acknowledgement when toggled before the save', async () => {
+    const wrapper = mountPanel(status({ apiKey: true, chatgpt: true }));
+    await toggle(wrapper).trigger('click');
+    await wrapper.get('input[type="password"]').setValue('sk-test');
+    await wrapper.get('input[type="password"]').trigger('keydown.enter');
+    const set = posted.find((m) => m.type === 'setOpenAIApiKey') as { requestId: string };
+    const prefer = posted.find((m) => m.type === 'setOpenAIPreferApiKey') as { requestId: string };
+    expect(set.requestId).not.toBe(prefer.requestId);
+
+    ack({ type: 'setOpenAIApiKeyAck', requestId: set.requestId, ok: true, validated: true, modelCount: 3 });
+    await nextTick();
+    expect(wrapper.get('input[type="password"]').attributes('disabled')).toBeUndefined();
+  });
 });
 
 describe('OpenAIAuthPanel API key', () => {
@@ -208,5 +276,26 @@ describe('OpenAIAuthPanel API key', () => {
     const wrapper = mountPanel();
     await save(wrapper, { ok: true, validated: false, warning: 'saved, not checked' });
     expect(wrapper.findAll('[role="status"]').map((el) => el.text())).toContain('saved, not checked');
+  });
+});
+
+describe('OpenAIAuthPanel active credential', () => {
+  it.each([
+    ['signIn', 'Active credential: sign-in'],
+    ['apiKey', 'Active credential: API key'],
+    ['external', 'Active credential: key set outside Damocles'],
+    ['none', 'Active credential: none'],
+  ] as const)('announces %s as the active credential', async (active, text) => {
+    const wrapper = mountPanel();
+    useSettingsStore().setOpenAIAuthStatus(status({ chatgpt: true, apiKey: true }), false, active);
+    await nextTick();
+    const line = wrapper.get('[data-testid="credential-active"]');
+    expect(line.text()).toBe(text);
+    expect(line.attributes('role')).toBe('status');
+  });
+
+  it('hides the line when core does not report it', () => {
+    const wrapper = mountPanel(status({ chatgpt: true, apiKey: true }));
+    expect(wrapper.find('[data-testid="credential-active"]').exists()).toBe(false);
   });
 });

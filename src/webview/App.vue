@@ -82,7 +82,7 @@ const EditorOverlayHost = defineAsyncComponent({
   },
 });
 import PromptNavigator from "./components/PromptNavigator.vue";
-import { useOpenSettings } from "@/composables/useOpenSettings";
+import { openSettings, useOpenSettings } from "@/composables/useOpenSettings";
 import { showYoloRefusal } from "@/composables/useYoloRefusal";
 import { usePlatformBridge } from "./composables/usePlatformBridge";
 import { remPx } from "./composables/useRemPx";
@@ -128,6 +128,7 @@ import type { PermissionUpdate } from "@shared/types/permissions";
 import type { ToolGroup } from "@shared/types/tools";
 import type { McpServerConfig, McpToolExposureScope, McpToolExposureSetting } from "@shared/types/mcp";
 import type { WebviewToExtensionMessage, WorktreeAction } from "@shared/types/messages";
+import type { SettingsAccountId } from "@shared/settings-sections";
 import { visibleText } from "@shared/visible-text";
 import { isMcpToolName } from "@shared/tool-names";
 
@@ -153,7 +154,7 @@ const {
   rewindCanFork,
   selectedRewindItem,
   rewindMetadataLoading,
-  authFailureMessage,
+  authFailure,
   retryStatus,
 } = storeToRefs(uiStore);
 // The server whose resource picker is open over the MCP panel.
@@ -584,8 +585,8 @@ function handleSetPermissionMode(mode: PermissionMode) {
 
 const handleOpenSettings = useOpenSettings();
 
-function handleInvokeSignIn() {
-  handleOpenSettings("accounts");
+function handleOpenAccount(account: SettingsAccountId) {
+  openSettings({ settingsStore, uiStore }, postMessage, { section: "accounts", account });
 }
 
 function handleOpenSessionLog() {
@@ -1124,10 +1125,10 @@ function handleSuggestion(prompt: string) {
             @dismiss="settingsStore.dismissAllowanceNotice()"
           />
           <AuthFailureBanner
-            v-if="authFailureMessage"
+            v-if="authFailure"
             key="auth"
-            :message="authFailureMessage"
-            @sign-in="handleInvokeSignIn"
+            :failure="authFailure"
+            @open-account="handleOpenAccount"
             @dismiss="uiStore.dismissAuthFailure"
           />
           <McpRenamedRulesBanner

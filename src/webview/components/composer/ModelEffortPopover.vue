@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, useTemplateRef } from 'vue';
+import { computed, useId, useTemplateRef } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
-import { Check, ChevronUp, Cpu } from 'lucide-vue-next';
+import { Check, ChevronUp, Cpu, Settings2 } from 'lucide-vue-next';
 import type { AcceptableValue } from 'reka-ui';
 import type { EffortLevel, ModelInfo } from '@shared/types/settings';
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
@@ -20,8 +21,10 @@ import ProviderLogo from '@/components/icons/ProviderLogo.vue';
 import { hasProviderLogo } from '@/components/icons/provider-logos';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useSlidingIndicator } from '@/composables/useSlidingIndicator';
-import { modelVendor, type ModelVendor } from '@/composables/useModelIdentity';
-import { KEY_PROVIDER_NAMES } from '@shared/settings-sections';
+import { MODEL_VENDOR_NAMES, modelVendor, type ModelVendor } from '@shared/model-vendor';
+import { ACCOUNT_PROVIDER_NAMES } from '@shared/settings-sections';
+import { usePickerModels } from '@/composables/usePickerModels';
+import { useOpenSettings } from '@/composables/useOpenSettings';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { remPx } from '@/composables/useRemPx';
 import { useChatHost } from '@/composables/useChatHost';
@@ -31,19 +34,20 @@ const { postMessage } = usePlatformBridge();
 const settingsStore = useSettingsStore();
 const { availableModels, activeModel, defaultModel, panelThinking, panelThinkingModel } = storeToRefs(settingsStore);
 
-// Vendor names are brands, shown as written in every language.
-const VENDOR_NAMES: Record<ModelVendor, string> = { anthropic: 'Anthropic', openai: 'OpenAI', ...KEY_PROVIDER_NAMES };
-
 const chatModel = computed(() => activeModel.value || defaultModel.value);
 const current = computed(() => availableModels.value.find((model) => model.value === chatModel.value));
 
+const pickerModels = usePickerModels();
+const openSettings = useOpenSettings();
+const noProvidersId = useId();
+
 const groups = computed(() => {
   const byVendor = new Map<ModelVendor, ModelInfo[]>();
-  for (const model of availableModels.value) {
+  for (const model of pickerModels.value) {
     const vendor = modelVendor(model);
     byVendor.set(vendor, [...(byVendor.get(vendor) ?? []), model]);
   }
-  return [...byVendor].map(([vendor, models]) => ({ vendor, name: VENDOR_NAMES[vendor], models }));
+  return [...byVendor].map(([vendor, models]) => ({ vendor, name: MODEL_VENDOR_NAMES[vendor], models }));
 });
 
 const thinkingModel = computed(() => availableModels.value.find((model) => model.value === (panelThinkingModel.value || chatModel.value)));
@@ -74,12 +78,19 @@ function selectEffort(value: AcceptableValue): void {
 
 const currentVendor = computed(() => (current.value ? modelVendor(current.value) : undefined));
 
-// A remote chat's model whose endpoint is on this computer's loopback (core marks it): shown, muted, never picked.
+// A model core marks unavailable (outside the user's plan, or a remote chat's loopback endpoint): shown, muted, never picked.
 const host = useChatHost();
 function unavailableTitle(model: ModelInfo): string | undefined {
-  if (!model.unavailable) return model.description;
-  const { endpoint } = model.unavailable;
+  const unavailable = model.unavailable;
+  if (!unavailable) return model.description;
+  if (unavailable.reason === 'not-in-plan') return t('composer.modelNotInPlanTitle', { provider: ACCOUNT_PROVIDER_NAMES[unavailable.provider], model: model.displayName });
+  const { endpoint } = unavailable;
   return host.value ? t('composer.modelUnavailableLoopback', { endpoint, host: host.value.name }) : t('composer.modelUnavailableLoopbackHere', { endpoint });
+}
+
+function unavailableReason(model: ModelInfo): string {
+  if (model.unavailable?.reason === 'not-in-plan') return t('composer.modelNotInPlan');
+  return host.value ? t('composer.modelUnavailable', { host: host.value.name }) : t('composer.modelUnavailableHere');
 }
 </script>
 
@@ -129,6 +140,7 @@ function unavailableTitle(model: ModelInfo): string | undefined {
           <div
             class="flex items-center gap-1.75 px-2.25 pb-0.75 pt-1.5 text-10.5 text-(--d-faint)"
             role="presentation"
+            data-testid="composer-model-group"
           >
             <ProviderLogo
               :provider="group.vendor"
@@ -161,7 +173,7 @@ function unavailableTitle(model: ModelInfo): string | undefined {
               <span
                 v-if="model.unavailable"
                 class="truncate text-11 text-(--d-faint-text)"
-              >{{ host ? t('composer.modelUnavailable', { host: host.name }) : t('composer.modelUnavailableHere') }}</span>
+              >{{ unavailableReason(model) }}</span>
             </span>
             <Check
               class="size-3.25 shrink-0 text-(--d-accent) transition-opacity"
@@ -171,6 +183,16 @@ function unavailableTitle(model: ModelInfo): string | undefined {
           </DropdownMenuRadioItem>
         </template>
       </DropdownMenuRadioGroup>
+      <!-- arrow keys never reach text in a menu, so Manage models… carries it as its description -->
+      <p
+        v-if="groups.length === 0"
+        :id="noProvidersId"
+        class="px-2.25 py-1.5 text-12 text-(--d-faint-text)"
+        role="presentation"
+        data-testid="composer-no-providers"
+      >
+        {{ t('composer.noProvidersShown') }}
+      </p>
       <template v-if="showEffort">
         <DropdownMenuSeparator class="mx-0.5 my-1.5 bg-(--d-border)" />
         <DropdownMenuLabel class="px-2 pb-1.5 pt-0.5 text-10.5 font-normal uppercase tracking-[.06em] text-(--d-faint)">
@@ -203,6 +225,19 @@ function unavailableTitle(model: ModelInfo): string | undefined {
           </DropdownMenuRadioItem>
         </DropdownMenuRadioGroup>
       </template>
+      <DropdownMenuSeparator class="mx-0.5 my-1.5 bg-(--d-border)" />
+      <DropdownMenuItem
+        class="gap-2.25 rounded-7 px-2.25 py-1.5 text-13 text-(--d-muted) focus:bg-(--d-hover) focus:text-(--d-text)"
+        :aria-describedby="groups.length === 0 ? noProvidersId : undefined"
+        data-testid="composer-manage-models"
+        @select="openSettings('accounts')"
+      >
+        <Settings2
+          class="size-3.75"
+          aria-hidden="true"
+        />
+        {{ t('composer.manageModels') }}
+      </DropdownMenuItem>
     </DropdownMenuContent>
   </DropdownMenu>
 </template>

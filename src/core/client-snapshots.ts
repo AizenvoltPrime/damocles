@@ -55,10 +55,25 @@ export function currentPin(remote: RemoteHost): ClientPin {
   return pins.getStore() ?? actingPin(remote, 'subcall');
 }
 
-/** Whether the pinned (else acting) client stores a key for a provider, from its clientAuth; never reads a key. */
+/** Whether pi on the pinned (else acting) client holds an API key for a provider (`ClientAuthEntry.hasKey`); never reads a key. */
 export function clientHasKey(remote: RemoteHost, providerId: string): boolean {
   const clientId = currentPin(remote).clientId;
   return clientId !== undefined && remote.clients.auth(clientId)?.providers[providerId]?.hasKey === true;
+}
+
+/** Whether the pinned (else acting) client saved a key provider's key in Damocles, even one its sign-in outranks; never reads a key. */
+export function clientKeySaved(remote: RemoteHost, providerId: string): boolean {
+  const clientId = currentPin(remote).clientId;
+  const entry = clientId === undefined ? undefined : remote.clients.auth(clientId)?.providers[providerId];
+  // a client that has not synced its keys yet sends no keySaved; until then hasKey is the best it said
+  return (entry?.keySaved ?? entry?.hasKey) === true;
+}
+
+/** Whether the pinned (else acting) client holds any credential for a provider, from its clientAuth; never reads one. */
+export function clientHasAuth(remote: RemoteHost, providerId: string): boolean {
+  const clientId = currentPin(remote).clientId;
+  const entry = clientId === undefined ? undefined : remote.clients.auth(clientId)?.providers[providerId];
+  return entry !== undefined && (entry.type !== 'none' || entry.hasKey);
 }
 
 /** Whether YOLO may apply: always on a local core, on a daemon's only while the pinned client's policy allows it. */

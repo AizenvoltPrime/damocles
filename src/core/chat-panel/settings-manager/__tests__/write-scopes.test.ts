@@ -332,6 +332,13 @@ describe('Explore model setters', () => {
     expect(platform.settings.get('damocles.explore.model')).toBe('step-5-preview');
   });
 
+  it('refuses none on GPT-6 Luna, which offers it to chats only', async () => {
+    const { platform } = setup();
+    await explore(platform).setModel('gpt-6-luna');
+    await expect(explore(platform).setEffort('none')).rejects.toThrow(/not supported/);
+    expect(platform.settings.inspect('damocles.explore.effort')).toStrictEqual({});
+  });
+
   it('sends the stored Explore pair with a retired id mapped and an unsupported effort dropped', async () => {
     const permissionHandler = { getPermissionMode: () => 'default', getDangerouslySkipPermissions: () => false } as never;
     const sent = async (user: Record<string, unknown>) => {
@@ -344,6 +351,7 @@ describe('Explore model setters', () => {
     expect(await sent({})).toStrictEqual({ model: '', effort: null });
     expect(await sent({ 'damocles.explore.model': 'step-3.7-flash', 'damocles.explore.effort': 'high' })).toStrictEqual({ model: 'step-5-preview', effort: 'high' });
     expect(await sent({ 'damocles.explore.model': 'step-5-preview', 'damocles.explore.effort': 'max' })).toStrictEqual({ model: 'step-5-preview', effort: null });
+    expect(await sent({ 'damocles.explore.model': 'gpt-6-luna', 'damocles.explore.effort': 'none' })).toStrictEqual({ model: 'gpt-6-luna', effort: null });
   });
 });
 

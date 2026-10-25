@@ -14,7 +14,7 @@ import {
  * Settings-driven team role model/effort resolution (Slice 1). A mock `ModelLookup` returns a fake
  * `Model` per canonical provider so we can assert: a configured slot resolves the exact model (cross
  * provider) when authed; a configured-but-unauthed/unknown slot blocks with an error naming the setting
- * key + model; an unset slot fails soft to the active model; and effort coerces to a thinkingLevel
+ * key + model; an unset slot runs the active model or blocks when it cannot run; and effort coerces to a thinkingLevel
  * against the resolved model's supported levels (unsupported → none).
  */
 
@@ -48,6 +48,7 @@ function mockRegistry(opts: {
     },
     hasConfiguredAuth: (providerId) =>
       (providerId === 'anthropic' && opts.anthropicAuthed) || ['deepseek', 'stepfun', 'minimax', 'xai'].includes(providerId),
+    planModelIds: () => undefined,
   };
 }
 
@@ -118,7 +119,7 @@ describe('resolveRoleModel — configured slots', () => {
   });
 });
 
-describe('resolveRoleModel — unset slots (active model fail-soft)', () => {
+describe('resolveRoleModel — unset slots (the active model)', () => {
   it('(c) unset → active model when authed', () => {
     const d = deps({
       registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false }),
@@ -130,17 +131,51 @@ describe('resolveRoleModel — unset slots (active model fail-soft)', () => {
     expect(res.modelLabel).toBe('Opus 5.5');
   });
 
-  it('(c) unset → no model but label = active model display name when the active model is unauthed', () => {
+  // A member spawned with no model runs on whatever pi picks itself, so the role is refused instead.
+  it('(c) unset → blocks the role, naming the chat\'s model, when the active model is unauthed', () => {
     const d = deps({
       registry: mockRegistry({ anthropicAuthed: false, openaiResolves: false }),
       activeModel: ANTHROPIC_ACTIVE,
     });
     const res = resolveRoleModel('lead', d);
-    expect(res.error).toBeUndefined();
     expect(res.model).toBeUndefined();
-    // The agent card shows the curated display name ("Opus 4.8"), not the raw value ("claude-opus-5-5").
+    expect(res.error).toBe('Team role "lead" cannot run: this chat\'s model, Opus 5.5, is not signed in. Pick another model for the chat, or set damocles.team.leadModel.');
+    // The agent card shows the curated display name, not the raw value ("claude-opus-5-5").
     expect(res.modelLabel).toBe('Opus 5.5');
     expect(res.thinkingLevel).toBeUndefined();
+  });
+
+  it('(c) unset → blocks the role when the chat has no model pi serves', () => {
+    const d = deps({ activeModel: 'step-5-preview' });
+    expect(resolveRoleModel('reviewer', d).error).toBe('Team role "reviewer" cannot run: this chat has no model it can run. Pick another model for the chat, or set damocles.team.reviewerModel.');
+  });
+});
+
+describe('resolveRoleModel — plan gating', () => {
+  const copilot = (plan: readonly string[]): ModelLookup => ({
+    getModel: (provider, modelId) => (provider === 'github-copilot' || provider === 'anthropic' ? fakeModel(provider, modelId) : undefined),
+    hasConfiguredAuth: (provider) => provider === 'github-copilot',
+    planModelIds: (provider) => (provider === 'github-copilot' ? new Set(plan) : undefined),
+  });
+
+  it('blocks a configured model the plan does not include, by the provider\'s name and the model\'s label', () => {
+    const d = deps({ registry: copilot(['gpt-6-luna']), roleSettings: roles({ implementor: { model: 'github-copilot/claude-opus-5.5', effort: null } }) });
+    const res = resolveRoleModel('implementor', d);
+    expect(res.model).toBeUndefined();
+    expect(res.error).toBe('Team role "implementor" cannot run: your GitHub Copilot plan does not include Opus 5.5 (GitHub Copilot), the model damocles.team.implementorModel names. Change the setting to another model.');
+  });
+
+  // The plan can shrink after the chat adopted its model; an unset role then refuses rather than spawning without one.
+  it('blocks an unset role whose chat model the plan no longer includes', () => {
+    const d = deps({ registry: copilot(['gpt-6-luna']), activeModel: 'github-copilot/gpt-6.1-sol' });
+    const res = resolveRoleModel('lead', d);
+    expect(res.model).toBeUndefined();
+    expect(res.error).toBe('Team role "lead" cannot run: your GitHub Copilot plan does not include GPT-6.1 Sol (GitHub Copilot), this chat\'s model. Pick another model for the chat, or set damocles.team.leadModel.');
+  });
+
+  it('runs a configured model the plan includes', () => {
+    const d = deps({ registry: copilot(['gpt-6-luna']), roleSettings: roles({ implementor: { model: 'github-copilot/gpt-6-luna', effort: null } }) });
+    expect(resolveRoleModel('implementor', d)).toMatchObject({ model: { provider: 'github-copilot', id: 'gpt-6-luna' } });
   });
 });
 
@@ -217,6 +252,19 @@ describe('resolveRoleModel — effort → thinkingLevel coercion', () => {
     const res = resolveRoleModel('implementor', d);
     expect(res.model?.id).toBe('gpt-6.1-sol');
     expect(res.thinkingLevel).toBeUndefined();
+  });
+
+  // GPT-6 Luna lists `none`, which a chat may run at and a role never does; a hand-edited `none` reaches here unfiltered.
+  it('(e3) a role never runs at None, even on a model that lists it', () => {
+    const d = deps({
+      registry: mockRegistry({ anthropicAuthed: false, openaiResolves: true }),
+      openai: { apiKey: false, codex: true } as OpenAIAuthStatus,
+      activeModel: OPENAI_ACTIVE,
+      roleSettings: roles({ implementor: { model: 'gpt-6-luna', effort: 'none' }, reviewer: { model: '', effort: 'none' } }),
+    });
+    expect(resolveRoleModel('implementor', d)).toMatchObject({ model: { id: 'gpt-6-luna' } });
+    expect(resolveRoleModel('implementor', d).thinkingLevel).toBeUndefined();
+    expect(resolveRoleModel('reviewer', d).thinkingLevel).toBeUndefined();
   });
 
   it('(f) unset effort (null) → no thinkingLevel on a configured model with no catalog default', () => {
@@ -316,6 +364,7 @@ describe('resolveRoleModel dollar billing', () => {
     const registry: ModelLookup = {
       getModel: (provider, modelId) => (provider === 'anthropic' || provider === 'openai' ? fakeModel(provider, modelId) : undefined),
       hasConfiguredAuth: (providerId) => providerId === 'anthropic',
+      planModelIds: () => undefined,
     };
     const openai = { apiKey: true, chatgpt: false, codex: true } as OpenAIAuthStatus;
     const d = deps({ registry, openai, preferApiKey: false, roleSettings: roles({ implementor: { model: OPENAI_ACTIVE, effort: null } }) });

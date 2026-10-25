@@ -67,7 +67,7 @@
             null
           ]
         },
-        "description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-5-5\"). Values: none, low, medium, high, xhigh, max, ultracode. Supported levels vary by model: the Anthropic models (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5) support low through ultracode; GPT-6 Astra, GPT-6.1 Sol and GPT-6 Luna support low through max; Step 5 Preview supports low, medium and high; DeepSeek V4 Pro supports high and max; DeepSeek V4.1 Flash supports low, high and max; MiniMax M3.1 Flash supports low through max; Grok 4.7 supports low through xhigh. Unsupported levels are ignored for that model. At a given level Opus 5.5 thinks more per turn than Opus 5 did, so keep xhigh and max for work where a quality gain has been measured."
+        "description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-5-5\"). Values: none, low, medium, high, xhigh, max, ultracode. Supported levels vary by model: the Anthropic models (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5) support low through ultracode; GPT-6 Astra and GPT-6.1 Sol support low through max; GPT-6 Luna supports none through max; Step 5 Preview supports low, medium and high; DeepSeek V4 Pro supports high and max; DeepSeek V4.1 Flash supports low, high and max; MiniMax M3.1 Flash supports low through max; Grok 4.7 supports low through xhigh; K3 and Kimi for Coding support low, high and max; Muse Spark 1.3 and Muse Wonder 1.0 support low through max; the GitHub Copilot Claude and GPT models (keyed \"github-copilot/<id>\") support low through max, and its Gemini models take no level. Unsupported levels are ignored for that model. At a given level Opus 5.5 thinks more per turn than Opus 5 did, so keep xhigh and max for work where a quality gain has been measured."
       },
       "damocles.checkpoints.retentionDays": {
         "type": "number",
@@ -277,7 +277,19 @@
           "deepseek-v4-pro",
           "deepseek-flash",
           "MiniMax-M3.1-Flash",
-          "grok-4.7"
+          "grok-4.7",
+          "k3",
+          "kimi-for-coding",
+          "muse-spark-1.3",
+          "muse-wonder-1.0",
+          "github-copilot/claude-opus-5.5",
+          "github-copilot/claude-sonnet-5.5",
+          "github-copilot/claude-haiku-5.5",
+          "github-copilot/gpt-6-astra",
+          "github-copilot/gpt-6.1-sol",
+          "github-copilot/gpt-6-luna",
+          "github-copilot/gemini-4-argon",
+          "github-copilot/gemini-3.8-flash"
         ],
         "default": "",
         "description": "Model for the team lead agent. Leave empty to use the active panel model."
@@ -311,7 +323,19 @@
           "deepseek-v4-pro",
           "deepseek-flash",
           "MiniMax-M3.1-Flash",
-          "grok-4.7"
+          "grok-4.7",
+          "k3",
+          "kimi-for-coding",
+          "muse-spark-1.3",
+          "muse-wonder-1.0",
+          "github-copilot/claude-opus-5.5",
+          "github-copilot/claude-sonnet-5.5",
+          "github-copilot/claude-haiku-5.5",
+          "github-copilot/gpt-6-astra",
+          "github-copilot/gpt-6.1-sol",
+          "github-copilot/gpt-6-luna",
+          "github-copilot/gemini-4-argon",
+          "github-copilot/gemini-3.8-flash"
         ],
         "default": "",
         "description": "Model for implementor role specialists. Leave empty to use the active panel model."
@@ -345,7 +369,19 @@
           "deepseek-v4-pro",
           "deepseek-flash",
           "MiniMax-M3.1-Flash",
-          "grok-4.7"
+          "grok-4.7",
+          "k3",
+          "kimi-for-coding",
+          "muse-spark-1.3",
+          "muse-wonder-1.0",
+          "github-copilot/claude-opus-5.5",
+          "github-copilot/claude-sonnet-5.5",
+          "github-copilot/claude-haiku-5.5",
+          "github-copilot/gpt-6-astra",
+          "github-copilot/gpt-6.1-sol",
+          "github-copilot/gpt-6-luna",
+          "github-copilot/gemini-4-argon",
+          "github-copilot/gemini-3.8-flash"
         ],
         "default": "",
         "description": "Model for reviewer role specialists. Leave empty to use the active panel model."
@@ -607,6 +643,41 @@
         "maximum": 16,
         "description": "Maximum number of subagents a chat runs at once, foreground and background together. Further spawns wait until one finishes. Team members are not counted."
       },
+      "damocles.modelPicker.providers": {
+        "type": "object",
+        "default": {},
+        "additionalProperties": false,
+        "description": "Which providers the chat's model picker lists, one switch per provider. A provider left unset is listed while it has a credential. The chat's current model is always listed. Defaults, Teams, Explore and Background list every model. Applies from user settings only.",
+        "properties": {
+          "anthropic": {
+            "type": "boolean"
+          },
+          "openai": {
+            "type": "boolean"
+          },
+          "stepfun": {
+            "type": "boolean"
+          },
+          "deepseek": {
+            "type": "boolean"
+          },
+          "minimax": {
+            "type": "boolean"
+          },
+          "xai": {
+            "type": "boolean"
+          },
+          "kimi-coding": {
+            "type": "boolean"
+          },
+          "meta": {
+            "type": "boolean"
+          },
+          "github-copilot": {
+            "type": "boolean"
+          }
+        }
+      },
       "damocles.explore.model": {
         "type": "string",
         "enum": [
@@ -622,10 +693,22 @@
           "deepseek-v4-pro",
           "deepseek-flash",
           "MiniMax-M3.1-Flash",
-          "grok-4.7"
+          "grok-4.7",
+          "k3",
+          "kimi-for-coding",
+          "muse-spark-1.3",
+          "muse-wonder-1.0",
+          "github-copilot/claude-opus-5.5",
+          "github-copilot/claude-sonnet-5.5",
+          "github-copilot/claude-haiku-5.5",
+          "github-copilot/gpt-6-astra",
+          "github-copilot/gpt-6.1-sol",
+          "github-copilot/gpt-6-luna",
+          "github-copilot/gemini-4-argon",
+          "github-copilot/gemini-3.8-flash"
         ],
         "default": "",
-        "description": "Model for the Explore subagent. Default uses the small model of the chat's provider (Haiku 5.5, GPT-6 Luna, or a key provider's own small model) at medium effort, and the chat's own model at the chat's effort when that small model is signed out or outside pi's enabledModels. A chosen model whose provider is signed out, or which is outside pi's enabledModels, makes Explore fail with an error naming this setting; it never falls back to another model. Applies from user settings only."
+        "description": "Model for the Explore subagent. Default uses the small model of the chat's provider (Haiku 5.5, GPT-6 Luna, a key provider's own small model, or GitHub Copilot's Haiku 5.5 for a Copilot chat) at medium effort, and the chat's own model at the chat's effort when that small model is signed out, outside your plan or outside pi's enabledModels. A chosen model whose provider is signed out, which is outside your plan, or which is outside pi's enabledModels, makes Explore fail with an error naming this setting; it never falls back to another model. Applies from user settings only."
       },
       "damocles.explore.effort": {
         "type": "string",
@@ -656,10 +739,22 @@
           "deepseek-v4-pro",
           "deepseek-flash",
           "MiniMax-M3.1-Flash",
-          "grok-4.7"
+          "grok-4.7",
+          "k3",
+          "kimi-for-coding",
+          "muse-spark-1.3",
+          "muse-wonder-1.0",
+          "github-copilot/claude-opus-5.5",
+          "github-copilot/claude-sonnet-5.5",
+          "github-copilot/claude-haiku-5.5",
+          "github-copilot/gpt-6-astra",
+          "github-copilot/gpt-6.1-sol",
+          "github-copilot/gpt-6-luna",
+          "github-copilot/gemini-4-argon",
+          "github-copilot/gemini-3.8-flash"
         ],
         "default": "",
-        "description": "Model for background work: chat titles, memory extraction, profile summaries, query expansion, the memory quality audit and the desktop app's commit messages. Automatic uses the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview, DeepSeek V4.1 Flash, MiniMax M3.1 Flash and Grok 4.7. A chosen model whose provider is signed out pauses that work; it never falls back to another provider. The memory merge and rerank judges follow Memory: Judge instead. Applies from user settings only."
+        "description": "Model for background work: chat titles, memory extraction, profile summaries, query expansion, the memory quality audit and the desktop app's commit messages. Automatic uses the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview, DeepSeek V4.1 Flash, MiniMax M3.1 Flash, Grok 4.7, Kimi for Coding and Muse Spark 1.3, never a GitHub Copilot model. A chosen model whose provider is signed out, or that is outside your plan, pauses that work; it never falls back to another provider. The memory merge and rerank judges follow Memory: Judge instead. Applies from user settings only."
       },
       "damocles.background.effort": {
         "type": "string",
@@ -693,10 +788,22 @@
           "deepseek-v4-pro",
           "deepseek-flash",
           "MiniMax-M3.1-Flash",
-          "grok-4.7"
+          "grok-4.7",
+          "k3",
+          "kimi-for-coding",
+          "muse-spark-1.3",
+          "muse-wonder-1.0",
+          "github-copilot/claude-opus-5.5",
+          "github-copilot/claude-sonnet-5.5",
+          "github-copilot/claude-haiku-5.5",
+          "github-copilot/gpt-6-astra",
+          "github-copilot/gpt-6.1-sol",
+          "github-copilot/gpt-6-luna",
+          "github-copilot/gemini-4-argon",
+          "github-copilot/gemini-3.8-flash"
         ],
         "default": "",
-        "description": "What judges memory contradictions and reranks memories. Automatic uses the first available classifier of Jev on TypeSafe, Jev on OpenRouter and GPT-6 Luna on the Decisions API (which needs the OpenAI API key as the active OpenAI credential), skipping one whose key was refused, and otherwise the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview, DeepSeek V4.1 Flash, MiniMax M3.1 Flash and Grok 4.7. A chosen classifier or model that cannot run leaves merges and reranks waiting; it never falls back to another judge. Applies from user settings only."
+        "description": "What judges memory contradictions and reranks memories. Automatic uses the first available classifier of Jev on TypeSafe, Jev on OpenRouter and GPT-6 Luna on the Decisions API (which needs the OpenAI API key as the active OpenAI credential), skipping one whose key was refused, and otherwise the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview, DeepSeek V4.1 Flash, MiniMax M3.1 Flash, Grok 4.7, Kimi for Coding and Muse Spark 1.3, never a GitHub Copilot model. A chosen classifier or model that cannot run leaves merges and reranks waiting; it never falls back to another judge. Applies from user settings only."
       },
       "damocles.memory.judgeEffort": {
         "type": "string",
@@ -1574,7 +1681,7 @@
             null
           ]
         },
-        "description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-5-5\"). Values: none, low, medium, high, xhigh, max, ultracode. Supported levels vary by model: the Anthropic models (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5) support low through ultracode; GPT-6 Astra, GPT-6.1 Sol and GPT-6 Luna support low through max; Step 5 Preview supports low, medium and high; DeepSeek V4 Pro supports high and max; DeepSeek V4.1 Flash supports low, high and max; MiniMax M3.1 Flash supports low through max; Grok 4.7 supports low through xhigh. Unsupported levels are ignored for that model. At a given level Opus 5.5 thinks more per turn than Opus 5 did, so keep xhigh and max for work where a quality gain has been measured."
+        "description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-5-5\"). Values: none, low, medium, high, xhigh, max, ultracode. Supported levels vary by model: the Anthropic models (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5) support low through ultracode; GPT-6 Astra and GPT-6.1 Sol support low through max; GPT-6 Luna supports none through max; Step 5 Preview supports low, medium and high; DeepSeek V4 Pro supports high and max; DeepSeek V4.1 Flash supports low, high and max; MiniMax M3.1 Flash supports low through max; Grok 4.7 supports low through xhigh; K3 and Kimi for Coding support low, high and max; Muse Spark 1.3 and Muse Wonder 1.0 support low through max; the GitHub Copilot Claude and GPT models (keyed \"github-copilot/<id>\") support low through max, and its Gemini models take no level. Unsupported levels are ignored for that model. At a given level Opus 5.5 thinks more per turn than Opus 5 did, so keep xhigh and max for work where a quality gain has been measured."
       },
       "damocles.checkpoints.retentionDays": {
         "not": {},
@@ -1786,7 +1893,19 @@
           "deepseek-v4-pro",
           "deepseek-flash",
           "MiniMax-M3.1-Flash",
-          "grok-4.7"
+          "grok-4.7",
+          "k3",
+          "kimi-for-coding",
+          "muse-spark-1.3",
+          "muse-wonder-1.0",
+          "github-copilot/claude-opus-5.5",
+          "github-copilot/claude-sonnet-5.5",
+          "github-copilot/claude-haiku-5.5",
+          "github-copilot/gpt-6-astra",
+          "github-copilot/gpt-6.1-sol",
+          "github-copilot/gpt-6-luna",
+          "github-copilot/gemini-4-argon",
+          "github-copilot/gemini-3.8-flash"
         ],
         "default": "",
         "description": "Model for the team lead agent. Leave empty to use the active panel model."
@@ -1820,7 +1939,19 @@
           "deepseek-v4-pro",
           "deepseek-flash",
           "MiniMax-M3.1-Flash",
-          "grok-4.7"
+          "grok-4.7",
+          "k3",
+          "kimi-for-coding",
+          "muse-spark-1.3",
+          "muse-wonder-1.0",
+          "github-copilot/claude-opus-5.5",
+          "github-copilot/claude-sonnet-5.5",
+          "github-copilot/claude-haiku-5.5",
+          "github-copilot/gpt-6-astra",
+          "github-copilot/gpt-6.1-sol",
+          "github-copilot/gpt-6-luna",
+          "github-copilot/gemini-4-argon",
+          "github-copilot/gemini-3.8-flash"
         ],
         "default": "",
         "description": "Model for implementor role specialists. Leave empty to use the active panel model."
@@ -1854,7 +1985,19 @@
           "deepseek-v4-pro",
           "deepseek-flash",
           "MiniMax-M3.1-Flash",
-          "grok-4.7"
+          "grok-4.7",
+          "k3",
+          "kimi-for-coding",
+          "muse-spark-1.3",
+          "muse-wonder-1.0",
+          "github-copilot/claude-opus-5.5",
+          "github-copilot/claude-sonnet-5.5",
+          "github-copilot/claude-haiku-5.5",
+          "github-copilot/gpt-6-astra",
+          "github-copilot/gpt-6.1-sol",
+          "github-copilot/gpt-6-luna",
+          "github-copilot/gemini-4-argon",
+          "github-copilot/gemini-3.8-flash"
         ],
         "default": "",
         "description": "Model for reviewer role specialists. Leave empty to use the active panel model."
@@ -2107,11 +2250,17 @@
         "maximum": 16,
         "description": "Maximum number of subagents a chat runs at once, foreground and background together. Further spawns wait until one finishes. Team members are not counted."
       },
+      "damocles.modelPicker.providers": {
+        "not": {},
+        "errorMessage": "damocles.modelPicker.providers applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.modelPicker.providers applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhich providers the chat's model picker lists, one switch per provider. A provider left unset is listed while it has a credential. The chat's current model is always listed. Defaults, Teams, Explore and Background list every model. Applies from user settings only."
+      },
       "damocles.explore.model": {
         "not": {},
         "errorMessage": "damocles.explore.model applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
-        "description": "damocles.explore.model applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nModel for the Explore subagent. Default uses the small model of the chat's provider (Haiku 5.5, GPT-6 Luna, or a key provider's own small model) at medium effort, and the chat's own model at the chat's effort when that small model is signed out or outside pi's enabledModels. A chosen model whose provider is signed out, or which is outside pi's enabledModels, makes Explore fail with an error naming this setting; it never falls back to another model. Applies from user settings only."
+        "description": "damocles.explore.model applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nModel for the Explore subagent. Default uses the small model of the chat's provider (Haiku 5.5, GPT-6 Luna, a key provider's own small model, or GitHub Copilot's Haiku 5.5 for a Copilot chat) at medium effort, and the chat's own model at the chat's effort when that small model is signed out, outside your plan or outside pi's enabledModels. A chosen model whose provider is signed out, which is outside your plan, or which is outside pi's enabledModels, makes Explore fail with an error naming this setting; it never falls back to another model. Applies from user settings only."
       },
       "damocles.explore.effort": {
         "not": {},
@@ -2123,7 +2272,7 @@
         "not": {},
         "errorMessage": "damocles.background.model applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
-        "description": "damocles.background.model applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nModel for background work: chat titles, memory extraction, profile summaries, query expansion, the memory quality audit and the desktop app's commit messages. Automatic uses the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview, DeepSeek V4.1 Flash, MiniMax M3.1 Flash and Grok 4.7. A chosen model whose provider is signed out pauses that work; it never falls back to another provider. The memory merge and rerank judges follow Memory: Judge instead. Applies from user settings only."
+        "description": "damocles.background.model applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nModel for background work: chat titles, memory extraction, profile summaries, query expansion, the memory quality audit and the desktop app's commit messages. Automatic uses the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview, DeepSeek V4.1 Flash, MiniMax M3.1 Flash, Grok 4.7, Kimi for Coding and Muse Spark 1.3, never a GitHub Copilot model. A chosen model whose provider is signed out, or that is outside your plan, pauses that work; it never falls back to another provider. The memory merge and rerank judges follow Memory: Judge instead. Applies from user settings only."
       },
       "damocles.background.effort": {
         "not": {},
@@ -2135,7 +2284,7 @@
         "not": {},
         "errorMessage": "damocles.memory.judge applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
-        "description": "damocles.memory.judge applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhat judges memory contradictions and reranks memories. Automatic uses the first available classifier of Jev on TypeSafe, Jev on OpenRouter and GPT-6 Luna on the Decisions API (which needs the OpenAI API key as the active OpenAI credential), skipping one whose key was refused, and otherwise the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview, DeepSeek V4.1 Flash, MiniMax M3.1 Flash and Grok 4.7. A chosen classifier or model that cannot run leaves merges and reranks waiting; it never falls back to another judge. Applies from user settings only."
+        "description": "damocles.memory.judge applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhat judges memory contradictions and reranks memories. Automatic uses the first available classifier of Jev on TypeSafe, Jev on OpenRouter and GPT-6 Luna on the Decisions API (which needs the OpenAI API key as the active OpenAI credential), skipping one whose key was refused, and otherwise the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview, DeepSeek V4.1 Flash, MiniMax M3.1 Flash, Grok 4.7, Kimi for Coding and Muse Spark 1.3, never a GitHub Copilot model. A chosen classifier or model that cannot run leaves merges and reranks waiting; it never falls back to another judge. Applies from user settings only."
       },
       "damocles.memory.judgeEffort": {
         "not": {},

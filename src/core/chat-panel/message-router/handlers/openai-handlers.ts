@@ -4,10 +4,13 @@ import type { Platform } from "../../../../platform/platform";
 import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
 import { PiRuntime, remoteSignInRefusal } from "../../../pi-session/pi-runtime";
 import { PI_AGENT_DIR } from "../../../pi-session/agent-dir";
+import type { ProviderCredentialActive } from "../../../../shared/settings-sections";
 import {
   OPENAI_API_KEY_SECRET,
+  OPENAI_API_PROVIDER,
   OPENAI_PREFER_API_KEY_STATE,
   openaiAuthStatus,
+  openaiRuntimeKeyWanted,
   readOpenAIAuthFromDisk,
   readPreferOpenAIApiKey,
   type OpenAIAuthStatus,
@@ -90,11 +93,26 @@ async function readStatus(platform: Platform): Promise<OpenAIAuthStatus> {
   return openaiAuthStatus(readOpenAIAuthFromDisk(PI_AGENT_DIR), secret !== undefined && secret !== "");
 }
 
+/**
+ * The credential pi sends for GPT models, in `resolvePiModel`'s order: the preferred key, ChatGPT, Codex, the key, an
+ * environment or models.json key.
+ */
+function activeOpenAICredential(status: OpenAIAuthStatus, preferApiKey: boolean): ProviderCredentialActive {
+  if (openaiRuntimeKeyWanted(status, preferApiKey) && (preferApiKey || !status.codex)) return "apiKey";
+  if (status.chatgpt || status.codex) return "signIn";
+  const external = PiRuntime.exists ? PiRuntime.get().externalKeySource(OPENAI_API_PROVIDER) : null;
+  return external !== null ? "external" : "none";
+}
+
 export async function openaiAuthStatusMessage(platform: Platform): Promise<Extract<ExtensionToWebviewMessage, { type: "openaiAuthStatusChanged" }>> {
+  const status = await readStatus(platform);
+  const preferApiKey = readPreferOpenAIApiKey(platform.state);
   return {
     type: "openaiAuthStatusChanged",
-    status: toSnapshot(await readStatus(platform)),
-    preferApiKey: readPreferOpenAIApiKey(platform.state),
+    status: toSnapshot(status),
+    preferApiKey,
+    // a daemon's core: which credential is active is the client's to say
+    ...(platform.remote ? {} : { active: activeOpenAICredential(status, preferApiKey) }),
   };
 }
 
@@ -121,6 +139,11 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
   async function broadcastAuthStatus(): Promise<void> {
     broadcast(await openaiAuthStatusMessage(platform));
     republishAccountInfo(getPanels);
+  }
+
+  /** The OpenAI account's credential changed, so its rejected-credential card goes. */
+  function credentialChanged(): void {
+    broadcast({ type: "authFailureCleared", account: "openai" });
   }
 
   /** Each chat applies or drops a model pick that asked for this sign-in; only a ChatGPT sign-in or a key save ends one. */
@@ -195,6 +218,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       }
 
       await broadcastAuthStatus();
+      credentialChanged();
       endSignIn(true);
 
       if (probe.status === "ok") {
@@ -226,6 +250,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       try {
         await runtime().clearOpenAIApiKey();
         await broadcastAuthStatus();
+        credentialChanged();
         postMessage(ctx.host, { type: "clearOpenAIApiKeyAck", requestId: msg.requestId, ok: true });
       } catch (err) {
         log("[OpenAIHandlers] Failed to clear API key: %s", describeAuthError(err));
@@ -261,6 +286,8 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
         return;
       }
       await broadcastAuthStatus();
+      // the toggle switches the credential pi sends, so the refusal the card names no longer applies
+      credentialChanged();
       postMessage(ctx.host, {
         type: "setOpenAIPreferApiKeyAck",
         requestId: msg.requestId,
@@ -287,6 +314,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
         await runtime().signInChatGPT(buildChatGPTInteraction(abort.signal));
         signedIn = true;
         broadcast({ type: "openaiChatGPTAuthCompleted" });
+        credentialChanged();
       } catch (err) {
         // pi rethrows a flow abort as its own "Login cancelled", so the signal is checked as well as the sentinel.
         if (abort.signal.aborted || (err instanceof Error && err.message === CHATGPT_SIGN_IN_CANCELLED)) {
@@ -310,6 +338,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       signInAbort?.abort();
       try {
         await runtime().signOutChatGPT();
+        credentialChanged();
       } catch (err) {
         log("[OpenAIHandlers] ChatGPT sign-out failed: %s", describeAuthError(err));
       }
@@ -322,6 +351,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       signInAbort?.abort();
       try {
         await runtime().signOutCodex();
+        credentialChanged();
       } catch (err) {
         log("[OpenAIHandlers] Codex sign-out failed: %s", describeAuthError(err));
       }

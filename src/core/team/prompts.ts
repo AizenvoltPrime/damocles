@@ -3,7 +3,7 @@ import { COMMENT_RULES_BODY, TEST_RUN_RULES_BODY } from "../pi-session/code-rule
 import { buildNarrationRule, PROSE_RULES_BODY } from "../pi-session/prose-rules";
 import { STEERING_PROTOCOL_BLOCK } from "../pi-session/steering-protocol";
 import type { PlanModeStatement } from "../pi-session/plan-mode-change";
-import { wrapSteerMessage } from "../../shared/steer";
+import { withResumeNote } from "../../shared/steer";
 
 /** Shared by all three team prompts, which run in replace mode and inherit no comment policy. */
 const COMMENTS_SUBSECTION = `### Comments
@@ -95,22 +95,22 @@ export function teamPlanModeStatement(role: "lead" | "specialist"): PlanModeStat
 const INTERRUPTED_RESUME_CONTEXT =
   "The team stopped when Damocles exited while it ran, so the team's state was restored from a snapshot that may predate your last actions. " +
   "Before anything else, call team_get_status and re-read the scratchpad sections you rely on with team_read_scratchpad; " +
-  "a review step or message you made just before the exit may be missing and need redoing. Then continue from where you left off.";
+  "a review step or message you made just before the exit may be missing and need redoing. " +
+  "Then continue from where you left off, at the same depth as before: finish the steps you had planned, then report.";
 
-/** The lead's prompt when it resumes a team a crash interrupted. An operator message rides as a steer, marker first. */
+/** The lead's prompt when it resumes a team a crash interrupted. */
 export function buildInterruptedResumePrompt(message?: string): string {
-  const trimmed = message?.trim();
-  return trimmed ? wrapSteerMessage(`${trimmed}\n\n${INTERRUPTED_RESUME_CONTEXT}`) : INTERRUPTED_RESUME_CONTEXT;
+  return withResumeNote(INTERRUPTED_RESUME_CONTEXT, message);
 }
 
 const FAILED_RESUME_CONTEXT =
-  "The team stopped because your previous run failed on an error, not because the operator interrupted you, and the operator has now resumed it. " +
-  "Continue from where you left off; check current state before redoing any step that may have been cut off.";
+  "The team stopped because your previous run failed on an error, not because the operator interrupted you, and it has now been resumed. " +
+  "Continue from where you left off, at the same depth as before: finish the steps you had planned, then report. " +
+  "Check current state before redoing any step that may have been cut off.";
 
-/** The lead's prompt when it resumes a team its own failure stopped. An operator message rides as a steer, marker first. */
+/** The lead's prompt when it resumes a team its own failure stopped. */
 export function buildFailedResumePrompt(message?: string): string {
-  const trimmed = message?.trim();
-  return trimmed ? wrapSteerMessage(`${trimmed}\n\n${FAILED_RESUME_CONTEXT}`) : FAILED_RESUME_CONTEXT;
+  return withResumeNote(FAILED_RESUME_CONTEXT, message);
 }
 
 export function buildLeadSystemPrompt(

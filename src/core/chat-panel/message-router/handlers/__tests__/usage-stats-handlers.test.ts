@@ -130,6 +130,25 @@ describe("requestUsageStats handler", () => {
     expect(finals()).toHaveLength(1);
   });
 
+  // pi names Anthropic's and Copilot's Opus 5.5 alike, so /stats takes the label the settings lists show.
+  it("labels a catalog model as the settings lists do, and keeps pi's name for any other", async () => {
+    const cost = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
+    H.getModels.mockReturnValue([
+      { provider: "anthropic", id: "claude-opus-5-5", name: "Claude Opus 5.5", cost },
+      { provider: "github-copilot", id: "claude-opus-5.5", name: "Claude Opus 5.5", cost },
+      { provider: "github-copilot", id: "gemini-4-argon", name: "Gemini 4 Argon", cost },
+      { provider: "github-copilot", id: "gpt-5-mini", name: "GPT-5 mini", cost },
+    ]);
+    const { send, service } = setup(async () => REPORT);
+    await send({ requestId: "r7", query: VALID });
+    expect((service.query.mock.calls[0]![1] as Array<{ key: string; label: string }>).map((m) => [m.key, m.label])).toEqual([
+      ["anthropic/claude-opus-5-5", "Opus 5.5"],
+      ["github-copilot/claude-opus-5.5", "Opus 5.5 (GitHub Copilot)"],
+      ["github-copilot/gemini-4-argon", "Gemini 4 Argon"],
+      ["github-copilot/gpt-5-mini", "GPT-5 mini"],
+    ]);
+  });
+
   it("posts the early report before the final one even when mapping the early one is slower", async () => {
     const early = { ...REPORT, indexedAtMs: 1, topSessions: [topSession("here", false)] };
     // Only the early report has top sessions, so only its mapping waits on the storage manager.

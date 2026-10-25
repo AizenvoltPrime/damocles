@@ -87,13 +87,45 @@ describe('key-presence checks on a daemon\'s core', () => {
     const secrets = { ...fake.secrets, get: vi.fn(async () => 'sk-should-not-be-read') };
     const platform = { ...fake, secrets, remote: host.remote };
     installPlatform(platform);
-    host.set('clientAuth', 'client-a', { providers: { deepseek: { type: 'api_key', hasKey: true, flatFee: false }, openai: { type: 'none', hasKey: true, flatFee: false } } });
-    expect(await providerAuthStatus(platform, 'deepseek')).toEqual({ type: 'providerAuthStatusChanged', provider: 'deepseek', configured: true, external: null });
+    host.set('clientAuth', 'client-a', { providers: {
+      deepseek: { type: 'api_key', hasKey: true, flatFee: false },
+      xai: { type: 'oauth', hasKey: false, flatFee: false, expires: 5_000 },
+      openai: { type: 'none', hasKey: true, flatFee: false },
+    } });
+    // which credential is active is the client's to say, so a daemon's core omits it
+    expect(await providerAuthStatus(platform, 'deepseek')).toEqual({ type: 'providerAuthStatusChanged', provider: 'deepseek', configured: true, external: null, signedIn: false, preferApiKey: false });
+    expect(await providerAuthStatus(platform, 'xai')).toEqual({
+      type: 'providerAuthStatusChanged', provider: 'xai', configured: false, external: null, signedIn: true, signedInExpiresAt: 5_000, preferApiKey: false,
+    });
     expect(await providerAuthStatus(platform, 'stepfun')).toMatchObject({ configured: false });
-    expect((await openaiAuthStatusMessage(platform)).status.apikey).toEqual({ configured: true });
+    const openai = await openaiAuthStatusMessage(platform);
+    expect(openai.status.apikey).toEqual({ configured: true });
+    expect(openai).not.toHaveProperty('active');
     const judge = await memoryJudgeStatus(platform);
     expect(judge.classifierCredentials.typesafe).not.toBe('ok');
     expect(secrets.get).not.toHaveBeenCalled();
+  });
+});
+
+describe('a key provider\'s saved key on a daemon\'s core', () => {
+  it('is the client\'s keySaved, which counts a key its sign-in outranks and no key pi holds from elsewhere', async () => {
+    const host = createFakeRemoteHost();
+    const platform = { ...createFakePlatform(), remote: host.remote };
+    installPlatform(platform);
+    host.set('clientAuth', 'client-a', { providers: {
+      xai: { type: 'oauth', hasKey: false, keySaved: true, flatFee: false, expires: 5_000 },
+      deepseek: { type: 'api_key', hasKey: true, keySaved: false, flatFee: false },
+      openrouter: { type: 'oauth', hasKey: false, keySaved: false, flatFee: false },
+      // a client that has not synced its keys yet
+      minimax: { type: 'api_key', hasKey: true, flatFee: false },
+    } });
+    expect(await providerAuthStatus(platform, 'xai')).toEqual({
+      type: 'providerAuthStatusChanged', provider: 'xai', configured: true, external: null, signedIn: true, signedInExpiresAt: 5_000, preferApiKey: false,
+    });
+    expect(await providerAuthStatus(platform, 'deepseek')).toMatchObject({ configured: false });
+    expect(await providerAuthStatus(platform, 'minimax')).toMatchObject({ configured: true });
+    // before pi starts, the judge counts the client's OpenRouter sign-in as the key status does
+    expect((await memoryJudgeStatus(platform)).classifierCredentials.openrouter).toBe('ok');
   });
 });
 
@@ -128,6 +160,23 @@ describe('this computer\'s clientAuth snapshot', () => {
     expect(snapshot.providers['minimax']).toMatchObject({ flatFee: true });
     expect(snapshot.providers['deepseek']).toMatchObject({ flatFee: false });
     expect(JSON.stringify(snapshot)).not.toContain('sk-');
+  }, 60_000);
+
+  it('sends a saved key its sign-in outranks as keySaved, while hasKey stays the key pi holds, and signals the change', async () => {
+    fs.writeFileSync(path.join(agentDir, 'auth.json'), JSON.stringify({ xai: { type: 'oauth', access: 'a', refresh: 'r', expires: 9_999_999_999_999 } }));
+    const runtime = PiRuntime.get(agentDir);
+    await runtime.init();
+    await runtime.syncCustomProviders(async () => undefined);
+    const auth = vi.fn();
+    const stopAuth = PiRuntime.onClientAuthChange(auth);
+    // nothing pi holds changes: the sign-in outranks the key, so only keySaved does
+    await runtime.syncCustomProviders(async (key) => (key === 'damocles.xai.apiKey' ? 'xai-key' : undefined));
+    stopAuth();
+    expect(auth).toHaveBeenCalled();
+    const snapshot = await runtime.clientAuthSnapshot();
+    expect(snapshot.providers['xai']).toMatchObject({ type: 'oauth', hasKey: false, keySaved: true });
+    expect(snapshot.providers['deepseek']).toMatchObject({ hasKey: false, keySaved: false });
+    expect(JSON.stringify(snapshot)).not.toContain('xai-key');
   }, 60_000);
 
   it('marks a Claude sign-in that bills the allowance, so a daemon can bill its requests the same way', async () => {

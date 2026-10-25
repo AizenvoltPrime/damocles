@@ -52,6 +52,7 @@ import type { Disposable } from '../../platform/disposable';
 import type { SettingInspection } from '../../platform/settings-store';
 import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
 import { worktreeWalkOf } from '../worktrees/personal-config';
+import { modelInPlan, notInPlanClause } from './pi-models';
 
 /** An existing asset resource directory plus its source attribution (for pi's resource source info). */
 interface AssetResourceEntry {
@@ -135,6 +136,8 @@ export interface FolderRuntimeOptions {
   agentDir: string;
   /** Shared by every folder runtime; pi-ai's provider registries are process-global. */
   modelRuntime: ModelRuntime;
+  /** The model ids a provider's stored sign-in allows (`PiRuntime.planModelIds`); undefined when it lists none. */
+  planModelIds: (provider: string) => ReadonlySet<string> | undefined;
   /** The one process-wide manager for user-scope MCP servers, shared by every folder. */
   userMcp: McpClientManager;
   /** Builds this folder's own MCP manager, wired like the user one; `reservedToolNames` keeps user tool names stable. */
@@ -177,6 +180,7 @@ export class FolderRuntime {
   private readonly _pi: PiCodingAgentModule;
   private readonly _agentDir: string;
   private readonly _modelRuntime: ModelRuntime;
+  private readonly _planModelIds: FolderRuntimeOptions['planModelIds'];
   private _services: AgentSessionServices | null = null;
   /** Live nested subagent sessions, disposed on completion or on folder dispose. */
   private readonly _subagentSessions = new Set<AgentSession>();
@@ -253,6 +257,7 @@ export class FolderRuntime {
     this._pi = options.pi;
     this._agentDir = options.agentDir;
     this._modelRuntime = options.modelRuntime;
+    this._planModelIds = options.planModelIds;
     this._trust = options.trust;
     this._fileWatchers = options.fileWatchers;
     this._ruleMemory = { notices: options.noticeMemory, additions: options.additionMemory };
@@ -906,6 +911,9 @@ export class FolderRuntime {
     const model = this._modelRuntime.getModel(recorded.provider, recorded.modelId);
     if (!model || !this._modelRuntime.hasConfiguredAuth(model.provider)) {
       throw new Error(`Cannot resume "${agentId}": its model ${recorded.provider}/${recorded.modelId} is not configured or not signed in.`);
+    }
+    if (!modelInPlan(model.provider, model.id, { planModelIds: this._planModelIds })) {
+      throw new Error(`Cannot resume "${agentId}": ${notInPlanClause(model)}, the model its session recorded.`);
     }
     return model;
   }

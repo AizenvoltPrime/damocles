@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_MODELS, TEAM_EFFORT_LEVELS } from '../../../shared/types/constants';
+import { DEFAULT_MODELS, ROLE_EFFORT_LEVELS } from '../../../shared/types/constants';
+import { modelLabel } from '../../../shared/model-vendor';
 import { readContributedConfiguration } from '../../config/read-contributed-configuration';
 
 /** Static-JSON drift guard: the `damocles.explore.*` enums must track `DEFAULT_MODELS` and the effort levels. */
@@ -17,13 +18,13 @@ const properties = pkg.contributes.configuration.properties;
 describe('explore settings contributions: enum sync guard', () => {
   it('damocles.explore.model enum and labels equal Default plus every DEFAULT_MODELS entry', () => {
     expect(properties['damocles.explore.model']!.enum).toEqual(['', ...DEFAULT_MODELS.map((m) => m.value)]);
-    expect(properties['damocles.explore.model']!.enumItemLabels).toEqual(['%configuration.explore.modelDefault%', ...DEFAULT_MODELS.map((m) => m.displayName)]);
+    expect(properties['damocles.explore.model']!.enumItemLabels).toEqual(['%configuration.explore.modelDefault%', ...DEFAULT_MODELS.map(modelLabel)]);
     expect(properties['damocles.explore.model']!.default).toBe('');
   });
 
-  it("damocles.explore.effort enum equals ['', ...TEAM_EFFORT_LEVELS], one label per value", () => {
+  it("damocles.explore.effort enum equals ['', ...ROLE_EFFORT_LEVELS], one label per value", () => {
     const effort = properties['damocles.explore.effort']!;
-    expect(effort.enum).toEqual(['', ...TEAM_EFFORT_LEVELS]);
+    expect(effort.enum).toEqual(['', ...ROLE_EFFORT_LEVELS]);
     expect(effort.enumItemLabels).toHaveLength(effort.enum!.length);
     expect(effort.default).toBe('');
   });

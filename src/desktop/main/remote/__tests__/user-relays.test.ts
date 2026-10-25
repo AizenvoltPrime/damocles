@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MAX_BROKER_EXPIRES_IN_MS, type BrokerAnswer, type HeldAuth } from '../../../../shared/remote-user';
+import { MAX_BROKER_EXPIRES_IN_MS, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, type BrokerAnswer, type HeldAuth } from '../../../../shared/remote-user';
 import { brokerAnswerOf, checkProvider, clientAuthOf, clientUserOf, UserRelays, type UserRelaysDeps } from '../user-relays';
 
 const KNOWN: HeldAuth = { providers: { anthropic: { type: 'oauth', expires: 1, hasKey: false, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false } } };
@@ -36,6 +36,16 @@ describe('brokerAnswerOf', () => {
     expect(() => brokerAnswerOf({ type: 'oauth', access: 'a', expiresIn: 1, refresh: '', clientId: 7 })).toThrow('clientId');
     expect(() => brokerAnswerOf({ type: 'oauth', access: 'a', expiresIn: 1, refresh: '', scopes: Array.from({ length: 600 }, () => 's') })).toThrow('scopes');
   });
+
+  // One rule with every other reader and sender of the list, so its bounds can move in one place.
+  it('keeps a plan model list exactly when planModelIdsOf does, and refuses any other', () => {
+    const oauth = { type: 'oauth', access: 'a', expiresIn: 1, refresh: '' };
+    const fits = Array.from({ length: MAX_PLAN_MODEL_IDS }, (_, i) => `m${i}`.padEnd(MAX_PLAN_MODEL_ID_CHARS, 'x'));
+    expect(brokerAnswerOf({ ...oauth, availableModelIds: fits })).toEqual({ ...oauth, availableModelIds: fits });
+    for (const ids of [[...fits, 'one-more'], ['x'.repeat(MAX_PLAN_MODEL_ID_CHARS + 1)], [''], ['gpt-6-luna', 7], 'gpt-6-luna']) {
+      expect(() => brokerAnswerOf({ ...oauth, availableModelIds: ids })).toThrow('availableModelIds');
+    }
+  });
 });
 
 describe('checkProvider', () => {
@@ -53,9 +63,32 @@ describe('clientAuthOf', () => {
     expect(clientAuthOf(raw)).toEqual({ providers: { anthropic: { type: 'oauth', expires: 5, hasKey: false, flatFee: false }, minimax: { type: 'api_key', hasKey: true, flatFee: true } } });
   });
 
+  it('keeps keySaved when the client said it, as a boolean, and adds none when it did not', () => {
+    const raw = { providers: { xai: { type: 'oauth', hasKey: false, keySaved: true, flatFee: false }, deepseek: { type: 'none', hasKey: false, keySaved: false, flatFee: false }, meta: { type: 'none', hasKey: false, keySaved: 'yes', flatFee: false }, minimax: { type: 'none', hasKey: true, flatFee: false } } } as unknown as HeldAuth;
+    expect(clientAuthOf(raw)).toEqual({ providers: {
+      xai: { type: 'oauth', hasKey: false, keySaved: true, flatFee: false },
+      deepseek: { type: 'none', hasKey: false, keySaved: false, flatFee: false },
+      meta: { type: 'none', hasKey: false, flatFee: false },
+      minimax: { type: 'none', hasKey: true, flatFee: false },
+    } });
+  });
+
   it('keeps allowance only on an OAuth sign-in', () => {
     const raw = { providers: { anthropic: { type: 'oauth', hasKey: false, flatFee: false, allowance: true }, deepseek: { type: 'api_key', hasKey: true, flatFee: false, allowance: true } } } as HeldAuth;
     expect(clientAuthOf(raw)).toEqual({ providers: { anthropic: { type: 'oauth', hasKey: false, flatFee: false, allowance: true }, deepseek: { type: 'api_key', hasKey: true, flatFee: false } } });
+  });
+
+  // A daemon's core gates as this computer's does: a list the wire cannot carry whole is no list there, as it is here.
+  it('sends an OAuth sign-in\'s plan model list whole, or no list when it is outside the wire\'s bounds', () => {
+    const fits = Array.from({ length: MAX_PLAN_MODEL_IDS }, (_, i) => `m${i}`);
+    const sent = (ids: unknown) =>
+      clientAuthOf({ providers: { 'github-copilot': { type: 'oauth', hasKey: false, flatFee: false, availableModelIds: ids } } } as unknown as HeldAuth).providers['github-copilot'];
+    expect(sent(fits)?.availableModelIds).toEqual(fits);
+    for (const ids of [[...fits, 'one-more'], ['x'.repeat(MAX_PLAN_MODEL_ID_CHARS + 1)], [''], ['gpt-6-luna', 7]]) {
+      expect(sent(ids)).toEqual({ type: 'oauth', hasKey: false, flatFee: false });
+    }
+    const keyOnly = clientAuthOf({ providers: { xai: { type: 'api_key', hasKey: true, flatFee: false, availableModelIds: ['grok-4.7'] } } } as unknown as HeldAuth).providers;
+    expect(keyOnly['xai']).toEqual({ type: 'api_key', hasKey: true, flatFee: false });
   });
 });
 

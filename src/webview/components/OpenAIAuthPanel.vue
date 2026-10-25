@@ -14,6 +14,7 @@ const settingsStore = useSettingsStore();
 const {
   openaiAuthStatus,
   openaiPreferApiKey,
+  openaiActive,
   openaiChatGPTAuthInFlight,
   openaiChatGPTAuthError,
 } = storeToRefs(settingsStore);
@@ -60,11 +61,16 @@ function handleClear() {
 
 const preferLabelId = useId();
 const preferHintId = useId();
+// Its own request, so a toggle never takes over a key save's acknowledgement; the switch shows the value it sent until then.
+const preferPending = ref<{ requestId: string; value: boolean } | null>(null);
+const preferError = ref<string | null>(null);
+const preferValue = computed(() => preferPending.value?.value ?? openaiPreferApiKey.value);
 
 function handlePreferenceChange(value: boolean) {
+  if (!canTogglePreference.value || saving.value) return;
   const requestId = makeRequestId();
-  pendingRequestId.value = requestId;
-  inlineMessage.value = null;
+  preferPending.value = { requestId, value };
+  preferError.value = null;
   postMessage({ type: "setOpenAIPreferApiKey", preferApiKey: value, requestId });
 }
 
@@ -117,11 +123,9 @@ function handleAck(msg: ExtensionToWebviewMessage) {
       inlineMessage.value = { kind: "error", text: msg.error ?? t('openai.apiKey.clearFailed') };
     }
   } else if (msg.type === "setOpenAIPreferApiKeyAck") {
-    if (msg.requestId !== pendingRequestId.value) return;
-    pendingRequestId.value = null;
-    if (!msg.ok) {
-      inlineMessage.value = { kind: "error", text: msg.error ?? t('openai.apiKey.saveFailed') };
-    }
+    if (msg.requestId !== preferPending.value?.requestId) return;
+    preferPending.value = null;
+    if (!msg.ok) preferError.value = msg.error ?? t('providerAuth.preferApiKey.failed');
   }
 }
 
@@ -147,6 +151,14 @@ const messageClass = computed(() => {
 
 <template>
   <div data-testid="openai-auth-panel">
+    <p
+      v-if="openaiActive"
+      class="sm-hint"
+      role="status"
+      data-testid="credential-active"
+    >
+      {{ t(`providerAuth.active.${openaiActive}`) }}
+    </p>
     <div class="sm-field">
       <div class="sm-field-label">
         {{ t('openai.chatgpt.label') }}
@@ -301,10 +313,10 @@ const messageClass = computed(() => {
     <!-- The whole row toggles the switch; aria-labelledby keeps the hint out of the switch's name. -->
     <label class="sm-field-row">
       <SettingSwitch
-        :model-value="openaiPreferApiKey"
+        :model-value="preferValue"
         :aria-labelledby="preferLabelId"
         :aria-describedby="preferHintId"
-        :disabled="!canTogglePreference"
+        :disabled="!canTogglePreference || saving"
         data-testid="openai-prefer-api-key"
         @update:model-value="handlePreferenceChange"
       />
@@ -323,5 +335,13 @@ const messageClass = computed(() => {
         </span>
       </span>
     </label>
+    <p
+      v-if="preferError"
+      class="sm-hint sm-hint-error"
+      role="alert"
+      data-testid="openai-prefer-error"
+    >
+      {{ preferError }}
+    </p>
   </div>
 </template>

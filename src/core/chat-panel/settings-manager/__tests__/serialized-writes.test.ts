@@ -29,4 +29,24 @@ describe('setters that read a list or object setting and write it back', () => {
     await Promise.all([settings.handleSetDefaultEffort('high', 'claude-opus-5-5', home), settings.handleSetDefaultEffort('low', 'claude-sonnet-5-5', home)]);
     expect(platform.settings.get('damocles.effortByModel')).toEqual({ 'claude-opus-5-5': 'high', 'claude-sonnet-5-5': 'low' });
   });
+
+  it('land two concurrent model picker switches, kept beside the values already set', async () => {
+    const { platform, settings } = setup({ 'damocles.modelPicker.providers': { xai: true } });
+    await Promise.all([settings.handleSetModelPickerProvider('deepseek', true), settings.handleSetModelPickerProvider('anthropic', false)]);
+    expect(platform.settings.inspect('damocles.modelPicker.providers').userValue).toEqual({ xai: true, deepseek: true, anthropic: false });
+  });
+
+  // A hand-edited array or string is not a vendor map; spreading one would write its indexes or characters as vendors.
+  it.each([[['xai']], ['xai'], [null]])('replace a stored model picker value that is not an object (%j) with the one switch', async (stored) => {
+    const { platform, settings } = setup({ 'damocles.modelPicker.providers': stored });
+    await settings.handleSetModelPickerProvider('deepseek', true);
+    expect(platform.settings.inspect('damocles.modelPicker.providers').userValue).toEqual({ deepseek: true });
+  });
+
+  it('refuse a model picker switch for a provider without chat models or with a value that is not a switch', async () => {
+    const { platform, settings } = setup({});
+    await expect(settings.handleSetModelPickerProvider('openrouter', true)).rejects.toThrow('is not a model provider');
+    await expect(settings.handleSetModelPickerProvider('deepseek', 'yes' as unknown as boolean)).rejects.toThrow('must be true or false');
+    expect(platform.settings.inspect('damocles.modelPicker.providers').userValue).toBeUndefined();
+  });
 });

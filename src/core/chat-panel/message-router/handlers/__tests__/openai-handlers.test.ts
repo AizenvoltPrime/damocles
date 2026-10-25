@@ -91,6 +91,7 @@ function makeServices() {
     getAuth: vi.fn(async () => undefined),
     getModel: vi.fn(() => undefined),
     hasConfiguredAuth: vi.fn(() => false),
+    getProviderAuthStatus: vi.fn((provider: string) => (runtimeKeys.has(provider) ? { configured: true, source: "runtime" } : { configured: false })),
     getAvailableSnapshot: vi.fn(() => []),
     getModels: vi.fn(() => []),
     registerProvider: vi.fn(),
@@ -114,7 +115,7 @@ function makeDeps(sent: ExtensionToWebviewMessage[], platform: FakePlatform): {
   const openaiSignInEnded = vi.fn(async () => undefined);
   const deps = {
     postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => { sent.push(message); },
-    getPanels: () => new Map([["panel-1", { host, session: { publishAccountInfo, openaiSignInEnded } }]]) as unknown as Map<string, never>,
+    getPanels: () => new Map([["panel-1", { host, session: { publishAccountInfo, publishAvailableModels: vi.fn(), openaiSignInEnded } }]]) as unknown as Map<string, never>,
     platform,
   } as unknown as HandlerDependencies;
   return { deps, ctx: { host, folder: { fsPath: "/work" } } as unknown as HandlerContext, publishAccountInfo, openaiSignInEnded };
@@ -169,6 +170,7 @@ describe("createOpenAIHandlers", () => {
       type: "openaiAuthStatusChanged",
       status: { chatgpt: { signedIn: false }, codex: { signedIn: false }, apikey: { configured: true } },
       preferApiKey: false,
+      active: "apiKey",
     });
     expect(sent.find((m) => m.type === "setOpenAIApiKeyAck")).toEqual({
       type: "setOpenAIApiKeyAck",
@@ -208,6 +210,7 @@ describe("createOpenAIHandlers", () => {
       type: "openaiAuthStatusChanged",
       status: { chatgpt: { signedIn: true, expiresAt: 123 }, codex: { signedIn: false }, apikey: { configured: false } },
       preferApiKey: false,
+      active: "signIn",
     });
     expect(publishAccountInfo).toHaveBeenCalled();
   });
@@ -221,8 +224,8 @@ describe("createOpenAIHandlers", () => {
       },
       getPanels: () =>
         new Map([
-          ["panel-1", { host: ctx.host, session: { publishAccountInfo, openaiSignInEnded } }],
-          ["panel-2", { host: otherHost, session: { publishAccountInfo, openaiSignInEnded } }],
+          ["panel-1", { host: ctx.host, session: { publishAccountInfo, publishAvailableModels: vi.fn(), openaiSignInEnded } }],
+          ["panel-2", { host: otherHost, session: { publishAccountInfo, publishAvailableModels: vi.fn(), openaiSignInEnded } }],
         ]) as unknown as Map<string, never>,
       platform,
     } as unknown as HandlerDependencies;
@@ -520,6 +523,53 @@ describe("createOpenAIHandlers", () => {
       await handlers.signOutChatGPT!({ type: "signOutChatGPT" }, ctx);
       await handlers.setOpenAIPreferApiKey!({ type: "setOpenAIPreferApiKey", preferApiKey: true, requestId: "r4" }, ctx);
       expect(openaiSignInEnded).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("the OpenAI rejected-credential card", () => {
+    const cleared = { type: "authFailureCleared", account: "openai" };
+
+    it("clears when a key is saved or cleared, and not when the probe rejects the key", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => ({ status: 401, json: async () => null })));
+      await handlers.setOpenAIApiKey!({ type: "setOpenAIApiKey", key: "sk-bad", requestId: "r1" }, ctx);
+      expect(sent).not.toContainEqual(cleared);
+
+      vi.stubGlobal("fetch", vi.fn(async () => ({ status: 200, json: async () => ({ data: [] }) })));
+      await handlers.setOpenAIApiKey!({ type: "setOpenAIApiKey", key: "sk-good", requestId: "r2" }, ctx);
+      expect(sent).toContainEqual(cleared);
+
+      sent.length = 0;
+      await handlers.clearOpenAIApiKey!({ type: "clearOpenAIApiKey", requestId: "r3" }, ctx);
+      expect(sent).toContainEqual(cleared);
+    });
+
+    it("clears when a ChatGPT sign-in completes, and not when it fails", async () => {
+      mock.modelRuntime.login.mockRejectedValueOnce(new Error("token exchange failed"));
+      await handlers.startChatGPTOAuth!({ type: "startChatGPTOAuth" }, ctx);
+      expect(sent).not.toContainEqual(cleared);
+
+      await handlers.startChatGPTOAuth!({ type: "startChatGPTOAuth" }, ctx);
+      expect(sent).toContainEqual(cleared);
+    });
+
+    it("clears on each sign-out", async () => {
+      await handlers.signOutChatGPT!({ type: "signOutChatGPT" }, ctx);
+      expect(sent).toContainEqual(cleared);
+
+      sent.length = 0;
+      await handlers.signOutCodex!({ type: "signOutCodex" }, ctx);
+      expect(sent).toContainEqual(cleared);
+    });
+
+    it("clears when the Prefer toggle switched the credential, and not when it failed", async () => {
+      await handlers.setOpenAIPreferApiKey!({ type: "setOpenAIPreferApiKey", preferApiKey: true, requestId: "r1" }, ctx);
+      expect(sent).toContainEqual(cleared);
+
+      sent.length = 0;
+      vi.spyOn(PiRuntime.get(), "applyOpenAIPreferApiKey").mockRejectedValueOnce(new Error("sync failed"));
+      await handlers.setOpenAIPreferApiKey!({ type: "setOpenAIPreferApiKey", preferApiKey: false, requestId: "r2" }, ctx);
+      expect(sent).toContainEqual({ type: "setOpenAIPreferApiKeyAck", requestId: "r2", ok: false, error: "Failed to apply the preference" });
+      expect(sent).not.toContainEqual(cleared);
     });
   });
 

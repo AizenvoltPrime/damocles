@@ -316,7 +316,7 @@ describe('PiRuntime OpenAI auth', () => {
     const rt = PiRuntime.get(agentDir);
     await rt.init();
     expect(mock.modelRuntime.runtimeKeys.has('openai')).toBe(false);
-    const session = { publishAccountInfo: vi.fn() };
+    const session = { publishAccountInfo: vi.fn(), publishAvailableModels: vi.fn() };
     rt.registerSessionMutator('s1', session as never);
 
     await platform.state.global.update(OPENAI_PREFER_API_KEY_STATE, true);
@@ -358,7 +358,7 @@ describe('PiRuntime OpenAI auth', () => {
   it('republishes the account state on a key secret change while a pending sign-in holds the chain', async () => {
     const rt = PiRuntime.get(agentDir);
     await rt.init();
-    const session = { publishAccountInfo: vi.fn() };
+    const session = { publishAccountInfo: vi.fn(), publishAvailableModels: vi.fn() };
     rt.registerSessionMutator('s1', session as never);
     const abort = new AbortController();
     mock.modelRuntime.login.mockImplementationOnce((_p, _t, interaction) =>

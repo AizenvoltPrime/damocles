@@ -33,7 +33,7 @@ import SettingsNav from './SettingsNav.vue';
 import SettingsPage from './SettingsPage.vue';
 import SettingButton from './controls/SettingButton.vue';
 import { normalizeQuery, SETTINGS_ROWS, type HostSettings, type SettingsRowMeta, type SettingsScopeView, type SettingsSectionMeta } from './settings-rows';
-import { provideSettingsBanner, provideSettingsFiles, provideSettingsTarget, type SettingsBanner } from './settings-view';
+import { provideSettingsBanner, provideSettingsChatHost, provideSettingsFiles, provideSettingsTarget, type SettingsBanner } from './settings-view';
 import { prefersReducedMotion } from '@/utils/reducedMotion';
 import './settings.css';
 
@@ -57,6 +57,8 @@ const props = defineProps<{
   pageKey?: number | undefined;
   /** The desktop scope tab: only the rows it lists show, and nothing while it loads. */
   scopeView?: SettingsScopeView | undefined;
+  /** The attached chat's host when it is a remote chat. */
+  chatHost?: string | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -106,6 +108,7 @@ const active = ref<SettingsSectionId>(props.target?.section ?? 'chat');
 const narrowPage = ref<'nav' | 'section'>(props.target?.section ? 'section' : 'nav');
 const request = shallowRef<SettingsTarget | null>(props.target ?? null);
 provideSettingsTarget(request);
+provideSettingsChatHost(() => props.chatHost);
 const typed = ref('');
 const query = computed(() => normalizeQuery(typed.value));
 const matches = ref(0);

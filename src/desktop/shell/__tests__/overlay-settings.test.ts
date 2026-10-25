@@ -121,6 +121,63 @@ describe('overlay settings', () => {
     expect(document.querySelector('[data-testid="settings-row-account-openai"] button[aria-expanded]')!.getAttribute('aria-expanded')).toBe('true');
   });
 
+  it('shows the xAI sign-in in its account row with its strings in English and Greek, and follows the state the chat sends', async () => {
+    await openSettings(1, 'accounts');
+    api.settingsTarget({ section: 'accounts', account: 'xai' });
+    await flushPromises();
+    const start = (): Element | null => document.querySelector('[data-testid="provider-sign-in-start"]');
+    const status = (): string => document.querySelector('[data-testid="provider-sign-in-status"]')!.textContent!.trim();
+    expect(start()!.textContent!.trim()).toBe('Sign in with xAI');
+
+    api.settingsMessage({ type: 'providerSignInState', provider: 'xai', state: { phase: 'finishing' } });
+    await flushPromises();
+    expect(start()).toBeNull();
+    expect(status()).toBe('Finishing…');
+    shellI18n.global.locale.value = 'el';
+    await flushPromises();
+    expect(status()).toBe('Ολοκλήρωση…');
+  });
+
+  // The overlay has no clipboard permission (security.ts grants it only to panel views), so the code is copied by core.
+  it('copies a device code through core, never the clipboard of its own page, and says when it was copied', async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    await openSettings(1, 'accounts');
+    api.settingsTarget({ section: 'accounts', account: 'xai' });
+    api.settingsMessage({ type: 'providerSignInState', provider: 'xai', state: { phase: 'deviceCode', userCode: 'WXYZ-1234', verificationUri: 'https://accounts.x.ai/device' } });
+    await flushPromises();
+    vi.mocked(api.settingsSend).mockClear();
+
+    document.querySelector<HTMLElement>('[data-testid="provider-sign-in-copy"]')!.click();
+    await flushPromises();
+    expect(sent().map(([, message]) => message)).toEqual([
+      { type: 'providerSignInCopyCode', provider: 'xai' },
+      { type: 'providerSignInOpenPage', provider: 'xai' },
+    ]);
+    expect(writeText).not.toHaveBeenCalled();
+
+    api.settingsMessage({ type: 'providerSignInCopyCodeAck', provider: 'xai', ok: true });
+    await flushPromises();
+    expect(document.querySelector('[data-testid="provider-sign-in"]')!.textContent).toContain('Code copied');
+  });
+
+  // A namespace missing from the overlay's bundle renders its key paths, never its strings.
+  it('renders the account rows\' own strings and the active credential label', async () => {
+    await openSettings(1, 'accounts');
+    api.settingsTarget({ section: 'accounts', account: 'github-copilot' });
+    await flushPromises();
+    expect(document.querySelector('[data-testid="provider-sign-in-start"]')!.textContent!.trim()).toBe('Sign in with GitHub');
+
+    for (const [account, placeholder] of [['kimi-coding', 'Kimi API key'], ['meta', 'Meta Model API key']] as const) {
+      api.settingsMessage({ type: 'providerAuthStatusChanged', provider: account, configured: true, external: null, signedIn: false, preferApiKey: false, active: 'apiKey' });
+      api.settingsTarget({ section: 'accounts', account });
+      await flushPromises();
+      const row = document.querySelector(`[data-testid="settings-row-account-${account}"]`)!;
+      expect(row.querySelector('input')!.getAttribute('placeholder')).toBe(placeholder);
+      expect(row.querySelector('[data-testid="credential-active"]')!.textContent!.trim()).toBe('Active credential: API key');
+    }
+  });
+
   it('keeps the host prompt dialog mounted, so a withdrawn prompt can play its exit', async () => {
     const wrapper = await openSettings(1);
     expect(wrapper.findComponent(ExtensionUiDialog).exists()).toBe(true);

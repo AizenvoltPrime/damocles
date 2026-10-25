@@ -2,8 +2,10 @@ import type { Model, Api } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ModelInfo, EffortLevel, TeamRole } from '../../shared/types/settings';
 import type { OpenAIAuthStatus } from './openai-auth';
-import { resolvePiModel, piModelToModelInfo, effortToPiThinking, type ModelLookup } from './pi-models';
+import { resolvePiModel, piModelToModelInfo, effortToPiThinking, notInPlanClause, type ModelLookup } from './pi-models';
 import { modelDollarBilled } from './account-billing';
+import { ROLE_EFFORT_LEVELS } from '../../shared/types/constants';
+import { modelLabel } from '../../shared/model-vendor';
 
 /**
  * Settings-driven team role model/effort resolution (Slice 1). The LEAD / IMPLEMENTOR / REVIEWER role
@@ -14,8 +16,8 @@ import { modelDollarBilled } from './account-billing';
  * - **Configured slot** (`roleSettings[role].model !== ''`): resolve the exact model. If it is unknown or
  *   its provider is not signed in, return `{ error }` naming the `damocles.team.*Model` key and the model
  *   value — NO fail-soft. The caller (create_team fail-fast / spawn-time) surfaces the error to the model.
- * - **Unset slot** (`model === ''`): fail soft to the active panel model (authed → that model, else no
- *   `model` so the caller degrades to the engine default; the label still reflects the active model).
+ * - **Unset slot** (`model === ''`): the active panel model, or `{ error }` when it cannot run (signed out,
+ *   outside the plan, or none), because a member spawned without a model would run on one pi chose.
  * - **Effort** (both branches): the slot's stored effort is coerced at resolution time against the
  *   RESOLVED model's `supportedEffortLevels`; unsupported → no `thinkingLevel` (silent coercion, by
  *   design). Coercion is LOCAL to this module so it stays vscode-free and pure-mock-testable.
@@ -71,43 +73,47 @@ const ROLE_SETTING_KEY: Record<TeamRole, string> = {
 
 /** The short display label for a resolved pi model (falls back to the raw value). */
 function labelFor(model: Model<Api> | undefined, value: string): string {
-  return model ? piModelToModelInfo(model).displayName : value;
+  return model ? modelLabel(piModelToModelInfo(model)) : value;
 }
 
 /** The catalog display name for a model value (falls back to the raw value when it is not curated). Used
  *  for the agent-card label when no pi `Model` resolved (an unauthed slot), so the card shows "Opus 5.5"
  *  rather than the raw "claude-opus-5-5". */
 function catalogLabel(value: string, supportedModels: readonly ModelInfo[]): string {
-  return supportedModels.find((m) => m.value === value)?.displayName ?? value;
+  const info = supportedModels.find((m) => m.value === value);
+  return info ? modelLabel(info) : value;
 }
 
 /**
- * Resolve the active model itself as a fail-soft fallback for an UNSET slot. Requires `authed`: an
- * unauthed-but-resolvable active model would spawn an unusable session that fails at runtime, so we
- * return no `model` and let the caller degrade to the engine default instead (the label still reflects
- * the active model for the agent card).
+ * The active model itself, for an UNSET slot. A member is never spawned without a model, since pi would then choose one
+ * itself, so an active model that cannot run (signed out, outside the plan, or none) blocks the role with an error.
  */
-function resolveActive(deps: TeamModelDeps): Omit<ResolvedTeamModel, 'dollarBilled'> {
+function resolveActive(role: TeamRole, deps: TeamModelDeps): Omit<ResolvedTeamModel, 'dollarBilled'> {
   const res = resolvePiModel(deps.activeModel, deps.registry, deps.openai, deps.preferApiKey);
   if (res.model && res.authed) return { model: res.model, modelLabel: labelFor(res.model, deps.activeModel) };
-  return { modelLabel: catalogLabel(deps.activeModel, deps.supportedModels) };
+  const label = catalogLabel(deps.activeModel, deps.supportedModels);
+  const cause = res.model && res.notInPlan
+    ? `${notInPlanClause(res.model)}, this chat's model.`
+    : res.model
+      ? `this chat's model, ${label}, is not signed in.`
+      : `this chat has no model it can run.`;
+  return { modelLabel: label, error: `Team role "${role}" cannot run: ${cause} Pick another model for the chat, or set ${ROLE_SETTING_KEY[role]}.` };
 }
 
 /**
  * The pi thinking level for a slot's stored effort, coerced against the RESOLVED model's supported
  * levels. A slot that is unset, or holds a level the model does not support, takes the model's catalog
- * `defaultEffort`, the same fallback the panel applies. Returns `undefined` (no thinkingLevel) when no
- * model resolved or neither level is supported.
+ * `defaultEffort`, the same fallback the panel applies. Returns `undefined` (no thinkingLevel) when
+ * neither level is supported.
  */
 function resolveThinkingLevel(
-  resolvedValue: string | undefined,
+  resolvedValue: string,
   effort: EffortLevel | null,
   supportedModels: readonly ModelInfo[],
 ): ThinkingLevel | undefined {
-  if (resolvedValue === undefined) return undefined;
   const info = supportedModels.find((m) => m.value === resolvedValue);
   const supported = (level: EffortLevel | null | undefined): EffortLevel | null =>
-    level && info?.supportedEffortLevels?.includes(level) ? level : null;
+    level && ROLE_EFFORT_LEVELS.includes(level) && info?.supportedEffortLevels?.includes(level) ? level : null;
   const level = supported(effort) ?? supported(info?.defaultEffort);
   if (level === null) return undefined;
   return effortToPiThinking(level);
@@ -120,8 +126,8 @@ function withThinking(base: ResolvedTeamModel, thinkingLevel: ThinkingLevel | un
 
 /**
  * Resolve a team role's model + reasoning depth from the user's settings.
- * - Configured slot: exact model; blocking `{ error }` if unknown/unauthed.
- * - Unset slot: fail soft to the active panel model.
+ * - Configured slot: exact model; blocking `{ error }` if unknown/unauthed/outside the plan.
+ * - Unset slot: the active panel model; blocking `{ error }` if it cannot run.
  * Effort is coerced against the resolved model in both branches (see `resolveThinkingLevel`).
  */
 export function resolveRoleModel(role: TeamRole, deps: TeamModelDeps): ResolvedTeamModel {
@@ -134,6 +140,9 @@ export function resolveRoleModel(role: TeamRole, deps: TeamModelDeps): ResolvedT
     if (!res.model || !res.authed) {
       // Branch the cause so the user knows whether to change the setting (unknown model) or sign in
       // (model resolves but its provider is unauthed) — not a merged "not available or not signed in".
+      if (res.model && res.notInPlan) {
+        return { dollarBilled: billed, error: `Team role "${role}" cannot run: ${notInPlanClause(res.model)}, the model ${ROLE_SETTING_KEY[role]} names. Change the setting to another model.` };
+      }
       const cause = !res.model
         ? 'that model is not available. Change the setting to a supported model.'
         : 'its provider is not signed in. Sign in to that provider or change the setting.';
@@ -146,8 +155,7 @@ export function resolveRoleModel(role: TeamRole, deps: TeamModelDeps): ResolvedT
     return withThinking(base, resolveThinkingLevel(setting.model, setting.effort, deps.supportedModels));
   }
 
-  const base: ResolvedTeamModel = { ...resolveActive(deps), dollarBilled: billed };
-  // Effort applies only when a model actually resolved (unset + unauthed → no model → no thinkingLevel).
-  const resolvedValue = base.model ? deps.activeModel : undefined;
-  return withThinking(base, resolveThinkingLevel(resolvedValue, setting.effort, deps.supportedModels));
+  const base: ResolvedTeamModel = { ...resolveActive(role, deps), dollarBilled: billed };
+  if (base.error) return base;
+  return withThinking(base, resolveThinkingLevel(deps.activeModel, setting.effort, deps.supportedModels));
 }

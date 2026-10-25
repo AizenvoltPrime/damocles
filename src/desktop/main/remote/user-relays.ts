@@ -5,7 +5,7 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { parseSettingsText, type SettingsObject } from '../../../core/config/settings-file';
 import type { Disposable } from '../../../platform/disposable';
-import { MAX_BROKER_EXPIRES_IN_MS, sentClientAuth, type BrokerAnswer, type ClientAuth, type ClientPolicy, type ClientUser, type HeldAuth, type HeldAuthEntry, type PermissionRuleLists, type UserRulesDir } from '../../../shared/remote-user';
+import { MAX_BROKER_EXPIRES_IN_MS, planModelIdsOf, sentClientAuth, type BrokerAnswer, type ClientAuth, type ClientPolicy, type ClientUser, type HeldAuth, type HeldAuthEntry, type PermissionRuleLists, type UserRulesDir } from '../../../shared/remote-user';
 
 // pi's provider ids are short slugs (anthropic, openai-codex, github-copilot)
 const PROVIDER_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
@@ -73,7 +73,11 @@ export function brokerAnswerOf(raw: unknown): BrokerAnswer {
         ...optional('scopes', (value) => boundedStrings(value, 'scopes')),
         ...optional('enterpriseUrl', (value) => boundedString(value, MAX_EXTRA_CHARS, 'enterpriseUrl')),
         ...optional('accountId', (value) => boundedString(value, MAX_EXTRA_CHARS, 'accountId')),
-        ...optional('availableModelIds', (value) => boundedStrings(value, 'availableModelIds')),
+        ...optional('availableModelIds', (value) => {
+          const ids = planModelIdsOf(value);
+          if (!ids) throw new Error("The credential answer's availableModelIds is not a plan list");
+          return ids;
+        }),
       };
     }
     default:
@@ -81,17 +85,20 @@ export function brokerAnswerOf(raw: unknown): BrokerAnswer {
   }
 }
 
-/** The non-secret snapshot a daemon gets: per provider its type, OAuth expiry, whether a key is stored and bills flat, whether an OAuth sign-in bills the allowance, nothing else. */
+/** The non-secret snapshot a daemon gets: per provider its type, OAuth expiry, whether pi holds a key, whether a key is saved, whether the applied key bills flat, whether an OAuth sign-in bills the allowance and the models it lists, nothing else. */
 export function clientAuthOf(raw: HeldAuth): HeldAuth {
   const providers: Record<string, HeldAuthEntry> = {};
   for (const [provider, entry] of Object.entries(raw.providers)) {
     if (!PROVIDER_ID.test(provider)) continue;
+    const plan = entry.type === 'oauth' ? planModelIdsOf(entry.availableModelIds) : undefined;
     providers[provider] = {
       type: entry.type,
       ...(entry.type === 'oauth' && typeof entry.expires === 'number' && Number.isFinite(entry.expires) ? { expires: entry.expires } : {}),
       hasKey: entry.hasKey === true,
+      ...(typeof entry.keySaved === 'boolean' ? { keySaved: entry.keySaved } : {}),
       flatFee: entry.flatFee === true,
       ...(entry.type === 'oauth' && entry.allowance === true ? { allowance: true } : {}),
+      ...(plan ? { availableModelIds: plan } : {}),
     };
   }
   return { providers };

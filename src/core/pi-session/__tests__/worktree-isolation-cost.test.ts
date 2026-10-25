@@ -1,11 +1,21 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { worktreeIsolationBlock, type WorktreeIsolation } from '../worktree-isolation';
 
-const calls = vi.hoisted(() => ({ canonical: [] as string[], parsed: [] as string[], cmdLines: [] as string[] }));
+const calls = vi.hoisted(() => ({ canonical: [] as string[], parsed: [] as string[], cmdLines: [] as string[], fsReads: [] as string[] }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const native = ((p: string) => (calls.fsReads.push(`realpath ${p}`), actual.realpathSync.native(p))) as typeof actual.realpathSync.native;
+  const realpathSync = Object.assign(((...args: Parameters<typeof actual.realpathSync>) => actual.realpathSync(...args)) as typeof actual.realpathSync, { native });
+  const lstatSync = ((p: string) => (calls.fsReads.push(`lstat ${p}`), actual.lstatSync(p))) as typeof actual.lstatSync;
+  const readlinkSync = ((p: string) => (calls.fsReads.push(`readlink ${p}`), actual.readlinkSync(p))) as typeof actual.readlinkSync;
+  return { ...actual, default: { ...actual, realpathSync, lstatSync, readlinkSync }, realpathSync, lstatSync, readlinkSync };
+});
 vi.mock('../../canonical-path', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../canonical-path')>();
-  return { ...actual, canonicalPath: (p: string) => (calls.canonical.push(p), actual.canonicalPath(p)) };
+  return { ...actual, canonicalPath: (...args: Parameters<typeof actual.canonicalPath>) => (calls.canonical.push(args[0]), actual.canonicalPath(...args)) };
 });
 vi.mock('../readonly-shell', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../readonly-shell')>();
@@ -80,6 +90,48 @@ describe('worktree isolation file system cost', () => {
       expect(worktreeIsolationBlock(tool, { command }, iso), command).toBeUndefined();
       expect(new Set(calls.canonical).size).toBe(calls.canonical.length);
     }
+  });
+
+  // The places a loop reaches share their prefixes, which one check reads once.
+  describe('reads the file system once per path for a whole check, though many paths share a prefix', () => {
+    const loops = (into: string) => [
+      ['Bash', `for d in ${ITEMS.join(' ')}; do pushd "${into}$d" && pwd; popd; done; git status`],
+      ['Bash', `for d in ${ITEMS.slice(0, 6).join(' ')}; do (cd "${into}$d" && pwd); done; git status`],
+      ['PowerShell', `foreach ($d in ${ITEMS.map((item) => `'${into}${item}'`).join(',')}) { Push-Location $d; pwd; Pop-Location }; git status`],
+    ] as const;
+    const readsOf = (tool: 'Bash' | 'PowerShell', command: string, layout: WorktreeIsolation): string[] => {
+      calls.fsReads.length = 0;
+      expect(worktreeIsolationBlock(tool, { command }, layout), command).toBeUndefined();
+      return [...calls.fsReads];
+    };
+    let temp: string | undefined;
+    afterEach(() => {
+      if (temp) fs.rmSync(temp, { recursive: true, force: true });
+      temp = undefined;
+    });
+
+    it('where no path exists, and the next check reads them again', () => {
+      for (const [tool, command] of loops('')) {
+        const reads = readsOf(tool, command, iso);
+        expect(reads.length, command).toBeGreaterThan(0);
+        expect(new Set(reads).size, command).toBe(reads.length);
+        expect(readsOf(tool, command, iso), command).toEqual(reads);
+      }
+    });
+
+    // Resolving a missing place reads up to its longest existing prefix, here through a junction inside the worktree.
+    it('where the places lie under an existing prefix reached through a link', () => {
+      temp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dam-iso-cost-')));
+      const layout: WorktreeIsolation = { ...iso, workingFolder: path.join(temp, 'wt'), projectPath: path.join(temp, 'project'), repositoryRoot: path.join(temp, 'project'), otherWorktrees: [] };
+      fs.mkdirSync(path.join(layout.workingFolder, 'src', 'deep'), { recursive: true });
+      fs.mkdirSync(layout.projectPath, { recursive: true });
+      fs.symlinkSync(path.join(layout.workingFolder, 'src'), path.join(layout.workingFolder, 'link'), 'junction');
+      for (const [tool, command] of loops('link/deep/')) {
+        const reads = readsOf(tool, command, layout);
+        expect(reads.some((read) => read.startsWith('realpath ') && read.endsWith(path.join('link', 'deep'))), command).toBe(true);
+        expect(new Set(reads).size, command).toBe(reads.length);
+      }
+    });
   });
 
   // Every walk of the body reaches the same nested texts, which a check parses once.

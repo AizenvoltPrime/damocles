@@ -9,6 +9,7 @@ import {
   type UsageStatsReport,
 } from "../../../../shared/types/usage-stats";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
+import { catalogEntryOfPiModel, modelLabel } from "../../../../shared/model-vendor";
 import { log } from "../../../logger";
 import type { UsageStatsModel } from "../../../usage-stats";
 
@@ -79,17 +80,19 @@ export function parseUsageStatsQuery(value: unknown): Parsed<UsageStatsQuery> {
   };
 }
 
-/** Registry rates and labels keyed `provider/id`; pi's `model.cost.input` is USD per million tokens. */
+/**
+ * Registry rates and labels keyed `provider/id`; pi's `model.cost.input` is USD per million tokens. A catalog model is
+ * labelled as the settings lists label it, since pi names a model the same under every provider that serves it.
+ */
 async function registryModels(): Promise<UsageStatsModel[]> {
   const runtime = PiRuntime.get();
   await runtime.init();
   const modelRuntime = runtime.modelRuntime;
   if (!modelRuntime) throw new Error("pi model registry is unavailable");
-  return modelRuntime.getModels().map((model) => ({
-    key: `${model.provider}/${model.id}`,
-    label: model.name,
-    inputRatePerToken: model.cost.input / 1e6,
-  }));
+  return modelRuntime.getModels().map((model) => {
+    const info = catalogEntryOfPiModel(model.provider, model.id);
+    return { key: `${model.provider}/${model.id}`, label: info ? modelLabel(info) : model.name, inputRatePerToken: model.cost.input / 1e6 };
+  });
 }
 
 /** A top session opens only while its file exists and a folder open in this window holds it, the resume path's own guard. */

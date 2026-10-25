@@ -46,6 +46,9 @@ allowed, so commits from the worktree work.
 The check fails closed. A target it cannot read from the text is **computed**, and a computed target blocks. "Computed"
 below always means "the text does not prove its value". Text the check cannot parse blocks.
 
+One check, of any tool, reads each path's `realpath` and `lstat` at most once, and a dangling link's `readlink` at most
+once (`rememberedPathQueries`), however many targets share the path as a prefix. The next check reads them again.
+
 ## Write tools
 
 Edit, Write and GenerateImage block when their `file_path` (or `path`) lies in the project folder or another worktree of
