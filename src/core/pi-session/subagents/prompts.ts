@@ -8,7 +8,22 @@ import { STEERING_PROTOCOL_BLOCK } from '../steering-protocol';
 import { COMMENT_RULES_BODY, TEST_RUN_RULES_BODY } from '../code-rules';
 import { buildNarrationRule } from '../prose-rules';
 import { mechanismRecordRule, sliceMechanismRungs } from '../delivery-mechanisms';
+import { MODEL_SECTION } from '../system-prompt';
+import type { PiAiModule } from '../pi-loader';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { AgentConfig, EnvInfo } from './types';
+
+/**
+ * The parent chat's current system prompt, replayed from its transcript, as an append-mode agent inherits it. The chat's
+ * `MODEL_SECTION` names the parent's model and says the user can switch it, neither of which holds for the agent, so it is
+ * left out. Empty when the transcript holds no prompt yet.
+ */
+export function inheritedParentPrompt(messages: readonly AgentMessage[], piAi: Pick<PiAiModule, 'getCurrentSystemMessage' | 'getSystemMessageText'>): string {
+  const current = piAi.getCurrentSystemMessage(messages as Parameters<PiAiModule['getCurrentSystemMessage']>[0]);
+  if (!current) return '';
+  const sections = Object.fromEntries(Object.entries(current.sections ?? {}).filter(([name]) => name !== MODEL_SECTION));
+  return piAi.getSystemMessageText({ ...current, sections });
+}
 
 /**
  * Replace-mode agents that write code (the bundled profiles, a user agent with a write tool) inherit no

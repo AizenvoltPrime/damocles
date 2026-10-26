@@ -1418,7 +1418,7 @@ export interface ShellSegment {
    */
   readonly guard?: '&&' | '||';
   /**
-   * Whether the command runs exactly once each time a walk passes it, given its guard: not in an `if`'s branches, not in
+   * Whether the command runs exactly once each time a walk passes it, given its guard and each `if` branch it is in: not in
    * a pipeline or a background job, and not in a compound command that follows `&&`, `||` or `|`, is piped or is put in
    * the background.
    */
@@ -1460,6 +1460,12 @@ export interface ShellStructure {
   readonly loops: readonly ShellLoop[];
   /** The `( )` subshells, in the order they open. */
   readonly subshells: readonly ShellRange[];
+  /**
+   * The branches of each `if`, in the order they open, each running whole or not at all: from `then` or `else` to the next
+   * `elif`, `else` or `fi`, and from `elif` to the same, its condition included, with the body after its `then` a branch
+   * inside it, since the condition may fail.
+   */
+  readonly branches: readonly ShellRange[];
   /**
    * Syntax the parse cannot follow: an unbalanced quote, substitution or compound command, a word after a compound
    * command's closing word, a heredoc without its end, a function or `case`.
@@ -1705,7 +1711,7 @@ function heredocDelimiter(text: string): { delimiter: string; quoted: boolean; l
 
 /** The bash structure of `command`, for checks that need the targets of particular commands; see ShellStructure. Bounded by MAX_COMMAND_LENGTH like the classifier. */
 export function parseShellStructure(command: string, depth = 0): ShellStructure {
-  if (command.length > MAX_COMMAND_LENGTH || depth > 8) return { segments: [], loops: [], subshells: [], unparsable: true };
+  if (command.length > MAX_COMMAND_LENGTH || depth > 8) return { segments: [], loops: [], subshells: [], branches: [], unparsable: true };
   const segments: ShellSegment[] = [];
   let unparsable = false;
   let assignments: ShellAssignment[] = [];
@@ -1733,23 +1739,27 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
   type OpenLoop = Mutable<ShellLoop> & { items?: Array<readonly ShellPart[]> };
   const loops: OpenLoop[] = [];
   const subshells: Array<Mutable<ShellRange>> = [];
+  const branches: Array<Mutable<ShellRange>> = [];
   // The compound commands and subshells open here, innermost last: the word that closes each, the index of its first
-  // segment, how many loops and subshells opened before it, whether it runs exactly once where it stands, whether its
-  // segments run once per walk (ShellSegment.sequential), whether an `if` has reached its branches, and the loop or
-  // subshell it is.
+  // segment, how many loops, subshells and branches opened before it, whether it runs exactly once where it stands,
+  // whether its segments run once per walk (ShellSegment.sequential), an `if`'s open branch, the body inside an `elif`'s
+  // branch, whether that `elif`'s condition is being read, and the loop or subshell it is.
   type Compound = {
     close: string;
     at: number;
     loops: number;
     subshells: number;
+    branches: number;
     unconditional: boolean;
     sequential: boolean;
-    branch: boolean;
+    branch?: Mutable<ShellRange>;
+    body?: Mutable<ShellRange> | undefined;
+    condition?: boolean;
     loop?: OpenLoop;
     subshell?: Mutable<ShellRange>;
   };
   const compounds: Compound[] = [];
-  const sequentialHere = (): boolean => compounds.every((compound) => compound.sequential && !compound.branch);
+  const sequentialHere = (): boolean => compounds.every((compound) => compound.sequential);
   // The compound command whose closing word the current command follows: its redirections are the rest of that command.
   let closed: Compound | undefined;
   // Whether the current command has a redirection, after which bash reads no reserved word.
@@ -1785,9 +1795,9 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
       at: segments.length,
       loops: loops.length,
       subshells: subshells.length,
+      branches: branches.length,
       unconditional: compounds.length === 0 && !chained,
       sequential: sequentialHere() && !chained,
-      branch: false,
       ...(loop === undefined ? {} : { loop }),
       ...(subshell === undefined ? {} : { subshell }),
     });
@@ -1795,11 +1805,18 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
     if (subshell !== undefined) subshells.push(subshell);
     guard = undefined;
   };
+  /** Ends the open branch of an `if`, and the body inside it. */
+  const endBranch = (compound: Compound): void => {
+    if (compound.branch !== undefined) compound.branch.end = segments.length;
+    if (compound.body !== undefined) compound.body.end = segments.length;
+    compound.body = undefined;
+  };
   const closeCompound = (close: string): void => {
     const compound = compounds.pop();
     if (compound?.close !== close) unparsable = true;
     if (compound?.loop !== undefined) compound.loop.end = segments.length;
     if (compound?.subshell !== undefined) compound.subshell.end = segments.length;
+    if (compound !== undefined) endBranch(compound);
     closed = compound;
   };
   /** Puts `segment`, the redirections of `compound`, before the compound command's first segment, where bash performs them. */
@@ -1817,6 +1834,11 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
       const inside = k >= compound.subshells;
       subshell.start = shift(subshell.start, inside);
       subshell.end = shift(subshell.end, inside);
+    });
+    branches.forEach((branch, k) => {
+      const inside = k >= compound.branches;
+      branch.start = shift(branch.start, inside);
+      branch.end = shift(branch.end, inside);
     });
   };
   /** The loop whose `for` header is being read. */
@@ -1959,8 +1981,21 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
         guard = undefined;
       }
       if (word === '!') negated = true;
-      // An `if`'s condition runs once; what follows its `then` may not run.
-      if ((word === 'then' || word === 'else' || word === 'elif') && compounds.at(-1)?.close === 'fi') compounds.at(-1)!.branch = true;
+      // An `if`'s condition runs once; a branch starts at its `then` and at each `elif` and `else`, and the body after an
+      // `elif`'s condition is a branch inside that one, since the condition may fail.
+      const opened = compounds.at(-1);
+      if (opened?.close === 'fi' && (word === 'elif' || word === 'else')) {
+        endBranch(opened);
+        opened.branch = { start: segments.length, end: segments.length };
+        opened.condition = word === 'elif';
+        branches.push(opened.branch);
+      } else if (opened?.close === 'fi' && word === 'then' && (opened.branch === undefined || opened.condition === true)) {
+        const branch = { start: segments.length, end: segments.length };
+        if (opened.branch === undefined) opened.branch = branch;
+        else opened.body = branch;
+        opened.condition = false;
+        branches.push(branch);
+      }
       const close = COMPOUND_CLOSER.get(word);
       // A `for` loop's repeated part starts after its header, where endSegment moves `start`.
       if (close !== undefined) openCompound(close, close === 'done' ? { start: segments.length, end: segments.length } : undefined);
@@ -2091,7 +2126,7 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
     if (ch === "'") {
       startWord(i);
       const end = command.indexOf("'", i + 1);
-      if (end < 0) return { segments, loops, subshells, unparsable: true };
+      if (end < 0) return { segments, loops, subshells, branches, unparsable: true };
       append(command.slice(i + 1, end));
       i = end;
       continue;
@@ -2107,18 +2142,18 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
           j++;
         } else if (c === '`') {
           const end = closingBacktick(command, j);
-          if (end < 0) return { segments, loops, subshells, unparsable: true };
+          if (end < 0) return { segments, loops, subshells, branches, unparsable: true };
           sub(command.slice(j + 1, end).replace(/\\`/g, '`'));
           opaque();
           j = end;
         } else if (c === '$' && /[A-Za-z_{(0-9?@*#!$-]/.test(command[j + 1] ?? '')) {
           if (command[j + 1] === '(') {
             const end = dollarParen(j, true);
-            if (end < 0) return { segments, loops, subshells, unparsable: true };
+            if (end < 0) return { segments, loops, subshells, branches, unparsable: true };
             j = end;
           } else if (command[j + 1] === '{') {
             const end = dollarBrace(j);
-            if (end < 0) return { segments, loops, subshells, unparsable: true };
+            if (end < 0) return { segments, loops, subshells, branches, unparsable: true };
             const name = bracedName(j, end);
             if (name === undefined) opaque();
             else reference(name, true);
@@ -2137,14 +2172,14 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
           append(c);
         }
       }
-      if (j >= command.length) return { segments, loops, subshells, unparsable: true };
+      if (j >= command.length) return { segments, loops, subshells, branches, unparsable: true };
       i = j;
       continue;
     }
     if (ch === '`') {
       startWord(i);
       const end = closingBacktick(command, i);
-      if (end < 0) return { segments, loops, subshells, unparsable: true };
+      if (end < 0) return { segments, loops, subshells, branches, unparsable: true };
       sub(command.slice(i + 1, end).replace(/\\`/g, '`'));
       opaque();
       i = end;
@@ -2155,14 +2190,14 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
       if (next === '(') {
         startWord(i);
         const end = dollarParen(i, false);
-        if (end < 0) return { segments, loops, subshells, unparsable: true };
+        if (end < 0) return { segments, loops, subshells, branches, unparsable: true };
         i = end;
         continue;
       }
       if (next === '{') {
         startWord(i);
         const end = dollarBrace(i);
-        if (end < 0) return { segments, loops, subshells, unparsable: true };
+        if (end < 0) return { segments, loops, subshells, branches, unparsable: true };
         const name = bracedName(i, end);
         if (name === undefined) opaque();
         else reference(name, false);
@@ -2172,7 +2207,7 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
       if (next === "'") {
         startWord(i);
         const end = closingAnsiQuote(command, i + 1);
-        if (end < 0) return { segments, loops, subshells, unparsable: true };
+        if (end < 0) return { segments, loops, subshells, branches, unparsable: true };
         opaque();
         i = end;
         continue;
@@ -2215,7 +2250,7 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
     if (ch === '(' && inWord && /^[A-Za-z_][A-Za-z0-9_]*\+?=$/.test(command.slice(wordStart, i))) {
       // An array assignment: its elements are data, but the substitutions among them run.
       const end = closingParen(command, i, true);
-      if (end < 0) return { segments, loops, subshells, unparsable: true };
+      if (end < 0) return { segments, loops, subshells, branches, unparsable: true };
       const elements = parseShellStructure(command.slice(i + 1, end), depth + 1);
       if (elements.unparsable) unparsable = true;
       for (const element of elements.segments) substitutions.push(...element.substitutions);
@@ -2238,7 +2273,7 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
       if (command[i + 1] === '(') {
         endWord(i);
         const end = closingParen(command, i + 1, true);
-        if (end < 0) return { segments, loops, subshells, unparsable: true };
+        if (end < 0) return { segments, loops, subshells, branches, unparsable: true };
         sub(command.slice(i + 2, end));
         if (redirectTarget) {
           redirectTarget = false;
@@ -2267,7 +2302,7 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
         const stripTabs = command[i + 2] === '-';
         i += stripTabs ? 2 : 1;
         const word = heredocDelimiter(command.slice(i + 1));
-        if (!word) return { segments, loops, subshells, unparsable: true };
+        if (!word) return { segments, loops, subshells, branches, unparsable: true };
         heredocs.push({ delimiter: word.delimiter, stripTabs, quoted: word.quoted, owner: substitutions });
         i += word.length;
         continue;
@@ -2304,5 +2339,5 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
   }
   endSegment(command.length);
   if (heredocs.length > 0 || compounds.length > 0) unparsable = true;
-  return { segments, loops, subshells, unparsable };
+  return { segments, loops, subshells, branches, unparsable };
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { piMessagesToHistoryAgentMessages } from '../message-mapper';
+import { useGreekLocale } from '../../../../__mocks__/greek-locale';
 
 describe('piMessagesToHistoryAgentMessages', () => {
   it("carries a tool result's recorded execution time onto its tool_use block, and none when pi recorded none", () => {
@@ -135,6 +136,22 @@ describe('piMessagesToHistoryAgentMessages: a failed model call', () => {
   it('maps the error of a failed call that streamed nothing, and names an unknown one as the live card does', () => {
     const out = piMessagesToHistoryAgentMessages([{ role: 'assistant', content: [], stopReason: 'error' }]);
     expect(out).toEqual([{ role: 'error', contentBlocks: [{ type: 'text', text: 'Unknown error' }] }]);
+  });
+
+  it("replays a call that had no credential as the live card did, naming the provider and model in Damocles' words", () => {
+    const out = piMessagesToHistoryAgentMessages([
+      { role: 'assistant', content: [], provider: 'cerebras', model: 'gpt-oss-120b', stopReason: 'error', errorMessage: 'Provider is not configured: cerebras' },
+    ]);
+    expect(out).toEqual([{ role: 'error', contentBlocks: [{ type: 'text', text: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.' }] }]);
+  });
+
+  // The transcript is the user's, so it is in the UI language, and a row's provider gets the row's text, never an account card.
+  it("replays a row's missing credential in the UI language", () => {
+    useGreekLocale();
+    const out = piMessagesToHistoryAgentMessages([
+      { role: 'assistant', content: [], provider: 'anthropic', model: 'claude-sonnet-5-5', stopReason: 'error', errorMessage: 'Provider is not configured: anthropic' },
+    ]);
+    expect(out).toEqual([{ role: 'error', contentBlocks: [{ type: 'text', text: 'Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το Anthropic, οπότε το Sonnet 5.5 δεν μπόρεσε να εκτελεστεί. Συνδεθείτε ή προσθέστε ένα κλειδί API στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.' }] }]);
   });
 
   it('maps no error for an aborted call', () => {

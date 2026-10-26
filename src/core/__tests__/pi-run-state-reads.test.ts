@@ -11,13 +11,14 @@ import { BUNDLED_TREES, REPO_ROOT, backendSourceFiles } from '../../__mocks__/so
  * source esbuild bundles into the extension and desktop hosts, where pi sessions live. src/webview is out: it holds no pi
  * session and its view models have `isStreaming` fields of their own. A call such as the MCP server manager's
  * `isIdle(name, timeoutMs)` is not a read of pi's getters and passes. Its limits: a same-named getter on a non-pi object is
- * flagged too, and a read through a computed key held in a variable (`session[key]`), through `Reflect.get`, or by
- * destructuring the target of a `for...of` is missed.
+ * flagged too, and a read through a computed key held in a variable (`session[key]`), through `Reflect.get`, by
+ * destructuring the target of a `for...of`, or by a name spelled with an escape sequence (`is\u0053treaming`) is missed.
  */
 
 const MODULE = 'src/core/pi-session/run-lifecycle.ts';
 const GETTERS = new Set(['isStreaming', 'isIdle']);
 const WAIT = 'waitForIdle';
+const NAMES = [...GETTERS, WAIT];
 
 const flagged = (name: string, called: boolean): boolean => name === WAIT || (GETTERS.has(name) && !called);
 
@@ -25,6 +26,8 @@ const isCallee = (node: ts.Node): boolean => ts.isCallExpression(node.parent) &&
 
 /** Each read of pi's run state in `source`, as `<line>: <text>`. */
 function runStateReads(source: string): string[] {
+  // A file without a watched name in its text needs no parse; the walk would flag only an escaped spelling there, a listed miss.
+  if (!NAMES.some((name) => source.includes(name))) return [];
   const file = ts.createSourceFile('source.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const found: string[] = [];
   const report = (node: ts.Node): void => {

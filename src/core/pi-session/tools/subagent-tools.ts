@@ -8,7 +8,7 @@
  * extension factory at the panel's current mode.
  */
 
-import { Type } from 'typebox';
+import { Type, type Static } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from '../pi-loader';
 import { TOOL_AGENT, TOOL_GET_SUBAGENT_RESULT, TOOL_STEER_SUBAGENT } from '../../../shared/tool-names';
@@ -42,15 +42,38 @@ function buildAgentSchema(agents: { name: string; description: string }[]) {
       description: Type.Optional(Type.String({ description: 'A short (3-5 word) description of the task. Required unless resuming.' })),
       prompt: Type.Optional(Type.String({ description: 'The task for the agent to perform. Required unless resuming.' })),
       subagent_type: Type.Optional(Type.String({ description: `The agent type to use. One of: ${typeList}. Required unless resuming.` })),
-      run_in_background: Type.Optional(Type.Boolean({ description: 'Run asynchronously and return an agent_id to poll with GetSubagentResult.' })),
-      resume: Type.Optional(Type.String({ description: 'The id of an interrupted or failed subagent to continue. Pass alone or with message.' })),
+      run_in_background: Type.Optional(Type.Boolean({ description: 'Run asynchronously and return an agent_id to poll with GetSubagentResult. Only for a new agent: a resumed agent keeps the mode it was started in.' })),
+      resume: Type.Optional(Type.String({ description: 'The id of an interrupted or failed subagent to continue. Pass alone or with message; no other field. The agent keeps the foreground or background mode it was started in.' })),
       message: Type.Optional(Type.String({ description: 'With resume: an optional note for the resumed agent. The agent continues its planned work (or starts its task again if it stopped before it began) and does what the note asks: it follows the note where the note explicitly changes or replaces a planned step, and ends planned work early only on an explicit instruction in the note to stop, skip or drop it. Omit it for a plain continue.' })),
     },
     { additionalProperties: false },
   );
 }
 
-const BAD_AGENT_ARGUMENTS = 'Pass either resume (with optional message) or description + prompt + subagent_type.';
+type AgentArguments = Static<ReturnType<typeof buildAgentSchema>>;
+
+const SPAWN_FIELDS = ['description', 'prompt', 'subagent_type'] as const;
+
+type AgentCall =
+  | { kind: 'resume'; agentId: string; message: string | undefined }
+  | { kind: 'spawn'; description: string; prompt: string; type: string; runInBackground: boolean | undefined };
+
+/** Reads an `Agent` call as one of its two forms; the error names each field that mixes or misses them. */
+function parseAgentArguments(params: AgentArguments): AgentCall {
+  const { description, prompt, subagent_type: type, run_in_background: runInBackground, resume, message } = params;
+  if (resume !== undefined) {
+    const extra = [...SPAWN_FIELDS, 'run_in_background' as const].filter((field) => params[field] !== undefined);
+    if (extra.length === 0) return { kind: 'resume', agentId: resume, message };
+    const mode = runInBackground !== undefined ? ' A resumed agent keeps the foreground or background mode it was started in.' : '';
+    throw new Error(`A resume takes only resume and an optional message: remove ${extra.join(', ')}.${mode}`);
+  }
+  if (description !== undefined && prompt !== undefined && type !== undefined && message === undefined) return { kind: 'spawn', description, prompt, type, runInBackground };
+  const problems: string[] = [];
+  const missing = SPAWN_FIELDS.filter((field) => params[field] === undefined);
+  if (missing.length > 0) problems.push(`A new agent needs description, prompt and subagent_type: missing ${missing.join(', ')}. To continue a stopped agent, pass resume instead.`);
+  if (message !== undefined) problems.push('message goes only with resume: put a new agent\'s instructions in prompt.');
+  throw new Error(problems.join(' '));
+}
 
 /** The `Agent` tool description, enumerating the available subagent types so the model knows what exists. */
 function buildAgentDescription(agents: { name: string; description: string }[]): string {
@@ -152,16 +175,13 @@ export function buildSubagentTools(pi: PiCodingAgentModule, manager: AgentManage
     parameters: agentSchema,
     executionMode: 'parallel',
     execute: async (toolCallId, params, signal) => {
-      const spawnFields = [params.description, params.prompt, params.subagent_type];
-      if (params.resume !== undefined) {
-        if (spawnFields.some((v) => v !== undefined) || params.run_in_background !== undefined) {
-          throw new Error(BAD_AGENT_ARGUMENTS);
-        }
+      const call = parseAgentArguments(params);
+      if (call.kind === 'resume') {
         // A resume keeps the agent's original mode; the manager binds the signal only to a foreground agent.
         const record = await manager.resume({
           kind: 'resume',
-          agentId: params.resume,
-          ...(params.message !== undefined ? { message: params.message } : {}),
+          agentId: call.agentId,
+          ...(call.message !== undefined ? { message: call.message } : {}),
           toolCallId,
           ...(signal ? { signal } : {}),
         });
@@ -171,17 +191,13 @@ export function buildSubagentTools(pi: PiCodingAgentModule, manager: AgentManage
         await record.promise;
         return agentResult(recordResultJson(record), recordToolDetails(record));
       }
-      const [description, prompt, type] = spawnFields;
-      if (params.message !== undefined || description === undefined || prompt === undefined || type === undefined) {
-        throw new Error(BAD_AGENT_ARGUMENTS);
-      }
       const spec: SpawnRequest = {
         kind: 'spawn',
-        type,
-        prompt,
-        description,
+        type: call.type,
+        prompt: call.prompt,
+        description: call.description,
         toolCallId,
-        runInBackground: manager.resolveRunInBackground(type, params.run_in_background),
+        runInBackground: manager.resolveRunInBackground(call.type, call.runInBackground),
       };
       if (spec.runInBackground) {
         const id = manager.spawn(spec);

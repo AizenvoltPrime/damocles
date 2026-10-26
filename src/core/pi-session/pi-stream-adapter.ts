@@ -20,8 +20,7 @@ import { failedCallError } from './nested-call-failures';
 import { skippedToolCalls } from './abandoned-tool-calls';
 import { windDownRecorded } from './session-store/turn-stopped';
 import { effortBadgeApplies } from './pi-models';
-import { httpStatusOf } from './http-status';
-import { isAccountProviderId, type SettingsAccountId } from '../../shared/settings-sections';
+import { failureCard } from './provider-account';
 
 /** A message as pi emits and persists it; the mid-stream marker matches entries to deliveries by its identity. */
 type PiMessage = Extract<AgentSessionEvent, { type: 'message_end' }>['message'];
@@ -99,19 +98,6 @@ export interface LiveSnapshot {
   readonly messages: readonly ExtensionToWebviewMessage[];
   /** The calls whose outcome the live run still owns, which the branch replay leaves to `messages` and the live events. */
   readonly liveToolCallIds: ReadonlySet<string>;
-}
-
-/** Detect auth-shaped error text so the webview can show the renewal banner rather than a raw error. */
-function isAuthError(message: string): boolean {
-  const m = message.toLowerCase();
-  return m.includes('401') || m.includes('unauthorized') || m.includes('authentication') || m.includes('invalid api key') || m.includes('oauth');
-}
-
-/** The Accounts row whose credential a pi provider uses; undefined for a provider no row signs in to. */
-function accountOfProvider(provider: string | undefined): SettingsAccountId | undefined {
-  if (provider === 'anthropic') return 'anthropic';
-  if (provider === 'openai' || provider === 'openai-codex') return 'openai';
-  return isAccountProviderId(provider) ? provider : undefined;
 }
 
 /**
@@ -256,7 +242,7 @@ export class PiStreamAdapter {
   private _lastAssistantError: string | null = null;
   /** A failed call's card, held until pi either re-runs the call (no card) or moves past it (see `holdFailure`).
    *  `shownId` is the webview id of what the call streamed, which a re-run takes back. */
-  private _pendingFailure: { message: string; provider: string | undefined; shownId: string | undefined } | null = null;
+  private _pendingFailure: { message: string; provider: string | undefined; model: string | undefined; shownId: string | undefined } | null = null;
   /** pi is waiting out a retry backoff; the retried call's assistant `message_start` ends the wait. */
   private _retrying = false;
   /** The current turn's correlation id, held until the real pi user entry id is known (FR-3). */
@@ -810,7 +796,8 @@ export class PiStreamAdapter {
           this._compactionReported = true;
         } else if (event.errorMessage && !event.result) {
           if (!isNothingToCompact(event.errorMessage)) {
-            this.emit({ type: 'error', message: event.errorMessage });
+            // pi compacts on the session's model, so a credential it lacks or the provider refused names that model's account.
+            this.emit(failureCard(session.model?.provider, session.model?.id, event.errorMessage));
             this._compactionReported = true;
           }
         } else if (event.result) {
@@ -1207,7 +1194,7 @@ export class PiStreamAdapter {
       return;
     }
     this.abandonToolCalls(message.content, 'failed');
-    this.holdFailure(failedCallError(message.errorMessage), message.provider, pending.shownId);
+    this.holdFailure(failedCallError(message.errorMessage), message.provider, message.model, pending.shownId);
   }
 
   /**
@@ -1217,8 +1204,8 @@ export class PiStreamAdapter {
    * (`showPendingFailure`). Both recoveries omit the call from model context, which is how a reload
    * tells them apart (`history-loader.ts`). Settling here would also flash idle in the middle of a retry.
    */
-  private holdFailure(message: string, provider: string | undefined, shownId: string | undefined): void {
-    this._pendingFailure = { message, provider, shownId };
+  private holdFailure(message: string, provider: string | undefined, model: string | undefined, shownId: string | undefined): void {
+    this._pendingFailure = { message, provider, model, shownId };
   }
 
   /**
@@ -1247,22 +1234,14 @@ export class PiStreamAdapter {
 
   /**
    * Show the held failure's card. A refusal arrives as an `error` stop whose message is the refusal
-   * text, so it shows as a plain error card (US-023). A rejected credential of a provider with an Accounts row raises
-   * the card naming that account; `isAuthError` can also match a refusal that mentions "oauth". xAI answers 402 to a
-   * credential without API access, which is read from the status, never the body.
+   * text, so it shows as a plain error card (US-023). A refused or missing credential raises the card naming its
+   * account (`accountFailureOf`, which a replay reads too).
    */
   private showPendingFailure(): void {
     const failure = this._pendingFailure;
     if (!failure) return;
     this._pendingFailure = null;
-    const account = accountOfProvider(failure.provider);
-    if (account === 'xai' && httpStatusOf(failure.message) === 402) {
-      this.emit({ type: 'authFailure', message: failure.message, account, reason: 'noApiAccess' });
-    } else if (account && isAuthError(failure.message)) {
-      this.emit({ type: 'authFailure', message: failure.message, account, reason: 'rejected' });
-    } else {
-      this.emit({ type: 'error', message: failure.message });
-    }
+    this.emit(failureCard(failure.provider, failure.model, failure.message));
   }
 
   private elapsed(toolCallId: string): number {

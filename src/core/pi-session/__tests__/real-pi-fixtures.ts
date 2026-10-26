@@ -4,10 +4,10 @@ import * as path from 'path';
 import {
   createAgentSession,
   DefaultResourceLoader,
-  ModelRuntime,
   SessionManager,
   SettingsManager,
   type AgentSession,
+  type ModelRuntime,
   type ExtensionAPI,
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
@@ -16,6 +16,7 @@ import { Type } from 'typebox';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { PermissionHandler } from '../../permission-handler';
 import type { SessionOptions } from '../../session-types';
+import { PiRuntime } from '../pi-runtime';
 import { PiSession } from '../pi-session';
 import { withSettingsPolicy } from '../settings-policy';
 import { trackRunLifecycle } from '../run-lifecycle';
@@ -30,6 +31,21 @@ import { createFakePlatform } from '../../../__mocks__/fake-platform';
 
 // Assembled from parts so the file holds no literal matching a secret scanner's token pattern.
 const STUB_CREDENTIAL = ['sk', 'ant', 'oat01', 'stub'].join('-');
+
+/**
+ * The process's PiRuntime initialised on `agentDir`, as production's `start()` finds it, with anthropic signed in. A session
+ * built on the model runtime it returns has its chat's model resolved and checked through the registry pi runs on.
+ */
+export async function seatPiRuntime(agentDir: string): Promise<ModelRuntime> {
+  // One a lazy `PiRuntime.get()` made earlier has the default agent dir and no model runtime.
+  if (PiRuntime.exists && PiRuntime.get().agentDir !== agentDir) await PiRuntime.disposeInstance();
+  const runtime = PiRuntime.get(agentDir);
+  await runtime.init();
+  const models = runtime.modelRuntime;
+  if (!models) throw new Error('PiRuntime.init left no model runtime');
+  await models.setRuntimeApiKey('anthropic', STUB_CREDENTIAL);
+  return models;
+}
 
 interface Message {
   role: string;
@@ -117,13 +133,14 @@ export interface RealPi {
   contexts: string[][];
 }
 
-/** Boots real pi sessions and removes what they leave behind; call `dispose` from `afterEach`. */
+/** Boots real pi sessions on a seated PiRuntime and removes what they leave behind; await `dispose` from `afterEach`. */
 export function realPiSessions(): {
   boot: (tool: ToolDefinition, responses: FauxResponseStep[], extend?: (pi: ExtensionAPI) => void) => Promise<RealPi>;
-  dispose: () => void;
+  dispose: () => Promise<void>;
 } {
   const made: string[] = [];
   const sessions: AgentSession[] = [];
+  let seated: Promise<ModelRuntime> | null = null;
 
   const tempDir = (prefix: string): string => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -148,12 +165,8 @@ export function realPiSessions(): {
     };
     // Built as FolderRuntime builds the folder's services, since pi's queue behaviour depends on it.
     const settingsManager = withSettingsPolicy(SettingsManager.create(cwd, agentDir, { projectTrusted: true }));
-    const modelRuntime = await ModelRuntime.create({
-      authPath: path.join(agentDir, 'auth.json'),
-      modelsPath: path.join(agentDir, 'models.json'),
-      refreshOnCreate: false,
-    });
-    await modelRuntime.setRuntimeApiKey('anthropic', STUB_CREDENTIAL);
+    seated ??= seatPiRuntime(tempDir('dam-note-runtime-'));
+    const modelRuntime = await seated;
     const resourceLoader = new DefaultResourceLoader({
       cwd,
       agentDir,
@@ -181,13 +194,17 @@ export function realPiSessions(): {
     return { session, contexts };
   };
 
-  const dispose = (): void => {
+  const dispose = async (): Promise<void> => {
     for (const session of sessions.splice(0)) {
       try {
         session.dispose();
       } catch {
         // A disposed session must not fail teardown for the next case.
       }
+    }
+    if (seated) {
+      seated = null;
+      await PiRuntime.disposeInstance();
     }
     for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   };

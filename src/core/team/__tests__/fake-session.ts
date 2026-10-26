@@ -124,6 +124,8 @@ export class FakeSession {
   beforeSettle: (() => Promise<void>) | null = null;
   /** An extension `input` handler, which pi awaits in `prompt()` before it reads the busy flag (`agent-session.js:1652`, `:1665`). */
   inputHandler: ((text: string) => Promise<void>) | null = null;
+  /** `AgentSession.model`, whose provider and id pi-ai writes on every assistant message (`AssistantMessage.provider`, `.model`). */
+  model: { provider: string; id: string } | undefined = undefined;
 
   private readonly listeners = new Set<Listener>();
   private readonly agentListeners = new Set<AgentListener>();
@@ -728,7 +730,7 @@ export class FakeSession {
       ];
       if (!call.started) await this.emitRunEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
       if (answer.partial) await this.emitRunEvent({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: answer.partial } });
-      const message = { role: 'assistant', content, stopReason: 'error', errorMessage: answer.errorMessage };
+      const message = { role: 'assistant', content, ...this.modelOfMessage(), stopReason: 'error', errorMessage: answer.errorMessage };
       await this.emitRunEvent({ type: 'message_end', message });
       return { message, toolResults: [], decided: call.decided };
     }
@@ -739,7 +741,7 @@ export class FakeSession {
         ...(answer.text ? [{ type: 'text', text: answer.text }] : []),
         ...(answer.toolCalls ?? []).map((c) => ({ type: 'toolCall', id: c.id, name: c.name, arguments: c.arguments ?? {} })),
       ];
-      message = { role: 'assistant', content, stopReason: answer.toolCalls?.length ? 'toolUse' : 'stop' };
+      message = { role: 'assistant', content, ...this.modelOfMessage(), stopReason: answer.toolCalls?.length ? 'toolUse' : 'stop' };
       if (!call.started) await this.emitRunEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
       if (answer.text) await this.emitRunEvent({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: answer.text } });
       await this.emitRunEvent({ type: 'message_end', message });
@@ -777,9 +779,13 @@ export class FakeSession {
 
   /** An aborted or wound-down response: its `message_start` unless it already streamed one, then its `message_end`. */
   private async endResponse(started: FakeMessage | null, stopReason: string, errorMessage: string): Promise<FakeMessage> {
-    const message = { role: 'assistant', content: Array.isArray(started?.content) ? started.content : [], stopReason, errorMessage };
+    const message = { role: 'assistant', content: Array.isArray(started?.content) ? started.content : [], ...this.modelOfMessage(), stopReason, errorMessage };
     if (!started) await this.emitRunEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
     await this.emitRunEvent({ type: 'message_end', message });
     return message;
+  }
+
+  private modelOfMessage(): { provider?: string; model?: string } {
+    return this.model ? { provider: this.model.provider, model: this.model.id } : {};
   }
 }

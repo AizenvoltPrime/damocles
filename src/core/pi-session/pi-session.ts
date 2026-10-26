@@ -51,7 +51,8 @@ import { perfSpan, timed } from "../perf";
 import { PiRuntime } from "./pi-runtime";
 import { ownSessionUsage } from "./session-usage";
 import type { FolderRuntime } from "./folder-runtime";
-import { getPiCodingAgent, type PiCodingAgentModule } from "./pi-loader";
+import { getPiCodingAgent, loadedPiAi, type PiCodingAgentModule } from "./pi-loader";
+import { inheritedParentPrompt } from "./subagents/prompts";
 import { cacheWarmingSetting, PI_AGENT_DIR } from "./agent-dir";
 import { installTurnDecider, BUDGET_STOP_HOOK } from "./finish-turn";
 import { installPlanModeChangeNotice, mainPlanModeStatement, planModeChangeNotice, planModeNoticeAtPromptStart, type PlanModeStatement } from "./plan-mode-change";
@@ -84,6 +85,9 @@ import {
   type ModelResolution,
 } from "./pi-models";
 import { providerPickedOnly } from "./custom-providers";
+import { accountOfModel, accountOfProvider, failureCard, failureText } from "./provider-account";
+import { failedCallError } from "./nested-call-failures";
+import type { SettingsAccountId } from "../../shared/settings-sections";
 import type { OpenAIAuthStatus } from "./openai-auth";
 import { currentPin, runPinnedTurn } from "../client-snapshots";
 import { pinRunStarts } from "./credential-broker";
@@ -194,7 +198,7 @@ import {
   firstExchangeForTitle,
 } from "./branch-text";
 import { abortRunAtStart } from "./abort-run-at-start";
-import { queuedPromptEntries, watchPromptEntry, type PromptDisposition, type PromptEntry, type PromptEntryWatch, type QueuedPromptEntries, type RequeuedFollowUp } from "./prompt-entry";
+import { queuedPromptEntries, watchPromptEntry, type PromptDisposition, type PromptEntry, type PromptEntryWatch, type QueuedPromptEntries, type RequeuedFollowUp, type ReturnRefused } from "./prompt-entry";
 import { isExtensionCommand, resolveSlashInvocation } from "./slash-invocation";
 import {
   PLAN_MODE_NUDGE_CUSTOM_TYPE,
@@ -238,9 +242,9 @@ export function workingFolderNote(folder: string): string {
   return `This chat now works in ${folder}. Read and edit files there from now on.`;
 }
 
-/** Runtimes whose provider-fallback warning has already been shown (see `warnCustomProviderFallback`).
+/** Runtimes whose unreached-provider warning has already been shown (see `warnProviderUnreached`).
  *  Module scope because the dedupe spans PiSession instances; weak so a disposed runtime is collectable. */
-const fallbackWarnedRuntimes = new WeakSet<PiRuntime>();
+const unreachedWarnedRuntimes = new WeakSet<PiRuntime>();
 
 /** How long a session delete or resume switch waits for the agents it aborted to stop writing. Aborted runs settle in
  *  milliseconds; this only caps a run whose tool ignores the abort signal, and not a parent turn held open waiting on one. */
@@ -310,6 +314,15 @@ interface QueuedInput {
   typed?: string;
   /** The UserPromptSubmit context screening admitted it with, owed to the request pi delivers it in. */
   hookContext?: string;
+}
+
+/** Queued messages as one send: the prompt pi is given and what the user typed, which goes back to the composer. */
+function batchSend(inputs: readonly QueuedInput[]): { prompt: ContentInput; broadcast: UserBroadcast } {
+  const prompt: ContentInput = inputs.every((input) => typeof input.content === "string")
+    ? inputs.map((input) => input.text).join("\n\n")
+    : inputs.flatMap((input): UserContentBlock[] => (typeof input.content === "string" ? [{ type: "text", text: input.content }] : input.content));
+  const typed = inputs.map((input) => input.typed ?? input.text).join("\n\n");
+  return { prompt, broadcast: typeof prompt === "string" ? { content: typed } : { content: typed, contentBlocks: prompt } };
 }
 
 /** A `sendMessage` prompt, from the start of its send until it settles (docs/invariants.md, "A send holds the session"). */
@@ -399,19 +412,34 @@ interface QueuedSwitch {
 
 /**
  * A stored session's recorded model as this panel's model value, the pi model it resolved to, and the recorded pi thinking
- * level. `runnable` is false for a model signed out or outside the plan, which the chat shows but sends refuse.
+ * level. `runnable` is false for a model signed out or outside the plan, which the chat shows but sends refuse; a key
+ * provider's model has no pi model while its key is missing, since pi registers it only with one.
  */
 interface BuiltSelection {
   readonly value: string;
-  readonly model: Model<Api>;
+  readonly model: Model<Api> | undefined;
   readonly thinkingLevel: string | undefined;
   readonly runnable: boolean;
 }
 
-/** Why a model call is refused: `modelSignInRequired` when no model can run at all, else `modelUnavailable` with why. */
+/**
+ * Why a model call is refused: `modelSignInRequired` when no model can run at all, else `modelUnavailable` with why.
+ * `account` is the Accounts row whose sign-in fixes it; without one the fix is a pick in This chat.
+ */
 interface ModelRefusal {
   readonly reason: "modelSignInRequired" | "modelUnavailable";
   readonly detail?: string;
+  readonly account?: SettingsAccountId;
+}
+
+/** Why a model value cannot run, and the Accounts row whose sign-in would let it, when a sign-in would. */
+interface UnavailableModel {
+  readonly text: string;
+  readonly signIn?: SettingsAccountId;
+}
+
+function samePiModel(a: Pick<Model<Api>, "provider" | "id">, b: Pick<Model<Api>, "provider" | "id">): boolean {
+  return a.provider === b.provider && a.id === b.id;
 }
 
 /** The conversation and prompt a turn's memory candidate is filed under, read when the prompt starts. */
@@ -514,6 +542,8 @@ export class PiSession implements ChatSession {
 
   private desiredModel: Model<Api> | undefined;
   private modelValue: string;
+  /** The chat shows the factory default (`SessionOptions.model` absent) and has not committed it or taken another model. */
+  private modelIsFactoryDefault: boolean;
   /** The recorded selection the factory handed pi for each session it built, which becomes the record once pi installs that session. */
   private readonly builtSelections = new WeakMap<AgentSession, BuiltSelection>();
   // The catalog is static, so it is populated before start(): a resumed panel defers start() and still
@@ -660,7 +690,8 @@ export class PiSession implements ChatSession {
     this.options = options;
     this.cwd = options.cwd;
     this.mcpScope = options.mcpScope;
-    this.modelValue = options.model ?? "";
+    this.modelValue = options.model ?? DEFAULT_FALLBACK_MODEL;
+    this.modelIsFactoryDefault = options.model === undefined;
     this.permissionMode = "default";
     this.worktree = new SessionWorktree({
       cwd: options.cwd,
@@ -793,7 +824,7 @@ export class PiSession implements ChatSession {
     // saved key-provider default model can resolve (Phase 5, US-018.8). Deliberately still AWAITED
     // before resolveInitialModel: fire-and-forget would race the user's first prompt and route turn 1 to
     // the wrong provider. Safe to await because the sync is bounded, cancellable and fail-soft — and if
-    // it does give up, the resulting model downgrade is surfaced below rather than applied silently.
+    // it does give up, the model it leaves unable to run is named below.
     let syncTimedOut = false;
     let notWiredProviders: string[] = [];
     if (this.options.secrets) {
@@ -804,9 +835,8 @@ export class PiSession implements ChatSession {
       this.throwIfDisposedDuringStart();
     }
 
-    const requestedModel = this.modelValue;
-    this.resolveInitialModel(piRuntime);
-    if (syncTimedOut) this.warnCustomProviderFallback(piRuntime, requestedModel, notWiredProviders);
+    this.resolveInitialModel();
+    if (syncTimedOut) this.warnProviderUnreached(piRuntime, notWiredProviders);
 
     // Native subagent engine (Phase 5): a cross-turn per-PiSession registry + manager, created before the
     // factory so the primary session's customTools include the three subagent tools.
@@ -829,9 +859,8 @@ export class PiSession implements ChatSession {
       const reopen = this.switchedFromOtherDir;
       this.switchedFromOtherDir = null;
       const sessionManager = reopen !== null ? pi.SessionManager.open(reopen, ensurePiSessionDir(this.cwd), this.cwd) : opts.sessionManager;
-      const recorded = this.recordedSelectionOf(sessionManager.getBranch());
-      // A record that cannot run becomes the chat's only while the chat has no model to run instead.
-      const built = recorded && (recorded.runnable || !this.desiredModel) ? recorded : undefined;
+      // A recorded model that cannot run is still the chat's, and its sends are refused until it can.
+      const built = this.recordedSelectionOf(sessionManager.getBranch());
       // Built per session so per-session tool state (the task list) resets on reset/newSession.
       const customTools = buildCustomTools({
         pi,
@@ -864,7 +893,7 @@ export class PiSession implements ChatSession {
       // mcp__ tools (the first-connect bug). Omitting it admits every non-excluded tool into the registry;
       // the active set is governed by `applyActiveToolsForMode`. `excludeTools` still drops pi's `edit`.
       // Given no model, pi picks one itself (sdk.js:87-118 in pi-coding-agent 1.4.0), so it always gets the chat's.
-      const model = built?.model ?? this.desiredModel ?? this.shownPiModel();
+      const model = built ? built.model ?? this.shownPiModel(built.value) : this.desiredModel ?? this.shownPiModel(this.modelValue);
       // pi runs the given model as it is and the given level clamped to it (sdk.js:87, :121-144 and :252-257 in pi-coding-agent 1.4.0).
       const result = await pi.createAgentSessionFromServices({
         services: shared,
@@ -968,7 +997,7 @@ export class PiSession implements ChatSession {
 
     this.announceSessionId(this.runtime.session.sessionId, resumingStored && openedPath !== null);
     await this.deliverWorkingFolderNote().catch((err: unknown) => log("[PiSession] the working-folder note waits for the next prompt: %O", err));
-    // resolveInitialModel may have moved the model off the requested one, and the panel has had no
+    // resolveInitialModel may have moved a factory default to a signed-in model, and the panel has had no
     // account state before this point.
     this.publishAccountInfo();
     this.publishModel();
@@ -1286,48 +1315,45 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Pick the starting model: the saved value if its canonical provider is authed, otherwise the
-   * first curated model the user is actually signed in for (so a codex-only user defaults to a GPT
-   * model rather than an unusable Claude/gateway one), never one of a `pickedOnly` provider. Leaves
-   * `desiredModel` unset when none qualifies, and every send is then refused until the user picks one.
+   * The starting model is the one the chat shows, whether or not it can run, since every send checks it. Only the factory
+   * default falls back when it cannot run: to its substitutes, then the first catalog model the user is signed in for,
+   * never one of a `pickedOnly` provider. With no model that can run, `desiredModel` stays unset and sends are refused.
    */
-  private resolveInitialModel(piRuntime: PiRuntime): void {
+  private resolveInitialModel(): void {
+    const shown = this.runnableModel(this.modelValue);
+    if (shown || !this.modelIsFactoryDefault) {
+      this.desiredModel = shown;
+      return;
+    }
+    // An earlier start that failed may have adopted the default; with nothing found below, no model can run.
+    this.desiredModel = undefined;
+    // Substitutes first: the catalog is ordered by capability, not price, so the walk alone would land on its costliest entry.
+    const walk = this.supportedModelsCache.filter((m) => !(m.piProvider !== undefined && providerPickedOnly(m.piProvider))).map((m) => m.value);
+    for (const value of [...(MODEL_SUBSTITUTES[this.modelValue] ?? []), ...walk]) {
+      const model = this.runnableModel(value);
+      if (!model) continue;
+      this.desiredModel = model;
+      this.modelValue = value;
+      this.modelIsFactoryDefault = false;
+      return;
+    }
+  }
+
+  /** A model value's pi model when it can run with today's credentials and plan, else undefined. */
+  private runnableModel(value: string): Model<Api> | undefined {
+    const piRuntime = PiRuntime.get();
     const registry = piRuntime.modelLookup;
-    if (!registry) return;
-    const openai = piRuntime.getOpenAIAuthStatus();
-
-    const preferApiKey = this.preferOpenAIApiKey();
-    const isCurated = (value: string): boolean => this.supportedModelsCache.some((m) => m.value === value);
-    const trySet = (value: string): boolean => {
-      const res = resolvePiModel(value, registry, openai, preferApiKey);
-      if (res.model && res.authed) {
-        this.desiredModel = res.model;
-        this.modelValue = value;
-        return true;
-      }
-      return false;
-    };
-
-    // Honor the saved model only if it's a curated value AND authed; else fall back to the first
-    // curated model the user is signed in for (keeps the active model in sync with the dropdown).
-    if (this.modelValue && isCurated(this.modelValue) && trySet(this.modelValue)) return;
-    // Before that generic walk, try the requested model's declared substitutes. `supportedModelsCache`
-    // is ordered by capability rather than price, so a model missing from pi's catalog (a fresh install
-    // that is offline or has not refreshed it yet) would otherwise land on the top entry — costlier than
-    // what the user actually asked for.
-    for (const substitute of MODEL_SUBSTITUTES[this.modelValue] ?? []) {
-      if (isCurated(substitute) && trySet(substitute)) return;
-    }
-    for (const m of this.supportedModelsCache) {
-      if (!(m.piProvider !== undefined && providerPickedOnly(m.piProvider)) && trySet(m.value)) return;
-    }
+    if (!registry) return undefined;
+    const resolution = resolvePiModel(value, registry, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
+    return resolution.authed ? resolution.model : undefined;
   }
 
   /**
    * pi resumes a session on the model and thinking level its file recorded (sdk.js createAgentSession), which Damocles
-   * otherwise overrides by passing the panel's: a recorded model still curated and signed in is the one the session is
+   * otherwise overrides by passing the panel's: a recorded catalog model is the one the chat shows and the session is
    * built on, with its level. A retired recorded model continues on its `LEGACY_MODEL_MAP` successor (`recordedModelValue`).
-   * A recorded model that cannot run is `runnable: false`. Permission mode and YOLO are never restored.
+   * A recorded model that cannot run is `runnable: false`, a key provider's one with no key included. Permission mode
+   * and YOLO are never restored.
    */
   private recordedSelectionOf(branch: readonly SessionEntry[]): BuiltSelection | undefined {
     const recorded = recordedSelection(branch);
@@ -1336,17 +1362,16 @@ export class PiSession implements ChatSession {
     const registry = piRuntime.modelLookup;
     if (value === undefined || !registry) return undefined;
     const resolution = resolvePiModel(value, registry, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
-    if (!resolution.model) return undefined;
-    return { value, model: resolution.model, thinkingLevel: recorded?.thinkingLevel, runnable: resolution.authed === true };
+    return { value, model: resolution.model, thinkingLevel: recorded?.thinkingLevel, runnable: resolution.authed === true && resolution.model !== undefined };
   }
 
-  /** The pi model of the value the chat shows, given to pi while the chat has no model it can run, which every send refuses. */
-  private shownPiModel(): Model<Api> {
+  /** The pi model given to pi for a shown value that cannot run, which every send refuses: its own, else the fallback model's when pi has none. */
+  private shownPiModel(value: string): Model<Api> {
     const piRuntime = PiRuntime.get();
     const registry = piRuntime.modelLookup;
-    const shown = (value: string): Model<Api> | undefined =>
-      registry ? resolvePiModel(value, registry, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey()).model : undefined;
-    const model = shown(this.modelValue) ?? shown(DEFAULT_FALLBACK_MODEL);
+    const shown = (candidate: string): Model<Api> | undefined =>
+      registry ? resolvePiModel(candidate, registry, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey()).model : undefined;
+    const model = shown(value) ?? shown(DEFAULT_FALLBACK_MODEL);
     if (!model) throw new Error("PiSession: pi's model catalog has no model to give the session");
     return model;
   }
@@ -1356,6 +1381,7 @@ export class PiSession implements ChatSession {
     const built = this.builtSelections.get(session);
     if (!built) return;
     this.builtSelections.delete(session);
+    this.modelIsFactoryDefault = false;
     this.modelValue = built.value;
     this.desiredModel = built.runnable ? built.model : undefined;
     this.options.onRecordedSelection?.(built.value, built.thinkingLevel);
@@ -1365,48 +1391,27 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Surface the model downgrade a timed-out provider sync causes: with the saved default not live,
-   * `resolveInitialModel` falls back to a curated Claude/GPT model — a different provider with different
-   * cost and capabilities than the user picked, which must not happen quietly. Fire-and-forget, so the
-   * notification never gates startup on an answer.
+   * Name the chat's model a timed-out provider sync left unable to run, which every send then refuses with a sign-in
+   * reason the timeout makes wrong. Fire-and-forget, so the notification never gates startup on an answer.
    *
    * Keyed off `notWired` (configured but not live), never off the absence from `wired`: a provider whose
    * secret the user deleted, or whose key a stored sign-in outranks, appears in NEITHER list, and telling that user we
    * "could not reach" their provider — then offering a reload that cannot help — is a wrong diagnosis.
    */
-  private warnCustomProviderFallback(piRuntime: PiRuntime, requested: string, notWired: string[]): void {
-    const info = this.supportedModelsCache.find((m) => m.value === requested);
-    if (!info?.piProvider || !notWired.includes(info.piProvider)) return;
-    // A resolved substitute means a downgrade; no `desiredModel` at all means nothing was authed, which
-    // leaves `modelValue` equal to `requested` and is the MORE broken case, not a reason to stay silent.
-    const fallback = this.modelValue === requested ? null : this.modelValue;
-    if (fallback === null && this.desiredModel) return;
+  private warnProviderUnreached(piRuntime: PiRuntime, notWired: string[]): void {
+    const info = this.getModelInfo(this.modelValue);
+    if (!info?.piProvider || !notWired.includes(info.piProvider) || this.desiredModel) return;
     // One modal per runtime: every open panel starts its own PiSession against the same PiRuntime, and
     // persistent lock contention would otherwise stack one identical modal per panel.
-    if (fallbackWarnedRuntimes.has(piRuntime)) return;
-    fallbackWarnedRuntimes.add(piRuntime);
+    if (unreachedWarnedRuntimes.has(piRuntime)) return;
+    unreachedWarnedRuntimes.add(piRuntime);
 
-    const providerName = providerDisplayName(info);
-    const requestedName = info.displayName;
-    const fallbackName = fallback === null ? null : (this.supportedModelsCache.find((m) => m.value === fallback)?.displayName ?? fallback);
-    const message =
-      fallbackName === null
-        ? t(
-            "Damocles could not reach {0} in time, so \"{1}\" is unavailable and no signed-in model could be selected.",
-            providerName,
-            requestedName,
-          )
-        : t(
-            "Damocles could not reach {0} in time, so \"{1}\" is unavailable and \"{2}\" is being used instead.",
-            providerName,
-            requestedName,
-            fallbackName,
-          );
+    const message = t("Damocles could not reach {0} in time, so \"{1}\" cannot run yet.", providerDisplayName(info), info.displayName);
     const reload = t("Reload Window");
     void (async () => {
       const choice = await this.options.platform.notifications.warn(message, reload);
       if (choice === reload) await this.options.platform.lifecycle.reload();
-    })().catch((err) => log("[PiSession] provider fallback notification failed: %O", err));
+    })().catch((err) => log("[PiSession] unreached-provider notification failed: %O", err));
   }
 
   // ---- messaging ----------------------------------------------------------
@@ -1419,7 +1424,7 @@ export class PiSession implements ChatSession {
     onWithdrawn?: () => void,
     ticket?: SendTicket,
   ): Promise<SendOutcome> {
-    const outgoing = ticket ? [...this.outgoingSends].find((candidate) => candidate === ticket) : this.claimSend(correlationId, userBroadcast, onWithdrawn);
+    const outgoing = ticket ? [...this.outgoingSends].find((candidate) => candidate === ticket) : this.claimSend(correlationId, userBroadcast, onWithdrawn, prompt);
     // A ticket the session no longer lists ended, or went back to the composer, before this call.
     if (!outgoing) return ticket?.signal.aborted ? "withdrawn" : "unsent";
     try {
@@ -1435,7 +1440,7 @@ export class PiSession implements ChatSession {
   }
 
   /** The session's one send, from its first step; null, with the refusal reported, while a send, turn or compaction holds it. */
-  private claimSend(correlationId: string | undefined, userBroadcast: UserBroadcast | undefined, onWithdrawn: (() => void) | undefined): OutgoingPrompt | null {
+  private claimSend(correlationId: string | undefined, userBroadcast: UserBroadcast | undefined, onWithdrawn: (() => void) | undefined, prompt?: ContentInput): OutgoingPrompt | null {
     if (this.processingFlag || this.compacting) {
       this.adapter.emitAlreadyInProgress();
       return null;
@@ -1454,7 +1459,7 @@ export class PiSession implements ChatSession {
         returnText();
         onWithdrawn?.();
       },
-      returnUnsent: () => outgoing.withdraw(() => this.returnUnsentMessage(correlationId, userBroadcast)),
+      returnUnsent: () => outgoing.withdraw(() => this.returnUnsentMessage(correlationId, userBroadcast, prompt)),
     };
     this.outgoingSends.add(outgoing);
     this.currentSend = outgoing;
@@ -1500,40 +1505,71 @@ export class PiSession implements ChatSession {
     return file === undefined || !existsSync(file);
   }
 
-  /** Give a send core refused back to the composer, with why. */
-  private returnPrompt(prompt: ContentInput, userBroadcast: UserBroadcast | undefined, reason: PromptReturnReason, detail?: string): void {
+  /** Give a send core refused back to the composer, with why; `correlationId` names the echo the transcript drops. */
+  private returnPrompt(prompt: ContentInput, userBroadcast: UserBroadcast | undefined, reason: PromptReturnReason, refusal?: Omit<ModelRefusal, "reason">, correlationId?: string): void {
     const content: UserContentBlock[] = userBroadcast
       ? userBroadcast.contentBlocks ?? [{ type: "text", text: userBroadcast.content }]
       : typeof prompt === "string" ? [{ type: "text", text: prompt }] : prompt;
-    this.emit({ type: "promptReturned", content, reason, ...(detail !== undefined ? { detail } : {}) });
+    const detail = refusal?.detail !== undefined ? { detail: refusal.detail } : {};
+    const account = refusal?.account !== undefined ? { account: refusal.account } : {};
+    const echo = correlationId !== undefined ? { correlationId } : {};
+    this.emit({ type: "promptReturned", content, reason, ...detail, ...account, ...echo });
   }
 
-  /** A chat with no model it can run takes the model it shows once that can run (a sign-in since the start), as a pick would. */
-  private async adoptShownModelIfRunnable(): Promise<void> {
-    const piRuntime = PiRuntime.get();
-    const registry = piRuntime.modelLookup;
-    if (this.desiredModel || !registry) return;
-    if (resolvePiModel(this.modelValue, registry, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey()).authed) await this.setModel(this.modelValue);
+  /**
+   * A prompt pi refused before committing its entry goes back to the composer with its echo taken out, and opens settings
+   * at the account its card names, as a send `modelRefusal` refuses does. The card, in the dock or the transcript, says why.
+   */
+  private returnRejectedPrompt(prompt: ContentInput, correlationId: string | undefined, userBroadcast: UserBroadcast | undefined, card: ReturnType<typeof failureCard>): void {
+    if (correlationId) this.adapter.withdrawEcho(correlationId);
+    const account = card.type === "authFailure" ? card.account : undefined;
+    this.returnPrompt(prompt, userBroadcast, "promptRejected", account ? { account } : undefined, correlationId);
+    if (account) this.emit({ type: "openSettingsPanel", section: "accounts", account });
   }
 
-  /** Why the chat may not start a model call now, or null: it has no model it can run, or its plan no longer includes it. */
+  /**
+   * The shown model, once it can run with today's credentials, becomes the one pi runs when pi runs another or none (a
+   * sign-in since the start, another credential of the same vendor), as a pick would. A pick still being applied goes
+   * first and adoption reads the model it left, so the latest pick wins. Null when nothing is to adopt.
+   */
+  private adoptShownModelIfRunnable(after?: Promise<void>): Promise<void> | null {
+    const pending = this.modelSwitch;
+    if (pending && pending !== after) return pending.then(() => this.adoptShownModelIfRunnable(pending) ?? undefined);
+    const target = this.runnableModel(this.modelValue);
+    if (!target || (this.desiredModel && samePiModel(this.desiredModel, target))) return null;
+    return this.setModel(this.modelValue);
+  }
+
+  /**
+   * Why the chat may not start a model call now, or null: the model it shows is checked against today's credentials and
+   * plan at every call, so a key removed or a plan narrowed since it was adopted refuses too. With no model runtime (one
+   * retired at shutdown) nothing can be checked, so every call is refused.
+   */
   private modelRefusal(): ModelRefusal | null {
-    const registry = PiRuntime.exists ? PiRuntime.get().modelLookup : null;
-    const model = this.desiredModel;
-    // A chat model was resolved through the registry, so it exists whenever `desiredModel` is set.
-    if (model) return !registry || modelInPlan(model.provider, model.id, registry) ? null : { reason: "modelUnavailable", detail: this.notInPlanNotice(model) };
-    if (!registry) return { reason: "modelSignInRequired" };
-    const piRuntime = PiRuntime.get();
+    const piRuntime = PiRuntime.exists ? PiRuntime.get() : null;
+    const registry = piRuntime?.modelLookup;
+    if (!piRuntime || !registry) return { reason: "modelSignInRequired" };
     const openai = piRuntime.getOpenAIAuthStatus();
     const resolve = (value: string): ModelResolution => resolvePiModel(value, registry, openai, this.preferOpenAIApiKey());
-    if (!this.supportedModelsCache.some((info) => resolve(info.value).authed)) return { reason: "modelSignInRequired" };
-    return { reason: "modelUnavailable", detail: this.unavailableModelText(this.modelValue, resolve(this.modelValue), openai) };
+    const shown = resolve(this.modelValue);
+    if (shown.authed && shown.model && this.desiredModel && samePiModel(this.desiredModel, shown.model)) return null;
+    const unavailable = this.unavailableModel(this.modelValue, shown, openai);
+    const account = unavailable.signIn ? { account: unavailable.signIn } : {};
+    if (!this.supportedModelsCache.some((info) => resolve(info.value).authed)) return { reason: "modelSignInRequired", ...account };
+    // The factory default is no model the user chose, so a model they can run is picked rather than a sign-in named.
+    if (this.modelIsFactoryDefault) return { reason: "modelUnavailable", detail: unavailable.text };
+    return { reason: "modelUnavailable", detail: unavailable.text, ...account };
   }
 
-  /** A refused model call goes back to the composer and opens where the user fixes it: the chat's model, or Models & accounts. */
-  private refuseForModel(prompt: ContentInput, userBroadcast: UserBroadcast | undefined, refusal: ModelRefusal): void {
-    this.returnPrompt(prompt, userBroadcast, refusal.reason, refusal.detail);
-    this.emit({ type: "openSettingsPanel", section: refusal.reason === "modelSignInRequired" ? "accounts" : "chat" });
+  /** A refused model call goes back to the composer and opens where the user fixes it: a provider's sign-in, Models & accounts, or the chat's model. */
+  private refuseForModel(prompt: ContentInput, userBroadcast: UserBroadcast | undefined, refusal: ModelRefusal, correlationId?: string): void {
+    this.returnPrompt(prompt, userBroadcast, refusal.reason, refusal, correlationId);
+    this.openSettingsAt(refusal);
+  }
+
+  private openSettingsAt(refusal: ModelRefusal): void {
+    if (refusal.account) this.emit({ type: "openSettingsPanel", section: "accounts", account: refusal.account });
+    else this.emit({ type: "openSettingsPanel", section: refusal.reason === "modelSignInRequired" ? "accounts" : "chat" });
   }
 
   private async promptPi(
@@ -1584,13 +1620,13 @@ export class PiSession implements ChatSession {
     // After every wait above; from here on `sendOvertaken` keeps the send on this session.
     if (!this.sendsTo(session, target)) {
       this.emit({ type: "processing", isProcessing: false });
-      this.returnPrompt(prompt, userBroadcast, "conversationChanged");
+      this.returnPrompt(prompt, userBroadcast, "conversationChanged", undefined, correlationId);
       return "unsent";
     }
     const readOnly = this.readOnlyRefusal();
     if (readOnly) {
       this.emit({ type: "error", message: readOnly });
-      this.returnUnsentMessage(correlationId, userBroadcast);
+      this.returnUnsentMessage(correlationId, userBroadcast, prompt);
       return "unsent";
     }
     const text = extractText(prompt);
@@ -1598,14 +1634,15 @@ export class PiSession implements ChatSession {
     // names no prompt, and the next real prompt keeps the index it would have had.
     const isPrompt = !isExtensionCommand(session, text);
     if (isPrompt) {
-      if (!this.desiredModel) {
-        await this.adoptShownModelIfRunnable();
+      const adopting = this.adoptShownModelIfRunnable();
+      if (adopting) {
+        await adopting;
         if (this.sendOvertaken(outgoing, session)) return "withdrawn";
       }
       const refusal = this.modelRefusal();
       if (refusal) {
         this.emit({ type: "processing", isProcessing: false });
-        this.refuseForModel(prompt, userBroadcast, refusal);
+        this.refuseForModel(prompt, userBroadcast, refusal, correlationId);
         return "unsent";
       }
     }
@@ -1625,7 +1662,7 @@ export class PiSession implements ChatSession {
       log("[PiSession] the working-folder note was not delivered: %O", err);
       if (this.sendOvertaken(outgoing, session)) return "withdrawn";
       this.emit({ type: "error", message: t("Damocles could not tell the agent where this chat now works: {0}", err instanceof Error ? err.message : String(err)) });
-      this.returnUnsentMessage(correlationId, userBroadcast);
+      this.returnUnsentMessage(correlationId, userBroadcast, prompt);
       return "unsent";
     }
     // Pre-prompt budget block (US-008): if the session already crossed the hard limit, refuse the next
@@ -1648,7 +1685,7 @@ export class PiSession implements ChatSession {
     // D33: a finish action holds the chat's worktree only while the chat is idle, so the check sits with the one above.
     if (this.worktree.finishing() !== undefined) {
       this.emit({ type: "processing", isProcessing: false });
-      this.returnPrompt(prompt, userBroadcast, "worktreeFinishing");
+      this.returnPrompt(prompt, userBroadcast, "worktreeFinishing", undefined, correlationId);
       return "unsent";
     }
     // A turn run on the committed model means the user went on without the model that asked for sign-in.
@@ -1775,6 +1812,7 @@ export class PiSession implements ChatSession {
               onWithdrawn: () => outgoing.withdraw(() => {
                 if (correlationId && userBroadcast) this.emit({ type: "queueCancelled", messageId: correlationId, returnToInput: true });
               }),
+              onRefused: (returnRefused) => outgoing.withdraw(() => returnRefused(prompt, userBroadcast, correlationId)),
             });
             // A stop or a replacement can land while pi runs the input handlers, and that run delivers nothing more.
             if (this.runStopped() || this.runtime?.session !== session) {
@@ -1816,9 +1854,12 @@ export class PiSession implements ChatSession {
       } else {
         log("[PiSession] prompt failed: %O", err);
         const message = err instanceof Error ? err.message : String(err);
-        outcome = turnOutcomeOfError(message);
-        this.emit({ type: "error", message });
+        const card = failureCard(session.model?.provider, session.model?.id, message);
+        outcome = turnOutcomeOfError(failureText(session.model?.provider, session.model?.id, message, "user"));
+        this.emit(card);
         this.emit({ type: "processing", isProcessing: false });
+        // Nothing stores a prompt pi refused before committing its entry, such as one whose credential went after `modelRefusal`.
+        if (accepted !== "queued" && committed.entry() === null) this.returnRejectedPrompt(prompt, correlationId, userBroadcast, card);
       }
     } finally {
       committed.dispose();
@@ -1846,7 +1887,16 @@ export class PiSession implements ChatSession {
 
   /** pi opened a run on `session` and dropped the restored names that did not register (agent-session.js:1447), so this panel drops them too. */
   private runStarted(session: AgentSession): void {
-    if (this.runtime?.session === session) this.pendingRestoredTools.clear();
+    if (this.runtime?.session !== session) return;
+    this.pendingRestoredTools.clear();
+    this.commitShownModel();
+  }
+
+  /** A shown factory default that a run or a compaction uses is committed, so the panel holds it; every run-opening path checked the model first. */
+  private commitShownModel(): void {
+    if (!this.modelIsFactoryDefault || !this.desiredModel) return;
+    this.modelIsFactoryDefault = false;
+    this.publishModel();
   }
 
   /**
@@ -1944,16 +1994,18 @@ export class PiSession implements ChatSession {
 
   /** A message cancelled or orphaned before its turn started never reached the model, so it goes back
    *  to the composer. */
-  private returnUnsentMessage(correlationId: string | undefined, userBroadcast: UserBroadcast | undefined): void {
+  private returnUnsentMessage(correlationId: string | undefined, userBroadcast: UserBroadcast | undefined, prompt?: ContentInput): void {
     log("[PiSession] message not sent: cancelled or session replaced before its turn started");
     this.emit({ type: "processing", isProcessing: false });
-    if (correlationId && userBroadcast) {
+    // A send core wrote has no broadcast; the plan's fresh start shows its echo from `sessionCleared.pendingMessage`.
+    const shown = userBroadcast ?? (prompt === undefined ? undefined : typeof prompt === "string" ? { content: prompt } : { content: extractText(prompt), contentBlocks: prompt });
+    if (correlationId && shown) {
       this.adapter.withdrawEcho(correlationId);
       this.emit({
         type: "interruptRecovery",
         correlationId,
-        promptContent: userBroadcast.content,
-        ...(userBroadcast.contentBlocks ? { contentBlocks: userBroadcast.contentBlocks } : {}),
+        promptContent: shown.content,
+        ...(shown.contentBlocks ? { contentBlocks: shown.contentBlocks } : {}),
       });
     }
   }
@@ -2099,11 +2151,7 @@ export class PiSession implements ChatSession {
     if (this.afterSettleInputs.length === 0 || !session || this.processingFlag || this.compacting || this.runOf(session)?.settling) return;
     const inputs = this.afterSettleInputs.splice(0);
     const target = this.afterSettleTarget;
-    const prompt: ContentInput = inputs.every((input) => typeof input.content === "string")
-      ? inputs.map((input) => input.text).join("\n\n")
-      : inputs.flatMap((input): UserContentBlock[] => (typeof input.content === "string" ? [{ type: "text", text: input.content }] : input.content));
-    const typed = inputs.map((input) => input.typed ?? input.text).join("\n\n");
-    const broadcast: UserBroadcast = typeof prompt === "string" ? { content: typed } : { content: typed, contentBlocks: prompt };
+    const { prompt, broadcast } = batchSend(inputs);
     for (const { id } of inputs) this.emit({ type: "queueCancelled", messageId: id });
     void this.sendMessage(prompt, target, `corr-${randomUUID()}`, broadcast).catch((err) => log("[PiSession] sending messages queued while pi settled a run failed: %O", err));
   }
@@ -2202,6 +2250,11 @@ export class PiSession implements ChatSession {
       await settled;
       if (this.runtime?.session !== session) return;
     }
+    // A pass on an idle session opens a run, so what it puts back is checked against the model a send would adopt.
+    if (!this.runOf(session)?.streaming && (this.queuedInputs.length > 0 || this.takenSteers?.session === session)) {
+      await this.whenShownModelRuns(session);
+      if (this.runtime?.session !== session) return;
+    }
     const taken = this.takenSteers?.session === session ? this.takenSteers.steering : [];
     this.takenSteers = null;
     if (this.queuedInputs.length === 0 && this.heldNotes(taken).length === 0) return;
@@ -2215,8 +2268,13 @@ export class PiSession implements ChatSession {
     // extension-command check and the skill and template expansion, which would execute or rewrite
     // literal text.
     for (const queued of this.queuedPrompts.requeue(session, followUp)) this.requeueFollowUp(session, queued);
-    for (const note of notes) {
+    for (const [index, note] of notes.entries()) {
       if (this.batchWithdrawn(session, batch)) return;
+      const refusal = this.runOpeningRefusal(session);
+      if (refusal) {
+        this.dropHeldNotes(notes.slice(index), batch.length === 0 ? refusal : null);
+        break;
+      }
       await session
         .sendUserMessage(note, { deliverAs: "steer", expandPromptTemplates: false })
         .catch((err) => log("[PiSession] re-queueing a cancel note failed: %O", err));
@@ -2225,7 +2283,13 @@ export class PiSession implements ChatSession {
     // A run can end while the notes go back, and a prompt made while pi settles it runs inside that settle, unseen by `batchInPi`.
     const settling = this.piSettling(session);
     if (settling) await settling;
+    // No await while a run streams, so a first re-steer reaches pi before `queueInput` returns.
+    const refusal = this.runOf(session)?.streaming ? null : await this.whenShownModelRuns(session);
     if (this.batchWithdrawn(session, batch)) return;
+    if (refusal) {
+      this.giveBackBatch(batch, (prompt, broadcast) => this.refuseForModel(prompt, broadcast, refusal));
+      return;
+    }
     this.batchInPi = batch;
     let dispositioned = false;
     try {
@@ -2240,6 +2304,13 @@ export class PiSession implements ChatSession {
           this.admitSteer(session, batch, disposition);
         },
       }));
+    } catch (err) {
+      if (dispositioned || this.stoppedBatch === batch || this.batchWithdrawn(session, batch)) throw err;
+      log("[PiSession] pi refused a steered batch: %O", err);
+      // pi refused it before committing it, as it refuses a send whose credential went after the check.
+      const card = failureCard(session.model?.provider, session.model?.id, err instanceof Error ? err.message : String(err));
+      this.emit(card);
+      this.giveBackBatch(batch, (prompt, broadcast) => this.returnRejectedPrompt(prompt, undefined, broadcast, card));
     } finally {
       if (this.batchInPi === batch) this.batchInPi = null;
       // pi refused a batch a Stop had left to its verdict, so nothing committed it.
@@ -2247,8 +2318,45 @@ export class PiSession implements ChatSession {
     }
   }
 
+  /** Why a message given to pi on `session` now may not open a run there, or null: one that opens a run is a send of its own. */
+  private runOpeningRefusal(session: AgentSession): ModelRefusal | null {
+    return this.runOf(session)?.streaming ? null : this.modelRefusal();
+  }
+
+  /** `runOpeningRefusal` once a shown model that can run is the one pi runs, adopted first as a send adopts it; never mid-run. */
+  private async whenShownModelRuns(session: AgentSession): Promise<ModelRefusal | null> {
+    if (this.runOf(session)?.streaming) return null;
+    const adopting = this.adoptShownModelIfRunnable();
+    if (adopting) await adopting;
+    return this.runOpeningRefusal(session);
+  }
+
+  /** The head `batch` of the queue leaves it and goes back to the composer as one message, `returnRefused` saying why. */
+  private giveBackBatch(batch: readonly QueuedInput[], returnRefused: ReturnRefused): void {
+    this.queuedInputs.splice(0, batch.length);
+    this.steeredCount = null;
+    for (const { id } of batch) this.emit({ type: "queueCancelled", messageId: id });
+    const { prompt, broadcast } = batchSend(batch);
+    returnRefused(prompt, broadcast, undefined);
+  }
+
+  /** Held cancel notes a refused run never delivers; their echo is corrected, and settings open at `refusal`'s fix unless something else opens them. */
+  private dropHeldNotes(notes: readonly string[], refusal: ModelRefusal | null): void {
+    for (const text of notes) {
+      const index = this.injectedNotes.findIndex((note) => note.text === text);
+      const [note] = index === -1 ? [] : this.injectedNotes.splice(index, 1);
+      if (note?.echoed) this.emit({ type: "notification", message: t("Your cancel note was not sent: this chat cannot run its model now."), notificationType: "warning" });
+    }
+    if (refusal) this.openSettingsAt(refusal);
+  }
+
   /** Puts one follow-up back with the content it was queued with; one a Stop overtook in pi's hands is sent and stopped, or returned (`queued`). */
   private requeueFollowUp(session: AgentSession, queued: RequeuedFollowUp): void {
+    const refusal = this.runOpeningRefusal(session);
+    if (refusal) {
+      queued.refuse((prompt, broadcast, correlationId) => this.refuseForModel(prompt, broadcast, refusal, correlationId));
+      return;
+    }
     let dispositioned = false;
     void this.pinned(() => session
       .prompt(queued.text, {
@@ -2292,7 +2400,13 @@ export class PiSession implements ChatSession {
         // pi refused it outright, so nothing committed it.
         const stopped = queued.stopped();
         queued.dispatched();
-        if (stopped) queued.giveBack();
+        if (stopped) {
+          queued.giveBack();
+          return;
+        }
+        const card = failureCard(session.model?.provider, session.model?.id, err instanceof Error ? err.message : String(err));
+        this.emit(card);
+        queued.refuse((prompt, broadcast, correlationId) => this.returnRejectedPrompt(prompt, correlationId, broadcast, card));
       });
   }
 
@@ -2518,7 +2632,8 @@ export class PiSession implements ChatSession {
    * echo through `subagentSteered` and `teamAgentUserMessage`, so only this context emits `userMessage`.
    *
    * A note accepted into the running run is moved ahead of a held chip batch (`resteerQueuedInputs`).
-   * One accepted with no run in progress starts a run, opened as a turn here since no `sendMessage` did.
+   * One accepted with no run in progress starts a run, opened as a turn here since no `sendMessage` did, so
+   * it is held to the chat's model as a send is (`whenShownModelRuns`).
    * A note for a run that a budget stop or an ESC has stopped is never left queued, since that run
    * delivers nothing more and the next one must not receive it; the user is told instead of shown an echo.
    */
@@ -2530,47 +2645,60 @@ export class PiSession implements ChatSession {
         this.emit({ type: "notification", message: refused, notificationType: "warning" });
         return;
       }
-      const promptIndex = this.currentPromptIndex;
-      // Listed before pi can deliver it, so that delivery's user message_end is never read as the chip batch.
-      const note: ListedNote = { text, echoed: false };
-      this.injectedNotes.push(note);
-      const unlist = (): void => {
-        const listed = this.injectedNotes.indexOf(note);
-        if (listed !== -1) this.injectedNotes.splice(listed, 1);
-      };
-      let accepted = false;
-      const onPreflight = (disposition: PromptDisposition): void => {
-        accepted = true;
-        // An input handler consumed it, so pi never received it and no echo is owed.
-        if (disposition === "handled") {
-          unlist();
-          return;
-        }
-        const startsRun = disposition === "started";
-        const target = session();
-        if (startsRun && target) this.runStarted(target);
-        // A stop can land while pi runs its input handlers, after the queue this note just joined was cleared.
-        const withdrawn = startsRun ? null : this.noteRefusal(target);
-        if (withdrawn) {
-          target?.clearQueue();
-          unlist();
-          this.emit({ type: "notification", message: withdrawn, notificationType: "warning" });
-          return;
-        }
-        note.echoed = true;
-        const echo: UserEcho = { message: { type: "userMessage", content: text, correlationId: randomUUID(), promptIndex, isInjected: true }, text };
-        if (startsRun) {
-          this.adapter.beginTurn(undefined, echo);
-          return;
-        }
-        this.adapter.echoUser(echo);
-        if (target && target === this.runtime?.session) this.resteerQueuedInputs();
-      };
-      void deliver(text, onPreflight).catch((err) => {
-        if (!accepted) unlist();
-        log("[PiSession] cancel note delivery to the panel session failed: %O", err);
-      });
+      const bound = session();
+      if (!bound || bound !== this.runtime?.session || this.runOf(bound)?.streaming) {
+        this.deliverNote(text, session, deliver);
+        return;
+      }
+      void this.whenShownModelRuns(bound).then((modelRefused) => {
+        if (!modelRefused) return this.deliverNote(text, session, deliver);
+        this.emit({ type: "notification", message: t("Your cancel note was not sent: this chat cannot run its model now."), notificationType: "warning" });
+        this.openSettingsAt(modelRefused);
+      }).catch((err) => log("[PiSession] cancel note delivery to the panel session failed: %O", err));
     };
+  }
+
+  private deliverNote(text: string, session: () => AgentSession | undefined, deliver: ReturnType<typeof sessionNoteDelivery>): void {
+    const promptIndex = this.currentPromptIndex;
+    // Listed before pi can deliver it, so that delivery's user message_end is never read as the chip batch.
+    const note: ListedNote = { text, echoed: false };
+    this.injectedNotes.push(note);
+    const unlist = (): void => {
+      const listed = this.injectedNotes.indexOf(note);
+      if (listed !== -1) this.injectedNotes.splice(listed, 1);
+    };
+    let accepted = false;
+    const onPreflight = (disposition: PromptDisposition): void => {
+      accepted = true;
+      // An input handler consumed it, so pi never received it and no echo is owed.
+      if (disposition === "handled") {
+        unlist();
+        return;
+      }
+      const startsRun = disposition === "started";
+      const target = session();
+      if (startsRun && target) this.runStarted(target);
+      // A stop can land while pi runs its input handlers, after the queue this note just joined was cleared.
+      const withdrawn = startsRun ? null : this.noteRefusal(target);
+      if (withdrawn) {
+        target?.clearQueue();
+        unlist();
+        this.emit({ type: "notification", message: withdrawn, notificationType: "warning" });
+        return;
+      }
+      note.echoed = true;
+      const echo: UserEcho = { message: { type: "userMessage", content: text, correlationId: randomUUID(), promptIndex, isInjected: true }, text };
+      if (startsRun) {
+        this.adapter.beginTurn(undefined, echo);
+        return;
+      }
+      this.adapter.echoUser(echo);
+      if (target && target === this.runtime?.session) this.resteerQueuedInputs();
+    };
+    void deliver(text, onPreflight).catch((err) => {
+      if (!accepted) unlist();
+      log("[PiSession] cancel note delivery to the panel session failed: %O", err);
+    });
   }
 
   /** Why a cancel note for `target` can no longer reach the agent, or null when it can. */
@@ -2732,8 +2860,13 @@ export class PiSession implements ChatSession {
         this.emit({ type: "error", message: readOnly });
         return;
       }
-      if (!this.desiredModel) {
-        await this.adoptShownModelIfRunnable();
+      const adopting = this.adoptShownModelIfRunnable();
+      if (adopting) {
+        await adopting;
+        if (beforePi.signal.aborted) {
+          if (this.runtime?.session === session) this.emit({ type: "compactionAborted", trigger: "manual", willRetry: false, timestamp: Date.now() });
+          return;
+        }
         if (this.runtime?.session !== session) {
           this.returnPrompt(instructions ? `/compact ${instructions}` : "/compact", undefined, "conversationChanged");
           return;
@@ -2745,6 +2878,7 @@ export class PiSession implements ChatSession {
         return;
       }
       onAccepted?.();
+      this.commitShownModel();
       const trimmed = instructions?.trim();
       // From here a Stop aborts the compaction through pi (`abort()` runs `abortCompaction()`, agent-session.js:1976).
       this.compactionBeforePi = null;
@@ -2761,7 +2895,7 @@ export class PiSession implements ChatSession {
           this.emit({ type: "notification", message: t("The conversation is too short to compact yet."), notificationType: "info" });
         } else {
           log("[PiSession] compact failed: %O", err);
-          this.emit({ type: "error", message });
+          this.emit(failureCard(session.model?.provider, session.model?.id, message));
         }
       }
     } finally {
@@ -3263,6 +3397,7 @@ export class PiSession implements ChatSession {
     // pi appends a model_change entry even for the model it already runs, which it holds while the chat has none it can run.
     const piRuns = model === this.modelValue && session.model?.provider === target.provider && session.model.id === target.id;
     if (piRuns && this.desiredModel) {
+      this.modelIsFactoryDefault = false;
       this.publishModel();
       return;
     }
@@ -3278,6 +3413,7 @@ export class PiSession implements ChatSession {
     // A replacement session was built from the previous `desiredModel`, so the switch is applied to it too.
     if (adopted && this.runtime?.session !== session) return this.switchModel(model, epoch);
     if (adopted) {
+      this.modelIsFactoryDefault = false;
       this.modelValue = model;
       this.desiredModel = target;
       // pi's setModel applied its own default level for the model, recorded in the session file.
@@ -3297,19 +3433,24 @@ export class PiSession implements ChatSession {
       return;
     }
     const known = resolution.notInPlan || (!resolution.authRequired && (resolution.model || this.getModelInfo(model)?.piProvider));
-    this.notifyModelRefused(this.unavailableModelText(model, resolution, openaiAuth), known ? "warn" : "error");
+    this.notifyModelRefused(this.unavailableModel(model, resolution, openaiAuth).text, known ? "warn" : "error");
   }
 
-  /** Why a model value cannot run: outside the plan, its provider signed out, or no model pi serves. */
-  private unavailableModelText(model: string, resolution: ModelResolution, openaiAuth: OpenAIAuthStatus): string {
-    if (resolution.notInPlan && resolution.model) return this.notInPlanNotice(resolution.model);
+  /** Why a model value cannot run: outside the plan, its provider signed out (fixed by that sign-in), or no model pi serves. */
+  private unavailableModel(model: string, resolution: ModelResolution, openaiAuth: OpenAIAuthStatus): UnavailableModel {
+    if (resolution.notInPlan && resolution.model) return { text: this.notInPlanNotice(resolution.model) };
     const info = this.getModelInfo(model);
-    // A catalog model with a known provider is only missing its credential (StepFun pre-key, DeepSeek pre-key), as is a GPT model with no OpenAI credential.
-    const openaiSignedOut = resolution.authRequired && !(openaiAuth.chatgpt || openaiAuth.codex || openaiAuth.apiKey);
-    if (openaiSignedOut || (!resolution.authRequired && (resolution.model || info?.piProvider))) {
-      return t("Sign in to {0} to use {1}", providerDisplayName(info), this.modelDisplayName(model));
+    if (this.onlySignedOut(model, resolution, openaiAuth)) {
+      const account = info ? accountOfModel(info) : accountOfProvider(resolution.model?.provider);
+      return { text: t("Sign in to {0} to use {1}", providerDisplayName(info), this.modelDisplayName(model)), ...(account ? { signIn: account } : {}) };
     }
-    return t("Model {0} is unavailable on the pi harness", this.modelDisplayName(model));
+    return { text: t("Model {0} is unavailable on the pi harness", this.modelDisplayName(model)) };
+  }
+
+  /** Whether a model value that cannot run lacks only its credential: a catalog model of a known provider (StepFun or DeepSeek pre-key), or a GPT model with no OpenAI credential. */
+  private onlySignedOut(model: string, resolution: ModelResolution, openaiAuth: OpenAIAuthStatus): boolean {
+    if (resolution.authRequired) return !(openaiAuth.chatgpt || openaiAuth.codex || openaiAuth.apiKey);
+    return resolution.model !== undefined || this.getModelInfo(model)?.piProvider !== undefined;
   }
 
   /** The notice for a model outside the user's plan, in the wording every refusal of one uses. */
@@ -3333,9 +3474,9 @@ export class PiSession implements ChatSession {
     return info ? modelLabel(info) : model;
   }
 
-  /** The only report of the chat's model to the panel, which shows no model this session did not commit. */
+  /** The only report of the chat's model to the panel, which shows it and holds it only once committed, so an uncommitted factory default stays one for the panel's next session. */
   private publishModel(): void {
-    if (!this._disposed && this.modelValue) this.options.onModelChange?.(this.modelValue, this.contextWindowForCurrentModel());
+    if (!this._disposed && this.modelValue) this.options.onModelChange?.(this.modelValue, this.contextWindowForCurrentModel(), !this.modelIsFactoryDefault);
   }
 
   async getSupportedModels(): Promise<ModelInfo[]> {
@@ -4413,7 +4554,7 @@ export class PiSession implements ChatSession {
       worktreeIsolation: () => this.worktreeIsolation(),
       shellCancelFor: (agentId) => this.shellCancel.forContext(this.noteDeliveryForSubagent(agentId)),
       postMessage: (m) => this.emit(m),
-      getParentSystemPrompt: () => this.runtime?.session.systemPrompt ?? "",
+      getParentSystemPrompt: () => this.parentPromptForAgents(),
       getParentSessionId: () => this.currentSessionId ?? this.memorySessionId,
       subagentStoreDir: () => subagentsDir(piSessionDirOf(this.cwd, this.liveSessionId()), this.liveSessionId()),
       recordInvocation: (data) => this.recordAgentInvocation(data),
@@ -4438,6 +4579,13 @@ export class PiSession implements ChatSession {
       onRunsChanged: () => this.publishSessionState(),
       getHooksDispatch: () => folder.getHooksDispatchDeps(),
     };
+  }
+
+  /** The prompt an append-mode agent inherits: the transcript's, which outlives the run that set it, unlike `session.systemPrompt`. */
+  private parentPromptForAgents(): string {
+    const session = this.runtime?.session;
+    const piAi = loadedPiAi();
+    return session && piAi ? inheritedParentPrompt(session.messages, piAi) : "";
   }
 
   /** The live parent session's id; agent data is filed under it. */
@@ -4709,11 +4857,17 @@ export class PiSession implements ChatSession {
     //    Its effort comes with it, or pi falls back to whatever default it last persisted, which varies
     //    by machine. A template's own `thinking:` still wins. The spawning model never picks the level.
     //    Never spawned without a model, since pi would then choose one itself.
-    const inherited = this.desiredModel;
-    if (!inherited) return { error: `Agent "${agentConfig.name}" cannot run: this chat has no model it can run. Pick a model for the chat, or set \`model:\` in the agent's template.` };
-    if (!modelInPlan(inherited.provider, inherited.id, registry)) {
-      return { error: `Agent "${agentConfig.name}" cannot run: ${notInPlanClause(inherited)}, this chat's model. Pick another model for the chat.` };
+    //    Checked against today's credentials, as the chat's own sends are.
+    const shown = resolvePiModel(this.modelValue, registry, openai, preferApiKey);
+    if (shown.notInPlan && shown.model) {
+      return { error: `Agent "${agentConfig.name}" cannot run: ${notInPlanClause(shown.model)}, this chat's model. Pick another model for the chat.` };
     }
+    const inherited = shown.authed ? shown.model : undefined;
+    if (!inherited && this.onlySignedOut(this.modelValue, shown, openai)) {
+      const provider = providerDisplayName(this.getModelInfo(this.modelValue));
+      return { error: `Agent "${agentConfig.name}" cannot run: this chat's model, ${this.modelLabelOf(this.modelValue)}, is not signed in. Sign in to ${provider}, or pick another model for the chat.` };
+    }
+    if (!inherited) return { error: `Agent "${agentConfig.name}" cannot run: this chat has no model it can run. Pick a model for the chat, or set \`model:\` in the agent's template.` };
     const err = scopeError(inherited);
     if (err) return { error: err };
     const thinkingLevel = agentConfig.thinking ?? effortToThinkingLevel(this.options.resolveThinking(this.modelValue));
@@ -5351,13 +5505,13 @@ export class PiSession implements ChatSession {
       this.emit({ type: "btwError", btwId, message: t("Start a conversation first") });
       return;
     }
-    const resolution = resolvePiModel(this.modelValue, modelRuntime, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
-    if (resolution.notInPlan && resolution.model) {
-      this.emit({ type: "btwError", btwId, message: this.notInPlanNotice(resolution.model) });
-      return;
-    }
+    const openaiAuth = piRuntime.getOpenAIAuthStatus();
+    const resolution = resolvePiModel(this.modelValue, modelRuntime, openaiAuth, this.preferOpenAIApiKey());
     if (!resolution.model || !resolution.authed) {
-      this.emit({ type: "btwError", btwId, message: t("Model {0} is unavailable for btw", this.modelLabelOf(this.modelValue)) });
+      // A send's refusal text, and the account whose sign-in would let the model run.
+      const unavailable = this.unavailableModel(this.modelValue, resolution, openaiAuth);
+      const authFailure = unavailable.signIn ? { authFailure: { account: unavailable.signIn, reason: "missing" as const } } : {};
+      this.emit({ type: "btwError", btwId, message: unavailable.text, ...authFailure });
       return;
     }
 
@@ -5390,10 +5544,21 @@ export class PiSession implements ChatSession {
     this.btwSessions.set(btwId, { session, ac });
 
     let streamed = "";
+    let failedCall: string | undefined;
+    const model = resolution.model;
+    const failure = (message: string): ExtensionToWebviewMessage => {
+      const card = failureCard(model.provider, model.id, message);
+      return card.type === "authFailure"
+        ? { type: "btwError", btwId, message, authFailure: { account: card.account, reason: card.reason } }
+        : { type: "btwError", btwId, message: card.message };
+    };
     const attribution = { cwd: this.cwd, ...(liveSession ? { sessionId: liveSession.sessionId } : {}) };
     const unsub = session.subscribe((event) => {
       // The aside runs on an in-memory session, so the ledger is the only record of what it billed.
-      if (event.type === "message_end" && event.message.role === "assistant") appendSubCallUsage(event.message, "btw", attribution);
+      if (event.type === "message_end" && event.message.role === "assistant") {
+        appendSubCallUsage(event.message, "btw", attribution);
+        failedCall = event.message.stopReason === "error" ? failedCallError(event.message.errorMessage) : undefined;
+      }
       if (event.type === "message_start" && event.message.role === "assistant") streamed = "";
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
         streamed += event.assistantMessageEvent.delta;
@@ -5406,10 +5571,11 @@ export class PiSession implements ChatSession {
       if (!ac.signal.aborted) {
         const finalText = (streamed.trim() || session.getLastAssistantText() || "").trim();
         if (finalText) this.emit({ type: "btwComplete", btwId, text: finalText });
+        else if (failedCall !== undefined) this.emit(failure(failedCall));
         else this.emit({ type: "btwError", btwId, message: t("No response received") });
       }
     } catch (err) {
-      if (!ac.signal.aborted) this.emit({ type: "btwError", btwId, message: err instanceof Error ? err.message : String(err) });
+      if (!ac.signal.aborted) this.emit(failure(err instanceof Error ? err.message : String(err)));
     } finally {
       unsub();
       this.btwSessions.delete(btwId);

@@ -25,7 +25,7 @@ describe("a resumed conversation's recorded model and effort become the panel's"
     const manager = new SessionManager({
       getMcpConfigLoaded: () => true,
       getEnabledMcpServers: () => ({ userUnion: {}, userVisible: [], folder: {} }),
-      getActiveModelForPanel: () => 'claude-opus-5-5',
+      getConfiguredModelForPanel: () => 'claude-opus-5-5',
       getPreferOpenAIApiKey: () => false,
       resolveThinkingForPanel: () => ({ thinkingDisabled: false, effort: null }),
       restoreRecordedSelection: restore,
@@ -53,7 +53,7 @@ describe("a resumed conversation's recorded model and effort become the panel's"
     expect(posted).toEqual([]);
     expect(settings.resolveThinkingEffort('panel-1', 'claude-sonnet-5-5', platform.settings, undefined)).toBe('xhigh');
 
-    settings.adoptSessionModel({} as PanelHost, 'panel-1', FOLDER, 'claude-sonnet-5-5', 1_000_000);
+    settings.adoptSessionModel({} as PanelHost, 'panel-1', FOLDER, 'claude-sonnet-5-5', 1_000_000, true);
 
     expect(settings.getActiveModelForPanel('panel-1')).toBe('claude-sonnet-5-5');
     expect(settings.getActiveModelForPanel('panel-2')).toBe('claude-opus-5-5');

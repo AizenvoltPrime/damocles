@@ -18,7 +18,7 @@ import { joinResultText } from '../pi-session/tool-result-text';
 import { mapPiToolName, normalizeToolInput } from '../pi-session/tool-normalization';
 import { extractImages } from '../pi-session/branch-text';
 import { ToolOutputCoalescer } from '../pi-session/tool-output-coalescer';
-import { NestedCallFailures, failedCallError } from '../pi-session/nested-call-failures';
+import { NestedCallFailures, nestedCallError, nestedRunError } from '../pi-session/nested-call-failures';
 import { abandonReasonOf } from '../pi-session/abandoned-tool-calls';
 import { turnStoppedToolCallIds, windDownRecorded, type TurnStoppedData } from '../pi-session/session-store/turn-stopped';
 import { DAMOCLES_TEAM_DELIVERED_ENTRY, DAMOCLES_TURN_STOPPED_ENTRY } from '../pi-session/session-store/constants';
@@ -98,8 +98,8 @@ interface SessionEventCallbacks {
   call: CurrentCall;
   /** The session's branch, whose turn-stopped record tells an abort's wind-down error from a failure (`windDownRecorded`). */
   branch: () => ReturnType<AgentSession['sessionManager']['getBranch']>;
-  /** Each model call's end: its error, if it failed, the card id of what it rendered, and whether it was an abort's wind-down. */
-  onCallEnd: (error: string | undefined, shownId: string | undefined, windDown: boolean) => void;
+  /** Each model call's end: its message, if it failed, the card id of what it rendered, and whether it was an abort's wind-down. */
+  onCallEnd: (failed: AssistantMessage | undefined, shownId: string | undefined, windDown: boolean) => void;
 }
 
 /** Tools whose whole point is that the agent stops here, so the engine ends the turn on their result. */
@@ -336,9 +336,9 @@ export class AgentRunner {
         onUsage: publishUsage,
         call,
         branch: () => session.sessionManager.getBranch(),
-        onCallEnd: (error, shownId, windDown) => {
-          callError = error;
-          if (error !== undefined && !windDown) failures.hold(error, shownId);
+        onCallEnd: (failed, shownId, windDown) => {
+          callError = failed && nestedCallError(failed, 'model');
+          if (failed && !windDown) failures.hold(nestedCallError(failed, 'user'), shownId);
         },
       });
       // Team tools change review state, summaries and cursors inside a call, so each of these may change the checkpoint.
@@ -544,7 +544,7 @@ export class AgentRunner {
       if (config.abortSignal.aborted) status = 'cancelled';
     } catch (err) {
       if (config.abortSignal.aborted) status = 'cancelled';
-      else failure = { kind: 'run', message: err instanceof Error ? err.message : String(err) };
+      else failure = { kind: 'run', message: nestedRunError(session, err) };
     } finally {
       released = true;
       waitResolve = null;
@@ -706,7 +706,7 @@ export class AgentRunner {
     if (abandoned === 'stopped' && cb.call.batch) this.resealSkipped(cb.call.batch, config);
     const sealed = this.emitAssistant(message.content, config, cb, messageId, failed, abandoned);
     cb.call.batch = sealed ? { messageId, content: message.content, answered: new Set(), unexecuted: new Set() } : null;
-    cb.onCallEnd(failed ? failedCallError(message.errorMessage) : undefined, sealed || cb.call.rendered ? messageId : undefined, windDown);
+    cb.onCallEnd(failed ? message : undefined, sealed || cb.call.rendered ? messageId : undefined, windDown);
   }
 
   /** Stream text/thinking deltas into the agent card via the existing `teamAgentStreamDelta` message. */

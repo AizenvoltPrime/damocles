@@ -17,6 +17,7 @@ import { dispatchToolCall, type DispatchDeps } from './hooks/dispatch';
 import type { HookCommon } from './hooks/payload';
 import { registerTurnEndImagePruning, registerAgentStartImageReconcile } from './context-image-pruning';
 import { registerStoppedToolResultMarker, registerWindDownErrorRecord } from './stopped-tool-result';
+import { registerModelSwitchPromptFold } from './model-switch-prompt';
 import { createToolSearchTool } from './tools/tool-search-tool';
 
 /**
@@ -106,13 +107,15 @@ export function createDamoclesExtensionFactory(
     // model's published caps (user attachments are exempt, so the totals can still exceed them). Both
     // halves register here rather than in the panel-routed handlers below so that pruning survives a
     // session whose panel entry is already unregistered. This factory serves only the main runtime;
-    // nested sessions register the same pair themselves (`subagents/subagent-extension-factory.ts:203`
-    // and `pi-session.ts:2545`), so deleting either of those leaves those sessions unpruned.
+    // nested sessions register the same pair themselves (`createSubagentExtensionFactory` and the `/btw`
+    // session's factory in `PiSession.sendBtw`), so deleting either of those leaves those sessions unpruned.
     registerTurnEndImagePruning(pi);
     registerAgentStartImageReconcile(pi);
     // Nested sessions register both in `subagents/subagent-extension-factory.ts`.
     registerStoppedToolResultMarker(pi);
     registerWindDownErrorRecord(pi);
+    // Only the main chat's transcript carries `MODEL_SECTION`; an agent inherits the parent's prompt without it (`inheritedParentPrompt`).
+    registerModelSwitchPromptFold(pi);
 
     // The always-active ToolSearch tool: the sole path that activates this session's deferred tools
     // (browser, compass, web, MCP). Registered here rather than in `buildCustomTools` because

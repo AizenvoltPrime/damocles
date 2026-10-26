@@ -1,5 +1,7 @@
 import type { ImageContent } from '@earendil-works/pi-ai';
 import type { AgentSession, AgentSessionEvent, PromptOptions } from '@earendil-works/pi-coding-agent';
+import type { UserBroadcast } from '../chat-session';
+import type { ContentInput } from '../session-types';
 import { piMessageText } from './branch-text';
 
 /** How pi dispatched an accepted `prompt()`: `started` opens a run, `queued` joined the running one, `handled` ran nothing. */
@@ -66,10 +68,15 @@ function whenCommitted(session: AgentSession, message: unknown, onCommitted: (en
   });
 }
 
+/** Gives a prompt back to the composer with why it was refused, as a send's refusal does. */
+export type ReturnRefused = (prompt: ContentInput, userBroadcast: UserBroadcast | undefined, correlationId: string | undefined) => void;
+
 export interface QueuedPromptHandlers {
   onCommitted: (entry: PromptEntry) => void;
   /** pi's queue was dropped before pi delivered the prompt, so it never commits. */
   onWithdrawn: () => void;
+  /** Its re-queue was refused before pi committed it, and `returnRefused` says why. */
+  onRefused: (returnRefused: ReturnRefused) => void;
 }
 
 /** A follow-up to put back after `clearQueue()`, with the content it was queued with. */
@@ -88,6 +95,8 @@ export interface RequeuedFollowUp {
   release: () => (entry: PromptEntry) => void;
   /** Stops tracking the prompt and returns it to the composer, unless it already went back. */
   giveBack: () => void;
+  /** As `giveBack`, with why the re-queue was refused. */
+  refuse: (returnRefused: ReturnRefused) => void;
 }
 
 /** One prompt `add` recorded, as pi queued it. */
@@ -155,7 +164,7 @@ export function queuedPromptEntries(): QueuedPromptEntries {
         const index = unmatched.findIndex((queued) => queued.text === text);
         const queued = index === -1 ? undefined : unmatched.splice(index, 1)[0];
         if (!queued) {
-          return { text, images: [], withdrawn: () => false, stopped: () => false, dispatched: () => {}, release: () => () => {}, giveBack: () => {} };
+          return { text, images: [], withdrawn: () => false, stopped: () => false, dispatched: () => {}, release: () => () => {}, giveBack: () => {}, refuse: () => {} };
         }
         queued.requeuing = true;
         queued.stopped = false;
@@ -172,6 +181,9 @@ export function queuedPromptEntries(): QueuedPromptEntries {
           },
           giveBack: () => {
             if (untrack(queued)) queued.onWithdrawn();
+          },
+          refuse: (returnRefused) => {
+            if (untrack(queued)) queued.onRefused(returnRefused);
           },
         };
       });

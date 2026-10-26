@@ -47,6 +47,18 @@ function dispatch(msg: ExtensionToWebviewMessage, ctx: HandlerContext, registry 
   handler(msg, ctx);
 }
 
+describe('a replayed credential refusal', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('keeps the account and reason the live card named, with the provider text', () => {
+    const raw = '401 {"error":{"message":"Authentication Fails","type":"authentication_error"}}';
+    dispatch({ type: 'errorReplay', content: raw, authFailure: { account: 'deepseek', reason: 'rejected' } }, context());
+    useStreamingStore().flushReplayQueue();
+
+    expect(useStreamingStore().messages.at(-1)).toMatchObject({ role: 'error', content: raw, isReplay: true, authFailure: { account: 'deepseek', reason: 'rejected' } });
+  });
+});
+
 describe('a replayed steer chip', () => {
   beforeEach(() => setActivePinia(createPinia()));
 

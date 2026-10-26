@@ -85,6 +85,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
       ctx.stores.streamingStore.queueReplayMessage(buildMessage({
         role: "error",
         content: msg.content,
+        ...(msg.authFailure ? { authFailure: msg.authFailure } : {}),
         timestamp: Date.now(),
         isReplay: true,
       }));

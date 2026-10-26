@@ -470,6 +470,40 @@ describe('loadPiSessionHistory — failed model calls', () => {
 
     expect(posts.filter((p) => p.type === 'errorReplay')).toEqual([{ type: 'errorReplay', content: overflow }]);
   });
+
+  // The live view showed these as the account's card (`PiStreamAdapter.showPendingFailure`), from the same classifier.
+  const rejectedKey = '401 {"error":{"message":"Authentication Fails, Your api key: ****0000 is invalid","type":"authentication_error"}}';
+  it.each([
+    ['deepseek', rejectedKey, { account: 'deepseek', reason: 'rejected' }],
+    ['anthropic', '401 authentication_error: OAuth token has expired', { account: 'anthropic', reason: 'rejected' }],
+    ['openai-codex', rejectedKey, { account: 'openai', reason: 'rejected' }],
+    ['xai', 'xai API error (402): personal-team-blocked:spending-limit', { account: 'xai', reason: 'noApiAccess' }],
+    ['deepseek', 'Provider is not configured: deepseek', { account: 'deepseek', reason: 'missing' }],
+    ['google', rejectedKey, undefined],
+    ['deepseek', 'deepseek API error (402): Insufficient Balance', undefined],
+  ])('replays a %s call that failed with %j as the card the live view showed, keeping the provider text', async (provider, errorMessage, authFailure) => {
+    hoisted.branch = [
+      userMsg('u1', 'hi'),
+      { id: 'a1', type: 'message', message: { role: 'assistant', provider, model: 'm', content: [], stopReason: 'error', errorMessage } } as unknown as SessionEntry,
+    ];
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-auth', (m) => posts.push(m));
+
+    expect(posts.filter((p) => p.type === 'errorReplay')).toEqual([{ type: 'errorReplay', content: errorMessage, ...(authFailure ? { authFailure } : {}) }]);
+  });
+
+  it('replays a provider with no Accounts row that had no credential as the live card\'s text naming it and the model, never pi\'s', async () => {
+    hoisted.branch = [
+      userMsg('u1', 'hi'),
+      { id: 'a1', type: 'message', message: { role: 'assistant', provider: 'cerebras', model: 'gpt-oss-120b', content: [], stopReason: 'error', errorMessage: 'Provider is not configured: cerebras' } } as unknown as SessionEntry,
+    ];
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-auth', (m) => posts.push(m));
+
+    expect(posts.filter((p) => p.type === 'errorReplay')).toEqual([
+      { type: 'errorReplay', content: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.' },
+    ]);
+  });
 });
 
 describe('reconstructMessages — mid-conversation system message', () => {

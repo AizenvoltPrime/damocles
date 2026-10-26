@@ -7,6 +7,8 @@ const props = defineProps<{
   title: string;
   /** A short chip beside the title, e.g. a refusal category. */
   chip?: string | undefined;
+  /** The title's element id, for a control inside the notice to point at. */
+  titleId?: string | undefined;
 }>();
 
 const toneVar = computed(() => `var(--d-${props.tone})`);
@@ -33,7 +35,10 @@ const toneTextVar = computed(() => `var(--d-${props.tone}-text)`);
       </span>
       <div class="flex min-w-0 flex-1 flex-col gap-0.5 pt-0.5">
         <div class="flex min-w-0 flex-wrap items-center gap-2">
-          <span class="text-13 font-semibold text-(--d-text)">{{ title }}</span>
+          <span
+            :id="titleId"
+            class="text-13 font-semibold text-(--d-text)"
+          >{{ title }}</span>
           <span
             v-if="chip"
             class="rounded-full px-2 py-px text-11 font-medium"

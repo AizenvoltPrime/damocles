@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -8,6 +8,7 @@ import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { BUDGET_STOP_HOOK, installTurnDecider } from '../finish-turn';
 import { registerConfiguredHooks } from '../hooks';
+import { PiRuntime } from '../pi-runtime';
 import { workingFolderNote, type PiSession } from '../pi-session';
 import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_INTERRUPTION_NOTICE, DAMOCLES_MID_STREAM_ENTRY } from '../session-store/constants';
 import { SUBAGENT_RESULTS_CUSTOM_TYPE } from '../subagents/background-results';
@@ -1013,5 +1014,26 @@ describe('the mid-run queue against pi', () => {
       { type: 'userMessageIdAssigned', correlationId: 'c1', sdkMessageId: ids[0] },
       { type: 'userMessageIdAssigned', correlationId: 'c2', sdkMessageId: ids[1] },
     ]);
+  });
+
+  // Guards that the fixture's seated PiRuntime leaves the model check on: pi's own auth refusal would return `promptRejected`.
+  it('refuses a send once the model pi is seated on has lost its credential, before pi sees it', async () => {
+    // pi also reads Anthropic credentials from these variables, which would keep the model signed in.
+    for (const name of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_TOKEN']) vi.stubEnv(name, undefined);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const emitted: ExtensionToWebviewMessage[] = [];
+    const panel = panelSession(emitted);
+    const { session, contexts } = await boot(blockingShell().definition, [fauxAssistantMessage('Unused.')]);
+    bindPanel(panel, session);
+    readyToSend(panel);
+    await PiRuntime.get().modelRuntime!.removeRuntimeApiKey('anthropic');
+
+    expect(await panel.sendMessage('first', undefined, 'c1', { content: 'first' })).toBe('unsent');
+
+    expect(emitted.filter((m) => m.type === 'promptReturned')).toEqual([
+      { type: 'promptReturned', content: [{ type: 'text', text: 'first' }], reason: 'modelSignInRequired', account: 'anthropic', correlationId: 'c1' },
+    ]);
+    expect(contexts).toEqual([]);
+    expect(userTexts(session)).toEqual([]);
   });
 });

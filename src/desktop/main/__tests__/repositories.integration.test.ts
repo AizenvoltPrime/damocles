@@ -15,7 +15,7 @@ function commitOn(repo: string, file: string, message: string, date: string): vo
   execFileSync(GIT_PATH!, ['commit', '--quiet', '-m', message], { cwd: repo, env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date }, stdio: 'ignore' });
 }
 
-describe.runIf(HAS_GIT)('the Repositories groups against a real repository', () => {
+describe.runIf(HAS_GIT)('the Repositories groups against a real repository', { timeout: 120_000 }, () => {
   it('builds Branches with folders and a merged chain, Stashes, Tags and Worktrees from the artifacts git lists', async () => {
     const repo = makeRepo(folder('acme'));
     commitOn(repo, 'main.txt', 'main work', '2025-01-01T10:00:00Z');

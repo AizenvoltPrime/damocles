@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { formatAgentConversation, runSubagent, normalizeMaxTurns } from '../subagent-runner';
 import { trackRunLifecycle } from '../../run-lifecycle';
+import { useGreekLocale } from '../../../../__mocks__/greek-locale';
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
@@ -215,6 +216,29 @@ describe('runSubagent provider failures', () => {
     f.emit(ended('error', '400 invalid_request_error'));
     f.finishPrompt();
     expect((await p).error).toBe('400 invalid_request_error');
+  });
+
+  // pi's text for a call whose provider has no credential (pinned against pi in provider-account.test.ts).
+  it("reports a call that had no credential in Damocles' words, naming the provider and model", async () => {
+    const f = makeSession();
+    const p = runSubagent({ createSession: async () => f.session, onSessionCreated: bind, prompt: 'go' });
+    await vi.waitFor(() => expect(f.promptCount()).toBe(1));
+
+    f.emit({ type: 'message_end', message: { role: 'assistant', content: [], provider: 'cerebras', model: 'gpt-oss-120b', stopReason: 'error', errorMessage: 'Provider is not configured: cerebras' } });
+    f.finishPrompt();
+    expect((await p).error).toBe('No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.');
+  });
+
+  // The run's error is the parent model's `Agent` result, so it stays English whatever the UI language.
+  it('reports a call that had no credential in English while the UI is in Greek', async () => {
+    useGreekLocale();
+    const f = makeSession();
+    const p = runSubagent({ createSession: async () => f.session, onSessionCreated: bind, prompt: 'go' });
+    await vi.waitFor(() => expect(f.promptCount()).toBe(1));
+
+    f.emit({ type: 'message_end', message: { role: 'assistant', content: [], provider: 'anthropic', model: 'claude-sonnet-5-5', stopReason: 'error', errorMessage: 'Provider is not configured: anthropic' } });
+    f.finishPrompt();
+    expect((await p).error).toBe('No Anthropic credential is saved, so Sonnet 5.5 could not run. Sign in or add an API key in Settings › Models & accounts.');
   });
 
   // pi's auto-retry re-runs the failed call before prompt() resolves, so only the run's last call decides.

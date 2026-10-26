@@ -325,6 +325,24 @@ describe('ProviderSignInField', () => {
     expect(wrapper.find('[role="alert"]').text()).toBe('Enter a host name such as company.ghe.com, or continue without a domain.');
   });
 
+  it('marks the refused answer field invalid and describes it by the refusal', async () => {
+    const wrapper = mountField();
+    await setState({ phase: 'browser', paste: true });
+    const input = wrapper.find('input');
+    expect(input.attributes('aria-invalid')).toBeUndefined();
+    expect(input.attributes('aria-describedby')).toBeUndefined();
+
+    await setState({ phase: 'browser', paste: true, invalid: true });
+    const alert = wrapper.find('[role="alert"]');
+    expect(input.attributes('aria-invalid')).toBe('true');
+    expect(alert.attributes('id')).toBeTruthy();
+    expect(input.attributes('aria-describedby')).toBe(alert.attributes('id'));
+
+    await setState({ phase: 'browser', paste: true });
+    expect(input.attributes('aria-invalid')).toBeUndefined();
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+  });
+
   it('shows no paste field when the browser flow takes no paste', async () => {
     const wrapper = mountField();
     await setState({ phase: 'browser', paste: false });

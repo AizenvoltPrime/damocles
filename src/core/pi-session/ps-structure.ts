@@ -54,6 +54,8 @@ const PS_BLOCK_RUNS_HERE: ReadonlySet<string> = new Set([
   'foreach', 'for', 'while', 'do', 'until', 'switch', 'function', 'filter', 'begin', 'process', 'end', 'clean', 'dynamicparam',
   'foreach-object', '%', 'where-object', '?', 'where', 'invoke-command', 'icm', 'measure-command',
 ]);
+// An `if` or `elseif` statement's first token, lower case; PowerShell reads the keyword before a `(` with no space too.
+const PS_CONDITION_KEYWORD = /^(if|elseif)(?:\(|$)/;
 export const PS_NEW_DRIVE: ReadonlySet<string> = new Set(['new-psdrive', 'ndr', 'mount']);
 export const PS_ALIAS: ReadonlySet<string> = new Set(['set-alias', 'sal', 'new-alias', 'nal']);
 export const PS_START_PROCESS: ReadonlySet<string> = new Set(['start-process', 'saps', 'start']);
@@ -115,9 +117,11 @@ const PS_SITE = new RegExp(
   ].join('|'),
   'giu',
 );
+// A `trap` statement anywhere in the text, inside strings and comments too.
+export const PS_TRAP: RegExp = /(?<![-\w$.:\\/])trap\b/iu;
 // Constructs that can set a variable by a name the text does not show as an assignment.
 const PS_POISON = new RegExp(
-  String.raw`(?:set|new|clear|remove|get)-variable\b|variable:|\[${PS_SCAN_SPACE}*ref${PS_SCAN_SPACE}*\]|psreference|psvariable|sessionstate|runspace|import-localizeddata|\bparam${PS_SCAN_SPACE}*\(|(?<![-\w$.:\\/])(?:(?:function|filter|workflow|configuration|class)${PS_SCAN_SPACE}+[\w-]|trap\b|data${PS_SCAN_SPACE}+\w+${PS_SCAN_SPACE}*[{-])`,
+  String.raw`(?:set|new|clear|remove|get)-variable\b|variable:|\[${PS_SCAN_SPACE}*ref${PS_SCAN_SPACE}*\]|psreference|psvariable|sessionstate|runspace|import-localizeddata|\bparam${PS_SCAN_SPACE}*\(|(?<![-\w$.:\\/])(?:(?:function|filter|workflow|configuration|class)${PS_SCAN_SPACE}+[\w-]|data${PS_SCAN_SPACE}+\w+${PS_SCAN_SPACE}*[{-])|${PS_TRAP.source}`,
   'iu',
 );
 export const PS_VARIABLE_TOKEN: RegExp = new RegExp(String.raw`\$${PS_NAME}`, 'u');
@@ -548,7 +552,8 @@ export interface PsSegment {
   readonly guard?: '&&' | '||';
   /**
    * Whether the statement runs exactly once each time a walk passes it, given its guard: not in a block that runs at most
-   * once (`if`, `try`, `&`), not fed by a pipe, and not chained without a guard; false too for a loop's opening statement.
+   * once (`try`, `&`; an `if` branch is a range of its own), not fed by a pipe, and not chained without a guard; false too
+   * for a loop's opening statement.
    */
   sequential: boolean;
   /** The depth of the scan that read it; a subexpression's own statements are one deeper than the statement holding it. */
@@ -557,10 +562,15 @@ export interface PsSegment {
   readonly assigns: readonly PsAssign[];
 }
 
-/** A script block that may run more than once: a loop's, a function's, or one given as an argument. */
+/** A script block that may run more than once (a loop's, a function's, or one given as an argument), or an `if` branch. */
 export interface PsRange extends LoopRange {
   /** After the block's last segment; a `do` block's range ends after its trailing condition. */
   end: number;
+  /**
+   * The block of an `if`, whose condition always runs, or of an `elseif` or `else`, whose condition may not: the block
+   * runs whole or not at all, and an `elseif`'s condition does too, with the block a branch inside it.
+   */
+  readonly branch?: 'if' | 'else';
   /** The function or filter it is the body of, without case. */
   readonly name?: string;
   readonly foreach?: PsForeach;
@@ -593,14 +603,16 @@ interface PsStatementEnd {
 }
 
 /**
- * The range of the script block opened after `statement`, its first segment `start`; undefined for a block that runs at
- * most once: after `if`, `elseif`, `else`, `try`, `catch`, `finally`, `&`, `.` and `@`.
+ * The range of the script block opened after `statement`, its first segment `start`: a branch after `if`, `elseif` and
+ * `else`; undefined for any other block that runs at most once: after `try`, `catch`, `finally`, `&`, `.` and `@`.
  */
 function psBlock(statement: PsStatementEnd | undefined, segments: readonly PsSegment[], start: number): PsRange | undefined {
   const raws = statement?.raws ?? [];
   const first = raws[0]?.toLowerCase();
   const last = raws.at(-1);
-  if (first === 'if' || first === 'elseif' || (raws.length === 1 && (first === 'else' || first === 'try' || first === 'finally'))) return undefined;
+  const keyword = PS_CONDITION_KEYWORD.exec(first ?? '')?.[1];
+  if (keyword !== undefined || (raws.length === 1 && first === 'else')) return { head: statement!.head, start, end: start, later: false, branch: keyword === 'if' ? 'if' : 'else' };
+  if (raws.length === 1 && (first === 'try' || first === 'finally')) return undefined;
   if (first === 'catch' && raws.slice(1).every((raw) => raw === ',' || /^\[[^\]]*\]$/.test(raw))) return undefined;
   if (last === '&' || last === '.' || last === '@') return undefined;
   const range = { head: statement?.head ?? start, start, end: start, later: first === undefined || !PS_BLOCK_RUNS_HERE.has(first) };
@@ -718,7 +730,7 @@ export function scanPowershell(command: string, start: number, depth: number, se
     bare = false;
   };
   // Whether a subexpression of the statement being read may not run each time the walk passes it.
-  const maybe = (): boolean => conditional || frames.some((range) => range === undefined) || piped || chained || raws[0]?.toLowerCase() === 'elseif';
+  const maybe = (): boolean => conditional || frames.some((range) => range === undefined) || piped || chained || /^elseif$/i.test(raws[0] ?? command.slice(wordStart, i));
   const endSegment = (then: 'end' | 'pipe' | 'chain' | 'block', operator?: '&&' | '||'): void => {
     endWord();
     if (words.length === 0) {
@@ -995,7 +1007,7 @@ export function scanPowershell(command: string, start: number, depth: number, se
         const block = psBlock(opener, segments, segments.length);
         const range = block === undefined ? undefined : { ...block, pieces };
         // A block that may repeat walks its opening statement again after its body, where no guard holds.
-        if (range !== undefined && opener !== undefined) segments[opener.index]!.sequential = false;
+        if (range !== undefined && range.branch === undefined && opener !== undefined) segments[opener.index]!.sequential = false;
         frames.push(range);
         if (range !== undefined) ranges.push(range);
         outerPieces.push(pieces);

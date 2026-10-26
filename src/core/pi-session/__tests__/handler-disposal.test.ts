@@ -106,6 +106,7 @@ const ALL_EVENTS = [
   'model_select',
   'thinking_level_select',
   'resources_discover',
+  'context_with_system',
 ];
 
 const PAYLOADS: Record<string, unknown> = {
@@ -131,6 +132,7 @@ const PAYLOADS: Record<string, unknown> = {
   session_compact: { type: 'session_compact', compactionEntry: { id: 'c1' }, reason: 'manual', willRetry: false, fromExtension: false },
   session_before_compact: { type: 'session_before_compact', reason: 'manual', willRetry: false },
   cache_warming_decision: { type: 'cache_warming_decision', warmCost: 0.07, missCost: 1.5, continuationProbability: 1, action: 'warm' },
+  context_with_system: { type: 'context_with_system', messages: [] },
 };
 
 function payloadFor(event: string): unknown {
@@ -386,6 +388,10 @@ describe('the per-subagent extension instance', () => {
     const pi = buildSubagentExtension();
 
     expect(pi.liveEvents()).not.toContain('session_shutdown');
+  });
+
+  it('registers no model-switch fold, since a subagent or team member never switches models', () => {
+    expect(buildSubagentExtension().liveEvents()).not.toContain('context_with_system');
   });
 
   it('keeps gating after an unrelated shutdown reaches the instance', async () => {

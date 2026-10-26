@@ -8,6 +8,8 @@ import { DEFAULT_FALLBACK_MODEL as DEFAULT_MODEL, migrateLegacyModelValue } from
 export class ModelManager {
   private defaultModel: string = "";
   private readonly perPanelModel: Map<string, string> = new Map();
+  /** The model the panel's session shows, which differs from the held one only while it shows the factory default it has not committed. */
+  private readonly perPanelShownModel: Map<string, string> = new Map();
   private readonly perPanelContextWindow: Map<string, number> = new Map();
   private readonly postMessage: PostMessageFn;
   private readonly configListener: Disposable;
@@ -41,11 +43,17 @@ export class ModelManager {
 
   cleanupPanelModel(panelId: string): void {
     this.perPanelModel.delete(panelId);
+    this.perPanelShownModel.delete(panelId);
     this.perPanelContextWindow.delete(panelId);
   }
 
   getActiveModelForPanel(panelId: string): string {
-    return this.perPanelModel.get(panelId) || this.defaultModel || DEFAULT_MODEL;
+    return this.perPanelShownModel.get(panelId) ?? this.getConfiguredModelForPanel(panelId) ?? DEFAULT_MODEL;
+  }
+
+  /** The panel's model or the configured default; undefined while the chat holds none and `damocles.model` is unset. */
+  getConfiguredModelForPanel(panelId: string): string | undefined {
+    return this.perPanelModel.get(panelId) || this.defaultModel || undefined;
   }
 
   getDefaultModel(): string {
@@ -63,6 +71,12 @@ export class ModelManager {
     }
     this.perPanelModel.set(panelId, model);
     return true;
+  }
+
+  /** Only a committed model is held, even one equal to the default, so a later session starts on it; a factory default only shown stays unheld. */
+  adoptPanelModel(panelId: string, model: string, committed: boolean): void {
+    this.perPanelShownModel.set(panelId, model);
+    if (committed) this.perPanelModel.set(panelId, model);
   }
 
   async setDefaultModel(model: string): Promise<SettingWrite> {

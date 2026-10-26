@@ -284,6 +284,10 @@ export class SettingsManager {
     return this.modelManager.getActiveModelForPanel(panelId);
   }
 
+  getConfiguredModelForPanel(panelId: string): string | undefined {
+    return this.modelManager.getConfiguredModelForPanel(panelId);
+  }
+
   getDefaultModel(): string {
     return this.modelManager.getDefaultModel();
   }
@@ -372,9 +376,9 @@ export class SettingsManager {
     if (thinkingLevel !== undefined) this.thinkingManager.restoreRecordedLevel(panelId, model, thinkingLevel);
   }
 
-  /** The panel's model is the one its session committed; nothing else writes it once the session exists. */
-  adoptSessionModel(host: PanelHost, panelId: string, folder: FolderTarget, model: string, contextWindow: number): void {
-    this.modelManager.setActiveModelForPanel(panelId, model);
+  /** The panel shows its session's model and holds it only once committed; nothing else writes the panel's model once the session exists. */
+  adoptSessionModel(host: PanelHost, panelId: string, folder: FolderTarget, model: string, contextWindow: number, committed: boolean): void {
+    this.modelManager.adoptPanelModel(panelId, model, committed);
     this.modelManager.setContextWindowForPanel(panelId, contextWindow);
     this.sendModelForPanel(host, panelId);
     this.sendThinkingForPanel(host, panelId, folder);

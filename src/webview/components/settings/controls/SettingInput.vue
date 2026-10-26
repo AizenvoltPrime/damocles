@@ -1,5 +1,5 @@
 <script setup lang="ts" generic="V">
-import { ref, useId, watch } from 'vue';
+import { computed, ref, useId, watch } from 'vue';
 
 export type InputParse<R> = (raw: string) => { ok: true; value: R } | { ok: false; error: string };
 
@@ -21,34 +21,37 @@ const props = withDefaults(defineProps<{
    * value even when it equals modelValue.
    */
   commitOnBlur?: boolean;
-}>(), { commitOnBlur: true });
+  /** The owner's verdict on the last sent value, such as the host refusing it; shown like a parse error until the owner clears it. */
+  refusal?: string | null;
+}>(), { commitOnBlur: true, refusal: null });
 
 const emit = defineEmits<{
   (e: 'commit', value: V): void;
 }>();
 
 const draft = ref(props.modelValue);
-const error = ref<string | null>(null);
+const parseError = ref<string | null>(null);
+const error = computed(() => parseError.value ?? props.refusal);
 const errorId = useId();
 
 watch(() => props.modelValue, (value) => {
   draft.value = value;
-  error.value = null;
+  parseError.value = null;
 });
 
 function submit(): void {
   const parsed = props.parse(draft.value);
   if (!parsed.ok) {
-    error.value = parsed.error;
+    parseError.value = parsed.error;
     return;
   }
-  error.value = null;
+  parseError.value = null;
   emit('commit', parsed.value);
 }
 
 function commit(): void {
   if (draft.value === props.modelValue) {
-    error.value = null;
+    parseError.value = null;
     return;
   }
   submit();
@@ -67,11 +70,11 @@ defineExpose({ submit });
 
 // Escape belongs to the field while it holds an edit; stopping it keeps the modal open.
 function revert(event: KeyboardEvent): void {
-  if (draft.value === props.modelValue && error.value === null) return;
+  if (draft.value === props.modelValue && parseError.value === null) return;
   event.stopPropagation();
   event.preventDefault();
   draft.value = props.modelValue;
-  error.value = null;
+  parseError.value = null;
 }
 </script>
 

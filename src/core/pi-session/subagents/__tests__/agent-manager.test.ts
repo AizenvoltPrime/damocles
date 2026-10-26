@@ -3,6 +3,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { SessionManager, type AgentSession } from '@earendil-works/pi-coding-agent';
+import { loadFormatNoApiKeyFoundMessage } from '../../../../__mocks__/pi-auth-guidance';
+import { useGreekLocale } from '../../../../__mocks__/greek-locale';
 import { AgentManager, isSubagentId, type SubagentEngine, type SpawnRequest } from '../agent-manager';
 import { AgentRegistry } from '../agent-types';
 import { RESUME_NOTE_LABEL, STEER_INSTRUCTION_PREFIX, buildResumePrompt, withResumeNote, wrapSteerMessage } from '../../../../shared/steer';
@@ -2954,6 +2956,48 @@ describe('AgentManager Agent result JSON', () => {
       const opts = finish.mock.calls[0]![0];
       expect(opts.isError).toBe(true);
       expect(JSON.parse(opts.resultJson)).toMatchObject({ agentId: id, agentStatus: 'error' });
+      mgr.dispose();
+    } finally {
+      finish.mockRestore();
+    }
+  });
+
+  // A template pin reaches a provider with no Accounts row, and pi refuses a prompt on it once its credential went (agent-session.js `prompt`).
+  it("names the provider and model of a run pi refused for a missing credential in Damocles' words, never pi's login help", async () => {
+    const formatNoApiKeyFoundMessage = await loadFormatNoApiKeyFoundMessage();
+    const { engine } = makeEngine();
+    const create = engine.createSession;
+    engine.createSession = async (opts) => Object.assign(await create(opts), {
+      model: { provider: 'cerebras', id: 'gpt-oss-120b' },
+      prompt: async () => { throw new Error(formatNoApiKeyFoundMessage('cerebras')); },
+    });
+    const mgr = new AgentManager(engine, 4);
+    const id = mgr.spawn(spec(0));
+    await mgr.getRecord(id)!.promise;
+
+    expect(mgr.getRecord(id)).toMatchObject({ status: 'error', error: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.' });
+    mgr.dispose();
+  });
+
+  // The error reaches the parent model's `Agent` result, the keep-alive delivery and the status entry, so it stays English.
+  it('gives the parent model a refused run in English while the UI is in Greek', async () => {
+    useGreekLocale();
+    const formatNoApiKeyFoundMessage = await loadFormatNoApiKeyFoundMessage();
+    const { engine } = makeEngine();
+    const create = engine.createSession;
+    engine.createSession = async (opts) => Object.assign(await create(opts), {
+      model: { provider: 'anthropic', id: 'claude-sonnet-5-5' },
+      prompt: async () => { throw new Error(formatNoApiKeyFoundMessage('anthropic')); },
+    });
+    const finish = vi.spyOn(SubagentStreamBridge.prototype, 'finish');
+    try {
+      const mgr = new AgentManager(engine, 4);
+      const id = mgr.spawn(spec(0));
+      await mgr.getRecord(id)!.promise;
+
+      const english = 'No Anthropic credential is saved, so Sonnet 5.5 could not run. Sign in or add an API key in Settings › Models & accounts.';
+      expect(mgr.getRecord(id)).toMatchObject({ status: 'error', error: english });
+      expect(finish.mock.calls[0]![0].responseText).toContain(english);
       mgr.dispose();
     } finally {
       finish.mockRestore();

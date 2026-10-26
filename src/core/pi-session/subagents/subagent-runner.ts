@@ -12,6 +12,7 @@
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { abortRunAtStart } from '../abort-run-at-start';
 import { runLifecycleOf } from '../run-lifecycle';
+import { nestedCallError } from '../nested-call-failures';
 
 /** Info about a tool event in the subagent (drives the parent card's tool-use count). */
 export interface ToolActivity {
@@ -44,7 +45,7 @@ export interface RunResult {
   aborted: boolean;
   /** True if steered to wrap up (hit soft turn limit) but finished in time. */
   steered: boolean;
-  /** The provider error the run's last model call ended on; pi has finished retrying it by then. */
+  /** The error the run's last model call ended on, as the parent model reads it (`nestedCallError`); pi has finished retrying it by then. */
   error?: string;
 }
 
@@ -134,7 +135,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<RunResul
     if (event.type === 'tool_execution_end') options.onToolActivity?.({ type: 'end', toolName: event.toolName });
     if (event.type === 'message_end' && event.message.role === 'assistant') {
       // pi reports a failed model call only here, and a retry that answers replaces it.
-      error = event.message.stopReason === 'error' ? event.message.errorMessage ?? 'Unknown error' : undefined;
+      error = event.message.stopReason === 'error' ? nestedCallError(event.message, 'model') : undefined;
       const usage = (event.message as { usage?: { input?: number; output?: number; cacheWrite?: number } }).usage;
       if (usage) {
         options.onAssistantUsage?.({ input: usage.input ?? 0, output: usage.output ?? 0, cacheWrite: usage.cacheWrite ?? 0 });

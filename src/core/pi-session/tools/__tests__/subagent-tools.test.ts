@@ -72,17 +72,21 @@ describe('Agent tool result details', () => {
     expect((await execute('tc3', params)).details).toEqual({ agentId: 'agent-3', status: 'completed' });
   });
 
-  const BAD = 'Pass either resume (with optional message) or description + prompt + subagent_type.';
+  const RESUMED_MODE = 'A resumed agent keeps the foreground or background mode it was started in.';
+  const RESUME_INSTEAD = 'To continue a stopped agent, pass resume instead.';
 
   it.each([
-    ['neither form', {}],
-    ['a partial spawn', { description: 'd', prompt: 'p' }],
-    ['both forms', { ...params, resume: '0a1b2c3d-4e5f-4a0' }],
-    ['a resume with spawn options', { resume: '0a1b2c3d-4e5f-4a0', run_in_background: true }],
-    ['a message without resume', { ...params, message: 'go' }],
-  ])('rejects %s', async (_label, args) => {
-    const execute = agentTool({ resolveRunInBackground: () => false });
-    await expect(execute('tc', args)).rejects.toThrow(BAD);
+    ['neither form', {}, `A new agent needs description, prompt and subagent_type: missing description, prompt, subagent_type. ${RESUME_INSTEAD}`],
+    ['a partial spawn', { description: 'd', prompt: 'p' }, `A new agent needs description, prompt and subagent_type: missing subagent_type. ${RESUME_INSTEAD}`],
+    ['both forms', { ...params, resume: '0a1b2c3d-4e5f-4a0' }, 'A resume takes only resume and an optional message: remove description, prompt, subagent_type.'],
+    ['a resume with run_in_background', { resume: '0a1b2c3d-4e5f-4a0', message: 'go on', run_in_background: true }, `A resume takes only resume and an optional message: remove run_in_background. ${RESUMED_MODE}`],
+    ['a resume with run_in_background false', { resume: '0a1b2c3d-4e5f-4a0', run_in_background: false }, `A resume takes only resume and an optional message: remove run_in_background. ${RESUMED_MODE}`],
+    ['a message without resume', { ...params, message: 'go' }, 'message goes only with resume: put a new agent\'s instructions in prompt.'],
+    ['a message on a partial spawn', { prompt: 'p', message: 'go' }, `A new agent needs description, prompt and subagent_type: missing description, subagent_type. ${RESUME_INSTEAD} message goes only with resume: put a new agent's instructions in prompt.`],
+  ])('rejects %s, naming the fields to change', async (_label, args, error) => {
+    const resume = async () => { throw new Error('resume must not run'); };
+    const execute = agentTool({ resolveRunInBackground: () => false, resume, spawn: () => 'never', spawnAndWait: resume });
+    await expect(execute('tc', args)).rejects.toThrow(new Error(error));
   });
 
   it('a foreground resume blocks and returns the resumed run result and details', async () => {

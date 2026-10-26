@@ -19,7 +19,8 @@ export interface SessionManagerConfig {
   getEnabledMcpServers: (folderKey: string) => McpScope;
   getMcpConfigLoaded: () => boolean;
   loadMcpConfig: () => Promise<void>;
-  getActiveModelForPanel: (panelId: string) => string;
+  /** Undefined while the panel holds no model and `damocles.model` is unset, so the session may fall back to a signed-in one. */
+  getConfiguredModelForPanel: (panelId: string) => string | undefined;
   getPreferOpenAIApiKey: () => boolean;
   resolveThinkingForPanel: (panelId: string, model: string, folder: SettingsFolder | undefined) => {
     thinkingDisabled: boolean;
@@ -27,8 +28,8 @@ export interface SessionManagerConfig {
   };
   /** A resumed conversation's recorded pi thinking level for its recorded model, which becomes the panel's. */
   restoreRecordedSelection: (panelId: string, model: string, thinkingLevel: string | undefined) => void;
-  /** The model the panel's session committed, which becomes the panel's. */
-  adoptSessionModel: (host: PanelHost, panelId: string, folder: FolderTarget, model: string, contextWindow: number) => void;
+  /** The model the panel's session shows, which becomes the panel's once the session committed it. */
+  adoptSessionModel: (host: PanelHost, panelId: string, folder: FolderTarget, model: string, contextWindow: number, committed: boolean) => void;
   postMessage: (host: PanelHost, message: ExtensionToWebviewMessage) => void;
   setupSessionWatcher: (folderKey: string) => Promise<void>;
   addOrUpdateSession: (sessionId: string, folderKey: string) => Promise<void>;
@@ -45,7 +46,7 @@ export class SessionManager {
   private readonly getEnabledMcpServers: SessionManagerConfig["getEnabledMcpServers"];
   private readonly getMcpConfigLoaded: SessionManagerConfig["getMcpConfigLoaded"];
   private readonly loadMcpConfig: SessionManagerConfig["loadMcpConfig"];
-  private readonly getActiveModelForPanel: SessionManagerConfig["getActiveModelForPanel"];
+  private readonly getConfiguredModelForPanel: SessionManagerConfig["getConfiguredModelForPanel"];
   private readonly getPreferOpenAIApiKey: SessionManagerConfig["getPreferOpenAIApiKey"];
   private readonly resolveThinkingForPanel: SessionManagerConfig["resolveThinkingForPanel"];
   private readonly restoreRecordedSelection: SessionManagerConfig["restoreRecordedSelection"];
@@ -63,7 +64,7 @@ export class SessionManager {
     this.getEnabledMcpServers = config.getEnabledMcpServers;
     this.getMcpConfigLoaded = config.getMcpConfigLoaded;
     this.loadMcpConfig = config.loadMcpConfig;
-    this.getActiveModelForPanel = config.getActiveModelForPanel;
+    this.getConfiguredModelForPanel = config.getConfiguredModelForPanel;
     this.getPreferOpenAIApiKey = config.getPreferOpenAIApiKey;
     this.resolveThinkingForPanel = config.resolveThinkingForPanel;
     this.restoreRecordedSelection = config.restoreRecordedSelection;
@@ -88,7 +89,7 @@ export class SessionManager {
   ): Promise<ChatSession> {
     if (!this.getMcpConfigLoaded()) await this.loadMcpConfig();
 
-    const activeModel = this.getActiveModelForPanel(panelId);
+    const configuredModel = this.getConfiguredModelForPanel(panelId);
 
     const piMemoryService = this.getMemoryService();
     const piCompassService = this.getCompassService(folder.key);
@@ -141,14 +142,14 @@ export class SessionManager {
       onSessionPersisted: (sessionId) => {
         this.addOrUpdateSession(sessionId, folder.key).catch((err) => log("[SessionManager] session list update failed for %s: %O", sessionId, err));
       },
-      model: activeModel,
+      ...(configuredModel !== undefined ? { model: configuredModel } : {}),
       panelId,
       // This folder's scope, so its servers connect at session start. The shared user client reconciles
       // idempotently; an empty union would close servers another panel connected.
       mcpScope: this.getEnabledMcpServers(folder.key),
       resolveThinking: (model) => this.resolveThinkingForPanel(panelId, model, settingsFolderOf(folder)),
       onRecordedSelection: (model, thinkingLevel) => this.restoreRecordedSelection(panelId, model, thinkingLevel),
-      onModelChange: (model, contextWindow) => this.adoptSessionModel(host, panelId, folder, model, contextWindow),
+      onModelChange: (model, contextWindow, committed) => this.adoptSessionModel(host, panelId, folder, model, contextWindow, committed),
       getPreferOpenAIApiKey: this.getPreferOpenAIApiKey,
       secrets: this.platform.secrets,
       platform: this.platform,

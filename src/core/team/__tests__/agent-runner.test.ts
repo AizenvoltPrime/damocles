@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { AgentRunner } from '../agent-runner';
+import { loadFormatNoApiKeyFoundMessage } from '../../../__mocks__/pi-auth-guidance';
+import { useGreekLocale } from '../../../__mocks__/greek-locale';
 import { MessageBus } from '../message-bus';
 import type { AgentRunConfig, NoteSink, UndeliveredMessage } from '../types';
 import type { ImageBlock } from '../../../shared/types/content';
@@ -1999,6 +2001,37 @@ describe('AgentRunner provider failures', () => {
     expect(broadcasts).toEqual(['Agent "worker" failed: 529 overloaded_error']);
   });
 
+  // pi's text for a call whose provider has no credential (pinned against pi in provider-account.test.ts); the reload reads the same message.
+  it("shows a live call that had no credential in Damocles' words, on the card and in the failure, as the reload does", async () => {
+    const fake = Object.assign(new FakeSession({ maxRetries: 0, onModelCall: (_c, s) => s.failCall('Provider is not configured: cerebras') }), { model: { provider: 'cerebras', id: 'gpt-oss-120b' } });
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    const words = 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.';
+    expect(sentOf(config).filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: words, parentToolUseId: 'a1' }]);
+    expect(result.failure).toEqual({ kind: 'model', message: words });
+  });
+
+  // The failure reaches the lead's bus broadcast and the team's results, so it stays English; only the member's card is translated.
+  it('gives the lead a failed call in English and the card the UI language', async () => {
+    useGreekLocale();
+    const fake = Object.assign(new FakeSession({ maxRetries: 0, onModelCall: (_c, s) => s.failCall('Provider is not configured: anthropic') }), { model: { provider: 'anthropic', id: 'claude-sonnet-5-5' } });
+    const messageBus = new MessageBus('team-1');
+    const broadcasts: string[] = [];
+    messageBus.subscribe((m) => { if (m.to === null) broadcasts.push(m.content); });
+    const config = baseConfig({ messageBus, createSession: async () => fake as never, keepAlive: () => false });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    const english = 'No Anthropic credential is saved, so Sonnet 5.5 could not run. Sign in or add an API key in Settings › Models & accounts.';
+    expect(result).toMatchObject({ status: 'failed', failure: { kind: 'model', message: english }, finalResponse: english });
+    expect(broadcasts).toEqual([`Agent "worker" failed: ${english}`]);
+    expect(sentOf(config).filter((m) => m.type === 'error')).toEqual([
+      { type: 'error', message: 'Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το Anthropic, οπότε το Sonnet 5.5 δεν μπόρεσε να εκτελεστεί. Συνδεθείτε ή προσθέστε ένα κλειδί API στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.', parentToolUseId: 'a1' },
+    ]);
+  });
+
   it('shows the failure in the transcript once, at the boundary after the call, never at its message_end', async () => {
     let sentAtAgentEnd = -1;
     const fake = new FakeSession({ maxRetries: 0, onModelCall: (_c, s) => s.failCall('529 overloaded_error', { partial: 'Now I will' }) });
@@ -2140,6 +2173,22 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
     expect(memberHistoryMessages([failed], new Map([[failed, 'e7']]))).toEqual([
       { id: 'e7', role: 'assistant', content: [{ type: 'text', text: 'Now I will' }] },
       { id: 'e7:error', role: 'error', content: [{ type: 'text', text: '529 overloaded_error' }] },
+    ]);
+  });
+
+  // pi's text for a call whose provider has no credential (pinned against pi in provider-account.test.ts); a template pin reaches providers with no Accounts row.
+  it("names the provider and model of a call that had no credential in Damocles' words, never pi's", () => {
+    const missing = { role: 'assistant', content: [], provider: 'cerebras', model: 'gpt-oss-120b', stopReason: 'error', errorMessage: 'Provider is not configured: cerebras' } as unknown as PersistedAgentMessage;
+    expect(memberHistoryMessages([missing], new Map([[missing, 'e9']]))).toEqual([
+      { id: 'e9:error', role: 'error', content: [{ type: 'text', text: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.' }] },
+    ]);
+  });
+
+  it("replays a row's missing credential in the UI language, as the live card showed it", () => {
+    useGreekLocale();
+    const missing = { role: 'assistant', content: [], provider: 'anthropic', model: 'claude-sonnet-5-5', stopReason: 'error', errorMessage: 'Provider is not configured: anthropic' } as unknown as PersistedAgentMessage;
+    expect(memberHistoryMessages([missing], new Map([[missing, 'e9']]))).toEqual([
+      { id: 'e9:error', role: 'error', content: [{ type: 'text', text: 'Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το Anthropic, οπότε το Sonnet 5.5 δεν μπόρεσε να εκτελεστεί. Συνδεθείτε ή προσθέστε ένα κλειδί API στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.' }] },
     ]);
   });
 
@@ -2643,6 +2692,30 @@ describe('AgentRunner keeps every message a failed run did not deliver', () => {
     expect(result.undelivered).toEqual([{ text: '[Message from Lead]: wake up', echoed: true, ids: [sent.messageId] }]);
     const echoes = vi.mocked(config.onMessage).mock.calls.filter(([m]) => m.type === 'teamAgentUserMessage' && m.content === '[Message from Lead]: wake up');
     expect(echoes).toHaveLength(1);
+  });
+
+  // A template pin reaches a provider with no Accounts row, and pi refuses a prompt on it once its credential went (agent-session.js `prompt`).
+  it("names the provider and model of a run pi refused for a missing credential in Damocles' words, never pi's login help", async () => {
+    const formatNoApiKeyFoundMessage = await loadFormatNoApiKeyFoundMessage();
+    const fake = Object.assign(new FakeSession(), { model: { provider: 'cerebras', id: 'gpt-oss-120b' } });
+    fake.prompt = async () => { throw new Error(formatNoApiKeyFoundMessage('cerebras')); };
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    expect(result).toMatchObject({ status: 'failed', failure: { kind: 'run', message: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.' } });
+  });
+
+  it('gives the lead a run pi refused in English while the UI is in Greek', async () => {
+    useGreekLocale();
+    const formatNoApiKeyFoundMessage = await loadFormatNoApiKeyFoundMessage();
+    const fake = Object.assign(new FakeSession(), { model: { provider: 'anthropic', id: 'claude-sonnet-5-5' } });
+    fake.prompt = async () => { throw new Error(formatNoApiKeyFoundMessage('anthropic')); };
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    expect(result).toMatchObject({ status: 'failed', failure: { kind: 'run', message: 'No Anthropic credential is saved, so Sonnet 5.5 could not run. Sign in or add an API key in Settings › Models & accounts.' } });
   });
 
   it('a steer pi refuses before queueing it is delivered as a prompt once the turn ends', async () => {

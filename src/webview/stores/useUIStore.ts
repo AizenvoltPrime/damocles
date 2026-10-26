@@ -1,6 +1,6 @@
 import { computed, ref, shallowRef } from 'vue';
 import { defineStore } from 'pinia';
-import type { ExtensionToWebviewMessage, WorktreeStateData } from '@shared/types/messages';
+import type { AuthFailure, WorktreeStateData } from '@shared/types/messages';
 import type { UserContentBlock } from '@shared/types/content';
 import type { ChatMessage, RewindHistoryItem, IdeContextDisplayInfo, RestorePoint, SkippedFile, SkippedFilesTarget } from '@shared/types/session';
 import type { MemoryKind } from '@shared/types/memory';
@@ -10,7 +10,7 @@ import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
 type RewindSource = 'picker' | 'bubble' | null;
 
-export type AuthFailure = Pick<Extract<ExtensionToWebviewMessage, { type: 'authFailure' }>, 'account' | 'reason'>;
+export type { AuthFailure };
 
 export type ExpandedToolSource = 'session' | 'subagent' | 'team';
 

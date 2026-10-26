@@ -43,8 +43,7 @@
   "DevTools is unavailable because the debugging port is disabled by damocles.browser.devToolsPort. Enable the setting and relaunch the browser. The port is a launch-time flag and cannot be turned on for a running browser.": "Τα εργαλεία προγραμματιστή δεν είναι διαθέσιμα επειδή η θύρα εντοπισμού σφαλμάτων είναι απενεργοποιημένη από το damocles.browser.devToolsPort. Ενεργοποιήστε τη ρύθμιση και επανεκκινήστε το πρόγραμμα περιήγησης. Η θύρα είναι σημαία χρόνου εκκίνησης και δεν μπορεί να ενεργοποιηθεί σε πρόγραμμα περιήγησης που ήδη εκτελείται.",
   "Open Settings": "Άνοιγμα ρυθμίσεων",
   "Reload Window": "Επαναφόρτωση παραθύρου",
-  "Damocles could not reach {0} in time, so \"{1}\" is unavailable and \"{2}\" is being used instead.": "Το Damocles δεν μπόρεσε να επικοινωνήσει έγκαιρα με το {0}, οπότε το \"{1}\" δεν είναι διαθέσιμο και χρησιμοποιείται το \"{2}\" στη θέση του.",
-  "Damocles could not reach {0} in time, so \"{1}\" is unavailable and no signed-in model could be selected.": "Το Damocles δεν μπόρεσε να επικοινωνήσει έγκαιρα με το {0}, οπότε το \"{1}\" δεν είναι διαθέσιμο και δεν ήταν δυνατή η επιλογή άλλου συνδεδεμένου μοντέλου.",
+  "Damocles could not reach {0} in time, so \"{1}\" cannot run yet.": "Το Damocles δεν μπόρεσε να επικοινωνήσει έγκαιρα με το {0}, οπότε το \"{1}\" δεν μπορεί να εκτελεστεί ακόμη.",
   "This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them.": "Αυτός ο χώρος εργασίας δεν είναι έμπιστος, οπότε οι δεξιότητες και οι εντολές του έργου δεν φορτώνονται. Καταστήστε τον χώρο εργασίας έμπιστο για να τις εκτελέσετε.",
   "Switch this panel to {0}? This starts a new conversation. The current one stays in history.": "Να μεταφερθεί αυτό το panel στο {0}; Θα ξεκινήσει νέα συνομιλία. Η τρέχουσα παραμένει στο ιστορικό.",
   "Start new conversation": "Έναρξη νέας συνομιλίας",
@@ -52,6 +51,7 @@
   "Damocles could not start a session in {0}: {1}": "Το Damocles δεν μπόρεσε να ξεκινήσει συνεδρία στο {0}: {1}",
   "Your cancel note was not sent: the budget limit stopped this turn.": "Η σημείωση ακύρωσης δεν στάλθηκε: το όριο προϋπολογισμού σταμάτησε αυτόν τον γύρο.",
   "Your cancel note was not sent: the turn was stopped.": "Η σημείωση ακύρωσης δεν στάλθηκε: ο γύρος διακόπηκε.",
+  "Your cancel note was not sent: this chat cannot run its model now.": "Η σημείωση ακύρωσης δεν στάλθηκε: αυτή η συνομιλία δεν μπορεί να εκτελέσει το μοντέλο της τώρα.",
   "Stopping the turn discarded your cancel note before the agent read it.": "Η διακοπή του γύρου απέρριψε τη σημείωση ακύρωσης πριν τη διαβάσει ο agent.",
   "Could not deliver the results of finished background subagents; they will be retried with your next message.": "Δεν ήταν δυνατή η παράδοση των αποτελεσμάτων των υποπρακτόρων παρασκηνίου που ολοκληρώθηκαν· θα επιχειρηθεί ξανά με το επόμενο μήνυμά σας.",
   "Could not record which agents were interrupted; the model will not be told it can resume them.": "Δεν ήταν δυνατή η καταγραφή των πρακτόρων που διακόπηκαν· το μοντέλο δεν θα ενημερωθεί ότι μπορεί να τους συνεχίσει.",
@@ -489,7 +489,6 @@
   "The injected context of the prompts the fork inherited could not be copied, so \"{0}\" may show nothing for those prompts in the fork.": "Το ενέσιμο πλαίσιο των μηνυμάτων που κληρονόμησε η διακλάδωση δεν αντιγράφηκε, οπότε το «{0}» μπορεί να μην εμφανίζει τίποτα για αυτά τα μηνύματα στη διακλάδωση.",
   "View injected context": "Προβολή ενέσιμου πλαισίου",
   "Start a conversation first": "Ξεκινήστε πρώτα μια συζήτηση",
-  "Model {0} is unavailable for btw": "Το μοντέλο {0} δεν είναι διαθέσιμο για το btw",
   "No response received": "Δεν λήφθηκε απάντηση",
   "Not secure": "Μη ασφαλής",
   "The connection to this site is not encrypted, so others on the network can read and change what it sends.": "Η σύνδεση με αυτόν τον ιστότοπο δεν είναι κρυπτογραφημένη, οπότε άλλοι στο δίκτυο μπορούν να διαβάσουν και να αλλάξουν ό,τι στέλνει.",
@@ -1139,5 +1138,9 @@
   "The provider could not complete the sign-in (HTTP {0}).": "Ο πάροχος δεν μπόρεσε να ολοκληρώσει τη σύνδεση (HTTP {0}).",
   "Could not sign out. Try again.": "Η αποσύνδεση απέτυχε. Δοκιμάστε ξανά.",
   "Effort \"{0}\" is not supported by model \"{1}\"": "Ο συλλογισμός \"{0}\" δεν υποστηρίζεται από το μοντέλο \"{1}\"",
-  "Effort \"{0}\" is not supported for a team role, Explore, Background or the memory judge": "Ο συλλογισμός \"{0}\" δεν υποστηρίζεται για ρόλο ομάδας, τον Explore, τις εργασίες παρασκηνίου ή τον κριτή μνήμης"
+  "Effort \"{0}\" is not supported for a team role, Explore, Background or the memory judge": "Ο συλλογισμός \"{0}\" δεν υποστηρίζεται για ρόλο ομάδας, τον Explore, τις εργασίες παρασκηνίου ή τον κριτή μνήμης",
+  "No {0} credential is saved, so {1} could not run. Add an API key in Settings › Models & accounts.": "Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το {0}, οπότε το {1} δεν μπόρεσε να εκτελεστεί. Προσθέστε ένα κλειδί API στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.",
+  "No {0} credential is saved, so {1} could not run. Sign in to {0} in Settings › Models & accounts.": "Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το {0}, οπότε το {1} δεν μπόρεσε να εκτελεστεί. Συνδεθείτε στο {0} στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.",
+  "No {0} credential is saved, so {1} could not run. Sign in or add an API key in Settings › Models & accounts.": "Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το {0}, οπότε το {1} δεν μπόρεσε να εκτελεστεί. Συνδεθείτε ή προσθέστε ένα κλειδί API στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.",
+  "No credential is set up for {0}, so {1} could not run. Pick a model from a provider you are signed in to.": "Δεν έχει ρυθμιστεί διαπιστευτήριο για το {0}, οπότε το {1} δεν μπόρεσε να εκτελεστεί. Επιλέξτε ένα μοντέλο από έναν πάροχο στον οποίο έχετε συνδεθεί."
 }

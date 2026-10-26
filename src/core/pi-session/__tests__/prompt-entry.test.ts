@@ -149,7 +149,7 @@ describe('watchPromptEntry onCommitted', () => {
 describe('queuedPromptEntries', () => {
   const PNG: ImageContent = { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' };
   const JPEG: ImageContent = { type: 'image', data: '/9j/4AAQ', mimeType: 'image/jpeg' };
-  const ignored = { onCommitted: () => {}, onWithdrawn: () => {} };
+  const ignored = { onCommitted: () => {}, onWithdrawn: () => {}, onRefused: () => {} };
 
   /** A prompt pi queued: pi pushes its text, then reports `queued`. */
   function queue(fake: FakeSession, entries: ReturnType<typeof queuedPromptEntries>, text: string, images: ImageContent[], handlers: QueuedPromptHandlers = ignored, hookContext?: string): void {
@@ -194,7 +194,7 @@ describe('queuedPromptEntries', () => {
     const withdrawn: string[] = [];
     const committed: unknown[] = [];
     for (const text of ['first', 'second']) {
-      queue(fake, entries, text, [], { onCommitted: (entry) => committed.push(entry), onWithdrawn: () => withdrawn.push(text) });
+      queue(fake, entries, text, [], { onCommitted: (entry) => committed.push(entry), onWithdrawn: () => withdrawn.push(text), onRefused: () => {} });
     }
     const [first] = entries.requeue(fake.asSession(), ['first']);
 
@@ -215,7 +215,7 @@ describe('queuedPromptEntries', () => {
     const replaced = fakeSession();
     const entries = queuedPromptEntries();
     const withdrawn: string[] = [];
-    const record = (text: string) => ({ onCommitted: () => {}, onWithdrawn: () => withdrawn.push(text) });
+    const record = (text: string) => ({ onCommitted: () => {}, onWithdrawn: () => withdrawn.push(text), onRefused: () => {} });
     queue(replaced, entries, 'on the replaced session', [], record('on the replaced session'));
     queue(live, entries, 'delivered', [], record('delivered'));
     queue(live, entries, 'still queued', [], record('still queued'));
@@ -231,9 +231,9 @@ describe('queuedPromptEntries', () => {
     const fake = fakeSession();
     const entries = queuedPromptEntries();
     const withdrawn: string[] = [];
-    queue(fake, entries, 'look at this', [PNG], { onCommitted: () => {}, onWithdrawn: () => withdrawn.push('kept') });
+    queue(fake, entries, 'look at this', [PNG], { onCommitted: () => {}, onWithdrawn: () => withdrawn.push('kept'), onRefused: () => {} });
     fake.followUps.push('look at this');
-    const later = entries.add(fake.asSession(), [JPEG], undefined, { onCommitted: () => {}, onWithdrawn: () => withdrawn.push('withdrawn') });
+    const later = entries.add(fake.asSession(), [JPEG], undefined, { onCommitted: () => {}, onWithdrawn: () => withdrawn.push('withdrawn'), onRefused: () => {} });
 
     entries.withdrawOne(later!);
     entries.withdrawOne(later!);

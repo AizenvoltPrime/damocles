@@ -89,7 +89,21 @@ interface BootOptions {
   beforeAgentStart?: boolean;
 }
 
-export function heldSettleSessions(): {
+async function signedInModelRuntime(agentDir: string): Promise<ModelRuntime> {
+  const models = await ModelRuntime.create({
+    authPath: path.join(agentDir, 'auth.json'),
+    modelsPath: path.join(agentDir, 'models.json'),
+    refreshOnCreate: false,
+  });
+  await models.setRuntimeApiKey('anthropic', STUB_CREDENTIAL);
+  return models;
+}
+
+/**
+ * `modelRuntime` gives the model runtime each session is built on, as `FolderRuntime` builds the main chat's on PiRuntime's
+ * (`seatPiRuntime`); without it each session gets its own, signed in to anthropic.
+ */
+export function heldSettleSessions(shared: { modelRuntime?: () => Promise<ModelRuntime> } = {}): {
   boot: (responses: FauxResponseStep[], options?: BootOptions) => Promise<HeldSettleSession>;
   dispose: () => void;
 } {
@@ -168,12 +182,7 @@ export function heldSettleSessions(): {
       pi.registerProvider('anthropic', { baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages', streamSimple: faux.streamSimple } as never);
     };
     const settingsManager = withSettingsPolicy(SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: 'off' }, { projectTrusted: true }));
-    const modelRuntime = await ModelRuntime.create({
-      authPath: path.join(agentDir, 'auth.json'),
-      modelsPath: path.join(agentDir, 'models.json'),
-      refreshOnCreate: false,
-    });
-    await modelRuntime.setRuntimeApiKey('anthropic', STUB_CREDENTIAL);
+    const modelRuntime = await (shared.modelRuntime ? shared.modelRuntime() : signedInModelRuntime(agentDir));
     const services = await createAgentSessionServices({
       cwd,
       agentDir,

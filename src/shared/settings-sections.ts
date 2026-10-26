@@ -77,6 +77,15 @@ export function isSettingsAccountId(value: unknown): value is SettingsAccountId 
   return typeof value === 'string' && (SETTINGS_ACCOUNT_IDS as readonly string[]).includes(value);
 }
 
+// Anthropic's and OpenAI's rows, outside ACCOUNT_PROVIDER_IDS, each take an API key and a sign-in.
+export function accountTakesKey(account: SettingsAccountId): boolean {
+  return !isAccountProviderId(account) || isKeyProviderId(account);
+}
+
+export function accountSignsIn(account: SettingsAccountId): boolean {
+  return !isAccountProviderId(account) || isSignInProviderId(account);
+}
+
 /** Where a request opens the settings: a section, and the Accounts row or the What's new release to expand there. */
 export interface SettingsTarget {
   readonly section?: SettingsSectionId;

@@ -152,8 +152,8 @@ describe('the UserPromptSubmit hook runs before pi', () => {
   const { boot, dispose } = realPiSessions();
   const dirs: string[] = [];
 
-  afterEach(() => {
-    dispose();
+  afterEach(async () => {
+    await dispose();
     for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   });
 

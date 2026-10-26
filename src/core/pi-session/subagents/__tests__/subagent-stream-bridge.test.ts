@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { SubagentStreamBridge } from '../subagent-stream-bridge';
+import { useGreekLocale } from '../../../../__mocks__/greek-locale';
 import type { ExtensionToWebviewMessage } from '../../../../shared/types/messages';
 import type { AgentUsageTotals } from '../../../../shared/usage-accounting';
 
@@ -443,10 +444,11 @@ describe('SubagentStreamBridge model and effort', () => {
  * `message_end` with `stopReason: 'error'` (`agent-loop.js:325`), `turn_end` and `agent_end`
  * (`agent-loop.js:156-157`), the last stamped with `willRetry` by `AgentSession` (`agent-session.js:753`).
  */
-function emitFailedCall(session: FakeSession, errorMessage: string, opts: { partial?: string; willRetry: boolean }): void {
+function emitFailedCall(session: FakeSession, errorMessage: string, opts: { partial?: string; willRetry: boolean; provider?: string; model?: string }): void {
   session.emit({ type: 'message_start', message: { role: 'assistant' } });
   if (opts.partial) session.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: opts.partial } });
-  const message = { role: 'assistant', content: opts.partial ? [{ type: 'text', text: opts.partial }] : [], stopReason: 'error', errorMessage };
+  const model = opts.provider ? { provider: opts.provider, model: opts.model } : {};
+  const message = { role: 'assistant', content: opts.partial ? [{ type: 'text', text: opts.partial }] : [], ...model, stopReason: 'error', errorMessage };
   session.emit({ type: 'message_end', message });
   session.emit({ type: 'turn_end', message, toolResults: [] });
   session.emit({ type: 'agent_end', messages: [message], willRetry: opts.willRetry });
@@ -515,6 +517,52 @@ describe('SubagentStreamBridge provider failures', () => {
 
     expect(ofType(sent, 'error')).toEqual([{ type: 'error', message: '400 invalid_request_error', parentToolUseId: 'toolu_parent' }]);
     expect(ofType(sent, 'assistantRetracted')).toEqual([]);
+  });
+
+  // pi's text for a call whose provider has no credential (pinned against pi in provider-account.test.ts); a template pin reaches providers with no Accounts row.
+  it("names the provider and model of a call that had no credential in Damocles' words, never pi's", () => {
+    const sent: ExtensionToWebviewMessage[] = [];
+    const bridge = makeBridge(sent);
+    const session = makeFakeSession();
+    bridge.attach(session as never);
+
+    emitFailedCall(session, 'Provider is not configured: cerebras', { willRetry: false, provider: 'cerebras', model: 'gpt-oss-120b' });
+    session.emit({ type: 'agent_settled', aborted: false });
+
+    expect(ofType(sent, 'error')).toEqual([
+      { type: 'error', message: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.', parentToolUseId: 'toolu_parent' },
+    ]);
+  });
+
+  // A nested transcript has no account card, so a row's provider gets the row's text there.
+  it("names a row's missing credential with the row's text, never the account card", () => {
+    const sent: ExtensionToWebviewMessage[] = [];
+    const bridge = makeBridge(sent);
+    const session = makeFakeSession();
+    bridge.attach(session as never);
+
+    emitFailedCall(session, 'Provider is not configured: anthropic', { willRetry: false, provider: 'anthropic', model: 'claude-sonnet-5-5' });
+    session.emit({ type: 'agent_settled', aborted: false });
+
+    expect(ofType(sent, 'authFailure')).toEqual([]);
+    expect(ofType(sent, 'error')).toEqual([
+      { type: 'error', message: 'No Anthropic credential is saved, so Sonnet 5.5 could not run. Sign in or add an API key in Settings › Models & accounts.', parentToolUseId: 'toolu_parent' },
+    ]);
+  });
+
+  it('shows the live card in the UI language', () => {
+    useGreekLocale();
+    const sent: ExtensionToWebviewMessage[] = [];
+    const bridge = makeBridge(sent);
+    const session = makeFakeSession();
+    bridge.attach(session as never);
+
+    emitFailedCall(session, 'Provider is not configured: anthropic', { willRetry: false, provider: 'anthropic', model: 'claude-sonnet-5-5' });
+    session.emit({ type: 'agent_settled', aborted: false });
+
+    expect(ofType(sent, 'error')).toEqual([
+      { type: 'error', message: 'Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το Anthropic, οπότε το Sonnet 5.5 δεν μπόρεσε να εκτελεστεί. Συνδεθείτε ή προσθέστε ένα κλειδί API στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.', parentToolUseId: 'toolu_parent' },
+    ]);
   });
 
   it('shows the last attempt once the retries run out', () => {

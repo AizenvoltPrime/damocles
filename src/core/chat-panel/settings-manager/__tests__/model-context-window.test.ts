@@ -23,14 +23,14 @@ describe("the context meter's window is the one of the model the session adopted
     const { settings, lastWindow } = setup();
     expect(getContextWindowForModel('gpt-6.1-sol')).not.toBe(500_000);
 
-    settings.adoptSessionModel(HOST, 'panel-1', FOLDER, 'gpt-6.1-sol', 500_000);
+    settings.adoptSessionModel(HOST, 'panel-1', FOLDER, 'gpt-6.1-sol', 500_000, true);
 
     expect(lastWindow()).toBe(500_000);
   });
 
   it('keeps the adopted window on every later model post', () => {
     const { settings, lastWindow } = setup();
-    settings.adoptSessionModel(HOST, 'panel-1', FOLDER, 'gpt-6.1-sol', 500_000);
+    settings.adoptSessionModel(HOST, 'panel-1', FOLDER, 'gpt-6.1-sol', 500_000, true);
 
     settings.sendModelForPanel(HOST, 'panel-1');
 
@@ -39,16 +39,16 @@ describe("the context meter's window is the one of the model the session adopted
 
   it('updates the window when the same model is adopted with another one', () => {
     const { settings, lastWindow } = setup();
-    settings.adoptSessionModel(HOST, 'panel-1', FOLDER, 'gpt-6.1-sol', 500_000);
+    settings.adoptSessionModel(HOST, 'panel-1', FOLDER, 'gpt-6.1-sol', 500_000, true);
 
-    settings.adoptSessionModel(HOST, 'panel-1', FOLDER, 'gpt-6.1-sol', 272_000);
+    settings.adoptSessionModel(HOST, 'panel-1', FOLDER, 'gpt-6.1-sol', 272_000, true);
 
     expect(lastWindow()).toBe(272_000);
   });
 
   it("keeps the adopted window through a resumed conversation's recorded selection, which posts no model of its own", () => {
     const { settings, lastWindow, posted } = setup();
-    settings.adoptSessionModel(HOST, 'panel-1', FOLDER, 'gpt-6.1-sol', 500_000);
+    settings.adoptSessionModel(HOST, 'panel-1', FOLDER, 'gpt-6.1-sol', 500_000, true);
     const before = posted.length;
 
     settings.restoreRecordedSelection('panel-1', 'gpt-6.1-sol', 'high');
@@ -60,7 +60,7 @@ describe("the context meter's window is the one of the model the session adopted
 
   it('forgets the window when the panel closes', () => {
     const { settings, lastWindow } = setup();
-    settings.adoptSessionModel(HOST, 'panel-1', FOLDER, 'gpt-6.1-sol', 500_000);
+    settings.adoptSessionModel(HOST, 'panel-1', FOLDER, 'gpt-6.1-sol', 500_000, true);
     settings.cleanupPanelModel('panel-1');
     settings.initPanelModel('panel-1');
 

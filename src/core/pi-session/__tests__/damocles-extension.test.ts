@@ -218,6 +218,25 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
   });
 });
 
+describe('context_with_system: a model switch reaches the provider in the leading system message', () => {
+  it('folds every system message up to the latest model change into the first, leaving the rest in place', async () => {
+    const { pi, run } = fakePiAll();
+    createDamoclesExtensionFactory(reader(), noCheckpoints())(pi as never);
+    const head = { role: 'system', content: '', sections: { preamble: 'p', damocles_model: 'Opus' }, timestamp: 1 };
+    const user = (text: string) => ({ role: 'user', content: [{ type: 'text', text }], timestamp: 2 });
+    const thinkingOff = { role: 'system', content: '', sections: { damocles_output_form: 'off' }, timestamp: 4 };
+    const messages = [head, user('one'), { role: 'system', content: '', sections: { damocles_model: 'Haiku' }, timestamp: 3 }, user('two'), thinkingOff, user('three')];
+
+    const [result] = await run('context_with_system', { type: 'context_with_system', messages }, ctxFor('A'));
+    expect(result).toEqual({
+      messages: [{ role: 'system', content: '', sections: { preamble: 'p', damocles_model: 'Haiku' }, timestamp: 1 }, user('one'), user('two'), thinkingOff, user('three')],
+    });
+    // Section order decides the rendered prompt, which `toEqual` ignores.
+    expect(Object.keys((result as { messages: [{ sections: object }] }).messages[0].sections)).toEqual(['preamble', 'damocles_model']);
+    expect(await run('context_with_system', { type: 'context_with_system', messages: [head, user('one'), thinkingOff] }, ctxFor('A'))).toEqual([undefined]);
+  });
+});
+
 describe('cache_warming_decision (budget + disposal policy)', () => {
   const warmEvent = { type: 'cache_warming_decision', warmCost: 0.075, missCost: 1.5, continuationProbability: 1, action: 'warm' };
 

@@ -218,6 +218,12 @@ export function buildEnvironmentSection(facts: EnvironmentFacts): string {
   return ["# Environment", "You have been invoked in the following environment: ", ...lines].join("\n");
 }
 
+/** The section `buildModelSection` fills. Its text must change only with the chat's model: any change re-folds the whole prompt (`model-switch-prompt.ts`). */
+export const MODEL_SECTION = 'damocles_model';
+
+/** The fold (`model-switch-prompt.ts`) drops pi's record of a switch, so the prompt itself says earlier replies may be another model's. */
+export const MODEL_SWITCH_NOTE = "The user can switch this chat's model at any time, so earlier replies in this conversation may have come from another model.";
+
 /** Without a catalog entry for `model`, only a retired id gets a name and cutoff. */
 export function buildModelSection(model: string): string {
   const entry = modelCatalogEntry(model);
@@ -227,7 +233,7 @@ export function buildModelSection(model: string): string {
     ? `You are powered by the model named ${displayName}. The exact model ID is ${modelId}.`
     : `You are powered by the model ${modelId}.`;
   const cutoff = entry ? entry.knowledgeCutoff : (retiredModel(model)?.cutoff ?? null);
-  return cutoff ? `${modelLine}\nAssistant knowledge cutoff is ${cutoff}.` : modelLine;
+  return [modelLine, ...(cutoff ? [`Assistant knowledge cutoff is ${cutoff}.`] : []), MODEL_SWITCH_NOTE].join('\n');
 }
 
 /**

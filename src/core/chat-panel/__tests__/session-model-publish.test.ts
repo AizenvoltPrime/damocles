@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-let captured: { onModelChange?: (model: string, contextWindow: number) => void } | null = null;
+let captured: { model?: string; onModelChange?: (model: string, contextWindow: number, committed: boolean) => void } | null = null;
 vi.mock('../../pi-session/pi-session', () => ({
   PiSession: class {
     constructor(options: typeof captured) {
@@ -34,7 +34,7 @@ describe("the panel's model is the one its session committed", () => {
     const manager = new SessionManager({
       getMcpConfigLoaded: () => true,
       getEnabledMcpServers: () => ({ userUnion: {}, userVisible: [], folder: {} }),
-      getActiveModelForPanel: () => 'claude-opus-5-5',
+      getConfiguredModelForPanel: () => 'claude-opus-5-5',
       getPreferOpenAIApiKey: () => false,
       resolveThinkingForPanel: () => ({ thinkingDisabled: false, effort: null }),
       restoreRecordedSelection: vi.fn(),
@@ -47,16 +47,118 @@ describe("the panel's model is the one its session committed", () => {
     } as unknown as SessionManagerConfig);
     await manager.createSessionForPanel(host, { getPermissionMode: () => 'default' } as never, 'panel-1', FOLDER);
 
-    captured!.onModelChange!('claude-haiku-5-5', 200_000);
+    captured!.onModelChange!('claude-haiku-5-5', 200_000, true);
+    captured!.onModelChange!('claude-opus-5-5', 1_000_000, false);
 
-    expect(adopt).toHaveBeenCalledExactlyOnceWith(host, 'panel-1', FOLDER, 'claude-haiku-5-5', 200_000);
+    expect(adopt.mock.calls).toEqual([
+      [host, 'panel-1', FOLDER, 'claude-haiku-5-5', 200_000, true],
+      [host, 'panel-1', FOLDER, 'claude-opus-5-5', 1_000_000, false],
+    ]);
+  });
+
+  // Only a session given no model may replace it with a signed-in one.
+  it('gives the session no model only while the panel holds none and damocles.model is unset in every scope', async () => {
+    const manager = new SessionManager({
+      getMcpConfigLoaded: () => true,
+      getEnabledMcpServers: () => ({ userUnion: {}, userVisible: [], folder: {} }),
+      getConfiguredModelForPanel: () => undefined,
+      getPreferOpenAIApiKey: () => false,
+      resolveThinkingForPanel: () => ({ thinkingDisabled: false, effort: null }),
+      restoreRecordedSelection: vi.fn(),
+      adoptSessionModel: vi.fn(),
+      postMessage: vi.fn(),
+      getMemoryService: () => null,
+      getCompassService: () => null,
+      getRawBrowserService: () => ({}),
+      platform: createFakePlatform(),
+    } as unknown as SessionManagerConfig);
+    await manager.createSessionForPanel({} as PanelHost, { getPermissionMode: () => 'default' } as never, 'panel-1', FOLDER);
+    expect(captured).not.toHaveProperty('model');
+
+    const unset = new SettingsManager({ postMessage: () => undefined, platform: installFakePlatform({ settings: {} }), folders: () => [] });
+    unset.initPanelModel('panel-1');
+    expect(unset.getConfiguredModelForPanel('panel-1')).toBeUndefined();
+    expect(unset.getActiveModelForPanel('panel-1')).toBe('claude-opus-5-5');
+    unset.adoptSessionModel({} as PanelHost, 'panel-1', FOLDER, 'deepseek-flash', 1_000_000, true);
+    expect(unset.getConfiguredModelForPanel('panel-1')).toBe('deepseek-flash');
+
+    const configured = new SettingsManager({ postMessage: () => undefined, platform: installFakePlatform({ settings: { project: { 'damocles.model': 'muse-spark-1.3' } } }), folders: () => [] });
+    configured.initPanelModel('panel-1');
+    expect(configured.getConfiguredModelForPanel('panel-1')).toBe('muse-spark-1.3');
+  });
+
+  // Holding none would let the panel's next session, after a folder switch, fall back to another model.
+  it('holds a committed model that equals the default, so the next session for the panel starts on it', () => {
+    const settings = new SettingsManager({ postMessage: () => undefined, platform: installFakePlatform({ settings: {} }), folders: () => [] });
+    settings.initPanelModel('panel-1');
+    expect(settings.getConfiguredModelForPanel('panel-1')).toBeUndefined();
+
+    settings.adoptSessionModel({} as PanelHost, 'panel-1', FOLDER, 'claude-opus-5-5', 1_000_000, true);
+
+    expect(settings.getConfiguredModelForPanel('panel-1')).toBe('claude-opus-5-5');
+  });
+
+  // A held factory default would reach the next session as configured, which then neither falls back nor refuses as for the factory default.
+  it('holds no factory default the session only shows, and posts it as the model the chat shows', async () => {
+    const posted: ExtensionToWebviewMessage[] = [];
+    const platform = installFakePlatform({ settings: {} });
+    const settings = new SettingsManager({ postMessage: (_host, message) => posted.push(message), platform, folders: () => [] });
+    settings.initPanelModel('panel-1');
+
+    settings.adoptSessionModel({} as PanelHost, 'panel-1', FOLDER, 'claude-opus-5-5', 1_000_000, false);
+
+    expect(settings.getConfiguredModelForPanel('panel-1')).toBeUndefined();
+    expect(settings.getActiveModelForPanel('panel-1')).toBe('claude-opus-5-5');
+    expect(posted).toEqual([
+      expect.objectContaining({ type: 'modelUpdate', activeModel: 'claude-opus-5-5', contextWindowSize: 1_000_000 }),
+      expect.objectContaining({ type: 'panelThinkingUpdate', panelModel: 'claude-opus-5-5' }),
+    ]);
+
+    // A default set later is the next session's model; the running chat still shows the one it runs.
+    await platform.settings.update('damocles.model', 'claude-sonnet-5-5', 'user');
+    settings.sendModelForPanel({} as PanelHost, 'panel-1');
+    expect(settings.getConfiguredModelForPanel('panel-1')).toBe('claude-sonnet-5-5');
+    expect(posted.at(-1)).toEqual(expect.objectContaining({ type: 'modelUpdate', activeModel: 'claude-opus-5-5', defaultModel: 'claude-sonnet-5-5' }));
+  });
+
+  it("starts the panel's next session, as a folder switch does, on the factory default until the shown one is committed", async () => {
+    const settings = new SettingsManager({ postMessage: () => undefined, platform: installFakePlatform({ settings: {} }), folders: () => [] });
+    settings.initPanelModel('panel-1');
+    const manager = new SessionManager({
+      getMcpConfigLoaded: () => true,
+      getEnabledMcpServers: () => ({ userUnion: {}, userVisible: [], folder: {} }),
+      getConfiguredModelForPanel: settings.getConfiguredModelForPanel.bind(settings),
+      getPreferOpenAIApiKey: () => false,
+      resolveThinkingForPanel: () => ({ thinkingDisabled: false, effort: null }),
+      restoreRecordedSelection: vi.fn(),
+      adoptSessionModel: settings.adoptSessionModel.bind(settings),
+      postMessage: vi.fn(),
+      getMemoryService: () => null,
+      getCompassService: () => null,
+      getRawBrowserService: () => ({}),
+      platform: createFakePlatform(),
+    } as unknown as SessionManagerConfig);
+    const nextSession = async () => {
+      await manager.createSessionForPanel({} as PanelHost, { getPermissionMode: () => 'default' } as never, 'panel-1', FOLDER);
+      return captured!;
+    };
+
+    const first = await nextSession();
+    expect(first).not.toHaveProperty('model');
+    first.onModelChange!('claude-opus-5-5', 1_000_000, false);
+
+    const afterSwitch = await nextSession();
+    expect(afterSwitch).not.toHaveProperty('model');
+    afterSwitch.onModelChange!('claude-opus-5-5', 1_000_000, true);
+
+    expect((await nextSession()).model).toBe('claude-opus-5-5');
   });
 
   it('posts the committed model and the thinking state for it', () => {
     const posted: ExtensionToWebviewMessage[] = [];
     const settings = settingsWith(posted);
 
-    settings.adoptSessionModel({} as PanelHost, 'panel-1', FOLDER, 'claude-haiku-5-5', 200_000);
+    settings.adoptSessionModel({} as PanelHost, 'panel-1', FOLDER, 'claude-haiku-5-5', 200_000, true);
 
     expect(settings.getActiveModelForPanel('panel-1')).toBe('claude-haiku-5-5');
     expect(posted).toEqual([

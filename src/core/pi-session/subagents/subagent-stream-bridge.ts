@@ -33,7 +33,7 @@ import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../tool
 import { joinResultText, resultImageCount } from '../tool-result-text';
 import { ToolOutputCoalescer } from '../tool-output-coalescer';
 import { piMessagesToHistoryAgentMessages } from './message-mapper';
-import { NestedCallFailures, failedCallError } from '../nested-call-failures';
+import { NestedCallFailures, nestedCallError } from '../nested-call-failures';
 import { skippedToolCalls } from '../abandoned-tool-calls';
 import { turnStoppedToolCallIds, windDownRecorded } from '../session-store/turn-stopped';
 import type { ToolAbandonReason } from '../../../shared/types/session';
@@ -106,7 +106,7 @@ export class SubagentStreamBridge {
   private readonly windDown = new Set<unknown>();
   /** An error stop, decided at its `turn_end` by the wind-down record (`decideErrorStop`). */
   private undecidedError: {
-    message: { errorMessage?: string };
+    message: { errorMessage?: string; provider?: string; model?: string };
     calls: Array<{ id: string; name: string }>;
     skipped: Array<{ id: string; name: string }>;
     shownId: string | undefined;
@@ -298,7 +298,7 @@ export class SubagentStreamBridge {
       return;
     }
     for (const call of pending.calls) this.emitAbandoned(call, 'failed');
-    this.failures.hold(failedCallError(pending.message.errorMessage), pending.shownId);
+    this.failures.hold(nestedCallError(pending.message, 'user'), pending.shownId);
   }
 
   private emitAbandoned(call: { id: string; name: string }, reason: ToolAbandonReason): void {

@@ -4,6 +4,7 @@ import { applyLocale, i18n } from "@/i18n";
 import { useUsageStatsStore } from "@/stores/useUsageStatsStore";
 import { useBindPlanStore } from "@/stores/useBindPlanStore";
 import type { PermissionMode } from "@shared/types/settings";
+import { MODEL_VENDOR_NAMES } from "@shared/model-vendor";
 import type { HandlerRegistry } from "../types";
 import { nestedTranscript } from "./nested-transcript";
 
@@ -96,11 +97,15 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
 
     // Core refused a send and gave it back; it lands in the composer with why.
     promptReturned: (msg, ctx) => {
+      if (msg.correlationId) ctx.stores.streamingStore.removeMessageByCorrelationId(msg.correlationId);
       if (msg.content.length === 0) return;
       const composer = ctx.refs.chatInputRef.value;
       if (composer) composer.restoreQueued(msg.content);
       else ctx.stores.uiStore.returnedPrompt = [...(ctx.stores.uiStore.returnedPrompt ?? []), ...msg.content];
-      const title = i18n.global.t(`toast.promptReturned.${msg.reason}`);
+      // The title names the fix, as settings open at it: a provider's sign-in, else what the reason says.
+      const title = msg.account
+        ? i18n.global.t("toast.promptReturned.providerSignIn", { provider: MODEL_VENDOR_NAMES[msg.account] })
+        : i18n.global.t(`toast.promptReturned.${msg.reason}`);
       if (msg.detail) toast.info(title, { description: msg.detail });
       else toast.info(title);
     },

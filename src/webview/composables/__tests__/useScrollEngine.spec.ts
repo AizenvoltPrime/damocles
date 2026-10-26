@@ -65,6 +65,30 @@ describe('the height the engine reserves for a thinking-dropped notice', () => {
   });
 });
 
+describe('the height the engine reserves for an error row', () => {
+  // The rendered heights of error rows with a one-line message in the built webview at a 16px root.
+  it('reserves the notice with its Details row', async () => {
+    const item = baseItem('error-auth-1', 'error-message');
+    item.message = { id: 'e1', role: 'error', content: 'raw', timestamp: 100, authFailure: { account: 'deepseek', reason: 'rejected' } };
+
+    expect(at(await heightsFor([item]), 0)).toBeCloseTo(98.156, 1);
+  });
+
+  it('reserves the notice without Details for a missing credential', async () => {
+    const item = baseItem('error-auth-2', 'error-message');
+    item.message = { id: 'e2', role: 'error', content: 'raw', timestamp: 100, authFailure: { account: 'deepseek', reason: 'missing' } };
+
+    expect(at(await heightsFor([item]), 0)).toBeCloseTo(76.156, 1);
+  });
+
+  it('reserves a plain error row like the notice without Details', async () => {
+    const item = baseItem('error-plain-1', 'error-message');
+    item.message = { id: 'e3', role: 'error', content: 'raw', timestamp: 100 };
+
+    expect(at(await heightsFor([item]), 0)).toBeCloseTo(76.156, 1);
+  });
+});
+
 describe('a row resizing while the reader is scrolled into the transcript', () => {
   afterEach(() => vi.unstubAllGlobals());
 
@@ -97,7 +121,7 @@ describe('a row resizing while the reader is scrolled into the transcript', () =
     });
     const column = document.createElement('div');
     Object.defineProperty(column, 'clientWidth', { value: 400 });
-    const items = ref(['r0', 'r1', 'r2'].map((id): VirtualItem => ({ ...baseItem(id, 'error-message'), sourceMessageId: `m-${id}` })));
+    const items = ref(['r0', 'r1', 'r2'].map((id): VirtualItem => ({ ...baseItem(id, 'background-label'), sourceMessageId: `m-${id}` })));
     const engine = useScrollEngine(items, ref(streamingMessage), ref(container), ref(canvas), ref(column));
     watch(engine.frame, (frame) => { canvas.style.minHeight = `${frame.totalHeight}px`; }, { immediate: true });
     engine.measureContainerWidth();

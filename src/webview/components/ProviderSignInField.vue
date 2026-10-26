@@ -43,7 +43,11 @@ const announcement = computed(() => {
 const error = computed(() => (state.value.phase === 'idle' ? state.value.error ?? null : null));
 const cancellable = computed(() => state.value.phase !== 'idle' && state.value.phase !== 'finishing');
 const answerShown = computed(() => state.value.phase === 'prompt' || (state.value.phase === 'browser' && state.value.paste));
-const answerRefused = computed(() => (state.value.phase === 'prompt' || state.value.phase === 'browser') && state.value.invalid === true);
+const answerRefusal = computed(() => {
+  const current = state.value;
+  if ((current.phase !== 'prompt' && current.phase !== 'browser') || current.invalid !== true) return null;
+  return t(current.phase === 'prompt' ? 'providerSignIn.enterpriseDomain.invalid' : 'providerSignIn.paste.invalid');
+});
 
 // Every request below makes core post this provider's state or status again; until then a repeat would only be dropped.
 const pending = ref(false);
@@ -285,6 +289,7 @@ function answer(input: string): void {
         :placeholder="state.phase === 'prompt' ? t('providerSignIn.enterpriseDomain.placeholder') : undefined"
         :commit-on-blur="false"
         :disabled="pending"
+        :refusal="answerRefusal"
         wide
         @commit="answer"
       />
@@ -305,15 +310,6 @@ function answer(input: string): void {
         {{ t('providerSignIn.enterpriseDomain.skip') }}
       </SettingButton>
     </div>
-    <p
-      v-if="answerRefused"
-      class="sm-hint sm-hint-error"
-      role="alert"
-      data-testid="provider-sign-in-answer-refused"
-    >
-      {{ t(state.phase === 'prompt' ? 'providerSignIn.enterpriseDomain.invalid' : 'providerSignIn.paste.invalid') }}
-    </p>
-
     <div
       v-if="cancellable"
       class="sm-field-row"

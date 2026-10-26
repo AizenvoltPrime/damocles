@@ -119,8 +119,8 @@ function assistantEntry(cost: number, timestamp = '2026-01-01T00:00:00.000Z', us
  * (`stopReason` plus `errorMessage`); it never emits a `message_update` for the stream's error event. Its
  * `turn_end` follows (pi-agent-core agent-loop.js:146-157).
  */
-function terminalAssistant(stopReason: 'error' | 'aborted', errorMessage: string, provider = 'anthropic'): unknown[] {
-  const message = { role: 'assistant', content: [], provider, stopReason, errorMessage, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {} } };
+function terminalAssistant(stopReason: 'error' | 'aborted', errorMessage: string, provider = 'anthropic', model?: string): unknown[] {
+  const message = { role: 'assistant', content: [], provider, ...(model ? { model } : {}), stopReason, errorMessage, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {} } };
   return [
     { type: 'message_start', message },
     { type: 'message_end', message },
@@ -132,9 +132,9 @@ function terminalAssistant(stopReason: 'error' | 'aborted', errorMessage: string
  * One failed model call as pi ends its run (pi-agent-core agent-loop.js:148-157), with agent-session's
  * verdict on `agent_end` (`_willRetryAfterAgentEnd`, agent-session.js:753 and :799).
  */
-function failedCall(errorMessage: string, willRetry: boolean, provider = 'anthropic'): unknown[] {
+function failedCall(errorMessage: string, willRetry: boolean, provider = 'anthropic', model?: string): unknown[] {
   return [
-    ...terminalAssistant('error', errorMessage, provider),
+    ...terminalAssistant('error', errorMessage, provider, model),
     { type: 'agent_end', messages: [], willRetry },
   ];
 }
@@ -941,10 +941,10 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
 });
 
 describe('PiStreamAdapter terminal assistant errors', () => {
-  const run = (provider: string, errorMessage: string): ExtensionToWebviewMessage[] => {
+  const run = (provider: string, errorMessage: string, model?: string): ExtensionToWebviewMessage[] => {
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out);
-    const session = fakeSession([...failedCall(errorMessage, false, provider), { type: 'agent_settled' }]);
+    const session = fakeSession([...failedCall(errorMessage, false, provider, model), { type: 'agent_settled' }]);
     adapter.subscribe(session as never);
     adapter.beginTurn('c');
     out.length = 0;
@@ -969,6 +969,18 @@ describe('PiStreamAdapter terminal assistant errors', () => {
 
   it('shows a provider with no Accounts row the error card', () => {
     expect(run('google', rejected)).toEqual([{ type: 'error', message: rejected }]);
+  });
+
+  // pi's text for a call whose provider has no credential (pinned against pi in provider-account.test.ts).
+  it('raises the card for a credential removed while the run went on, as a missing one rather than a refused one', () => {
+    const missing = 'Provider is not configured: deepseek';
+    expect(run('deepseek', missing)).toEqual([{ type: 'authFailure', message: missing, account: 'deepseek', reason: 'missing' }]);
+  });
+
+  it('names a provider with no Accounts row and the model when the call had no credential, in Damocles\' words', () => {
+    expect(run('cerebras', 'Provider is not configured: cerebras', 'gpt-oss-120b')).toEqual([
+      { type: 'error', message: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.' },
+    ]);
   });
 
   it('reads an xAI 402 as a credential without API access, by its status alone', () => {
@@ -1573,6 +1585,38 @@ describe('PiStreamAdapter compaction no-op classification', () => {
     session.play();
 
     expect(out.some((m) => m.type === 'error')).toBe(true);
+  });
+
+  // pi's wrapped texts for a compaction on a model whose credential is gone (pinned against a real pi session in provider-account.test.ts).
+  it.each([
+    ['manual', 'Compaction failed: Summarization failed: Provider is not configured: deepseek'],
+    ['threshold', 'Auto-compaction failed: Summarization failed: Provider is not configured: deepseek'],
+    ['overflow', 'Context overflow recovery failed: Summarization failed: Provider is not configured: deepseek'],
+  ] as const)('raises the missing-credential card of the session model\'s account for a failed %s compaction', (reason, errorMessage) => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = { ...fakeSession([{ type: 'compaction_end', reason, result: undefined, aborted: false, willRetry: false, errorMessage }]), model: { provider: 'deepseek', id: 'deepseek-v4-pro' } };
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    session.play();
+
+    expect(out.filter((m) => m.type === 'error' || m.type === 'authFailure')).toEqual([{ type: 'authFailure', message: errorMessage, account: 'deepseek', reason: 'missing' }]);
+  });
+
+  it('names a provider with no Accounts row and its model for a compaction that lost the credential', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const errorMessage = 'Compaction failed: Summarization failed: Provider is not configured: cerebras';
+    const session = { ...fakeSession([{ type: 'compaction_end', reason: 'manual', result: undefined, aborted: false, willRetry: false, errorMessage }]), model: { provider: 'cerebras', id: 'gpt-oss-120b' } };
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    session.play();
+
+    expect(out.filter((m) => m.type === 'error' || m.type === 'authFailure')).toEqual([
+      { type: 'error', message: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.' },
+    ]);
   });
 
   it('forwards the post-compaction token estimate as postTokens (pi 0.79.8 #5877)', () => {

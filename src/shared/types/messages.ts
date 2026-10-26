@@ -439,9 +439,17 @@ export type WorktreeFinishAction = "apply" | "merge" | "update" | "delete";
  * runs on the chat's worktree; heldPromptKept: a held first prompt that will not be sent (the chat left its opt-in, or a
  * draft the host kept across an unload or a quit); mcpResourceUnavailable: an attached MCP resource could not be sent (the
  * message's `detail` says which and why); modelSignInRequired: no signed-in model can run; modelUnavailable: the chat has
- * no model it can run, or its plan no longer includes the chat's model (`detail` says why).
+ * no model it can run, or its plan no longer includes the chat's model (`detail` says why); promptRejected: pi refused the
+ * prompt before storing it, and the failure core sent with it says why: an `authFailure` card in the dock, else an error row
+ * in the transcript.
  */
-export type PromptReturnReason = "heldPromptWaiting" | "worktreeFinishing" | "heldPromptKept" | "mcpResourceUnavailable" | "conversationChanged" | "modelSignInRequired" | "modelUnavailable";
+export type PromptReturnReason = "heldPromptWaiting" | "worktreeFinishing" | "heldPromptKept" | "mcpResourceUnavailable" | "conversationChanged" | "modelSignInRequired" | "modelUnavailable" | "promptRejected";
+
+/** Why a provider call failed on its account's credential (`authFailure`, `errorReplay`, `btwError`). */
+export type AuthFailureReason = "rejected" | "noApiAccess" | "missing";
+
+/** A provider call that failed on an account's credential: the Accounts row, and why. */
+export interface AuthFailure { account: SettingsAccountId; reason: AuthFailureReason }
 
 /** A chat review's scope (D60): the whole chat, or only its latest turn. */
 export type ChatReviewScope = "chat" | "turn";
@@ -537,8 +545,11 @@ export type ExtensionToWebviewMessage =
   | { type: "toolPending"; toolUseId: string; toolName: string; input: unknown; parentToolUseId?: string | null }
   /** `parentToolUseId` names the nested agent the error belongs to: a subagent's `Agent` call id or a team agent's id. */
   | { type: "error"; message: string; parentToolUseId?: string }
-  /** `account`: the Accounts row whose credential the provider refused. `noApiAccess`: xAI answered 402, the account lacks API access. */
-  | { type: "authFailure"; message: string; account: SettingsAccountId; reason: "rejected" | "noApiAccess" }
+  /**
+   * `account`: the Accounts row whose credential the provider refused. `noApiAccess`: xAI answered 402, the account lacks API
+   * access. `missing`: pi had no credential for the call, so the provider was never asked.
+   */
+  | ({ type: "authFailure"; message: string } & AuthFailure)
   /** With `account`, only that account's card clears: its credential changed. Without, every card clears. */
   | { type: "authFailureCleared"; account?: SettingsAccountId }
   /** `stored`: the conversation has a session file, so it is what a restart restores. pi writes none before the first prompt. */
@@ -644,11 +655,14 @@ export type ExtensionToWebviewMessage =
   // desktop: text the host puts in the composer after its draft, which it never replaces (the Graph's Explain Changes)
   | { type: "composerAppend"; text: string }
   /** A prompt core did not send goes back into the composer, text and images; `reason` says why. */
-  // detail: localized text the reason alone cannot carry
-  | { type: "promptReturned"; content: UserContentBlock[]; reason: PromptReturnReason; detail?: string }
+  // detail: localized text the reason alone cannot carry; account: the Accounts row settings open at, whose sign-in lets the
+  // chat's model run (modelSignInRequired, modelUnavailable) or whose credential failed (promptRejected, the `authFailure`
+  // card's account); correlationId: the transcript's echo of the prompt, which the transcript drops.
+  | { type: "promptReturned"; content: UserContentBlock[]; reason: PromptReturnReason; detail?: string; account?: SettingsAccountId; correlationId?: string }
   | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; terminalAttachments?: ChatAttachmentInfo[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; steerTarget?: { agentId: string; agentType?: string; description?: string }; promptIndex?: number; timestamp?: number }
   | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[]; effort?: import('../effort-badge').EffortBadgeLevel }
-  | { type: "errorReplay"; content: string }
+  /** `authFailure`: the call failed on that account's credential, refused or missing, which the live view showed as its card. */
+  | { type: "errorReplay"; content: string; authFailure?: AuthFailure }
   | { type: "promptHistory"; history: string[]; hasMore: boolean }
   | { type: "promptHistoryPush"; entry: string }
   | { type: "panelFocused" }
@@ -837,7 +851,11 @@ export type ExtensionToWebviewMessage =
   | { type: "sessionTagged"; sessionId: string; tag: string | null }
   | { type: "btwStreaming"; btwId: string; text: string }
   | { type: "btwComplete"; btwId: string; text: string }
-  | { type: "btwError"; btwId: string; message: string }
+  /**
+   * `authFailure`: the aside's call failed on that account's credential, shown as the transcript's notice with `message` behind
+   * Details, except for `missing`, whose `message` is pi's and never shown.
+   */
+  | { type: "btwError"; btwId: string; message: string; authFailure?: AuthFailure }
   | { type: "backgroundTaskStarted"; task: import('./background-tasks').BackgroundTask }
   // `requestId` echoes the `steerAgent` this answers; a steer the extension sends on its own carries none.
   | { type: "subagentSteered"; agentId: string; toolUseId: string | null; agentType?: string; description?: string; message: string; images?: ImageBlock[]; requestId?: string; status: 'steered' | 'queued' | 'finished' | 'failed' | 'not-found'; team?: { teamId: string; teamTitle: string; memberName: string; role: 'lead' | 'specialist' } }

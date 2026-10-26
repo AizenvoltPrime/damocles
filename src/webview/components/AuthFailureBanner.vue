@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { KeyRound } from 'lucide-vue-next';
-import { MODEL_VENDOR_NAMES } from '@shared/model-vendor';
 import type { SettingsAccountId } from '@shared/settings-sections';
 import type { AuthFailure } from '@/stores/useUIStore';
+import { useAuthFailureText } from '@/composables/useAuthFailureText';
 import DockBanner from './DockBanner.vue';
 
 const props = defineProps<{
@@ -18,21 +17,14 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 
-const isAnthropic = computed(() => props.failure.account === 'anthropic');
-
-const providerName = computed(() => MODEL_VENDOR_NAMES[props.failure.account]);
-
-const message = computed(() => {
-  if (props.failure.reason === 'noApiAccess') return t('authBanner.noApiAccess', { provider: providerName.value });
-  return isAnthropic.value ? t('authBanner.sessionExpired') : t('authBanner.rejected', { provider: providerName.value });
-});
+const { isAnthropic, title, message } = useAuthFailureText(() => props.failure);
 </script>
 
 <template>
   <DockBanner
     tone="warning"
     :icon="KeyRound"
-    :title="t('authBanner.title', { provider: providerName })"
+    :title="title"
     data-testid="auth-banner"
     @dismiss="emit('dismiss')"
   >

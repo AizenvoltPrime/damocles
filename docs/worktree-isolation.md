@@ -461,7 +461,7 @@ unknown directory blocks the next command that needs it: a git call, a `cd`, a g
 shell or cmd that starts there; `$PWD` is then computed. In PowerShell it blocks the next statement that runs git, a
 shell, cmd or wsl, or moves or starts a process in a location (`Set-Location`, `Push-Location`, `Start-Process`). When the places
 grew past 32, the reason suggests the form that keeps them few: a `( cd "$d" && ... )` subshell in Bash, or `Push-Location` and
-`Pop-Location` in PowerShell.
+`Pop-Location` in PowerShell, at a loop body's top level or in an `if` branch inside it ("Loops and functions").
 
 ### PowerShell locations
 
@@ -493,7 +493,9 @@ another trap's action may run between its commands, as in bash. A `( )` subshell
 as bash does under `set -E` and `set -T`. A trap does not change the exit status `&&` and `||` read.
 
 After `break` or `continue` every command may start from any place seen, and in PowerShell after `break`, `continue`,
-`return`, `throw` and inside `catch`, `finally` and `trap`.
+`return`, `throw` and inside `catch`, `finally` and `trap`. In a PowerShell text that holds a `trap` anywhere, every
+statement may start from any place seen: PowerShell sets a trap for its whole scope, and its `continue` resumes after the
+top-level statement around the error, which may leave an `if` branch or a loop body partway.
 
 ## Loops and functions
 
@@ -507,8 +509,17 @@ After `break` or `continue` every command may start from any place seen, and in 
   where a walk dropped a place it stood in, every place seen stays possible after the loop.
 - A PowerShell function or filter is walked once where it is defined (its places join those before it) and recorded by
   name without case; each call by that name walks its body where the call stands.
-- `if`, `elseif`, `else`, `try`, `catch` and `finally` bodies, Bash groups and subshells, and a script block after `&`
-  or `.` run at most once.
+- A branch of an `if` runs whole or not at all: in Bash from `then` or `else` to the next `elif`, `else` or `fi`, and
+  from `elif` to the same; in PowerShell an `if` or `else` block, and an `elseif` from its condition to the end of its
+  block (`if(` and `elseif(` without a space included). An `elif` or `elseif` condition belongs to its branch, and the
+  body after it is a branch of its own inside it, since the condition may run and fail. A branch's commands follow one
+  another, `&&` and `||` included, and the places after it are those it reaches joined with those before it. So a
+  `pushd` and `popd`, a `Push-Location` and `Pop-Location`, or a `( cd ... )` subshell that returns inside a branch of a
+  loop body leaves the places as they were, as at the body's top level; a branch that leaves a place changed adds it. A
+  `break` or `continue` in a branch is followed as anywhere else ("Traps and jumps"). Real shells measured: Git Bash
+  5.3 and bash 5.2 on Ubuntu 24.04, pwsh 7.6 and Windows PowerShell 5.1, where an error that ends one statement of a
+  branch does not end the branch unless a `trap` is in the scope ("Traps and jumps").
+- `try`, `catch` and `finally` bodies, Bash groups and subshells, and a script block after `&` or `.` run at most once.
 - A loop that has not settled after 32 walks makes the directory unknown. Past 256 loop and function body walks in one
   pass, the command blocks. The walks of the traps that run before every command ("Traps and jumps") count too; they
   are walked again only where the shell's state changed since they last settled, so commands that change nothing cost

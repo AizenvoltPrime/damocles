@@ -236,7 +236,7 @@ export class ChatPanelProvider {
       getEnabledMcpServers: (folderKey) => this.settingsManager.getEnabledMcpServers(folderKey),
       getMcpConfigLoaded: () => this.settingsManager.getMcpConfigLoaded(),
       loadMcpConfig: () => this.settingsManager.loadMcpConfig(),
-      getActiveModelForPanel: (panelId) => this.settingsManager.getActiveModelForPanel(panelId),
+      getConfiguredModelForPanel: (panelId) => this.settingsManager.getConfiguredModelForPanel(panelId),
       getPreferOpenAIApiKey: () => (PiRuntime.exists ? PiRuntime.get().preferOpenAIApiKey() : readPreferOpenAIApiKey(this.platform.state)),
       resolveThinkingForPanel: (panelId, model, folder) => {
         const settings = this.platform.settings;
@@ -246,8 +246,8 @@ export class ChatPanelProvider {
         };
       },
       restoreRecordedSelection: (panelId, model, thinkingLevel) => this.settingsManager.restoreRecordedSelection(panelId, model, thinkingLevel),
-      adoptSessionModel: (host, panelId, folder, model, contextWindow) =>
-        this.settingsManager.adoptSessionModel(host, panelId, folder, model, contextWindow),
+      adoptSessionModel: (host, panelId, folder, model, contextWindow, committed) =>
+        this.settingsManager.adoptSessionModel(host, panelId, folder, model, contextWindow, committed),
       postMessage,
       setupSessionWatcher: (folderKey) => this.storageManager.setupSessionWatcher(folderKey),
       addOrUpdateSession: (sessionId, folderKey) => this.storageManager.addOrUpdateSession(sessionId, folderKey),

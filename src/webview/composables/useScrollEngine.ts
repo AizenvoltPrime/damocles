@@ -64,6 +64,18 @@ function estimateThinkingHeight(item: VirtualItem): number {
   return THINKING_TRIGGER;
 }
 
+// An error row's TranscriptNotice with a one-line message: py-2, py-2.25 and pt-0.5, a text-13 title at the root's 1.5
+// line height and a text-12.5 line at text-xs's 4/3; AuthFailureNotice's Details adds gap-0.5 and its 1.25rem button.
+const ERROR_NOTICE_REM = 1 + 1.125 + 0.125 + 0.8125 * 1.5 + 0.125 + 0.78125 * (4 / 3);
+const AUTH_NOTICE_DETAILS_REM = 0.125 + 1.25;
+const NOTICE_BORDER_PX = 2;
+
+function estimateErrorHeight(item: VirtualItem): number {
+  const failure = item.message.authFailure;
+  const details = failure !== undefined && failure.reason !== 'missing';
+  return remPx(ERROR_NOTICE_REM + (details ? AUTH_NOTICE_DETAILS_REM : 0)) + NOTICE_BORDER_PX;
+}
+
 function estimateHeight(item: VirtualItem, containerWidth: number): number {
   if (item.type === 'tool-call') return estimateToolCallHeight(item);
   if (item.type === 'thinking-block') return estimateThinkingHeight(item);
@@ -72,7 +84,7 @@ function estimateHeight(item: VirtualItem, containerWidth: number): number {
   // Both notice cards draw two text-xs lines in the same chrome, plus a third when the optional reason line renders.
   if (item.type === 'compaction-aborted-notice') return item.compactionAborted?.errorMessage ? 86 : 68;
   if (item.type === 'thinking-dropped-notice') return item.thinkingDropped?.reasons.length ? 86 : 68;
-  if (item.type === 'error-message') return 32;
+  if (item.type === 'error-message') return estimateErrorHeight(item);
   if (item.type === 'refusal-message') return 110;
   if (item.type === 'background-label') return 32;
 

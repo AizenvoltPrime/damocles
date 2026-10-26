@@ -1,11 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { PermissionHandler } from '../../permission-handler';
 import { getPiCodingAgent, type PiCodingAgentModule } from '../pi-loader';
 import type { SessionOptions } from '../../session-types';
+import { PiRuntime } from '../pi-runtime';
 import { PiSession } from '../pi-session';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
-import { trackRunLifecycle } from '../run-lifecycle';
+import type { Api, Model } from '@earendil-works/pi-ai';
+import { bindPanel, seatPiRuntime } from './real-pi-fixtures';
 import type { CustomToolDeps } from '../tools';
 import { buildCustomTools } from '../tools';
 import type { ShellCancelRegistry } from '../tools/shell-cancel-registry';
@@ -27,6 +32,10 @@ vi.mock('../pi-loader', async (importOriginal) => ({
 
 const NOTE = 'wrong loop, use seq 1 5';
 
+let runtimeDir: string;
+/** The model each `piQueue` session is seated on, from the PiRuntime `beforeEach` seats. */
+let seatedModel: Model<Api> | undefined;
+
 type PromptOptions = { streamingBehavior?: 'steer' | 'followUp'; preflightResult?: (disposition: 'started' | 'queued' | 'handled') => void };
 
 /**
@@ -37,6 +46,7 @@ function piQueue() {
   const steering: string[] = [];
   const followUp: string[] = [];
   const session = {
+    model: seatedModel,
     isStreaming: true,
     steers: steering,
     followUps: followUp,
@@ -95,16 +105,12 @@ function harness(): Harness {
 
   const session = new PiSession(options);
   const internals = session as unknown as {
-    runtime: unknown;
-    runLifecycle: unknown;
     subagentManager: unknown;
     buildNestedMcp: unknown;
     agentRegistry: unknown;
   };
   const piSession = piQueue();
-  internals.runtime = { session: piSession };
-  // `bindSession` binds the session's run lifecycle.
-  internals.runLifecycle = trackRunLifecycle(piSession as unknown as AgentSession);
+  bindPanel(session, piSession as unknown as AgentSession);
   internals.subagentManager = { steer, abortAll: vi.fn(), getRecord: () => ({ type: 'Explore', description: 'look' }) };
   // The note path must not depend on the MCP snapshot, so the spawn's other half is stubbed out.
   internals.buildNestedMcp = () => ({ tools: [], names: [] });
@@ -159,8 +165,15 @@ function noteDepsOf(call: number): CustomToolDeps {
   return vi.mocked(buildCustomTools).mock.calls[call]![0];
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.mocked(buildCustomTools).mockClear();
+  runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dam-note-delivery-runtime-')));
+  seatedModel = (await seatPiRuntime(runtimeDir)).getModel('anthropic', 'claude-opus-5-5');
+});
+
+afterEach(async () => {
+  await PiRuntime.disposeInstance();
+  fs.rmSync(runtimeDir, { recursive: true, force: true });
 });
 
 describe('cancel note delivery targets the agent that ran the command', () => {

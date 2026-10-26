@@ -1,6 +1,6 @@
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
-import type { ExtensionToWebviewMessage } from '@shared/types/messages';
+import type { AuthFailure, ExtensionToWebviewMessage } from '@shared/types/messages';
 import type { ContentBlock, HistoryAgentMessage, HistoryToolCall, ImageBlock } from '@shared/types/content';
 import { initPiLoader, loadPiAi } from '../pi-loader';
 import { log } from '../../logger';
@@ -9,6 +9,7 @@ import { approxStringLength, perfDebugEnabled, perfSpan } from '../../perf';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../tool-normalization';
 import { piMessagesToHistoryAgentMessages } from '../subagents/message-mapper';
 import { failedCallError } from '../nested-call-failures';
+import { failureCard } from '../provider-account';
 import { abandonReasonOf, skippedToolCalls } from '../abandoned-tool-calls';
 import {
   agentInvocationsOnBranch,
@@ -78,6 +79,7 @@ interface ReplayAssistant {
 interface ReplayError {
   kind: 'error';
   content: string;
+  authFailure?: AuthFailure;
 }
 interface ReplayCompaction {
   kind: 'compaction';
@@ -96,6 +98,12 @@ interface ReplaySteer {
   sentAt?: number;
 }
 type ReplayMessage = ReplayUser | ReplayAssistant | ReplayError | ReplayCompaction | ReplaySteer;
+
+/** A failed call's replay: the live card's account and the provider's text, else the live error card's text. */
+function replayedFailure(message: { provider?: unknown; model?: unknown } | undefined, text: string): ReplayError {
+  const card = failureCard(typeof message?.provider === 'string' ? message.provider : undefined, typeof message?.model === 'string' ? message.model : undefined, text);
+  return card.type === 'authFailure' ? { kind: 'error', content: text, authFailure: { account: card.account, reason: card.reason } } : { kind: 'error', content: card.message };
+}
 
 // When the entry was written: pi's message time (epoch ms), else the entry's ISO time; undefined when neither parses.
 function sentAtOf(entry: SessionEntry): number | undefined {
@@ -276,7 +284,9 @@ export function reconstructMessages(
     const failed = message?.stopReason === 'error';
     // An abort's wind-down error shows no card, as it showed none live; the turn-stopped record names it.
     const windDown = stopped.entryIds.has(entry.id);
-    const failureCard = failed && !windDown ? failedCallError(message.errorMessage) : undefined;
+    const errorText = failed && !windDown ? failedCallError(message.errorMessage) : undefined;
+    // The live view showed this card, from the same classifier.
+    const errorRow: ReplayError | undefined = errorText === undefined ? undefined : replayedFailure(message, errorText);
     // pi returns from a turn whose call failed or was aborted before it executes any tool that call named.
     const unexecuted = windDown ? 'stopped' : abandonReasonOf(message?.stopReason);
     if (message?.stopReason === 'aborted' || windDown) {
@@ -286,7 +296,7 @@ export function reconstructMessages(
     // pi re-ran an omitted call, and the live view took back what it streamed. A retried call shows no card, as it
     // showed none live; an omitted overflow's card is cleared by the recovery compaction that follows it.
     if (failed && !windDown && omitted.has(entry.id)) {
-      if (failureCard && isContextOverflow(message as unknown as AssistantMessage)) messages.push({ kind: 'error', content: failureCard });
+      if (errorRow && isContextOverflow(message as unknown as AssistantMessage)) messages.push(errorRow);
       continue;
     }
 
@@ -336,7 +346,7 @@ export function reconstructMessages(
       messages.push({ kind: 'assistant', content: text, thinking, tools, contentBlocks, ...(effort ? { effort } : {}) });
     }
     // The live view shows a failed call's card after what the call streamed.
-    if (failureCard) messages.push({ kind: 'error', content: failureCard });
+    if (errorRow) messages.push(errorRow);
   }
 
   return { messages, usage };
@@ -579,7 +589,7 @@ function postReplayMessages(messages: readonly ReplayMessage[], post: (m: Extens
         ...(msg.sentAt !== undefined ? { timestamp: msg.sentAt } : {}),
       });
     } else if (msg.kind === 'error') {
-      post({ type: 'errorReplay', content: msg.content });
+      post({ type: 'errorReplay', content: msg.content, ...(msg.authFailure ? { authFailure: msg.authFailure } : {}) });
     } else if (msg.kind === 'compaction') {
       post({
         type: 'compactBoundary',

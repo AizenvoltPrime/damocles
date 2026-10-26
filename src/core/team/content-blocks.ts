@@ -4,7 +4,7 @@ import { joinResultText, resultImageCount } from '../pi-session/tool-result-text
 import { toImageBlocks } from '../pi-session/branch-text';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../pi-session/tool-normalization';
 import type { PersistedAgentMessage } from '../pi-session/agent-records';
-import { failedCallError } from '../pi-session/nested-call-failures';
+import { nestedCallError } from '../pi-session/nested-call-failures';
 import { abandonReasonOf, skippedToolCalls } from '../pi-session/abandoned-tool-calls';
 
 /**
@@ -125,7 +125,7 @@ export function memberHistoryMessages(
         batch = { index: out.length - 1, content };
       }
       // The file reader drops a call pi re-ran, so every error stop here is one pi did not recover.
-      if (failed) out.push({ id: `${id}:error`, role: 'error', content: [{ type: 'text', text: failedCallError(message['errorMessage']) }] });
+      if (failed) out.push({ id: `${id}:error`, role: 'error', content: [{ type: 'text', text: nestedCallError(message, 'user') }] });
     } else if (message.role === 'toolResult' && typeof message['toolCallId'] === 'string' && !unexecuted.has(message['toolCallId'])) {
       out.push({ id, role: 'toolResult', content: [toolResultBlock(message['toolCallId'], message, message['isError'] === true)] });
     }

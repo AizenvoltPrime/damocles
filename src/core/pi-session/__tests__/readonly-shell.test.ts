@@ -376,11 +376,19 @@ describe('parseShellStructure — loops, and the commands that run once where th
     expect(guards('! a && b; { a; } && b; (a) || b')).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
     expect(guards('a && if b; then c; fi; a && time b; a && { b; }')).toEqual([undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
     expect(guards('a | b && c')).toEqual([undefined, undefined, '&&']);
-    expect(sequential('a; b && c; if d; then e; else f; fi; g | h; i & j')).toEqual([true, true, true, true, false, false, false, false, false, true]);
+    // An `if` branch's commands run once per walk of their branch, which runs whole or not at all.
+    expect(sequential('a; b && c; if d; then e; else f; fi; g | h; i & j')).toEqual([true, true, true, true, true, true, false, false, false, true]);
     expect(sequential('x && { y; }; (z); { w; } | v; for d in a; do u; done')).toEqual([true, false, true, false, false, true, true]);
+    expect(sequential('x | if y; then z; fi')).toEqual([false, false, false]);
     expect(parseShellStructure('(a; (b)); c').subshells).toEqual([{ start: 0, end: 2 }, { start: 1, end: 2 }]);
     // A compound command's redirection runs before it, inside the subshell around it.
     expect(parseShellStructure('( { a; } > $(b) )').subshells).toEqual([{ start: 0, end: 2 }]);
+    // An `elif`'s condition belongs to its branch, and the body after it, which a failed condition skips, is a branch
+    // inside it; the redirection of the `if` runs before its condition.
+    expect(parseShellStructure('if a; then b; elif c; then d; else e; fi > $(f)').branches).toEqual([{ start: 2, end: 3 }, { start: 3, end: 5 }, { start: 4, end: 5 }, { start: 5, end: 6 }]);
+    expect(parseShellStructure('if a; then b; elif c; then d; elif e; then f; fi').branches).toEqual([{ start: 1, end: 2 }, { start: 2, end: 4 }, { start: 3, end: 4 }, { start: 4, end: 6 }, { start: 5, end: 6 }]);
+    // The redirection of a compound command that starts a branch runs inside that branch.
+    expect(parseShellStructure('if a; then { b; } > $(c); if d; then e; fi; fi').branches).toEqual([{ start: 1, end: 5 }, { start: 4, end: 5 }]);
   });
 
   // Git Bash reads an alias defined on an earlier line at each of these breaks, and none defined on the same line.

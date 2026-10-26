@@ -1539,11 +1539,81 @@ describe('worktree isolation (D62)', () => {
     for (const command of [`for d in ${loopItems(6).join(' ')}; do cd "$d" && pwd && cd ..; done; git status`, `for d in ${loopItems(6).join(' ')}; do cd "$d"; done; git status`]) {
       const result = bash(command);
       expect(result, command).toMatch(/working directory (?:of this git command )?cannot be read/);
-      expect(result, command).toContain('subshell');
+      expect(result, command).toContain('subshell, at a loop body\'s top level or in an `if` branch inside it');
     }
     const grown = ps(`foreach ($d in ${loopItems(6, "'").join(',')}) { Set-Location $d; Set-Location .. }; git status`);
     expect(grown).toContain('The working directory cannot be read.');
-    expect(grown).toContain('Push-Location');
+    expect(grown).toContain('Push-Location and Pop-Location, at a loop body\'s top level or in an `if` branch inside it');
+  });
+
+  // Read as commands that may each run alone, six items' branches leave more places than the check follows.
+  it('runs an `if` branch whole or not at all, so a pair that returns inside a branch of a loop body leaves the places as they were', () => {
+    for (const count of [6, 32]) {
+      const words = loopItems(count).join(' ');
+      const quoted = loopItems(count, "'").join(',');
+      check(bash, [
+        [`for d in ${words}; do if [ -d "$d" ]; then pushd "$d"; pwd; popd; fi; done; git status`, 'each branch returns to the worktree'],
+        [`for d in ${words}; do if [ "$d" = d0 ]; then pushd "$d"; pwd; popd; elif [ -d "$d" ]; then pushd "$d"; popd; else pushd "$d"; ls; popd; fi; done; git status`, 'each branch returns to the worktree'],
+        [`for d in ${words}; do if [ -d "$d" ]; then pushd "$d"; if [ -d lib ]; then pushd lib; git status; popd; fi; popd; fi; done; git status`, 'the inner pair returns to the outer one'],
+        [`for d in ${words}; do if [ -d "$d" ]; then (cd "$d" && npm test); fi; done; git status`, 'each subshell leaves the worktree as it was'],
+        [`for d in ${words}; do if [ -d "$d" ]; then pushd "$d"; pwd; popd; fi > /dev/null; done; git status`, 'the branch with its redirection returns to the worktree'],
+      ]);
+      check(ps, [
+        [`foreach ($d in ${quoted}) { if (Test-Path $d) { Push-Location $d; (Get-Location).Path | Split-Path -Leaf; Pop-Location } }; git status --short`, 'each branch returns to the worktree'],
+        [`foreach ($d in ${quoted}) { if ($d -eq 'd0') { Push-Location $d; pwd; Pop-Location } elseif (Test-Path $d) { Push-Location $d; Pop-Location } else { Push-Location $d; ls; Pop-Location } }; git status`, 'each branch returns to the worktree'],
+        [`foreach ($d in ${quoted}) { if (Test-Path $d) { Push-Location $d; if (Test-Path lib) { Push-Location lib; git status; Pop-Location }; Pop-Location } }; git status`, 'the inner pair returns to the outer one'],
+        // PowerShell reads the keyword before a `(` with no space as `if` and `elseif`.
+        [`foreach ($d in ${quoted}) { if($true){ Push-Location $d; Pop-Location } }; git status`, 'each branch returns to the worktree'],
+        [`foreach ($d in ${quoted}) { if ($d -eq 'd0') { } elseif(Test-Path $d){ Push-Location $d; Pop-Location } }; git status`, 'each branch returns to the worktree'],
+      ]);
+    }
+    const words = loopItems(6).join(' ');
+    const quoted = loopItems(6, "'").join(',');
+    check(bash, [
+      ['if x; then cd src && git -C <UP> status; fi', 'git runs only where the cd succeeded'],
+      [`for d in ${words}; do if [ -d "$d" ]; then pushd "$d"; pwd; popd; fi; done; cd <UP> && git add .`, REACHES],
+      [`for d in ${words} <QP>; do if [ -d "$d" ]; then pushd "$d"; git status; popd; fi; done`, REACHES],
+      ['if x; then cd src; git -C <UP> add .; fi', REACHES],
+      ['if x; then pushd src; popd; else pushd src; fi; git -C ../<UP> add .', REACHES],
+      ['if x; then pushd src; popd; elif y; then pushd src; fi; git -C ../<UP> add .', REACHES],
+      ['for d in src; do if true; then pushd "$d"; break; popd; fi; done; git -C ../<UP> add .', REACHES],
+      [`for d in ${words}; do if [ -d "$d" ]; then pushd "$d"; popd; done; git status`],
+      // An `elif` condition that moves runs where the earlier conditions failed, and its body only where it succeeds.
+      ['if [ -f nope ]; then :; elif pushd src && [ -f Makefile ]; then make; popd; fi; git -C ../<UP> add .', REACHES],
+      ['if false; then :; elif pushd src; false; then popd; fi; git -C ../<UP> add .', REACHES],
+      ['if x; then cd src || git -C <UP> status; fi', REACHES],
+      ['if a; then pushd src; if b; then popd; fi; fi; git -C ../<UP> add .', REACHES],
+    ]);
+    check(ps, [
+      [`foreach ($d in ${quoted}) { if (Test-Path $d) { Push-Location $d; Pop-Location } }; Set-Location <UP>; git add .`, REACHES],
+      [`foreach ($d in ${quoted},'<P>') { if (Test-Path $d) { Push-Location $d; git status; Pop-Location } }`, REACHES],
+      ['if ($x) { Push-Location src; Pop-Location } else { Push-Location src }; git -C ../<UP> add .', REACHES],
+      ["foreach ($d in 'src') { if ($true) { Push-Location $d; break; Pop-Location } }; git -C ../<UP> add .", REACHES],
+      // A script block in a header opens first and starts where the statement it is in does.
+      ['Push-Location src; if (Invoke-Command { $x }) { Pop-Location }; git -C ../<UP> add .', REACHES],
+      ['foreach ($i in (Invoke-Command { 1..6 })) { Set-Location .. }; Set-Location project; git add .', REACHES],
+      [`foreach ($d in ${quoted}) { if (Test-Path $d) { Push-Location "$d; Pop-Location } }; git status`],
+      ['if ($x) { } elseif ((Push-Location src)) { Pop-Location }; git -C ../<UP> add .', REACHES],
+      ['if ($x) { } elseif ($(Push-Location src; $false)) { Pop-Location }; git -C ../<UP> add .', REACHES],
+      ['if ($x) { Set-Location src || git -C <UP> status }', REACHES],
+      ['if ($a) { Push-Location src; if ($b) { Pop-Location } }; git -C ../<UP> add .', REACHES],
+      ['if($x){ Push-Location src }; git -C ../<UP> add .', REACHES],
+      // An error that ends one statement goes on with the next, so the branch still returns.
+      ["if ($a) { Push-Location src; [int]::Parse('x'); Pop-Location }; git -C ../<UP> status", 'the branch ends in the worktree'],
+      // A trap's continue resumes after the top-level statement around the error, wherever the trap stands in the scope.
+      ['if ($true) { Push-Location src; Get-Item nope -ErrorAction Stop; Pop-Location }; git -C ../<UP> add .; trap { continue }', REACHES],
+      ["foreach ($d in 'a') { Push-Location src; Get-Item nope -ErrorAction Stop; Pop-Location }; git -C ../<UP> add .; trap { continue }", REACHES],
+    ]);
+    for (const command of [`for d in ${words}; do if [ -d "$d" ]; then pushd "$d"; fi; done; git status`, `for d in ${words}; do if [ -d "$d" ]; then cd "$d"; fi; done; git status`]) {
+      const result = bash(command);
+      expect(result, command).toMatch(/working directory (?:of this git command )?cannot be read/);
+      expect(result, command).toContain('subshell, at a loop body\'s top level or in an `if` branch inside it');
+    }
+    for (const command of [`foreach ($d in ${quoted}) { if (Test-Path $d) { Push-Location $d } }; git status`, `foreach ($d in ${quoted}) { if (Test-Path $d) { Set-Location $d } }; git status`]) {
+      const result = ps(command);
+      expect(result, command).toContain('The working directory cannot be read.');
+      expect(result, command).toContain('Push-Location and Pop-Location, at a loop body\'s top level or in an `if` branch inside it');
+    }
   });
 
   it('follows each place the shell may stand in with its own directory stack, and runs a command after && or || only where it can', () => {

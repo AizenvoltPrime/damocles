@@ -30,7 +30,7 @@ function makeManager(): SessionManager {
   const config = {
     getMcpConfigLoaded: () => true,
     getEnabledMcpServers: () => ({ userUnion: {}, userVisible: [], folder: {} }),
-    getActiveModelForPanel: () => 'claude-opus-4-8',
+    getConfiguredModelForPanel: () => 'claude-opus-4-8',
     getPreferOpenAIApiKey: () => false,
     resolveThinkingForPanel: () => ({ thinkingDisabled: false, effort: null }),
     postMessage,

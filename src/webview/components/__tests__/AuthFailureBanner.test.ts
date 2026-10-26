@@ -54,6 +54,19 @@ describe('AuthFailureBanner', () => {
     expect(wrapper.emitted('open-account')).toEqual([[account]]);
   });
 
+  it.each([
+    ['deepseek', 'DeepSeek', 'Open settings'],
+    ['anthropic', 'Anthropic', 'Sign In'],
+  ] as const)('says no %s credential is saved, rather than that it was refused, and opens its row', async (account, name, actionText) => {
+    const wrapper = mountBanner({ account, reason: 'missing' });
+    expect(title(wrapper)).toBe(`${name} authentication required`);
+    expect(message(wrapper)).toBe(`No ${name} credential is saved. Add one in settings to continue.`);
+    expect(action(wrapper).text()).toBe(actionText);
+
+    await action(wrapper).trigger('click');
+    expect(wrapper.emitted('open-account')).toEqual([[account]]);
+  });
+
   it('says the xAI account needs API access, or a saved key preferred over the sign-in', async () => {
     const wrapper = mountBanner({ account: 'xai', reason: 'noApiAccess' });
     expect(title(wrapper)).toBe('xAI authentication required');

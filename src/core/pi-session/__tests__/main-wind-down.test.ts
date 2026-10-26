@@ -8,13 +8,14 @@ import { STEER_INSTRUCTION_PREFIX } from '../../../shared/steer';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { AgentWindDown } from '../../../shared/types/wind-down';
 import type { SendOutcome } from '../../chat-session';
+import { PiRuntime } from '../pi-runtime';
 import type { PiSession } from '../pi-session';
 import { DAMOCLES_MID_STREAM_ENTRY, DAMOCLES_TERMINAL_ATTACHMENTS_ENTRY } from '../session-store/constants';
 import { nextPromptIndex } from '../session-store/prompt-index';
 import { WIND_DOWN_NOTICE_MS } from '../wind-down-notice';
 import type { RunLifecycle } from '../run-lifecycle';
 import { HELD_DRAFT_ENTRY, heldSettleSessions, type HeldSettleSession } from './held-settle-fixture';
-import { panelSession } from './real-pi-fixtures';
+import { panelSession, seatPiRuntime } from './real-pi-fixtures';
 
 /**
  * The main chat's Stop whose run a handler pi awaits holds, on a real pi session built as the main chat's (no path-loaded
@@ -23,10 +24,16 @@ import { panelSession } from './real-pi-fixtures';
  * says what pi still finishes once the wait outlasts `WIND_DOWN_NOTICE_MS`, and a reloaded webview hears it again.
  */
 
-const sessions = heldSettleSessions();
 const dirs: string[] = [];
-afterEach(() => {
+const tempDir = (prefix: string): string => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  dirs.push(dir);
+  return dir;
+};
+const sessions = heldSettleSessions({ modelRuntime: () => seatPiRuntime(tempDir('dam-main-wind-down-runtime-')) });
+afterEach(async () => {
   sessions.dispose();
+  await PiRuntime.disposeInstance();
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
@@ -61,9 +68,7 @@ function boundPanel(held: HeldSettleSession, emitted: ExtensionToWebviewMessage[
 
 /** A session on a real file, so a send that waited is checked against the conversation it was written for. */
 function onFile(): { kind: 'file'; dir: string; id: string } {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dam-main-wind-down-')));
-  dirs.push(dir);
-  return { kind: 'file', dir, id: 'main-chat' };
+  return { kind: 'file', dir: tempDir('dam-main-wind-down-'), id: 'main-chat' };
 }
 
 /** The wind-down each `sessionStateChanged` carried, null where it carried none. */

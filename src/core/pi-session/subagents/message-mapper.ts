@@ -12,7 +12,7 @@ import type { HistoryAgentContentBlock, HistoryAgentMessage } from '../../../sha
 import { mapPiToolName, normalizeToolDetails, normalizeToolInput } from '../tool-normalization';
 import { toImageBlocks } from '../branch-text';
 import { resultImageCount } from '../tool-result-text';
-import { failedCallError } from '../nested-call-failures';
+import { nestedCallError } from '../nested-call-failures';
 import { abandonReasonOf, skippedToolCalls } from '../abandoned-tool-calls';
 
 interface PiTextBlock {
@@ -41,6 +41,8 @@ interface PiMessageLike {
   durationMs?: unknown;
   stopReason?: unknown;
   errorMessage?: unknown;
+  provider?: unknown;
+  model?: unknown;
 }
 
 /** Join the text blocks of a content array (or a raw string) into one string. */
@@ -138,7 +140,7 @@ export function piMessagesToHistoryAgentMessages(
     }
     if (blocks.length > 0) out.push({ role: 'assistant', contentBlocks: blocks });
     // A call pi re-ran is not among these messages, so every error stop here is one pi did not recover.
-    if (failed) out.push({ role: 'error', contentBlocks: [{ type: 'text', text: failedCallError(msg.errorMessage) }] });
+    if (failed) out.push({ role: 'error', contentBlocks: [{ type: 'text', text: nestedCallError(msg, 'user') }] });
   }
   return out;
 }

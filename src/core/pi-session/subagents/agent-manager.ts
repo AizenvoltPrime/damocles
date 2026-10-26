@@ -70,6 +70,7 @@ import { getStatusNote, recordOutcomeText } from './status-note';
 import { addUsage, getLifetimeTotal } from './usage';
 import { PLAN_AGENT_NAME, type AgentConfig, type AgentRecord, type PendingSteer, type SubagentType, type ThinkingLevel } from './types';
 import { extractImages } from '../branch-text';
+import { nestedRunError } from '../nested-call-failures';
 import type { ImageBlock } from '../../../shared/types/content';
 import { emptyAgentUsage, type AgentUsageTotals } from '../../../shared/usage-accounting';
 import { sessionEffort, type EffortBadgeLevel } from '../../../shared/effort-badge';
@@ -697,7 +698,7 @@ export class AgentManager {
     void this.run(record, spec, config, resolved, bridge)
       .catch((err) => {
         if (record.status !== 'stopped') record.status = 'error';
-        record.error = err instanceof Error ? err.message : String(err);
+        record.error = nestedRunError(record.session, err);
         record.completedAt ??= Date.now();
       })
       .finally(() => {

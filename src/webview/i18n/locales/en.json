@@ -1594,7 +1594,9 @@
       "mcpResourceUnavailable": "An attached MCP resource could not be sent, so your message and its attachments are back in the input.",
       "conversationChanged": "This chat no longer shows the conversation your message was written for, so it is back in the input.",
       "modelSignInRequired": "Sign in to a model provider in Models & accounts to send messages. Your message is back in the input.",
-      "modelUnavailable": "Pick a model this chat can run. Your message is back in the input."
+      "modelUnavailable": "Pick a model this chat can run. Your message is back in the input.",
+      "promptRejected": "Your message could not be sent, so it is back in the input. The chat says why.",
+      "providerSignIn": "Sign in to {provider} to send messages with this chat's model. Your message is back in the input."
     }
   },
   "backgroundTask": {
@@ -1715,8 +1717,10 @@
     "title": "{provider} authentication required",
     "signIn": "Sign In",
     "openSettings": "Open settings",
+    "details": "Details",
     "sessionExpired": "Your Anthropic sign-in needs to be renewed. Sign in to continue.",
     "rejected": "{provider} did not accept the saved credential. Update it in settings.",
+    "missing": "No {provider} credential is saved. Add one in settings to continue.",
     "noApiAccess": "The {provider} account needs API access. Give the account API access, or save an API key and turn on Prefer API key over sign-in."
   },
   "allowanceBanner": {
@@ -2655,7 +2659,7 @@
       },
       "xai": {
         "label": "xAI",
-        "description": "Per-token API key."
+        "description": "Per-token API key or sign-in."
       },
       "kimi-coding": {
         "label": "Kimi Code",

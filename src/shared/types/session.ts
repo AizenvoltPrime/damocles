@@ -2,7 +2,7 @@ import type { ContentBlock, UserContentBlock } from './content';
 import type { AgentUsageTotals } from '../usage-accounting';
 import type { EffortBadgeLevel } from '../effort-badge';
 import type { ChatAttachmentInfo } from './chat-attachment';
-import type { ChatPlace } from './messages';
+import type { AuthFailure, ChatPlace } from './messages';
 
 export interface SystemInitData {
   model: string;
@@ -251,6 +251,8 @@ export interface ChatMessage {
   content: string;
   refusalExplanation?: string | null;
   refusalCategory?: 'cyber' | 'bio' | null;
+  /** On a replayed error: the credential refusal the live view showed as that account's card. */
+  authFailure?: AuthFailure;
   contentBlocks?: ContentBlock[];
   /** A user message's attachments (terminal output, commits, MCP resources), shown as chips. */
   terminalAttachments?: ChatAttachmentInfo[];

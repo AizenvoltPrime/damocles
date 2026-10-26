@@ -41,6 +41,7 @@ export interface SessionOptions {
   onSessionPersisted?: (sessionId: string) => void;
   onAssistantTextFinal?: (text: string) => void;
   mcpScope?: McpScope;
+  /** The chat's model; absent when the panel holds none and `damocles.model` is unset in every scope, the only case a start may replace it with a signed-in one. */
   model?: string;
   memoryService?: MemoryService;
   browserService?: BrowserService;
@@ -57,8 +58,8 @@ export interface SessionOptions {
   };
   /** A resumed conversation continues on the model value and pi thinking level its session file recorded, reported once pi installed its session; the model itself is reported through `onModelChange`. */
   onRecordedSelection?: (model: string, thinkingLevel: string | undefined) => void;
-  /** The chat's committed model and the context window pi resolved for it, reported once the session has started and after every switch attempt, refused ones included. */
-  onModelChange?: (model: string, contextWindow: number) => void;
+  /** The model the chat shows, which pi may not run yet, and the adopted pi model's window, after the start and every switch attempt; `committed` is false only for a factory default not yet picked, recorded or run. */
+  onModelChange?: (model: string, contextWindow: number, committed: boolean) => void;
   /** Whether to prefer the OpenAI API key over a ChatGPT or Codex sign-in when both are configured. */
   getPreferOpenAIApiKey?: () => boolean;
   secrets?: SecretsStore;

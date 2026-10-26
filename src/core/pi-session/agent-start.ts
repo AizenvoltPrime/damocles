@@ -8,6 +8,7 @@ import {
   buildEnvironmentSection,
   buildModelSection,
   EXPLORE_FALLBACK_SECTION,
+  MODEL_SECTION,
   SYSTEM_PROMPT_PREAMBLE,
   THINKING_OFF_SECTION,
   TONE_REMINDER_SECTION,
@@ -184,7 +185,7 @@ export function assembleDamoclesSystemPrompt(i: DamoclesSystemPromptInputs): Dam
   if (skills) sections['skills'] = skills;
   // Kept at the end so the model reads cwd and platform closest to its first tool call.
   sections['damocles_environment'] = buildEnvironmentSection(i.env);
-  sections['damocles_model'] = buildModelSection(i.env.model);
+  sections[MODEL_SECTION] = buildModelSection(i.env.model);
   if (i.env.thinkingDisabled) sections['damocles_output_form'] = THINKING_OFF_SECTION;
   // Inserted last so it stays the final section of the assembled prompt.
   sections['damocles_tone'] = TONE_REMINDER_SECTION;

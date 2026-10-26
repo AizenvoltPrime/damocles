@@ -1,5 +1,6 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
+import type { AuthFailure } from '@/stores/useUIStore';
 
 export interface BtwAside {
   id: string;
@@ -7,6 +8,8 @@ export interface BtwAside {
   text: string;
   isStreaming: boolean;
   error?: string;
+  /** The aside failed on this account's credential; `error` is then the provider's text, or for `missing` pi's, never shown. */
+  authFailure?: AuthFailure;
 }
 
 export const useBtwStore = defineStore('btw', () => {
@@ -33,10 +36,11 @@ export const useBtwStore = defineStore('btw', () => {
     }
   }
 
-  function setError(id: string, message: string): void {
+  function setError(id: string, message: string, authFailure?: AuthFailure): void {
     if (aside.value?.id === id) {
       aside.value.isStreaming = false;
       aside.value.error = message;
+      if (authFailure) aside.value.authFailure = authFailure;
     }
   }
 

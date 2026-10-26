@@ -1,8 +1,22 @@
-import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
+import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
+import { failureText, type FailureReader } from './provider-account';
 
 /** A failed call's error as every transcript names it, live and reloaded. */
 export function failedCallError(errorMessage: unknown): string {
   return typeof errorMessage === 'string' && errorMessage ? errorMessage : 'Unknown error';
+}
+
+/**
+ * A subagent's or team agent's failed call as `reader` gets it: its transcript, live and reloaded, which has no account
+ * card (`failureText`), or the model its outcome reaches.
+ */
+export function nestedCallError(message: { errorMessage?: unknown; provider?: unknown; model?: unknown } | Readonly<Record<string, unknown>>, reader: FailureReader): string {
+  return failureText(typeof message.provider === 'string' ? message.provider : undefined, typeof message.model === 'string' ? message.model : undefined, failedCallError(message.errorMessage), reader);
+}
+
+/** A subagent's or team agent's run that threw, such as a prompt pi refused, as the model its outcome reaches reads it. */
+export function nestedRunError(session: Pick<AgentSession, 'model'> | undefined, err: unknown): string {
+  return failureText(session?.model?.provider, session?.model?.id, err instanceof Error ? err.message : String(err), 'model');
 }
 
 /**

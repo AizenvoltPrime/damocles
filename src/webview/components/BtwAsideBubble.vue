@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n';
 import { Ban, MessageSquare, MessagesSquare, SendHorizontal } from 'lucide-vue-next';
 import type { BtwAside } from '@/stores/useBtwStore';
 import { useBtwAsk } from '@/composables/useBtwAsk';
+import AuthFailureNotice from './AuthFailureNotice.vue';
 import LoadingSpinner from './LoadingSpinner.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
@@ -65,10 +66,21 @@ function ask(): void {
       </div>
 
       <div
-        v-if="aside.error"
-        class="px-1 text-13 text-(--d-danger)"
+        v-if="aside.authFailure || aside.error"
+        role="status"
+        data-testid="btw-error"
       >
-        {{ aside.error }}
+        <AuthFailureNotice
+          v-if="aside.authFailure"
+          :failure="aside.authFailure"
+          :details="aside.error ?? ''"
+        />
+        <div
+          v-else
+          class="px-1 text-13 text-(--d-danger)"
+        >
+          {{ aside.error }}
+        </div>
       </div>
       <div
         v-else-if="aside.text"

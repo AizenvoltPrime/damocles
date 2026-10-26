@@ -18,6 +18,7 @@ import RefusalCard from './RefusalCard.vue';
 import TranscriptNotice from './TranscriptNotice.vue';
 import EffortBadge from './EffortBadge.vue';
 import ErrorMessageText from './ErrorMessageText.vue';
+import AuthFailureNotice from './AuthFailureNotice.vue';
 
 const { t } = useI18n();
 
@@ -152,6 +153,12 @@ onUnmounted(() => {
         @expand-subagent="emit('expandSubagent', $event)"
       />
     </div>
+
+    <AuthFailureNotice
+      v-else-if="item.type === 'error-message' && item.message.authFailure"
+      :failure="item.message.authFailure"
+      :details="item.text ?? ''"
+    />
 
     <TranscriptNotice
       v-else-if="item.type === 'error-message'"

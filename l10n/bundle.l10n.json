@@ -43,8 +43,7 @@
   "DevTools is unavailable because the debugging port is disabled by damocles.browser.devToolsPort. Enable the setting and relaunch the browser. The port is a launch-time flag and cannot be turned on for a running browser.": "DevTools is unavailable because the debugging port is disabled by damocles.browser.devToolsPort. Enable the setting and relaunch the browser. The port is a launch-time flag and cannot be turned on for a running browser.",
   "Open Settings": "Open Settings",
   "Reload Window": "Reload Window",
-  "Damocles could not reach {0} in time, so \"{1}\" is unavailable and \"{2}\" is being used instead.": "Damocles could not reach {0} in time, so \"{1}\" is unavailable and \"{2}\" is being used instead.",
-  "Damocles could not reach {0} in time, so \"{1}\" is unavailable and no signed-in model could be selected.": "Damocles could not reach {0} in time, so \"{1}\" is unavailable and no signed-in model could be selected.",
+  "Damocles could not reach {0} in time, so \"{1}\" cannot run yet.": "Damocles could not reach {0} in time, so \"{1}\" cannot run yet.",
   "This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them.": "This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them.",
   "Switch this panel to {0}? This starts a new conversation. The current one stays in history.": "Switch this panel to {0}? This starts a new conversation. The current one stays in history.",
   "Start new conversation": "Start new conversation",
@@ -52,6 +51,7 @@
   "Damocles could not start a session in {0}: {1}": "Damocles could not start a session in {0}: {1}",
   "Your cancel note was not sent: the budget limit stopped this turn.": "Your cancel note was not sent: the budget limit stopped this turn.",
   "Your cancel note was not sent: the turn was stopped.": "Your cancel note was not sent: the turn was stopped.",
+  "Your cancel note was not sent: this chat cannot run its model now.": "Your cancel note was not sent: this chat cannot run its model now.",
   "Stopping the turn discarded your cancel note before the agent read it.": "Stopping the turn discarded your cancel note before the agent read it.",
   "Could not deliver the results of finished background subagents; they will be retried with your next message.": "Could not deliver the results of finished background subagents; they will be retried with your next message.",
   "Could not record which agents were interrupted; the model will not be told it can resume them.": "Could not record which agents were interrupted; the model will not be told it can resume them.",
@@ -489,7 +489,6 @@
   "The injected context of the prompts the fork inherited could not be copied, so \"{0}\" may show nothing for those prompts in the fork.": "The injected context of the prompts the fork inherited could not be copied, so \"{0}\" may show nothing for those prompts in the fork.",
   "View injected context": "View injected context",
   "Start a conversation first": "Start a conversation first",
-  "Model {0} is unavailable for btw": "Model {0} is unavailable for btw",
   "No response received": "No response received",
   "Not secure": "Not secure",
   "The connection to this site is not encrypted, so others on the network can read and change what it sends.": "The connection to this site is not encrypted, so others on the network can read and change what it sends.",
@@ -1139,5 +1138,9 @@
   "The provider could not complete the sign-in (HTTP {0}).": "The provider could not complete the sign-in (HTTP {0}).",
   "Could not sign out. Try again.": "Could not sign out. Try again.",
   "Effort \"{0}\" is not supported by model \"{1}\"": "Effort \"{0}\" is not supported by model \"{1}\"",
-  "Effort \"{0}\" is not supported for a team role, Explore, Background or the memory judge": "Effort \"{0}\" is not supported for a team role, Explore, Background or the memory judge"
+  "Effort \"{0}\" is not supported for a team role, Explore, Background or the memory judge": "Effort \"{0}\" is not supported for a team role, Explore, Background or the memory judge",
+  "No {0} credential is saved, so {1} could not run. Add an API key in Settings › Models & accounts.": "No {0} credential is saved, so {1} could not run. Add an API key in Settings › Models & accounts.",
+  "No {0} credential is saved, so {1} could not run. Sign in to {0} in Settings › Models & accounts.": "No {0} credential is saved, so {1} could not run. Sign in to {0} in Settings › Models & accounts.",
+  "No {0} credential is saved, so {1} could not run. Sign in or add an API key in Settings › Models & accounts.": "No {0} credential is saved, so {1} could not run. Sign in or add an API key in Settings › Models & accounts.",
+  "No credential is set up for {0}, so {1} could not run. Pick a model from a provider you are signed in to.": "No credential is set up for {0}, so {1} could not run. Pick a model from a provider you are signed in to."
 }

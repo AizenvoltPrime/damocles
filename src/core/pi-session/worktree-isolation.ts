@@ -9,7 +9,7 @@ import { COMPUTED_TEXT, DECLARATION_BUILTINS, MAX_COMMAND_LENGTH, parseShellStru
 import { resolveToCwd } from './tools/search-tools';
 import { pathCombine, posixBasename, posixDirname, psJoinPath, psSplitPath } from './path-functions';
 import { CMD_DELIMITER, CMD_SPACE, cmdCommands, cmdSegments, cmdSwitches, cmdTokens, parseCmdLine, type CmdBlocked, type CmdCommand, type CmdLine, type CmdSegment, type CmdStart, type CmdVariable } from './cmd-structure';
-import { allRead, type LoopRange, PS_ALIAS, PS_ASSIGNMENT_OPERATOR, PS_COMBINE, PS_COMMAND_DRIVE, PS_CREATE_CALL, PS_DASHES, PS_DEFAULT_PARAMETERS, PS_ENV_MENTION, PS_FRESH_ENVIRONMENT, PS_IEX_PARAMETERS, PS_IMPORT_MODULE, PS_INVOKE_METHOD, PS_ITEM_PARAMETERS, PS_ITEM_TRANSFER, PS_ITEM_WRITE, PS_JOB_PARAMETERS, PS_JOIN_PARAMETERS, PS_JUMPS, PS_LINK_CALL, PS_LOCATION, PS_LOCATION_PARAMETERS, PS_NATIVE_PASSING, PS_NEW_DRIVE, PS_NEW_ITEM_PARAMETERS, PS_PROCESS_CLASS, PS_QUOTED_TOKEN, PS_REDIRECTION, PS_RUNS_TEXT, PS_SESSION_LOCATION, PS_SET_ENVIRONMENT, PS_SET_ENVIRONMENT_NAME, PS_SPLAT, PS_SPLIT_PARAMETERS, PS_START_JOB, PS_START_PARAMETERS, PS_START_PROCESS, PS_TEE, PS_VARIABLE_CMDLETS, PS_VARIABLE_TOKEN, PS_WILDCARD, psBind, type PsBound, psCommandLines, psCommandTokens, psExpression, type PsFunction, psLinkKinds, psOperand, psOutVariable, type PsParameterKind, type PsPart, type PsRange, psReference, type PsSegment, psSiteKey, type PsText, psTextScan, psUnescape, psValue, psVariable, scanPowershell, siteKey, type TextScan, worded, type Worded } from './ps-structure';
+import { allRead, type LoopRange, PS_ALIAS, PS_ASSIGNMENT_OPERATOR, PS_COMBINE, PS_COMMAND_DRIVE, PS_CREATE_CALL, PS_DASHES, PS_DEFAULT_PARAMETERS, PS_ENV_MENTION, PS_FRESH_ENVIRONMENT, PS_IEX_PARAMETERS, PS_IMPORT_MODULE, PS_INVOKE_METHOD, PS_ITEM_PARAMETERS, PS_ITEM_TRANSFER, PS_ITEM_WRITE, PS_JOB_PARAMETERS, PS_JOIN_PARAMETERS, PS_JUMPS, PS_LINK_CALL, PS_LOCATION, PS_LOCATION_PARAMETERS, PS_NATIVE_PASSING, PS_NEW_DRIVE, PS_NEW_ITEM_PARAMETERS, PS_PROCESS_CLASS, PS_QUOTED_TOKEN, PS_REDIRECTION, PS_RUNS_TEXT, PS_SESSION_LOCATION, PS_SET_ENVIRONMENT, PS_SET_ENVIRONMENT_NAME, PS_SPLAT, PS_SPLIT_PARAMETERS, PS_START_JOB, PS_START_PARAMETERS, PS_START_PROCESS, PS_TEE, PS_TRAP, PS_VARIABLE_CMDLETS, PS_VARIABLE_TOKEN, PS_WILDCARD, psBind, type PsBound, psCommandLines, psCommandTokens, psExpression, type PsFunction, psLinkKinds, psOperand, psOutVariable, type PsParameterKind, type PsPart, type PsRange, psReference, type PsSegment, psSiteKey, type PsText, psTextScan, psUnescape, psValue, psVariable, scanPowershell, siteKey, type TextScan, worded, type Worded } from './ps-structure';
 
 /** A.5's reason; the gate adds the working folder. */
 export const WORKTREE_ISOLATION_REASON = 'This chat works in its worktree. Edits and commands aimed at the project folder are blocked in every mode.';
@@ -595,9 +595,9 @@ const MAX_TRAP_RUNS = 6;
 const STACK_COMMANDS: ReadonlySet<string> = new Set([...CD_COMMANDS, 'popd', 'dirs']);
 const UNREAD_DIRECTORY = 'The working directory cannot be read.';
 const GROWN_BASH =
-  'A loop or a chain of cd commands left more possible folders than this check follows; run a loop body that changes directory in a subshell, as in `for d in a b; do (cd "$d" && npm test); done`.';
+  'A loop or a chain of cd commands left more possible folders than this check follows; change directory in a subshell, at a loop body\'s top level or in an `if` branch inside it, as in `for d in a b; do (cd "$d" && npm test); done`.';
 const GROWN_POWERSHELL =
-  'A loop or a chain of Set-Location commands left more possible locations than this check follows; change location in a loop body between Push-Location and Pop-Location.';
+  'A loop or a chain of Set-Location commands left more possible locations than this check follows; change location between Push-Location and Pop-Location, at a loop body\'s top level or in an `if` branch inside it.';
 // Trap conditions, upper case, that run only when the shell exits; any other may run between any two commands.
 const EXIT_CONDITIONS: ReadonlySet<string> = new Set(['EXIT', '0']);
 
@@ -644,8 +644,15 @@ interface Place {
   readonly exits: number;
 }
 
+// Each place's key by its stack and directory; a stack array is never changed once made, and places share it.
+const placeKeys = new WeakMap<readonly string[], Map<string, string>>();
+
 function placeKey(place: Place): string {
-  return JSON.stringify([place.dir, ...place.stack]);
+  let byDir = placeKeys.get(place.stack);
+  if (byDir === undefined) placeKeys.set(place.stack, (byDir = new Map()));
+  let key = byDir.get(place.dir);
+  if (key === undefined) byDir.set(place.dir, (key = JSON.stringify([place.dir, ...place.stack])));
+  return key;
 }
 
 /**
@@ -1001,6 +1008,11 @@ interface BashText {
 interface RangeWalker<L extends LoopRange> {
   step(k: number): string | undefined;
   loop(found: L, body: () => string | undefined, header: () => string | undefined, inner: readonly L[]): string | undefined;
+}
+
+/** Ranges in the order a range walk meets them, outer first; the sort is stable, so ranges over the same segments keep their order. */
+function byNesting<L extends LoopRange>(ranges: L[]): L[] {
+  return ranges.sort((a, b) => a.head - b.head || b.end - a.end);
 }
 
 class IsolationRun {
@@ -1504,14 +1516,16 @@ class IsolationRun {
       if (aliases === undefined) lines.set(segment.line, (aliases = state.aliases));
       return { aliases, expanding: new Set() };
     };
-    // Outer ranges first: a subshell and a loop over the same segments are `( for ...; done )`.
-    const ranges: Array<LoopRange & { readonly loop?: ShellLoop }> = [
+    // Outer ranges first: a branch, a subshell and a loop over the same segments are `then ( for ...; done ); fi`.
+    const ranges = byNesting<LoopRange & { readonly loop?: ShellLoop; readonly branch?: true }>([
+      ...structure.branches.map((branch) => ({ branch: true as const, head: branch.start, start: branch.start, end: branch.end })),
       ...structure.subshells.map((subshell) => ({ head: subshell.start, start: subshell.start, end: subshell.end })),
       ...structure.loops.map((loop) => ({ loop, head: loop.header ?? loop.start, start: loop.start, end: loop.end })),
-    ].sort((a, b) => a.head - b.head || b.end - a.end);
+    ]);
     return this.range(0, structure.segments.length, ranges, {
       step: (k) => this.sequenced(state, structure.segments[k]!, () => this.bashSegment(structure.segments[k]!, state, text, site, readingOf(structure.segments[k]!))),
-      loop: (found, body) => (found.loop === undefined ? this.subshell(state, body) : this.bashLoop(found.loop, structure, state, text, site, body, readingOf)),
+      loop: (found, body) =>
+        found.branch ? this.branch(state, body) : found.loop === undefined ? this.subshell(state, body) : this.bashLoop(found.loop, structure, state, text, site, body, readingOf),
     });
   }
 
@@ -1528,6 +1542,19 @@ class IsolationRun {
     state.seen = seen;
     state.traps = traps;
     return blocked;
+  }
+
+  /**
+   * A branch of an `if`, which runs whole or not at all: its commands follow one another, and the places after it join
+   * those before it. A jump or an error that leaves it partway is followed as anywhere else.
+   */
+  private branch(state: ShellState, body: () => string | undefined): string | undefined {
+    const before = state.places;
+    const blocked = body();
+    if (blocked) return blocked;
+    if (before === undefined) state.places = undefined;
+    else this.stand(state, joinPlaces(state.places, eitherExit(before)));
+    return undefined;
   }
 
   /**
@@ -1688,16 +1715,22 @@ class IsolationRun {
     }
   }
 
+  /** `loops` are sorted by head, then by end descending (`byNesting`), so the cursor `r` only moves forward. */
   private rangeWalk<L extends LoopRange>(from: number, to: number, loops: readonly L[], walker: RangeWalker<L>): string | undefined {
+    let r = 0;
     for (let k = from; k < to; ) {
-      const found = loops.find((loop) => loop.head === k && loop.end > k);
+      while (r < loops.length && loops[r]!.head < k) r++;
+      // The outermost range opening here: a block in the header of another opens first and starts at the same segment.
+      const found = loops[r]?.head === k && loops[r]!.end > k ? loops[r]! : undefined;
       if (found === undefined) {
         const blocked = walker.step(k);
         if (blocked) return blocked;
         k++;
         continue;
       }
-      const inner = loops.filter((loop) => loop !== found && loop.head >= found.head && loop.end <= found.end);
+      let after = r + 1;
+      while (after < loops.length && loops[after]!.head < found.end) after++;
+      const inner = loops.slice(r + 1, after).filter((loop) => loop.end <= found.end);
       const blocked = walker.loop(found, () => this.range(found.start, found.end, inner, walker), () => this.range(found.head, found.start, inner, walker), inner);
       if (blocked) return blocked;
       k = found.end;
@@ -3144,6 +3177,8 @@ class IsolationRun {
     if (PS_DEFAULT_PARAMETERS.test(command)) return this.block('$PSDefaultParameterValues gives cmdlets parameters the text does not show, so its git target cannot be read.');
     if (PS_NATIVE_PASSING.test(command)) return this.block('$PSNativeCommandArgumentPassing changes the command lines programs get, so its git target cannot be read.');
     if (PS_PROCESS_CLASS.test(command) && PS_CREATE_CALL.test(command)) return this.block('The command starts a process through Win32_Process, which this check cannot read.');
+    // A trap's `continue` resumes after the top-level statement around the error, which may end a branch or a loop partway.
+    if (PS_TRAP.test(source)) state.scattered = true;
     return this.range(0, scanned.segments.length, scanned.ranges, this.psWalker(scanned.segments, text, state));
   }
 
@@ -3152,7 +3187,7 @@ class IsolationRun {
     if (!this.psParses.has(source)) {
       const segments: PsSegment[] = [];
       const ranges: PsRange[] = [];
-      this.psParses.set(source, scanPowershell(source, 0, 0, segments, false, ranges) === undefined ? undefined : { segments, ranges });
+      this.psParses.set(source, scanPowershell(source, 0, 0, segments, false, ranges) === undefined ? undefined : { segments, ranges: byNesting(ranges) });
     }
     return this.psParses.get(source);
   }
@@ -3167,9 +3202,12 @@ class IsolationRun {
   /**
    * A PowerShell script block that may run more than once: a `foreach` over at most MAX_LOOP_ITEMS items the text
    * gives runs once per item, with its variable bound to the item; any other is walked until its state settles. A function
-   * or filter is walked once where it is defined, and recorded so that each call walks its body.
+   * or filter is walked once where it is defined, and recorded so that each call walks its body. An `if` branch runs whole
+   * or not at all.
    */
   private psLoop(range: PsRange, inner: readonly PsRange[], segments: readonly PsSegment[], text: PsText, state: ShellState, body: () => string | undefined, header: () => string | undefined): string | undefined {
+    if (range.branch === 'if') return header() ?? this.branch(state, body);
+    if (range.branch === 'else') return this.branch(state, () => header() ?? this.branch(state, body));
     if (range.later) this.reading.deferred = true;
     if (range.name !== undefined) {
       state.functions.set(range.name, { segments, text, start: range.start, end: range.end, inner });

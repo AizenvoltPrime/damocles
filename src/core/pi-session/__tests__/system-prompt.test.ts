@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { assembleDamoclesSystemPrompt, renderSections } from '../agent-start';
-import { SYSTEM_PROMPT_PREAMBLE, buildModelSection } from '../system-prompt';
+import { MODEL_SWITCH_NOTE, SYSTEM_PROMPT_PREAMBLE, buildModelSection } from '../system-prompt';
 import { DEFAULT_MODELS } from '../../../shared/types/constants';
 import { COMPASS_SYSTEM_PROMPT } from '../../compass/system-prompt';
 import { PROSE_RULES_BODY } from '../prose-rules';
@@ -540,6 +540,7 @@ describe('the assembled system prompt — Claude 5-gen context-engineering pass'
         <damocles_model>
         You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.
         Assistant knowledge cutoff is June 2026.
+        The user can switch this chat's model at any time, so earlier replies in this conversation may have come from another model.
         </damocles_model>
 
         <damocles_tone>
@@ -723,6 +724,7 @@ describe('the assembled system prompt — Claude 5-gen context-engineering pass'
         <damocles_model>
         You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.
         Assistant knowledge cutoff is June 2026.
+        The user can switch this chat's model at any time, so earlier replies in this conversation may have come from another model.
         </damocles_model>
 
         <damocles_tone>
@@ -934,19 +936,19 @@ describe('buildModelSection over the catalog', () => {
   });
 
   it('names an id outside the catalog only by its id', () => {
-    expect(buildModelSection('some-new-model')).toBe('You are powered by the model some-new-model.');
+    expect(buildModelSection('some-new-model')).toBe(`You are powered by the model some-new-model.\n${MODEL_SWITCH_NOTE}`);
   });
 
   // Outside the catalog, as a hand-edited setting naming a pi id is: only an exact retired version matches.
   it('names a retired version, its dated snapshot, pin and [1m] forms, and never a longer version', () => {
     const name = (model: string) => buildModelSection(model).split('\n');
-    expect(name('claude-opus-5')).toEqual(['You are powered by the model named Opus 5. The exact model ID is claude-opus-5.', 'Assistant knowledge cutoff is May 2026.']);
+    expect(name('claude-opus-5')).toEqual(['You are powered by the model named Opus 5. The exact model ID is claude-opus-5.', 'Assistant knowledge cutoff is May 2026.', MODEL_SWITCH_NOTE]);
     expect(name('claude-haiku-4-5-20251001')[0]).toContain('named Haiku 4.5.');
     expect(name('anthropic/claude-opus-4-8')[0]).toContain('named Opus 4.8.');
     expect(name('claude-opus-5[1m]')[0]).toContain('named Opus 5.');
-    expect(name('claude-opus-4-1-20250805')).toEqual(['You are powered by the model claude-opus-4-1-20250805.', 'Assistant knowledge cutoff is January 2025.']);
+    expect(name('claude-opus-4-1-20250805')).toEqual(['You are powered by the model claude-opus-4-1-20250805.', 'Assistant knowledge cutoff is January 2025.', MODEL_SWITCH_NOTE]);
     for (const longer of ['claude-opus-5.5', 'claude-opus-5-5-preview', 'gpt-6-sol-mini', 'claude-sonnet-5.5']) {
-      expect(name(longer), longer).toEqual([`You are powered by the model ${longer}.`]);
+      expect(name(longer), longer).toEqual([`You are powered by the model ${longer}.`, MODEL_SWITCH_NOTE]);
     }
   });
 });

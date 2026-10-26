@@ -10,7 +10,7 @@ export function createBtwHandlers(): Partial<HandlerRegistry> {
       useBtwStore().completeAside(msg.btwId, msg.text);
     },
     btwError: (msg) => {
-      useBtwStore().setError(msg.btwId, msg.message);
+      useBtwStore().setError(msg.btwId, msg.message, msg.authFailure);
     },
   };
 }
