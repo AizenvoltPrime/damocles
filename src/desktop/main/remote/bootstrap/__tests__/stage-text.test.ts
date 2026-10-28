@@ -51,27 +51,40 @@ describe('stage 0', () => {
 
 describe('Windows stage 0 under a real PowerShell', async () => {
   const shell = process.platform === 'win32' ? await powerShell() : undefined;
-  // every byte value, then random bytes, echoed through the raw console streams after stage 1 is read
-  const payload = Buffer.concat([Buffer.from(Array.from({ length: 256 }, (_, index) => index)), randomBytes(64 * 1024)]);
-  const echo = [
-    `$left = ${payload.length}`,
+  // every byte value, then random bytes, echoed through stage 0's streams after stage 1 is read
+  const payloadOf = (randomLength: number): Buffer => Buffer.concat([Buffer.from(Array.from({ length: 256 }, (_, index) => index)), randomBytes(randomLength)]);
+  const echo = (length: number): string => [
+    `$left = ${length}`,
     '$buffer = New-Object byte[] 65536',
     'while ($left -gt 0) { $read = $DamoclesIn.Read($buffer, 0, [Math]::Min($buffer.Length, $left)); if ($read -le 0) { exit 4 }; $DamoclesOut.Write($buffer, 0, $read); $left -= $read }',
     '$DamoclesOut.Flush()',
   ].join('\n');
-  const run = async (args: string[]): Promise<Buffer> => {
-    const { exit, stdout } = await runWithBytes({ file: shell!, args, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }, Buffer.concat([stage1Frame(echo), payload]));
+  const run = async (args: string[], payload: Buffer, mode: 'pipe' | 'overlapped'): Promise<Buffer> => {
+    const spec = { file: shell!, args, windowsHide: true, stdio: [mode, mode, 'pipe'] } as const;
+    const { exit, stdout } = mode === 'pipe'
+      ? await runWithBytes(spec, Buffer.concat([stage1Frame(echo(payload.length)), payload]))
+      : await runWithBytes(spec, Buffer.alloc(0), [stage1Frame(echo(payload.length)), payload]);
     expect(exit?.code).toBe(0);
     return stdout;
   };
+  const CMD_ARGS = windowsStage0('cmd').split(' ').slice(1);
+  const POWERSHELL_ARGS = ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', windowsStage0('powershell')];
 
   it.skipIf(shell === undefined)('passes every byte value through unchanged as cmd launches it (-EncodedCommand)', async () => {
-    const [, ...args] = windowsStage0('cmd').split(' ');
-    expect((await run(args)).equals(payload)).toBe(true);
+    const payload = payloadOf(64 * 1024);
+    expect((await run(CMD_ARGS, payload, 'pipe')).equals(payload)).toBe(true);
   });
 
   it.skipIf(shell === undefined)('passes every byte value through unchanged as a PowerShell default shell runs it (-Command)', async () => {
-    expect((await run(['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', windowsStage0('powershell')])).equals(payload)).toBe(true);
+    const payload = payloadOf(64 * 1024);
+    expect((await run(POWERSHELL_ARGS, payload, 'pipe')).equals(payload)).toBe(true);
+  });
+
+  // Win32-OpenSSH's handles: the console streams' reads on an empty overlapped pipe lost bytes and stalled an upload
+  it.skipIf(shell === undefined)('passes 2 MiB arriving in chunks through unchanged both ways on overlapped stdin and stdout, under both shells', { timeout: 60_000 }, async () => {
+    const payload = payloadOf(2 * 1024 * 1024);
+    expect((await run(CMD_ARGS, payload, 'overlapped')).equals(payload)).toBe(true);
+    expect((await run(POWERSHELL_ARGS, payload, 'overlapped')).equals(payload)).toBe(true);
   });
 });
 

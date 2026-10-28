@@ -1,5 +1,5 @@
 # Stage 1 on a Windows target: the prerequisite probe, the install, and then the bridge itself. Stage 0 runs it dot-sourced
-# with $DamoclesIn and $DamoclesOut, the raw console streams; nothing may reach PowerShell's own output, which would re-encode
+# with $DamoclesIn and $DamoclesOut, unbuffered streams on stdin and stdout; nothing may reach PowerShell's own output, which would re-encode
 # bytes as text, so tool output goes to stderr and only Send-DamoclesLine writes to stdout until the bridge copies bytes.
 # Everything above "BEGIN MAIN" only defines; the tests dot-source that part and call the functions.
 # BEGIN PARAMETERS

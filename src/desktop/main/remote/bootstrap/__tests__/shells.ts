@@ -7,18 +7,28 @@ import { afterAll } from 'vitest';
 import { processLauncher, runProcess, type RunOutput, type SpawnSpec } from '../../../../../core/process-launcher';
 import { findBash, findPwsh, windowsPowerShell } from '../../../../../core/system-tools';
 import { parseStageLine, type StageMessage } from '../probe-parse';
+import { WINDOWS_STDIO_SETUP } from '../stage0';
 import POSIX_STAGE1 from '../stage1-posix.sh';
 import WINDOWS_STAGE1 from '../stage1-windows.ps1';
 import { stageDefinitions } from '../stage1';
 
-/** Runs a process with these exact stdin bytes, then closes stdin; runProcess writes a string input as UTF-8. */
-export async function runWithBytes(spec: SpawnSpec, input: Buffer): Promise<RunOutput> {
+/**
+ * Runs a process with these exact stdin bytes, then closes stdin; runProcess writes a string input as UTF-8. With `paced`,
+ * each later part goes in 64 KiB chunks a few ms apart, as a network delivers it, so the child's reads find an empty pipe.
+ */
+export async function runWithBytes(spec: SpawnSpec, input: Buffer, paced?: readonly Buffer[]): Promise<RunOutput> {
   const child = processLauncher().launch(spec);
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
   child.onData('stdout', (chunk) => stdout.push(chunk));
   child.onData('stderr', (chunk) => stderr.push(chunk));
   await child.write(input);
+  for (const part of paced ?? []) {
+    for (let at = 0; at < part.length; at += 64 * 1024) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      await child.write(part.subarray(at, at + 64 * 1024));
+    }
+  }
   child.end();
   const exit = await child.exited;
   await child.closed;
@@ -79,12 +89,14 @@ export function withPosixDefinitions(body: string): string {
   return `${stageDefinitions(POSIX_STAGE1)}\n${body}\n`;
 }
 
-/** Windows stage 1's definitions with the raw console streams stage 0 provides, then `body`. */
+// pwsh off Windows has no kernel32, so there stage 1 gets the console streams
+const STDIO_SETUP = process.platform === 'win32' ? WINDOWS_STDIO_SETUP : ['$DamoclesIn = [Console]::OpenStandardInput()', '$DamoclesOut = [Console]::OpenStandardOutput()'];
+
+/** Windows stage 1's definitions with the stdin and stdout streams stage 0 opens, then `body`. */
 export function withWindowsDefinitions(body: string): string {
   return [
     "$ErrorActionPreference = 'Stop'",
-    '$DamoclesIn = [Console]::OpenStandardInput()',
-    '$DamoclesOut = [Console]::OpenStandardOutput()',
+    ...STDIO_SETUP,
     stageDefinitions(WINDOWS_STAGE1),
     body,
     '',

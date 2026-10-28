@@ -5,7 +5,8 @@ export const LAUNCHER_WORKER_MARKER = 'damocles-process-launcher';
 /** A worker pauses a child's output once this much is unacknowledged by the client. */
 export const MAX_UNACKED_BYTES: number = 1024 * 1024;
 
-export type StdioMode = 'pipe' | 'ignore' | 'inherit';
+// 'overlapped' is 'pipe' whose child end has FILE_FLAG_OVERLAPPED on Windows, as Win32-OpenSSH gives a session's command
+export type StdioMode = 'pipe' | 'overlapped' | 'ignore' | 'inherit';
 export type OutputStream = 'stdout' | 'stderr';
 
 /** Every option a process start takes; `job` names a session job from the same launcher. */
