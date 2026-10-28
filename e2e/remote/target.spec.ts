@@ -9,53 +9,15 @@ import { HEADER_BYTES, MESSAGE_TYPE } from '../../src/remote/persistent-protocol
 import { NONCE_BYTES } from '../../src/remote/handshake';
 import { isAlive, run, windowsProcessTree } from '../desktop/support/app';
 import { openInEditor, editorShows, quickOpen, quickPick } from '../desktop/support/editor';
-import type { HermeticHome } from '../desktop/support/hermetic';
 import { killDaemonIn, pidIn } from '../desktop/support/loopback';
 import { localRunPaths } from '../../src/desktop/daemon/token';
 import { overlayPage, shellPage, shellState } from '../desktop/support/shell';
 import { openTerminal, runInTerminal, waitForOutputLine } from '../desktop/support/terminal';
-import { addHost, control, DARWIN_TARGET_TAG, dropConnection, expect, openRemoteFolder, readRemoteBytes, remoteProjectKey, test as remoteTest, WINDOWS_SSH_ENV, WINDOWS_TARGET_TAG, writeRemoteBytes } from './support/remote';
+import { addHost, control, DARWIN_TARGET_TAG, dropConnection, expect, openRemoteFolder, readRemoteBytes, remoteProjectKey, test as remoteTest, WINDOWS_TARGET_TAG, writeRemoteBytes } from './support/remote';
+import { runnerTargetEnv } from './support/runner-target';
 
-// The target suites run on a CI runner against its own sshd (remote-e2e-nightly.yml), which authorizes a key for the runner's
-// account and passes it, the known host line and the account here. The target's home is the runner's, discarded with it.
-const TARGET = {
-  identity: process.env['DAMOCLES_E2E_TARGET_IDENTITY'],
-  knownHosts: process.env['DAMOCLES_E2E_TARGET_KNOWN_HOSTS'],
-  user: process.env['DAMOCLES_E2E_TARGET_USER'],
-  // cmd or powershell: the DefaultShell the workflow gave Win32-OpenSSH
-  shell: process.env['DAMOCLES_E2E_TARGET_SHELL'],
-};
-
-// A release URL nothing serves: the target's download fails at once and the app uploads the package it built.
-const NO_RELEASE = 'http://127.0.0.1:1';
-
-const targetEnv = (home: HermeticHome): Record<string, string> => ({ ...WINDOWS_SSH_ENV, DAMOCLES_E2E_HOOKS: '1', DAMOCLES_REMOTE: '1', DAMOCLES_E2E_SSH_CONFIG: targetConfig(home), DAMOCLES_E2E_RELEASE_URL: NO_RELEASE });
-
-/** A temp ~/.ssh naming the runner's sshd as prod-1, with the workflow's key and known host. */
-function targetConfig(home: HermeticHome): string {
-  const { identity, knownHosts, user } = TARGET;
-  if (!identity || !knownHosts || !user) throw new Error('DAMOCLES_E2E_TARGET_IDENTITY, _KNOWN_HOSTS and _USER are unset; the target suites run in remote-e2e-nightly.yml');
-  const dir = path.join(home.home, '.ssh');
-  fs.mkdirSync(dir, { recursive: true });
-  const key = path.join(dir, 'id_ed25519');
-  fs.copyFileSync(identity, key);
-  if (process.platform !== 'win32') fs.chmodSync(key, 0o600);
-  fs.copyFileSync(knownHosts, path.join(dir, 'known_hosts'));
-  const posix = (file: string): string => file.split(path.sep).join('/');
-  const config = path.join(dir, 'config');
-  fs.writeFileSync(config, [
-    'Host prod-1',
-    '  HostName 127.0.0.1',
-    '  Port 22',
-    `  User ${user}`,
-    `  IdentityFile "${posix(key)}"`,
-    '  IdentitiesOnly yes',
-    '  IdentityAgent none',
-    `  UserKnownHostsFile "${posix(path.join(dir, 'known_hosts'))}"`,
-    '',
-  ].join('\n'));
-  return config;
-}
+// cmd or powershell: the DefaultShell remote-e2e-nightly.yml gave Win32-OpenSSH
+const TARGET_SHELL = process.env['DAMOCLES_E2E_TARGET_SHELL'];
 
 // The runner's account is the target's, so its daemon's pid file is in this computer's real home.
 const targetDaemonPid = (): Promise<number | undefined> => pidIn(os.homedir());
@@ -97,7 +59,7 @@ for (const [tag, platform] of [[WINDOWS_TARGET_TAG, 'win32'], [DARWIN_TARGET_TAG
       fs.mkdirSync(path.join(folder, 'src'), { recursive: true });
       fs.writeFileSync(path.join(folder, 'src', 'target.ts'), 'export const target = 1;\n');
       fs.writeFileSync(path.join(folder, 'notes.md'), '# Target\n');
-      const { app } = await launch({ env: targetEnv(home) });
+      const { app } = await launch({ env: await runnerTargetEnv(home) });
       const { hostId, key } = await connectTarget(app, folder);
       const project = (await shellState(app)).projects.find((candidate) => candidate.key === key)!;
       expect(project.platform).toBe(platform);
@@ -118,7 +80,7 @@ for (const [tag, platform] of [[WINDOWS_TARGET_TAG, 'win32'], [DARWIN_TARGET_TAG
     test(`the daemon on ${platform} survives the end of its SSH session, and the next connection attaches to it`, async ({ home, launch }) => {
       const folder = path.join(home.root, 'target-project');
       fs.mkdirSync(folder, { recursive: true });
-      const { app } = await launch({ env: targetEnv(home) });
+      const { app } = await launch({ env: await runnerTargetEnv(home) });
       const { hostId, key } = await connectTarget(app, folder);
       const pid = (await targetDaemonPid())!;
       await dropConnection(app, hostId);
@@ -133,11 +95,11 @@ for (const [tag, platform] of [[WINDOWS_TARGET_TAG, 'win32'], [DARWIN_TARGET_TAG
 }
 
 test.describe('win32 target', { tag: WINDOWS_TARGET_TAG }, () => {
-  test(`every byte value and 16 MiB of random data cross the connection unchanged both ways (DefaultShell ${TARGET.shell ?? 'unknown'})`, async ({ home, launch }) => {
+  test(`every byte value and 16 MiB of random data cross the connection unchanged both ways (DefaultShell ${TARGET_SHELL ?? 'unknown'})`, async ({ home, launch }) => {
     test.setTimeout(600_000);
     const folder = path.join(home.root, 'target-project');
     fs.mkdirSync(folder, { recursive: true });
-    const { app } = await launch({ env: targetEnv(home) });
+    const { app } = await launch({ env: await runnerTargetEnv(home) });
     const { hostId, key } = await connectTarget(app, folder);
     const everyByte = Buffer.from(Array.from({ length: 256 }, (_, n) => n));
     // 16 MiB in 4 MiB files, each inside one workspace message's bound
@@ -159,7 +121,7 @@ test.describe('win32 target', { tag: WINDOWS_TARGET_TAG }, () => {
   test('a pipe another process created first under a name makes the package Node\'s bind of that name fail, as the daemon\'s start binds its pipe', async ({ home, launch }) => {
     const folder = path.join(home.root, 'target-project');
     fs.mkdirSync(folder, { recursive: true });
-    const { app } = await launch({ env: targetEnv(home) });
+    const { app } = await launch({ env: await runnerTargetEnv(home) });
     const { hostId } = await connectTarget(app, folder);
     const server = path.join(os.homedir(), '.damocles', 'server');
     const version = fs.readdirSync(server).find((name) => /-win32-(?:x64|arm64)$/.test(name));
@@ -182,7 +144,7 @@ test.describe('win32 target', { tag: WINDOWS_TARGET_TAG }, () => {
   test('a stand-in pipe under a stopped daemon\'s name receives only the bridge\'s nonce, and the bridge starts a new daemon', async ({ home, launch }) => {
     const folder = path.join(home.root, 'target-project');
     fs.mkdirSync(folder, { recursive: true });
-    const { app } = await launch({ env: targetEnv(home) });
+    const { app } = await launch({ env: await runnerTargetEnv(home) });
     const { hostId, key } = await connectTarget(app, folder);
     const old = (await targetDaemonPid())!;
     const record = JSON.parse(fs.readFileSync(await pidFileOf(), 'utf8')) as { endpoint: string };
