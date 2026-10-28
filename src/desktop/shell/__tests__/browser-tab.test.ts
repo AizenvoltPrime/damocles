@@ -247,7 +247,7 @@ describe('page tabs in the strip', () => {
     const api = fakeShellApi([], { getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs, activeTabId: tabs[0]!.id })) });
     const store = createEditorStore(api);
     await store.start();
-    const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W' }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: createScmStore(api.scm) } }, attachTo: document.body });
+    const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W', projects: [] }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: createScmStore(api.scm) } }, attachTo: document.body });
     mounted.push(wrapper);
     await flushPromises();
     return { wrapper, api };

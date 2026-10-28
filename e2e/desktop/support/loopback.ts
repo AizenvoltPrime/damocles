@@ -152,7 +152,13 @@ export async function endLeftoverDaemon(app: ElectronApplication | undefined, ho
     await shutdownDaemon(app, home);
     return;
   }
-  const root = await daemonPid(home);
+  await killDaemonIn(loopbackHome(home));
+}
+
+/** Kills the process tree of the daemon whose pid file is in `daemonHome`'s run folder; nothing when no daemon.js serve runs. */
+export async function killDaemonIn(daemonHome: string): Promise<void> {
+  const root = await pidIn(daemonHome);
+  if (root === undefined) return;
   // a stale pid file can name a pid the system has since given to a process that is no daemon (daemon.js serve)
   if (!/daemon\.js\S*\s+serve\b/.test((await commandLineOf(root)) ?? '')) return;
   const tree = await processTree(root);

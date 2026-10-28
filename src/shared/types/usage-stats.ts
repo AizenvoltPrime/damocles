@@ -125,6 +125,13 @@ export interface UsageStatsSourceRow extends UsageStatsAggregate {
   detail: string | null;
 }
 
+/** Whose credential paid: the user's own sign-in (any local core's spend) or a remote host's own credential. */
+export type UsageStatsCredential = 'signIn' | 'host';
+
+export interface UsageStatsCredentialRow extends UsageStatsAggregate {
+  credential: UsageStatsCredential;
+}
+
 /** Usage in one weekday and hour of the query's zone. Weekday is 0 for Monday through 6 for Sunday; empty cells are omitted. */
 export interface UsageStatsHeatmapCell {
   weekday: number;
@@ -160,6 +167,7 @@ export interface UsageStatsReport {
   byModel?: UsageStatsModelRow[];
   byProject?: UsageStatsProjectRow[];
   bySource?: UsageStatsSourceRow[];
+  byCredential?: UsageStatsCredentialRow[];
   heatmap?: UsageStatsHeatmapCell[];
   /** The costliest conversations in range, at most `USAGE_STATS_TOP_SESSIONS`. */
   topSessions?: UsageStatsTopSession[];

@@ -3,6 +3,7 @@ import { computed, inject, onMounted, ref, shallowRef, watch } from 'vue';
 import type { DamoclesShellApi, ShellEditorTab } from '../../preload/shell-channels';
 import { EDITOR_STORE } from './editor-store';
 import { markdownPreviewHtml, previewLink } from './markdown-html';
+import LoadFailedNotice from './LoadFailedNotice.vue';
 
 const props = defineProps<{ api: DamoclesShellApi; tab: ShellEditorTab }>();
 const store = inject(EDITOR_STORE)!;
@@ -31,12 +32,14 @@ watch(buffer, (model, _previous, onCleanup) => {
     listener.dispose();
   });
 }, { immediate: true });
+// a buffer holds the text whatever main's load did
+const failed = computed(() => !buffer.value && props.tab.documentId !== undefined && store.loadFailed(props.tab.documentId));
 const source = computed(() => (buffer.value ? bufferText.value : content.value?.kind === 'text' ? content.value.text : ''));
 // Sanitized by markdownPreviewHtml: the file's raw HTML renders only through its DOMPurify allowlist.
 const html = computed(() => markdownPreviewHtml(source.value));
 
 onMounted(() => {
-  if (props.tab.documentId !== undefined) void store.load(props.tab.documentId);
+  if (props.tab.documentId !== undefined) void store.loadShown(props.tab.documentId);
 });
 
 const slug = (text: string): string => text.trim().toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, '').replace(/\s+/g, '-');
@@ -63,8 +66,13 @@ function onClick(event: MouseEvent): void {
 </script>
 
 <template>
+  <LoadFailedNotice
+    v-if="failed"
+    :tab="tab"
+  />
   <!-- contain: paint keeps anything the file's HTML positions inside the preview. -->
   <div
+    v-else
     data-testid="markdown-preview"
     class="absolute inset-0 overflow-auto bg-(--d-bg) contain-[paint]"
   >

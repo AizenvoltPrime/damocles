@@ -99,6 +99,10 @@ export interface MenuState {
   readonly handOff: { readonly canHandOff: boolean; readonly place: 'project' | 'worktree' } | undefined;
   // New Chat in This Worktree's target: the selected chat works in its live chat worktree of a trusted project; undefined otherwise
   readonly newChatInWorktree: NewChatInWorktreeRequest | undefined;
+  // the selected project is on a remote host that is connected
+  readonly remoteHostConnected: boolean;
+  // at least one SSH host is saved
+  readonly remoteHostSaved: boolean;
 }
 
 // Search's part of the context: what main's search service and editor pane hold, never what a renderer reports.
@@ -200,6 +204,8 @@ export interface MenuActions {
   restartEngine(): void;
   // present only in a dev or e2e run with the loopback daemon enabled
   readonly loopback?: { openFolder(): void; showLog(): void };
+  // present only while remote features are enabled (remote-enabled.ts)
+  readonly remote?: { connectToHost(): void; disconnectHost(): void; openFolderOnHost(): void };
   // Settings › About
   about(): void;
   // Settings › About with the running version expanded in What's new
@@ -310,6 +316,7 @@ export function installApplicationMenu(
       item(MENU_IDS.saveAs),
       { type: 'separator' },
       item(MENU_IDS.addProject),
+      ...(actions.remote ? [item(MENU_IDS.connectToHost), item(MENU_IDS.openFolderOnHost), item(MENU_IDS.disconnectHost)] : []),
       ...(actions.loopback ? [item(MENU_IDS.openFolderThroughLocalDaemon), item(MENU_IDS.showLocalDaemonLog)] : []),
       { type: 'separator' },
       ...(mac ? [] : [settingsItem, { type: 'separator' as const }]),

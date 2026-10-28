@@ -49,7 +49,8 @@ function route() {
     getPanels: () => new Map(),
     platform: { ...createFakePlatform(), settings },
   } as Partial<HandlerDependencies> as HandlerDependencies;
-  const ctx = { host: {}, permissionHandler: {} } as unknown as HandlerContext;
+  const host = {};
+  const ctx = { host, reply: host, permissionHandler: {} } as unknown as HandlerContext;
 
   async function run(msg: WebviewToExtensionMessage): Promise<void> {
     await createSettingsHandlers(deps)[msg.type]!(msg, ctx);

@@ -242,3 +242,81 @@ describe.skipIf(!HAS_GIT)('discarding tracked changes to the trash', { timeout: 
     h.service.dispose();
   });
 });
+
+// A daemon's core has no trash: its injected delete removes the file, and every question and failure says so.
+describe.skipIf(!HAS_GIT)('discarding on a core that deletes permanently', { timeout: 120_000 }, () => {
+  const deleted: string[] = [];
+  const remove = async (absolute: string): Promise<void> => {
+    fs.rmSync(absolute, { recursive: true });
+    deleted.push(absolute);
+  };
+  const openDeleting = (project: string, trash: (absolute: string) => Promise<void> = remove) => open(project, { deletesPermanently: true, trash });
+
+  it('asks to Delete File with the irreversible detail, then runs the injected delete', async () => {
+    const project = makeRepo(folder('delete-one'));
+    write(path.join(project, 'junk.txt'), 'junk\n');
+    deleted.length = 0;
+    const { h, repoId } = await openDeleting(project);
+    expect(await listed(h, repoId)).toEqual(['UNTRACKED junk.txt']);
+    h.answers = [0];
+    expect(await h.service.discard(repoId, ['junk.txt'])).toBe(true);
+    expect(h.questions[0]).toMatchObject({
+      severity: 'danger',
+      message: 'Are you sure you want to DELETE the following untracked file: \'junk.txt\'?',
+      detail: 'This is IRREVERSIBLE!\nThis file will be FOREVER LOST if you proceed.',
+      actions: ['Delete File'],
+    });
+    expect(deleted).toEqual([path.join(project, 'junk.txt')]);
+    expect(h.bin).toEqual([]);
+    expect(fs.existsSync(path.join(project, 'junk.txt'))).toBe(false);
+    h.service.dispose();
+  });
+
+  it('asks to Delete All {0} Files with the irreversible detail for many', async () => {
+    const project = makeRepo(folder('delete-many'));
+    write(path.join(project, 'x.txt'), 'x\n');
+    write(path.join(project, 'y.txt'), 'y\n');
+    deleted.length = 0;
+    const { h, repoId } = await openDeleting(project);
+    expect(await listed(h, repoId)).toEqual(['UNTRACKED x.txt', 'UNTRACKED y.txt']);
+    h.answers = [0];
+    expect(await h.service.discardAll(repoId, 'untracked')).toBe(true);
+    expect(h.questions[0]).toMatchObject({
+      message: 'Are you sure you want to DELETE the 2 untracked files?',
+      detail: 'This is IRREVERSIBLE!\nThese files will be FOREVER LOST if you proceed.',
+      actions: ['Delete All 2 Files'],
+    });
+    expect(deleted.sort()).toEqual([path.join(project, 'x.txt'), path.join(project, 'y.txt')]);
+    h.service.dispose();
+  });
+
+  it('says nothing of a trash when it discards a tracked change', async () => {
+    const project = makeRepo(folder('delete-tracked'));
+    write(path.join(project, 'a.txt'), 'changed\n');
+    deleted.length = 0;
+    const { h, repoId } = await openDeleting(project);
+    h.answers = [0];
+    expect(await h.service.discard(repoId, ['a.txt'])).toBe(true);
+    expect(h.questions[0]).toMatchObject({ message: 'Are you sure you want to discard changes in \'a.txt\'?', actions: ['Discard File'] });
+    expect(h.questions[0]!.detail).toBeUndefined();
+    expect(deleted).toEqual([path.join(project, 'a.txt')]);
+    expect(read(path.join(project, 'a.txt'))).toBe('one\n');
+    h.service.dispose();
+  });
+
+  it('names a file it could not delete, and counts several', async () => {
+    const project = makeRepo(folder('delete-fails'));
+    write(path.join(project, 'x.txt'), 'x\n');
+    write(path.join(project, 'y.txt'), 'y\n');
+    const { h, repoId } = await openDeleting(project, async () => {
+      throw new Error('read-only file system');
+    });
+    await listed(h, repoId);
+    h.answers = [0];
+    await expect(h.service.discard(repoId, ['x.txt'])).rejects.toThrow('\'x.txt\' could not be deleted, so its changes were not discarded: read-only file system');
+    h.answers = [0];
+    await expect(h.service.discardAll(repoId, 'untracked')).rejects.toThrow('2 files could not be deleted, so their changes were not discarded: read-only file system');
+    expect(read(path.join(project, 'x.txt'))).toBe('x\n');
+    h.service.dispose();
+  });
+});

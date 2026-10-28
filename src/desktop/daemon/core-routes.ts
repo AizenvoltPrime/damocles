@@ -7,7 +7,7 @@ import { OPENAI_API_KEY_SECRET } from '../../core/pi-session/openai-auth';
 import { folderKey } from '../../core/workspace-folders/folder-key';
 import type { Disposable } from '../../platform/disposable';
 import type { OpenFolder } from '../../platform/workspace-folders';
-import { createCoreEndpoint, type CoreEndpoint, type CoreTransport, type MainEndpoint } from '../core-protocol';
+import { createCoreEndpoint, processActor, type CoreEndpoint, type CoreTransport, type MainEndpoint } from '../core-protocol';
 import { CLIENT_STATE_KEYS, MAX_ITEMS } from '../core-protocol/messages';
 import { confineExisting, projectOfPath } from '../local-services/confine';
 import { readFileBytes } from '../local-services/file-bytes';
@@ -28,9 +28,10 @@ export interface NoClientContext {
 }
 
 /**
- * client: the acting client, else noClient; issuingClient: the client that sent the scm.commit the token names; viewClient:
- * the client showing params.viewId; pinnedClient: exactly the client params.clientId names, refused with
- * CREDENTIAL_CLIENT_ABSENT when it is gone, never another.
+ * client: the client the request's actor names, else the acting client, else another attached one, else noClient (a client
+ * inside its reconnection grace is skipped); issuingClient: the client that sent the scm.commit the token names; viewClient:
+ * a client showing params.viewId, the actor's first; pinnedClient: exactly the client params.clientId names, refused with
+ * CREDENTIAL_CLIENT_ABSENT while it is gone or inside its grace, never another.
  */
 export type CoreRequestRoute<M extends keyof CoreRequests> =
   | { readonly to: 'client' | 'issuingClient' | 'viewClient'; readonly noClient: (params: Params<CoreRequests, M>, context: NoClientContext) => Result<CoreRequests, M> | Promise<Result<CoreRequests, M>> }
@@ -96,6 +97,8 @@ export const CORE_REQUEST_ROUTES: { readonly [M in keyof CoreRequests]: CoreRequ
   'shell.trash': { to: 'refused' },
   'dialogs.ask': { to: 'client', noClient: nothing },
   'askpass.prompt': { to: 'client', noClient: answer({ cancelled: true }) },
+  // the relay helper tells git on stderr that no client is attached
+  'askpass.credential': { to: 'client', noClient: answer({ kind: 'notConnected' as const }) },
   'scm.branchName': { to: 'issuingClient', noClient: nothing },
   'worktrees.reviewSetup': { to: 'client', noClient: answer('skip' as const) },
   'worktrees.runSetup': { to: 'client', noClient: noClientFor('run the worktree setup') },
@@ -106,6 +109,7 @@ export const CORE_REQUEST_ROUTES: { readonly [M in keyof CoreRequests]: CoreRequ
   'worktrees.showApplyConflicts': { to: 'client', noClient: nothing },
   'user.credentials': { to: 'pinnedClient' },
   'user.voice.speak': { to: 'viewClient', noClient: nothing },
+  'views.drained': { to: 'daemon' },
 };
 
 export type CoreEventRoute = 'allClients' | 'actingClient' | 'attachmentClient' | 'registry' | 'dropped';
@@ -165,6 +169,9 @@ export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainReques
   // the daemon sends it itself before it exits
   'core.shutdown': 'refused',
   'chats.restore': 'restore',
+  // only this computer's core shows a mirrored transcript
+  'chats.openTranscript': 'refused',
+  'chats.listMirrored': 'refused',
   'chats.startInWorktree': 'restore',
   'chats.whenSetUp': 'view',
   'chats.setWorktreeOptIn': 'core',
@@ -177,6 +184,7 @@ export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainReques
   'chats.open': 'core',
   'chats.newSession': 'core',
   'chats.cancelSession': 'core',
+  'chats.stop': 'core',
   'chats.postToActive': 'core',
   'chats.post': 'core',
   'chats.deliver': 'deliver',
@@ -224,9 +232,12 @@ export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainReques
   'e2e.stopWatchProbe': 'e2e',
   'e2e.fakeVoice': 'e2e',
   'e2e.voiceRecorder': 'e2e',
+  'e2e.stubOAuth': 'e2e',
   // served by the client's own core
   'user.resolveCredential': 'refused',
   'user.clientAuth': 'refused',
+  // lands only in the pushing client's cache (the request's actor)
+  'user.credentials.push': 'core',
   'user.voice.speak': 'refused',
   'panels.attachForeign': 'refused',
   'panels.detachForeign': 'refused',
@@ -260,11 +271,14 @@ export const MIRROR_TOPIC_ROUTES: Readonly<Record<keyof MirrorTopics, 'clientSta
   clientUser: 'perClient',
   clientPolicy: 'perClient',
   actingClient: 'daemonOwned',
+  hostSockets: 'daemonOwned',
 };
 
-export const MAIN_PANEL_OP_ROUTES: Readonly<Record<keyof MainPanelOps, 'core' | 'panelRule'>> = {
+// daemon: the daemon sends it itself, and a client's is dropped
+export const MAIN_PANEL_OP_ROUTES: Readonly<Record<keyof MainPanelOps, 'core' | 'panelRule' | 'daemon'>> = {
   message: 'core',
   disposed: 'panelRule',
+  viewDetached: 'daemon',
 };
 
 /** What the daemon takes from its clients for core, kept across core restarts for the daemon's life. */
@@ -301,9 +315,22 @@ export function createClientMirrors(): ClientMirrors {
 type PerClientTopic = 'clientAuth' | 'clientUser' | 'clientPolicy';
 const PER_CLIENT_TOPICS: readonly PerClientTopic[] = ['clientAuth', 'clientUser', 'clientPolicy'];
 
-export interface RouterClient {
-  // the connection's id
+/** What the router learns of a client's connection besides its channel. */
+export interface ClientLink {
+  // settles once the core channel's queue toward the client is within its window, or the connection closed
+  readonly drained: () => Promise<void>;
+  // inside its reconnection grace: what it is sent waits for its resume, so it answers nothing until then
+  readonly lost: () => boolean;
+  // fires when the connection is lost and when it resumes
+  readonly onLostChange: (listener: () => void) => Disposable;
+}
+
+export interface RouterClient extends ClientLink {
+  // the connection's id, for logs
   readonly id: string;
+  // the hello's stable client id: core names the client by it (mirrors, actingClient, user.credentials, actor), so a device
+  // that attaches again on a new connection is the same client
+  readonly clientId: string;
   // the client's own id for this host: its secrets namespace is remote/<hostId>/
   readonly hostId: string;
   // the attach generation's transport (attached-transport framing already removed)
@@ -342,6 +369,8 @@ interface Session {
   readonly endpoint: CoreEndpoint;
   // the client's view id -> core's view id
   readonly views: Map<string, string>;
+  // the client's view id -> the daemon's key of that view, which core addresses it by (panel op post, message)
+  readonly viewKeys: Map<string, string>;
   // the core panel ids whose chats entry this client was sent
   readonly chats: Set<string>;
   // the client's settings attachment -> the daemon's
@@ -357,6 +386,12 @@ interface Session {
 
 type ScmPatch = CoreMirrorTopics['scm'];
 
+// one client's view of a core view: its session and its own view id
+interface Viewer {
+  readonly session: Session;
+  readonly viewId: string;
+}
+
 const NAMESPACE = (hostId: string): string => `remote/${hostId}/`;
 const STATE_SCOPES: readonly StateScope[] = ['global', 'workspace'];
 
@@ -367,9 +402,11 @@ function isProviderKey(key: string): boolean {
 
 export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   const { core, log } = deps;
+  // by the hello's client id
   const sessions = new Map<string, Session>();
-  // core's view id -> the session and view that show it
-  const viewers = new Map<string, { readonly session: Session; readonly viewId: string }>();
+  // core's view id -> each view that shows it, by the daemon's view key
+  const viewers = new Map<string, Map<string, Viewer>>();
+  let nextViewKey = 0;
   const keys = createViewKeys();
   const chats = new Map<string, ChatEntry>();
   // core's view id -> the panel's title, which listRuns reports
@@ -393,11 +430,36 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   let ended = false;
 
   const live = (session: Session | undefined): session is Session => session !== undefined && !session.closed;
+  // a client inside its reconnection grace still gets every post and delta, sent on its resume, but answers nothing meanwhile
+  const present = (session: Session | undefined): session is Session => live(session) && !session.client.lost();
   const actingSession = (): Session | undefined => (live(acting) ? acting : [...sessions.values()].at(-1));
+  // the acting client core is told of: a lost one reads as detached, so another attached one, else none
+  const actingPresent = (): Session | undefined => (present(acting) ? acting : [...sessions.values()].reverse().find(present));
+  // the client the current work's actor names (core stamps it from the work's origin), else the acting one, else another
+  const actorSession = (): Session | undefined => {
+    const actor = processActor.current();
+    const named = actor === undefined ? undefined : sessions.get(actor);
+    if (present(named)) return named;
+    const fallback = actingSession();
+    return present(fallback) ? fallback : [...sessions.values()].reverse().find(present);
+  };
+  // settles once the session's channel drained, or once it is lost, whose queue waits for its resume
+  const drainedUnlessLost = (session: Session): Promise<void> => {
+    if (session.client.lost()) return Promise.resolve();
+    let subscription: Disposable | undefined;
+    return new Promise<void>((resolve, reject) => {
+      subscription = session.client.onLostChange(() => {
+        if (session.client.lost()) resolve();
+      });
+      session.client.drained().then(resolve, reject);
+    }).finally(() => subscription?.dispose());
+  };
+  const liveViewers = (viewId: string): Viewer[] => [...(viewers.get(viewId)?.values() ?? [])].filter((viewer) => live(viewer.session));
+  const viewerOf = (session: Session, viewId: string): Viewer | undefined => liveViewers(viewId).find((viewer) => viewer.session === session);
   // core reads the acting client from this mirror, so it is published before the message that made the client act
   // core reads CLIENT_STATE_KEYS from the state mirror: the acting client's values, the last ones while none is attached
   const publishClientState = (): void => {
-    const session = actingSession();
+    const session = actingPresent();
     if (ended || !session || session === stateOwner) return;
     stateOwner = session;
     for (const scope of STATE_SCOPES) {
@@ -411,7 +473,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   };
   const publishActing = (): void => {
     publishClientState();
-    const clientId = actingSession()?.client.id;
+    const clientId = actingPresent()?.client.clientId;
     if (ended || deps.mirrors.actingClient.clientId === clientId) return;
     deps.mirrors.actingClient = clientId === undefined ? {} : { clientId };
     core.publish('actingClient', deps.mirrors.actingClient);
@@ -447,8 +509,8 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   // ---- chats a client sees: only the panels it views, under its own view ids
   const publishChat = (session: Session, panelId: string): void => {
     const entry = chats.get(panelId);
-    const viewer = entry === undefined ? undefined : viewers.get(entry.viewId);
-    if (entry !== undefined && viewer?.session === session) {
+    const viewer = entry === undefined ? undefined : viewerOf(session, entry.viewId);
+    if (entry !== undefined && viewer !== undefined) {
       session.chats.add(panelId);
       deliver(session, (endpoint) => endpoint.publish('chats', { panelId, entry: { ...entry, viewId: viewer.viewId } }));
     } else if (session.chats.delete(panelId)) {
@@ -459,19 +521,32 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     for (const entry of chats.values()) if (entry.viewId === viewId) publishChat(session, entry.panelId);
   };
 
-  const bindView = (session: Session, clientViewId: string, viewId: string): void => {
-    const known = viewers.get(viewId);
-    if (known !== undefined && known.session !== session) throw new Error(`View ${viewId} belongs to another client`);
-    if (session.views.has(clientViewId) && session.views.get(clientViewId) !== viewId) throw new Error(`View ${clientViewId} is already in use`);
+  // A core view has a view of every client that shows it, each under its own key; a client shows a core view in one view.
+  const bindView = (session: Session, clientViewId: string, viewId: string): { readonly viewKey: string; readonly created: boolean } => {
+    const bound = session.views.get(clientViewId);
+    if (bound !== undefined && bound !== viewId) throw new Error(`View ${clientViewId} is already in use`);
+    if (bound !== undefined) return { viewKey: session.viewKeys.get(clientViewId)!, created: false };
+    if (viewerOf(session, viewId) !== undefined) throw new Error(`View ${viewId} is already shown by this client`);
+    const viewKey = `view-${++nextViewKey}`;
     session.views.set(clientViewId, viewId);
-    viewers.set(viewId, { session, viewId: clientViewId });
+    session.viewKeys.set(clientViewId, viewKey);
+    const shown = viewers.get(viewId) ?? new Map<string, Viewer>();
+    shown.set(viewKey, { session, viewId: clientViewId });
+    viewers.set(viewId, shown);
     publishChatsOfView(session, viewId);
+    return { viewKey, created: true };
   };
   const unbindView = (session: Session, clientViewId: string): string | undefined => {
     const viewId = session.views.get(clientViewId);
-    if (viewId === undefined) return undefined;
+    const viewKey = session.viewKeys.get(clientViewId);
+    if (viewId === undefined || viewKey === undefined) return undefined;
     session.views.delete(clientViewId);
-    if (viewers.get(viewId)?.session === session) viewers.delete(viewId);
+    session.viewKeys.delete(clientViewId);
+    const shown = viewers.get(viewId);
+    shown?.delete(viewKey);
+    if (shown?.size === 0) viewers.delete(viewId);
+    // core drops the key, so it builds no more posts for a view that is gone
+    if (!ended) core.postPanel(viewId, 'viewDetached', { viewKey });
     publishChatsOfView(session, viewId);
     return viewId;
   };
@@ -484,7 +559,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   const retention: PanelRetention = createPanelRetention({
     registry: deps.registry,
     panelIdOf: panelIdOfView,
-    viewed: (viewId) => viewers.has(viewId),
+    viewed: (viewId) => liveViewers(viewId).length > 0,
     dispose: (viewId, reason) => core.postPanel(viewId, 'disposed', { reason }),
     log,
   });
@@ -501,7 +576,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
         return undefined;
       }
       if (deps.secrets.has(key)) return deps.secrets.get(key);
-      const session = actingSession();
+      const session = actorSession();
       if (!session) return undefined;
       const value = await session.endpoint.request('secrets.get', { key: NAMESPACE(session.client.hostId) + key }, signal);
       deps.secrets.set(key, value);
@@ -513,7 +588,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
         throw new Error('A provider key changes only on the client');
       }
       deps.secrets.set(key, value);
-      const session = actingSession();
+      const session = actorSession();
       if (session) await session.endpoint.request('secrets.store', { key: NAMESPACE(session.client.hostId) + key, value }, signal);
     },
     'secrets.delete': async ({ key }, signal) => {
@@ -522,12 +597,12 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
         throw new Error('A provider key changes only on the client');
       }
       deps.secrets.set(key, undefined);
-      const session = actingSession();
+      const session = actorSession();
       if (session) await session.endpoint.request('secrets.delete', { key: NAMESPACE(session.client.hostId) + key }, signal);
     },
     'secrets.keys': async (_params, signal) => {
       const cached = [...deps.secrets].flatMap(([key, value]) => (value === undefined ? [] : [key]));
-      const session = actingSession();
+      const session = actorSession();
       if (!session) return cached;
       const prefix = NAMESPACE(session.client.hostId);
       const relayed = (await session.endpoint.request('secrets.keys', {}, signal)).flatMap((key) => (key.startsWith(prefix) && !isProviderKey(key.slice(prefix.length)) ? [key.slice(prefix.length)] : []));
@@ -538,11 +613,22 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       // the delta goes out before the reply, as main's store does
       core.publish('state', { scope, key, value });
     },
+    // the new core is no client's work: forked inside this request's context, every event it sends would carry its actor
     'lifecycle.reload': () => {
-      setImmediate(deps.reload);
+      setImmediate(() => processActor.run(undefined, deps.reload));
     },
     // core's dispatcher routes a login-environment proxy itself (EnvHttpProxyAgent)
     'network.resolveProxy': () => 'DIRECT',
+    // a view no client shows queues nothing toward a page
+    'views.drained': async ({ viewId, viewKey }) => {
+      // a keyed ask waits for that view's client alone, an unkeyed one for every viewing client; neither for one inside its grace
+      if (viewKey !== undefined) {
+        const keyed = viewers.get(viewId)?.get(viewKey);
+        if (keyed !== undefined && live(keyed.session)) await drainedUnlessLost(keyed.session);
+        return;
+      }
+      await Promise.all([...new Set(liveViewers(viewId).map((viewer) => viewer.session))].map(drainedUnlessLost));
+    },
   };
   for (const method of Object.keys(CORE_REQUEST_ROUTES) as Array<keyof CoreRequests>) {
     const route = CORE_REQUEST_ROUTES[method] as CoreRequestRoute<keyof CoreRequests>;
@@ -556,20 +642,39 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       if (!handler) throw new Error(`No daemon handler for ${method}`);
       serveCore(method, handler as never);
     } else if (route.to === 'pinnedClient') {
-      serveCore(method, ((params: { provider: string; clientId: string }, signal: AbortSignal) => {
+      serveCore(method, (async (params: { provider: string; clientId: string }, signal: AbortSignal) => {
         const session = sessions.get(params.clientId);
-        if (!live(session)) {
+        if (!present(session)) {
           log(`[core-host] ${method} for ${params.provider}: client ${params.clientId} is not attached`);
           throw new Error(CREDENTIAL_CLIENT_ABSENT);
         }
-        log(`[core-host] ${method} for ${params.provider} from client ${params.clientId}`);
-        return (session.endpoint.request as (name: string, value: unknown, abort: AbortSignal) => Promise<unknown>)(method, params, signal);
+        log(`[core-host] ${method} for ${params.provider} from client ${params.clientId} (${session.client.id})`);
+        // a client lost while it answers is absent at once: its answer would arrive only on its resume
+        const asking = new AbortController();
+        const cancel = (): void => asking.abort();
+        signal.addEventListener('abort', cancel, { once: true });
+        const lostWhileAsking = session.client.onLostChange(() => {
+          if (session.client.lost()) asking.abort();
+        });
+        const gone = new Promise<never>((_resolve, reject) => asking.signal.addEventListener('abort', () => reject(new Error(CREDENTIAL_CLIENT_ABSENT)), { once: true }));
+        try {
+          return await Promise.race([(session.endpoint.request as (name: string, value: unknown, abort: AbortSignal) => Promise<unknown>)(method, params, asking.signal), gone]);
+        } catch (err) {
+          // the connection closed, was replaced or was lost while the client answered: the turn waits for that device as for an absent one
+          if (session.closed || session.client.lost()) throw new Error(CREDENTIAL_CLIENT_ABSENT);
+          throw err;
+        } finally {
+          signal.removeEventListener('abort', cancel);
+          lostWhileAsking.dispose();
+        }
       }) as never);
     } else if (route.to === 'viewClient') {
       const noClient = route.noClient as (params: unknown, context: NoClientContext) => unknown;
       serveCore(method, ((params: { viewId: string }, signal: AbortSignal) => {
-        const viewer = viewers.get(params.viewId);
-        if (!viewer || !live(viewer.session)) {
+        const shown = liveViewers(params.viewId).filter((viewer) => present(viewer.session));
+        const actor = actorSession();
+        const viewer = shown.find((candidate) => candidate.session === actor) ?? shown[0];
+        if (!viewer) {
           log(`[core-host] ${method} for view ${params.viewId}, which no client shows`);
           return noClient(params, { folders: deps.mirrors.folders });
         }
@@ -578,8 +683,8 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     } else {
       const noClient = route.noClient as (params: unknown, context: NoClientContext) => unknown;
       serveCore(method, ((params: unknown, signal: AbortSignal) => {
-        const session = route.to === 'issuingClient' ? commitTokens.get((params as { token: string }).token) : actingSession();
-        if (!live(session)) {
+        const session = route.to === 'issuingClient' ? commitTokens.get((params as { token: string }).token) : actorSession();
+        if (!present(session)) {
           log(`[core-host] ${method} with no client attached`);
           return noClient(params, { folders: deps.mirrors.folders });
         }
@@ -598,7 +703,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       if (route === 'registry') return;
       if (route === 'dropped') log(`[core-host] dropped core's ${name}, which a daemon's core never sends`);
       else if (route === 'allClients') for (const session of sessions.values()) emitTo(session, name, payload);
-      else if (route === 'actingClient') emitTo(actingSession(), name, payload);
+      else if (route === 'actingClient') emitTo(actorSession(), name, payload);
       else {
         const { attachment } = payload as { attachment: number };
         const target = attachments.get(attachment);
@@ -615,7 +720,8 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     return { panelId, projectKey: entry ? (entry.folder.ownerKey ?? entry.folder.key) : '', title: (entry && titles.get(entry.viewId)) ?? panelId };
   };
   disposables.push(
-    core.onEvent('chat.activity', ({ panelId, activity }) => deps.registry.panelActivity(runOf(panelId), activity)),
+    // a turn pins the client whose work started it, else the acting client (runPinnedTurn)
+    core.onEvent('chat.activity', ({ panelId, activity }) => deps.registry.panelActivity(runOf(panelId), activity, processActor.current() ?? actingPresent()?.client.clientId)),
     core.onEvent('chat.turnSettled', ({ panelId }) => deps.registry.panelSettled(panelId)),
     core.onEvent('chat.providers', ({ panelId, providers }) => deps.registry.panelProviders(panelId, providers)),
   );
@@ -675,7 +781,8 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   // ---- core's panel envelopes
   disposables.push(core.onPanel((viewId, envelope) => {
     if (CORE_PANEL_OP_ROUTES[envelope.op] === 'actingClient') {
-      const session = actingSession();
+      // with no other client there, one inside its grace still gets the page, on its resume
+      const session = actorSession() ?? actingSession();
       if (!session) {
         core.postPanel(viewId, 'disposed', { error: 'no client is attached', reason: 'user' });
         return;
@@ -692,12 +799,20 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       return;
     }
     if (envelope.op === 'setTitle') titles.set(viewId, (envelope.payload as CorePanelOps['setTitle']).title);
-    const viewer = viewers.get(viewId);
     // a panel the panel rule kept for its run has no view; a rejoin replays what it missed
-    if (!viewer || viewer.session.closed) return;
-    deliver(viewer.session, (endpoint) => (endpoint.postPanel as (id: string, op: string, payload: unknown) => void)(viewer.viewId, envelope.op, envelope.payload));
+    let targets = liveViewers(viewId);
+    let payload = envelope.payload;
+    if (envelope.op === 'post' || envelope.op === 'postBinary') {
+      const { viewKey, except, ...post } = envelope.payload as CorePanelOps['post'] | CorePanelOps['postBinary'];
+      payload = post;
+      const shown = viewers.get(viewId);
+      const keyed = viewKey === undefined ? undefined : shown?.get(viewKey);
+      if (viewKey !== undefined) targets = keyed !== undefined && live(keyed.session) ? [keyed] : [];
+      else if (except !== undefined) targets = targets.filter((viewer) => !except.some((key) => shown?.get(key) === viewer));
+    }
+    for (const viewer of targets) deliver(viewer.session, (endpoint) => (endpoint.postPanel as (id: string, op: string, value: unknown) => void)(viewer.viewId, envelope.op, payload));
     if (envelope.op === 'close') {
-      unbindView(viewer.session, viewer.viewId);
+      for (const viewer of targets) unbindView(viewer.session, viewer.viewId);
       keys.forget(viewId);
     }
   }));
@@ -755,11 +870,12 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
 
   const serveClient = (session: Session): void => {
     const { endpoint, client } = session;
-    const touch = <A extends unknown[], R>(run: (...args: A) => R) => (...args: A): R => {
+    // what the client sends runs as that client, so what the daemon forwards to core names it as the actor
+    const touch = <A extends unknown[], R>(run: (...args: A) => R) => (...args: A): R => processActor.run(client.clientId, () => {
       acting = session;
       publishActing();
       return run(...args);
-    };
+    });
     const forward = (method: string, params: unknown, signal: AbortSignal): Promise<unknown> =>
       (core.request as (name: string, value: unknown, abort: AbortSignal) => Promise<unknown>)(method, params, signal);
     const serve = (method: keyof MainRequests, handler: (params: never, signal: AbortSignal) => unknown): void => {
@@ -776,6 +892,8 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
           break;
         case 'restore':
           serve(method, (params: { viewId: string }, signal) => {
+            // a restore makes a new view; another client's view is shown only through views.join, which replays to it
+            if ([...(viewers.get(params.viewId)?.values() ?? [])].some((viewer) => viewer.session !== session)) throw new Error(`View ${params.viewId} belongs to another client`);
             bindView(session, params.viewId, params.viewId);
             return forward(method, params, signal);
           });
@@ -790,6 +908,13 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
           serve(method, async ({ viewId, empty }: Params<MainRequests, 'chats.unload'>, signal) => {
             const coreView = coreViewOf(session, viewId);
             if (!retention.mayUnload(coreView)) return false;
+            // another client's view still shows the panel: only this client's view closes, as on its detach
+            if (liveViewers(coreView).some((viewer) => viewer.session !== session)) {
+              deliver(session, (endpoint) => endpoint.postPanel(viewId, 'close', {}));
+              unbindView(session, viewId);
+              retention.disposed(coreView, 'detach');
+              return true;
+            }
             return forward(method, { viewId: coreView, empty }, signal);
           });
           break;
@@ -797,7 +922,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
           serve(method, (params: Params<MainRequests, 'views.join'>, signal) => joinView({
             keys,
             core,
-            viewed: (viewId) => live(viewers.get(viewId)?.session),
+            viewOfSession: (sessionId) => [...chats.values()].find((entry) => entry.sessionId === sessionId)?.viewId,
             bind: (clientViewId, viewId) => bindView(session, clientViewId, viewId),
             unbind: (clientViewId) => void unbindView(session, clientViewId),
             log,
@@ -888,7 +1013,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
             return;
           }
           case 'folders':
-            deps.mirrors.clientFolders.set(client.id, (patch as MirrorTopics['folders']).folders);
+            deps.mirrors.clientFolders.set(client.clientId, (patch as MirrorTopics['folders']).folders);
             publishFolders();
             return;
           case 'panel': {
@@ -917,11 +1042,12 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
               log(`[core-host] dropped ${client.id}'s ${topic} without a value`);
               return;
             }
-            publishClientValue(topic, client.id, value);
+            publishClientValue(topic, client.clientId, value);
             return;
           }
           case 'actingClient':
-            log(`[core-host] dropped ${client.id}'s actingClient, which the daemon publishes`);
+          case 'hostSockets':
+            log(`[core-host] dropped ${client.id}'s ${topic}, which the daemon publishes`);
             return;
         }
       })));
@@ -933,16 +1059,24 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
         log(`[core-host] dropped ${client.id}'s ${envelope.op} for view ${clientViewId}, which it does not show`);
         return;
       }
-      if (MAIN_PANEL_OP_ROUTES[envelope.op] === 'core') {
+      const route = MAIN_PANEL_OP_ROUTES[envelope.op];
+      if (route === 'daemon') {
+        log(`[core-host] dropped ${client.id}'s ${envelope.op}, which the daemon sends`);
+        return;
+      }
+      if (route === 'core') {
         const { message } = envelope.payload as MainPanelOps['message'];
         const token = typeof message === 'object' && message !== null && (message as { type?: unknown }).type === 'ready' ? (message as { panelToken?: unknown }).panelToken : undefined;
-        if (typeof token === 'string') keys.record(viewId, token);
-        core.postPanel(viewId, 'message', { message });
+        // the panel's own token names it for views.join; a joined view's page holds a token of its own
+        if (typeof token === 'string' && keys.tokenOf(viewId) === undefined && keys.viewOf(token) === undefined) keys.record(viewId, token);
+        // the daemon's key of the sending view, whatever the client put there
+        core.postPanel(viewId, 'message', { message, viewKey: session.viewKeys.get(clientViewId)! });
         return;
       }
       const { reason } = envelope.payload as MainPanelOps['disposed'];
       unbindView(session, clientViewId);
-      if (reason === 'user') keys.forget(viewId);
+      // the panel's token names it while any client's view shows it
+      if (reason === 'user' && liveViewers(viewId).length === 0) keys.forget(viewId);
       retention.disposed(viewId, reason);
     }) as (panelId: string, envelope: unknown) => void));
   };
@@ -950,7 +1084,8 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   const detach = (session: Session, reason: string): void => {
     if (session.closed) return;
     session.closed = true;
-    sessions.delete(session.client.id);
+    // attach detaches a replaced session before it registers the newer one, so a live session is always the current one
+    sessions.delete(session.client.clientId);
     session.endpoint.close(reason);
     for (const disposable of session.disposables.splice(0)) disposable.dispose();
     for (const [clientViewId, viewId] of [...session.views]) {
@@ -962,27 +1097,28 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       if (ended) continue;
       core.request('settingsView.detach', { attachment }).catch((err: unknown) => log(`[core-host] detaching settings view ${attachment} failed: ${err instanceof Error ? err.message : String(err)}`));
     }
-    deps.mirrors.clientFolders.delete(session.client.id);
+    deps.mirrors.clientFolders.delete(session.client.clientId);
     if (sessions.size > 0 && !ended) publishFolders();
     for (const [token, owner] of commitTokens) if (owner === session) commitTokens.delete(token);
     if (acting === session) acting = undefined;
     if (stateOwner === session) stateOwner = undefined;
     if (lastAttached === session) lastAttached = [...sessions.values()].at(-1);
     // a core that ended keeps its clients' values for the next core's init; the connection drops them when it closes
-    if (!ended) for (const topic of PER_CLIENT_TOPICS) publishClientValue(topic, session.client.id, undefined);
+    if (!ended) for (const topic of PER_CLIENT_TOPICS) publishClientValue(topic, session.client.clientId, undefined);
     publishActing();
     publishLanguage();
   };
 
   return {
     attach: (client) => {
-      const previous = sessions.get(client.id);
+      const previous = sessions.get(client.clientId);
       if (previous) detach(previous, 'the client attached again');
       const endpoint = createCoreEndpoint(client.transport, log, (error) => client.close(error.message));
       const session: Session = {
         client,
         endpoint,
         views: new Map(),
+        viewKeys: new Map(),
         chats: new Set(),
         attachments: new Map(),
         clientState: { global: new Map(), workspace: new Map() },
@@ -991,14 +1127,28 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
         closed: false,
       };
       for (const scope of STATE_SCOPES) for (const [key, value] of Object.entries(client.mirrors.state[scope])) recordClientState(session, scope, key, value);
-      sessions.set(client.id, session);
+      sessions.set(client.clientId, session);
       lastAttached = session;
       acting = session;
-      for (const topic of PER_CLIENT_TOPICS) publishClientValue(topic, client.id, client.mirrors[topic]);
+      for (const topic of PER_CLIENT_TOPICS) publishClientValue(topic, client.clientId, client.mirrors[topic]);
+      // core reads a lost client as detached, so a turn pinned to it waits visibly and asks it again once it resumed; the mirror
+      // leaves it out meanwhile, so a core started then does not list it as attached
+      let heldAuth: ClientAuth | undefined;
+      session.disposables.push(client.onLostChange(() => {
+        if (ended || session.closed) return;
+        if (client.lost()) {
+          heldAuth = deps.mirrors.clientAuth.get(client.clientId) ?? heldAuth;
+          publishClientValue('clientAuth', client.clientId, undefined);
+        } else if (heldAuth !== undefined) {
+          publishClientValue('clientAuth', client.clientId, heldAuth);
+          heldAuth = undefined;
+        }
+        publishActing();
+      }));
       publishActing();
       serveClient(session);
       grantTrust(client.mirrors.trust.keys, []);
-      deps.mirrors.clientFolders.set(client.id, client.mirrors.folders.folders);
+      deps.mirrors.clientFolders.set(client.clientId, client.mirrors.folders.folders);
       publishFolders();
       deps.mirrors.editor = client.mirrors.editor;
       deps.mirrors.terminal = client.mirrors.terminal;

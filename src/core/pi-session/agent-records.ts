@@ -30,18 +30,12 @@ import { TOOL_AGENT, TOOL_GET_SUBAGENT_RESULT } from '../../shared/tool-names';
 import type { AgentRecord } from './subagents/types';
 import { addAgentUsage, agentUsageOf, emptyAgentUsage, usageOfEntry, type AgentUsageTotals } from '../../shared/usage-accounting';
 import { isEffortBadgeLevel, type EffortBadgeLevel } from '../../shared/effort-badge';
+import { isSafeAgentPathId } from '../../shared/agent-path-id';
 
 // ---- layout ----------------------------------------------------------------
 
-/** pi's session id rule (`assertValidSessionId`); also keeps every id a single safe path segment. */
-const SAFE_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
-
-export function isSafeAgentPathId(id: string): boolean {
-  return SAFE_ID.test(id);
-}
-
 function assertSafeId(label: string, id: string): void {
-  if (!SAFE_ID.test(id)) throw new Error(`Invalid ${label} "${id}"`);
+  if (!isSafeAgentPathId(id)) throw new Error(`Invalid ${label} "${id}"`);
 }
 
 /** The parent session's agent-data root. `sessionDir` is the workspace pi session dir. */

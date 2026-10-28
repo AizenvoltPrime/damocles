@@ -915,6 +915,50 @@ describe('remote terminals', () => {
     expect(toDaemon).toEqual([{ type: 'clearAck', id: created.id }, { type: 'serialize', id: created.id }, { type: 'scrollback', id: created.id, scrollback: SETTINGS.scrollback }]);
     expect(h.remote.at(-1)!.map((record) => record.id)).toEqual([created.id]);
   });
+
+  it('closes a remote terminal\'s tab and leaves it running on its host when the project goes with Keep running', async () => {
+    const h = harness();
+    h.projects = [ALPHA, REMOTE];
+    const local = h.service.create({ profileId: 'pwsh', target: { project: ALPHA.key } }, false);
+    const remote = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    await settle();
+    if (!remote.ok || !local.ok) throw new Error('no terminals');
+    h.posted.length = 0;
+    h.service.detach(remote.id);
+    await settle();
+    // the daemon stops sending this client that terminal alone
+    expect(h.posted).toEqual([{ type: 'detach', id: remote.id }]);
+    expect(h.ptys.every((pty) => !pty.killed)).toBe(true);
+    expect(lastState(h).terminals.map((terminal) => terminal.id)).toEqual([local.id]);
+    expect(() => h.service.detach(local.id)).toThrow();
+  });
+
+  it('shows a launch\'s kept terminals as reconnecting until the host reattaches them, and one the daemon lost as exited', async () => {
+    const h = harness();
+    h.projects = [REMOTE];
+    const created = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    await settle();
+    if (!created.ok) throw new Error('no remote terminal');
+    const kept = h.remote.at(-1)!.map((record) => ({ ...record, name: 'build' }));
+    const gone = { ...kept[0]!, id: 'term-123456789012345' };
+    h.service.closeWindow();
+    h.service.attach({ state: (state) => h.states.push(state), data: (data) => h.data.push(data), screen: (screen) => h.screens.push(screen), focus: (id) => h.focused.push(id) });
+    h.service.showReconnecting([...kept, gone]);
+    await settle();
+    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status])).toEqual([[created.id, 'reconnecting'], [gone.id, 'reconnecting']]);
+    // nothing reaches a host while it is away, and the kept list is not rewritten from the placeholders
+    const remoteWrites = h.remote.length;
+    h.service.kill(gone.id);
+    expect(h.remote.length).toBe(remoteWrites + 1);
+    h.service.showReconnecting([gone]);
+    const backend: TerminalBackend = {
+      ...h.backend,
+      startHost: () => ({ postMessage: () => undefined, onMessage: () => undefined, onExit: () => undefined, kill: () => undefined }),
+      list: async () => [{ id: created.id, pid: 1, cols: 90, rows: 20 }],
+    };
+    await h.service.reattach(backend, [...kept, gone]);
+    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status])).toEqual([[created.id, 'running'], [gone.id, 'exited']]);
+  });
 });
 
 // A loopback connection's workspace over a fake endpoint: the daemon's answers, the posts it got and its pushes.
@@ -1094,6 +1138,76 @@ describe('remote terminals across connections', () => {
     expect(after.activeId).toBe(pane);
   });
 
+  it('shows a dropped connection\'s terminals reconnecting, running again on a resume, and reattached through serialize after a fresh attach', async () => {
+    let connection = fakeConnection();
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    const created = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    if (!created.ok) throw new Error('no remote terminal');
+    await settle();
+    connection.daemon({ type: 'ready', id: created.id, pid: 5 });
+    h.service.connectionLost('ssh+other');
+    expect(statusOf(h, created.id)).toBe('running');
+    h.service.connectionLost('loopback');
+    expect(statusOf(h, created.id)).toBe('reconnecting');
+    // the same connection resumed: its replay carries the output on, with no new screen
+    h.service.connectionResumed('loopback');
+    expect(statusOf(h, created.id)).toBe('running');
+    connection.daemon({ type: 'data', id: created.id, data: 'after the resume' });
+    h.service.connectionLost('loopback');
+    const kept = h.remote.at(-1)!;
+    // the daemon no longer held it: the terminal still runs there, so its tab waits for the next connection
+    connection.close('the daemon no longer holds this connection');
+    expect(statusOf(h, created.id)).toBe('reconnecting');
+    connection = fakeConnection([{ id: created.id, pid: 5, cols: 80, rows: 24 }]);
+    await h.service.reattach(connection.workspace.terminals, kept);
+    expect(statusOf(h, created.id)).toBe('running');
+    expect(connection.posts.filter((request) => request.type === 'serialize').map((request) => request.id)).toEqual([created.id]);
+  });
+
+  it('holds the keys and paste that reach main while the connection is away, and sends them in order on a resume', async () => {
+    const connection = fakeConnection();
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    const created = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    if (!created.ok) throw new Error('no remote terminal');
+    await settle();
+    connection.daemon({ type: 'ready', id: created.id, pid: 5 });
+    h.service.input(created.id, 'a');
+    h.service.connectionLost('loopback');
+    // keys the renderer sent before it saw the tab reconnecting
+    h.service.input(created.id, 'b');
+    h.service.write(created.id, 'cd');
+    const inputs = (): string[] => connection.posts.flatMap((request) => (request.type === 'input' ? [request.data] : []));
+    expect(inputs()).toEqual(['a']);
+    h.service.connectionResumed('loopback');
+    expect(inputs()).toEqual(['a', 'b', 'cd']);
+    h.service.input(created.id, 'e');
+    expect(inputs()).toEqual(['a', 'b', 'cd', 'e']);
+  });
+
+  it('sends what was held after the screen of a fresh connection\'s reattach, and says so when the terminal ended meanwhile', async () => {
+    let connection = fakeConnection();
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    const created = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    const ended = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    if (!created.ok || !ended.ok) throw new Error('no remote terminals');
+    await settle();
+    connection.daemon({ type: 'ready', id: created.id, pid: 5 });
+    connection.daemon({ type: 'ready', id: ended.id, pid: 6 });
+    const kept = h.remote.at(-1)!;
+    h.service.connectionLost('loopback');
+    h.service.input(created.id, 'ls');
+    h.service.input(ended.id, 'pwd');
+    connection.close('the daemon no longer holds this connection');
+    connection = fakeConnection([{ id: created.id, pid: 5, cols: 80, rows: 24 }]);
+    await h.service.reattach(connection.workspace.terminals, kept);
+    expect(connection.posts.filter((request) => 'id' in request && request.id === created.id).map((request) => request.type)).toEqual(['clearAck', 'serialize', 'scrollback', 'input']);
+    expect(connection.posts.some((request) => 'id' in request && request.id === ended.id)).toBe(false);
+    expect(h.logs).toContain(`[terminal] ${ended.id} ended while its host was away; 1 inputs typed meanwhile were not sent`);
+  });
+
   it('counts the shell\'s sequences on from a reattached screen, so the next reload\'s marks land on their commands', async () => {
     const first = fakeConnection();
     let connection = first;
@@ -1113,6 +1227,68 @@ describe('remote terminals across connections', () => {
     h.service.shellLoaded();
     connection.daemon({ type: 'screen', id: created.id, data: '$ \r\n$ ', cols: 80, rows: 24, marks: [{ index: 5, line: 1 }], sequences: 6 });
     expect(h.screens.at(-1)!.marks).toEqual([{ line: 1, event: { kind: 'promptStart' } }]);
+  });
+
+  it('tells the daemon what another device needs to show a remote terminal, and a local terminal nothing', async () => {
+    const connection = fakeConnection();
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [ALPHA, REMOTE];
+    h.hostProfiles = [{ id: 'bash', name: 'bash', file: '/usr/bin/bash', args: ['-l'], icon: 'bash' }];
+    const remote = h.service.create({ profileId: null, target: { project: REMOTE.key } }, false);
+    h.service.create({ profileId: 'pwsh', target: { project: ALPHA.key } }, false);
+    await settle();
+    if (!remote.ok) throw new Error('no remote terminal');
+    const nonce = h.remote.at(-1)![0]!.nonce;
+    expect(spawned(connection)).toEqual([expect.objectContaining({ id: remote.id, view: { root: '/srv/app', profile: { id: 'bash', name: 'bash', file: '/usr/bin/bash', args: ['-l'], icon: 'bash' }, startCwd: '/srv/app', nonce } })]);
+    expect(h.posted.filter((request) => (request as HostRequest).type === 'spawn').every((request) => !('view' in (request as object)))).toBe(true);
+  });
+
+  it('opens a terminal another device started: its tab, screen and integration here, input to the daemon, kept in remote-state.json, and closing it detaches this view only', async () => {
+    const nonce = 'ab'.repeat(16);
+    const id = 'term-111111111111111';
+    const live: LiveTerminal = { id, pid: 5, cols: 100, rows: 30, view: { root: '/srv/app', profile: { id: 'bash', name: 'bash', file: '/usr/bin/bash', args: [], icon: 'bash' }, startCwd: '/srv/app', nonce } };
+    const connection = fakeConnection([live]);
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [];
+    // its folder is not open on this device
+    expect(h.service.canOpen('loopback', live)).toBe(false);
+    await expect(h.service.open(connection.workspace.terminals, 'loopback', id)).rejects.toThrow(/cannot be shown here/);
+    h.projects = [REMOTE];
+    expect(h.service.canOpen('loopback', live)).toBe(true);
+    expect(h.service.canOpen('ssh+other', live)).toBe(false);
+    expect(h.service.canOpen('loopback', { id, pid: 5, cols: 100, rows: 30 })).toBe(false);
+    await h.service.open(connection.workspace.terminals, 'loopback', id);
+    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.projectKey, terminal.status, terminal.title])).toEqual([[id, REMOTE.key, 'running', 'bash']]);
+    expect(lastState(h).activeId).toBe(id);
+    expect(h.focused.at(-1)).toBe(id);
+    expect(connection.posts).toEqual([{ type: 'clearAck', id }, { type: 'serialize', id }, { type: 'scrollback', id, scrollback: SETTINGS.scrollback }]);
+    expect(h.remote.at(-1)).toEqual([{ id, projectKey: REMOTE.key, profile: live.view!.profile, startCwd: '/srv/app', nonce, name: null, customIcon: null, color: null }]);
+    expect(h.service.canOpen('loopback', live)).toBe(false);
+    connection.daemon({ type: 'screen', id, data: '$ ', cols: 100, rows: 30, marks: [], sequences: 0 });
+    expect(h.screens.at(-1)).toMatchObject({ id, data: '$ ' });
+    // the other device's nonce signs the shell's sequences, so this device trusts them too
+    connection.daemon({ type: 'data', id, data: `\x1b]633;A;${nonce}\x07$ ` });
+    expect(lastState(h).terminals[0]!.integrated).toBe(true);
+    h.service.input(id, 'ls');
+    expect(connection.posts.at(-1)).toEqual({ type: 'input', id, data: 'ls' });
+    // opening it again only selects it
+    await h.service.open(connection.workspace.terminals, 'loopback', id);
+    expect(connection.posts.filter((request) => request.type === 'serialize')).toHaveLength(1);
+    h.service.detach(id);
+    expect(connection.posts.at(-1)).toEqual({ type: 'detach', id });
+    expect(connection.posts.some((request) => request.type === 'kill')).toBe(false);
+    expect(h.remote.at(-1)).toEqual([]);
+  });
+
+  it('shows the exit on this device when another device kills a terminal open here', async () => {
+    const id = 'term-111111111111111';
+    const live: LiveTerminal = { id, pid: 5, cols: 80, rows: 24, view: { root: '/srv/app', profile: { id: 'bash', name: 'bash', file: '/usr/bin/bash', args: [], icon: 'bash' }, startCwd: '/srv/app', nonce: 'cd'.repeat(16) } };
+    const connection = fakeConnection([live]);
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    await h.service.open(connection.workspace.terminals, 'loopback', id);
+    connection.daemon({ type: 'exit', id, exitCode: 1 });
+    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status])).toEqual([[id, 'exited']]);
   });
 });
 

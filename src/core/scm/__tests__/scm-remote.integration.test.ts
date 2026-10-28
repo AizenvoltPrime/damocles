@@ -288,7 +288,7 @@ describe.skipIf(!HAS_GIT)('remote operations against bare repositories', { timeo
     const version = parseGitVersion(git(['--version'], sandbox))!;
     const base = createGitRunner({ git: { path: GIT_PATH!, version }, log: { appendLine: () => undefined }, isTrusted: () => true });
     const recording = { ...base, run: (call: GitCall) => (calls.push(call), base.run(call)) };
-    const broken: AskpassServer = { register: () => Promise.reject(new Error('listen ENAMETOOLONG')), dispose: async () => undefined };
+    const broken: AskpassServer = { register: () => Promise.reject(new Error('listen ENAMETOOLONG')), relay: async () => undefined, moveRelay: async () => undefined, dispose: async () => undefined };
     const { h, repoId } = await open(work, { runner: recording, askpass: broken });
     await h.service.fetch(repoId, {});
     expect((await freshStatus(h, repoId)).upstream).toMatchObject({ behind: 1 });
@@ -313,6 +313,10 @@ describe.skipIf(!HAS_GIT)('remote operations against bare repositories', { timeo
     await waitFor(() => statusOf(h, repoId)?.upstream?.behind === 1, 'the autofetch');
     const background = calls.find((call) => call.args.includes('fetch'))!;
     expect(base.envFor(background)['LC_ALL']).toBe('C');
+    // a background fetch never asks this computer's credential relay (no consent dialog); one the user starts may
+    expect(background.relayCredentials).toBeUndefined();
+    await h.service.fetch(repoId, {});
+    expect(calls.filter((call) => call.args.includes('fetch')).at(-1)?.relayCredentials).toBe(true);
     h.service.dispose();
   });
 

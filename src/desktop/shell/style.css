@@ -6,6 +6,7 @@
 @source "../../webview/components/RollingNumber.vue";
 @source "../../webview/components/icons/ProviderLogo.vue";
 @source "../../webview/components/HostBadge.vue";
+@source "../../webview/components/HostUpdateBanner.vue";
 
 @theme {
   --font-mono: var(--d-mono);

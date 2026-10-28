@@ -31,6 +31,7 @@ export const TERMINAL_DECORATIONS_SETTING = 'damocles.desktop.terminal.shellInte
 export const TERMINAL_CONFIRM_ON_KILL_SETTING = 'damocles.desktop.terminal.confirmOnKill';
 export const TERMINAL_PROFILES_SETTING = 'damocles.desktop.terminal.profiles';
 export const REMOTE_TERMINAL_IDLE_DAYS_SETTING = 'damocles.desktop.remote.terminalIdleDays';
+export const REMOTE_CLOSE_WITH_RUNNING_AGENTS_SETTING = 'damocles.desktop.remote.closeWithRunningAgents';
 export const FILES_EXCLUDE_SETTING = 'damocles.desktop.files.exclude';
 export const SEARCH_EXCLUDE_SETTING = 'damocles.desktop.search.exclude';
 export const SEARCH_MODE_SETTING = 'damocles.desktop.search.mode';
@@ -83,11 +84,14 @@ export const GIT_PULL_BEFORE_CHECKOUT_SETTING = 'damocles.desktop.git.pullBefore
 export const GIT_PROMPT_TO_SAVE_FILES_BEFORE_STASH_SETTING = 'damocles.desktop.git.promptToSaveFilesBeforeStash';
 export const GIT_BLAME_EDITOR_DECORATION_SETTING = 'damocles.desktop.git.blame.editorDecoration.enabled';
 export const SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING = 'damocles.desktop.sidebar.alwaysShowHeaderActions';
+export const PROJECTS_VIEW_SETTING = 'damocles.desktop.projects.view';
+export const PROJECTS_VIEWS = ['flat', 'grouped'] as const;
 
 export const EDITOR_WORD_WRAPS = ['off', 'on'] as const;
 export const EDITOR_RENDER_WHITESPACES = ['none', 'boundary', 'selection', 'trailing', 'all'] as const;
 export const EDITOR_AUTO_SAVES = ['off', 'afterDelay', 'onFocusChange'] as const;
 export const TERMINAL_CURSOR_STYLES = ['block', 'underline', 'bar'] as const;
+export const CLOSE_WITH_RUNNING_AGENTS = ['ask', 'keep', 'stop'] as const;
 // VS Code's terminal.integrated.enableMultiLinePasteWarning values.
 export const TERMINAL_MULTI_LINE_PASTE_WARNINGS = ['auto', 'always', 'never'] as const;
 export type TerminalMultiLinePasteWarning = (typeof TERMINAL_MULTI_LINE_PASTE_WARNINGS)[number];
@@ -357,6 +361,18 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     maximum: 3650,
     scope: 'application',
     description: 'A terminal on a remote host that no device has reattached for this many days ends on its own. 0 means never.',
+  },
+  [REMOTE_CLOSE_WITH_RUNNING_AGENTS_SETTING]: {
+    type: 'string',
+    enum: CLOSE_WITH_RUNNING_AGENTS,
+    enumDescriptions: [
+      'Ask whether the agents keep running on their hosts.',
+      'The agents keep running on their hosts, and Damocles closes without asking.',
+      'The agents stop, and Damocles closes without asking.',
+    ],
+    default: 'ask',
+    scope: 'application',
+    description: 'What happens to agents running on remote hosts when Damocles closes.',
   },
   [TERMINAL_CURSOR_STYLE_SETTING]: {
     type: 'string',
@@ -825,6 +841,14 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     default: false,
     scope: 'application',
     description: 'Controls the visibility of sidebar section actions. Section actions may either be always visible, or only visible when that section is focused or hovered over.',
+  },
+  [PROJECTS_VIEW_SETTING]: {
+    type: 'string',
+    enum: PROJECTS_VIEWS,
+    enumDescriptions: ['Local and remote projects in one list.', 'One collapsible group per host, This computer for local projects.'],
+    default: 'flat',
+    scope: 'application',
+    description: 'Controls how the Projects section lists projects: in one list, or grouped by host.',
   },
 };
 

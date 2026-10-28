@@ -12,13 +12,15 @@ const REQUEST_PREFIX = "host-prompt:";
 export interface PromptTarget {
   readonly panelId: string;
   readonly host: PanelHost;
+  // On a daemon's core, the device the prompt asks: only that device's settings view shows it.
+  readonly clientId?: string;
 }
 
 export interface PromptPanels {
   // The chat panel a prompt renders in, once its webview is ready; undefined when none could be had before the signal aborted.
   target(signal: AbortSignal | undefined): Promise<PromptTarget | undefined>;
-  // A settings view attached to the panel; while one is, the panel's prompts render there instead of in the chat.
-  attachedView(panelId: string): AttachedView | undefined;
+  // The settings view the device attached to the panel; while one is, the device's prompts render there instead of in the chat.
+  attachedView(panelId: string, clientId: string | undefined): AttachedView | undefined;
 }
 
 interface PendingPrompt {
@@ -123,9 +125,10 @@ export class WebviewPrompts {
 
   /** Moves the panel's pending prompts to where they render now, after its attached view changed: withdrawn from the old surface, posted to the new one. */
   resurface(panelId: string): void {
-    const view = this.panels.attachedView(panelId);
     for (const [requestId, entry] of this.pending) {
-      if (entry.target.panelId !== panelId || entry.shownIn === view) continue;
+      if (entry.target.panelId !== panelId) continue;
+      const view = this.panels.attachedView(panelId, entry.target.clientId);
+      if (entry.shownIn === view) continue;
       this.postTo(entry, { type: "extensionUiCancel", requestId });
       entry.shownIn = view;
       this.postTo(entry, entry.message);
@@ -168,7 +171,7 @@ export class WebviewPrompts {
         disposed.dispose();
         resolve(value);
       };
-      const entry: PendingPrompt = { target, message, itemIds, settle, shownIn: this.panels.attachedView(target.panelId) };
+      const entry: PendingPrompt = { target, message, itemIds, settle, shownIn: this.panels.attachedView(target.panelId, target.clientId) };
       this.pending.set(requestId, entry);
       signal?.addEventListener("abort", onAbort, { once: true });
       const disposed = target.host.onDispose(() => settle(undefined));

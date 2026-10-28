@@ -61,8 +61,17 @@ export function pathFor(location: { readonly os: NodeJS.Platform }): path.Platfo
   return location.os === 'win32' ? path.win32 : path.posix;
 }
 
-/** Whether target is folder or lies below it, in the project's own path flavor. */
+/**
+ * Whether a path is absolute by its host's rules alone: on Windows a drive or UNC path, never a root-relative one (`\srv`),
+ * which path.win32 resolves against this computer's current drive.
+ */
+export function isAbsoluteOn(location: { readonly os: NodeJS.Platform }, target: string): boolean {
+  return location.os === 'win32' ? /^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/])/.test(target) : path.posix.isAbsolute(target);
+}
+
+/** Whether target is folder or lies below it, in the project's own path flavor; both must be absolute there. */
 export function isInsideFolder(location: { readonly os: NodeJS.Platform }, folder: string, target: string): boolean {
+  if (!isAbsoluteOn(location, folder) || !isAbsoluteOn(location, target)) return false;
   const flavor = pathFor(location);
   const relative = flavor.relative(folder, target);
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${flavor.sep}`) && !flavor.isAbsolute(relative));

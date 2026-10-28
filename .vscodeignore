@@ -187,6 +187,7 @@ dist/quick-open-worker.js
 dist/watch-worker.js
 dist/askpass-main.js
 dist/askpass/**
+dist/git-credential/**
 dist/e2e*/**
 dist-desktop/**
 e2e/**
@@ -194,10 +195,12 @@ build/**
 types/**
 electron-builder.yml
 playwright.desktop.config.ts
+playwright.remote.config.ts
 vite.shell.config.ts
 resources/icon.ico
 resources/shell-integration/**
 resources/askpass/**
+resources/git-credential/**
 
 # Python sidecar dev artefacts (the runtime ships in dist/, not from source tree)
 python/**/.venv/**

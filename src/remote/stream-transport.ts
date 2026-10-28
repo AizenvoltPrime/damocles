@@ -1,6 +1,9 @@
 import type { Duplex } from 'node:stream';
 import type { ByteSocket, Disposable } from './persistent-protocol';
 
+// how long an ended socket waits for its peer to end too
+export const END_TIMEOUT_MS = 2000;
+
 /** A Duplex (a socket, a named pipe, a child's stdio joined into one) as the protocol's byte connection. */
 export function streamSocket(stream: Duplex): ByteSocket {
   const on = <A extends unknown[]>(event: string, listener: (...args: A) => void): Disposable => {
@@ -29,6 +32,11 @@ export function streamSocket(stream: Duplex): ByteSocket {
     },
     destroy: () => {
       stream.destroy();
+    },
+    end: () => {
+      const cutOff = setTimeout(() => stream.destroy(), END_TIMEOUT_MS);
+      stream.once('close', () => clearTimeout(cutOff));
+      stream.end();
     },
   };
 }

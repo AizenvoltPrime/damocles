@@ -23,6 +23,11 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
   const { postMessage, settingsManager, platform } = deps;
 
   return {
+    // runs as the clicking view's client (the panel message's actor), which the turn re-pins to
+    continueWithMySignIn: (msg, ctx) => {
+      if (msg.type !== "continueWithMySignIn" || typeof msg.requestId !== "string") return;
+      ctx.permissionHandler.continueWithSignIn(msg.requestId);
+    },
     approveEdit: async (msg, ctx) => {
       if (msg.type !== "approveEdit") return;
 

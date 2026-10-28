@@ -142,6 +142,16 @@ describe('protocol-compat', () => {
     expect(check(base, fixture(additive, 1, ['files.list']))).toMatchObject({ ok: true, errors: [] });
   });
 
+  it('compares an array\'s elements, so an optional field added inside one is additive and a required one breaks', () => {
+    const listed = BASE.replace("  'files.stat':", "  'files.find': { readonly params: { readonly path: string }; readonly result: readonly { readonly name: string }[] };\n  'files.stat':");
+    const before = fixture(listed);
+    const optional = fixture(listed.replace('readonly { readonly name: string }[]', 'readonly { readonly name: string; readonly size?: number }[]'), 1, ['files.find.size']);
+    expect(check(before, optional)).toMatchObject({ ok: true, errors: [] });
+    expect(check(before, fixture(listed.replace('readonly { readonly name: string }[]', 'readonly { readonly name: string; readonly size: number }[]'))).errors).toEqual([
+      'breaking without a protocolVersion bump: Requests.files.find.result[].size was added as required',
+    ]);
+  });
+
   it('fails a removed command or event variant without a bump', () => {
     expect(check(base, fixture(BASE.replace(/ {2}'files\.stat'.*\n/, ''))).errors).toEqual(['breaking without a protocolVersion bump: Requests.files.stat was removed']);
     expect(check(base, fixture(BASE.replace("\n  | { readonly type: 'deleted'; readonly path: string }", ''))).ok).toBe(false);

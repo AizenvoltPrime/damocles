@@ -262,7 +262,8 @@ function treeEntry(stat: fs.BigIntStats): TreeEntry {
 
 // One non-recursive inotify watch per directory. A directory is watched before it is listed, as inotify(7) prescribes for a subtree,
 // so nothing created in between is missed. Events are diffed against the entries already reported, so each one names a real change.
-function startInotifyTree(root: string, emit: RawListener, lost: () => void, log: Log): Disposable {
+// limitReached: a directory got no watch because fs.inotify.max_user_watches is used up (ENOSPC), so its changes go unseen.
+export function startInotifyTree(root: string, emit: RawListener, lost: () => void, log: Log, limitReached: () => void, watch: typeof fs.watch = fs.watch): Disposable {
   const dirs = new Map<string, TreeDir>();
   // Per directory: the names with raw events since the last flush, and whether any of them was a content change.
   const pending = new Map<string, Map<string, boolean>>();
@@ -322,10 +323,12 @@ function startInotifyTree(root: string, emit: RawListener, lost: () => void, log
   const watchDir = (dir: string, report: boolean): void => {
     let watcher: fs.FSWatcher;
     try {
-      watcher = fs.watch(dir, (eventType, filename) => queue(dir, eventType, filename));
+      watcher = watch(dir, (eventType, filename) => queue(dir, eventType, filename));
     } catch (err) {
+      const exhausted = (err as NodeJS.ErrnoException).code === 'ENOSPC';
+      if (exhausted) limitReached();
       if (dir === root) throw err;
-      const limit = (err as NodeJS.ErrnoException).code === 'ENOSPC' ? '; the inotify watch limit (fs.inotify.max_user_watches) is reached' : '';
+      const limit = exhausted ? '; the inotify watch limit (fs.inotify.max_user_watches) is reached' : '';
       log(`[watcher] could not watch ${dir}: ${errorText(err)}${limit}`);
       return;
     }
@@ -461,6 +464,9 @@ class EventFan implements FileWatcher {
  */
 export class DesktopFileWatcherFactory implements FileWatcherFactory {
   private readonly roots = new Map<string, RootEntry>();
+  // the watched roots whose tree ran out of inotify watches, while they are watched
+  private readonly limited = new Set<string>();
+  private readonly limitReached: Emitter<[string]>;
   private readonly folders: WorkspaceFolders;
   private readonly log: Log;
   private readonly windowsTree: FsWatchTreeHost;
@@ -481,6 +487,16 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
     this.folders = folders;
     this.log = log;
     this.windowsTree = windowsTree;
+    this.limitReached = new Emitter('watcher', log);
+  }
+
+  /** A watched root's tree ran out of inotify watches (Linux), once per root while it stays watched. */
+  onDidReachWatchLimit(listener: (root: string) => void): Disposable {
+    return this.limitReached.add(listener);
+  }
+
+  watchLimitedRoots(): readonly string[] {
+    return [...this.limited];
   }
 
   // Never throws: a watch that cannot start is logged and fires nothing, as a VS Code watcher on a missing path does.
@@ -546,6 +562,7 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
     this.closed = true;
     for (const entry of this.roots.values()) entry.source.dispose();
     this.roots.clear();
+    this.limited.clear();
     await Promise.all([settlePending(() => this.work), this.windowsTree.close()]);
   }
 
@@ -564,7 +581,7 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
         if (recursive && USE_FS_WATCH_TREE) return windowsTree.start(root, appeared, emit, lost);
         let started: Disposable;
         if (!recursive) started = startShallow(root, emit, lost, log);
-        else started = USE_INOTIFY_TREE ? startInotifyTree(root, emit, lost, log) : startParcel(root, emit, lost, log, track);
+        else started = USE_INOTIFY_TREE ? startInotifyTree(root, emit, lost, log, () => this.reachedLimit(root)) : startParcel(root, emit, lost, log, track);
         let live = true;
         // Deferred, so a watcher whose directory appears while watch() runs has its listeners before the replay.
         if (appeared) queueMicrotask(() => {
@@ -587,6 +604,13 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
       if (current.listeners.size > 0 || this.roots.get(key) !== current) return;
       current.source.dispose();
       this.roots.delete(key);
+      if (recursive) this.limited.delete(root);
     };
+  }
+
+  private reachedLimit(root: string): void {
+    if (this.limited.has(root)) return;
+    this.limited.add(root);
+    this.limitReached.fire(root);
   }
 }

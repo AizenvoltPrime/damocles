@@ -29,13 +29,13 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 			try {
 				await compassService.ensureInitialized();
 				const results = await compassService.webviewSearch(msg.query, msg.kind ?? undefined, msg.limit ?? 30) as CompassSearchResult[];
-				postMessage(ctx.host, {
+				postMessage(ctx.reply, {
 					type: 'compassSearchResults',
 					results,
 				});
 			} catch (err) {
 				log('[compass-handlers] compassSearch error: %O', err);
-				postMessage(ctx.host, { type: 'compassSearchResults', results: [] });
+				postMessage(ctx.reply, { type: 'compassSearchResults', results: [] });
 			}
 		},
 
@@ -46,10 +46,10 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 			try {
 				await compassService.ensureInitialized();
 				const data = await compassService.webviewGraph(msg.maxNodes ?? 500, msg.communityId) as CompassGraphData;
-				postMessage(ctx.host, { type: 'compassGraphData', data });
+				postMessage(ctx.reply, { type: 'compassGraphData', data });
 			} catch (err) {
 				log('[compass-handlers] compassRequestGraph error: %O', err);
-				postMessage(ctx.host, {
+				postMessage(ctx.reply, {
 					type: 'compassGraphData',
 					data: { nodes: [], edges: [], communities: [] },
 				});
@@ -80,10 +80,10 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 				await compassService.ensureInitialized();
 				const depth = platform.settings.get<number>('damocles.compass.blastRadiusDepth', 2);
 				const data = await compassService.webviewBlastRadius(msg.filePath, depth) as CompassBlastRadiusResult;
-				postMessage(ctx.host, { type: 'compassBlastRadiusData', data });
+				postMessage(ctx.reply, { type: 'compassBlastRadiusData', data });
 			} catch (err) {
 				log('[compass-handlers] compassRequestBlastRadius error: %O', err);
-				postMessage(ctx.host, {
+				postMessage(ctx.reply, {
 					type: 'compassBlastRadiusData',
 					data: { changed_files: [], changed_nodes: [], impacted_nodes: [], impacted_files: [], edges: [], total_impacted: 0, truncated: false },
 				});
@@ -91,13 +91,13 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 		},
 
 		compassDismissBlastRadius: (_msg, ctx) => {
-			postMessage(ctx.host, { type: 'compassBlastRadiusDismissed' });
+			postMessage(ctx.reply, { type: 'compassBlastRadiusDismissed' });
 		},
 
 		compassRequestValidation: async (_msg, ctx) => {
 			const compassService = serviceFor(ctx);
 			if (!compassService?.isEnabled) {
-				postMessage(ctx.host, {
+				postMessage(ctx.reply, {
 					type: 'compassValidationResult',
 					data: {
 						timestamp: Date.now(),
@@ -115,7 +115,7 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 				const rawValidation = await compassService.webviewValidation() as WebviewValidationResponse | WebviewValidationBusy;
 
 				if ('busy' in rawValidation) {
-					postMessage(ctx.host, {
+					postMessage(ctx.reply, {
 						type: 'compassValidationResult',
 						data: {
 							timestamp: Date.now(),
@@ -315,11 +315,11 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 					},
 				};
 
-				postMessage(ctx.host, { type: 'compassValidationResult', data: result });
+				postMessage(ctx.reply, { type: 'compassValidationResult', data: result });
 			} catch (err) {
 				log('[compass-handlers] compassRequestValidation error: %O', err);
 				const msg = err instanceof Error ? err.message : 'Unknown validation error';
-				postMessage(ctx.host, {
+				postMessage(ctx.reply, {
 					type: 'compassValidationResult',
 					data: {
 						timestamp: Date.now(),

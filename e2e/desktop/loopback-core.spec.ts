@@ -10,10 +10,10 @@ import type { HermeticHome } from './support/hermetic';
 import { cleanUp, daemonPid, endLeftoverDaemon, LOCAL_DAEMON, loopbackHome, LOOPBACK_ENV, LOOPBACK_TAG, openThroughLocalDaemon, processTree, REVIEW_SHOTS, shutdownDaemon } from './support/loopback';
 import { commitMessage, scmSection, setSection } from './support/scm';
 import { setReducedMotion, showShellTheme, THEMES } from './support/screenshots';
-import { settingsModal, settingsNav, settingsRow } from './support/settings';
+import { closeSettingsModal, settingsModal, settingsNav, settingsRow } from './support/settings';
 import { overlayPage, shellPage, shellState } from './support/shell';
 import { listChats } from './support/shell-ui';
-import { awaitTurnEnd, chatInput, clickMenu } from './support/ui';
+import { chatInput, clickMenu } from './support/ui';
 
 // The daemon's core: its state as control.coreState reports it, and the epoch and engine state main shows.
 interface CoreState {
@@ -37,8 +37,6 @@ interface CoreHooks {
 const SESSION_ID = '01a0e000-0000-7000-8000-00000000c0de';
 const PROMPT = 'Where is the needle?';
 const REPLY = 'The needle is in a.ts.';
-// pi's own error text when the broker answers none and the target has no credential of its own
-const NO_SIGN_IN = 'No API key found';
 
 const coreState = (app: ElectronApplication): Promise<CoreState> => app.evaluate(() => (globalThis as unknown as CoreHooks).__damoclesE2e.loopback.coreState());
 const engine = (app: ElectronApplication): Promise<{ epoch: string | null; state: string | null }> =>
@@ -158,17 +156,22 @@ test('a loopback project\'s git, chats and engine run in the daemon\'s core: sta
     // closed, so no source control request waits on the engine the kills below take down
     await setSection(shell, 'scm-section', false);
 
-    // The stored conversation opens from the loopback project's list and replays; with no sign-in here the broker answers none,
-    // so a send shows the message and pi's error card.
+    // The stored conversation opens from the loopback project's list and replays; with no sign-in here the chat's model cannot
+    // run, so a send sends nothing: the message goes back to the composer and settings open where it is fixed.
     expect((await shellState(app)).selected.projectKey).toBe(key);
     expect(await shell.evaluate((id) => window.damoclesShell!.selectChat(id), SESSION_ID)).toEqual({ ok: true });
     let tab = await remoteChat(app);
     await expect(tab.getByText(PROMPT, { exact: true }).first()).toBeVisible();
     await chatInput(tab).fill('hello from this computer');
     await chatInput(tab).press('Enter');
-    await expect(tab.getByRole('region', { name: 'Error' })).toContainText(NO_SIGN_IN, { timeout: 30_000 });
-    await expect(tab.getByText('hello from this computer', { exact: true })).toBeVisible();
-    await awaitTurnEnd(tab);
+    const refusal = await overlayPage(app);
+    await expect(settingsModal(refusal)).toBeVisible({ timeout: 30_000 });
+    await expect(chatInput(tab)).toHaveValue('hello from this computer');
+    // the replayed prompt is the transcript's only user message
+    await expect(tab.getByTestId('user-message-time')).toHaveCount(1);
+    await closeSettingsModal(refusal);
+    // the refusal's settings change nothing about where the user is
+    expect((await shellState(app)).selected.projectKey).toBe(key);
     for (let clicks = 0; clicks < 3 && !/^Plan mode/.test((await tab.getByTestId('composer-mode').getAttribute('aria-label')) ?? ''); clicks++) {
       await tab.getByTestId('composer-mode').click();
     }

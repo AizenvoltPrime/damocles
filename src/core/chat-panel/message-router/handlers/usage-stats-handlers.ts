@@ -119,7 +119,7 @@ export function createUsageStatsHandlers(deps: HandlerDependencies): Partial<Han
     requestUsageStats: async (msg, ctx) => {
       if (msg.type !== "requestUsageStats") return;
       const requestId = typeof msg.requestId === "string" ? msg.requestId : "";
-      const fail = (error: string) => deps.postMessage(ctx.host, { type: "usageStats", requestId, final: true, report: null, error });
+      const fail = (error: string) => deps.postMessage(ctx.reply, { type: "usageStats", requestId, final: true, report: null, error });
       const parsed = requestId === "" ? { error: "requestId is missing" } : parseUsageStatsQuery(msg.query);
       if ("error" in parsed) {
         fail(`Invalid usage stats query: ${parsed.error}`);
@@ -132,10 +132,10 @@ export function createUsageStatsHandlers(deps: HandlerDependencies): Partial<Han
         let early: Promise<void> = Promise.resolve();
         const final = await deps.usageStatsService.query(parsed.value, models, (update) => {
           if (update.type === "progress") {
-            deps.postMessage(ctx.host, { type: "usageStatsProgress", requestId, filesDone: update.filesDone, filesTotal: update.filesTotal });
+            deps.postMessage(ctx.reply, { type: "usageStatsProgress", requestId, filesDone: update.filesDone, filesTotal: update.filesTotal });
           } else {
             early = withOpenableSessions(update.report, folderOf).then((mapped) =>
-              deps.postMessage(ctx.host, { type: "usageStats", requestId, final: false, report: mapped }),
+              deps.postMessage(ctx.reply, { type: "usageStats", requestId, final: false, report: mapped }),
             );
           }
         });
@@ -147,7 +147,7 @@ export function createUsageStatsHandlers(deps: HandlerDependencies): Partial<Han
         return;
       }
       // Outside the try: a failed post must not be answered with a second final.
-      deps.postMessage(ctx.host, { type: "usageStats", requestId, final: true, report });
+      deps.postMessage(ctx.reply, { type: "usageStats", requestId, final: true, report });
     },
   };
 }

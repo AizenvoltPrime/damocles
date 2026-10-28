@@ -32,17 +32,29 @@ afterEach(() => {
 const notice = (): HTMLElement | null => document.querySelector<HTMLElement>('[data-testid="yolo-refused"]');
 
 describe('YOLO on a host whose policy refuses it', () => {
-  it('says so in a live region that was already in the page, and sends nothing, when the host already refuses it', async () => {
+  const yolo = (): HTMLElement | null => document.querySelector<HTMLElement>('[data-testid="composer-yolo"]');
+
+  it('hides the YOLO control while the host refuses it, and shows it where the host allows it', async () => {
     useSettingsStore().setHostCapabilities({ ...VSCODE_HOST_CAPABILITIES, bypassPermissions: false });
     app = mount(App, { global: { plugins: [i18n] }, attachTo: document.body });
     await flushPromises();
-    expect(notice()).toBeNull();
-    const live = [...document.querySelectorAll('[role="status"]')];
-    document.querySelector<HTMLElement>('[data-testid="composer-yolo"]')!.click();
+    expect(yolo()).toBeNull();
+    useSettingsStore().setHostCapabilities({ ...VSCODE_HOST_CAPABILITIES, bypassPermissions: true });
     await flushPromises();
-    expect(notice()).not.toBeNull();
-    expect(live).toContain(notice()!.parentElement);
-    expect(posted.some((m) => m.type === 'setDangerouslySkipPermissions')).toBe(false);
+    expect(yolo()).not.toBeNull();
+  });
+
+  // an on state is never hidden: the user can always turn YOLO off
+  it('keeps the control while YOLO is on, and its click turns YOLO off', async () => {
+    useSettingsStore().setHostCapabilities({ ...VSCODE_HOST_CAPABILITIES, bypassPermissions: false });
+    app = mount(App, { global: { plugins: [i18n] }, attachTo: document.body });
+    await flushPromises();
+    useSettingsStore().setDangerouslySkipPermissions(true);
+    await flushPromises();
+    yolo()!.click();
+    await flushPromises();
+    expect(posted).toContainEqual({ type: 'setDangerouslySkipPermissions', enabled: false });
+    expect(yolo()).toBeNull();
   });
 
   it('turns the toggle back off and says why when core refuses a change it sent', async () => {

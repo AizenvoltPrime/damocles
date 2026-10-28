@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { HostStarters } from '../../workspace/host-starters';
-import { connectToDaemon } from '../attach';
+import { connectToDaemon, daemonAnswers } from '../attach';
 import { removeStaleSocket } from '../endpoint-server';
 import { acquireDaemonLock, LOCK_STALE_MS } from '../singleton';
 import { createSocketFolder, localRunPaths, makeRunDir, socketFolderBase, socketPath, writePidFile } from '../token';
@@ -15,6 +15,8 @@ const NO_HOSTS: HostStarters = {
 };
 
 const running: InProcessDaemon[] = [];
+// a holder whose endpoint never answers
+const NO_ANSWER = async (): Promise<boolean> => false;
 
 afterEach(async () => {
   await Promise.all(running.splice(0).map((daemon) => daemon.shutdown()));
@@ -24,12 +26,12 @@ describe('the daemon singleton', () => {
   it('holds one lock per user and host', async () => {
     const paths = await localRunPaths();
     await makeRunDir(paths);
-    const first = await acquireDaemonLock(paths, () => undefined);
-    const second = await acquireDaemonLock(paths, () => undefined, 0);
+    const first = await acquireDaemonLock(paths, () => undefined, NO_ANSWER);
+    const second = await acquireDaemonLock(paths, () => undefined, NO_ANSWER, 0);
     expect(first.held).toBe(true);
     expect(second.held).toBe(false);
     if (first.held) await first.release();
-    const third = await acquireDaemonLock(paths, () => undefined);
+    const third = await acquireDaemonLock(paths, () => undefined, NO_ANSWER);
     expect(third.held).toBe(true);
     if (third.held) await third.release();
   });
@@ -37,14 +39,44 @@ describe('the daemon singleton', () => {
   it('takes over the lock of a daemon that crashed once it turns stale, waiting rather than failing the start', async () => {
     const paths = await localRunPaths();
     await makeRunDir(paths);
-    // a crashed daemon's lock, last refreshed almost LOCK_STALE_MS ago
+    // a crashed daemon's lock, refreshed just now; it turns stale while the start waits, after the first probe
     fs.mkdirSync(paths.lockFile);
-    const refreshed = new Date(Date.now() - LOCK_STALE_MS + 1500);
-    fs.utimesSync(paths.lockFile, refreshed, refreshed);
-    const started = Date.now();
-    const lock = await acquireDaemonLock(paths, () => undefined);
+    let probes = 0;
+    const lock = await acquireDaemonLock(paths, () => undefined, async () => {
+      probes += 1;
+      const stale = new Date(Date.now() - LOCK_STALE_MS - 1000);
+      if (probes === 1) fs.utimesSync(paths.lockFile, stale, stale);
+      // the real probe: a crashed daemon has no pid file that answers
+      return daemonAnswers(paths);
+    });
     expect(lock.held).toBe(true);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(1000);
+    expect(probes).toBe(1);
+    if (lock.held) await lock.release();
+  }, 15_000);
+
+  it('gives up at once while the lock\'s holder answers on its endpoint, instead of waiting out the stale window', async () => {
+    running.push(await startInProcessDaemon({ starters: NO_HOSTS }));
+    const paths = await localRunPaths();
+    const started = Date.now();
+    const lock = await acquireDaemonLock(paths, () => undefined, () => daemonAnswers(paths));
+    expect(lock.held).toBe(false);
+    expect(Date.now() - started).toBeLessThan(LOCK_STALE_MS / 4);
+  }, LOCK_STALE_MS / 2);
+
+  it('waits for a holder that does not answer, as one still starting or shutting down, and takes the lock once it is released', async () => {
+    const paths = await localRunPaths();
+    await makeRunDir(paths);
+    const holder = await acquireDaemonLock(paths, () => undefined, NO_ANSWER);
+    if (!holder.held) throw new Error('the holder did not get the lock');
+    let probes = 0;
+    const lock = await acquireDaemonLock(paths, () => undefined, async () => {
+      probes += 1;
+      // the holder finishes its shutdown while the start waits
+      if (probes === 2) await holder.release();
+      return false;
+    });
+    expect(lock.held).toBe(true);
+    expect(probes).toBe(2);
     if (lock.held) await lock.release();
   }, 15_000);
 

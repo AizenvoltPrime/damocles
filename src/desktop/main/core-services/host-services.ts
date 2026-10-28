@@ -4,11 +4,12 @@ import type { Memento } from '../../../platform/key-value-state';
 import type { NotificationOptions } from '../../../platform/notification-service';
 import type { Platform } from '../../../platform/platform';
 import type { PanelHost } from '../../../platform/window-service';
+import type { GitCredentialAnswer } from '../../../shared/git-credential';
 import type { PageSpec } from '../../../shared/panel-html';
 import { LOCAL_CLIENT_ID, type BrokerAnswer } from '../../../shared/remote-user';
 import { desktopHostCapabilities } from '../../local-services/capabilities';
 import type { DesktopEditorService, HostDiffView } from '../platform/editor-service';
-import { DIFF_TITLE_NAME, type AskQuestion, type CoreInit, type CredentialKind, type MainEndpoint, type MirrorTopics, type PanelCreate, type StateScope } from '../../core-protocol';
+import { DIFF_TITLE_NAME, type AskQuestion, type CoreInit, type CoreRequests, type CredentialKind, type MainEndpoint, type MirrorTopics, type PanelCreate, type StateScope } from '../../core-protocol';
 
 export interface HostTrust {
   // the folder keys core names trusted folders by, as its own folderKey computes them
@@ -40,6 +41,11 @@ export interface RelayView extends PanelHost {
   readonly closeReason: 'user' | 'detach';
 }
 
+/** A held view's ready: the panel token its page holds, when it names one. */
+export interface HeldReady {
+  readonly panelToken?: string;
+}
+
 /**
  * The worktree UI main keeps (core/worktrees/host.ts), which core's worktree services reach over worktrees.* requests. A
  * question's signal aborts when its request does (core ended), which withdraws it with its cancel answer.
@@ -64,12 +70,15 @@ export interface HostWorktreeUi {
 export interface HostUser {
   credentials(provider: string): Promise<BrokerAnswer>;
   speak(viewId: string, text: string): Promise<void>;
+  // the target's git credential relay (remote/git-credential-client.ts)
+  gitCredential(request: CoreRequests['askpass.credential']['params'], signal: AbortSignal): Promise<GitCredentialAnswer>;
 }
 
 /** What the local core's host services answer: it asks this computer's PiRuntime and voice service itself. */
 export const NO_USER_RELAYS: HostUser = {
   credentials: () => Promise.reject(new Error('Credentials are relayed only to a remote core')),
   speak: () => Promise.reject(new Error('Speech is relayed only from a remote core')),
+  gitCredential: () => Promise.reject(new Error('Git credentials are relayed only to a remote core')),
 };
 
 /** Main's own UI core's engine reaches: log tabs, the trash, questions, credential prompts and the worktree dialogs. */
@@ -120,9 +129,11 @@ export interface HostServices extends Disposable {
   // Relays a chat view main created from before attach asks core to attach to it, which may set its HTML at once; its view
   // state follows the request, which creates the proxy it updates.
   adopt<T>(view: RelayView, attach: () => Promise<T>): Promise<T>;
-  // Relays a chat view whose page main loads itself for a rejoin: true once the page sent its ready, which core never gets;
-  // false when the view closed or the services were disposed first.
-  adoptHeld(view: RelayView): Promise<boolean>;
+  // Relays a chat view whose page main loads itself for a rejoin: its page's ready, which core never gets, once sent; false
+  // when the view closed or the services were disposed first.
+  adoptHeld(view: RelayView): Promise<HeldReady | false>;
+  // A joined view's later readys (its page reloaded) run rejoin instead of reaching core, which would take the panel as its own.
+  rejoinOnReady(panelId: string, rejoin: () => void): void;
 }
 
 /**
@@ -173,7 +184,8 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
   };
 
   // a held view's messages are dropped up to its page's ready, which settles its hold instead of reaching core
-  const holds = new Map<string, (ready: boolean) => void>();
+  const holds = new Map<string, (ready: HeldReady | false) => void>();
+  const rejoins = new Map<string, () => void>();
 
   const relay = (view: RelayView): void => {
     const { panelId } = view;
@@ -182,10 +194,17 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     viewSubscriptions.set(panelId, [
       view.onMessage((message) => {
         const hold = holds.get(panelId);
+        const isReady = (message as { type?: unknown }).type === 'ready';
         if (hold) {
-          if ((message as { type?: unknown }).type !== 'ready') return;
+          if (!isReady) return;
           holds.delete(panelId);
-          hold(true);
+          const token = (message as { panelToken?: unknown }).panelToken;
+          hold(typeof token === 'string' ? { panelToken: token } : {});
+          return;
+        }
+        const rejoin = isReady ? rejoins.get(panelId) : undefined;
+        if (rejoin) {
+          rejoin();
           return;
         }
         if (deps.divert(view, message)) return;
@@ -202,6 +221,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
   const forget = (panelId: string): void => {
     const hold = holds.get(panelId);
     holds.delete(panelId);
+    rejoins.delete(panelId);
     hold?.(false);
     views.delete(panelId);
     for (const subscription of viewSubscriptions.get(panelId) ?? []) subscription.dispose();
@@ -278,7 +298,10 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     endpoint.serve('worktrees.showRefusal', (request, signal) => ui.worktrees.showRefusal(request, signal));
     endpoint.serve('user.credentials', ({ provider }) => deps.user.credentials(provider));
     endpoint.serve('user.voice.speak', ({ viewId, text }) => deps.user.speak(viewId, text));
+    endpoint.serve('askpass.credential', (request, signal) => deps.user.gitCredential(request, signal));
     endpoint.serve('worktrees.showApplyConflicts', ({ worktreeId, files }) => ui.worktrees.showApplyConflicts(worktreeId, files));
+    // main posts to a page in this process, which queues nothing toward it
+    endpoint.serve('views.drained', () => undefined);
   };
 
   serve();
@@ -355,7 +378,10 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
       publishViewState(view.panelId, view);
       return attached;
     },
-    adoptHeld: (view) => new Promise<boolean>((resolve) => {
+    rejoinOnReady: (panelId, rejoin) => {
+      if (views.has(panelId)) rejoins.set(panelId, rejoin);
+    },
+    adoptHeld: (view) => new Promise<HeldReady | false>((resolve) => {
       relay(view);
       holds.set(view.panelId, resolve);
       publishViewState(view.panelId, view);

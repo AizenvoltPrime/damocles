@@ -31,6 +31,7 @@ import { readContributedConfiguration } from "../../../config/read-contributed-c
 import { CHAT_SETTING_KEYS } from "../../../config/chat-settings";
 import { MODEL_PICKER_SETTING, isModelVendor } from "../../../../shared/model-vendor";
 import { t } from "../../../l10n";
+import { forEachDevice } from "../../device-hosts";
 
 // A hundred years; the bound keeps a typed number from overflowing the retention arithmetic.
 const MAX_RETENTION_DAYS = 36500;
@@ -76,6 +77,10 @@ export class ConfigManager {
     permissionHandler: PermissionHandler,
     folder: SettingsFolder | undefined,
   ): Promise<void> {
+    forEachDevice(this.platform.remote, host, (target) => this.postCurrentSettings(target, permissionHandler, folder));
+  }
+
+  private postCurrentSettings(host: PanelHost, permissionHandler: PermissionHandler, folder: SettingsFolder | undefined): void {
     const config = this.platform.settings;
 
     const defaultAutoCompact: AutoCompactConfig = {

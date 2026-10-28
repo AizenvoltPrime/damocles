@@ -2,9 +2,10 @@
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useEventListener, useResizeObserver } from '@vueuse/core';
-import { FileDiff, GitCompare, GitMerge, Globe, History, LoaderCircle, MessageSquareDiff, ScrollText, Search, Settings2, X } from 'lucide-vue-next';
+import { CloudOff, CloudUpload, FileDiff, GitCompare, GitMerge, Globe, History, LoaderCircle, MessageSquareDiff, ScrollText, Search, Settings2, X } from 'lucide-vue-next';
 import type { Component } from 'vue';
-import type { DamoclesShellApi, FileRef, ShellEditorTab } from '../../preload/shell-channels';
+import type { DamoclesShellApi, FileRef, ShellEditorTab, ShellProject } from '../../preload/shell-channels';
+import { parseRootKey } from '../../preload/folder-root';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import { useSlidingIndicator, type IndicatorBox } from '@/composables/useSlidingIndicator';
 import { remPx } from '@/composables/useRemPx';
@@ -21,7 +22,7 @@ import { TONE_TEXT } from '../scm/scm-list';
 import StatusLetter from '../scm/StatusLetter.vue';
 import { isBlankPage, pageText, pageTitle } from './browser-page';
 
-const props = defineProps<{ api: DamoclesShellApi; closeShortcut: string }>();
+const props = defineProps<{ api: DamoclesShellApi; closeShortcut: string; projects: readonly ShellProject[] }>();
 const emit = defineEmits<{ revealInFiles: [file: FileRef]; focusOverlay: [] }>();
 const { t } = useI18n();
 const store = inject(EDITOR_STORE)!;
@@ -120,6 +121,35 @@ const decorationOf = (tab: ShellEditorTab) => {
   const decoration = scm.decorationOf(tab.projectKey, tab.relativePath);
   return decoration?.letter === undefined ? undefined : { letter: decoration.letter, tone: decoration.tone, color: TONE_TEXT[decoration.tone], strike: decoration.strike, title: decoration.status ? t(`scm.status.${decoration.status}`) : undefined };
 };
+// An offline save names the host as ShellState names it now, so a rename shows at once.
+const hostOf = (tab: ShellEditorTab): string => props.projects.find((project) => project.key === parseRootKey(tab.projectKey)?.projectKey)?.authority.name ?? '';
+const pendingText = (tab: ShellEditorTab): string => t('editor.tab.pendingUpload', { host: hostOf(tab) });
+// ms the cloud-up glyph shows after a pending save uploaded
+const UPLOADED_MS = 2400;
+const uploaded = ref<ReadonlySet<string>>(new Set());
+const wasPending = new Set<string>();
+const uploadedTimers = new Set<ReturnType<typeof setTimeout>>();
+watch(() => store.tabs.value.map((tab) => [tab.id, tab.pendingUpload === true, tab.dirty || tab.conflict] as const), (tabs) => {
+  // a tab closed while its save was pending never shows the glyph
+  const open = new Set(tabs.map(([id]) => id));
+  for (const id of wasPending) if (!open.has(id)) wasPending.delete(id);
+  for (const [id, pending, unsettled] of tabs) {
+    if (pending) {
+      wasPending.add(id);
+      continue;
+    }
+    if (!wasPending.delete(id) || unsettled) continue;
+    uploaded.value = new Set([...uploaded.value, id]);
+    const timer = setTimeout(() => {
+      uploadedTimers.delete(timer);
+      uploaded.value = new Set([...uploaded.value].filter((other) => other !== id));
+    }, UPLOADED_MS);
+    uploadedTimers.add(timer);
+  }
+}, { immediate: true });
+onBeforeUnmount(() => {
+  for (const timer of uploadedTimers) clearTimeout(timer);
+});
 const isMarkdown = (tab: ShellEditorTab): boolean => tab.kind === 'markdownPreview' || (tab.kind === 'code' && /\.md$/i.test(tab.title));
 const fileOf = (tab: ShellEditorTab): FileRef | undefined =>
   (tab.projectKey !== undefined && tab.relativePath !== undefined ? { projectKey: tab.projectKey, relativePath: tab.relativePath } : undefined);
@@ -444,6 +474,26 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
               v-if="tab.deleted"
               class="sr-only"
             >{{ t('editor.tab.deleted') }}</span>
+            <Transition name="t-icon">
+              <span
+                v-if="tab.pendingUpload"
+                data-testid="editor-tab-pending-upload"
+                class="flex shrink-0 text-(--d-warning-text)"
+                :title="pendingText(tab)"
+              ><CloudOff
+                aria-hidden="true"
+                class="size-3"
+              /><span class="sr-only">{{ pendingText(tab) }}</span></span>
+              <span
+                v-else-if="uploaded.has(tab.id)"
+                data-testid="editor-tab-uploaded"
+                class="flex shrink-0 text-(--d-success-text)"
+                :title="t('editor.tab.uploaded', { host: hostOf(tab) })"
+              ><CloudUpload
+                aria-hidden="true"
+                class="size-3"
+              /><span class="sr-only">{{ t('editor.tab.uploaded', { host: hostOf(tab) }) }}</span></span>
+            </Transition>
             <span
               v-if="tab.conflict"
               class="sr-only"

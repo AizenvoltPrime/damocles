@@ -8,12 +8,15 @@ import type { IndicatorBox } from '@/composables/useSlidingIndicator';
 // `ring`: currentColor border and tinted fill for a vertical list. Fixed top and bottom caps and a middle scaled on Y,
 // so rows of different heights animate by transform alone; a width change snaps.
 // `soft`: the ring's pieces filled with currentColor and no border; currentColor may be translucent, as those pieces never overlap.
+// `columns`: a group of equal columns; one piece one column wide (its size and corners from the caller's class) moves
+// `index` columns by transform, so its place never depends on measured widths; none while nothing is selected.
 const props = withDefaults(defineProps<{
   box: IndicatorBox | null;
   /** px at the default font, scaled with the root font size like the rem radii it matches; `pill` is half the box height. */
   radius: number | 'pill';
   animate: boolean;
   variant?: 'solid' | 'ring' | 'soft';
+  columns?: { readonly index: number };
 }>(), { variant: 'solid' });
 
 // The middle is drawn about this many px long, then scaled to its span. Chromium snaps the unscaled box to whole device
@@ -70,7 +73,15 @@ const ringFill = computed(() => (props.variant === 'ring'
 
 <template>
   <span
-    v-if="ring"
+    v-if="columns"
+    v-show="columns.index >= 0"
+    class="pointer-events-none absolute bg-current transition-transform duration-260 ease-out"
+    aria-hidden="true"
+    data-testid="sliding-indicator"
+    :style="{ transform: `translateX(${Math.max(0, columns.index) * 100}%)` }"
+  />
+  <span
+    v-else-if="ring"
     class="pointer-events-none absolute inset-0"
     aria-hidden="true"
     data-testid="sliding-indicator"

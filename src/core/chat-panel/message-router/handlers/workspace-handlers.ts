@@ -94,7 +94,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (msg.type !== "openAppSettings") return;
       if (msg.section !== undefined && !isSettingsSectionId(msg.section)) throw new Error("Unknown settings section");
       if (msg.account !== undefined && !isSettingsAccountId(msg.account)) throw new Error("Unknown settings account");
-      openAppSettingsFor(platform, postMessage, ctx.host, msg.section, msg.account);
+      openAppSettingsFor(platform, postMessage, ctx.reply, msg.section, msg.account);
     },
 
     toggleTerminal: () => {
@@ -174,7 +174,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
       try {
         const content = await fs.readFile(planPath, "utf-8");
-        postMessage(ctx.host, { type: "showPlanContent", content, filePath: planPath });
+        postMessage(ctx.reply, { type: "showPlanContent", content, filePath: planPath });
       } catch (err) {
         log("[MessageRouter] Error reading plan file:", err);
         void platform.notifications.info(t("No plan exists for this session"));
@@ -191,7 +191,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       } catch (err) {
         log("[MessageRouter] Listing plan files in %s failed: %O", ctx.folder.fsPath, err);
         issuePlanFiles(ctx, new Map());
-        postMessage(ctx.host, { type: "planFileCandidates", files: [], hasPlan, listFailed: true });
+        postMessage(ctx.reply, { type: "planFileCandidates", files: [], hasPlan, listFailed: true });
         return;
       }
       const issued = new Map<string, string>();
@@ -201,10 +201,10 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
         return { id, relativePath: file.relativePath, modifiedAt: file.modifiedAt };
       });
       if (!issuePlanFiles(ctx, issued)) {
-        postMessage(ctx.host, { type: "planFileCandidates", files: [], hasPlan: false });
+        postMessage(ctx.reply, { type: "planFileCandidates", files: [], hasPlan: false });
         return;
       }
-      postMessage(ctx.host, { type: "planFileCandidates", files: listed, hasPlan });
+      postMessage(ctx.reply, { type: "planFileCandidates", files: listed, hasPlan });
     },
 
     bindPlanToSession: async (msg, ctx) => {
@@ -244,7 +244,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
         await fs.mkdir(path.dirname(planFilePath), { recursive: true });
         await fs.writeFile(planFilePath, content);
 
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: t("Plan file updated: {0}", planFilePath),
           notificationType: "info",
@@ -266,7 +266,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (msg.type !== "requestContextInjection") return;
       if (!Number.isInteger(msg.promptIndex) || msg.promptIndex < 0) return;
       const memoryData = await ctx.session.getMemoryInjection(msg.promptIndex) ?? null;
-      postMessage(ctx.host, { type: "contextInjectionLoaded", promptIndex: msg.promptIndex, memoryData });
+      postMessage(ctx.reply, { type: "contextInjectionLoaded", promptIndex: msg.promptIndex, memoryData });
     },
 
     // A file dropped on the composer names a project and a relative path; core confines it (mention-resolver.ts).
@@ -276,7 +276,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (!target) throw new Error("Malformed file drop");
       const instance = deps.getPanels().get(ctx.panelId);
       await mentionInChat(
-        { folders: deps.folderRegistry, confinement: platform.confinement, notifications: platform.notifications, post: (message) => postMessage(ctx.host, message) },
+        { folders: deps.folderRegistry, confinement: platform.confinement, notifications: platform.notifications, post: (message) => postMessage(ctx.reply, message) },
         target,
         (instance?.folder ?? ctx.folder).fsPath,
       );
@@ -284,7 +284,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
     requestWorkspaceFiles: async (_msg, ctx) => {
       const message = await workspaceManager.workspaceFilesMessage(ctx.folder);
-      if (stillOnDispatchFolder(ctx)) postMessage(ctx.host, message);
+      if (stillOnDispatchFolder(ctx)) postMessage(ctx.reply, message);
     },
 
     openFile: async (msg, ctx) => {
@@ -348,15 +348,15 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
     requestCustomSlashCommands: async (_msg, ctx) => {
       const message = await workspaceManager.customSlashCommandsMessage(ctx.folder);
-      if (stillOnDispatchFolder(ctx)) postMessage(ctx.host, message);
+      if (stillOnDispatchFolder(ctx)) postMessage(ctx.reply, message);
     },
 
     requestSteerTargets: (_msg, ctx) => {
-      postMessage(ctx.host, { type: "steerTargets", agents: ctx.session.listSteerTargets() });
+      postMessage(ctx.reply, { type: "steerTargets", agents: ctx.session.listSteerTargets() });
     },
 
     requestCustomAgents: async (_msg, ctx) => {
-      await workspaceManager.sendCustomAgents(ctx.host);
+      await workspaceManager.sendCustomAgents(ctx.reply);
     },
 
     setLanguagePreference: async (msg) => {
@@ -369,7 +369,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       // The stopped run's own completion resolves the card and the task, so a stop that landed posts nothing here.
       if (ctx.session.stopSubagent(msg.agentId)) return;
       // A late click: the agent had already finished, and nothing else clears the webview's "Stopping..." state.
-      postMessage(ctx.host, { type: "subagentStopRejected", agentId: msg.agentId });
+      postMessage(ctx.reply, { type: "subagentStopRejected", agentId: msg.agentId });
     },
 
     steerAgent: async (msg, ctx) => {

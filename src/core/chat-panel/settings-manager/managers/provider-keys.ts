@@ -4,7 +4,7 @@ import type { ExtensionToWebviewMessage } from "../../../../shared/types/message
 import { customProviderDef, providerKeyStored } from "../../../pi-session/custom-providers";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { log } from "../../../logger";
-import { clientKeySaved } from "../../../client-snapshots";
+import { clientKeySaved, clientPrefersApiKey } from "../../../client-snapshots";
 import { PI_AGENT_DIR } from "../../../pi-session/agent-dir";
 import { providerCredentialActive, readPreferProviderApiKey, readProviderSignIns } from "../../../pi-session/provider-auth";
 
@@ -49,7 +49,7 @@ export async function providerAuthStatus(
   }
   // a daemon's core: the key is the client's, known from its clientAuth, never read; which credential is active is the client's to say
   if (platform.remote) {
-    const preferApiKey = readPreferProviderApiKey(platform.state, provider);
+    const preferApiKey = clientPrefersApiKey(platform.remote, provider);
     return { type: "providerAuthStatusChanged", provider, configured: clientKeySaved(platform.remote, customProviderDef(provider).provider), external: null, ...signInFields, preferApiKey };
   }
   const stored = await providerKeyStored((k) => platform.secrets.get(k), customProviderDef(provider).key.secretKey);

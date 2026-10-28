@@ -17,7 +17,13 @@ const LOGO_URL = 'app://damocles/resources/icon.png';
 const APP_NAME = 'Damocles';
 
 const logo = ref<HTMLElement | null>(null);
-const projectName = computed(() => props.state.projects.find((entry) => entry.key === props.state.selected.projectKey)?.name ?? t('projects.home'));
+const selectedProject = computed(() => props.state.projects.find((entry) => entry.key === props.state.selected.projectKey));
+const projectName = computed(() => selectedProject.value?.name ?? t('projects.home'));
+// The safety stripe of the selected project's host, shown only once the host has a color.
+const stripe = computed(() => {
+  const authority = selectedProject.value?.authority;
+  return authority?.color === undefined ? undefined : { key: authority.key, name: authority.name, tone: authority.color };
+});
 const chatTitle = computed(() => {
   const chat = props.state.selectedChat;
   if (!chat) return undefined;
@@ -80,9 +86,25 @@ async function openCenter(): Promise<void> {
 <template>
   <header
     data-testid="title-bar"
-    class="title-bar flex h-10 shrink-0 items-center border-b border-(--d-border) bg-(--d-panel)"
+    class="title-bar relative flex h-10 shrink-0 items-center border-b border-(--d-border) bg-(--d-panel)"
     :class="state.platform === 'darwin' ? 'title-bar-darwin' : ''"
   >
+    <!-- keyed by host and tone, so a selection change or recolor fades the old stripe out as the new one fades in -->
+    <Transition
+      appear
+      enter-active-class="animate-[d-fade_.3s_var(--ease-out)]"
+      leave-active-class="animate-[o-fade-out_.3s_ease-in_both]"
+    >
+      <div
+        v-if="stripe"
+        :key="`${stripe.key}:${stripe.tone}`"
+        aria-hidden="true"
+        data-testid="title-bar-stripe"
+        :data-tone="stripe.tone"
+        class="pointer-events-none absolute inset-x-0 top-0 h-0.5 bg-(--tone)"
+        :class="`d-tone-${stripe.tone}`"
+      />
+    </Transition>
     <button
       ref="logo"
       type="button"
@@ -100,6 +122,36 @@ async function openCenter(): Promise<void> {
       >
       <span class="font-semibold tracking-[-.01em]">{{ APP_NAME }}</span>
     </button>
+    <!-- out-in: the label sits in the row, so two at once would push the breadcrumb aside -->
+    <Transition
+      appear
+      mode="out-in"
+      enter-active-class="animate-[d-fade_.3s_var(--ease-out)]"
+      leave-active-class="animate-[o-fade-out_.14s_ease-in_both]"
+    >
+      <span
+        v-if="stripe"
+        :key="`${stripe.key}:${stripe.tone}`"
+        data-testid="title-bar-stripe-label"
+        :data-tone="stripe.tone"
+        class="mr-2 inline-flex h-4.5 max-w-40 shrink-0 items-center rounded px-1.5 text-10 font-bold tracking-[.05em] bg-(--tone) text-(--tone-on)"
+        :class="`d-tone-${stripe.tone}`"
+        :title="t('titleBar.hostStripe', { host: stripe.name })"
+      >
+        <span class="sr-only">{{ t('titleBar.hostStripe', { host: stripe.name }) }}</span>
+        <!-- A rename swaps the old name for the new one. -->
+        <Transition
+          name="t-swap"
+          mode="out-in"
+        >
+          <span
+            :key="stripe.name"
+            aria-hidden="true"
+            class="truncate"
+          >{{ stripe.name }}</span>
+        </Transition>
+      </span>
+    </Transition>
     <nav
       data-testid="breadcrumb"
       :aria-label="t('titleBar.breadcrumb')"

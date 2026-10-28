@@ -69,8 +69,11 @@ export interface Refused {
 
 export type HelloAnswer = { readonly kind: 'welcome'; readonly welcome: Welcome } | { readonly kind: 'refused'; readonly refused: Refused };
 
-// skewMs: serverTime minus the midpoint of hello's send and welcome's receipt, on the client's clock
-export type HelloOutcome = { readonly kind: 'welcome'; readonly welcome: Welcome; readonly skewMs: number } | { readonly kind: 'refused'; readonly refused: Refused };
+// skewMs: serverTime minus the midpoint of hello's send and welcome's receipt, on the client's clock. resumedRest: for a
+// resumed connection, the bytes read past welcome; the handshake's protocol is detached, and the held one takes the socket.
+export type HelloOutcome =
+  | { readonly kind: 'welcome'; readonly welcome: Welcome; readonly skewMs: number; readonly resumedRest?: Uint8Array }
+  | { readonly kind: 'refused'; readonly refused: Refused };
 
 type Fields = Record<string, unknown>;
 
@@ -323,7 +326,13 @@ export function sayHello(protocol: PersistentProtocol, hello: Omit<Hello, 'clien
         protocol.close('a welcome for another protocol version');
         return;
       }
-      finish({ kind: 'welcome', welcome: answer.welcome, skewMs: answer.welcome.serverTime - (sentAt + Date.now()) / 2 });
+      const skewMs = answer.welcome.serverTime - (sentAt + Date.now()) / 2;
+      // the daemon's replay follows welcome at once, so nothing after it may be read as this protocol's
+      if (answer.welcome.resumed && hello.reconnectionToken) {
+        finish({ kind: 'welcome', welcome: answer.welcome, skewMs, resumedRest: protocol.detach() });
+        return;
+      }
+      finish({ kind: 'welcome', welcome: answer.welcome, skewMs });
     }));
     subscriptions.push(protocol.onClose((reason) => finish(new HandshakeError(`the connection closed before welcome: ${reason}`))));
     protocol.sendControl(encode({ type: 'hello', ...hello, clientTime: sentAt }));

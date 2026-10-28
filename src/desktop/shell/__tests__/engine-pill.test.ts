@@ -23,7 +23,7 @@ function pill(state: 'halted' | 'restarting', name = 'prod-1') {
     attachTo: document.body,
   });
   mounted.push(wrapper);
-  return { api, button: wrapper.get('[data-testid="engine-host-pill"]') };
+  return { api, wrapper, button: wrapper.get('[data-testid="engine-host-pill"]') };
 }
 
 // The accessible name: aria-label when set, else the text.
@@ -54,5 +54,12 @@ describe('a remote host\'s engine pill', () => {
     const { button } = pill('halted', name);
     expect(button.get('.truncate').text()).toBe(`Engine stopped on ${name}`);
     expect(button.attributes('title')).toContain(name);
+  });
+
+  it('swaps the name with t-swap when the host is renamed', async () => {
+    const { wrapper } = pill('halted');
+    await wrapper.setProps({ engines: [{ authority: 'ssh+h1', name: 'billing-prod', state: 'halted' }] });
+    // the old name leaves before the new one enters
+    expect(wrapper.get('.t-swap-leave-active').text()).toBe('Engine stopped on prod-1');
   });
 });

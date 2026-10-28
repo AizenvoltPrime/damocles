@@ -18,8 +18,9 @@ export interface RemoteHostedCore extends HostedCore {
   readonly client: CoreClient;
   // the epoch attachCore answered for this generation
   epoch(): string | null;
-  // creates nothing: relays view, loads its chat page, holds its ready and joins the panel viewKey names; false when none
-  rejoin(view: RelayView, viewKey: string): Promise<boolean>;
+  // creates nothing: relays view, loads its chat page, holds its ready and joins the panel viewKey (else its page's token)
+  // names, or the one holding sessionId (another device's); false when none. Its page's later readys join it again.
+  rejoin(view: RelayView, viewKey: string | undefined, sessionId?: string): Promise<boolean>;
   terminalToggleChanged(): void;
   // the daemon reported this attach's core gone: its requests fail now and it is handed out no more
   end(why: string): void;
@@ -47,6 +48,13 @@ export interface RemoteCoreDeps {
   readonly sharedLoopback: boolean;
   // the engine state or the halt changed
   readonly changed: () => void;
+  // how many chats remote-state.json keeps open on the authority, for the log
+  readonly keptChats: () => number;
+  // a connection's attach is ready and its chats rejoined or restored (or the core is halted, so none can open). restarted:
+  // this run had the chats open under another epoch, of a daemon with another pid (server) or the same one (engine).
+  readonly reattached: (restarted: 'server' | 'engine' | undefined) => void;
+  // the core this run attached to ended while the connection stayed up (a restart, a halt): what it never answered is lost
+  readonly coreEnded: () => void;
   readonly drainTimeoutMs: number;
   readonly log: (line: string) => void;
 }
@@ -67,6 +75,11 @@ export class RemoteCore {
   // the connection the core is attached over, and its coreState events
   private connection: RemoteConnection | undefined;
   private coreStates: Disposable | undefined;
+  private connectionClosed: Disposable | undefined;
+  // a connection whose chats have not reopened yet, which reattached reports once they have
+  private reopening: RemoteConnection | undefined;
+  // the daemon's pid while this run's chats were last open; undefined before they first were
+  private openPpid: number | null | undefined;
 
   constructor(deps: RemoteCoreDeps) {
     this.deps = deps;
@@ -100,10 +113,12 @@ export class RemoteCore {
   connected(connection: RemoteConnection): void {
     if (this.disposed || this.connection === connection) return;
     this.connection = connection;
+    this.reopening = connection;
     this.coreStates?.dispose();
+    this.connectionClosed?.dispose();
     const subscription = connection.control.onEvent('coreState', (state) => this.stateChanged(state));
     this.coreStates = subscription;
-    connection.onClose(() => {
+    this.connectionClosed = connection.onClose(() => {
       subscription.dispose();
       if (this.coreStates === subscription) this.coreStates = undefined;
       this.restartSettled();
@@ -140,6 +155,8 @@ export class RemoteCore {
     this.disposed = true;
     this.coreStates?.dispose();
     this.coreStates = undefined;
+    this.connectionClosed?.dispose();
+    this.connectionClosed = undefined;
     await this.host.dispose();
   }
 
@@ -160,7 +177,10 @@ export class RemoteCore {
     // the core this attach serves is gone once the daemon restarts or halts it, or names another epoch
     const gone = current !== undefined && !current.hasEnded() && serving !== undefined && serving !== null
       && (state.epoch !== serving || state.phase === 'restarting' || state.phase === 'halted');
-    if (gone) current.end(`the core of epoch ${serving} ended`);
+    if (gone) {
+      current.end(`the core of epoch ${serving} ended`);
+      this.deps.coreEnded();
+    }
     const report = (what: string) => (err: unknown): void => this.deps.log(`[remote] ${what} ${this.deps.authority} failed: ${String(err)}`);
     if (state.phase === 'halted') {
       if (!this.host.halted()) this.host.halt().catch(report('halting'));
@@ -173,13 +193,32 @@ export class RemoteCore {
     this.deps.changed();
   }
 
-  private openTabs(afterRestart: boolean): Promise<void> {
+  private async openTabs(afterRestart: boolean): Promise<void> {
     const core = this.host.current();
-    if (!core) return Promise.resolve();
-    const rejoin = core.epoch() !== null && core.epoch() === this.openEpoch;
+    if (!core) return;
+    const previous = this.openEpoch;
+    const rejoin = core.epoch() !== null && core.epoch() === previous;
     const kept = this.kept.reopening(afterRestart && !rejoin);
     this.openEpoch = core.epoch();
-    return this.deps.openTabs(core, rejoin, kept);
+    const ppid = this.state?.ppid ?? null;
+    const restarted = rejoin || this.openPpid === undefined ? undefined : ppid !== this.openPpid ? 'server' : 'engine';
+    const { authority, log } = this.deps;
+    if (rejoin) log(`[remote] ${authority}: rejoining ${this.deps.keptChats()} chats through views.join (epoch ${core.epoch() ?? 'none'})`);
+    else log(`[remote] ${authority}: restoring ${this.deps.keptChats()} chats (epoch ${core.epoch() ?? 'none'}, was ${previous ?? 'none'}${restarted ? `; the ${restarted} restarted` : ''})`);
+    try {
+      await this.deps.openTabs(core, rejoin, kept);
+      this.openPpid = ppid;
+    } finally {
+      // a reopening that failed still makes the connection usable: held messages and offline saves go over it
+      this.reopened(restarted);
+    }
+  }
+
+  // once per connection, after its first reopening: a reopening after a core restart on a live connection is no gain
+  private reopened(restarted: 'server' | 'engine' | undefined): void {
+    if (!this.reopening || this.reopening !== this.connection) return;
+    this.reopening = undefined;
+    this.deps.reattached(restarted);
   }
 
   private attach(): RemoteHostedCore {
@@ -215,7 +254,7 @@ export class RemoteCore {
     const client = new CoreClient(endpoint, (view, attach) => services.adopt(view, attach), authorityProjectKeys(authority, (error) => connection.close(error.message)));
     const closed = connection.onClose((reason) => end(`the connection closed: ${reason}`));
     // a delta published before the attach opens waits in the transport, after the values the attach names
-    const relayed = this.deps.relays.attach((topic, value) => endpoint.publish(topic, { value } as MirrorTopics[typeof topic]), this.deps.sharedLoopback);
+    const relayed = this.deps.relays.attach((topic, value) => endpoint.publish(topic, { value } as MirrorTopics[typeof topic]), this.deps.authority, this.deps.sharedLoopback);
     subscriptions = [relayed.subscription, ...this.deps.subscribe(client)];
     const mirrors = services.init.mirrors;
     const payload: CoreAttach = {
@@ -238,8 +277,9 @@ export class RemoteCore {
       epoch = state.epoch;
       this.deps.changed();
       if (state.phase === 'halted') {
-        // the pill offers Restart; nothing attaches until the daemon reports a core again
+        // the pill offers Restart; nothing attaches until the daemon reports a core again, and no chat can reopen meanwhile
         void this.host.halt().catch((err: unknown) => log(`[remote] halting ${authority} failed: ${String(err)}`));
+        this.reopened(undefined);
         throw new HaltedError(`The core on ${authority} is halted`);
       }
       transport.open();
@@ -258,12 +298,20 @@ export class RemoteCore {
       epoch: () => epoch,
       terminalToggleChanged: () => services.terminalToggleChanged(),
       end,
-      rejoin: async (view, viewKey) => {
+      rejoin: async (view, viewKey, sessionId) => {
         const held = services.adoptHeld(view);
         view.showPage({ kind: 'chat' });
         // a reload awaits the reopening before it disposes this attach, so an attach that ends first stops waiting for the page
-        if (!(await Promise.race([held, endedAt]))) return false;
-        return (await client.joinView(view.panelId, viewKey)) !== null;
+        const ready = await Promise.race([held, endedAt]);
+        if (!ready) return false;
+        const key = viewKey ?? ready.panelToken;
+        if (key === undefined) return false;
+        const join = (): Promise<boolean> => client.joinView(view.panelId, key, sessionId).then((joined) => joined !== null);
+        if (!(await join())) return false;
+        services.rejoinOnReady(view.panelId, () => {
+          join().catch((err: unknown) => log(`[remote] rejoining a reloaded chat page on ${authority} failed: ${String(err)}`));
+        });
+        return true;
       },
       dispose: async () => {
         // an attach that never served keeps what the one before it handed over

@@ -17,12 +17,14 @@ import { containsConflict, parseConflicts, type ConflictChoice } from './conflic
 import { matchRegions, mergeProgress, type ConflictRegion } from './merge-model';
 import { createMergeWorker } from './merge-worker';
 import MergeRegionActions from './MergeRegionActions.vue';
+import LoadFailedNotice from '../LoadFailedNotice.vue';
 import RollingNumber from '@/components/RollingNumber.vue';
 
 // The 3-way merge editor (B28): Incoming and Current read-only above, the file's own document as the Result below, VS Code's
 // mergeEditor.ts layout and commands.ts title actions. During a rebase Current is the branch rebased onto and shows first, as
 // VS Code's openMergeEditor swaps its inputs. The Result's conflicts are its marker blocks, so accepting a side, an
-// edit by hand, Reset Result or Compute Conflicts With Git all count the same way.
+// edit by hand, Reset Result or Compute Conflicts With Git all count the same way. An upload merge (an offline save that met
+// a changed target) has no repository: its inputs and Complete Merge are main's document service's, and git computes nothing.
 const props = defineProps<{ api: DamoclesShellApi; tab: ShellEditorTab & { merge: NonNullable<ShellEditorTab['merge']> } }>();
 const { t } = useI18n();
 const store = inject(EDITOR_STORE)!;
@@ -58,7 +60,10 @@ const mergeWorker = createMergeWorker();
 const progress = computed(() => mergeProgress(resultText.value, total.value));
 const matched = computed(() => matchRegions(resultText.value, parseConflicts(resultText.value), regions.value));
 const name = computed(() => props.tab.merge.path.slice(props.tab.merge.path.lastIndexOf('/') + 1));
+const git = computed(() => ('repoId' in props.tab.merge ? props.tab.merge : null));
 const paneOrder = computed(() => (inputs.value?.operation === 'rebase' ? (['current', 'incoming'] as const) : (['incoming', 'current'] as const)));
+// the Result's document could not load; a remount of the tab asks main again
+const resultFailed = computed(() => store.loadFailed(props.tab.merge.documentId));
 
 let inputDecorations: { incoming: MonacoEditor.IEditorDecorationsCollection; current: MonacoEditor.IEditorDecorationsCollection } | null = null;
 let resultDecorations: MonacoEditor.IEditorDecorationsCollection | null = null;
@@ -257,9 +262,11 @@ function reveal(): void {
 }
 
 async function computeWithGit(diff3: boolean): Promise<void> {
+  const repo = git.value;
+  if (!repo) return;
   busy.value = 'compute';
   try {
-    const answer = await props.api.scm.mergeFile({ repoId: props.tab.merge.repoId, path: props.tab.merge.path, diff3 });
+    const answer = await props.api.scm.mergeFile({ repoId: repo.repoId, path: repo.path, diff3 });
     if (!answer.ok || unmounted) return;
     replaceResult(answer.text);
     total.value = parseConflicts(answer.text).length;
@@ -308,8 +315,10 @@ async function complete(): Promise<void> {
   busy.value = 'complete';
   try {
     store.flush(props.tab.merge.documentId);
-    // main saves, stages and closes this tab
-    await props.api.scm.run({ op: 'completeMerge', repoId: props.tab.merge.repoId, path: props.tab.merge.path, documentId: props.tab.merge.documentId });
+    // main saves, stages (a repository's conflict only) and closes this tab
+    const repo = git.value;
+    if (repo) await props.api.scm.run({ op: 'completeMerge', repoId: repo.repoId, path: repo.path, documentId: repo.documentId });
+    else await props.api.completeUploadMerge(props.tab.id);
   } finally {
     if (!unmounted) busy.value = null;
   }
@@ -323,9 +332,7 @@ async function openMore(event: MouseEvent): Promise<void> {
     label: t('merge.moreActions'),
     anchor: { x: anchor.left, y: anchor.top, width: anchor.width, height: anchor.height },
     items: [
-      item('compute', t('merge.computeWithGit'), 'refresh-cw'),
-      item('computeDiff3', t('merge.computeWithGitDiff3'), 'refresh-cw'),
-      { kind: 'separator' },
+      ...(git.value ? [item('compute', t('merge.computeWithGit'), 'refresh-cw'), item('computeDiff3', t('merge.computeWithGitDiff3'), 'refresh-cw'), { kind: 'separator' } as const] : []),
       item('acceptAllIncoming', t('merge.acceptAllIncoming'), 'arrow-down-to-line'),
       item('acceptAllCurrent', t('merge.acceptAllCurrent'), 'circle-dot'),
       { kind: 'separator' },
@@ -341,7 +348,11 @@ async function runAction(id: string): Promise<void> {
   if (id === 'compute' || id === 'computeDiff3') await computeWithGit(id === 'computeDiff3');
   else if (id === 'acceptAllIncoming' || id === 'acceptAllCurrent') acceptAll(id === 'acceptAllIncoming' ? 'incoming' : 'current');
   else if (id === 'reset') await resetResult();
-  else if (id === 'openFile') await props.api.scm.run({ op: 'openFile', repoId: props.tab.merge.repoId, path: props.tab.merge.path });
+  else if (id === 'openFile') {
+    const repo = git.value;
+    if (repo) await props.api.scm.run({ op: 'openFile', repoId: repo.repoId, path: repo.path });
+    else await props.api.editorTab({ action: 'openFile', tabId: props.tab.id });
+  }
 }
 
 function acceptAll(choice: 'incoming' | 'current'): void {
@@ -367,15 +378,28 @@ const barTimer = setTimeout(() => {
   loadingBar.value = true;
 }, LOADING_BAR_DELAY_MS);
 
+// A request main threw on reads as the failed read it is, so the bar stops and the tab says so.
+async function mergeInputs(): Promise<ScmMergeInputsResult> {
+  const repo = git.value;
+  try {
+    return await (repo ? props.api.scm.mergeInputs({ repoId: repo.repoId, path: repo.path }) : props.api.uploadMergeInputs(props.tab.id));
+  } catch (err) {
+    console.error('[merge] reading the merge inputs failed', err);
+    return { ok: false, reason: 'failed' };
+  }
+}
+
 onMounted(async () => {
-  const [module, model, answer] = await Promise.all([store.monaco(), store.model(props.tab.merge.documentId), props.api.scm.mergeInputs({ repoId: props.tab.merge.repoId, path: props.tab.merge.path })]);
+  const [module, content, answer] = await Promise.all([store.monaco(), store.loadShown(props.tab.merge.documentId), mergeInputs()]);
   clearTimeout(barTimer);
   loadingBar.value = false;
-  if (unmounted) return;
+  if (unmounted || content?.kind !== 'text') return;
   if (!answer.ok) {
     failure.value = answer.reason;
     return;
   }
+  const model = await store.model(props.tab.merge.documentId);
+  if (unmounted) return;
   inputs.value = answer;
   // the panes render in the operation's order before their editors mount
   await nextTick();
@@ -581,8 +605,13 @@ function setInputHost(side: 'incoming' | 'current', element: unknown): void {
       :aria-label="t('merge.loading')"
       class="d-sweep-bar h-0.5 shrink-0 text-(--d-accent)"
     />
+    <LoadFailedNotice
+      v-if="resultFailed"
+      :tab="tab"
+      class="min-h-0 flex-1"
+    />
     <div
-      v-if="failure"
+      v-else-if="failure"
       role="alert"
       data-testid="merge-failure"
       class="pane-empty d-fade-in flex flex-1 items-center justify-center p-6 text-center text-12.5 text-(--d-muted)"
@@ -590,7 +619,7 @@ function setInputHost(side: 'incoming' | 'current', element: unknown): void {
       {{ t(`merge.failure.${failure}`) }}
     </div>
     <div
-      v-show="!failure"
+      v-show="!failure && !resultFailed"
       class="grid min-h-0 flex-1 grid-rows-[minmax(9rem,46%)_minmax(0,1fr)]"
     >
       <div class="grid min-h-0 grid-cols-2 border-b border-(--d-border)">

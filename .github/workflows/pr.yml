@@ -124,3 +124,176 @@ jobs:
           path: dist/e2e-report
           retention-days: 7
           if-no-files-found: ignore
+
+  # What the ssh shards share, built once: the grammars and wake models, the Linux and Alpine server packages with the dev
+  # manifest, and the reference server package.
+  ssh-build:
+    needs: checks
+    runs-on: ubuntu-latest
+    # npm ci, the two build steps and the uploads (docs/release.md "Time limits")
+    timeout-minutes: 65
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The whole history with its tags, so the reference tag below is in the clone.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      # A missing reference tag fails here, before anything is installed or built.
+      - name: Check the reference tag
+        run: node e2e/remote/support/reference-package.mjs --ref remote-protocol-ref --check
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The only download of the grammars and wake models for the ssh jobs; the shards and the reference tree reuse them.
+      - name: Fetch the grammars and wake models
+        run: npm run fetch:assets
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fetched-assets
+          path: |
+            resources/grammars/*.wasm
+            python/damocles_voice_sidecar/damocles_voice_sidecar/models/wake/*.onnx
+            python/damocles_voice_sidecar/damocles_voice_sidecar/models/wake/tokens.txt
+            python/damocles_voice_sidecar/damocles_voice_sidecar/models/wake/bpe.model
+          retention-days: 1
+          if-no-files-found: error
+
+      # daemon-upgrade.spec.ts attaches to the server package of the tag remote-protocol-ref, the oldest protocol peer.
+      - name: Build the reference server package
+        timeout-minutes: 15
+        run: |
+          package=$(node e2e/remote/support/reference-package.mjs --ref remote-protocol-ref --target linux-x64 --out "$RUNNER_TEMP/reference")
+          echo "REFERENCE_PACKAGE=$package" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ssh-reference-package
+          path: ${{ env.REFERENCE_PACKAGE }}
+          retention-days: 1
+          if-no-files-found: error
+
+      # The Alpine package's node-pty is compiled against musl in the pinned Alpine build image.
+      - name: Build the Linux and Alpine server packages
+        timeout-minutes: 20
+        run: node scripts/test-remote.mjs --build-server-packages linux-x64,alpine-x64
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ssh-server-packages
+          path: |
+            dist/server-packages/damocles-server-*.tar.gz
+            dist/desktop/server-manifest.json
+          retention-days: 1
+          if-no-files-found: error
+
+  # The remote suite against the Docker sshd fixtures (playwright.remote.config.ts) in Playwright shards, with the loopback
+  # job's Linux e2e setup and what ssh-build built.
+  ssh:
+    needs: ssh-build
+    strategy:
+      # Every shard reports all its failures.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+        shards: [4]
+    runs-on: ubuntu-latest
+    # npm ci and the downloads, the suite step and the upload (docs/release.md "Time limits")
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Xvfb and a window manager
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb openbox
+
+      - name: Install dependencies
+        run: npm ci
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: fetched-assets
+
+      # The packages land in dist/server-packages and their manifest in dist/desktop, where the dev app reads them.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ssh-server-packages
+          path: dist
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ssh-reference-package
+          path: ${{ runner.temp }}/reference
+
+      - name: Locate the reference server package
+        run: |
+          package=$(ls "$RUNNER_TEMP"/reference/damocles-server-*.tar.gz)
+          echo "DAMOCLES_E2E_REFERENCE_PACKAGE=$package" >> "$GITHUB_ENV"
+
+      # The electron package has no install script and downloads its binary on first require.
+      - name: Download the Electron binary
+        run: npx --no install-electron
+
+      # Ubuntu 24.04 restricts unprivileged user namespaces for binaries without an AppArmor profile, so Chromium needs its setuid helper; the sandbox stays on.
+      - name: Enable the setuid sandbox helper of the dev Electron binary
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+
+      # test:remote builds the app and the fixture images this shard's specs need, then runs them; its Playwright globalTimeout
+      # lies inside this limit, so a hung run still writes its report (docs/release.md "Time limits").
+      - name: Remote end-to-end specs (shard ${{ matrix.shard }} of ${{ matrix.shards }})
+        timeout-minutes: 60
+        env:
+          SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
+          DAMOCLES_E2E_PREBUILT: server-packages
+        run: xvfb-run -a -s '-screen 0 1920x1080x24' sh -c 'openbox & exec npm run test:remote -- --shard="$SHARD"'
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: ssh-e2e-report-${{ matrix.shard }}
+          path: |
+            dist/e2e-report/remote-dev
+            dist/e2e-results/remote-dev
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The POSIX stage, removal and git credential relay scripts run under every target's /bin/sh (dash, busybox ash, bash),
+  # so they are checked as POSIX sh.
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned by digest, so a runner image update cannot change the rules a pull request is checked against.
+      - name: Shellcheck the stage scripts
+        run: >-
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt
+          koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
+          --shell=sh --severity=style
+          src/desktop/main/remote/bootstrap/stage1-posix.sh src/desktop/main/remote/bootstrap/remove-posix.sh resources/git-credential/git-credential-relay.sh

@@ -31,11 +31,11 @@ function tempDbPath(): string {
 }
 
 describe('openUsageDatabase', () => {
-  it('creates the index in WAL mode at schema v1', () => {
+  it('creates the index in WAL mode at the latest schema', () => {
     const dbPath = tempDbPath();
     const db = openUsageDatabase(dbPath, () => {});
     expect(db.prepare('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'wal' });
-    expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 1 });
+    expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 2 });
     expect(db.prepare('PRAGMA busy_timeout').get()).toEqual({ timeout: 5000 });
     expect(db.prepare('PRAGMA secure_delete').get()).toEqual({ secure_delete: 1 });
     db.close();

@@ -12,6 +12,12 @@ interface ApprovedPlanInfo {
   approvalMode: 'acceptEdits' | 'manual';
 }
 
+// A turn waiting for its pinned device's sign-in (Sign-in needed); provider is a pi provider id.
+export interface PendingSignIn {
+  requestId: string;
+  provider: string;
+}
+
 interface PendingSkillApproval {
   toolUseId: string;
   skillName: string;
@@ -24,6 +30,7 @@ export const usePermissionStore = defineStore('permission', () => {
   const isPlanOverlayVisible = ref(false);
   const pendingSkillApproval = ref<PendingSkillApproval | null>(null);
   const approvedPlans = ref<Record<string, ApprovedPlanInfo>>({});
+  const pendingSignIns = ref<PendingSignIn[]>([]);
 
   const currentPermission = computed(() => {
     const entries = Object.values(pendingPermissions.value);
@@ -54,6 +61,7 @@ export const usePermissionStore = defineStore('permission', () => {
     isPlanOverlayVisible.value = false;
     pendingSkillApproval.value = null;
     approvedPlans.value = {};
+    pendingSignIns.value = [];
   }
 
   function setPendingPlanApproval(info: PendingPlanApproval | null) {
@@ -98,6 +106,16 @@ export const usePermissionStore = defineStore('permission', () => {
     pendingSkillApproval.value = null;
   }
 
+  // core posts every pending prompt again on ready and views.join, so a known request id is that same wait
+  function addSignIn(info: PendingSignIn) {
+    if (pendingSignIns.value.some((pending) => pending.requestId === info.requestId)) return;
+    pendingSignIns.value = [...pendingSignIns.value, info];
+  }
+
+  function resolveSignIn(requestId: string) {
+    pendingSignIns.value = pendingSignIns.value.filter((pending) => pending.requestId !== requestId);
+  }
+
   return {
     pendingPermissions,
     currentPermission,
@@ -116,6 +134,9 @@ export const usePermissionStore = defineStore('permission', () => {
     pendingSkillApproval,
     setPendingSkillApproval,
     clearPendingSkillApproval,
+    pendingSignIns,
+    addSignIn,
+    resolveSignIn,
     $reset,
   };
 });

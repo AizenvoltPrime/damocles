@@ -62,7 +62,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
   const UNAVAILABLE = "Memory system is not available";
 
   function postAuditError(ctx: HandlerContext, code: MemoryAuditErrorCode, message: string): void {
-    postMessage(ctx.host, { type: "memoryError", source: "audit", code, message });
+    postMessage(ctx.reply, { type: "memoryError", source: "audit", code, message });
   }
 
   /** The audit state and summary to every panel, or an audit error to the asking one when memory is unavailable. */
@@ -99,26 +99,26 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       // Read guards stay untagged: source:'panel' bumps the panel's create-error token, so tagging a
       // read failure would wrongly reset a pending create. Only CRUD mutations carry source:'panel'.
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", message: "Memory system is not available" });
         return;
       }
 
       await deps.memoryService.ensureInitialized();
       const panel = loadPanel(ctx.session.memorySessionId, identityFolder(ctx.folder.fsPath));
-      postMessage(ctx.host, { type: "memoriesUpdate", memories: panel.memories, hasMoreObservations: panel.hasMoreObservations, observationCursor: panel.observationCursor });
+      postMessage(ctx.reply, { type: "memoriesUpdate", memories: panel.memories, hasMoreObservations: panel.hasMoreObservations, observationCursor: panel.observationCursor });
     },
 
     requestMoreObservations: async (msg, ctx) => {
       if (msg.type !== "requestMoreObservations") return;
 
       if (!deps.memoryService?.isEnabled || !identityFolder(ctx.folder.fsPath)) {
-        postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", message: "Memory system is not available" });
         return;
       }
 
       await deps.memoryService.ensureInitialized();
       const { entries, hasMore, nextCursor } = deps.memoryService.getObservationPage(identityFolder(ctx.folder.fsPath), msg.cursor);
-      postMessage(ctx.host, { type: "moreObservationsLoaded", observations: entries, hasMore, nextCursor });
+      postMessage(ctx.reply, { type: "moreObservationsLoaded", observations: entries, hasMore, nextCursor });
     },
 
     createMemory: async (msg, ctx) => {
@@ -126,7 +126,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
 
       const requestId = msg.requestId;
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", source: "panel", message: "Memory system is not available", ...(requestId ? { requestId } : {}) });
+        postMessage(ctx.reply, { type: "memoryError", source: "panel", message: "Memory system is not available", ...(requestId ? { requestId } : {}) });
         return;
       }
 
@@ -149,9 +149,9 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       }
 
       if (memory) {
-        postMessage(ctx.host, { type: "memoryCreated", memory, ...(requestId ? { requestId } : {}) });
+        postMessage(ctx.reply, { type: "memoryCreated", memory, ...(requestId ? { requestId } : {}) });
       } else {
-        postMessage(ctx.host, { type: "memoryError", source: "panel", message: "Failed to create memory.", ...(requestId ? { requestId } : {}) });
+        postMessage(ctx.reply, { type: "memoryError", source: "panel", message: "Failed to create memory.", ...(requestId ? { requestId } : {}) });
       }
     },
 
@@ -159,18 +159,18 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       if (msg.type !== "updateMemory") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", source: "panel", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", source: "panel", message: "Memory system is not available" });
         return;
       }
 
       await deps.memoryService.ensureInitialized();
       const updated = await deps.memoryService.updateMemory(msg.id, msg.content, msg.tags);
       if (!updated) {
-        postMessage(ctx.host, { type: "memoryError", source: "panel", message: "Failed to update memory." });
+        postMessage(ctx.reply, { type: "memoryError", source: "panel", message: "Failed to update memory." });
         return;
       }
       // A fact/preference edit forks a new version row (new id); the panel must drop the pre-edit id.
-      postMessage(ctx.host, {
+      postMessage(ctx.reply, {
         type: "memoryUpdated",
         memory: updated,
         ...(updated.id !== msg.id ? { replacedId: msg.id } : {}),
@@ -181,16 +181,16 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       if (msg.type !== "deleteMemory") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", source: "panel", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", source: "panel", message: "Memory system is not available" });
         return;
       }
 
       await deps.memoryService.ensureInitialized();
       const deleted = await deps.memoryService.deleteMemory(msg.id);
       if (deleted) {
-        postMessage(ctx.host, { type: "memoryDeleted", id: msg.id });
+        postMessage(ctx.reply, { type: "memoryDeleted", id: msg.id });
       } else {
-        postMessage(ctx.host, { type: "memoryError", source: "panel", message: "Failed to delete memory." });
+        postMessage(ctx.reply, { type: "memoryError", source: "panel", message: "Failed to delete memory." });
       }
     },
 
@@ -198,7 +198,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       if (msg.type !== "searchMemories") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", message: "Memory system is not available" });
         return;
       }
 
@@ -215,23 +215,23 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       const results = await deps.memoryService.searchMemories(query);
       // Echo the query so the panel can drop results that arrive out of order (A→B: A's late results
       // must not render under B's label).
-      postMessage(ctx.host, { type: "searchResults", results, ...(msg.query.query ? { query: msg.query.query } : {}) });
+      postMessage(ctx.reply, { type: "searchResults", results, ...(msg.query.query ? { query: msg.query.query } : {}) });
     },
 
     pinMemory: async (msg, ctx) => {
       if (msg.type !== "pinMemory") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", source: "panel", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", source: "panel", message: "Memory system is not available" });
         return;
       }
 
       await deps.memoryService.ensureInitialized();
       const success = await deps.memoryService.pinMemory(msg.id);
       if (success) {
-        postMessage(ctx.host, { type: "memoryPinned", id: msg.id });
+        postMessage(ctx.reply, { type: "memoryPinned", id: msg.id });
       } else {
-        postMessage(ctx.host, { type: "memoryError", source: "panel", message: "Failed to pin memory — ID may not exist" });
+        postMessage(ctx.reply, { type: "memoryError", source: "panel", message: "Failed to pin memory — ID may not exist" });
       }
     },
 
@@ -239,16 +239,16 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       if (msg.type !== "unpinMemory") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", source: "panel", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", source: "panel", message: "Memory system is not available" });
         return;
       }
 
       await deps.memoryService.ensureInitialized();
       const success = await deps.memoryService.unpinMemory(msg.id);
       if (success) {
-        postMessage(ctx.host, { type: "memoryUnpinned", id: msg.id });
+        postMessage(ctx.reply, { type: "memoryUnpinned", id: msg.id });
       } else {
-        postMessage(ctx.host, { type: "memoryError", source: "panel", message: "Failed to unpin memory — ID may not exist" });
+        postMessage(ctx.reply, { type: "memoryError", source: "panel", message: "Failed to unpin memory — ID may not exist" });
       }
     },
 
@@ -256,7 +256,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       if (msg.type !== "forgetMemory") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", source: "panel", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", source: "panel", message: "Memory system is not available" });
         return;
       }
 
@@ -265,74 +265,74 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       // could forget an unrelated memory if this id is stale.
       const { forgotten } = await deps.memoryService.forgetMemory(msg.id, msg.scope ?? "chain", true);
       if (forgotten === 0) {
-        postMessage(ctx.host, { type: "memoryError", source: "panel", message: "No matching memory found to forget." });
+        postMessage(ctx.reply, { type: "memoryError", source: "panel", message: "No matching memory found to forget." });
         return;
       }
-      postMessage(ctx.host, { type: "memoryForgotten", id: msg.id, count: forgotten });
+      postMessage(ctx.reply, { type: "memoryForgotten", id: msg.id, count: forgotten });
     },
 
     unforgetMemory: async (msg, ctx) => {
       if (msg.type !== "unforgetMemory") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", source: "panel", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", source: "panel", message: "Memory system is not available" });
         return;
       }
 
       await deps.memoryService.ensureInitialized();
       const { restored } = await deps.memoryService.unforgetMemory(msg.id, msg.scope ?? "chain");
       if (restored === 0) {
-        postMessage(ctx.host, { type: "memoryError", source: "panel", message: "No matching memory found to unforget." });
+        postMessage(ctx.reply, { type: "memoryError", source: "panel", message: "No matching memory found to unforget." });
         return;
       }
-      postMessage(ctx.host, { type: "memoryUnforgotten", id: msg.id, count: restored });
+      postMessage(ctx.reply, { type: "memoryUnforgotten", id: msg.id, count: restored });
     },
 
     getMemoryHistory: async (msg, ctx) => {
       if (msg.type !== "getMemoryHistory") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", message: "Memory system is not available" });
         return;
       }
 
       await deps.memoryService.ensureInitialized();
       const entries = deps.memoryService.getMemoryHistory(msg.id);
-      postMessage(ctx.host, { type: "memoryHistory", id: msg.id, entries });
+      postMessage(ctx.reply, { type: "memoryHistory", id: msg.id, entries });
     },
 
     getRelatedMemories: async (msg, ctx) => {
       if (msg.type !== "getRelatedMemories") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", message: "Memory system is not available" });
         return;
       }
 
       await deps.memoryService.ensureInitialized();
       const entries = deps.memoryService.getRelatedMemories(msg.id);
-      postMessage(ctx.host, { type: "relatedMemories", id: msg.id, entries });
+      postMessage(ctx.reply, { type: "relatedMemories", id: msg.id, entries });
     },
 
     getProfile: async (msg, ctx) => {
       if (msg.type !== "getProfile") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", message: "Memory system is not available" });
         return;
       }
 
       await deps.memoryService.ensureInitialized();
       const project = deps.memoryService.getProfile("project", identityFolder(ctx.folder.fsPath));
       const global = deps.memoryService.getProfile("global", "");
-      postMessage(ctx.host, { type: "profileData", project, global });
+      postMessage(ctx.reply, { type: "profileData", project, global });
     },
 
     setProfileSection: async (msg, ctx) => {
       if (msg.type !== "setProfileSection") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", message: "Memory system is not available" });
         return;
       }
 
@@ -342,37 +342,37 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       if (!ok) {
         // Targeted failure so the panel clears ONLY this section's pending flag (keeping the draft),
         // instead of a coarse memoryError that would leave it hung.
-        postMessage(ctx.host, { type: "profileSectionError", scope: msg.scope, section: msg.section, message: "Failed to save profile section." });
+        postMessage(ctx.reply, { type: "profileSectionError", scope: msg.scope, section: msg.section, message: "Failed to save profile section." });
         return;
       }
       const project = deps.memoryService.getProfile("project", identityFolder(ctx.folder.fsPath));
       const global = deps.memoryService.getProfile("global", "");
       // savedSection scopes the panel's confirm+re-seed to this section only.
-      postMessage(ctx.host, { type: "profileData", project, global, savedSection: { scope: msg.scope, section: msg.section } });
+      postMessage(ctx.reply, { type: "profileData", project, global, savedSection: { scope: msg.scope, section: msg.section } });
     },
 
     requestConsolidationPreview: async (msg, ctx) => {
       if (msg.type !== "requestConsolidationPreview") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", source: "consolidation", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", source: "consolidation", message: "Memory system is not available" });
         return;
       }
 
       await deps.memoryService.ensureInitialized();
-      postMessage(ctx.host, { type: "consolidationPreview", candidates: deps.memoryService.getPendingCandidates() });
-      postMessage(ctx.host, {
+      postMessage(ctx.reply, { type: "consolidationPreview", candidates: deps.memoryService.getPendingCandidates() });
+      postMessage(ctx.reply, {
         type: "consolidationPendingCount",
         count: deps.memoryService.getPendingCount(),
         setAside: deps.memoryService.getSetAsideCount(),
       });
       const lastResult = deps.memoryService.getLastConsolidationResult();
-      if (lastResult) postMessage(ctx.host, { type: "consolidationResult", result: lastResult });
+      if (lastResult) postMessage(ctx.reply, { type: "consolidationResult", result: lastResult });
 
       // Replay live state so reopening the overlay mid-pass restores the running badge and every
       // phase's stepper status, not just the current one.
       const activity = deps.memoryService.getConsolidationActivity();
-      postMessage(ctx.host, {
+      postMessage(ctx.reply, {
         type: "consolidationRunning",
         running: activity.running,
         ...(activity.pass !== undefined ? { pass: activity.pass } : {}),
@@ -380,7 +380,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       });
       if (activity.running) {
         for (const event of activity.phaseEvents) {
-          postMessage(ctx.host, { type: "consolidationProgress", event });
+          postMessage(ctx.reply, { type: "consolidationProgress", event });
         }
       }
     },
@@ -389,24 +389,24 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       if (msg.type !== "triggerConsolidation") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", source: "consolidation", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", source: "consolidation", message: "Memory system is not available" });
         return;
       }
 
       await deps.memoryService.triggerConsolidation();
-      postMessage(ctx.host, { type: "consolidationPreview", candidates: deps.memoryService.getPendingCandidates() });
+      postMessage(ctx.reply, { type: "consolidationPreview", candidates: deps.memoryService.getPendingCandidates() });
     },
 
     retrySetAsideTurns: async (msg, ctx) => {
       if (msg.type !== "retrySetAsideTurns") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", source: "consolidation", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", source: "consolidation", message: "Memory system is not available" });
         return;
       }
 
       await deps.memoryService.retrySetAsideTurns();
-      postMessage(ctx.host, { type: "consolidationPreview", candidates: deps.memoryService.getPendingCandidates() });
+      postMessage(ctx.reply, { type: "consolidationPreview", candidates: deps.memoryService.getPendingCandidates() });
     },
 
     requestMemoryAudit: async (msg, ctx) => {
@@ -417,18 +417,18 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       }
       await deps.memoryService.ensureInitialized();
       const state = await deps.memoryService.getAuditState();
-      if (state) postMessage(ctx.host, { type: "memoryAuditState", state });
+      if (state) postMessage(ctx.reply, { type: "memoryAuditState", state });
       else postAuditError(ctx, "unavailable", UNAVAILABLE);
     },
 
     requestMemoryAuditSummary: async (msg, ctx) => {
       if (msg.type !== "requestMemoryAuditSummary") return;
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryAuditSummary", summary: null });
+        postMessage(ctx.reply, { type: "memoryAuditSummary", summary: null });
         return;
       }
       await deps.memoryService.ensureInitialized();
-      postMessage(ctx.host, { type: "memoryAuditSummary", summary: deps.memoryService.getAuditSummary() });
+      postMessage(ctx.reply, { type: "memoryAuditSummary", summary: deps.memoryService.getAuditSummary() });
     },
 
     startMemoryAudit: async (msg, ctx) => {
@@ -458,7 +458,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         return;
       }
       const result = await deps.memoryService.cancelAudit();
-      if (await broadcastAuditState(ctx)) postMessage(ctx.host, { type: "memoryAuditCancelResult", result });
+      if (await broadcastAuditState(ctx)) postMessage(ctx.reply, { type: "memoryAuditCancelResult", result });
     },
 
     applyMemoryAudit: async (msg, ctx) => {
@@ -469,7 +469,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       }
       const result = await deps.memoryService.applyAudit(msg.runId, msg.accept, msg.reject);
       await broadcastAfterAuditWrite(ctx);
-      postMessage(ctx.host, { type: "memoryAuditResult", result: { action: "apply", ...result } });
+      postMessage(ctx.reply, { type: "memoryAuditResult", result: { action: "apply", ...result } });
     },
 
     revertMemoryAudit: async (msg, ctx) => {
@@ -480,7 +480,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       }
       const result = await deps.memoryService.revertAudit(msg.runId);
       await broadcastAfterAuditWrite(ctx);
-      postMessage(ctx.host, { type: "memoryAuditResult", result: { action: "revert", ...result } });
+      postMessage(ctx.reply, { type: "memoryAuditResult", result: { action: "revert", ...result } });
     },
   };
 }

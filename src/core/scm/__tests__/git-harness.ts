@@ -141,7 +141,7 @@ export interface Harness {
   answers: Array<number | undefined>;
 }
 
-export function harness(opts: { trusted?: readonly string[]; state?: MapMemento; settings?: FakeSettings; runner?: (GitRunner & GitCloner) | null; realpath?: (folder: string) => Promise<string>; trash?: (absolute: string) => Promise<void>; askpass?: AskpassServer; watchers?: FileWatcherFactory } = {}): Harness {
+export function harness(opts: { trusted?: readonly string[]; state?: MapMemento; settings?: FakeSettings; runner?: (GitRunner & GitCloner) | null; realpath?: (folder: string) => Promise<string>; trash?: (absolute: string) => Promise<void>; askpass?: AskpassServer; watchers?: FileWatcherFactory; deletesPermanently?: boolean } = {}): Harness {
   const trust = new FakeTrust();
   for (const dir of opts.trusted ?? []) trust.trusted.add(path.resolve(dir).toLowerCase());
   const log: string[] = [];
@@ -188,6 +188,7 @@ export function harness(opts: { trusted?: readonly string[]; state?: MapMemento;
     log: (line) => h.serviceLog.push(line),
     ...(opts.realpath ? { realpath: opts.realpath } : {}),
     ...(opts.askpass ? { askpass: opts.askpass } : {}),
+    ...(opts.deletesPermanently ? { deletesPermanently: true } : {}),
   });
   return h;
 }

@@ -379,12 +379,11 @@ function toggleDangerouslySkipPermissions() {
   emit("toggleDangerouslySkipPermissions");
 }
 
-// A remote host's policy may keep YOLO off; the composer says so calmly, naming the host as this computer names it
 const chatHost = useChatHost();
+// core refused YOLO (a remote host's policy); the composer says so calmly, naming the host as this computer names it
 const yoloRefused = useYoloRefusal();
-const yoloTooltip = computed(() => (settingsStore.hostCapabilities.bypassPermissions === false && chatHost.value
-  ? t("chatInput.yolo.notAllowedOnHost", { host: chatHost.value.name })
-  : t("chatInput.yolo.tooltip")));
+// A host whose policy refuses YOLO hides it, except while it is on, so it can always be turned off.
+const yoloShown = computed(() => settingsStore.hostCapabilities.bypassPermissions !== false || props.dangerouslySkipPermissions);
 
 const ideContextLabel = computed(() => {
   const ctx = uiStore.ideContext;
@@ -648,7 +647,10 @@ onUnmounted(() => {
           scope="global"
         >
           <template #host>
-            <HostBadge :name="chatHost.name" />
+            <HostBadge
+              :name="chatHost.name"
+              :tone="chatHost.color"
+            />
           </template>
         </i18n-t>
         <span v-else>{{ t("chatInput.yolo.refused") }}</span>
@@ -757,13 +759,14 @@ onUnmounted(() => {
         </button>
 
         <button
+          v-if="yoloShown"
           type="button"
           class="d-press flex h-7 shrink-0 items-center gap-1.25 rounded-full px-2.25 text-xs font-medium transition-colors duration-200"
           :class="dangerouslySkipPermissions
             ? 'bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)] text-(--d-danger-text)'
             : 'text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text)'"
           :aria-pressed="dangerouslySkipPermissions"
-          :title="yoloTooltip"
+          :title="t('chatInput.yolo.tooltip')"
           data-testid="composer-yolo"
           @click="toggleDangerouslySkipPermissions"
         >

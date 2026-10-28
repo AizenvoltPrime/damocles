@@ -146,6 +146,14 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
       }
     },
 
+    signInRequest: (msg, ctx) => {
+      ctx.stores.permissionStore.addSignIn({ requestId: msg.requestId, provider: msg.provider });
+    },
+
+    signInResolved: (msg, ctx) => {
+      ctx.stores.permissionStore.resolveSignIn(msg.requestId);
+    },
+
     requestElicitation: (msg, ctx) => {
       ctx.stores.elicitationStore.addElicitation({
         elicitationId: msg.elicitationId,

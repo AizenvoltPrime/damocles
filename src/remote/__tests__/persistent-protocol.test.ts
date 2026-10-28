@@ -83,11 +83,10 @@ describe('PersistentProtocol', () => {
     expect(socket.written).toHaveLength(0);
   });
 
-  it('closes on a gap in ids, an ack of a message never sent and an unknown type', () => {
+  it('closes on an ack of a message never sent and an unknown type', () => {
     const cases = [
-      message(MESSAGE_TYPE.regular, 2, 0, new Uint8Array(0)),
       message(MESSAGE_TYPE.control, 0, 5, new Uint8Array(0)),
-      message(6, 0, 0, new Uint8Array(0)),
+      message(5, 0, 0, new Uint8Array(0)),
     ];
     for (const frame of cases) {
       const socket = fakeSocket();
@@ -98,6 +97,251 @@ describe('PersistentProtocol', () => {
       expect(reasons).toHaveLength(1);
       expect(socket.destroyed()).toBe(true);
     }
+  });
+
+  it('asks for a replay on a gap in ids, drops the out-of-order message and ignores duplicates', () => {
+    const socket = fakeSocket();
+    const protocol = createPersistentProtocol({ socket, maxBodyBytes: 100, log });
+    const got: number[] = [];
+    protocol.onMessage((body) => got.push(body[0]!));
+    socket.receive(message(MESSAGE_TYPE.regular, 1, 0, Uint8Array.of(1)));
+    socket.receive(message(MESSAGE_TYPE.regular, 3, 0, Uint8Array.of(3)));
+    expect(socket.written.map(parseHeader)).toEqual([{ type: MESSAGE_TYPE.replayRequest, id: 0, ack: 1, length: 0 }]);
+    // at most one request per interval
+    socket.receive(message(MESSAGE_TYPE.regular, 4, 0, Uint8Array.of(4)));
+    expect(socket.written).toHaveLength(1);
+    socket.receive(message(MESSAGE_TYPE.regular, 1, 0, Uint8Array.of(1)));
+    socket.receive(message(MESSAGE_TYPE.regular, 2, 0, Uint8Array.of(2)));
+    socket.receive(message(MESSAGE_TYPE.regular, 3, 0, Uint8Array.of(3)));
+    expect(got).toEqual([1, 2, 3]);
+    protocol.close('done');
+  });
+
+  it('resends every unacknowledged message when the peer asks for a replay', () => {
+    const socket = fakeSocket();
+    const protocol = createPersistentProtocol({ socket, maxBodyBytes: 100, log });
+    protocol.send(Uint8Array.of(1));
+    protocol.send(Uint8Array.of(2));
+    protocol.send(Uint8Array.of(3));
+    socket.written.length = 0;
+    socket.receive(message(MESSAGE_TYPE.replayRequest, 0, 1, new Uint8Array(0)));
+    expect(socket.written.map(parseHeader)).toEqual([
+      { type: MESSAGE_TYPE.regular, id: 2, ack: 0, length: 1 },
+      { type: MESSAGE_TYPE.regular, id: 3, ack: 0, length: 1 },
+    ]);
+    protocol.close('done');
+  });
+
+  it('answers at most one replay request per interval, however often the peer asks', () => {
+    vi.useFakeTimers();
+    const socket = fakeSocket();
+    const protocol = createPersistentProtocol({ socket, maxBodyBytes: 100, log });
+    protocol.send(Uint8Array.of(1));
+    socket.written.length = 0;
+    const replayed = (): number => socket.written.filter((frame) => parseHeader(frame).type === MESSAGE_TYPE.regular).length;
+    socket.receive(message(MESSAGE_TYPE.replayRequest, 0, 0, new Uint8Array(0)));
+    socket.receive(message(MESSAGE_TYPE.replayRequest, 0, 0, new Uint8Array(0)));
+    vi.advanceTimersByTime(9999);
+    socket.receive(message(MESSAGE_TYPE.replayRequest, 0, 0, new Uint8Array(0)));
+    expect(replayed()).toBe(1);
+    vi.advanceTimersByTime(1);
+    socket.receive(message(MESSAGE_TYPE.replayRequest, 0, 0, new Uint8Array(0)));
+    expect(replayed()).toBe(2);
+    protocol.close('done');
+  });
+
+  it('acknowledges a replayed message it already has, so a resumed peer with nothing else to hear never turns suspect', () => {
+    vi.useFakeTimers();
+    const socket = fakeSocket();
+    const protocol = createPersistentProtocol({ socket, maxBodyBytes: 100, log });
+    socket.receive(message(MESSAGE_TYPE.regular, 1, 0, Uint8Array.of(1)));
+    vi.advanceTimersByTime(2000);
+    socket.written.length = 0;
+    // the peer never saw that ack and replays the message after a resume
+    socket.receive(message(MESSAGE_TYPE.regular, 1, 0, Uint8Array.of(1)));
+    vi.advanceTimersByTime(2000);
+    expect(socket.written.map(parseHeader)).toEqual([{ type: MESSAGE_TYPE.ack, id: 0, ack: 1, length: 0 }]);
+    protocol.close('done');
+  });
+
+  it('ends gracefully: the socket writes what it holds, the protocol closes with the reason and holds nothing for a resume', () => {
+    const socket = fakeSocket();
+    const protocol = createPersistentProtocol({ socket, maxBodyBytes: 100, log });
+    protocol.holdOnDrop();
+    const lost: string[] = [];
+    const closes: string[] = [];
+    protocol.onLost((reason) => lost.push(reason));
+    protocol.onClose((reason) => closes.push(reason));
+    protocol.end('the client disconnected');
+    expect(socket.ended()).toBe(true);
+    expect(socket.destroyed()).toBe(false);
+    socket.close();
+    expect(closes).toEqual(['the client disconnected']);
+    expect(lost).toEqual([]);
+  });
+
+  it('delivers what a stream socket holds before its end reaches the peer', async () => {
+    const [ours, theirs] = duplexPair();
+    const socket = streamSocket(ours);
+    const read: number[] = [];
+    theirs.on('data', (chunk: Buffer) => read.push(...chunk));
+    const ended = new Promise((resolve) => theirs.once('end', resolve));
+    socket.write(Uint8Array.from([7, 8, 9]));
+    socket.end();
+    await ended;
+    expect(read).toEqual([7, 8, 9]);
+    theirs.destroy();
+  });
+
+  it('holds a dropped socket\'s state and replays the unacknowledged messages on resume, the rest bytes read first', () => {
+    const first = fakeSocket();
+    const protocol = createPersistentProtocol({ socket: first, maxBodyBytes: 100, log });
+    protocol.holdOnDrop();
+    const got: number[] = [];
+    const lost: string[] = [];
+    const closes: string[] = [];
+    protocol.onMessage((body) => got.push(body[0]!));
+    protocol.onLost((reason) => lost.push(reason));
+    protocol.onClose((reason) => closes.push(reason));
+    protocol.send(Uint8Array.of(1));
+    protocol.send(Uint8Array.of(2));
+    first.receive(message(MESSAGE_TYPE.regular, 1, 1, Uint8Array.of(10)));
+    first.close();
+    expect(lost).toEqual(['the connection closed']);
+    expect(closes).toEqual([]);
+    expect(protocol.lost()).toBe(true);
+    expect(protocol.writable()).toBe(false);
+    // held while lost, written by the replay
+    protocol.send(Uint8Array.of(3));
+    const second = fakeSocket();
+    protocol.resume(second, message(MESSAGE_TYPE.regular, 2, 3, Uint8Array.of(20)));
+    expect(second.written.map(parseHeader)).toEqual([
+      { type: MESSAGE_TYPE.regular, id: 2, ack: 1, length: 1 },
+      { type: MESSAGE_TYPE.regular, id: 3, ack: 1, length: 1 },
+    ]);
+    expect(got).toEqual([10, 20]);
+    expect(protocol.unackedBytes()).toBe(0);
+    expect(protocol.lost()).toBe(false);
+    // the peer's replay of what already arrived is dropped, and asks for nothing
+    second.receive(message(MESSAGE_TYPE.regular, 1, 3, Uint8Array.of(10)));
+    expect(got).toEqual([10, 20]);
+    expect(second.written.map(parseHeader).some((frame) => frame.type === MESSAGE_TYPE.replayRequest)).toBe(false);
+    protocol.close('done');
+  });
+
+  it('replaces a socket the peer already left, dropping the old one without a lost event', () => {
+    const first = fakeSocket();
+    const protocol = createPersistentProtocol({ socket: first, maxBodyBytes: 100, log });
+    protocol.holdOnDrop();
+    const lost: string[] = [];
+    protocol.onLost((reason) => lost.push(reason));
+    protocol.send(Uint8Array.of(1));
+    const second = fakeSocket();
+    protocol.resume(second, new Uint8Array(0));
+    expect(first.destroyed()).toBe(true);
+    first.close();
+    expect(lost).toEqual([]);
+    expect(second.written.map(parseHeader)).toEqual([{ type: MESSAGE_TYPE.regular, id: 1, ack: 0, length: 1 }]);
+    protocol.close('done');
+  });
+
+  it('turns suspect 2 s past the missed keepalive deadline, and any frame clears it', () => {
+    vi.useFakeTimers();
+    const socket = fakeSocket();
+    const protocol = createPersistentProtocol({ socket, maxBodyBytes: 100, log, highLoad: () => false });
+    const suspects: Array<number | undefined> = [];
+    protocol.onSuspect((since) => suspects.push(since));
+    const start = Date.now();
+    protocol.startKeepAlive();
+    vi.advanceTimersByTime(6999);
+    expect(suspects).toEqual([]);
+    // the fake clock runs an immediate set inside a timer 1 ms later, so a suspect decision lands 1 ms past its timer
+    vi.advanceTimersByTime(2);
+    expect(suspects).toEqual([start + 5000]);
+    socket.receive(message(MESSAGE_TYPE.keepAlive, 0, 0, new Uint8Array(0)));
+    expect(suspects).toEqual([start + 5000, undefined]);
+    protocol.close('done');
+  });
+
+  it('decides suspect only after the loop read what arrived while it stalled past the deadline', () => {
+    vi.useFakeTimers();
+    const socket = fakeSocket();
+    const protocol = createPersistentProtocol({ socket, maxBodyBytes: 100, log, highLoad: () => false });
+    const suspects: Array<number | undefined> = [];
+    protocol.onSuspect((since) => suspects.push(since));
+    const start = Date.now();
+    protocol.startKeepAlive();
+    // the loop stalls from 4 s to past 7 s: the late timers run first (the keepalive, then the suspect timer), and only
+    // the poll phase after them reads the peer's keepalive that arrived at 5 s
+    vi.advanceTimersByTime(4000);
+    vi.advanceTimersToNextTimer();
+    vi.advanceTimersToNextTimer();
+    expect(Date.now()).toBe(start + 7000);
+    socket.receive(message(MESSAGE_TYPE.keepAlive, 0, 0, new Uint8Array(0)));
+    vi.advanceTimersByTime(1);
+    expect(suspects).toEqual([]);
+    // re-armed from that frame
+    vi.advanceTimersByTime(6999);
+    expect(suspects).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(suspects).toEqual([start + 12_000]);
+    protocol.close('done');
+  });
+
+  it('turns suspect 2 s past the missed ack deadline of the oldest unacknowledged message', () => {
+    vi.useFakeTimers();
+    const socket = fakeSocket();
+    const protocol = createPersistentProtocol({ socket, maxBodyBytes: 100, log, highLoad: () => false });
+    const suspects: Array<number | undefined> = [];
+    protocol.onSuspect((since) => suspects.push(since));
+    const start = Date.now();
+    protocol.startKeepAlive();
+    vi.advanceTimersByTime(500);
+    socket.receive(message(MESSAGE_TYPE.keepAlive, 0, 0, new Uint8Array(0)));
+    vi.advanceTimersByTime(500);
+    protocol.send(Uint8Array.of(1));
+    // the ack deadline (send + 2 s) comes before the keepalive one (last frame + 5 s)
+    vi.advanceTimersByTime(3999);
+    expect(suspects).toEqual([]);
+    vi.advanceTimersByTime(2);
+    expect(suspects).toEqual([start + 3000]);
+    protocol.close('done');
+  });
+
+  it('counts a missed ack deadline only while nothing arrived after it', () => {
+    vi.useFakeTimers();
+    const socket = fakeSocket();
+    const protocol = createPersistentProtocol({ socket, maxBodyBytes: 100, log, highLoad: () => false });
+    const suspects: Array<number | undefined> = [];
+    protocol.onSuspect((since) => suspects.push(since));
+    protocol.startKeepAlive();
+    protocol.send(Uint8Array.of(1));
+    vi.advanceTimersByTime(3000);
+    const keepAliveAt = Date.now();
+    socket.receive(message(MESSAGE_TYPE.keepAlive, 0, 0, new Uint8Array(0)));
+    vi.advanceTimersByTime(6999);
+    expect(suspects).toEqual([]);
+    vi.advanceTimersByTime(2);
+    expect(suspects).toEqual([keepAliveAt + 5000]);
+    protocol.close('done');
+  });
+
+  it('after holdOnDrop, 20 s of silence loses the socket instead of closing the protocol', () => {
+    vi.useFakeTimers();
+    const socket = fakeSocket();
+    const protocol = createPersistentProtocol({ socket, maxBodyBytes: 100, log, highLoad: () => false });
+    protocol.holdOnDrop();
+    const lost: string[] = [];
+    const closes: string[] = [];
+    protocol.onLost((reason) => lost.push(reason));
+    protocol.onClose((reason) => closes.push(reason));
+    protocol.startKeepAlive();
+    vi.advanceTimersByTime(25_000);
+    expect(lost).toEqual(['nothing arrived in 20000 ms']);
+    expect(closes).toEqual([]);
+    expect(socket.destroyed()).toBe(true);
+    protocol.close('the grace ended');
+    expect(closes).toEqual(['the grace ended']);
   });
 
   it('ends only the connection when a message listener throws, and isolates close listeners', () => {

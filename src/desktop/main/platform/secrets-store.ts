@@ -107,7 +107,7 @@ export function createDesktopSecretsStore(
       if (!stored.values.has(key) && !stored.undecryptable.has(key)) return;
       await change(key, undefined);
     },
-    keys: async () => [...stored.values.keys()],
+    keys: async () => [...stored.values.keys(), ...stored.undecryptable.keys()],
     onDidChange: (listener) => changed.add(listener),
     flush: () => jsonConfigWritesSettled(filePath),
   };

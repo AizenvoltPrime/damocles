@@ -62,7 +62,7 @@ function fakePermissionHandler(): PermissionHandler {
           }
         : { behavior: 'allow', updatedInput: {} },
     ),
-    getPermissionMode: vi.fn(() => 'plan'),
+    getPermissionMode: vi.fn(() => 'plan'), turnPermissionMode: vi.fn(() => 'plan'),
     activatePlanMode: vi.fn(async () => undefined),
   } as unknown as PermissionHandler;
 }
@@ -198,7 +198,7 @@ describe('buildCustomTools — behavior', () => {
   it('ExitPlanMode rejection is an error tool result carrying the denial marker and its plan version (renders denied, not completed)', async () => {
     const ph = {
       canUseTool: vi.fn(async () => ({ behavior: 'deny', message: `Plan rejected. ${FEEDBACK_MARKER} please add tests first`, planShown: true })),
-      getPermissionMode: vi.fn(() => 'plan'),
+      getPermissionMode: vi.fn(() => 'plan'), turnPermissionMode: vi.fn(() => 'plan'),
       activatePlanMode: vi.fn(async () => undefined),
     } as unknown as PermissionHandler;
     const { tool } = build(ph);
@@ -210,7 +210,7 @@ describe('buildCustomTools — behavior', () => {
   it('AskUserQuestion cancellation throws with the denial marker (renders denied, not completed)', async () => {
     const ph = {
       canUseTool: vi.fn(async () => ({ behavior: 'deny', message: 'User cancelled the question prompt' })),
-      getPermissionMode: vi.fn(() => 'default'),
+      getPermissionMode: vi.fn(() => 'default'), turnPermissionMode: vi.fn(() => 'default'),
       activatePlanMode: vi.fn(async () => undefined),
     } as unknown as PermissionHandler;
     const { tool } = build(ph);

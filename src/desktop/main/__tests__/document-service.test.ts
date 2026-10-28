@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { testRemote, testWorkspaces } from './test-workspaces';
 import { projectKeyOf } from '../../../shared/project-location';
 import type { ProjectWorkspace } from '../../workspace/project-workspace';
-import type { Workspaces } from '../workspace/workspaces';
+import { NotConnectedError, type Workspaces } from '../workspace/workspaces';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { createFakePlatform, type FakeFileWatcher, type FakePlatform } from '../../../__mocks__/fake-platform';
 import { EDITOR_MAX_DOCUMENT_BYTES } from '../../../shared/types/messages';
@@ -58,6 +58,7 @@ beforeEach(() => {
     writeNow: async (document) => {
       backups.order.push(`now:${document.text}`);
       await backupLands();
+      return true;
     },
     remove: (backupId) => {
       backups.removed.push(backupId);
@@ -65,6 +66,10 @@ beforeEach(() => {
     },
   };
   service = new DocumentService({
+    hostLabel: (authority) => ({ hostId: authority, name: authority }),
+    uploadsConflicted: () => undefined,
+    warn: () => undefined,
+    reopen: () => undefined,
     authorityOs: () => process.platform,
     projects: () => [project],
     workspaces: testWorkspaces({
@@ -1322,11 +1327,14 @@ async function waitFor(condition: () => boolean): Promise<void> {
 
 describe('documents of projects on other hosts', () => {
   const t = (message: string, ...args: Array<string | number>): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]));
-  const noBackups: Backups = { changed: () => undefined, writeNow: async () => undefined, remove: () => undefined };
+  const noBackups: Backups = { changed: () => undefined, writeNow: async () => true, remove: () => undefined };
   const noSettings = { locate: () => undefined, save: async (): Promise<SettingsFileSaveOutcome> => { throw new Error('no settings file in this test'); } };
 
   function serviceOver(projects: readonly Project[], workspaces: Workspaces, authorityOs: (authority: string) => NodeJS.Platform): DocumentService {
-    return new DocumentService({ projects: () => projects, workspaces, authorityOs, ask: async () => 0, t, log: (line) => logged.push(line), pickSavePath: async () => undefined, backups: noBackups, settings: noSettings });
+    return new DocumentService({
+      hostLabel: (authority) => ({ hostId: authority, name: authority }), uploadsConflicted: () => undefined, warn: () => undefined, reopen: () => undefined,
+      projects: () => projects, workspaces, authorityOs, ask: async () => 0, t, log: (line) => logged.push(line), pickSavePath: async () => undefined, backups: noBackups, settings: noSettings,
+    });
   }
 
   it('keeps a folder open here and through a host as two files, each saved and replaced through its own authority', async () => {
@@ -1353,7 +1361,7 @@ describe('documents of projects on other hosts', () => {
     remoteRoot.disconnect('the test ended');
   });
 
-  it('words a host\'s failed write by the code the host reported, and a save while the host is away as not connected', async () => {
+  it('words a host\'s failed write by the code the host reported', async () => {
     const file = write('src/full.ts', 'base');
     const remote = testRemote({ watchers: platform.fileWatchers });
     const away: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(projectDir)), fsPath: projectDir, name: 'proj' };
@@ -1363,9 +1371,8 @@ describe('documents of projects on other hosts', () => {
     const document = opened.document;
     failWrite(file, 'ENOSPC', 'none');
     expect(await documents.save(document.id, document.version, 'mine')).toEqual({ ok: false, reason: 'failed', message: 'Failed to save \'full.ts\': There is not enough space on the disk.' });
-    remote.disconnect('network');
-    expect(await documents.save(document.id, document.version, 'mine')).toEqual({ ok: false, reason: 'failed', message: 'Failed to save \'full.ts\': loopback is not connected.' });
     documents.dispose();
+    remote.disconnect('the test ended');
   });
 
   it('offers Save As of a host\'s file under its name in a local project, never at its path on the host', async () => {
@@ -1376,6 +1383,7 @@ describe('documents of projects on other hosts', () => {
     const away: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(remoteDir)), fsPath: remoteDir, name: 'remote' };
     const offered: string[] = [];
     const documents = new DocumentService({
+      hostLabel: (authority) => ({ hostId: authority, name: authority }), uploadsConflicted: () => undefined, warn: () => undefined, reopen: () => undefined,
       projects: () => [away, project], workspaces: testWorkspaces({ watchers: platform.fileWatchers, remote: () => remote.workspace() }), authorityOs: () => process.platform,
       ask: async () => 0, t, log: (line) => logged.push(line), backups: noBackups, settings: noSettings,
       pickSavePath: async (defaultPath) => {
@@ -1482,5 +1490,189 @@ describe('documents of projects on other hosts', () => {
     await documents.rename(posix.key, 'src/A.ts', async () => ({ ok: true, relativePath: 'src/moved/B.ts' }));
     expect(documents.get(upper.id)?.location?.path).toBe('/srv/app/src/moved/B.ts');
     documents.dispose();
+  });
+});
+
+describe('documents of a host that is not connected', () => {
+  const t = (message: string, ...args: Array<string | number>): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]));
+  const removed: string[] = [];
+  const backups: Backups = { changed: () => undefined, writeNow: async () => true, remove: (id) => { removed.push(id); } };
+  const noSettings = { locate: () => undefined, save: async (): Promise<SettingsFileSaveOutcome> => { throw new Error('no settings file in this test'); } };
+
+  function offlineHost(served: (workspace: ProjectWorkspace) => ProjectWorkspace = (workspace) => workspace) {
+    let connected: ReturnType<typeof testRemote> | undefined;
+    const away: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(projectDir)), fsPath: projectDir, name: 'proj' };
+    const replaced: Array<{ from: string; to: string }> = [];
+    const warned: string[] = [];
+    const documents = new DocumentService({
+      hostLabel: (authority) => ({ hostId: authority, name: 'prod-1' }), uploadsConflicted: () => undefined, warn: (message) => warned.push(message), reopen: () => undefined,
+      projects: () => [away], authorityOs: () => process.platform, ask: async () => 0, t, log: (line) => logged.push(line), pickSavePath: async () => undefined, backups, settings: noSettings,
+      workspaces: testWorkspaces({ watchers: platform.fileWatchers, remote: (authorityKey) => {
+        if (!connected) throw new NotConnectedError(`${authorityKey} is not connected.`);
+        return served(connected.workspace());
+      } }),
+    });
+    documents.onDidReplace((replacement) => replaced.push(replacement));
+    return {
+      away,
+      documents,
+      replaced,
+      warned,
+      connect: () => {
+        connected = testRemote({ watchers: platform.fileWatchers });
+        documents.connectionsChanged();
+      },
+      end: () => connected?.disconnect('the test ended'),
+    };
+  }
+
+  it('shows a placeholder with no content of this computer, and opens the file once the host connects', async () => {
+    write('src/a.ts', 'on the host');
+    const host = offlineHost();
+    expect(host.documents.awaitsHost(host.away.key)).toBe(true);
+    const placeholder = host.documents.openOffline(host.away.key, 'src/a.ts');
+    expect(host.documents.openOffline(host.away.key, 'src/a.ts')).toBe(placeholder);
+    expect(host.documents.content(placeholder.id)).toEqual({ kind: 'offline', documentId: placeholder.id, hostId: 'loopback', hostName: 'prod-1' });
+    host.connect();
+    await waitFor(() => host.replaced.length === 1);
+    const opened = host.documents.get(host.replaced[0]!.to);
+    expect(host.replaced[0]!.from).toBe(placeholder.id);
+    expect(opened?.kind === 'text' && opened.text).toBe('on the host');
+    expect(host.documents.get(placeholder.id)).toBeUndefined();
+    host.documents.dispose();
+    host.end();
+  });
+
+  it('restores a backup dirty while the host is away, refuses to save it there, and takes the disk text as its baseline on connect', async () => {
+    write('src/b.ts', 'saved');
+    const host = offlineHost();
+    const document = host.documents.openAwaitingHost(host.away.key, 'src/b.ts', { encoding: 'utf8', bom: false, eol: '\n' }) as TextDocument;
+    host.documents.restoreBuffer(document.id, 'unsaved', document.backupId);
+    expect(isDocumentDirty(document)).toBe(true);
+    expect(await host.documents.save(document.id, document.version, 'unsaved')).toMatchObject({ ok: false, reason: 'failed' });
+    expect(fs.readFileSync(path.join(projectDir, 'src', 'b.ts'), 'utf8')).toBe('saved');
+    host.connect();
+    await waitFor(() => document.awaitingHost === undefined);
+    expect(document.diskText).toBe('saved');
+    expect(document.text).toBe('unsaved');
+    expect(document.conflict).toBe(false);
+    expect(isDocumentDirty(document)).toBe(true);
+    host.documents.dispose();
+    host.end();
+  });
+
+  it('turns a backup whose buffer equals the disk clean once the baseline is known, and drops its backup', async () => {
+    write('src/b.ts', 'saved');
+    const host = offlineHost();
+    const same = host.documents.openAwaitingHost(host.away.key, 'src/b.ts', { encoding: 'utf8', bom: false, eol: '\n' }) as TextDocument;
+    host.documents.restoreBuffer(same.id, 'saved', same.backupId);
+    host.connect();
+    await waitFor(() => same.awaitingHost === undefined);
+    expect(isDocumentDirty(same)).toBe(false);
+    expect(removed).toContain(same.backupId);
+    host.documents.dispose();
+    host.end();
+  });
+
+  it('keeps one document per file while the host is away: a second backup finds the first, and a backup takes a placeholder\'s tabs', async () => {
+    write('src/b.ts', 'saved');
+    const host = offlineHost();
+    const placeholder = host.documents.openOffline(host.away.key, 'src/b.ts');
+    const waiting = host.documents.openAwaitingHost(host.away.key, 'src/b.ts', { encoding: 'utf8', bom: false, eol: '\n' });
+    expect(host.replaced).toEqual([{ from: placeholder.id, to: waiting.id }]);
+    expect(host.documents.get(placeholder.id)).toBeUndefined();
+    host.documents.restoreBuffer(waiting.id, 'first', (waiting as TextDocument).backupId);
+    expect(host.documents.openAwaitingHost(host.away.key, 'src/b.ts', { encoding: 'utf8', bom: false, eol: '\n' })).toBe(waiting);
+    expect(host.documents.openOffline(host.away.key, 'src/b.ts')).toBe(waiting);
+    expect(host.documents.all()).toEqual([waiting]);
+    host.documents.dispose();
+    host.end();
+  });
+
+  it('moves a backup whose file now leads outside its project to an untitled buffer with its text and backup, and says why', async () => {
+    fs.writeFileSync(path.join(outside, 'elsewhere.ts'), 'outside');
+    const host = offlineHost();
+    const backupId = '0f8fad5b-d9cb-469f-a165-70867728950e';
+    const document = host.documents.openAwaitingHost(host.away.key, 'out/elsewhere.ts', { encoding: 'utf8', bom: false, eol: '\n' }) as TextDocument;
+    host.documents.restoreBuffer(document.id, 'unsaved', backupId);
+    fs.symlinkSync(outside, path.join(projectDir, 'out'), 'junction');
+    host.connect();
+    await waitFor(() => host.replaced.length === 1);
+    expect(host.replaced[0]!.from).toBe(document.id);
+    const untitled = host.documents.get(host.replaced[0]!.to) as TextDocument;
+    expect(untitled).toMatchObject({ untitled: true, text: 'unsaved', backupId, location: undefined });
+    expect(host.documents.get(document.id)).toBeUndefined();
+    expect(host.warned).toEqual(['The unsaved changes to elsewhere.ts are in an untitled editor: It is now outside its project.']);
+    expect(removed).not.toContain(backupId);
+    host.documents.dispose();
+    host.end();
+  });
+
+  it('moves a backup whose file on the host is not valid UTF-8 to an untitled buffer, as the restore path refuses it', async () => {
+    const bytes = Buffer.from([0x61, 0xc3, 0x28, 0x0a]);
+    write('src/latin.txt', bytes);
+    const host = offlineHost();
+    const backupId = '1f8fad5b-d9cb-469f-a165-70867728950e';
+    const document = host.documents.openAwaitingHost(host.away.key, 'src/latin.txt', { encoding: 'utf8', bom: false, eol: '\n' }) as TextDocument;
+    host.documents.restoreBuffer(document.id, 'unsaved', backupId);
+    host.connect();
+    await waitFor(() => host.replaced.length === 1);
+    const untitled = host.documents.get(host.replaced[0]!.to) as TextDocument;
+    expect(untitled).toMatchObject({ untitled: true, text: 'unsaved', backupId });
+    expect(removed).not.toContain(backupId);
+    expect(host.documents.get(document.id)).toBeUndefined();
+    expect(host.warned).toEqual(['The unsaved changes to latin.txt are in an untitled editor: The editor cannot change it as it is on disk now.']);
+    expect(fs.readFileSync(path.join(projectDir, 'src', 'latin.txt'))).toEqual(bytes);
+    host.documents.dispose();
+    host.end();
+  });
+
+  it.each([
+    ['binary', 'src/blob.bin', Buffer.from([0x61, 0x00, 0x62, 0x0a])],
+    ['too large', 'src/big.txt', Buffer.alloc(EDITOR_MAX_DOCUMENT_BYTES + 1, 0x61)],
+    ['an image, though its bytes are text', 'src/logo.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>\n')],
+  ])('moves a backup whose file on the host is %s to an untitled buffer, as the restore path refuses it', async (_kind, relativePath, bytes) => {
+    write(relativePath, bytes);
+    const host = offlineHost();
+    const backupId = '3f8fad5b-d9cb-469f-a165-70867728950e';
+    const document = host.documents.openAwaitingHost(host.away.key, relativePath, { encoding: 'utf8', bom: false, eol: '\n' }) as TextDocument;
+    host.documents.restoreBuffer(document.id, 'unsaved', backupId);
+    host.connect();
+    await waitFor(() => host.replaced.length === 1);
+    const untitled = host.documents.get(host.replaced[0]!.to) as TextDocument;
+    expect(untitled).toMatchObject({ untitled: true, text: 'unsaved', backupId });
+    expect(host.documents.get(document.id)).toBeUndefined();
+    expect(host.warned).toEqual([`The unsaved changes to ${path.posix.basename(relativePath)} are in an untitled editor: The editor cannot change it as it is on disk now.`]);
+    expect(removed).not.toContain(backupId);
+    host.documents.dispose();
+    host.end();
+  });
+
+  it('keeps a backup awaiting while the connected host cannot resolve its file, says so once, and retries on a save', async () => {
+    write('src/b.ts', 'saved');
+    let resolvable = false;
+    const host = offlineHost((workspace) => ({
+      ...workspace,
+      files: {
+        ...workspace.files,
+        confineExisting: async (owner: Project, relativePath: string) => (resolvable ? workspace.files.confineExisting(owner, relativePath) : { ok: false as const, reason: 'failed' as const }),
+      },
+    }));
+    const document = host.documents.openAwaitingHost(host.away.key, 'src/b.ts', { encoding: 'utf8', bom: false, eol: '\n' }) as TextDocument;
+    host.documents.restoreBuffer(document.id, 'unsaved', document.backupId);
+    host.connect();
+    await waitFor(() => host.warned.length === 1);
+    expect(host.warned).toEqual(['b.ts could not be read on prod-1, so its unsaved changes stay in the editor. Saving it tries again.']);
+    expect(document.awaitingHost).toBe(true);
+    host.documents.connectionsChanged();
+    expect(await host.documents.save(document.id, document.version, 'unsaved')).toEqual({ ok: false, reason: 'failed', message: 'b.ts could not be read on prod-1, so it was not saved. Its changes stay in the editor.' });
+    expect(host.warned).toHaveLength(1);
+    expect(fs.readFileSync(path.join(projectDir, 'src', 'b.ts'), 'utf8')).toBe('saved');
+    resolvable = true;
+    expect(await host.documents.save(document.id, document.version, 'unsaved')).toEqual({ ok: true });
+    expect(document.awaitingHost).toBeUndefined();
+    expect(fs.readFileSync(path.join(projectDir, 'src', 'b.ts'), 'utf8')).toBe('unsaved');
+    host.documents.dispose();
+    host.end();
   });
 });

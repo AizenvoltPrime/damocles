@@ -1,8 +1,11 @@
 // Every git process the source control engine starts (plan AD4, "Process model"; docs/invariants.md "Source control").
+import { promises as fs } from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { childEnv } from '../pi-session/checkpoints/exec';
 import { processLauncher, type Launcher, type SessionJob } from '../process-launcher';
+import { CREDENTIAL_SUBCOMMANDS, relayHelperConfig, relayVariables, type CredentialRelay, type SpawnAgent } from './askpass/credential-relay';
 import { GitError, GitUntrustedError, redactUrls } from './errors';
 
 export interface GitVersion {
@@ -134,6 +137,8 @@ export interface GitCall {
   readonly localOnly?: true;
   // the askpass registration's variables, only on a call that may need credentials (a remote operation or a clone)
   readonly askpassEnv?: Readonly<Record<string, string>>;
+  // a remote operation the user started: on a daemon's core git may ask the credential relay, whose consent asks the user
+  readonly relayCredentials?: true;
   // set only by Repository.withStash after its fenced stash push; fence() refuses a starting pull, merge or rebase without it
   readonly fencedStash?: true;
   // command-line config passed as GIT_CONFIG_COUNT pairs, which carry a key holding '=' that -c would split
@@ -150,6 +155,7 @@ export interface GitCloneCall {
   readonly signal: AbortSignal;
   readonly session?: SessionJob;
   readonly askpassEnv?: Readonly<Record<string, string>>;
+  readonly relayCredentials?: true;
 }
 
 export interface GitResult {
@@ -173,13 +179,34 @@ export interface GitRunnerDeps {
   readonly now?: () => number;
   // the stdout bound of a call that names none
   readonly maxOutputBytes?: number;
+  // a daemon's core: the credential relay and the forwarded agent's socket, read per call and given only to
+  // CREDENTIAL_SUBCOMMANDS, the relay only to those with relayCredentials; with agentSocket set, no call runs with an
+  // inherited SSH_AUTH_SOCK
+  readonly credentialRelay?: () => CredentialRelay | undefined;
+  readonly agentSocket?: () => string | undefined;
+}
+
+// What a call that may need credentials gets on top of its own variables.
+export interface CallCredentials {
+  readonly relay?: CredentialRelay;
+  readonly agent?: SpawnAgent;
 }
 
 export interface GitRunner {
   readonly git: GitBinary;
   run(call: GitCall): Promise<GitResult>;
   // the environment a call runs with, which the docs and tests read from here
-  envFor(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs' | 'ceilingDirectories' | 'localOnly' | 'askpassEnv' | 'config' | 'indexFile'>): NodeJS.ProcessEnv;
+  envFor(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs' | 'ceilingDirectories' | 'localOnly' | 'askpassEnv' | 'config' | 'indexFile'>, credentials?: CallCredentials): NodeJS.ProcessEnv;
+}
+
+// ScmService.trustedProjectAt's answer while a project's realpath is unknown, so no folder can be ruled out of a project yet.
+export const PROJECTS_RESOLVING: unique symbol = Symbol('projectsResolving');
+
+// Whether the target's git would hand a credential the relay answered to a helper of its own, which saves it there. project
+// is the trusted project whose repository config git may read in cwd; outside one only the system and global files are read,
+// and while projects resolve the answer is yes, since a repository's own helper cannot be ruled out.
+export interface CredentialHelperProbe {
+  targetHasCredentialHelper(cwd: string, url: string, project: string | typeof PROJECTS_RESOLVING | undefined): Promise<boolean>;
 }
 
 // The runner the host creates: run, plus clone, which ScmService's trust gate never wraps.
@@ -195,16 +222,20 @@ const INHERITED_PATHSPEC_MODES: ReadonlySet<string> = new Set(['GIT_LITERAL_PATH
 const ENGINE_CONFIG: ReadonlyArray<readonly [string, string]> = [['core.longpaths', 'true']];
 
 /** The environment every engine git call runs with: no prompt and no editor; literal pathspecs where it names paths. */
-export function gitEnv(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs' | 'ceilingDirectories' | 'localOnly' | 'askpassEnv' | 'config' | 'indexFile'>): NodeJS.ProcessEnv {
+export function gitEnv(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs' | 'ceilingDirectories' | 'localOnly' | 'askpassEnv' | 'config' | 'indexFile'>, credentials: CallCredentials = {}): NodeJS.ProcessEnv {
   const env = childEnv();
   // An inherited pathspec mode turns the fence's exclusions into file names or clashes with the literal mode set here; keys
   // match as Windows does.
-  for (const key of Object.keys(env)) if (INHERITED_PATHSPEC_MODES.has(key.toUpperCase())) delete env[key];
+  for (const key of Object.keys(env)) {
+    if (INHERITED_PATHSPEC_MODES.has(key.toUpperCase()) || (credentials.agent && key.toUpperCase() === 'SSH_AUTH_SOCK')) delete env[key];
+  }
   const inherited = env['GIT_CEILING_DIRECTORIES'];
   const ceilings = [...(call.ceilingDirectories ?? []), ...(inherited ? [inherited] : [])];
   return {
     ...env,
+    ...(credentials.agent?.socket !== undefined ? { SSH_AUTH_SOCK: credentials.agent.socket } : {}),
     // before the engine's own variables, so a registration can never override one
+    ...(credentials.relay ? relayVariables(credentials.relay) : {}),
     ...call.askpassEnv,
     GIT_TERMINAL_PROMPT: '0',
     GIT_EDITOR: 'true',
@@ -212,7 +243,8 @@ export function gitEnv(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs
     ...(call.literalPathspecs ? { GIT_LITERAL_PATHSPECS: '1' } : {}),
     ...(call.indexFile !== undefined ? { GIT_INDEX_FILE: call.indexFile } : {}),
     ...(call.localOnly ? { GIT_ALLOW_PROTOCOL: 'none' } : {}),
-    ...configPairs([...ENGINE_CONFIG, ...(call.config ?? [])]),
+    // the relay's helper last, after the engine's pairs and the call's
+    ...configPairs([...ENGINE_CONFIG, ...(call.config ?? []), ...(credentials.relay ? [relayHelperConfig(credentials.relay)] : [])]),
     ...(call.parsed ? { LC_ALL: 'C' } : {}),
     ...(ceilings.length > 0 ? { GIT_CEILING_DIRECTORIES: ceilings.join(path.delimiter) } : {}),
     // Status takes no optional lock, so it never holds the index lock another tool needs. A working-tree diff refreshes the
@@ -238,7 +270,7 @@ export function subcommandIndex(args: readonly string[]): number {
   return index;
 }
 
-export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner {
+export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner & CredentialHelperProbe {
   const launcher = deps.launcher ?? processLauncher();
   const now = deps.now ?? (() => Date.now());
   const defaultMaxOutput = deps.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
@@ -248,8 +280,14 @@ export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner {
         reject(call.signal.reason);
         return;
       }
-      // git before 2.31 ignores GIT_CONFIG_COUNT, so it gets the engine's config as -c options
-      const args = gitAtLeast(deps.git.version, 2, 31) ? call.args : [...ENGINE_CONFIG.flatMap(([key, value]) => ['-c', `${key}=${value}`]), ...call.args];
+      const network = CREDENTIAL_SUBCOMMANDS.has(call.args[subcommandIndex(call.args)] ?? '');
+      // a background call (autofetch) never asks this computer for a credential, as its askpass never prompts
+      const relay = network && call.relayCredentials ? deps.credentialRelay?.() : undefined;
+      const agent = deps.agentSocket ? { socket: network ? deps.agentSocket() : undefined } : undefined;
+      const credentials: CallCredentials = { ...(relay ? { relay } : {}), ...(agent ? { agent } : {}) };
+      // git before 2.31 ignores GIT_CONFIG_COUNT, so it gets the engine's config and the relay's helper as -c options
+      const oldConfig = [...ENGINE_CONFIG, ...(relay ? [relayHelperConfig(relay)] : [])];
+      const args = gitAtLeast(deps.git.version, 2, 31) ? call.args : [...oldConfig.flatMap(([key, value]) => ['-c', `${key}=${value}`]), ...call.args];
       const started = now();
       const argv = args.map((arg) => logArg(redactUrls(arg))).join(' ');
       const cancellable = call.signal !== undefined;
@@ -259,7 +297,7 @@ export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner {
         file: deps.git.path,
         args,
         cwd: call.cwd,
-        env: gitEnv(call),
+        env: gitEnv(call, credentials),
         windowsHide: true,
         shell: false,
         detached: cancellable && process.platform !== 'win32',
@@ -371,7 +409,39 @@ export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner {
     },
     clone(call) {
       if (call.args[subcommandIndex(call.args)] !== 'clone') return Promise.reject(new Error('The clone entry runs git clone only'));
-      return execute({ cwd: call.cwd, args: call.args, kind: 'mutation', signal: call.signal, ceilingDirectories: [call.cwd], ...(call.session ? { session: call.session } : {}), ...(call.askpassEnv ? { askpassEnv: call.askpassEnv } : {}) });
+      return execute({ cwd: call.cwd, args: call.args, kind: 'mutation', signal: call.signal, ceilingDirectories: [call.cwd], ...(call.session ? { session: call.session } : {}), ...(call.askpassEnv ? { askpassEnv: call.askpassEnv } : {}), ...(call.relayCredentials ? { relayCredentials: true as const } : {}) });
+    },
+    // Every scope in cwd when project is trusted; elsewhere only the system and global files, read from an empty folder git
+    // searches no further up from, so no repository is discovered at all. A named file reads no include unless asked. An
+    // empty value resets the helpers listed before it.
+    async targetHasCredentialHelper(cwd, url, project) {
+      if (project === PROJECTS_RESOLVING) {
+        deps.log.appendLine('[askpass] a project folder is still resolving, so the consent warns of a helper of the target\'s own');
+        return true;
+      }
+      const trusted = project !== undefined && deps.isTrusted(project);
+      const outside = trusted ? undefined : await fs.mkdtemp(path.join(os.tmpdir(), 'damocles-git-config-'));
+      try {
+        const scopes: ReadonlyArray<readonly string[]> = trusted ? [[]] : [['--system', '--includes'], ['--global', '--includes']];
+        for (const scope of scopes) {
+          for (const query of [['--get-all', 'credential.helper'], ['--get-urlmatch', 'credential.helper', url]]) {
+            const result = await execute({
+              cwd: outside ?? cwd,
+              args: ['config', ...scope, ...query],
+              kind: 'read',
+              allowFailure: true,
+              localOnly: true,
+              ...(outside !== undefined ? { ceilingDirectories: [path.dirname(outside)] } : {}),
+            });
+            let helpers = 0;
+            for (const line of result.stdout.toString('utf8').split(/\r?\n/).slice(0, -1)) helpers = line.trim() === '' ? 0 : helpers + 1;
+            if (helpers > 0) return true;
+          }
+        }
+        return false;
+      } finally {
+        if (outside !== undefined) await fs.rm(outside, { recursive: true, force: true });
+      }
     },
   };
 }

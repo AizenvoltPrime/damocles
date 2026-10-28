@@ -2,10 +2,10 @@ import { rgPath } from '@vscode/ripgrep';
 import { DAMOCLES_HOME_DIR } from '../../../core/paths';
 import type { FileWatcherFactory } from '../../../platform/file-watcher';
 import type { CoreTransport } from '../../core-protocol/endpoint';
-import { createEndpoint } from '../../core-protocol/endpoint';
+import { createEndpoint, type Endpoint } from '../../core-protocol/endpoint';
 import { ERROR_CODEC } from '../../core-protocol/errors';
 import type { TerminalHub } from '../../daemon/terminal-hub';
-import { createWorkspaceHost } from '../../daemon/workspace-host';
+import { createWorkspaceHost, type WorkspaceModules } from '../../daemon/workspace-host';
 import { createFileSystem, type FileSystemDeps } from '../../workspace/file-system';
 import type { Formatter } from '../../workspace/format/formatter';
 import { CLIENT_TO_WORKSPACE, WORKSPACE_TO_CLIENT, type ClientToWorkspace, type WorkspaceToClient } from '../../workspace/messages';
@@ -30,6 +30,8 @@ export interface TestWorkspaceOptions {
   readonly spawnListingRg?: QuickOpenListingDeps['spawnRg'];
   readonly format?: Formatter;
   readonly terminals?: TerminalBackend;
+  // the daemon watcher's inotify limit reports; default: none
+  readonly watchLimits?: WorkspaceModules['watchLimits'];
   readonly log?: (line: string) => void;
 }
 
@@ -58,6 +60,8 @@ export function testWorkspaces(options: TestWorkspaceOptions): Workspaces {
 export interface TestRemote {
   // the connected workspace; throws NotConnectedError, as main's does, once disconnected
   workspace(): ProjectWorkspace;
+  // the client end of the workspace channel, as a connection's workspace endpoint
+  readonly endpoint: Endpoint<ClientToWorkspace, WorkspaceToClient>;
   // ends the connection: its streams end and every later call fails
   disconnect(reason: string): void;
 }
@@ -87,9 +91,10 @@ export function testRemote(options: TestWorkspaceOptions & { readonly authorityK
   const authorityKey = options.authorityKey ?? 'loopback';
   const modules = localModules(options);
   const hub = { list: async () => [], post: () => { throw new Error('no terminal hub in this test'); }, detach: () => undefined } as unknown as TerminalHub;
-  const host = createWorkspaceHost({ ...modules, hub }, log);
+  const watchLimits = options.watchLimits ?? { roots: () => [], onReached: () => ({ dispose: () => undefined }), limit: async () => null };
+  const host = createWorkspaceHost({ ...modules, hub, terminalCredentials: () => ({}), watchLimits }, log);
   const [clientEnd, hostEnd] = channel();
-  const served = host.serve('test-connection', hostEnd, (reason) => { throw new Error(reason); });
+  const served = host.serve('test-connection', 'test-client', hostEnd, (reason) => { throw new Error(reason); });
   const endpoint = createEndpoint<ClientToWorkspace, WorkspaceToClient>({ transport: clientEnd, outgoing: CLIENT_TO_WORKSPACE, incoming: WORKSPACE_TO_CLIENT, log, errors: ERROR_CODEC });
   const closeListeners = new Set<(reason: string) => void>();
   let closedWith: string | undefined;
@@ -106,6 +111,7 @@ export function testRemote(options: TestWorkspaceOptions & { readonly authorityK
     log,
   });
   return {
+    endpoint,
     workspace: () => {
       if (closedWith !== undefined) throw new NotConnectedError(`${authorityKey} is not connected.`);
       return workspace;

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TERMINAL_HIGH_WATERMARK_CHARS } from '../../preload/terminal-channels';
-import type { HostMessage, HostRequest } from '../../pty-host/protocol';
+import { parseHostRequest, type HostMessage, type HostRequest } from '../../pty-host/protocol';
+import { INVALID } from '../../core-protocol/schema';
+import { CLIENT_TO_WORKSPACE } from '../../workspace/messages';
 import { createPtyScreen } from '../../pty-host/screen';
 import { createPtySessions, type Pty } from '../../pty-host/sessions';
 import type { PtyHostProcess } from '../../workspace/host-starters';
@@ -200,5 +202,119 @@ describe('terminal flow control on the daemon', () => {
     expect(seen).toEqual(['exit']);
     expect(registry.isEmpty()).toBe(true);
     expect(hub.list()).toEqual([]);
+  });
+
+  it('shares one terminal between two devices: both type, each gets the output, one view closing leaves the other, a kill from a device that never viewed it ends it for both', () => {
+    const toHost: HostRequest[] = [];
+    let fromHost: (message: unknown) => void = () => undefined;
+    const registry = createRunRegistry();
+    const hub = createTerminalHub({
+      start: () => ({ postMessage: (message) => toHost.push(message), onMessage: (listener) => { fromHost = listener; }, onExit: () => undefined, kill: () => undefined }),
+      registry,
+      log: () => undefined,
+    });
+    const received = new Map<string, string[]>();
+    const device = (id: string): HubClient => {
+      received.set(id, []);
+      return { id, message: (message) => received.get(id)!.push(message.type === 'data' ? `data:${message.data}` : message.type), hostExit: () => undefined };
+    };
+    const a = device('a');
+    const b = device('b');
+    const c = device('c');
+    const view = { root: '/srv/app', profile: { id: 'bash', name: 'bash', file: '/bin/bash', args: [], icon: 'bash' as const }, startCwd: '/srv/app', nonce: '0123456789abcdef0123456789abcdef' };
+    hub.post(a, { ...SPAWN, view }, '/srv/app');
+    fromHost({ type: 'ready', id: 'term-1', pid: 42 });
+    // another device finds what it needs to show the terminal
+    expect(hub.list()).toEqual([{ id: 'term-1', pid: 42, cols: 80, rows: 24, view }]);
+    hub.post(b, { type: 'serialize', id: 'term-1' }, undefined);
+    fromHost({ type: 'screen', id: 'term-1', data: '$ ', cols: 80, rows: 24, marks: [], sequences: 0 });
+    hub.post(a, { type: 'input', id: 'term-1', data: 'ls\r' }, undefined);
+    hub.post(b, { type: 'input', id: 'term-1', data: 'pwd\r' }, undefined);
+    // a device that views nothing types into nothing
+    hub.post(c, { type: 'input', id: 'term-1', data: 'rm -rf ~\r' }, undefined);
+    expect(toHost.filter((request) => request.type === 'input')).toEqual([{ type: 'input', id: 'term-1', data: 'ls\r' }, { type: 'input', id: 'term-1', data: 'pwd\r' }]);
+    fromHost({ type: 'data', id: 'term-1', data: 'one' });
+    expect(received.get('a')).toEqual(['ready', 'data:one']);
+    expect(received.get('b')).toEqual(['screen', 'data:one']);
+    // a closes its tab: the terminal runs on, b still gets its output, a gets none
+    hub.post(a, { type: 'detach', id: 'term-1' }, undefined);
+    fromHost({ type: 'data', id: 'term-1', data: 'two' });
+    expect(received.get('a')).toEqual(['ready', 'data:one']);
+    expect(received.get('b')).toEqual(['screen', 'data:one', 'data:two']);
+    expect(toHost.some((request) => request.type === 'kill' || request.type === 'detach')).toBe(false);
+    expect(hub.list()).toHaveLength(1);
+    // the host card's Kill on a device that never opened it ends it, and every viewer sees the exit
+    hub.post(c, { type: 'kill', id: 'term-1' }, undefined);
+    expect(toHost.at(-1)).toEqual({ type: 'kill', id: 'term-1' });
+    expect(received.get('b')!.at(-1)).toBe('exit');
+    expect(received.get('c')).toEqual([]);
+    expect(hub.list()).toEqual([]);
+    expect(registry.isEmpty()).toBe(true);
+  });
+
+  it('takes a spawn\'s view and a view\'s detach over the wire only within the contract', () => {
+    const view = { root: '/srv/app\u0000wt-1', profile: { id: 'bash', name: 'bash', file: '/bin/bash', args: ['-l'], icon: 'bash' }, startCwd: '/srv/app', nonce: 'ab'.repeat(16) };
+    const post = CLIENT_TO_WORKSPACE.events['terminals.post'];
+    expect(post({ request: { ...SPAWN, view } })).toEqual({ request: { ...SPAWN, view } });
+    expect(post({ request: { type: 'detach', id: 'term-1' } })).toEqual({ request: { type: 'detach', id: 'term-1' } });
+    expect(post({ request: { ...SPAWN, view: { ...view, nonce: 'not-a-nonce' } } })).toBe(INVALID);
+    expect(post({ request: { ...SPAWN, view: { ...view, profile: { ...view.profile, icon: 'evil' } } } })).toBe(INVALID);
+    expect(parseHostRequest({ ...SPAWN, view: { ...view, startCwd: '' } })).toBeUndefined();
+    const listed = CLIENT_TO_WORKSPACE.requests['terminals.list'].result;
+    expect(listed([{ id: 'term-1', pid: 1, cols: 80, rows: 24, view }])).toEqual([{ id: 'term-1', pid: 1, cols: 80, rows: 24, view }]);
+    expect(listed([{ id: 'term-1', pid: 1, cols: 80, rows: 24 }])).toEqual([{ id: 'term-1', pid: 1, cols: 80, rows: 24 }]);
+  });
+
+  it('starts the idle clock once the last view of a terminal closes while its device stays connected', () => {
+    let fromHost: (message: unknown) => void = () => undefined;
+    const attached: number[] = [];
+    const registry = createRunRegistry();
+    const setAttached = registry.setAttached.bind(registry);
+    registry.setAttached = (id, connections) => {
+      attached.push(connections);
+      setAttached(id, connections);
+    };
+    const hub = createTerminalHub({
+      start: () => ({ postMessage: () => undefined, onMessage: (listener) => { fromHost = listener; }, onExit: () => undefined, kill: () => undefined }),
+      registry,
+      log: () => undefined,
+    });
+    const a: HubClient = { id: 'a', message: () => undefined, hostExit: () => undefined };
+    const b: HubClient = { id: 'b', message: () => undefined, hostExit: () => undefined };
+    hub.post(a, SPAWN, '/srv/app');
+    fromHost({ type: 'ready', id: 'term-1', pid: 42 });
+    hub.post(b, { type: 'serialize', id: 'term-1' }, undefined);
+    hub.post(b, { type: 'detach', id: 'term-1' }, undefined);
+    hub.post(a, { type: 'detach', id: 'term-1' }, undefined);
+    expect(attached).toEqual([1, 2, 1, 0]);
+  });
+
+  it('keeps feeding a fast device while a slow one sits past its window, with input from both', () => {
+    const toHost: HostRequest[] = [];
+    let fromHost: (message: unknown) => void = () => undefined;
+    const hub = createTerminalHub({
+      start: () => ({ postMessage: (message) => toHost.push(message), onMessage: (listener) => { fromHost = listener; }, onExit: () => undefined, kill: () => undefined }),
+      registry: createRunRegistry(),
+      log: () => undefined,
+    });
+    const counts = new Map<string, number>([['fast', 0], ['slow', 0]]);
+    const device = (id: string): HubClient => ({ id, message: (message) => { if (message.type === 'data') counts.set(id, counts.get(id)! + message.data.length); }, hostExit: () => undefined });
+    const fast = device('fast');
+    const slow = device('slow');
+    hub.post(fast, SPAWN, '/srv/app');
+    fromHost({ type: 'ready', id: 'term-1', pid: 42 });
+    hub.post(slow, { type: 'serialize', id: 'term-1' }, undefined);
+    fromHost({ type: 'screen', id: 'term-1', data: '', cols: 80, rows: 24, marks: [], sequences: 0 });
+    const chunk = 'x'.repeat(10_000);
+    for (let index = 0; index < 100; index++) {
+      fromHost({ type: 'data', id: 'term-1', data: chunk });
+      hub.post(fast, { type: 'ack', id: 'term-1', chars: chunk.length }, undefined);
+    }
+    expect(counts.get('fast')).toBe(1_000_000);
+    expect(counts.get('slow')).toBeLessThanOrEqual(TERMINAL_HIGH_WATERMARK_CHARS + chunk.length);
+    // the slow device is behind on output, not on input
+    hub.post(slow, { type: 'input', id: 'term-1', data: 'q' }, undefined);
+    expect(toHost.at(-1)).toEqual({ type: 'input', id: 'term-1', data: 'q' });
+    expect(toHost.some((request) => request.type === 'ack')).toBe(false);
   });
 });

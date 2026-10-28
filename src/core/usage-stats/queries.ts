@@ -2,6 +2,8 @@ import { USAGE_STATS_TOP_SESSIONS } from '../../shared/types/usage-stats';
 import type {
   UsageStatsAggregate,
   UsageStatsBucket,
+  UsageStatsCredential,
+  UsageStatsCredentialRow,
   UsageStatsHeatmapCell,
   UsageStatsTopSession,
   UsageStatsModelOption,
@@ -297,6 +299,14 @@ export function queryBySource(db: UsageDatabase, range: UsageStatsRange, filters
   return rows.map((r) => ({ source: r.source, detail: r.detail, ...aggregateOf(r) }));
 }
 
+/** One row per payer: a row a daemon's core billed to the host's own credential is the host's, every other the user's sign-in. */
+export function queryByCredential(db: UsageDatabase, range: UsageStatsRange, filters: UsageStatsFilters): UsageStatsCredentialRow[] {
+  const rows = db.prepare(`SELECT CASE WHEN e.credential_source = 'host' THEN 'host' ELSE 'signIn' END AS credential, ${AGGREGATE_COLUMNS}
+    ${FILTERED_ENTRIES}
+    GROUP BY 1 ${ORDER_BY_SPEND}, 1`).all(filterParams(range, filters)) as unknown as Array<AggregateRow & { credential: UsageStatsCredential }>;
+  return rows.map((r) => ({ credential: r.credential, ...aggregateOf(r) }));
+}
+
 /** Usage per weekday and hour of `timeZone`. */
 export function queryHeatmap(db: UsageDatabase, range: UsageStatsRange, filters: UsageStatsFilters, timeZone: string): UsageStatsHeatmapCell[] {
   const params = zonedParams(db, range, filters, timeZone);
@@ -375,6 +385,7 @@ export function buildReport(db: UsageDatabase, query: UsageStatsQuery, models: r
       byModel: queryByModel(db, query, filters, models),
       byProject: queryByProject(db, query, filters),
       bySource: queryBySource(db, query, filters),
+      byCredential: queryByCredential(db, query, filters),
       heatmap: queryHeatmap(db, query, filters, query.timeZone),
       topSessions: queryTopSessions(db, query, filters, USAGE_STATS_TOP_SESSIONS),
     };

@@ -169,4 +169,11 @@ describe('remote tags and worktree names', () => {
     expect(defaultWorktreePath(path.join('/work', 'repo'), 'feat-x', false)).toBe(path.join('/work', 'repo.worktrees', 'feat-x'));
     expect(defaultWorktreePath(path.join('/work', 'wt'), 'feat-x', true)).toBe(path.join('/work', 'feat-x'));
   });
+
+  it('puts it beside the repository in the path rules of the host the repository is on', () => {
+    expect(defaultWorktreePath('/srv/repo', 'feat-x', false, path.posix)).toBe('/srv/repo.worktrees/feat-x');
+    expect(defaultWorktreePath('/srv/wt', 'feat-x', true, path.posix)).toBe('/srv/feat-x');
+    expect(defaultWorktreePath('C:\\work\\repo', 'feat-x', false, path.win32)).toBe('C:\\work\\repo.worktrees\\feat-x');
+    expect(defaultWorktreePath('C:\\work\\wt', 'feat-x', true, path.win32)).toBe('C:\\work\\feat-x');
+  });
 });

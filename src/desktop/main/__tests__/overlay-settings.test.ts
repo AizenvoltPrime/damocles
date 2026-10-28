@@ -16,6 +16,7 @@ import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayAnswer, type 
 import { DESKTOP_CONFIGURATION, LANGUAGE_SETTING, TERMINAL_PROFILES_SETTING } from '../../local-services/desktop-configuration';
 import { OverlaySettings, type SettingsViewHost } from '../overlay-settings';
 import { WebviewPrompts } from '../../../core/chat-panel/webview-prompts';
+import type { AttachedView } from '../../../core/chat-panel/types';
 import type { OverlayHost } from '../overlay';
 import { fakeHandleWhileOpen } from './fake-popup-channels';
 
@@ -80,14 +81,17 @@ async function setup() {
   const resetLayout = vi.fn();
   const harness = h;
   // core's side of the settings modal, as core-service.ts serves it
-  const attached = new Map<number, string>();
+  const attached = new Map<number, { readonly panelId: string; readonly view: AttachedView }>();
   const lines: string[] = [];
   const real: SettingsViewHost = {
     attachSettingsView: async (panelId, attachment, view) => {
-      attached.set(attachment, panelId);
+      attached.set(attachment, { panelId, view });
       return harness.manager.attachView(panelId, view);
     },
-    dispatchSettingsView: (attachment, message) => harness.manager.dispatchFromView(attached.get(attachment) ?? '', message),
+    dispatchSettingsView: async (attachment, message) => {
+      const entry = attached.get(attachment);
+      if (entry) await harness.manager.dispatchFromView(entry.panelId, entry.view, message);
+    },
   };
   // what the tests swap: the core the chat runs on and how its panel is found
   const hooks: { core: () => SettingsViewHost | undefined; targetPanel: () => Promise<string | undefined> } = {
@@ -109,6 +113,7 @@ async function setup() {
     terminalProfiles: () => ({ profiles: [{ id: 'pwsh', name: 'PowerShell', path: 'C:\\pwsh.exe', args: [], source: 'detected', icon: 'powershell', customIcon: null, color: null, isDefault: true }], hidden: ['Command Prompt'], problems: [{ name: 'Evil', reason: 'pathNotAllowed', detail: '\\\\server\\x.exe' }] }) as const,
     log: (line) => lines.push(line),
     languageAtLaunch: 'el',
+    knownHost: () => false,
   });
   harness.routed.length = 0;
   return {
@@ -135,6 +140,7 @@ describe('OverlaySettings', () => {
       terminalProfiles: () => ({ profiles: [], hidden: [], problems: [] }),
       log: () => undefined,
       languageAtLaunch: 'en',
+      knownHost: () => false,
     });
     await expect(settings.show({ section: 'accounts', account: 'openai' })).rejects.toThrow('No chat could be opened');
     expect(seen).toEqual([['user', true]]);
@@ -481,16 +487,19 @@ describe('OverlaySettings scope tabs', () => {
     const local = await openPanel(harness);
     const remote = await openPanel(harness);
     const fake = fakeOverlay();
-    const attached = new Map<number, string>();
+    const attached = new Map<number, { readonly panelId: string; readonly view: AttachedView }>();
     const hooks = { remoteUp: true, refuse: (_scope: string | undefined): boolean => false, attaches: 0 };
     const host = (): SettingsViewHost => ({
       attachSettingsView: async (panelId, attachment, view, scope) => {
         hooks.attaches++;
         if (hooks.refuse(scope)) throw new Error('No open chat panel');
-        attached.set(attachment, panelId);
+        attached.set(attachment, { panelId, view });
         return harness.manager.attachView(panelId, view);
       },
-      dispatchSettingsView: (attachment, message) => harness.manager.dispatchFromView(attached.get(attachment) ?? '', message),
+      dispatchSettingsView: async (attachment, message) => {
+        const entry = attached.get(attachment);
+        if (entry) await harness.manager.dispatchFromView(entry.panelId, entry.view, message);
+      },
     });
     const localCore = host();
     const remoteCore = host();
@@ -507,6 +516,7 @@ describe('OverlaySettings scope tabs', () => {
       terminalProfiles: () => ({ profiles: [], hidden: [], problems: [] }),
       log: () => undefined,
       languageAtLaunch: 'en',
+      knownHost: () => false,
     });
     harness.routed.length = 0;
     const attachedEvents = () => fake.sent.filter((entry) => entry.channel === OVERLAY_CHANNELS.settingsAttached).map((entry) => entry.payload);
@@ -541,6 +551,23 @@ describe('OverlaySettings scope tabs', () => {
     await tick();
     expect(fake.requests.at(-1)).toMatchObject({ generation: 1, scopes: { active: 'user' } });
     expect(await send(1)).toEqual([local.panelId]);
+  });
+
+  it('opens Remote hosts, or a saved host named in the target, on the User tab, and refuses an unknown host', async () => {
+    const { fake, settings } = await scoped();
+    void settings.show({ section: 'remoteHosts' });
+    await tick();
+    expect(fake.requests.at(-1)).toMatchObject({ section: 'remoteHosts', scopes: { active: 'user' } });
+    await expect(settings.show({ section: 'remoteHosts', host: 'nope' })).rejects.toThrow('Unknown host');
+  });
+
+  it('tells the open modal\'s host tab its new name and color once that host changed, and no other host\'s change', async () => {
+    const { fake, settings } = await scoped();
+    void settings.show({});
+    await tick();
+    settings.hostChanged('ssh+other');
+    settings.hostChanged('loopback');
+    expect(fake.sent.filter((entry) => entry.channel === OVERLAY_CHANNELS.settingsScopeHost).map((entry) => entry.payload)).toEqual([{ name: 'Local daemon' }]);
   });
 
   it('attaches the previous tab again when core refuses the new one, once', async () => {

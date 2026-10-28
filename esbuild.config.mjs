@@ -144,6 +144,8 @@ const desktopMainOptions = {
   bundle: true,
   outfile: 'dist/desktop/main.js',
   external: DESKTOP_EXTERNALS,
+  // the stage and removal scripts main sends to a target as text (src/desktop/main/remote/bootstrap/stage1.ts, remove-server.ts)
+  loader: { '.sh': 'text', '.ps1': 'text' },
   format: 'cjs',
   platform: 'node',
   target: 'node24',
@@ -246,12 +248,23 @@ const askpassMainOptions = {
 };
 
 // git and ssh execute the askpass scripts, so the packaged mode comes from here, never from the checkout's file mode. The
-// folder is the list: verify-desktop-package.mjs's ASKPASS_SCRIPTS is tested against it.
+// folder's .sh files are the list: verify-desktop-package.mjs's ASKPASS_SCRIPTS is tested against it.
 export function copyAskpassScripts(dir = 'dist/askpass') {
   mkdirSync(dir, { recursive: true });
-  for (const name of readdirSync('resources/askpass')) {
+  for (const name of readdirSync('resources/askpass').filter((file) => file.endsWith('.sh'))) {
     copyFileSync(`resources/askpass/${name}`, `${dir}/${name}`);
     chmodSync(`${dir}/${name}`, 0o755);
+  }
+}
+
+// A daemon's core gives git dist/git-credential/git-credential-relay.sh, or the .cmd on a Windows target, as its credential
+// helper (src/core/scm/askpass/credential-relay.ts); git runs the .sh, so its mode comes from here.
+export const CREDENTIAL_RELAY_SCRIPTS = ['git-credential-relay.sh', 'git-credential-relay.cmd'];
+export function copyCredentialRelayScripts(dir = 'dist/git-credential') {
+  mkdirSync(dir, { recursive: true });
+  for (const name of CREDENTIAL_RELAY_SCRIPTS) {
+    copyFileSync(`resources/git-credential/${name}`, `${dir}/${name}`);
+    chmodSync(`${dir}/${name}`, name.endsWith('.sh') ? 0o755 : 0o644);
   }
 }
 
@@ -299,6 +312,9 @@ async function buildDesktop() {
   // Settings › About's What's new reads it next to main.js (src/desktop/main/release-notes.ts).
   copyFileSync('CHANGELOG.md', 'dist/desktop/CHANGELOG.md');
   copyAskpassScripts();
+  copyCredentialRelayScripts();
+  const { compileAskpassTrampoline } = await import('./scripts/askpass-trampoline.mjs');
+  compileAskpassTrampoline();
   // the loopback daemon's core loads it from the checkout's dist/, as a server package's core does from its own
   const { vendorSubscriptionPlugin } = await import('./scripts/subscription-plugin.mjs');
   await vendorSubscriptionPlugin('dist/subscription-plugin');

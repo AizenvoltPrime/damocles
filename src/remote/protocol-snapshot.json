@@ -21,17 +21,148 @@
   "account.providerSignIn",
   "client.availableModelIds",
   "client.keySaved",
+  "client.preferApiKey",
   "chat.modelRefusal",
   "account.authFailureReason",
   "history.authFailureReplay",
   "account.authFailureMissing",
   "chat.modelRefusalAccount",
   "chat.promptRejected",
-  "chat.btwAuthFailure"
+  "chat.btwAuthFailure",
+  "chats.openTranscript",
+  "model.credentialSource",
+  "chats.listMirrored",
+  "protocol.resume",
+  "control.ping",
+  "views.drained",
+  "actor",
+  "panelViews",
+  "credentialsPush",
+  "signIn",
+  "clients",
+  "linger",
+  "chats.stop",
+  "control.disconnect",
+  "chat.activity.sessionId",
+  "askpass.credential",
+  "askpass.daemonRelay",
+  "agent.forwarding",
+  "ssh.installAuthorizedKey",
+  "control.shutdownForRemoval",
+  "settings.remoteHosts",
+  "capabilities.bypassPermissions",
+  "credentialsPush.planModelIds",
+  "terminals.view",
+  "terminals.detachView",
+  "files.watchLimit",
+  "control.sharedHome",
+  "agent.perClientSockets",
+  "hostSockets",
+  "linger.alreadyEnabled",
+  "linger.domainUsers",
+  "ssh.installAuthorizedKey.accountFailed",
+  "ssh.installAuthorizedKey.restricted",
+  "askpass.credential.verifiedErase",
+  "e2e.stubOAuth",
+  "usageStats.byCredential",
+  "panels.viewDetached",
+  "panels.binaryAudience",
+  "chat.queuedPartsReturn",
+  "control.listOwnRuns"
  ],
  "contracts": {
   "CoreRequests": {
    "object": {
+    "askpass.credential": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "fields": {
+           "optional": false,
+           "type": {
+            "object": {
+             "host": {
+              "optional": false,
+              "type": "string"
+             },
+             "path": {
+              "optional": true,
+              "type": "string"
+             },
+             "protocol": {
+              "optional": false,
+              "type": "string"
+             },
+             "username": {
+              "optional": true,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "op": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"erase\"",
+             "\"get\""
+            ]
+           }
+          },
+          "targetHelper": {
+           "optional": false,
+           "type": "boolean"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "variants": "kind",
+         "of": {
+          "\"credential\"": {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": "\"credential\""
+            },
+            "password": {
+             "optional": false,
+             "type": "string"
+            },
+            "username": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          },
+          "\"none\"": {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": "\"none\""
+            }
+           }
+          },
+          "\"notConnected\"": {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": "\"notConnected\""
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
     "askpass.prompt": {
      "optional": false,
      "type": {
@@ -336,6 +467,7 @@
              "\"editor\"",
              "\"files\"",
              "\"integrations\"",
+             "\"remoteHosts\"",
              "\"sourceControl\"",
              "\"teams\"",
              "\"terminal\"",
@@ -1135,6 +1267,32 @@
       }
      }
     },
+    "views.drained": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "viewId": {
+           "optional": false,
+           "type": "string"
+          },
+          "viewKey": {
+           "optional": true,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
     "worktrees.confirmHandOff": {
      "optional": false,
      "type": {
@@ -1692,6 +1850,38 @@
       }
      }
     },
+    "chats.listMirrored": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "folder": {
+           "optional": false,
+           "type": "string"
+          },
+          "hostId": {
+           "optional": false,
+           "type": "string"
+          },
+          "query": {
+           "optional": true,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "array": "unknown"
+        }
+       }
+      }
+     }
+    },
     "chats.mention": {
      "optional": false,
      "type": {
@@ -1766,6 +1956,36 @@
         "optional": false,
         "type": {
          "ref": "object"
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "chats.openTranscript": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "file": {
+           "optional": false,
+           "type": "string"
+          },
+          "hostId": {
+           "optional": false,
+           "type": "string"
+          },
+          "viewId": {
+           "optional": false,
+           "type": "string"
+          }
+         }
         }
        },
        "result": {
@@ -2021,6 +2241,28 @@
            "type": "string"
           },
           "worktreeId": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "chats.stop": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "panelId": {
            "optional": false,
            "type": "string"
           }
@@ -2381,6 +2623,36 @@
           "folder": {
            "optional": false,
            "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "e2e.stubOAuth": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "account": {
+           "optional": false,
+           "type": "string"
+          },
+          "expiresInMs": {
+           "optional": false,
+           "type": "number"
+          },
+          "offline": {
+           "optional": true,
+           "type": "boolean"
           }
          }
         }
@@ -3129,6 +3401,10 @@
                  "optional": true,
                  "type": "boolean"
                 },
+                "preferApiKey": {
+                 "optional": true,
+                 "type": "boolean"
+                },
                 "type": {
                  "optional": false,
                  "type": {
@@ -3151,6 +3427,75 @@
       }
      }
     },
+    "user.credentials.push": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "credential": {
+           "optional": false,
+           "type": {
+            "object": {
+             "access": {
+              "optional": false,
+              "type": "string"
+             },
+             "accountId": {
+              "optional": true,
+              "type": "string"
+             },
+             "availableModelIds": {
+              "optional": true,
+              "type": {
+               "array": "string"
+              }
+             },
+             "clientId": {
+              "optional": true,
+              "type": "string"
+             },
+             "enterpriseUrl": {
+              "optional": true,
+              "type": "string"
+             },
+             "expiresIn": {
+              "optional": false,
+              "type": "number"
+             },
+             "refresh": {
+              "optional": false,
+              "type": "\"\""
+             },
+             "scopes": {
+              "optional": true,
+              "type": {
+               "array": "string"
+              }
+             },
+             "type": {
+              "optional": false,
+              "type": "\"oauth\""
+             }
+            }
+           }
+          },
+          "provider": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
     "user.resolveCredential": {
      "optional": false,
      "type": {
@@ -3159,6 +3504,10 @@
         "optional": false,
         "type": {
          "object": {
+          "force": {
+           "optional": true,
+           "type": "boolean"
+          },
           "provider": {
            "optional": false,
            "type": "string"
@@ -3275,6 +3624,14 @@
         "optional": false,
         "type": {
          "object": {
+          "joining": {
+           "optional": true,
+           "type": "string"
+          },
+          "sessionId": {
+           "optional": true,
+           "type": "string"
+          },
           "viewId": {
            "optional": false,
            "type": "string"
@@ -3471,7 +3828,8 @@
               "\"approval\"",
               "\"input\"",
               "\"plan\"",
-              "\"question\""
+              "\"question\"",
+              "\"signIn\""
              ]
             }
            }
@@ -3492,7 +3850,8 @@
                  "\"approval\"",
                  "\"input\"",
                  "\"plan\"",
-                 "\"question\""
+                 "\"question\"",
+                 "\"signIn\""
                 ]
                }
               },
@@ -3571,6 +3930,10 @@
        },
        "panelId": {
         "optional": false,
+        "type": "string"
+       },
+       "sessionId": {
+        "optional": true,
         "type": "string"
        }
       }
@@ -3902,6 +4265,7 @@
           "\"editor\"",
           "\"files\"",
           "\"integrations\"",
+          "\"remoteHosts\"",
           "\"sourceControl\"",
           "\"teams\"",
           "\"terminal\"",
@@ -4420,6 +4784,10 @@
                  "optional": true,
                  "type": "boolean"
                 },
+                "preferApiKey": {
+                 "optional": true,
+                 "type": "boolean"
+                },
                 "type": {
                  "optional": false,
                  "type": {
@@ -4454,6 +4822,10 @@
         "optional": true,
         "type": {
          "object": {
+          "agentForwarding": {
+           "optional": true,
+           "type": "boolean"
+          },
           "allowBypass": {
            "optional": false,
            "type": "boolean"
@@ -4623,6 +4995,21 @@
       }
      }
     },
+    "hostSockets": {
+     "optional": false,
+     "type": {
+      "object": {
+       "agentFolder": {
+        "optional": true,
+        "type": "string"
+       },
+       "relayHandle": {
+        "optional": true,
+        "type": "string"
+       }
+      }
+     }
+    },
     "language": {
      "optional": false,
      "type": {
@@ -4768,12 +5155,22 @@
      "optional": false,
      "type": {
       "object": {
+       "except": {
+        "optional": true,
+        "type": {
+         "array": "string"
+        }
+       },
        "json": {
         "optional": false,
         "type": "string"
        },
        "type": {
         "optional": false,
+        "type": "string"
+       },
+       "viewKey": {
+        "optional": true,
         "type": "string"
        }
       }
@@ -4783,9 +5180,19 @@
      "optional": false,
      "type": {
       "object": {
+       "except": {
+        "optional": true,
+        "type": {
+         "array": "string"
+        }
+       },
        "message": {
         "optional": false,
         "type": "unknown"
+       },
+       "viewKey": {
+        "optional": true,
+        "type": "string"
        }
       }
      }
@@ -4908,6 +5315,21 @@
        "message": {
         "optional": false,
         "type": "unknown"
+       },
+       "viewKey": {
+        "optional": true,
+        "type": "string"
+       }
+      }
+     }
+    },
+    "viewDetached": {
+     "optional": false,
+     "type": {
+      "object": {
+       "viewKey": {
+        "optional": false,
+        "type": "string"
        }
       }
      }
@@ -5068,6 +5490,10 @@
                     "optional": true,
                     "type": "boolean"
                    },
+                   "preferApiKey": {
+                    "optional": true,
+                    "type": "boolean"
+                   },
                    "type": {
                     "optional": false,
                     "type": {
@@ -5099,6 +5525,10 @@
            "key": "string",
            "value": {
             "object": {
+             "agentForwarding": {
+              "optional": true,
+              "type": "boolean"
+             },
              "allowBypass": {
               "optional": false,
               "type": "boolean"
@@ -5355,6 +5785,25 @@
            "optional": false,
            "type": "string"
           },
+          "credentialRelay": {
+           "optional": true,
+           "type": {
+            "object": {
+             "handle": {
+              "optional": false,
+              "type": "string"
+             },
+             "helper": {
+              "optional": false,
+              "type": "string"
+             },
+             "nonce": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
           "main": {
            "optional": false,
            "type": "string"
@@ -5424,6 +5873,10 @@
      "optional": true,
      "type": {
       "object": {
+       "agentFolder": {
+        "optional": true,
+        "type": "string"
+       },
        "hostId": {
         "optional": false,
         "type": "string"
@@ -6490,6 +6943,41 @@
       }
      }
     },
+    "files.watchLimits": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "ref": "object"
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "limit": {
+           "optional": false,
+           "type": {
+            "union": [
+             "null",
+             "number"
+            ]
+           }
+          },
+          "roots": {
+           "optional": false,
+           "type": {
+            "array": "string"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
     "files.writeHostSettings": {
      "optional": false,
      "type": {
@@ -7267,6 +7755,65 @@
            "rows": {
             "optional": false,
             "type": "number"
+           },
+           "view": {
+            "optional": true,
+            "type": {
+             "object": {
+              "nonce": {
+               "optional": false,
+               "type": "string"
+              },
+              "profile": {
+               "optional": false,
+               "type": {
+                "object": {
+                 "args": {
+                  "optional": false,
+                  "type": {
+                   "array": "string"
+                  }
+                 },
+                 "file": {
+                  "optional": false,
+                  "type": "string"
+                 },
+                 "icon": {
+                  "optional": false,
+                  "type": {
+                   "union": [
+                    "\"bash\"",
+                    "\"cmd\"",
+                    "\"fish\"",
+                    "\"git-bash\"",
+                    "\"powershell\"",
+                    "\"shell\"",
+                    "\"wsl\"",
+                    "\"zsh\""
+                   ]
+                  }
+                 },
+                 "id": {
+                  "optional": false,
+                  "type": "string"
+                 },
+                 "name": {
+                  "optional": false,
+                  "type": "string"
+                 }
+                }
+               }
+              },
+              "root": {
+               "optional": false,
+               "type": "string"
+              },
+              "startCwd": {
+               "optional": false,
+               "type": "string"
+              }
+             }
+            }
            }
           }
          }
@@ -7468,6 +8015,18 @@
             }
            }
           },
+          "\"detach\"": {
+           "object": {
+            "id": {
+             "optional": false,
+             "type": "string"
+            },
+            "type": {
+             "optional": false,
+             "type": "\"detach\""
+            }
+           }
+          },
           "\"input\"": {
            "object": {
             "data": {
@@ -7591,6 +8150,65 @@
             "type": {
              "optional": false,
              "type": "\"spawn\""
+            },
+            "view": {
+             "optional": true,
+             "type": {
+              "object": {
+               "nonce": {
+                "optional": false,
+                "type": "string"
+               },
+               "profile": {
+                "optional": false,
+                "type": {
+                 "object": {
+                  "args": {
+                   "optional": false,
+                   "type": {
+                    "array": "string"
+                   }
+                  },
+                  "file": {
+                   "optional": false,
+                   "type": "string"
+                  },
+                  "icon": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "\"bash\"",
+                     "\"cmd\"",
+                     "\"fish\"",
+                     "\"git-bash\"",
+                     "\"powershell\"",
+                     "\"shell\"",
+                     "\"wsl\"",
+                     "\"zsh\""
+                    ]
+                   }
+                  },
+                  "id": {
+                   "optional": false,
+                   "type": "string"
+                  },
+                  "name": {
+                   "optional": false,
+                   "type": "string"
+                  }
+                 }
+                }
+               },
+               "root": {
+                "optional": false,
+                "type": "string"
+               },
+               "startCwd": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
             }
            }
           }
@@ -7625,6 +8243,26 @@
        "watchId": {
         "optional": false,
         "type": "number"
+       }
+      }
+     }
+    },
+    "files.watchLimit": {
+     "optional": false,
+     "type": {
+      "object": {
+       "limit": {
+        "optional": false,
+        "type": {
+         "union": [
+          "null",
+          "number"
+         ]
+        }
+       },
+       "root": {
+        "optional": false,
+        "type": "string"
        }
       }
      }
@@ -7933,6 +8571,10 @@
           "terminalIdleDays": {
            "optional": false,
            "type": "number"
+          },
+          "watchClients": {
+           "optional": true,
+           "type": "boolean"
           }
          }
         }
@@ -8022,6 +8664,10 @@
                        "optional": true,
                        "type": "boolean"
                       },
+                      "preferApiKey": {
+                       "optional": true,
+                       "type": "boolean"
+                      },
                       "type": {
                        "optional": false,
                        "type": {
@@ -8045,6 +8691,10 @@
               "optional": false,
               "type": {
                "object": {
+                "agentForwarding": {
+                 "optional": true,
+                 "type": "boolean"
+                },
                 "allowBypass": {
                  "optional": false,
                  "type": "boolean"
@@ -8399,6 +9049,150 @@
       }
      }
     },
+    "disconnect": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "ref": "object"
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "linger": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "ref": "object"
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "variants": "result",
+         "of": {
+          "\"alreadyEnabled\"": {
+           "object": {
+            "result": {
+             "optional": false,
+             "type": "\"alreadyEnabled\""
+            }
+           }
+          },
+          "\"enabled\"": {
+           "object": {
+            "result": {
+             "optional": false,
+             "type": "\"enabled\""
+            }
+           }
+          },
+          "\"failed\"": {
+           "object": {
+            "code": {
+             "optional": false,
+             "type": "string"
+            },
+            "result": {
+             "optional": false,
+             "type": "\"failed\""
+            }
+           }
+          },
+          "\"refused\"": {
+           "object": {
+            "result": {
+             "optional": false,
+             "type": "\"refused\""
+            },
+            "user": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "listOwnRuns": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "ref": "object"
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "runs": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "id": {
+               "optional": false,
+               "type": "string"
+              },
+              "kind": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"chat\"",
+                 "\"terminal\""
+                ]
+               }
+              },
+              "projectKey": {
+               "optional": false,
+               "type": "string"
+              },
+              "providers": {
+               "optional": false,
+               "type": {
+                "array": "string"
+               }
+              },
+              "state": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"background\"",
+                 "\"running\"",
+                 "\"waiting\""
+                ]
+               }
+              },
+              "title": {
+               "optional": false,
+               "type": "string"
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
     "listRuns": {
      "optional": false,
      "type": {
@@ -8638,6 +9432,25 @@
       }
      }
     },
+    "ping": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "ref": "object"
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "ref": "object"
+        }
+       }
+      }
+     }
+    },
     "restartCore": {
      "optional": false,
      "type": {
@@ -8700,6 +9513,56 @@
       }
      }
     },
+    "sharedHome": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "ref": "object"
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "hosts": {
+           "optional": false,
+           "type": {
+            "array": "string"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "shutdownForRemoval": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "ref": "object"
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "runKey": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
     "shutdownNow": {
      "optional": false,
      "type": {
@@ -8733,11 +9596,102 @@
        }
       }
      }
+    },
+    "ssh.installAuthorizedKey": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "publicKey": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "code": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"accountFailed\"",
+               "\"aclFailed\"",
+               "\"notFile\"",
+               "\"ownership\"",
+               "\"restricted\"",
+               "\"writeFailed\""
+              ]
+             }
+            },
+            "path": {
+             "optional": false,
+             "type": "string"
+            },
+            "result": {
+             "optional": false,
+             "type": "\"failed\""
+            }
+           }
+          },
+          {
+           "object": {
+            "path": {
+             "optional": false,
+             "type": "string"
+            },
+            "result": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"installed\"",
+               "\"present\""
+              ]
+             }
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
     }
    }
   },
   "ControlEvents": {
    "object": {
+    "clients": {
+     "optional": false,
+     "type": {
+      "object": {
+       "clients": {
+        "optional": false,
+        "type": {
+         "array": {
+          "object": {
+           "deviceName": {
+            "optional": false,
+            "type": "string"
+           },
+           "self": {
+            "optional": false,
+            "type": "boolean"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
     "coreState": {
      "optional": false,
      "type": {
@@ -10099,6 +11053,10 @@
           "contextWindow": {
            "optional": true,
            "type": "number"
+          },
+          "credentialSource": {
+           "optional": true,
+           "type": "\"host\""
           },
           "defaultEffort": {
            "optional": true,
@@ -13747,7 +14705,7 @@
        "type": {
         "object": {
          "bypassPermissions": {
-          "optional": true,
+          "optional": false,
           "type": "boolean"
          },
          "chatReview": {
@@ -13981,6 +14939,75 @@
       "correlationId": {
        "optional": false,
        "type": "string"
+      },
+      "parts": {
+       "optional": true,
+       "type": {
+        "array": {
+         "object": {
+          "content": {
+           "optional": false,
+           "type": {
+            "array": {
+             "variants": "type",
+             "of": {
+              "\"image\"": {
+               "object": {
+                "source": {
+                 "optional": false,
+                 "type": {
+                  "object": {
+                   "data": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "media_type": {
+                    "optional": false,
+                    "type": {
+                     "union": [
+                      "\"image/gif\"",
+                      "\"image/jpeg\"",
+                      "\"image/png\"",
+                      "\"image/webp\""
+                     ]
+                    }
+                   },
+                   "type": {
+                    "optional": false,
+                    "type": "\"base64\""
+                   }
+                  }
+                 }
+                },
+                "type": {
+                 "optional": false,
+                 "type": "\"image\""
+                }
+               }
+              },
+              "\"text\"": {
+               "object": {
+                "text": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "type": {
+                 "optional": false,
+                 "type": "\"text\""
+                }
+               }
+              }
+             }
+            }
+           }
+          },
+          "messageId": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       }
       },
       "promptContent": {
        "optional": false,
@@ -18303,6 +19330,7 @@
          "\"editor\"",
          "\"files\"",
          "\"integrations\"",
+         "\"remoteHosts\"",
          "\"sourceControl\"",
          "\"teams\"",
          "\"terminal\"",
@@ -19044,6 +20072,75 @@
        "optional": true,
        "type": "string"
       },
+      "parts": {
+       "optional": true,
+       "type": {
+        "array": {
+         "object": {
+          "content": {
+           "optional": false,
+           "type": {
+            "array": {
+             "variants": "type",
+             "of": {
+              "\"image\"": {
+               "object": {
+                "source": {
+                 "optional": false,
+                 "type": {
+                  "object": {
+                   "data": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "media_type": {
+                    "optional": false,
+                    "type": {
+                     "union": [
+                      "\"image/gif\"",
+                      "\"image/jpeg\"",
+                      "\"image/png\"",
+                      "\"image/webp\""
+                     ]
+                    }
+                   },
+                   "type": {
+                    "optional": false,
+                    "type": "\"base64\""
+                   }
+                  }
+                 }
+                },
+                "type": {
+                 "optional": false,
+                 "type": "\"image\""
+                }
+               }
+              },
+              "\"text\"": {
+               "object": {
+                "text": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "type": {
+                 "optional": false,
+                 "type": "\"text\""
+                }
+               }
+              }
+             }
+            }
+           }
+          },
+          "messageId": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       }
+      },
       "reason": {
        "optional": false,
        "type": {
@@ -19365,6 +20462,10 @@
       "returnToInput": {
        "optional": true,
        "type": "boolean"
+      },
+      "sentAs": {
+       "optional": true,
+       "type": "string"
       },
       "type": {
        "optional": false,
@@ -21865,6 +22966,34 @@
       "type": {
        "optional": false,
        "type": "\"showPlanContent\""
+      }
+     }
+    },
+    "\"signInRequest\"": {
+     "object": {
+      "provider": {
+       "optional": false,
+       "type": "string"
+      },
+      "requestId": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"signInRequest\""
+      }
+     }
+    },
+    "\"signInResolved\"": {
+     "object": {
+      "requestId": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"signInResolved\""
       }
      }
     },
@@ -25484,6 +26613,52 @@
          "null",
          {
           "object": {
+           "byCredential": {
+            "optional": true,
+            "type": {
+             "array": {
+              "object": {
+               "cacheRead": {
+                "optional": false,
+                "type": "number"
+               },
+               "cacheWrite": {
+                "optional": false,
+                "type": "number"
+               },
+               "cost": {
+                "optional": false,
+                "type": "number"
+               },
+               "credential": {
+                "optional": false,
+                "type": {
+                 "union": [
+                  "\"host\"",
+                  "\"signIn\""
+                 ]
+                }
+               },
+               "input": {
+                "optional": false,
+                "type": "number"
+               },
+               "output": {
+                "optional": false,
+                "type": "number"
+               },
+               "requests": {
+                "optional": false,
+                "type": "number"
+               },
+               "unpricedTokens": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             }
+            }
+           },
            "byModel": {
             "optional": true,
             "type": {
@@ -28005,6 +29180,18 @@
       }
      }
     },
+    "\"continueWithMySignIn\"": {
+     "object": {
+      "requestId": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"continueWithMySignIn\""
+      }
+     }
+    },
     "\"createMemory\"": {
      "object": {
       "content": {
@@ -28920,6 +30107,7 @@
          "\"editor\"",
          "\"files\"",
          "\"integrations\"",
+         "\"remoteHosts\"",
          "\"sourceControl\"",
          "\"teams\"",
          "\"terminal\"",

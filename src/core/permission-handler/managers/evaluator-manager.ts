@@ -15,7 +15,8 @@ import { resolveToCwd } from '../../pi-session/tools/search-tools';
 import { MCP_TOOL_PREFIX } from '../../pi-session/mcp/naming';
 import { matchesToolPattern } from '../../pi-session/mcp/exposure';
 import { READ_MCP_RESOURCE, uriRuleCovers, type McpResourceRuleFilter } from '../mcp-resource-rule';
-import { bypassAllowed, currentPin } from '../../client-snapshots';
+import { bypassAllowed, currentPin, hostDefaultMode } from '../../client-snapshots';
+import type { PermissionMode } from '../../../shared/types/settings';
 import type { PermissionRuleLists } from '../../../shared/remote-user';
 
 /** Every built-in tool that edits a file; an `Edit` rule covers each of them. */
@@ -191,7 +192,7 @@ export class EvaluatorManager {
       return 'allow';
     }
 
-    if (this.state.permissionMode === 'acceptEdits') {
+    if (this.mode() === 'acceptEdits') {
       if ((toolName === TOOL_EDIT || toolName === TOOL_WRITE || toolName === TOOL_GENERATE_IMAGE) && !this.linksOutOfCwd(typeof input['file_path'] === 'string' ? input['file_path'] : '')) {
         return 'allow';
       }
@@ -264,6 +265,12 @@ export class EvaluatorManager {
   // YOLO as set, re-checked against the pinned client's policy at each decision
   private bypassing(): boolean {
     return this.state.dangerouslySkipPermissions && bypassAllowed(this.platform);
+  }
+
+  /** The mode the pinned (else acting) client's turn runs in: a YOLO panel's turn for a client whose policy refuses bypass runs in that client's default mode for the host. */
+  mode(): PermissionMode {
+    if (this.state.dangerouslySkipPermissions && !bypassAllowed(this.platform)) return hostDefaultMode(this.platform) ?? this.state.permissionMode;
+    return this.state.permissionMode;
   }
 
   /**

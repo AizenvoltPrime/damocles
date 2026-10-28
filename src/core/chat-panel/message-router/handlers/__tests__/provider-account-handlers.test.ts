@@ -45,7 +45,7 @@ function setup(remote = false) {
     platform,
     subscriptions,
   } as unknown as HandlerDependencies;
-  const ctx = { host, session } as unknown as HandlerContext;
+  const ctx = { host, reply: host, session } as unknown as HandlerContext;
   const accounts = createProviderAccountHandlers(deps);
   const send = (msg: WebviewToExtensionMessage) => accounts.handlers[msg.type]!(msg as never, ctx);
   const states = (provider = "xai"): ProviderSignInState[] =>

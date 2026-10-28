@@ -5,6 +5,7 @@ import FilesSection from '../components/FilesSection.vue';
 import { shellI18n } from '../i18n';
 import { createEditorStore, EDITOR_STORE } from '../editor/editor-store';
 import { createScmStore, SCM_STORE } from '../scm/scm-store';
+import type { ShownFolder } from '../../preload/shell-channels';
 import { FakeResizeObserver, fakeShellApi, type FakeShellApi } from './fakes';
 
 const mounted: VueWrapper[] = [];
@@ -19,12 +20,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function mountFiles(platform: 'win32' | 'linux' = 'win32'): Promise<{ wrapper: VueWrapper; api: FakeShellApi }> {
+async function mountFiles(options: { platform?: 'win32' | 'linux'; projectPlatform?: 'win32' | 'linux' | 'darwin'; trash?: boolean; shown?: ShownFolder; projectKey?: string } = {}): Promise<{ wrapper: VueWrapper; api: FakeShellApi }> {
   const api = fakeShellApi([], {
     listFiles: vi.fn(async () => ({ ok: true as const, entries: [{ name: 'src', kind: 'dir' as const }, { name: 'notes.txt', kind: 'file' as const }, { name: 'todo.md', kind: 'file' as const }] })),
   });
   const wrapper = mount(FilesSection, {
-    props: { api, projectKey: 'home', projectName: 'Home', platform, collapsed: false },
+    props: { api, projectKey: options.projectKey ?? 'home', projectName: 'Home', platform: options.platform ?? 'win32', projectPlatform: options.projectPlatform ?? options.platform ?? 'win32', trash: options.trash ?? true, collapsed: false, ...(options.shown ? { shown: options.shown } : {}) },
     global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: createEditorStore(api), [SCM_STORE]: createScmStore(api.scm) } },
     attachTo: document.body,
   });
@@ -73,6 +74,31 @@ describe('Files inline name box', () => {
     // the entry's own name, whatever its case, is not another entry's
     await input(wrapper).setValue('NOTES.txt');
     expect(message(wrapper).exists()).toBe(false);
+  });
+
+  it('follows the project\'s platform, not this computer\'s: a Linux project on Windows takes a:b and tells TODO.md from todo.md', async () => {
+    const { wrapper } = await mountFiles({ platform: 'win32', projectPlatform: 'linux' });
+    await startRename(wrapper, 'notes.txt');
+    await input(wrapper).setValue('a:b');
+    expect(message(wrapper).exists()).toBe(false);
+    await input(wrapper).setValue('TODO.md');
+    expect(message(wrapper).exists()).toBe(false);
+    await input(wrapper).setValue('todo.md');
+    expect(message(wrapper).text()).toContain('already exists');
+    // a separator is never part of a name, whatever the platform
+    await input(wrapper).setValue('a/b');
+    expect(message(wrapper).text()).toContain('not a valid name');
+  });
+
+  it('names Delete for what it does: Delete where the host has a trash, Delete Permanently where it has none', async () => {
+    for (const trash of [true, false]) {
+      const { wrapper, api } = await mountFiles({ trash });
+      await row(wrapper, 'notes.txt').trigger('contextmenu');
+      await flushPromises();
+      const request = api.overlayRequests.at(-1);
+      const items = request?.kind === 'menu' ? request.items : [];
+      expect(items.find((item) => item.kind === 'item' && item.id === 'delete')).toMatchObject({ label: trash ? 'Delete' : 'Delete Permanently', danger: true });
+    }
   });
 
   it('cancels an invalid name when the box loses focus, leaving the tree usable', async () => {
@@ -152,6 +178,22 @@ describe('Files folder expand', () => {
     await flushPromises();
     expect(api.listFiles).toHaveBeenCalledWith({ projectKey: 'home', relativeDir: 'src' });
   });
+
+  it('shows the newest listing of a folder when an older one answers after it', async () => {
+    const { wrapper, api } = await mountFiles();
+    const answers: Array<(entries: Array<{ name: string; kind: 'file' }>) => void> = [];
+    vi.mocked(api.listFiles).mockImplementation(() => new Promise((resolve) => answers.push((entries) => resolve({ ok: true, entries }))));
+    api.filesChanged({ projectKey: 'home', relativeDirs: [''] });
+    api.filesChanged({ projectKey: 'home', relativeDirs: [''] });
+    await flushPromises();
+    expect(answers).toHaveLength(2);
+    answers[1]!([{ name: 'renamed.txt', kind: 'file' }]);
+    await flushPromises();
+    answers[0]!([{ name: 'made.txt', kind: 'file' }]);
+    await flushPromises();
+    expect(row(wrapper, 'renamed.txt').exists()).toBe(true);
+    expect(row(wrapper, 'made.txt').exists()).toBe(false);
+  });
 });
 
 describe('Files names with control and bidi characters', () => {
@@ -160,7 +202,7 @@ describe('Files names with control and bidi characters', () => {
       listFiles: vi.fn(async () => ({ ok: true as const, entries: [{ name: 'a\u202Ebc.txt', kind: 'file' as const }, { name: 'x\u2066y.md', kind: 'file' as const }] })),
     });
     const wrapper = mount(FilesSection, {
-      props: { api, projectKey: 'home', projectName: 'Home', platform: 'win32', collapsed: false },
+      props: { api, projectKey: 'home', projectName: 'Home', platform: 'win32', projectPlatform: 'win32', trash: true, collapsed: false },
       global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: createEditorStore(api), [SCM_STORE]: createScmStore(api.scm) } },
       attachTo: document.body,
     });
@@ -212,7 +254,7 @@ describe('Files menu and Reveal in Files', () => {
       listFiles: vi.fn(async () => ({ ok: true as const, entries: [{ name: 'notes.txt', kind: 'file' as const }] })),
     });
     const wrapper = mount(FilesSection, {
-      props: { api, projectKey: worktreeKey, projectName: 'alpha', platform: 'win32', collapsed: false, shown: shown(worktreeKey) },
+      props: { api, projectKey: worktreeKey, projectName: 'alpha', platform: 'win32', projectPlatform: 'win32', trash: true, collapsed: false, shown: shown(worktreeKey) },
       global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: createEditorStore(api), [SCM_STORE]: createScmStore(api.scm) } },
       attachTo: document.body,
     });
@@ -236,5 +278,31 @@ describe('Files menu and Reveal in Files', () => {
     vi.mocked(api.showFolder).mockClear();
     await reveal({ projectKey: 'p1\u0000ffffffff', relativePath: 'notes.txt' });
     expect(api.showFolder).not.toHaveBeenCalled();
+  });
+});
+
+describe('Files Open as project', () => {
+  const PROJECT: ShownFolder = { projectKey: 'home', root: { projectKey: 'home' }, rootKey: 'home', fsPath: '/w/home', canShowWorktree: false };
+  const menuOf = async (wrapper: VueWrapper, api: FakeShellApi, path: string): Promise<string[]> => {
+    await row(wrapper, path).trigger('contextmenu', { clientX: 10, clientY: 10 });
+    await flushPromises();
+    const request = api.overlayRequests.at(-1);
+    return request?.kind === 'menu' ? request.items.flatMap((item) => (item.kind === 'item' ? [item.id] : [])) : [];
+  };
+
+  it('opens a folder of the project folder as its own project', async () => {
+    const { wrapper, api } = await mountFiles({ shown: PROJECT });
+    api.answerNext({ kind: 'menu', itemId: 'openAsProject' });
+    expect(await menuOf(wrapper, api, 'src')).toContain('openAsProject');
+    expect(api.openAsProject).toHaveBeenCalledWith({ projectKey: 'home', relativePath: 'src' });
+  });
+
+  it('offers it on folders only, naming the shown folder by its root key', async () => {
+    const { wrapper, api } = await mountFiles({ shown: PROJECT });
+    expect(await menuOf(wrapper, api, 'notes.txt')).not.toContain('openAsProject');
+    const worktree = await mountFiles({ projectKey: 'home|w1', shown: { ...PROJECT, rootKey: 'home|w1', root: { projectKey: 'home', worktreeId: 'w1' } } });
+    worktree.api.answerNext({ kind: 'menu', itemId: 'openAsProject' });
+    expect(await menuOf(worktree.wrapper, worktree.api, 'src')).toContain('openAsProject');
+    expect(worktree.api.openAsProject).toHaveBeenCalledWith({ projectKey: 'home|w1', relativePath: 'src' });
   });
 });

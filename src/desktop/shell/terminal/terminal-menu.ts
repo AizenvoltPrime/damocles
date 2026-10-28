@@ -139,6 +139,7 @@ export function renameRequestName(draft: string, terminal: Pick<TerminalInfo, 't
 export function terminalStatusLabel(terminal: Pick<TerminalInfo, 'status' | 'exitCode'>, t: (key: string, values?: Record<string, unknown>) => string): string {
   if (terminal.status === 'starting') return t('terminal.status.starting');
   if (terminal.status === 'running') return t('terminal.status.running');
+  if (terminal.status === 'reconnecting') return t('terminal.status.reconnecting');
   return terminal.exitCode === null ? t('terminal.hostStopped') : t('terminal.exited', { code: terminal.exitCode });
 }
 

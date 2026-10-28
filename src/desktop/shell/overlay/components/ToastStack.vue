@@ -252,7 +252,11 @@ watch(() => toasts.value.length > 0, (showing) => {
 
 onMounted(() => {
   stops.push(props.api.onToast((toast) => {
-    if (toasts.value.some((existing) => existing.id === toast.id)) return;
+    // A showing toast sent again is relabeled (a host renamed): its text changes in place, keeping its place, life and announcement.
+    if (toasts.value.some((existing) => existing.id === toast.id)) {
+      toasts.value = toasts.value.map((existing) => (existing.id === toast.id ? { ...existing, body: toast.body } : existing));
+      return;
+    }
     clocks.set(toast.id, { remaining: toast.remainingMs, since: Date.now() });
     toasts.value = [...toasts.value, toast];
     announce(toast);
@@ -373,9 +377,17 @@ onBeforeUnmount(() => {
             <HostBadge
               v-if="shown.host"
               :name="shown.host"
+              :tone="shown.hostTone"
               class="self-start"
             />
-            <p class="max-h-40 overflow-y-auto text-12.5 wrap-break-word whitespace-pre-wrap text-(--d-text)">
+            <span
+              v-if="shown.title"
+              class="text-13.5 font-semibold wrap-break-word"
+            >{{ shown.title }}</span>
+            <p
+              class="max-h-40 overflow-y-auto text-12.5 wrap-break-word whitespace-pre-wrap"
+              :class="shown.title ? 'text-pretty text-(--d-muted)' : 'text-(--d-text)'"
+            >
               <span class="sr-only">{{ shown.where }}: </span>{{ shown.message }}
             </p>
           </template>
@@ -385,6 +397,7 @@ onBeforeUnmount(() => {
               <HostBadge
                 v-if="shown.host"
                 :name="shown.host"
+                :tone="shown.hostTone"
               />
             </div>
             <p class="line-clamp-2 text-12.5 text-pretty text-(--d-muted)">

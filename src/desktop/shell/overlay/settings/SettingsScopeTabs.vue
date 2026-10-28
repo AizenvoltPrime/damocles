@@ -50,8 +50,8 @@ const TAB = 'relative h-8 min-w-0 flex-none gap-1.5 rounded-none border-0 bg-tra
       >
         <span
           aria-hidden="true"
-          class="size-2 shrink-0 rounded-full bg-(--host-color,var(--d-accent))"
-          :style="scopes.host.color !== undefined ? { '--host-color': scopes.host.color } : undefined"
+          class="size-2 shrink-0 rounded-full bg-(--tone)"
+          :class="`d-tone-${scopes.host.color ?? 'muted'}`"
         />
         <span class="max-w-40 truncate">{{ host }}</span>
       </TabsTrigger>

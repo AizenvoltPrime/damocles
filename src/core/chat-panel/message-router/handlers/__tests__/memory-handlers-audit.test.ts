@@ -43,7 +43,7 @@ function makeHarness(overrides: Record<string, unknown> = {}) {
     getPanels: () => panels,
     memoryService,
   } as unknown as HandlerDependencies;
-  const ctx = { folder: panels.get("panel-1")!.folder, host: { id: "panel-1" }, session: { memorySessionId: "sess-1" } } as unknown as HandlerContext;
+  const ctx = { folder: panels.get("panel-1")!.folder, host: { id: "panel-1" }, reply: { id: "panel-1" }, session: { memorySessionId: "sess-1" } } as unknown as HandlerContext;
   const to = (host: string) => sent.filter((s) => s.host === host).map((s) => s.message);
   return { sent, to, memoryService, handlers: createMemoryHandlers(deps), ctx };
 }

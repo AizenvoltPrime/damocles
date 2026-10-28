@@ -17,9 +17,11 @@ export const EXIT_NO_DAEMON = 2;
 
 export interface ConnectOptions {
   readonly paths: RunPaths;
-  // starts a daemon; called at most once, when none answers, since a start waits for a lock another daemon still holds
+  // starts a daemon; called at most once, when none answers, since a start waits for a lock whose holder does not answer yet
   readonly start: () => Promise<void>;
   readonly deadlineMs?: number;
+  // the SSH agent socket sshd forwarded into this session, sent in the last authentication message
+  readonly agentSock?: string;
   readonly log: (line: string) => void;
 }
 
@@ -41,7 +43,7 @@ function connectSocket(endpoint: string): Promise<net.Socket> {
 }
 
 // The daemon the pid file names, authenticated; rejects when it does not answer or cannot prove the token.
-async function tryDaemon(paths: RunPaths, record: PidRecord): Promise<DaemonConnection> {
+async function tryDaemon(paths: RunPaths, record: PidRecord, agentSock?: string): Promise<DaemonConnection> {
   if (!isOwnEndpoint(record)) throw new Error(`the pid file names ${record.endpoint}, which is not a daemon endpoint`);
   // lstat before every connect: a folder swapped for a link or another user's is never used
   if (record.socketFolder !== null) await checkSocketFolder(record.socketFolder);
@@ -49,13 +51,22 @@ async function tryDaemon(paths: RunPaths, record: PidRecord): Promise<DaemonConn
   const socket = await connectSocket(record.endpoint);
   const protocol = createPersistentProtocol({ socket: streamSocket(socket), maxBodyBytes: HANDSHAKE_MAX_BYTES, log: () => undefined });
   try {
-    await authenticateBridge(protocol, token);
+    await authenticateBridge(protocol, token, agentSock);
   } catch (err) {
     // sends nothing more to an endpoint that is not this user's daemon
     protocol.close('not this user\'s daemon');
     throw err;
   }
   return { socket, rest: protocol.detach() };
+}
+
+/** Whether the daemon the pid file names answers and proves the token now; the probe's connection ends before its hello. */
+export async function daemonAnswers(paths: RunPaths): Promise<boolean> {
+  const record = await readPidFile(paths.pidFile);
+  if (!record) return false;
+  const connection = await tryDaemon(paths, record).catch(() => undefined);
+  connection?.socket.destroy();
+  return connection !== undefined;
 }
 
 /** Connects to the running daemon, starting one when none answers, within the deadline; two bridges at once end with one daemon. */
@@ -67,7 +78,7 @@ export async function connectToDaemon(options: ConnectOptions): Promise<DaemonCo
     const record = await readPidFile(options.paths.pidFile);
     if (record) {
       try {
-        return await tryDaemon(options.paths, record);
+        return await tryDaemon(options.paths, record, options.agentSock);
       } catch (err) {
         last = `the daemon at ${record.endpoint} did not answer: ${err instanceof Error ? err.message : String(err)}`;
       }
@@ -92,9 +103,12 @@ export async function attach(root: string): Promise<void> {
   lockThreadSpawns();
   installProcessLauncher(createLauncherPool({ workerPath: path.join(root, 'dist', 'process-launcher-worker.js'), sentinelPath: path.join(root, 'dist', 'sentinel.js') }));
   let connection: DaemonConnection;
+  // sshd sets SSH_AUTH_SOCK only for a session that forwards an agent; the daemon uses it only while the client's policy forwards
+  const agentSock = process.env['SSH_AUTH_SOCK'];
   try {
     connection = await connectToDaemon({
       paths: await localRunPaths(),
+      ...(agentSock !== undefined && agentSock !== '' ? { agentSock } : {}),
       // HOME, USERPROFILE and ELECTRON_RUN_AS_NODE pass through to the daemon, which drops ELECTRON_* for its children
       start: () => startDaemonDetached(process.execPath, [path.join(root, 'dist', 'daemon.js'), 'serve'], Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)), root),
       log,

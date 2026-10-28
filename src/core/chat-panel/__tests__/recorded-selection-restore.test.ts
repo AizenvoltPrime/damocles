@@ -35,7 +35,7 @@ describe("a resumed conversation's recorded model and effort become the panel's"
       getRawBrowserService: () => ({}),
       platform: createFakePlatform(),
     } as unknown as SessionManagerConfig);
-    await manager.createSessionForPanel(host, { getPermissionMode: () => 'default' } as never, 'panel-1', FOLDER);
+    await manager.createSessionForPanel(host, { getPermissionMode: () => 'default', turnPermissionMode: () => 'default' } as never, 'panel-1', FOLDER);
 
     captured!.onRecordedSelection!('claude-sonnet-5-5', 'xhigh');
 

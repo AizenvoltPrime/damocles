@@ -71,6 +71,7 @@ interface FileRow {
   tail_hash: string | null;
   missing: number;
   parse_errors: number;
+  client_providers: string | null;
 }
 
 interface Target {
@@ -89,6 +90,8 @@ interface FileState {
   modelProvider: string | null;
   modelId: string | null;
   parseErrors: number;
+  /** The latest credential-source entry's providers; null before one, which a local core never writes. */
+  clientProviders: string[] | null;
   /** False until a session file's header line has been read; ledger lines ignore it. */
   attributed: boolean;
 }
@@ -152,7 +155,7 @@ function readCompleteLines(fd: number, start: number, end: number, onLine: (line
 const ENTRY_COLUMNS = [
   'entry_key', 'ts_ms', 'session_id', 'agent_session_id', 'session_started_ms', 'project_key', 'origin', 'kind', 'detail',
   'provider', 'model', 'model_key', 'input', 'output', 'cache_read', 'cache_write', 'cache_write_1h', 'reasoning',
-  'cost_input', 'cost_output', 'cost_cache_read', 'cost_cache_write', 'cost_total', 'stop_reason', 'file_id',
+  'cost_input', 'cost_output', 'cost_cache_read', 'cost_cache_write', 'cost_total', 'stop_reason', 'file_id', 'credential_source',
 ] as const;
 
 // A copied entry belongs to the oldest top-level session; equal start times fall back to session id, the
@@ -185,8 +188,8 @@ function prepareStatements(db: UsageDatabase): Statements {
     selectFile: db.prepare('SELECT * FROM files WHERE path = ?'),
     insertFile: db.prepare('INSERT INTO files (path, kind) VALUES (?, ?) RETURNING file_id'),
     updateFile: db.prepare(`UPDATE files SET session_id = ?, agent_session_id = ?, session_started_ms = ?, project_key = ?, detail = ?,
-      model_provider = ?, model_id = ?, size = ?, mtime_ms = ?, byte_offset = ?, tail_hash = ?, missing = 0, parse_errors = ?
-      WHERE file_id = ?`),
+      model_provider = ?, model_id = ?, size = ?, mtime_ms = ?, byte_offset = ?, tail_hash = ?, missing = 0, parse_errors = ?,
+      client_providers = ? WHERE file_id = ?`),
     upsertEntry: db.prepare(UPSERT_ENTRY_SQL),
     upsertProject: db.prepare('INSERT INTO projects (project_key, cwd) VALUES (?, ?) ON CONFLICT(project_key) DO NOTHING'),
     selectSession: db.prepare('SELECT started_ms, project_key FROM sessions WHERE session_id = ?'),
@@ -208,7 +211,7 @@ function prepareStatements(db: UsageDatabase): Statements {
 function emptyState(): FileState {
   return {
     sessionId: null, agentSessionId: null, startedMs: null, projectKey: null, detail: null,
-    modelProvider: null, modelId: null, parseErrors: 0, attributed: false,
+    modelProvider: null, modelId: null, parseErrors: 0, clientProviders: null, attributed: false,
   };
 }
 
@@ -222,6 +225,7 @@ function stateFromRow(row: FileRow): FileState {
     modelProvider: row.model_provider,
     modelId: row.model_id,
     parseErrors: row.parse_errors,
+    clientProviders: row.client_providers === null ? null : (JSON.parse(row.client_providers) as string[]),
     attributed: row.session_started_ms !== null,
   };
 }
@@ -291,7 +295,8 @@ class Indexer {
 
     this.stmts.updateFile.run(
       state.sessionId, state.agentSessionId, state.startedMs, state.projectKey, state.detail,
-      state.modelProvider, state.modelId, size, mtimeMs, end, tailHash(fd, end), state.parseErrors, fileId,
+      state.modelProvider, state.modelId, size, mtimeMs, end, tailHash(fd, end), state.parseErrors,
+      state.clientProviders === null ? null : JSON.stringify(state.clientProviders), fileId,
     );
   }
 
@@ -322,12 +327,16 @@ class Indexer {
         state.modelProvider = parsed.provider;
         state.modelId = parsed.model;
         return;
-      case 'usage':
+      case 'credentialSource':
+        state.clientProviders = parsed.clientProviders;
+        return;
+      case 'usage': {
         if (!state.attributed) return;
         if (parsed.entryKind === 'assistant' && parsed.provider && parsed.model) {
           state.modelProvider = parsed.provider;
           state.modelId = parsed.model;
         }
+        const provider = parsed.provider ?? state.modelProvider;
         this.upsertEntry(parsed, {
           sessionId: state.sessionId,
           agentSessionId: state.agentSessionId,
@@ -335,12 +344,14 @@ class Indexer {
           projectKey: state.projectKey!,
           origin: target.kind,
           detail: state.detail,
-          provider: parsed.provider ?? state.modelProvider,
+          provider,
           model: parsed.model ?? state.modelId,
+          credentialSource: state.clientProviders !== null && provider !== null && !state.clientProviders.includes(provider) ? 'host' : null,
           fileId,
           filePath: target.path,
         });
         return;
+      }
       default:
         return;
     }
@@ -397,6 +408,7 @@ class Indexer {
       detail: parsed.purpose,
       provider: parsed.provider,
       model: parsed.model,
+      credentialSource: parsed.credentialSource,
       fileId,
       filePath,
     });
@@ -406,7 +418,7 @@ class Indexer {
     line: UsageLine,
     at: {
       sessionId: string | null; agentSessionId: string | null; startedMs: number; projectKey: string; origin: FileKind;
-      detail: string | null; provider: string | null; model: string | null; fileId: number; filePath: string;
+      detail: string | null; provider: string | null; model: string | null; credentialSource: 'host' | null; fileId: number; filePath: string;
     },
   ): void {
     const u = line.usage;
@@ -415,7 +427,7 @@ class Indexer {
       `${line.id}|${line.timestamp}`, line.tsMs, at.sessionId, at.agentSessionId, at.startedMs, at.projectKey, at.origin,
       line.entryKind, at.detail, at.provider, at.model, modelKey, u.input, u.output, u.cacheRead, u.cacheWrite,
       u.cacheWrite1h, u.reasoning, u.cost.input, u.cost.output, u.cost.cacheRead, u.cost.cacheWrite, u.cost.total,
-      line.stopReason, at.fileId, at.filePath,
+      line.stopReason, at.fileId, at.credentialSource, at.filePath,
     );
   }
 

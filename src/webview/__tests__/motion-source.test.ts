@@ -62,11 +62,27 @@ describe('motion source', () => {
     }
   });
 
-  it('animates only opacity and transform, except the reference shimmer', () => {
+  // d-draw moves a sparkline's stroke-dashoffset, the one way an SVG line draws itself (the mockup's keyframe)
+  it('animates only opacity and transform, except the reference shimmer and the sparkline draw', () => {
     const motion = read('src/webview/styles/motion.css');
     const offenders = [...motion.matchAll(/@keyframes ([\w-]+)\{(.*)\}\s*$/gm)]
-      .filter(([, name]) => name !== 'd-shimmer')
+      .filter(([, name]) => name !== 'd-shimmer' && name !== 'd-draw')
       .flatMap(([, name, body = '']) => [...body.matchAll(/([a-z-]+):/g)].map(([, prop]) => prop).filter((prop) => prop !== 'opacity' && prop !== 'transform').map((prop) => `${name}: ${prop}`));
+    expect(offenders).toEqual([]);
+  });
+
+  // an animation outranks an inline style, and a filling one keeps its last transform, so the bound value never shows
+  it('puts no transform-animating motion class on an element whose inline style sets its transform', () => {
+    const motion = read('src/webview/styles/motion.css');
+    const movesTransform = new Set([...motion.matchAll(/@keyframes ([\w-]+)\{(.*)\}\s*$/gm)].filter(([, , body = '']) => body.includes('transform:')).map(([, name]) => name));
+    const classes = new Set([...motion.matchAll(/\.([\w-]+)\{[^}]*animation:([\w-]+)/g)].filter(([, , keyframe]) => movesTransform.has(keyframe!)).map(([, name]) => name));
+    const offenders = files(join(ROOT, 'src')).filter((path) => path.endsWith('.vue')).flatMap((path) =>
+      [...readFileSync(path, 'utf8').matchAll(/<[a-zA-Z][\s\S]*?(?<![=-])>/g)]
+        .map(([tag]) => tag)
+        .filter((tag) => /:style="[^"]*transform:/.test(tag) && !/:style="[^"]*animation: 'none'/.test(tag))
+        .flatMap((tag) => (/\sclass="([^"]*)"/.exec(tag)?.[1] ?? '').split(/\s+/).filter((name) => classes.has(name)))
+        .map((name) => `${relative(ROOT, path)}: ${name}`));
+    expect(classes.size).toBeGreaterThan(0);
     expect(offenders).toEqual([]);
   });
 

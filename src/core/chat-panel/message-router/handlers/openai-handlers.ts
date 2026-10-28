@@ -16,8 +16,10 @@ import {
   type OpenAIAuthStatus,
 } from "../../../pi-session/openai-auth";
 import { describeAuthError } from "../../../pi-session/describe-error";
-import { clientHasKey } from "../../../client-snapshots";
+import { clientHasKey, clientPrefersApiKey } from "../../../client-snapshots";
 import { buildAuthInteraction } from "./auth-interaction";
+import { deviceHost } from "../../device-hosts";
+import type { PanelHost } from "../../../../platform/window-service";
 import { republishAccountInfo } from "./account-info";
 import { log } from "../../../logger";
 import { t } from "../../../l10n";
@@ -106,7 +108,7 @@ function activeOpenAICredential(status: OpenAIAuthStatus, preferApiKey: boolean)
 
 export async function openaiAuthStatusMessage(platform: Platform): Promise<Extract<ExtensionToWebviewMessage, { type: "openaiAuthStatusChanged" }>> {
   const status = await readStatus(platform);
-  const preferApiKey = readPreferOpenAIApiKey(platform.state);
+  const preferApiKey = platform.remote ? clientPrefersApiKey(platform.remote, OPENAI_API_PROVIDER) : readPreferOpenAIApiKey(platform.state);
   return {
     type: "openaiAuthStatusChanged",
     status: toSnapshot(status),
@@ -134,10 +136,17 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
     }
   }
 
+  /** Every panel, on a daemon's core only the views of the device `asker` replies to: its sign-in's progress and refusal are its own. */
+  function toAsker(asker: PanelHost, message: ExtensionToWebviewMessage): void {
+    for (const [, instance] of getPanels()) {
+      postMessage(asker.clientId === undefined ? instance.host : deviceHost(instance.host, asker.clientId), message);
+    }
+  }
+
   /** Called on the mutation paths only. The read-only status queries post `openaiAuthStatusMessage()` direct,
    *  because a read changes nothing the account state is derived from. */
   async function broadcastAuthStatus(): Promise<void> {
-    broadcast(await openaiAuthStatusMessage(platform));
+    await deps.broadcastAccountState("the OpenAI auth status", "openai", () => openaiAuthStatusMessage(platform));
     republishAccountInfo(getPanels);
   }
 
@@ -164,12 +173,12 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       if (msg.type !== "setOpenAIApiKey") return;
       // before the probe, so the key never reaches OpenAI from a daemon's core
       if (platform.remote) {
-        postMessage(ctx.host, { type: "setOpenAIApiKeyAck", requestId: msg.requestId, ok: false, error: remoteSignInRefusal() });
+        postMessage(ctx.reply, { type: "setOpenAIApiKeyAck", requestId: msg.requestId, ok: false, error: remoteSignInRefusal() });
         return;
       }
       const key = msg.key.trim();
       if (!key) {
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "setOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: false,
@@ -181,7 +190,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       const probe = await probeOpenAIKey(key);
 
       if (probe.status === "rejected") {
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "setOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: false,
@@ -191,7 +200,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       }
 
       if (probe.status === "forbidden") {
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "setOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: false,
@@ -208,7 +217,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
         log("[OpenAIHandlers] Failed to persist API key: %s", describeAuthError(err));
         await broadcastAuthStatus();
         endSignIn(false);
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "setOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: false,
@@ -222,7 +231,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       endSignIn(true);
 
       if (probe.status === "ok") {
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "setOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: true,
@@ -230,7 +239,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
           modelCount: probe.modelCount ?? 0,
         });
       } else {
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "setOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: true,
@@ -243,7 +252,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
     clearOpenAIApiKey: async (msg, ctx) => {
       if (msg.type !== "clearOpenAIApiKey") return;
       if (platform.remote) {
-        postMessage(ctx.host, { type: "clearOpenAIApiKeyAck", requestId: msg.requestId, ok: false, error: remoteSignInRefusal() });
+        postMessage(ctx.reply, { type: "clearOpenAIApiKeyAck", requestId: msg.requestId, ok: false, error: remoteSignInRefusal() });
         return;
       }
       signInAbort?.abort();
@@ -251,11 +260,11 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
         await runtime().clearOpenAIApiKey();
         await broadcastAuthStatus();
         credentialChanged();
-        postMessage(ctx.host, { type: "clearOpenAIApiKeyAck", requestId: msg.requestId, ok: true });
+        postMessage(ctx.reply, { type: "clearOpenAIApiKeyAck", requestId: msg.requestId, ok: true });
       } catch (err) {
         log("[OpenAIHandlers] Failed to clear API key: %s", describeAuthError(err));
         await broadcastAuthStatus();
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "clearOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: false,
@@ -265,7 +274,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
     },
 
     getOpenAIAuthStatus: async (_msg, ctx) => {
-      postMessage(ctx.host, await openaiAuthStatusMessage(platform));
+      postMessage(ctx.reply, await openaiAuthStatusMessage(platform));
     },
 
     setOpenAIPreferApiKey: async (msg, ctx) => {
@@ -277,7 +286,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       } catch (err) {
         log("[OpenAIHandlers] Failed to apply the API key preference: %s", describeAuthError(err));
         await broadcastAuthStatus();
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "setOpenAIPreferApiKeyAck",
           requestId: msg.requestId,
           ok: false,
@@ -288,7 +297,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       await broadcastAuthStatus();
       // the toggle switches the credential pi sends, so the refusal the card names no longer applies
       credentialChanged();
-      postMessage(ctx.host, {
+      postMessage(ctx.reply, {
         type: "setOpenAIPreferApiKeyAck",
         requestId: msg.requestId,
         ok: true,
@@ -300,28 +309,28 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
 
       // The flow in progress is still running, so the requester is told so rather than every panel told it failed.
       if (signInBusy) {
-        postMessage(ctx.host, { type: "openaiChatGPTAuthStarted" });
+        postMessage(ctx.reply, { type: "openaiChatGPTAuthStarted" });
         return;
       }
 
       signInBusy = true;
       const abort = new AbortController();
       signInAbort = abort;
-      broadcast({ type: "openaiChatGPTAuthStarted" });
+      toAsker(ctx.reply, { type: "openaiChatGPTAuthStarted" });
 
       let signedIn = false;
       try {
         await runtime().signInChatGPT(buildChatGPTInteraction(abort.signal));
         signedIn = true;
-        broadcast({ type: "openaiChatGPTAuthCompleted" });
+        toAsker(ctx.reply, { type: "openaiChatGPTAuthCompleted" });
         credentialChanged();
       } catch (err) {
         // pi rethrows a flow abort as its own "Login cancelled", so the signal is checked as well as the sentinel.
         if (abort.signal.aborted || (err instanceof Error && err.message === CHATGPT_SIGN_IN_CANCELLED)) {
-          broadcast({ type: "openaiChatGPTAuthFailed", error: t("Sign-in cancelled.") });
+          toAsker(ctx.reply, { type: "openaiChatGPTAuthFailed", error: t("Sign-in cancelled.") });
         } else {
           log("[OpenAIHandlers] ChatGPT sign-in failed: %s", describeAuthError(err));
-          broadcast({ type: "openaiChatGPTAuthFailed", error: err instanceof Error ? err.message : String(err) });
+          toAsker(ctx.reply, { type: "openaiChatGPTAuthFailed", error: err instanceof Error ? err.message : String(err) });
         }
       } finally {
         signInBusy = false;

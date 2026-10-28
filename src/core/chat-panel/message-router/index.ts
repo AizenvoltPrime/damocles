@@ -15,11 +15,20 @@ import type { HandlerContext, HandlerDependencies, HandlerRegistry, ViewHandlerR
 import { createHandlerRegistry } from "./handler-registry";
 import { createViewJoin } from "./handlers/session-handlers";
 import { withSettingsViewScope } from "../settings-view-scope";
+import { deviceHost } from "../device-hosts";
 import { MEMORY_MESSAGE_TYPES, MEMORY_MESSAGE_SOURCES } from "./handlers/memory-handlers";
 import { log } from "../../logger";
 import { visibleLines } from "../../../shared/visible-text";
 import { LANGUAGE_PREFERENCE_KEY } from "../../../shared/language-preference";
 import { VOICE_VIEW_MESSAGES } from "../../../shared/remote-user";
+
+/**
+ * Where a settings view's request is answered: on a panel several devices show, that device's chat views, and the settings
+ * view through the panel's copy of its types; elsewhere the panel's host.
+ */
+function settingsViewReply(panel: PanelHost, view: AttachedView): PanelHost {
+  return view.clientId === undefined ? panel : deviceHost(panel, view.clientId);
+}
 
 export interface MessageRouterConfig {
   postMessage: (host: PanelHost, message: ExtensionToWebviewMessage) => void;
@@ -43,6 +52,7 @@ export interface MessageRouterConfig {
   restoreRetryChanged: HandlerDependencies["restoreRetryChanged"];
   webviewPrompts: HandlerDependencies["webviewPrompts"];
   worktrees: HandlerDependencies["worktrees"];
+  broadcastAccountState: HandlerDependencies["broadcastAccountState"];
 }
 
 export class MessageRouter {
@@ -51,10 +61,12 @@ export class MessageRouter {
   private readonly viewJoin: ReturnType<typeof createViewJoin>;
   private readonly getPanels: MessageRouterConfig["getPanels"];
   private readonly postMessage: MessageRouterConfig["postMessage"];
+  private readonly platform: Platform;
 
   constructor(config: MessageRouterConfig) {
     this.getPanels = config.getPanels;
     this.postMessage = config.postMessage;
+    this.platform = config.platform;
 
     const deps: HandlerDependencies = {
       postMessage: config.postMessage,
@@ -79,17 +91,19 @@ export class MessageRouter {
       restoreRetryChanged: config.restoreRetryChanged,
       webviewPrompts: config.webviewPrompts,
       worktrees: config.worktrees,
+      broadcastAccountState: config.broadcastAccountState,
     };
     ({ handlers: this.handlers, viewHandlers: this.viewHandlers } = createHandlerRegistry(deps));
     this.viewJoin = createViewJoin(deps);
   }
 
-  /** A view joins the panel's chat (views.join); the panel's own posts wait behind `gate` while the join replays it. */
-  async joinView(panelId: string, gate: ViewJoinGate): Promise<void> {
+  /** A view joins the panel's chat (views.join) on its own host; the panel's own posts wait behind `gate` while the join replays it. */
+  async joinView(panelId: string, gate: ViewJoinGate, host: PanelHost): Promise<void> {
     const instance = this.getPanels().get(panelId);
     if (!instance) throw new Error(`No open chat panel ${panelId}`);
     await this.viewJoin({
       host: instance.host,
+      reply: host,
       session: instance.session,
       permissionHandler: instance.permissionHandler,
       ideContextManager: instance.ideContextManager,
@@ -97,6 +111,11 @@ export class MessageRouter {
       panelId,
       folder: instance.folder,
     }, gate);
+  }
+
+  /** The language the user picked for Damocles, else the host's. */
+  languagePreference(): string {
+    return this.getLanguagePreference(this.platform);
   }
 
   private getLanguagePreference(platform: Platform): string {
@@ -114,16 +133,21 @@ export class MessageRouter {
     await handler(message, { host });
   }
 
-  /** `view` is the attached settings view the message came from; the handler then runs with the chat's own context. */
-  async handleWebviewMessage(message: WebviewToExtensionMessage, panelId: string, view?: AttachedView): Promise<void> {
+  /**
+   * `view` is the attached settings view the message came from; the handler then runs with the chat's own context. `viewKey`
+   * names the chat view of several that sent it, whose own host is the handler's `reply`; `host` reaches every view.
+   */
+  async handleWebviewMessage(message: WebviewToExtensionMessage, panelId: string, view?: AttachedView, viewKey?: string): Promise<void> {
     const instance = this.getPanels().get(panelId);
     if (!instance) {
       log("[MessageRouter] No panel instance found for", panelId);
       return;
     }
 
+    const reply = view !== undefined ? settingsViewReply(instance.host, view) : viewKey !== undefined && instance.host.viewHost ? instance.host.viewHost(viewKey) : instance.host;
     const ctx: HandlerContext = {
       host: instance.host,
+      reply,
       session: instance.session,
       permissionHandler: instance.permissionHandler,
       ideContextManager: instance.ideContextManager,
@@ -131,6 +155,7 @@ export class MessageRouter {
       panelId,
       folder: instance.folder,
       ...(view ? { view } : {}),
+      ...(viewKey !== undefined ? { viewKey } : {}),
     };
 
     const handler = this.handlers[message.type];
@@ -144,14 +169,14 @@ export class MessageRouter {
         const failure = `Failed to handle ${message.type}: ${visibleLines(detail)}`;
         if (MEMORY_MESSAGE_TYPES.has(message.type)) {
           const source = MEMORY_MESSAGE_SOURCES.get(message.type);
-          this.postMessage(instance.host, {
+          this.postMessage(reply, {
             type: "memoryError",
             message: failure,
             ...(source ? { source } : {}),
             ...(source === "audit" ? { code: "request-failed" as const } : {}),
           });
         } else {
-          this.postMessage(instance.host, { type: "error", message: failure });
+          this.postMessage(reply, { type: "error", message: failure });
         }
       }
     } else {

@@ -45,6 +45,22 @@ export async function shutDown(steps: ShutdownSteps): Promise<void> {
   await bounded(disposed, steps.timeoutMs, () => steps.log(`[shutdown] teardown did not finish within ${steps.timeoutMs} ms; quitting anyway`));
 }
 
+export interface RemoteDetachSteps {
+  // every session mirror's sync under way settled
+  readonly mirrorsIdle: () => Promise<unknown>;
+  // the graceful control.disconnect of every connected daemon
+  readonly disconnect: () => Promise<unknown>;
+  // each wait's bound, inside the teardown's own
+  readonly waitMs: number;
+  readonly log: (line: string) => void;
+}
+
+/** A quit's detach from its daemons: a mirror sync under way lands over its connection, then each daemon is told goodbye. */
+export async function detachRemotes(steps: RemoteDetachSteps): Promise<void> {
+  await bounded(steps.mirrorsIdle(), steps.waitMs, () => steps.log(`[shutdown] a session mirror sync did not settle within ${steps.waitMs} ms; disconnecting anyway`));
+  await bounded(steps.disconnect(), steps.waitMs, () => steps.log(`[shutdown] a daemon did not answer the disconnect within ${steps.waitMs} ms; closing anyway`));
+}
+
 // releasing: the quit asks about terminals and editors and can still be cancelled; disposing: it no longer can.
 export type QuitPhase = 'running' | 'releasing' | 'disposing' | 'done';
 

@@ -4,7 +4,7 @@ vi.mock('electron', () => ({ WebContentsView: vi.fn(), nativeTheme: { shouldUseD
 
 import { MAX_MENU_ITEMS, MAX_MESSAGE_PREVIEW_LINES, MAX_OVERLAY_ITEMS, MAX_OVERLAY_LABEL_LENGTH, MAX_QUICK_PICK_BYTES, MAX_QUICK_PICK_ITEMS, parseInputRequest, quickPickItemBytes, tidyMenu } from '../../preload/overlay-channels';
 import { MAX_INPUT_VALUE_LENGTH } from '../../../shared/input-validation';
-import { createInputAsker, createQuickPickAsker, parseBrowseCall, parseMessageRequest, parseOverlayAnswer, parseOverlayRequest, parseQuickPickRequest, type InputBrowseHandler, type InputOverlay } from '../overlay';
+import { createInputAsker, createQuickPickAsker, parseBrowseCall, parseConnectRequest, parseMessageRequest, parseOverlayAnswer, parseOverlayRequest, parseQuickPickRequest, type InputBrowseHandler, type InputOverlay } from '../overlay';
 import { moreActionsMenu, toOverlayMenu } from '../../shell/scm/scm-menus';
 import type { OverlayAnswer, OverlayRequest } from '../../preload/overlay-channels';
 
@@ -443,5 +443,73 @@ describe('the QuickInput asker', () => {
     expect(await unbounded.ask({ prompt: '' })).toBeUndefined();
     expect(unbounded.requests).toEqual([]);
     expect(unbounded.unavailable()).toBe(1);
+  });
+});
+
+describe('the Connect dialog request', () => {
+  const card = {
+    hostId: 'h1', name: 'prod-1', destinationLabel: 'prod-1', connection: 'offline', signInNeeded: false, recentFolders: ['/srv/app'], projectFolders: [],
+    notices: [{ code: 'noLinger', params: { user: 'u' } }], allowBypass: false, passwordless: false, keyInstalledByDamocles: false, lingerEnabledByDamocles: false,
+  };
+  const request = { kind: 'connect', hosts: [card], sshConfigAliases: ['staging'] };
+
+  it('takes what main builds within the bounds, and only main opens it', () => {
+    expect(parseConnectRequest(request)).toEqual(request);
+    expect(parseConnectRequest({ ...request, sshConfigAliases: [...Array.from({ length: 999 }, (_, index) => `h${index}`), 'a'.repeat(255)] })).toBeDefined();
+    expect(parseConnectRequest({ ...request, hostId: 'h1', attempt: { attemptId: 'a', hostId: 'h1', step: 'installing', visited: ['connecting', 'installing'], progress: 0.5, notices: [] } })).toBeDefined();
+    expect(parseOverlayRequest(request)).toBeUndefined();
+  });
+
+  it('refuses one past the bounds or malformed', () => {
+    expect(parseConnectRequest({ ...request, hosts: [{ ...card, name: 'x'.repeat(500) }] })).toBeUndefined();
+    expect(parseConnectRequest({ ...request, hosts: [{ ...card, notices: [{ code: 'x', params: { a: {} } }] }] })).toBeUndefined();
+    expect(parseConnectRequest({ ...request, sshConfigAliases: [''] })).toBeUndefined();
+    expect(parseConnectRequest({ ...request, sshConfigAliases: ['a'.repeat(256)] })).toBeUndefined();
+    expect(parseConnectRequest({ ...request, sshConfigAliases: Array.from({ length: 1001 }, (_, index) => `h${index}`) })).toBeUndefined();
+    expect(parseConnectRequest({ ...request, attempt: { attemptId: 'a', hostId: 'h1', step: 'flying', visited: [], notices: [] } })).toBeUndefined();
+  });
+
+  it('rebuilds the request field by field, dropping what main never sends', () => {
+    const full = {
+      ...card, color: 'danger', os: 'win32', lastUsed: 5, clockSkewMs: -180000, installFolder: 'D:\\damocles', defaultPermissionMode: 'plan',
+      failure: { code: 'timedOut', params: {} }, reconnect: { phase: 'waiting', since: 1, retryAt: 2 }, devices: [{ deviceName: 'laptop', self: true }],
+    };
+    const attempt = { attemptId: 'a', hostId: 'h1', step: 'authenticating', visited: ['connecting', 'authenticating'], prompt: { promptId: 'p', kind: 'secret', secretKind: 'password', text: 'Password:', offerRemember: true }, notices: [] };
+    const parsed = parseConnectRequest({ ...request, hostId: 'h1', hosts: [{ ...full, extra: 'x' }], attempt: { ...attempt, extra: 'x' }, extra: 'x' });
+    expect(parsed).toEqual({ ...request, hostId: 'h1', hosts: [full], attempt });
+    expect(parsed!.hosts[0]).not.toBe(full);
+  });
+
+  it('refuses a card or attempt field outside what main builds', () => {
+    for (const bad of [
+      { color: '#ff0000' }, { os: 'freebsd' }, { installFolder: '' }, { installFolder: 'x'.repeat(4097) }, { clockSkewMs: 1.5 }, { lastUsed: -1 },
+      { defaultPermissionMode: 'yolo' }, { allowBypass: undefined }, { passwordless: 'yes' }, { connection: 'up' },
+      { failure: { code: 'notACode', params: {} } }, { reconnect: { phase: 'failed', since: 1, code: 'timedOut' } }, { devices: [{ deviceName: '', self: true }] },
+    ]) expect(parseConnectRequest({ ...request, hosts: [{ ...card, ...bad }] })).toBeUndefined();
+    const attempt = { attemptId: 'a', hostId: 'h1', step: 'installing', visited: ['connecting'], notices: [] };
+    for (const bad of [
+      { progress: 1.5 }, { progress: Number.NaN }, { visited: ['flying'] }, { failure: { code: 'nope', params: {} } },
+      { prompt: { promptId: 'p', kind: 'secret', secretKind: 'pin', text: 'x'.repeat(2001) } }, { prompt: { promptId: 'p', kind: 'secret', secretKind: 'mind', text: 'PIN:' } },
+      { prompt: { promptId: 'p', kind: 'hostKey', host: 'h', keyType: 'ED25519' } }, { prompt: { kind: 'secret', secretKind: 'pin', text: 'PIN:' } },
+    ]) expect(parseConnectRequest({ ...request, hostId: 'h1', attempt: { ...attempt, ...bad } })).toBeUndefined();
+  });
+
+  it('takes a host\'s latency only with its measurement count', () => {
+    const latency = { latencyMs: 38, slow: false, history: [38], measurements: 1 };
+    expect(parseConnectRequest({ ...request, hosts: [{ ...card, latency }] })).toBeDefined();
+    expect(parseConnectRequest({ ...request, hosts: [{ ...card, latency: { ...latency, measurements: undefined } }] })).toBeUndefined();
+    expect(parseConnectRequest({ ...request, hosts: [{ ...card, latency: { ...latency, measurements: 0 } }] })).toBeUndefined();
+  });
+
+  it('opens a host\'s card for a rename only with that host named', () => {
+    expect(parseConnectRequest({ ...request, hostId: 'h1', card: 'rename' })).toEqual({ ...request, hostId: 'h1', card: 'rename' });
+    expect(parseConnectRequest({ ...request, card: 'rename' })).toBeUndefined();
+    expect(parseConnectRequest({ ...request, hostId: 'h1', card: 'kill' })).toBeUndefined();
+  });
+
+  it('answers only dismissed', () => {
+    const parsed = parseConnectRequest(request)!;
+    expect(parseOverlayAnswer({ kind: 'dismissed' }, parsed)).toEqual({ kind: 'dismissed' });
+    expect(parseOverlayAnswer({ kind: 'connect', closed: true }, parsed)).toBeUndefined();
   });
 });

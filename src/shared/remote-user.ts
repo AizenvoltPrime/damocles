@@ -3,7 +3,7 @@
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from './types/messages';
 import type { PermissionMode } from './types/settings';
 
-/** The client id a local core's init names for its one client, main. A daemon's ids are its connection ids. */
+/** The client id a local core's init names for its one client, main. A daemon names each client by its hello's stable clientId. */
 export const LOCAL_CLIENT_ID = 'local';
 
 /** The most a broker answer's expiresIn may be (ms); the client clamps to it, so a token never stays cached longer. */
@@ -33,7 +33,8 @@ export type BrokerAnswer =
  * answers and whose change drops its cached credential; keySaved: a key provider's key is saved in Damocles, applied or
  * outranked by a sign-in (absent before the client's first key sync); flatFee: the applied key bills a flat subscription;
  * allowance: the client bills this OAuth sign-in to its subscription's included allowance (Claude's allowance plugin is
- * active there); availableModelIds: the models the OAuth sign-in lists for the user's plan (GitHub Copilot).
+ * active there); availableModelIds: the models the OAuth sign-in lists for the user's plan (GitHub Copilot); preferApiKey:
+ * the client prefers its key saved in Damocles over a sign-in for OpenAI or a key provider (absent: it does not).
  */
 export interface ClientAuthEntry {
   readonly type: 'oauth' | 'api_key' | 'none';
@@ -44,6 +45,7 @@ export interface ClientAuthEntry {
   readonly flatFee: boolean;
   readonly allowance?: boolean;
   readonly availableModelIds?: readonly string[];
+  readonly preferApiKey?: boolean;
 }
 
 /** The most model ids a plan list carries across machines, and the longest id. */
@@ -76,6 +78,7 @@ export interface HeldAuthEntry {
   readonly flatFee: boolean;
   readonly allowance?: boolean;
   readonly availableModelIds?: readonly string[];
+  readonly preferApiKey?: boolean;
 }
 
 export interface HeldAuth {
@@ -119,7 +122,8 @@ export interface ClientUser {
 }
 
 /**
- * What the client allows a daemon's core: its voice capability (HostCapabilities.voice), YOLO, and the host's default mode.
+ * What the client allows a daemon's core: its voice capability (HostCapabilities.voice), YOLO, the host's default mode and
+ * agent forwarding.
  * sharedLoopback: the target runs on the client's own machine (the loopback authority), so a loopback endpoint is reachable.
  */
 export interface ClientPolicy {
@@ -127,6 +131,8 @@ export interface ClientPolicy {
   readonly allowBypass: boolean;
   readonly defaultPermissionMode?: PermissionMode;
   readonly sharedLoopback?: boolean;
+  // the host's Forward SSH agent switch: the daemon's agent socket reaches this client's processes only while it is on
+  readonly agentForwarding?: boolean;
 }
 
 /** The daemon's request to a client whose connection is gone (user.credentials to an absent pinned client). */

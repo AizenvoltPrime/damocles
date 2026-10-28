@@ -663,3 +663,76 @@ body {
   transition: none;
   animation: o-fade-out 0.14s ease-in both;
 }
+
+/*
+ * Connect to Host. The dialog renders in place, so its wrapper's leave plays the exit before the answer reaches main; host
+ * cards rise in 40 ms apart (capped at 8), timeline rows slide in, and a step's message and form grow from their top edge.
+ */
+.overlay-pop-leave-active.connect-overlay {
+  transition: none;
+  animation: o-fade-out 0.18s ease-in both;
+}
+
+.overlay-pop-leave-active.connect-overlay .connect-dialog {
+  animation: o-zoom-out 0.18s ease-in both;
+}
+
+.host-card {
+  animation: d-up 0.3s var(--ease-out) both;
+  animation-delay: calc(var(--card-index, 0) * 40ms);
+}
+
+.host-card-new {
+  animation: d-pop 0.16s var(--ease-out) both;
+}
+
+.timeline-row {
+  animation: d-slide 0.22s var(--ease-out) both;
+  animation-delay: calc(var(--row-index, 0) * 50ms);
+}
+
+.timeline-line {
+  transition: transform 0.35s var(--ease-out);
+}
+
+.timeline-bar {
+  transform-origin: left;
+  transition: transform 0.45s var(--ease-out);
+}
+
+[dir="rtl"] .timeline-bar {
+  transform-origin: right;
+}
+
+.timeline-grow {
+  transform-origin: top;
+  animation: o-grow 0.2s var(--ease-out);
+}
+
+/* Reduced motion stops every animation, so the turning spinner gives way to a static ellipsis. */
+.timeline-ellipsis {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .timeline-spinner {
+    display: none;
+  }
+
+  .timeline-ellipsis {
+    display: inline;
+  }
+}
+
+[data-reduced-motion] .timeline-spinner {
+  display: none;
+}
+
+[data-reduced-motion] .timeline-ellipsis {
+  display: inline;
+}
+
+.folder-row {
+  animation: d-slide 0.2s var(--ease-out) both;
+  animation-delay: calc(var(--row-index, 0) * 25ms);
+}

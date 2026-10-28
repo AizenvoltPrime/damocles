@@ -616,6 +616,10 @@ describe('Delete with a dirty editor tab of the worktree', () => {
     fs.writeFileSync(path.join(folder, 'b.ts'), 'disk');
     let worktrees!: WorktreeController;
     const documents = new DocumentService({
+      hostLabel: (authority) => ({ hostId: authority, name: authority }),
+      uploadsConflicted: () => undefined,
+      warn: () => undefined,
+      reopen: () => undefined,
       authorityOs: () => process.platform,
       projects: () => roots.all(),
       workspaces: testWorkspaces({ watchers: platform.fileWatchers }),
@@ -623,7 +627,7 @@ describe('Delete with a dirty editor tab of the worktree', () => {
       t,
       log: () => undefined,
       pickSavePath: async () => undefined,
-      backups: { changed: () => undefined, writeNow: async () => undefined, remove: () => undefined },
+      backups: { changed: () => undefined, writeNow: async () => true, remove: () => undefined },
       settings: { locate: () => undefined, save: async () => ({ ok: false, error: 'unused', conflict: false }) },
     });
     const pane: EditorPane = new EditorPane({
@@ -655,6 +659,7 @@ describe('Delete with a dirty editor tab of the worktree', () => {
       mention: async () => undefined,
       browser: () => undefined,
       warn: () => undefined,
+      hostName: (authority) => authority,
       searchEditorClosed: () => undefined,
       reviewClosed: () => undefined,
       openChanges: async () => undefined,

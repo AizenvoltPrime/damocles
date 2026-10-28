@@ -447,7 +447,7 @@ describe('panels', () => {
     const received = vi.fn();
     panel.onMessage(received);
     view.fireMessage({ type: 'ready' });
-    expect(received).toHaveBeenCalledWith({ type: 'ready' });
+    expect(received).toHaveBeenCalledWith({ type: 'ready' }, undefined);
 
     const viewState = vi.fn();
     panel.onDidChangeViewState(viewState);
@@ -471,7 +471,7 @@ describe('panels', () => {
     const received = vi.fn();
     panel.onMessage(received);
     view.fireMessage({ type: 'ready' });
-    expect(received).toHaveBeenCalledWith({ type: 'ready' });
+    expect(received).toHaveBeenCalledWith({ type: 'ready' }, undefined);
     expect(core.panels.attach('main-view')).toBe(panel);
     view.close();
     expect(core.panels.get('main-view')).toBeUndefined();

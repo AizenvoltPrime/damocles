@@ -9,7 +9,7 @@ import { browserPageHtml, type BrowserPageStrings } from '../../shared/browser-p
 import { chatPageHtml, errorPageHtml, type ErrorPageStrings, type PageSpec } from '../../shared/panel-html';
 import { CHAT_WORKER_SRC } from '../app-urls';
 import { PAGE_STATE_TYPES } from '../core-protocol';
-import { PANEL_CHANNELS, type PanelHostLabel, type PanelInit, type PanelTheme } from '../preload/panel-channels';
+import { PANEL_CHANNELS, PANEL_HOST_ACTIONS, type PanelConnection, type PanelHostAction, type PanelHostLabel, type PanelInit, type PanelQueueAction, type PanelTheme } from '../preload/panel-channels';
 import { onWindowActivated, onWindowDeactivated } from './activation-focus';
 import type { PanelStateStore } from './panel-state-store';
 import { APP_ORIGIN, isPanelId, panelPageUrl } from './protocol';
@@ -162,6 +162,14 @@ interface PanelViewsDeps {
   readonly pageStrings: () => PageStrings;
   // the host of a remote chat's authority as this computer's host store names it, never as its core does; undefined for a local chat
   readonly hostLabel: (authority: string) => PanelHostLabel | undefined;
+  // a remote chat page's banner asked to reconnect, sign in, show the log or edit its own host
+  readonly onHostAction: (panel: DesktopPanel, action: PanelHostAction) => void;
+  // a remote chat's connection and held messages, which its page reads at init; undefined for a local chat
+  readonly connection: (panel: DesktopPanel) => PanelConnection | undefined;
+  // a chip's Cancel or Discard on one of the page's held messages
+  readonly onQueueAction: (panel: DesktopPanel, action: PanelQueueAction) => void;
+  // a core message on its way to a remote chat's page; true when main took it (a held message core refused)
+  readonly takeCoreMessage: (panel: DesktopPanel, type: string, json: string) => boolean;
   readonly preloadPath: string;
   readonly states: PanelStateStore;
   readonly pages: PagesHost;
@@ -192,6 +200,10 @@ export interface CreatePanelRequest {
   readonly panelId?: string;
   // the authority whose core serves the panel; absent for the local core
   readonly authority?: string;
+  // a remote chat shown read-only from its session mirror while its host is not connected
+  readonly offline?: { readonly hostId: string; readonly hostName: string };
+  // a mirrored transcript of a saved chat: that chat's panel token, whose held messages the transcript shows
+  readonly heldFor?: string;
 }
 
 export class DesktopPanel implements PanelHost {
@@ -199,6 +211,9 @@ export class DesktopPanel implements PanelHost {
   readonly kind: PanelOptions['kind'];
   // 'local', or the authority key of the remote core serving the panel; only a local chat persists to panels.json
   readonly authority: string;
+  // a mirrored transcript this computer's core shows read-only (CreatePanelRequest.offline)
+  readonly offline: { readonly hostId: string; readonly hostName: string } | undefined;
+  private readonly heldFor: string | undefined;
   readonly pageUrl: string;
   // Monaco's workers load from the built webview assets; only a chat renders editors.
   readonly workerSrc?: string;
@@ -226,6 +241,8 @@ export class DesktopPanel implements PanelHost {
     this.panelId = request.restore?.panelId ?? request.panelId ?? randomUUID();
     this.kind = request.options.kind;
     this.authority = request.authority ?? chat?.authority ?? 'local';
+    this.offline = request.offline;
+    this.heldFor = request.heldFor;
     this.title = request.options.title;
     this.state = request.restore?.state ?? null;
     this.chat = chat;
@@ -250,7 +267,8 @@ export class DesktopPanel implements PanelHost {
 
     this.onIpc(PANEL_CHANNELS.init, (event) => {
       const host = this.authority === 'local' ? undefined : deps.hostLabel(this.authority);
-      const init: PanelInit = { state: this.state, theme: currentTheme(), ...(host ? { host } : {}) };
+      const connection = this.kind === 'chat' && this.authority !== 'local' ? deps.connection(this) : undefined;
+      const init: PanelInit = { state: this.state, theme: currentTheme(), ...(host ? { host } : {}), ...(this.offline ? { offline: this.offline } : {}), ...(connection ? { connection } : {}) };
       event.returnValue = init;
     }, (event) => { event.returnValue = null; });
     this.onIpc(PANEL_CHANNELS.post, (_event, payload) => {
@@ -260,6 +278,21 @@ export class DesktopPanel implements PanelHost {
         return;
       }
       this.messages.fire(message);
+    });
+    this.onIpc(PANEL_CHANNELS.hostAction, (_event, action) => {
+      if (this.kind !== 'chat' || this.authority === 'local' || !(PANEL_HOST_ACTIONS as readonly unknown[]).includes(action)) {
+        deps.log(`[views] panel ${this.panelId}: dropped a host action it may not ask for`);
+        return;
+      }
+      deps.onHostAction(this, action as PanelHostAction);
+    });
+    this.onIpc(PANEL_CHANNELS.queueAction, (_event, payload) => {
+      const { action, id } = (typeof payload === 'object' && payload !== null ? payload : {}) as { action?: unknown; id?: unknown };
+      if (this.kind !== 'chat' || this.authority === 'local' || (action !== 'cancel' && action !== 'discard') || typeof id !== 'string' || id.length > 64) {
+        deps.log(`[views] panel ${this.panelId}: dropped a malformed queue action`);
+        return;
+      }
+      deps.onQueueAction(this, { action, id });
     });
     this.onIpc(PANEL_CHANNELS.setState, (_event, payload) => {
       const normalized = asJsonValue(payload, MAX_STATE_JSON_CHARS);
@@ -305,6 +338,12 @@ export class DesktopPanel implements PanelHost {
     if (typeof state !== 'object' || state === null || !Object.hasOwn(state, 'panelToken')) return undefined;
     const token = (state as { panelToken: unknown }).panelToken;
     return typeof token === 'string' && token !== '' ? token : undefined;
+  }
+
+  // The panel token whose held messages this remote chat page shows: its own, or a mirrored transcript's saved chat's.
+  get heldToken(): string | undefined {
+    if (this.kind !== 'chat' || this.authority === 'local') return undefined;
+    return this.offline ? this.heldFor : this.panelToken;
   }
 
   get closeReason(): 'user' | 'detach' {
@@ -386,6 +425,7 @@ export class DesktopPanel implements PanelHost {
     // A folder update may move the chat to another project.
     if (this.kind === 'chat' && type === 'workspaceFolderUpdate') this.owner.changed();
     if (this.page && PAGE_STATE_TYPES.has(type) && observePageMessage(this.page, JSON.parse(json))) this.owner.pageChanged(this);
+    if (this.kind === 'chat' && this.authority !== 'local' && this.deps.takeCoreMessage(this, type, json)) return;
     this.send(json);
   }
 
@@ -396,7 +436,7 @@ export class DesktopPanel implements PanelHost {
     return true;
   }
 
-  // A browser tab action on this page, delivered to core as the webview message its own toolbar would post.
+  // A message delivered to core as the page itself would post it: a browser tab's toolbar action, a chat's held send.
   deliver(message: { readonly type: string; readonly url?: string }): void {
     if (!this.disposed) this.messages.fire(message);
   }
@@ -404,6 +444,16 @@ export class DesktopPanel implements PanelHost {
   sendTheme(theme: PanelTheme): void {
     this.view.setBackgroundColor(THEME_BACKGROUND[theme.kind]);
     if (!this.webContents.isDestroyed() && !this.webContents.isCrashed()) this.webContents.send(PANEL_CHANNELS.theme, theme);
+  }
+
+  // the chat's host was renamed or recolored on this computer
+  sendHost(host: PanelHostLabel): void {
+    if (!this.webContents.isDestroyed() && !this.webContents.isCrashed()) this.webContents.send(PANEL_CHANNELS.host, host);
+  }
+
+  // the chat's host changed phase, or its held messages changed
+  sendConnection(connection: PanelConnection): void {
+    if (!this.webContents.isDestroyed() && !this.webContents.isCrashed()) this.webContents.send(PANEL_CHANNELS.connection, connection);
   }
 
   onMessage(listener: (message: unknown) => void): Disposable {
@@ -626,6 +676,11 @@ export class PanelViews {
     if (this.focusOverlay === open) return;
     this.focusOverlay = open;
     this.layout();
+  }
+
+  /** Every chat page of the authority hears its host's new label. */
+  broadcastHost(authority: string, host: PanelHostLabel): void {
+    for (const panel of this.panels.values()) if (panel.kind === 'chat' && panel.authority === authority) panel.sendHost(host);
   }
 
   broadcastTheme(theme: PanelTheme): void {

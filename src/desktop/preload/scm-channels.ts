@@ -536,6 +536,10 @@ export type ScmRunRequest =
   // (null when HEAD lacks it); a HEAD that moved is refused like a changed index. documentId names the file's document or a
   // git side of its open diff tab; the blob keeps the file's open document encoding, else its own.
   | ScmUnstageRangesRequest
+  // a Stage, Unstage or Revert Selected Ranges the shell could not apply, which main tells the user: noChanges, the selection
+  // touches no change the action takes; noQuickDiff, main gave the file no quick diff base (untracked, binary, too large, a
+  // link, LFS, a conflict) or its diff failed; changed and outOfRange, as the stage refusals of the same names
+  | { readonly op: 'refuseRanges'; readonly repoId: string; readonly action: ScmRangeAction; readonly reason: ScmRangeRefusal }
   // the merge editor's Complete Merge: saves the document, then stages the file with no marker question (the shell asked
   // Complete with Conflicts first when regions were left)
   | { readonly op: 'completeMerge'; readonly repoId: string; readonly path: string; readonly documentId: string }
@@ -565,6 +569,11 @@ export type ScmRunRequest =
   // HEAD (outgoing), all three resolved by main
   | { readonly op: 'openGraphChanges'; readonly repoId: string; readonly direction: 'incoming' | 'outgoing' };
 export type ScmOp = ScmRunRequest['op'];
+
+export const SCM_RANGE_ACTIONS = ['stage', 'unstage', 'revert'] as const;
+export type ScmRangeAction = (typeof SCM_RANGE_ACTIONS)[number];
+export const SCM_RANGE_REFUSALS = ['noChanges', 'noQuickDiff', 'changed', 'outOfRange'] as const;
+export type ScmRangeRefusal = (typeof SCM_RANGE_REFUSALS)[number];
 
 export interface ScmStageRangesRequest {
   readonly op: 'stageRanges';
@@ -1000,15 +1009,19 @@ export function isFullRefName(value: unknown, prefixes: readonly string[]): valu
 const ANY_REF = ['refs/heads/', 'refs/remotes/', 'refs/tags/'] as const;
 
 /**
- * An absolute local path (a drive path on Windows, '/'-rooted elsewhere; never UNC or root-relative), bounded, with no control
- * character.
+ * An absolute path in platform's rules (a drive path on Windows, '/'-rooted elsewhere; never UNC or root-relative), bounded, with
+ * no control character.
  */
-export function isWorktreePath(value: unknown, platform: NodeJS.Platform = process.platform): value is string {
+export function isWorktreePath(value: unknown, platform: NodeJS.Platform): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.length > MAX_SCM_WORKTREE_PATH_LENGTH) return false;
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(value)) return false;
   return platform === 'win32' ? /^[A-Za-z]:[\\/]/.test(value) : value.startsWith('/');
 }
+
+// A worktree row's path as the shell names it, in the path rules of this computer or of a remote repository's host; main only
+// looks it up in that repository's own fresh list.
+const isRowWorktreePath = (value: unknown): value is string => isWorktreePath(value, 'win32') || isWorktreePath(value, 'linux');
 
 const isStashIndex = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < MAX_STASH_INDEX;
 
@@ -1161,7 +1174,7 @@ export function parseScmRun(raw: unknown): ScmRunRequest | undefined {
       const value = withOptional(raw, ['op', 'repoId'], ['path']);
       if (!value || !isScmId(value['repoId'])) return undefined;
       const worktree = value['path'];
-      if (Object.hasOwn(value, 'path') && !isWorktreePath(worktree)) return undefined;
+      if (Object.hasOwn(value, 'path') && !isRowWorktreePath(worktree)) return undefined;
       return { op, repoId: value['repoId'], ...(worktree !== undefined ? { path: worktree as string } : {}) };
     }
     case 'compareRef': {
@@ -1170,7 +1183,7 @@ export function parseScmRun(raw: unknown): ScmRunRequest | undefined {
     }
     case 'openWorktree': {
       const value = exact(raw, ['op', 'repoId', 'path']);
-      return value && isScmId(value['repoId']) && isWorktreePath(value['path']) ? { op, repoId: value['repoId'], path: value['path'] } : undefined;
+      return value && isScmId(value['repoId']) && isRowWorktreePath(value['path']) ? { op, repoId: value['repoId'], path: value['path'] } : undefined;
     }
     case 'stage':
     case 'unstage':
@@ -1238,6 +1251,12 @@ export function parseScmRun(raw: unknown): ScmRunRequest | undefined {
       if (!value || !ranges || !isScmId(value['repoId']) || !isRepoPath(value['path']) || !isScmId(value['documentId']) || !isHash(value['indexOid'])) return undefined;
       if (headOid !== null && !isHash(headOid)) return undefined;
       return { op, repoId: value['repoId'], path: value['path'], documentId: value['documentId'], ranges, indexOid: value['indexOid'], headOid };
+    }
+    case 'refuseRanges': {
+      const value = exact(raw, ['op', 'repoId', 'action', 'reason']);
+      return value && isScmId(value['repoId']) && oneOf(SCM_RANGE_ACTIONS, value['action']) && oneOf(SCM_RANGE_REFUSALS, value['reason'])
+        ? { op, repoId: value['repoId'], action: value['action'], reason: value['reason'] }
+        : undefined;
     }
     case 'completeMerge': {
       const value = exact(raw, ['op', 'repoId', 'path', 'documentId']);
@@ -1438,10 +1457,10 @@ const COPY_TARGETS: Readonly<Record<ScmCopyKind, (value: unknown) => boolean>> =
   path: isCopyablePath,
   relativePath: isCopyablePath,
   stashName: isHash,
-  branchName: (value) => isHash(value) || isFullRefName(value, ['refs/heads/']) || isWorktreePath(value),
+  branchName: (value) => isHash(value) || isFullRefName(value, ['refs/heads/']) || isRowWorktreePath(value),
   tagName: (value) => isFullRefName(value, ['refs/tags/']),
-  commitHash: (value) => isFullRefName(value, ['refs/heads/', 'refs/tags/']) || isWorktreePath(value),
-  worktreePath: isWorktreePath,
+  commitHash: (value) => isFullRefName(value, ['refs/heads/', 'refs/tags/']) || isRowWorktreePath(value),
+  worktreePath: isRowWorktreePath,
   commitId: isHash,
   commitMessage: isHash,
 };

@@ -45,7 +45,7 @@ function loadedOverlay(): { host: OverlayHost; view: FakeOverlayView } {
   const host = new OverlayHost({
     window: fakeOverlayWindow() as never,
     preloadPath: 'preload-overlay.js',
-    state: () => ({ locale: 'en', platform: 'win32' }),
+    state: () => ({ locale: 'en', platform: 'win32', remoteEnabled: false }),
     focusOutside: () => undefined,
     awaitActivation: () => undefined,
     popupsClosed: () => undefined,

@@ -13,6 +13,7 @@ export interface FakeSocket extends ByteSocket {
   receive(bytes: Uint8Array): void;
   close(): void;
   destroyed(): boolean;
+  ended(): boolean;
 }
 
 /** A socket that records every write and is fed by hand. */
@@ -24,6 +25,7 @@ export function fakeSocket(): FakeSocket {
     return { dispose: () => { set.delete(listener); } };
   };
   let destroyed = false;
+  let ended = false;
   const written: Uint8Array[] = [];
   return {
     written,
@@ -38,6 +40,9 @@ export function fakeSocket(): FakeSocket {
     destroy: () => {
       destroyed = true;
     },
+    end: () => {
+      ended = true;
+    },
     receive: (bytes) => {
       for (const listener of [...data]) listener(bytes);
     },
@@ -45,6 +50,7 @@ export function fakeSocket(): FakeSocket {
       for (const listener of [...closes]) listener(undefined);
     },
     destroyed: () => destroyed,
+    ended: () => ended,
   };
 }
 

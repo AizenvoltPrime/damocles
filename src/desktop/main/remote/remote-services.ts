@@ -15,6 +15,7 @@ import type { DesktopEditorService, HostDiffView } from '../platform/editor-serv
 import type { ActiveEditorContext, DiffRequest } from '../../../platform/editor-service';
 import type { ChatReviewScope, SettingsFileScope } from '../../../shared/types/messages';
 import { authorityKeyOfProject } from '../../../shared/project-location';
+import type { PickOptions } from './remote-hosts';
 
 export interface RemoteServicesDeps {
   readonly authority: string;
@@ -44,6 +45,8 @@ export interface RemoteServicesDeps {
   readonly openSettingsFile: (scope: SettingsFileScope, key: string | undefined) => Promise<void>;
   // the target's log by name (control logs.read), as a read-only editor tab named with the host
   readonly showLog: (name: string, preserveFocus: boolean) => void;
+  // the host's folder browser as a picker over its workspace, confined to fileRoots; undefined on cancel
+  readonly pick: (mode: 'file' | 'folder', options: PickOptions) => Promise<string | undefined>;
   // worktrees: the host's worktree controller, whose Setup terminal runs on the host's pty host
   readonly ui: Pick<HostUi, 'ask' | 'askpass' | 'worktrees'>;
   // main's notices, each shown with the host's name from this computer's host store, never one the core sent
@@ -149,11 +152,6 @@ export function remoteServices(deps: RemoteServicesDeps): Omit<HostServicesDeps,
     folders: () => deps.projects().map((project) => ({ fsPath: project.fsPath, name: project.name })),
     onDidChange: (cb) => deps.onProjectsChanged(cb),
   };
-  // the host's folder browser is not built yet, so a picker says so instead of doing nothing
-  const noPicker = (): Promise<undefined> => {
-    void deps.notices.info(t('Choosing a file or folder on {0} is not available yet.', deps.hostName()));
-    return Promise.resolve(undefined);
-  };
   const remotePlatform: HostPlatform = {
     appInfo: platform.appInfo,
     secrets: namespacedSecrets(platform.secrets, deps.hostId, deps.base.log),
@@ -175,7 +173,14 @@ export function remoteServices(deps: RemoteServicesDeps): Omit<HostServicesDeps,
     window: platform.window,
     lifecycle: { reload: () => refused('A reload') },
     workspaceFolders: folders,
-    dialogs: { pickFolder: noPicker, pickFile: noPicker },
+    dialogs: {
+      pickFolder: ({ title, defaultPath, buttonLabel }) => deps.pick('folder', { ...(title !== undefined ? { title } : {}), ...(defaultPath !== undefined ? { defaultPath } : {}), ...(buttonLabel !== undefined ? { buttonLabel } : {}) }),
+      pickFile: ({ title, defaultPath, filters }) => deps.pick('file', {
+        ...(title !== undefined ? { title } : {}),
+        ...(defaultPath !== undefined ? { defaultPath } : {}),
+        ...(filters !== undefined ? { extensions: Object.values(filters).flat() } : {}),
+      }),
+    },
     editor,
   };
   const ui: HostUi = {

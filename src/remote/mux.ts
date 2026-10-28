@@ -11,7 +11,8 @@ export const FIRST_DYNAMIC = 16;
 export const FRAGMENT_BYTES: number = 64 * 1024;
 export const MESSAGE_WINDOW_BYTES: number = 1024 * 1024;
 export const STREAM_WINDOW_BYTES: number = 256 * 1024;
-// frames sent and unacknowledged plus frames queued behind credit; the message a channel is sending is not counted
+// frames sent and unacknowledged plus frames queued, live or dropped; the longest message queued on each message channel is
+// not counted (docs/invariants.md "Remote daemon and wire")
 export const MAX_HELD_BYTES: number = 64 * 1024 * 1024;
 // the largest frame body: a fragment, its channel id and its two bytes
 export const MAX_FRAME_BYTES: number = FRAGMENT_BYTES + 16;
@@ -25,6 +26,8 @@ export interface MessageChannel {
   readonly id: number;
   send(message: Uint8Array): void;
   onMessage(listener: (message: Uint8Array) => void): Disposable;
+  // settles once the channel's queue is within its window, or the mux is disposed; a producer that can wait awaits it
+  drained(): Promise<void>;
 }
 
 export interface StreamChannel {
@@ -68,20 +71,28 @@ export interface Mux {
   dispose(): void;
 }
 
+interface Queued {
+  readonly bytes: Uint8Array;
+  offset: number;
+  readonly end?: true;
+}
+
 interface Outgoing {
   readonly id: number;
   readonly window: number;
   credit: number;
   // message channels: whole messages, the head one partly sent; streams: byte chunks and the end marker
-  readonly queue: Array<{ bytes: Uint8Array; offset: number; readonly end?: true }>;
+  readonly queue: Queued[];
+  // message channels: queued messages, each longer than every one queued after it, so the first is the longest
+  readonly longest: Queued[];
   queuedBytes: number;
   // queue items pushed and fully handed to the protocol, which drained() compares
   enqueued: number;
   sent: number;
   readonly stream: boolean;
-  // a write returned false; the drain fires once the queue is back within the window
+  // a write returned false or a producer waits; the drain fires once the queue is back within the window
   blocked: boolean;
-  readonly drained?: Listeners<[]>;
+  readonly drained: Listeners<[]>;
 }
 
 function vqlLength(value: number): number {
@@ -178,8 +189,8 @@ export function createMux(options: MuxOptions): Mux {
     let held = protocol.unackedBytes();
     for (const channel of outgoing.values()) {
       held += channel.queuedBytes;
-      // a message channel's head message is the one it is sending
-      if (!channel.stream && channel.queue.length > 0) held -= channel.queue[0]!.bytes.length - channel.queue[0]!.offset;
+      const longest = channel.longest[0];
+      if (longest) held -= longest.bytes.length - longest.offset;
     }
     return held;
   };
@@ -216,11 +227,12 @@ export function createMux(options: MuxOptions): Mux {
     const done = head.offset === head.bytes.length;
     if (done) {
       channel.queue.shift();
+      if (channel.longest[0] === head) channel.longest.shift();
       channel.sent++;
     }
     if (channel.blocked && channel.queuedBytes <= channel.window) {
       channel.blocked = false;
-      channel.drained?.fire();
+      channel.drained.fire();
     }
     return frame(channel.id, KIND.data, !channel.stream && !done ? MORE : 0, body);
   };
@@ -254,6 +266,8 @@ export function createMux(options: MuxOptions): Mux {
     } finally {
       settleDrained();
     }
+    // sending moves bytes from the queue to the unacknowledged ones, and the longest message's sent part counts from then
+    checkBound();
   }
 
   function send(): void {
@@ -279,7 +293,7 @@ export function createMux(options: MuxOptions): Mux {
   }
 
   const register = (id: number, window: number, stream: boolean): Outgoing => {
-    const channel: Outgoing = { id, window, credit: window, queue: [], queuedBytes: 0, enqueued: 0, sent: 0, stream, blocked: false, ...(stream ? { drained: listeners<[]>(options.log) } : {}) };
+    const channel: Outgoing = { id, window, credit: window, queue: [], longest: [], queuedBytes: 0, enqueued: 0, sent: 0, stream, blocked: false, drained: listeners<[]>(options.log) };
     outgoing.set(id, channel);
     order.push(id);
     return channel;
@@ -316,7 +330,7 @@ export function createMux(options: MuxOptions): Mux {
     },
     onData: entry.data.add,
     onEnd: entry.ended!.add,
-    onDrain: out.drained!.add,
+    onDrain: out.drained.add,
   });
 
   const addStream = (id: number): StreamChannel => {
@@ -445,7 +459,7 @@ export function createMux(options: MuxOptions): Mux {
     outgoing.clear();
     incoming.clear();
     settleDrained();
-    for (const channel of writers) channel.drained?.fire();
+    for (const channel of writers) channel.drained.fire();
     for (const entry of readers) entry.ended?.fire();
   }
 
@@ -459,13 +473,26 @@ export function createMux(options: MuxOptions): Mux {
         id,
         send: (message) => {
           if (disposed) return;
-          out.queue.push({ bytes: message, offset: 0 });
+          const item: Queued = { bytes: message, offset: 0 };
+          out.queue.push(item);
+          while (out.longest.length > 0 && out.longest.at(-1)!.bytes.length <= message.length) out.longest.pop();
+          out.longest.push(item);
           out.enqueued++;
           out.queuedBytes += message.length;
           scheduleFlush();
           checkBound();
         },
         onMessage: entry.data.add,
+        drained: () => {
+          if (disposed || out.queuedBytes <= out.window) return Promise.resolve();
+          out.blocked = true;
+          return new Promise((resolve) => {
+            const subscription = out.drained.add(() => {
+              subscription.dispose();
+              resolve();
+            });
+          });
+        },
       };
     },
     openStream: (reserved) => {

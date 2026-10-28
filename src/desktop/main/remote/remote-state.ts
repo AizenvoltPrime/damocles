@@ -4,6 +4,8 @@ import { jsonConfigWritesSettled, writeJsonConfig } from '../../../core/config/j
 import { TERMINAL_ICONS, type TerminalColor, type TerminalCustomIcon, type TerminalIcon } from '../../preload/terminal-channels';
 import { isTerminalId } from '../../pty-host/protocol';
 import { isTerminalColor, isTerminalCustomIcon, parseTerminalName } from '../terminal/terminal-service';
+import { isImageBlock, type UserContentBlock } from '../../../shared/types/content';
+import { authorityKeyOfProject } from '../../../shared/project-location';
 
 const SCHEMA_VERSION = 1;
 export const REMOTE_STATE_FILE = 'remote-state.json';
@@ -21,24 +23,77 @@ export interface RemoteTerminalRecord {
   readonly color: TerminalColor | null;
 }
 
-// A chat open on an authority's core: its conversation and the page's panel token, which a rejoin names its view by.
+// A chat open on an authority's core: its conversation and the page's panel token, which a rejoin names its view by. A new chat
+// with no conversation yet is kept only while it holds messages, and reopens new with them.
 export interface RemoteChatRecord {
   readonly authority: string;
-  readonly sessionId: string;
+  readonly sessionId?: string;
   readonly panelToken: string;
+}
+
+// A chat whose turn was running when this app detached from its host, which the next attach tells about once it finished.
+export interface AwayChat {
+  // the core panel id the host's run registry names it by
+  readonly panelId: string;
+  readonly sessionId: string;
+  readonly title: string;
 }
 
 interface AuthorityState {
   readonly terminals: readonly RemoteTerminalRecord[];
   readonly chats: readonly RemoteChatRecord[];
+  readonly away: readonly AwayChat[];
+  // the core epoch the away chats ran under: another one at the next attach means their core ended, which stopped them
+  readonly awayEpoch: string | null;
   // the core epoch the chats were open under; the same epoch at the next attach rejoins them, another restores them
   readonly coreEpoch: string | null;
 }
 
-type StateFile = ReadonlyMap<string, AuthorityState>;
+// The selected project and chat when they are remote, which panels.json (read by older versions) never names; cleared when a
+// local chat is selected.
+export interface RemoteSelection {
+  readonly projectKey: string;
+  readonly sessionId?: string;
+}
 
-const EMPTY_AUTHORITY: AuthorityState = { terminals: [], chats: [], coreEpoch: null };
+// A message a remote chat's page sent while its host was away: its text and images, and the conversation the page showed then.
+// notSent: core refused it after the reconnect because the chat had moved to another conversation; it is never sent again.
+export interface OfflineEntry {
+  readonly id: string;
+  readonly conversationId: string | null;
+  readonly content: string | readonly UserContentBlock[];
+  readonly status: 'queued' | 'notSent';
+}
+
+// One chat page's held messages, in the order it sent them, under the authority whose core they go to.
+export interface QueuedPanel {
+  readonly authority: string;
+  readonly entries: readonly OfflineEntry[];
+}
+
+interface StateFile {
+  readonly authorities: ReadonlyMap<string, AuthorityState>;
+  readonly selected: RemoteSelection | undefined;
+  // by panel token, which names the page across a fresh attach and a relaunch
+  readonly offlineQueue: ReadonlyMap<string, QueuedPanel>;
+}
+
+const EMPTY_AUTHORITY: AuthorityState = { terminals: [], chats: [], away: [], awayEpoch: null, coreEpoch: null };
+// a chat title as the run registry clamps it (MAX_RUN_TITLE_CHARS)
+const MAX_AWAY_TITLE = 1024;
+
+function parseAway(value: unknown): AwayChat | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  const panelId = own(record, 'panelId');
+  const sessionId = own(record, 'sessionId');
+  const title = own(record, 'title');
+  if (!isText(panelId) || panelId.length > 128 || !isText(sessionId) || sessionId.length > 256 || typeof title !== 'string' || title.length > MAX_AWAY_TITLE) return undefined;
+  return { panelId, sessionId, title };
+}
 const PANEL_TOKEN = /^[0-9a-f-]{1,64}$/i;
+/** A page's panel token as remote-state.json keeps it; a page supplies its own, so it is checked before anything is held. */
+export const isPanelToken = (value: string): boolean => PANEL_TOKEN.test(value);
 const CORE_EPOCH = /^[0-9a-f]{32}$/;
 
 function parseChat(value: unknown, authority: string): RemoteChatRecord | undefined {
@@ -46,7 +101,9 @@ function parseChat(value: unknown, authority: string): RemoteChatRecord | undefi
   const record = value as Record<string, unknown>;
   const sessionId = own(record, 'sessionId');
   const panelToken = own(record, 'panelToken');
-  if (own(record, 'authority') !== authority || !isText(sessionId) || sessionId.length > 256 || typeof panelToken !== 'string' || !PANEL_TOKEN.test(panelToken)) return undefined;
+  if (own(record, 'authority') !== authority || typeof panelToken !== 'string' || !PANEL_TOKEN.test(panelToken)) return undefined;
+  if (sessionId === undefined) return { authority, panelToken };
+  if (!isText(sessionId) || sessionId.length > 256) return undefined;
   return { authority, sessionId, panelToken };
 }
 
@@ -75,41 +132,104 @@ function parseTerminal(value: unknown): RemoteTerminalRecord | undefined {
   };
 }
 
+function parseSelection(value: unknown): RemoteSelection | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  const projectKey = own(record, 'projectKey');
+  const sessionId = own(record, 'sessionId');
+  if (!isText(projectKey) || projectKey.length > 4096 || (sessionId !== undefined && !(isText(sessionId) && sessionId.length <= 256))) return undefined;
+  return { projectKey, ...(sessionId !== undefined ? { sessionId: sessionId as string } : {}) };
+}
+
+const ENTRY_ID = /^[0-9a-f-]{36}$/i;
+
+/** A message's content as a page or the file gives it: text, or text and image blocks with no other field; undefined otherwise. */
+export function parseContent(value: unknown): string | UserContentBlock[] | undefined {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const blocks = value.flatMap((block: unknown): UserContentBlock[] => {
+    if (isImageBlock(block)) return [{ type: 'image', source: { type: 'base64', media_type: block.source.media_type, data: block.source.data } }];
+    const text = typeof block === 'object' && block !== null ? (block as { type?: unknown; text?: unknown }) : undefined;
+    return text?.type === 'text' && typeof text.text === 'string' ? [{ type: 'text', text: text.text }] : [];
+  });
+  return blocks.length === value.length ? blocks : undefined;
+}
+
+function parseEntry(value: unknown): OfflineEntry | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  const id = own(record, 'id');
+  const conversationId = own(record, 'conversationId');
+  const status = own(record, 'status');
+  const content = parseContent(own(record, 'content'));
+  if (typeof id !== 'string' || !ENTRY_ID.test(id) || content === undefined || (status !== 'queued' && status !== 'notSent')) return undefined;
+  if (conversationId !== null && !(isText(conversationId) && conversationId.length <= 256)) return undefined;
+  return { id, conversationId, content, status };
+}
+
+function parseQueue(value: unknown): Map<string, QueuedPanel> {
+  const queue = new Map<string, QueuedPanel>();
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return queue;
+  for (const [panelToken, panel] of Object.entries(value)) {
+    const record = typeof panel === 'object' && panel !== null ? panel as Record<string, unknown> : undefined;
+    const authority = record ? own(record, 'authority') : undefined;
+    const entries = record ? own(record, 'entries') : undefined;
+    if (!PANEL_TOKEN.test(panelToken) || !isText(authority) || !Array.isArray(entries)) continue;
+    const parsed = entries.flatMap((entry) => parseEntry(entry) ?? []);
+    if (parsed.length > 0) queue.set(panelToken, { authority, entries: parsed });
+  }
+  return queue;
+}
+
 function parseStateFile(text: string): StateFile {
-  const parsed = JSON.parse(text) as { version?: unknown; authorities?: unknown } | null;
+  const parsed = JSON.parse(text) as { version?: unknown; authorities?: unknown; selected?: unknown; offlineQueue?: unknown } | null;
   if (parsed?.version !== SCHEMA_VERSION || typeof parsed.authorities !== 'object' || parsed.authorities === null || Array.isArray(parsed.authorities)) {
     throw new Error('unknown schema');
   }
-  const file = new Map<string, AuthorityState>();
+  const authorities = new Map<string, AuthorityState>();
   for (const [key, value] of Object.entries(parsed.authorities)) {
     const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined;
     const terminals = record ? own(record, 'terminals') : undefined;
     const chats = record ? own(record, 'chats') : undefined;
+    const away = record ? own(record, 'away') : undefined;
     const coreEpoch = record ? own(record, 'coreEpoch') : undefined;
+    const awayEpoch = record ? own(record, 'awayEpoch') : undefined;
     if (!isText(key) || record === undefined) continue;
-    file.set(key, {
+    authorities.set(key, {
       terminals: Array.isArray(terminals) ? terminals.flatMap((entry) => parseTerminal(entry) ?? []) : [],
       chats: Array.isArray(chats) ? chats.flatMap((entry) => parseChat(entry, key) ?? []) : [],
+      away: Array.isArray(away) ? away.flatMap((entry) => parseAway(entry) ?? []) : [],
+      awayEpoch: typeof awayEpoch === 'string' && CORE_EPOCH.test(awayEpoch) ? awayEpoch : null,
       coreEpoch: typeof coreEpoch === 'string' && CORE_EPOCH.test(coreEpoch) ? coreEpoch : null,
     });
   }
-  return file;
+  return { authorities, selected: parseSelection(parsed.selected), offlineQueue: parseQueue(parsed.offlineQueue) };
 }
+
+const EMPTY_FILE: StateFile = { authorities: new Map(), selected: undefined, offlineQueue: new Map() };
 
 /**
  * What main keeps of remote work by authority, in remote-state.json, never in panels.json or window-layout.json, which an
  * older app version reads after a downgrade and would drop or misread it.
  */
 export class RemoteState {
-  private readonly filePath: string;
+  readonly filePath: string;
   private file: StateFile;
+  // a closing window seals the selection, as panels.json's, so the chats closing under a quit never replace it
+  private selectionSealed = false;
+  // why the file did not parse at launch (a hand edit, a newer version's schema); while set, every write is refused
+  private readonly readError: string | undefined;
 
-  private constructor(filePath: string, file: StateFile) {
+  private constructor(filePath: string, file: StateFile, readError?: string) {
     this.filePath = filePath;
     this.file = file;
+    this.readError = readError;
   }
 
-  /** Reads the file; a missing one is empty, an unreadable one is logged and replaced at the next change. */
+  /**
+   * Reads the file; a missing one is empty. One that does not parse or names another schema holds nothing for the run and
+   * refuses every write, so neither a typo nor a downgrade replaces the held messages and away chats it keeps.
+   */
   static async open(userDataDir: string, log: (line: string) => void): Promise<RemoteState> {
     const filePath = path.join(userDataDir, REMOTE_STATE_FILE);
     let text: string | undefined;
@@ -118,25 +238,82 @@ export class RemoteState {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     }
-    if (text === undefined) return new RemoteState(filePath, new Map());
+    if (text === undefined) return new RemoteState(filePath, EMPTY_FILE);
     try {
       return new RemoteState(filePath, parseStateFile(text));
     } catch (err) {
-      log(`[remote-state] ignoring ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
-      return new RemoteState(filePath, new Map());
+      const reason = err instanceof Error ? err.message : String(err);
+      log(`[remote-state] ${filePath} does not parse (${reason}); holding nothing from it and refusing every write`);
+      return new RemoteState(filePath, EMPTY_FILE, reason);
     }
   }
 
+  /** Why remote-state.json did not parse; undefined while it is read and written normally. */
+  unreadable(): string | undefined {
+    return this.readError;
+  }
+
   terminals(authorityKey: string): readonly RemoteTerminalRecord[] {
-    return this.file.get(authorityKey)?.terminals ?? [];
+    return this.file.authorities.get(authorityKey)?.terminals ?? [];
   }
 
   chats(authorityKey: string): readonly RemoteChatRecord[] {
-    return this.file.get(authorityKey)?.chats ?? [];
+    return this.file.authorities.get(authorityKey)?.chats ?? [];
   }
 
   coreEpoch(authorityKey: string): string | null {
-    return this.file.get(authorityKey)?.coreEpoch ?? null;
+    return this.file.authorities.get(authorityKey)?.coreEpoch ?? null;
+  }
+
+  /** The chats that were running when this app last detached from the authority. */
+  away(authorityKey: string): readonly AwayChat[] {
+    return this.file.authorities.get(authorityKey)?.away ?? [];
+  }
+
+  /** The core epoch the away chats ran under; null when unknown. */
+  awayEpoch(authorityKey: string): string | null {
+    return this.file.authorities.get(authorityKey)?.awayEpoch ?? null;
+  }
+
+  /** Replaces them: on a detach, the chats running then under coreEpoch; on the next attach's notice, none. */
+  setAway(authorityKey: string, away: readonly AwayChat[], coreEpoch: string | null): Promise<void> {
+    return this.change(authorityKey, { away: [...away], awayEpoch: away.length > 0 ? coreEpoch : null });
+  }
+
+  /** Every chat page's held messages, by panel token. */
+  offlineQueue(): ReadonlyMap<string, QueuedPanel> {
+    return this.file.offlineQueue;
+  }
+
+  /** Replaces one page's held messages; undefined or no entries removes them. */
+  async setOfflineQueue(panelToken: string, panel: QueuedPanel | undefined): Promise<void> {
+    if (!isPanelToken(panelToken)) throw new Error('A held message names its page by a panel token');
+    return this.write((file) => {
+      const offlineQueue = new Map(file.offlineQueue);
+      if (panel && panel.entries.length > 0) offlineQueue.set(panelToken, panel);
+      else offlineQueue.delete(panelToken);
+      return { ...file, offlineQueue };
+    });
+  }
+
+  /** The last selected project and chat when they were remote. */
+  selected(): RemoteSelection | undefined {
+    return this.file.selected;
+  }
+
+  /** Records the selection when it is remote, undefined when a local chat took it; nothing while sealed. */
+  async select(selection: RemoteSelection | undefined): Promise<void> {
+    const current = this.file.selected;
+    if (this.selectionSealed || (current?.projectKey === selection?.projectKey && current?.sessionId === selection?.sessionId)) return;
+    await this.write((file) => ({ ...file, selected: selection }));
+  }
+
+  seal(): void {
+    this.selectionSealed = true;
+  }
+
+  unseal(): void {
+    this.selectionSealed = false;
   }
 
   /** Replaces the authority's terminals; memory follows only once the file says so. */
@@ -149,11 +326,28 @@ export class RemoteState {
     return this.change(authorityKey, { chats: [...chats], coreEpoch });
   }
 
-  private async change(authorityKey: string, patch: Partial<AuthorityState>): Promise<void> {
+  /** Forget host: the authority's terminals, chats and away list, its pages' held messages, and a selection on it. */
+  forgetAuthority(authorityKey: string): Promise<void> {
+    return this.write((file) => {
+      const authorities = new Map(file.authorities);
+      authorities.delete(authorityKey);
+      const offlineQueue = new Map([...file.offlineQueue].filter(([, panel]) => panel.authority !== authorityKey));
+      const selected = file.selected !== undefined && authorityKeyOfProject(file.selected.projectKey) === authorityKey ? undefined : file.selected;
+      return { authorities, offlineQueue, selected };
+    });
+  }
+
+  private change(authorityKey: string, patch: Partial<AuthorityState>): Promise<void> {
+    return this.write((file) => ({ ...file, authorities: new Map(file.authorities).set(authorityKey, { ...(file.authorities.get(authorityKey) ?? EMPTY_AUTHORITY), ...patch }) }));
+  }
+
+  private async write(apply: (file: StateFile) => StateFile): Promise<void> {
+    if (this.readError !== undefined) throw new Error(`${this.filePath} could not be read, so it is not changed: ${this.readError}`);
     let next = this.file;
     await writeJsonConfig(this.filePath, () => {
-      next = new Map(this.file).set(authorityKey, { ...(this.file.get(authorityKey) ?? EMPTY_AUTHORITY), ...patch });
-      return `${JSON.stringify({ version: SCHEMA_VERSION, authorities: Object.fromEntries(next) }, null, 2)}\n`;
+      next = apply(this.file);
+      const offlineQueue = next.offlineQueue.size > 0 ? { offlineQueue: Object.fromEntries(next.offlineQueue) } : {};
+      return `${JSON.stringify({ version: SCHEMA_VERSION, authorities: Object.fromEntries(next.authorities), ...(next.selected ? { selected: next.selected } : {}), ...offlineQueue }, null, 2)}\n`;
     });
     this.file = next;
   }

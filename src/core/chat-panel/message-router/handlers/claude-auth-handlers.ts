@@ -2,9 +2,9 @@ import type { AuthInteraction, AuthPrompt } from "@earendil-works/pi-ai";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
 import type { PanelHost } from "../../../../platform/window-service";
-import { PiRuntime } from "../../../pi-session/pi-runtime";
-import { PI_AGENT_DIR } from "../../../pi-session/agent-dir";
-import { readClaudeAuthFromDisk, type ClaudeAuthStatus } from "../../../pi-session/subscription";
+import { PiRuntime, remoteSignInRefusal } from "../../../pi-session/pi-runtime";
+import type { ClaudeAuthStatus } from "../../../pi-session/subscription";
+import { deviceHost } from "../../device-hosts";
 import { buildAuthInteraction } from "./auth-interaction";
 import { republishAccountInfo } from "./account-info";
 import { log } from "../../../logger";
@@ -40,6 +40,13 @@ export function createClaudeAuthHandlers(deps: HandlerDependencies): ClaudeAuthH
   function broadcast(message: ExtensionToWebviewMessage): void {
     for (const [, instance] of getPanels()) {
       postMessage(instance.host, message);
+    }
+  }
+
+  /** Every panel, on a daemon's core only the views of the device `asker` replies to: its refusals and failures are its own. */
+  function toAsker(asker: PanelHost, message: ExtensionToWebviewMessage): void {
+    for (const [, instance] of getPanels()) {
+      postMessage(asker.clientId === undefined ? instance.host : deviceHost(instance.host, asker.clientId), message);
     }
   }
 
@@ -87,9 +94,14 @@ export function createClaudeAuthHandlers(deps: HandlerDependencies): ClaudeAuthH
    * operation's own abort signal: pi rethrows a flow abort as its own "Login cancelled", so an aborted operation is a
    * cancel whatever it threw.
    */
-  async function runOp(op: () => Promise<ClaudeAuthStatus>, cancel?: AbortSignal): Promise<void> {
+  async function runOp(op: () => Promise<ClaudeAuthStatus>, asker: PanelHost, cancel?: AbortSignal): Promise<void> {
+    // a daemon's core refuses every Claude auth change before the lock, so another device never sees a refusal as busy
+    if (deps.platform.remote) {
+      toAsker(asker, { type: "claudeAuthError", error: remoteSignInRefusal() });
+      return;
+    }
     if (busy) {
-      broadcast({ type: "claudeAuthError", error: BUSY_ERROR });
+      toAsker(asker, { type: "claudeAuthError", error: BUSY_ERROR });
       return;
     }
     busy = true;
@@ -105,7 +117,7 @@ export function createClaudeAuthHandlers(deps: HandlerDependencies): ClaudeAuthH
       } else {
         const error = err instanceof Error ? err.message : String(err);
         log("[ClaudeAuth] operation failed: %O", err);
-        broadcast({ type: "claudeAuthError", error });
+        toAsker(asker, { type: "claudeAuthError", error });
       }
     } finally {
       busy = false;
@@ -127,7 +139,7 @@ export function createClaudeAuthHandlers(deps: HandlerDependencies): ClaudeAuthH
       if (msg.type !== "claudeSignIn") return;
       // Refused before it touches the running sign-in's abort controller, which Cancel and Sign out reach it through.
       if (busy || signInAbort !== null) {
-        broadcast({ type: "claudeAuthError", error: BUSY_ERROR });
+        toAsker(ctx.reply, { type: "claudeAuthError", error: BUSY_ERROR });
         return;
       }
       const useAllowance = msg.useAllowance;
@@ -135,6 +147,7 @@ export function createClaudeAuthHandlers(deps: HandlerDependencies): ClaudeAuthH
       signInAbort = abort;
       const run = runOp(
         () => runtime().signInSubscription(ctx.folder.fsPath, useAllowance, buildLoginInteraction(abort.signal)),
+        ctx.reply,
         abort.signal,
       );
       signInInFlight = run;
@@ -159,27 +172,27 @@ export function createClaudeAuthHandlers(deps: HandlerDependencies): ClaudeAuthH
     claudeSetBilling: async (msg, ctx) => {
       if (msg.type !== "claudeSetBilling") return;
       const useAllowance = msg.useAllowance;
-      await runOp(() => runtime().setSubscriptionBilling(ctx.folder.fsPath, useAllowance));
+      await runOp(() => runtime().setSubscriptionBilling(ctx.folder.fsPath, useAllowance), ctx.reply);
     },
 
-    claudeSetApiKey: async (msg) => {
+    claudeSetApiKey: async (msg, ctx) => {
       if (msg.type !== "claudeSetApiKey") return;
       const key = msg.key;
-      await runOp(() => runtime().setAnthropicApiKey(key));
+      await runOp(() => runtime().setAnthropicApiKey(key), ctx.reply);
     },
 
-    claudeSignOut: async (msg) => {
+    claudeSignOut: async (msg, ctx) => {
       if (msg.type !== "claudeSignOut") return;
       // A stalled sign-in is aborted first, so the sign-out runs instead of bouncing off "already in progress".
       await abortSignIn();
-      await runOp(() => runtime().signOutAnthropic());
+      await runOp(() => runtime().signOutAnthropic(), ctx.reply);
     },
   };
 
   return {
     handlers,
     postState: (host) => {
-      postMessage(host, { type: "claudeAuthStatusChanged", mode: readClaudeAuthFromDisk(PI_AGENT_DIR).mode });
+      postMessage(host, { type: "claudeAuthStatusChanged", mode: PiRuntime.claudeAuthStatus(deps.platform.remote).mode });
       postMessage(host, { type: "claudeAuthBusy", busy });
       postMessage(host, { type: "claudeSignInWaiting", waiting: pendingPaste !== null });
     },

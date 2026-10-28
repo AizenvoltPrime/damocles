@@ -349,6 +349,7 @@ describe('breakdowns', () => {
     expectSumsTo('byModel', sumAggregates(report.byModel!), total);
     expectSumsTo('byProject', sumAggregates(report.byProject!), total);
     expectSumsTo('bySource', sumAggregates(report.bySource!), total);
+    expectSumsTo('byCredential', sumAggregates(report.byCredential!), total);
 
     const points = report.series!.points;
     expect(points.reduce((acc, p) => acc + p.cost, 0), 'series cost').toBeCloseTo(total.cost, 12);

@@ -4,7 +4,7 @@ import type { editor as MonacoEditor, IDisposable } from 'monaco-editor/editor/e
 import { applyLineChanges, selectedLineChanges, type LineChange, type LineRange } from '@shared/scm/apply-line-changes';
 import type { Monaco } from '@/components/editor/useMonaco';
 import type { DamoclesShellApi, ShellEditorTab } from '../../preload/shell-channels';
-import type { ScmBlameCommit, ScmResource } from '../../preload/scm-channels';
+import type { ScmBlameCommit, ScmRangeAction, ScmRangeRefusal, ScmResource } from '../../preload/scm-channels';
 import type { ScmStore } from '../scm/scm-store';
 import { fromNow } from '../scm/scm-list';
 import { attachBlame, type BlameCardHost, type BlameController } from './blame';
@@ -20,6 +20,8 @@ import QuickDiffPeekHeader from './quick-diff/QuickDiffPeekHeader.vue';
 // Previous Change, and inline blame (B31). It runs only for a tab main gave a git resource, which an untrusted project never has.
 
 export type EditorGitCommand = 'nextChange' | 'previousChange' | 'stageSelectedRanges' | 'unstageSelectedRanges' | 'revertSelectedRanges' | 'showLineBlame';
+
+const RANGE_ACTIONS = { stageSelectedRanges: 'stage', unstageSelectedRanges: 'unstage', revertSelectedRanges: 'revert' } as const satisfies Record<string, ScmRangeAction>;
 
 // ms of .qd-blame-card-out (d-pop-out's length in style.css); the card's widget is removed when it ends
 const BLAME_CARD_EXIT_MS = 120;
@@ -297,26 +299,33 @@ export function attachEditorGit(editor: MonacoEditor.IStandaloneCodeEditor, mona
     }
   }
 
+  // main owns notices, so an action with nothing to apply is told there
+  async function refuse(resource: ScmResource, action: ScmRangeAction, reason: ScmRangeRefusal = 'noChanges'): Promise<void> {
+    await deps.api.scm.run({ op: 'refuseRanges', repoId: resource.repoId, action, reason });
+  }
+
   async function stage(changes: readonly LineChange[], state: QuickDiffState): Promise<void> {
-    if (!target || !tab?.documentId || changes.length === 0) return;
+    if (!target || !tab?.documentId) return;
+    if (changes.length === 0) return refuse(target, 'stage');
     deps.flush(tab.documentId);
     const result = await deps.api.scm.run({ op: 'stageRanges', repoId: target.repoId, path: target.path, documentId: tab.documentId, ranges: changes, indexOid: state.indexOid });
     if (result.ok) await quick?.refresh();
   }
 
   async function unstage(changes: readonly LineChange[], state: QuickDiffState): Promise<void> {
-    if (!target || !tab?.documentId || changes.length === 0) return;
+    if (!target || !tab?.documentId) return;
+    if (changes.length === 0) return refuse(target, 'unstage');
     const result = await deps.api.scm.run({ op: 'unstageRanges', repoId: target.repoId, path: target.path, documentId: tab.documentId, ranges: changes, indexOid: state.indexOid, headOid: state.headOid });
     if (result.ok) await quick?.refresh();
   }
 
   // Revert edits the buffer alone (B27): the kept changes applied to the index give the new text, written as one undoable edit.
-  function revert(kept: readonly LineChange[], state: QuickDiffState): void {
-    if (!model || tab?.readOnly) return;
+  async function revert(kept: readonly LineChange[], state: QuickDiffState): Promise<void> {
+    if (!model || !target || tab?.readOnly) return;
     const current = model.getValue();
     const next = applyLineChanges(state.indexText, current, kept);
     const edits = lineEdits(current, next);
-    if (edits.length === 0) return;
+    if (edits.length === 0) return refuse(target, 'revert');
     const selections = editor.getSelections();
     model.pushStackElement();
     model.pushEditOperations(selections ?? [], edits.map((edit) => ({ range: edit.range, text: edit.text })), () => selections);
@@ -334,7 +343,7 @@ export function attachEditorGit(editor: MonacoEditor.IStandaloneCodeEditor, mona
   });
   const revertMark = (shown: PeekTarget): Promise<void> => withBusy(async () => {
     const state = await quick?.current();
-    if (state) revert(state.primary.filter((change) => !sameChange(change, shown.change)), state);
+    if (state) await revert(state.primary.filter((change) => !sameChange(change, shown.change)), state);
   });
 
   function selectedRanges(): LineRange[] {
@@ -373,11 +382,13 @@ export function attachEditorGit(editor: MonacoEditor.IStandaloneCodeEditor, mona
     }
     await withBusy(async () => {
       const state = await quick?.current();
-      if (!state || !model) return;
+      if (!model || !target) return;
+      // no state: the file has no quick diff, else the buffer changed while the base was read
+      if (!state) return refuse(target, RANGE_ACTIONS[command], quick?.status.value === 'none' ? 'noQuickDiff' : 'outOfRange');
       const ranges = selectedRanges();
       const lineCount = model.getLineCount();
       if (command === 'stageSelectedRanges') await stage(selectedLineChanges(state.primary, ranges, lineCount), state);
-      else if (command === 'revertSelectedRanges') revert(changesKeptByRevert(state.primary, ranges, lineCount), state);
+      else if (command === 'revertSelectedRanges') await revert(changesKeptByRevert(state.primary, ranges, lineCount), state);
       else {
         const secondary = selectedLineChanges(state.secondary, ranges, lineCount);
         const staged = secondary.flatMap((change) => stagedChangesFor(change, state.primary, state.staged));

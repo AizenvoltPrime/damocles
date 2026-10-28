@@ -27,6 +27,15 @@ describe('the clientAuth snapshot', () => {
     expect(MAIN_TO_CORE.requests['user.clientAuth'].result({ providers: { xai: { ...entry, keySaved: 1 } } })).toBe(INVALID);
   });
 
+  // Each device's views of a remote chat show that device's own prefer-API-key choice.
+  it('carries whether the client prefers its saved key, optionally, in both snapshots, and refuses a value that is not a boolean', () => {
+    const entry = { type: 'oauth', hasKey: true, flatFee: false };
+    expect(parseClientValues.clientAuth({ providers: { openai: { ...entry, preferApiKey: true } } })).toEqual({ providers: { openai: { ...entry, preferApiKey: true } } });
+    expect(MAIN_TO_CORE.requests['user.clientAuth'].result({ providers: { xai: { ...entry, preferApiKey: true } } })).toEqual({ providers: { xai: { ...entry, preferApiKey: true } } });
+    expect(parseClientValues.clientAuth({ providers: { openai: { ...entry, preferApiKey: 'yes' } } })).toBe(INVALID);
+    expect(MAIN_TO_CORE.requests['user.clientAuth'].result({ providers: { xai: { ...entry, preferApiKey: 1 } } })).toBe(INVALID);
+  });
+
   // A remote chat marks the acting client's models outside its plan, so the list crosses in both snapshots, bounded.
   it('carries a sign-in\'s plan model list in both snapshots, up to 512 ids of at most 128 characters', () => {
     const entry = { type: 'oauth', hasKey: false, flatFee: false };

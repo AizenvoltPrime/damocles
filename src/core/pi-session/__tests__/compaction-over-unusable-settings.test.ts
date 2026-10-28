@@ -46,7 +46,7 @@ describe('auto-compaction over an unusable agent settings file', () => {
       settingsFolder: undefined,
       projectScope: true,
       platform,
-      permissionHandler: { getPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [] } as unknown as SessionOptions['permissionHandler'],
+      permissionHandler: { getPermissionMode: () => 'default', turnPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [] } as unknown as SessionOptions['permissionHandler'],
       onMessage: () => {},
       resolveThinking: () => ({ thinkingDisabled: false, effort: null }),
     });

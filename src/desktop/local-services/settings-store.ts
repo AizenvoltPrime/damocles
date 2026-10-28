@@ -43,10 +43,15 @@ export interface ChatFolders {
   onDidChange(cb: () => void): Disposable;
 }
 
+/** One device's user layer changed (its layer before and after), or, without a clientId, the acting client did. */
+export type ClientSettingsChange =
+  | { readonly clientId: string; readonly before: SettingsObject | undefined; readonly after: SettingsObject | undefined }
+  | { readonly clientId?: undefined };
+
 export interface RemoteSettings {
   readonly fromHostTab: () => boolean;
   readonly clientSettings: () => SettingsObject | undefined;
-  readonly onDidChangeClientSettings: (cb: () => void) => Disposable;
+  readonly onDidChangeClientSettings: (cb: (change: ClientSettingsChange) => void) => Disposable;
 }
 
 interface StoreDeps {
@@ -148,7 +153,7 @@ function resolved(folder: SettingsFolder): { path: string; personalPath: string 
  */
 export class DesktopSettingsStore implements SettingsStore, Disposable {
   private readonly deps: DesktopSettingsStoreDeps;
-  private readonly listeners: Emitter<[readonly string[]]>;
+  private readonly listeners: Emitter<[readonly string[], string | undefined]>;
   private readonly subscriptions: Disposable[] = [];
   // the last text that parsed, per file, which a file that no longer parses keeps serving
   private readonly lastParsed = new Map<string, SettingsObject>();
@@ -161,7 +166,7 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
   private readonly written = new Set<string>();
   private emptyRetry: NodeJS.Timeout | undefined;
   private user: SettingsObject;
-  // a daemon's core: the client's user layer at the last change notice, which the next notice diffs against
+  // a daemon's core: the acting client's user layer at the last change notice, which the next acting change diffs against
   private notifiedClient: SettingsObject = {};
   private disposed = false;
   // the entry window-level reads used at the last default-project change
@@ -187,10 +192,11 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
     const remote = deps.remote;
     if (remote !== undefined) {
       this.notifiedClient = { ...remote.clientSettings() };
-      this.subscriptions.push(remote.onDidChangeClientSettings(() => {
+      this.subscriptions.push(remote.onDidChangeClientSettings((change) => {
         const before = this.notifiedClient;
         this.notifiedClient = { ...remote.clientSettings() };
-        this.fire(changedKeys({ user: before }, { user: this.notifiedClient }));
+        if (change.clientId !== undefined) this.fire(changedKeys({ user: change.before ?? {} }, { user: change.after ?? {} }), change.clientId);
+        else this.fire(changedKeys({ user: before }, { user: this.notifiedClient }));
       }));
     }
     const windowEntry = this.windowEntry();
@@ -259,8 +265,8 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
   }
 
   onDidChange(section: string, cb: (change: SettingsChange) => void): Disposable {
-    return this.listeners.add((keys) => {
-      if (affects(keys, section)) cb({ affects: (key) => affects(keys, key) });
+    return this.listeners.add((keys, clientId) => {
+      if (affects(keys, section)) cb({ affects: (key) => affects(keys, key), ...(clientId !== undefined ? { clientId } : {}) });
     });
   }
 
@@ -438,8 +444,8 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
     }, EMPTY_SETTINGS_RETRY_MS);
   }
 
-  private fire(keys: readonly string[]): void {
-    if (keys.length > 0) this.listeners.fire(keys);
+  private fire(keys: readonly string[], clientId?: string): void {
+    if (keys.length > 0) this.listeners.fire(keys, clientId);
   }
 
   private reloadUser(acceptEmpty: boolean): void {

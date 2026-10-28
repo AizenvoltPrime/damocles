@@ -38,16 +38,22 @@ export function run(command: string, args: string[], timeoutMs = RUN_TIMEOUT_MS)
 
 /** `root` and every process below it, from Windows' process table. */
 export async function windowsProcessTree(root: number): Promise<number[]> {
-  const table = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }']);
+  const table = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $(if ($_.CreationDate) { [long]($_.CreationDate.ToFileTimeUtc() / 10000) } else { 0 })" }']);
   if (table.code !== 0) throw new Error(`Get-CimInstance Win32_Process exited with code ${table.code}: ${table.stderr.trim()}`);
   const children = new Map<number, number[]>();
+  const created = new Map<number, number>();
   for (const line of table.stdout.split(/\r?\n/)) {
-    const [pid, parent] = line.trim().split(' ').map(Number);
-    if (pid === undefined || parent === undefined || !Number.isInteger(pid) || !Number.isInteger(parent)) continue;
+    const [pid, parent, at] = line.trim().split(' ').map(Number);
+    if (pid === undefined || parent === undefined || at === undefined || !Number.isInteger(pid) || !Number.isInteger(parent)) continue;
     children.set(parent, [...(children.get(parent) ?? []), pid]);
+    created.set(pid, at);
   }
+  // Windows keeps an orphan's parent id after that parent exits, and reuses ids: a child older than its parent is another
+  // process's orphan whose parent id a tree member now holds.
   const tree = new Set([root]);
-  for (const pid of tree) for (const child of children.get(pid) ?? []) tree.add(child);
+  for (const pid of tree) {
+    for (const child of children.get(pid) ?? []) if ((created.get(child) ?? 0) >= (created.get(pid) ?? 0)) tree.add(child);
+  }
   return [...tree];
 }
 

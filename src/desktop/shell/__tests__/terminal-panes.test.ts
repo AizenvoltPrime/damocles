@@ -42,7 +42,7 @@ afterEach(() => wrapper?.unmount());
 function mountPanes(state: TerminalState): { api: FakeShellApi; wrapper: VueWrapper } {
   const api = fakeShellApi();
   wrapper = mount(TerminalPanes, {
-    props: { api, terminal: state, platform: 'win32', splitShortcut: 'Ctrl+Shift+5' },
+    props: { api, terminal: state, platform: 'win32', splitShortcut: 'Ctrl+Shift+5', hosts: [] },
     global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: storeFor(state) }, stubs: { TerminalView: ViewStub } },
   });
   return { api, wrapper };

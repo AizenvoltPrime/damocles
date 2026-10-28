@@ -430,7 +430,8 @@ export class SearchService {
         return (include.globs.length === 0 || included(label)) && !excluded(label);
       });
     });
-    if (!admitted.ok) return { ok: false, error: 'invalidGlob', glob: raw.include || raw.exclude };
+    // Out of time (a backtracking glob, or main stalled under load): no buffer is searched, and ripgrep, whose globs are linear, still runs.
+    const admittedBuffers = admitted.ok ? admitted.value : [];
     const run: Run = {
       searchId: owner.kind === 'view' ? owner.searchId : 0,
       owner,
@@ -441,7 +442,7 @@ export class SearchService {
       settings,
       matches: new Map(),
       files: new Map(),
-      buffered: new Set(admitted.value.map((buffer) => fileKeyId(this.keyOf(buffer)))),
+      buffered: new Set(admittedBuffers.map((buffer) => fileKeyId(this.keyOf(buffer)))),
       removed: new Set(),
       dismissedFiles: new Set(),
       liveTimers: new Map(),
@@ -457,7 +458,7 @@ export class SearchService {
       nextId: 0,
       resultCount: 0,
       limitHit: false,
-      bufferWarning: undefined,
+      bufferWarning: admitted.ok ? undefined : 'timedOut',
       editorChars: 0,
     };
     this.runs.set(ownerId, run);
@@ -473,7 +474,7 @@ export class SearchService {
       });
     const begin = (): void => {
       run.debounce = undefined;
-      this.searchBuffers(run, admitted.value);
+      this.searchBuffers(run, admittedBuffers);
       if (run.done) return;
       if (!args) {
         this.finish(run, undefined, false);

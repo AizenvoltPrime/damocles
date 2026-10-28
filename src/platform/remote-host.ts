@@ -6,8 +6,13 @@ export type ClientTopic = 'clientAuth' | 'clientUser' | 'clientPolicy' | 'acting
 
 /** The per-client mirrors of a daemon's core, by the daemon's id for each attached client. */
 export interface ClientSnapshots {
-  // the client that most recently sent core a message; undefined with no client attached
+  // the client whose request or panel message the work in progress came from; undefined outside one
+  actor(): string | undefined;
+  // actor() while it is attached, else the client that most recently sent core a message; undefined with none attached
   acting(): string | undefined;
+  // whether the client is attached now, its connection outside its reconnection grace; a client is named by its device's
+  // stable id, so a relaunch of that device attaches under the same id
+  attached(clientId: string): boolean;
   // expiries stamped on this host's clock when the snapshot arrived; a detached client's last one stays
   auth(clientId: string): HeldAuth | undefined;
   user(clientId: string): ClientUser | undefined;
@@ -20,6 +25,9 @@ export interface ClientSnapshots {
 export interface RemoteHost {
   readonly hostId: string;
   readonly clients: ClientSnapshots;
+  // the daemon's proxy socket for that client's forwarded agent, which reaches only that client's agent; undefined on a
+  // target without one (Windows)
+  agentSocket(clientId: string): string | undefined;
   // the token broker's ask, answered by exactly that client; rejects with CREDENTIAL_CLIENT_ABSENT when it is gone
   credentials(provider: string, clientId: string): Promise<BrokerAnswer>;
   // speak a chat's final reply on the client showing its view

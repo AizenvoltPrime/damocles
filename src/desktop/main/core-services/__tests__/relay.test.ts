@@ -174,13 +174,13 @@ function relayServices(divert: (view: RelayView, message: unknown) => boolean = 
   return { host, view, relayed };
 }
 
-it('settles a held view false when it closes before its page is ready or the services are disposed, and true on its ready', async () => {
+it('settles a held view false when it closes before its page is ready or the services are disposed, and with its page token on its ready', async () => {
   const { host, view, relayed } = relayServices();
   const ready = view('view-1');
   const joined = host.adoptHeld(ready);
   ready.fireMessage({ type: 'getSettings' });
-  ready.fireMessage({ type: 'ready' });
-  await expect(joined).resolves.toBe(true);
+  ready.fireMessage({ type: 'ready', panelToken: 'token-1' });
+  await expect(joined).resolves.toEqual({ panelToken: 'token-1' });
   ready.fireMessage({ type: 'afterReady' });
 
   const closing = view('view-2');
@@ -193,6 +193,20 @@ it('settles a held view false when it closes before its page is ready or the ser
   await expect(left).resolves.toBe(false);
   // only what a page sent after its ready reached core
   expect(relayed()).toEqual(['afterReady']);
+});
+
+it("joins a joined view again on its page's later ready instead of sending core that ready", async () => {
+  const { host, view, relayed } = relayServices();
+  const joined = view('view-1');
+  const held = host.adoptHeld(joined);
+  joined.fireMessage({ type: 'ready', panelToken: 'token-of-this-device' });
+  await held;
+  const rejoins: string[] = [];
+  host.rejoinOnReady('view-1', () => rejoins.push('join'));
+  joined.fireMessage({ type: 'sendMessage' });
+  joined.fireMessage({ type: 'ready', panelToken: 'token-of-this-device' });
+  expect(rejoins).toEqual(['join']);
+  expect(relayed()).toEqual(['sendMessage']);
 });
 
 it('relays to core no page message that main diverts', async () => {

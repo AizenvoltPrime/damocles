@@ -31,10 +31,9 @@ import {
   type ShellDiffSide,
   type ShellEditorTab,
   type ShellFileGit,
-  type ShellMergeTab,
   type ShellTimelineTab,
 } from '../preload/shell-channels';
-import type { ScmChangesTab } from '../preload/scm-channels';
+import type { ScmChangesTab, ScmMergeInputsResult } from '../preload/scm-channels';
 import type { ChatReviewTab } from '../preload/review-channels';
 import { parseRootKey } from '../preload/folder-root';
 import { authorityKeyOfProject, pathFor } from '../../shared/project-location';
@@ -53,7 +52,7 @@ import {
   isDesktopSettingValue,
 } from '../local-services/desktop-configuration';
 import type { BackupRecord } from './documents/backups';
-import { isDocumentDirty, movedPath, type Document, type DocumentService, type ShellEdit, type TextDocument } from './documents/document-service';
+import { isDocumentDirty, movedPath, uploadMergeLabels, type Document, type DocumentService, type Location, type ShellEdit, type TextDocument } from './documents/document-service';
 import type { FormatTarget } from './formatting/format-service';
 import { DEFAULT_SEARCH_EDITOR_CONFIG, resultLocation } from './search/search-editor-format';
 import { projectOfPath, type Project } from '../local-services/confine';
@@ -86,6 +85,19 @@ export interface NotShownSide {
   readonly name: string;
   readonly notDisplayed: NotDisplayedReason;
   readonly bytes?: number;
+}
+
+// A remote diff's side: a project file of that host by FileRef, a core-originated text, or a side not shown as text.
+export type RemoteDiffSide = { readonly file: FileRef } | { readonly name: string; readonly content: string } | NotShownSide;
+
+// The repository a source control diff shows a change of, and the change's file and group when its git side refreshes.
+export interface ScmDiffOrigin {
+  readonly repoId: string;
+  readonly git?: Omit<ShellDiffGit, 'repoId'>;
+}
+
+function scmFlags(scm: ScmDiffOrigin | undefined): { readonly scmRepoId?: string; readonly scmGit?: Omit<ShellDiffGit, 'repoId'> } {
+  return scm ? { scmRepoId: scm.repoId, ...(scm.git ? { scmGit: scm.git } : {}) } : {};
 }
 
 // A source control group's multi-file diff (ChangesTab.vue); its entries follow the repository's status while it is open.
@@ -121,8 +133,7 @@ interface Tab {
     subject: DiffSubject;
     readonly conflictCompare?: true;
     readonly replacePreview?: true;
-    // the root and id of the repository whose change source control opened here (Close All Diff Editors, a disposed repository)
-    readonly scmRoot?: string;
+    // the repository whose change source control opened here (Close All Diff Editors, a disposed repository)
     readonly scmRepoId?: string;
     // the change's file and group, whose index side main refreshes after each status (ShellDiffGit)
     readonly scmGit?: Omit<ShellDiffGit, 'repoId'>;
@@ -131,8 +142,8 @@ interface Tab {
   // a chat's review (D60), kept current by its owner
   review?: ChatReviewTab;
   timeline?: ShellTimelineTab & { readonly title: string };
-  // the Result is the tab's documentId
-  merge?: Omit<ShellMergeTab, 'documentId'> & { readonly title: string };
+  // the Result is the tab's documentId; upload: an offline save that met a changed target, whose inputs are its document's
+  merge?: ({ readonly repoId: string; readonly path: string } | { readonly upload: true; readonly path: string }) & { readonly title: string };
 }
 
 // What the active tab is to source control (MenuState.editorGit).
@@ -210,14 +221,17 @@ export interface EditorPaneDeps {
   readonly browser: () => BrowserTabSource | undefined;
   // a warning toast
   readonly warn: (message: string) => void;
+  // a remote authority's host as this computer names it
+  readonly hostName: (authority: string) => string;
   // a Search Editor's document left with its last tab
   readonly searchEditorClosed: (documentId: string) => void;
   // a chat review's tab closed, by the user or by its owner
   readonly reviewClosed: (reviewId: string) => void;
   // a code tab's Open Changes: source control's diff of that file
-  readonly openChanges: (absolutePath: string) => Promise<void>;
-  // the file's place in an open repository of a trusted project (ShellEditorTab.git); undefined anywhere else
-  readonly gitOf: (absolutePath: string) => ShellFileGit | undefined;
+  readonly openChanges: (location: Location) => Promise<void>;
+  // the file's place in an open repository of a trusted project (ShellEditorTab.git), on the file's own authority; undefined
+  // anywhere else
+  readonly gitOf: (location: Location) => ShellFileGit | undefined;
 }
 
 function readSetting<T>(settings: SettingsStore, key: string, fallback: T): T {
@@ -303,6 +317,8 @@ function placeFields(place: Place): Pick<ShellEditorTab, 'projectKey' | 'relativ
 function diffSide(document: Document | undefined, modified: boolean): ShellDiffSide {
   if (document?.kind === 'text') return { kind: 'text' };
   if (!document) return { kind: 'notDisplayed', reason: 'missing', openable: false };
+  // a remote file whose host is not connected shows nothing of it
+  if (document.kind === 'offline') return { kind: 'notDisplayed', reason: 'unreadable', openable: false };
   const bytes = document.bytes;
   return {
     kind: 'notDisplayed',
@@ -347,6 +363,21 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
         this.stateChanged();
       }),
       deps.settings.onDidChange('damocles.desktop.editor', () => this.stateChanged()),
+      // an offline placeholder's host connected, or an awaiting backup moved: its tabs show the new document id
+      deps.documents.onDidReplace(({ from, to }) => {
+        const document = this.deps.documents.get(to);
+        if (!document) return;
+        const showing = this.tabs.filter((tab) => tab.documentId === from);
+        if (showing.length === 0) {
+          if (!this.holds(to)) this.deps.documents.release(to, false);
+          return;
+        }
+        for (const tab of showing) {
+          tab.documentId = to;
+          tab.kind = this.kindFor(document, tab.kind);
+        }
+        this.stateChanged();
+      }),
     ];
   }
 
@@ -493,8 +524,9 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       if (this.tabs.some((other) => other !== tab && other.documentId === edited.id)) continue;
       this.replaceWithFileTab(tab, edited);
     }
-    const ofRepo = (tab: Tab): boolean => tab.changes?.changes.repoId === repoId || tab.timeline?.repoId === repoId || tab.merge?.repoId === repoId || repoDiff(tab);
-    for (const tab of this.tabs.filter((candidate) => candidate.merge?.repoId === repoId)) {
+    const mergeOf = (tab: Tab): boolean => tab.merge !== undefined && 'repoId' in tab.merge && tab.merge.repoId === repoId;
+    const ofRepo = (tab: Tab): boolean => tab.changes?.changes.repoId === repoId || tab.timeline?.repoId === repoId || mergeOf(tab) || repoDiff(tab);
+    for (const tab of this.tabs.filter(mergeOf)) {
       const document = tab.documentId !== undefined ? this.deps.documents.get(tab.documentId) : undefined;
       if (document && isDocumentDirty(document) && !this.tabs.some((other) => other.kind === 'code' && other.documentId === document.id)) this.showDocument(document);
     }
@@ -553,16 +585,77 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   }
 
   /** A conflicted file's merge editor tab over its own document (the Result), reused for the same file. */
-  showMerge(merge: Omit<ShellMergeTab, 'documentId'>, document: Document, title: string, opts: { readonly focus: boolean }): string {
+  showMerge(merge: { readonly repoId: string; readonly path: string }, document: Document, title: string, opts: { readonly focus: boolean }): string {
     const existing = this.tabs.find((tab) => tab.kind === 'merge' && tab.documentId === document.id);
     const tab = existing ?? this.addTab({ id: randomUUID(), kind: 'merge', documentId: document.id, merge: { ...merge, title } });
     this.afterOpen(tab, opts);
     return tab.id;
   }
 
-  /** The merge editor tabs of a file, closed with no question: the Result is the file's own document, which keeps its edits. */
-  async closeMerge(repoId: string, relativePath: string): Promise<void> {
-    const merges = this.tabs.filter((tab) => tab.merge?.repoId === repoId && tab.merge.path === relativePath);
+  /**
+   * The merge editor of an offline save that met a changed target (TextDocument.uploadConflict), opened in the background
+   * unless the pane shows nothing; the conflict summary's Review focuses it (focusUploadMerge).
+   */
+  showUploadMerge(document: TextDocument): void {
+    const relativePath = document.location?.relativePath;
+    if (relativePath === undefined || !document.uploadConflict) throw new Error('Not an upload conflict of a project file');
+    if (this.tabs.some((tab) => tab.kind === 'merge' && tab.documentId === document.id)) return;
+    const tab = this.addTab({ id: randomUUID(), kind: 'merge', documentId: document.id, merge: { upload: true, path: relativePath, title: this.deps.t('Merging: {0}', document.name) } });
+    if (this.activeId === null) this.activate(tab.id);
+    this.deps.showPane();
+    this.stateChanged();
+  }
+
+  /** A document the service holds with no tab that needs the user again (an offline save that did not upload), in the background. */
+  showHeld(document: TextDocument): void {
+    if (this.holds(document.id)) return;
+    const tab = this.addTab({ id: randomUUID(), kind: this.kindFor(document), documentId: document.id });
+    if (this.activeId === null) this.activate(tab.id);
+    this.deps.showPane();
+    this.stateChanged();
+  }
+
+  /** Review on the conflict summary: the upload merge of that project file, focused. */
+  focusUploadMerge(file: FileRef): void {
+    const tab = this.tabs.find((candidate) => {
+      if (candidate.kind !== 'merge' || !candidate.merge || !('upload' in candidate.merge) || candidate.documentId === undefined) return false;
+      const location = this.deps.documents.get(candidate.documentId)?.location;
+      return location?.projectKey === file.projectKey && location.relativePath === file.relativePath;
+    });
+    if (tab) this.afterOpen(tab, { focus: true });
+  }
+
+  /** An upload merge tab's three inputs, read from its document: base as last read, the target's text, the text saved here. */
+  uploadMergeInputs(tabId: string): ScmMergeInputsResult {
+    const document = this.uploadMergeDocument(tabId);
+    const conflict = document?.uploadConflict;
+    if (!document || !conflict) return { ok: false, reason: 'notConflicted' };
+    const labels = uploadMergeLabels(this.deps.hostName(authorityKeyOfProject(document.location!.projectKey!)), this.deps.t);
+    return { ok: true, base: conflict.base, current: conflict.current, incoming: conflict.incoming, labels, operation: 'merge' };
+  }
+
+  /** Complete Merge of an upload merge: the Result saves through its host's workspace over the target's text, and the tab closes. */
+  async completeUploadMerge(tabId: string): Promise<void> {
+    const document = this.uploadMergeDocument(tabId);
+    if (!document?.uploadConflict) throw new Error('Not an upload merge');
+    if (!(await this.saveDocuments([document.id]))) {
+      this.deps.warn(this.deps.t('The file could not be saved, so the merge was not completed.'));
+      return;
+    }
+    this.deps.documents.endUploadConflict(document.id);
+    await this.closeMerge(document.id);
+  }
+
+  private uploadMergeDocument(tabId: string): TextDocument | undefined {
+    const tab = this.tab(tabId);
+    if (tab.kind !== 'merge' || !tab.merge || !('upload' in tab.merge) || tab.documentId === undefined) throw new Error('Not an upload merge tab');
+    const document = this.deps.documents.get(tab.documentId);
+    return document?.kind === 'text' ? document : undefined;
+  }
+
+  /** The merge editor tabs of a Result, closed with no question: the Result is the file's own document, which keeps its edits. */
+  async closeMerge(documentId: string): Promise<void> {
+    const merges = this.tabs.filter((tab) => tab.kind === 'merge' && tab.documentId === documentId);
     // the file's own tab takes over the document first, so closing the merge tab never releases unsaved edits
     for (const tab of merges) {
       const document = tab.documentId !== undefined ? this.deps.documents.get(tab.documentId) : undefined;
@@ -604,7 +697,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     if (tab.diff?.scmGit) return tab.diff.scmGit.group === 'index' ? 'indexDiff' : 'workingTreeDiff';
     if (tab.kind !== 'code' || tab.documentId === undefined) return null;
     const location = this.deps.documents.get(tab.documentId)?.location;
-    return location && isLocalLocation(location) && this.deps.gitOf(location.path) ? 'file' : null;
+    return location && this.deps.gitOf(location) ? 'file' : null;
   }
 
   /** A path core named (a tool card click, the agent): shown in the pane, focused only for a user's click. */
@@ -651,13 +744,12 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     filePath: string,
     left: DiffSide | NotShownSide,
     right: DiffSide | NotShownSide,
-    opts: { readonly focus: boolean; readonly scm?: { readonly root: string; readonly repoId: string; readonly git?: Omit<ShellDiffGit, 'repoId'> } },
+    opts: { readonly focus: boolean; readonly scm?: ScmDiffOrigin },
   ): Promise<{ close(): void; readonly closed: Promise<void> }> {
     const [original, modified] = await Promise.all([this.sideDocument(left), this.sideDocument(right)]);
     const fileSide = 'path' in right ? modified : 'path' in left ? original : undefined;
     const subject: DiffSubject = fileSide ? { documentId: fileSide.id } : { place: await this.placeOfPath(filePath) };
-    const scm = opts.scm;
-    const tab = this.openDiffTab(title, original, modified, subject, scm ? { scmRoot: scm.root, scmRepoId: scm.repoId, ...(scm.git ? { scmGit: scm.git } : {}) } : {});
+    const tab = this.openDiffTab(title, original, modified, subject, scmFlags(opts.scm));
     this.afterOpen(tab, { focus: opts.focus });
     const closed = new Promise<void>((resolve) => this.diffClosed.set(tab.id, resolve));
     // Edits the user made to the file in this tab are asked about, as VS Code's tabGroups.close asks before closing a dirty editor.
@@ -679,11 +771,12 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   async showRemoteDiff(
     title: (fileName: string) => string,
     file: FileRef,
-    left: { readonly file: FileRef } | { readonly name: string; readonly content: string },
-    right: { readonly file: FileRef } | { readonly name: string; readonly content: string },
-    opts: { readonly focus: boolean },
+    left: RemoteDiffSide,
+    right: RemoteDiffSide,
+    opts: { readonly focus: boolean; readonly scm?: ScmDiffOrigin },
   ): Promise<{ close(): void; readonly closed: Promise<void> }> {
-    const side = async (diffSide: typeof left): Promise<Document> => {
+    const side = async (diffSide: RemoteDiffSide): Promise<Document> => {
+      if ('notDisplayed' in diffSide) return this.deps.documents.openPlaceholder(diffSide.name, diffSide.notDisplayed, diffSide.bytes);
       if (!('file' in diffSide)) return this.deps.documents.openMemory(diffSide.name, diffSide.content, { untitled: false });
       const opened = await this.deps.documents.openProjectFile(diffSide.file.projectKey, diffSide.file.relativePath);
       if (opened.ok) return opened.document;
@@ -693,7 +786,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     const [original, modified] = await Promise.all([side(left), side(right)]);
     const fileSide = 'file' in right ? modified : 'file' in left ? original : undefined;
     const subject: DiffSubject = fileSide ? { documentId: fileSide.id } : { place: this.placeOfFile(file) };
-    const tab = this.openDiffTab(title, original, modified, subject);
+    const tab = this.openDiffTab(title, original, modified, subject, scmFlags(opts.scm));
     this.afterOpen(tab, { focus: opts.focus });
     const closed = new Promise<void>((resolve) => this.diffClosed.set(tab.id, resolve));
     return { close: () => this.closeTabs([tab.id], { ask: true }), closed };
@@ -703,11 +796,11 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
    * Each file's tab opened without taking the active tab, unless the pane shows none (VS Code's background open); the shell
    * gets the tabs in one state push.
    */
-  async openInBackground(filePaths: readonly string[]): Promise<void> {
+  async openInBackground(files: ReadonlyArray<{ readonly path: string } | { readonly file: FileRef }>): Promise<void> {
     let first: Tab | undefined;
     try {
-      for (const filePath of filePaths) {
-        const document = await this.deps.documents.openPath(filePath);
+      for (const entry of files) {
+        const document = 'path' in entry ? await this.deps.documents.openPath(entry.path) : await this.projectDocument(entry.file);
         const kind = this.kindFor(document);
         const tab = this.tabs.find((candidate) => candidate.documentId === document.id && candidate.kind === kind) ?? this.addTab({ id: randomUUID(), kind, documentId: document.id }, false);
         first ??= tab;
@@ -721,20 +814,20 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     }
   }
 
-  /** Close All Diff Editors: the diff tabs source control opened for the repository at root, asking about unsaved edits. */
-  async closeScmDiffs(root: string): Promise<void> {
-    await this.closeTabs(this.tabs.filter((tab) => tab.diff?.scmRoot !== undefined && folderKey(tab.diff.scmRoot) === folderKey(root)).map((tab) => tab.id), { ask: true });
+  /** Close All Diff Editors: the diff tabs source control opened for the repository, asking about unsaved edits. */
+  async closeScmDiffs(repoId: string): Promise<void> {
+    await this.closeTabs(this.tabs.filter((tab) => tab.diff?.scmRepoId === repoId).map((tab) => tab.id), { ask: true });
   }
 
   /**
    * Close All Unmodified Editors: every clean text tab (VS Code's TabInputText: a file, untitled, settings or log tab) whose file
    * has no change in source control.
    */
-  async closeUnmodified(changed: (absolutePath: string) => boolean): Promise<void> {
+  async closeUnmodified(changed: (location: Location) => boolean): Promise<void> {
     const text: ReadonlySet<FileTabKind> = new Set(['code', 'untitled', 'settings', 'log']);
     const targets = this.tabs.filter((tab) => {
       const document = tab.documentId !== undefined ? this.deps.documents.get(tab.documentId) : undefined;
-      return text.has(tab.kind) && document !== undefined && !isDocumentDirty(document) && !(document.location && changed(document.location.path));
+      return text.has(tab.kind) && document !== undefined && !isDocumentDirty(document) && !(document.location && changed(document.location));
     });
     await this.closeTabs(targets.map((tab) => tab.id), { ask: false });
   }
@@ -794,20 +887,29 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return [...documents.values()];
   }
 
-  /** Closes the active file tab as Close Editor does; cleanOnly leaves a tab with unsaved edits open. */
-  async closeActive(opts: { readonly cleanOnly: boolean }): Promise<void> {
+  /**
+   * Closes the active file tab as Close Editor does, only while it shows that file: a project file by its project place (a
+   * remote file's path is its host's), a file outside every project by this computer's path; cleanOnly leaves a tab with
+   * unsaved edits open.
+   */
+  async closeActive(file: FileRef | { readonly path: string }, opts: { readonly cleanOnly: boolean }): Promise<void> {
     const tab = this.tabs.find((candidate) => candidate.id === this.activeId);
     if (!tab) return;
     const document = tab.documentId !== undefined ? this.deps.documents.get(tab.documentId) : undefined;
-    if (opts.cleanOnly && document && isDocumentDirty(document)) return;
+    const location = document?.location;
+    const shows = location !== undefined && ('path' in file ? isLocalLocation(location) && folderKey(location.path) === folderKey(file.path) : location.projectKey === file.projectKey && location.relativePath === file.relativePath);
+    if (!shows || (opts.cleanOnly && isDocumentDirty(document!))) return;
     await this.closeTabs([tab.id], { ask: true });
   }
 
-  /** The unsaved documents of files on disk, once the shell's last edits arrived (the save-before-commit prompt). */
+  /**
+   * The unsaved documents of files on this computer's disk, once the shell's last edits arrived (the save-before-commit
+   * prompt); a remote file's path is its host's, so it never matches a local repository's.
+   */
   async dirtyFiles(): Promise<ReadonlyArray<{ readonly documentId: string; readonly path: string }>> {
     await this.flush();
     return this.dirtyDocuments().flatMap((document) =>
-      document.untitled || document.settingsScope !== undefined || document.searchEditor || !document.location || document.location.host !== undefined ? [] : [{ documentId: document.id, path: document.location.path }],
+      document.untitled || document.settingsScope !== undefined || document.searchEditor || !document.location || !isLocalLocation(document.location) ? [] : [{ documentId: document.id, path: document.location.path }],
     );
   }
 
@@ -890,9 +992,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
         this.afterOpen(this.showDocument(document, document.kind === 'text' ? 'code' : undefined), { focus: true });
         return;
       case 'openChanges':
-        if (!document?.location) return;
-        if (!isLocalLocation(document.location)) this.deps.warn(this.deps.t('The file is not on this computer.'));
-        else await this.deps.openChanges(document.location.path);
+        if (document?.location) await this.deps.openChanges(document.location);
         return;
       case 'copyPath':
       case 'copyRelativePath': {
@@ -1009,6 +1109,14 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return this.visibleIds().length > 0;
   }
 
+  /** Whether a file tab belongs to a project match accepts, without building the shell's whole state. */
+  hasProjectTab(match: (projectKey: string) => boolean): boolean {
+    return this.tabs.some((tab) => {
+      const { projectKey } = this.shellTab(tab);
+      return projectKey !== undefined && match(projectKey);
+    });
+  }
+
   activeContext(): ActiveEditorContext | undefined {
     const tab = this.tabs.find((candidate) => candidate.id === this.activeId);
     const document = tab?.documentId !== undefined ? this.deps.documents.get(tab.documentId) : undefined;
@@ -1016,6 +1124,13 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     const range = this.selection?.documentId === document.id ? this.selection.range : null;
     const selection = range && document.kind === 'text' ? selectionText(document.text, range) : undefined;
     return { filePath: document.location?.path, selection };
+  }
+
+  /** Where the file activeContext describes is, on its own authority; undefined without one. */
+  activeLocation(): Location | undefined {
+    const tab = this.tabs.find((candidate) => candidate.id === this.activeId);
+    if (tab?.kind !== 'code' && tab?.kind !== 'markdownPreview') return undefined;
+    return tab.documentId !== undefined ? this.deps.documents.get(tab.documentId)?.location : undefined;
   }
 
   /** The project key of the document activeContext describes; undefined for one outside every project. */
@@ -1136,6 +1251,11 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     let document: Document | undefined;
     if (persisted.kind === 'settings') {
       document = await this.deps.documents.openSettingsFile(persisted.scope);
+    } else if ('file' in persisted && this.deps.documents.awaitsHost(persisted.file.projectKey)) {
+      // a remote file whose host is not connected shows the offline placeholder, never anything from this computer's disk
+      const placeholder = this.deps.documents.openOffline(persisted.file.projectKey, persisted.file.relativePath);
+      const kind = this.kindFor(placeholder, persisted.kind);
+      return this.tabs.find((tab) => tab.documentId === placeholder.id && tab.kind === kind) ?? this.addTab({ id: randomUUID(), kind, documentId: placeholder.id }, false);
     } else if ('file' in persisted) {
       const opened = await this.deps.documents.openProjectFile(persisted.file.projectKey, persisted.file.relativePath);
       if (!opened.ok) throw new Error(`${persisted.file.relativePath} is ${opened.reason}`);
@@ -1190,12 +1310,17 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       if (this.liveProjectKey(target.projectKey) === undefined) {
         return parseRootKey(target.projectKey)?.worktreeId !== undefined ? this.deps.t('Its worktree no longer exists.') : this.deps.t('Its project is no longer open.');
       }
-      const opened = await this.deps.documents.openProjectFile(target.projectKey, target.relativePath, { missing: backup });
-      if (!opened.ok) {
-        if (opened.reason === 'outside') return this.deps.t('It is now outside its project.');
-        return opened.reason === 'missing' ? this.deps.t('Its project folder is missing.') : this.deps.t('It cannot be read.');
+      if (this.deps.documents.awaitsHost(target.projectKey)) {
+        // its host is not connected: the buffer opens dirty with the backup's text and takes the file's disk text once it connects
+        document = this.deps.documents.openAwaitingHost(target.projectKey, target.relativePath, { encoding: backup.encoding, bom: backup.bom, eol: backup.eol });
+      } else {
+        const opened = await this.deps.documents.openProjectFile(target.projectKey, target.relativePath, { missing: backup });
+        if (!opened.ok) {
+          if (opened.reason === 'outside') return this.deps.t('It is now outside its project.');
+          return opened.reason === 'missing' ? this.deps.t('Its project folder is missing.') : this.deps.t('It cannot be read.');
+        }
+        document = opened.document;
       }
-      document = opened.document;
     }
     if (document.kind !== 'text' || document.readOnlyReason !== undefined) return this.refuseBackup(document, this.deps.t('The editor cannot change it as it is on disk now.'));
     // A second backup of one file (a crash between two sessions) never overwrites the text the first restored.
@@ -1222,6 +1347,12 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return projectKey !== undefined && this.deps.projects().some((project) => project.key === projectKey) ? projectKey : undefined;
   }
 
+  private async projectDocument(file: FileRef): Promise<Document> {
+    const opened = await this.deps.documents.openProjectFile(file.projectKey, file.relativePath);
+    if (!opened.ok) throw new Error(`${file.relativePath} could not be opened (${opened.reason})`);
+    return opened.document;
+  }
+
   private async sideDocument(side: DiffSide | NotShownSide): Promise<Document> {
     if ('notDisplayed' in side) return this.deps.documents.openPlaceholder(side.name, side.notDisplayed, side.bytes);
     if ('path' in side) return this.deps.documents.openPath(side.path);
@@ -1233,7 +1364,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     original: Document,
     modified: Document,
     subject: DiffSubject,
-    flags: { readonly conflictCompare?: true; readonly replacePreview?: true; readonly scmRoot?: string; readonly scmRepoId?: string; readonly scmGit?: Omit<ShellDiffGit, 'repoId'> } = {},
+    flags: { readonly conflictCompare?: true; readonly replacePreview?: true; readonly scmRepoId?: string; readonly scmGit?: Omit<ShellDiffGit, 'repoId'> } = {},
   ): Tab {
     const counts = original.kind === 'text' && modified.kind === 'text' ? diffCounts(original.text, modified.text) : { added: 0, removed: 0 };
     return this.addTab({ id: randomUUID(), kind: 'diff', diff: { originalId: original.id, modifiedId: modified.id, title, subject, ...counts, ...flags } });
@@ -1296,9 +1427,11 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   }
 
   private kindFor(document: Document, preferred?: FileTabKind): FileTabKind {
+    if (document.kind === 'offline') return preferred ?? 'code';
     if (document.kind === 'image') return 'image';
     if (document.kind === 'notDisplayed') return 'notDisplayed';
     if (document.searchEditor) return 'searchEditor';
+    if (document.untitled) return 'untitled';
     return preferred === 'markdownPreview' && isMarkdown(document) ? 'markdownPreview' : 'code';
   }
 
@@ -1497,7 +1630,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     }
     if (tab.merge) {
       const document = this.deps.documents.get(tab.documentId!)!;
-      const { repoId, path: file, title } = tab.merge;
+      const { title, ...merge } = tab.merge;
       return {
         id: tab.id,
         kind: 'merge',
@@ -1507,7 +1640,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
         dirty: isDocumentDirty(document),
         readOnly: document.kind !== 'text' || document.readOnlyReason !== undefined,
         conflict: document.kind === 'text' && document.conflict,
-        merge: { repoId, path: file, documentId: document.id },
+        merge: { ...merge, documentId: document.id },
       };
     }
     if (tab.diff) {
@@ -1532,7 +1665,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     const readOnlyReason = document.kind === 'text' ? document.readOnlyReason : undefined;
     // a host's own settings file validates as its user file does
     const settingsScope = tab.kind === 'settings' && document.kind === 'text' ? document.settingsScope ?? (document.location?.host !== undefined ? 'user' : undefined) : undefined;
-    const git = tab.kind === 'code' && document.location && isLocalLocation(document.location) ? this.deps.gitOf(document.location.path) : undefined;
+    const git = tab.kind === 'code' && document.location ? this.deps.gitOf(document.location) : undefined;
     return {
       id: tab.id,
       kind: tab.kind,
@@ -1543,6 +1676,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       readOnly: document.kind !== 'text' || readOnlyReason !== undefined,
       ...(readOnlyReason !== undefined ? { readOnlyReason } : {}),
       conflict: document.kind === 'text' && document.conflict,
+      ...(document.kind === 'text' && document.pendingUpload ? { pendingUpload: true as const } : {}),
       ...(document.kind === 'text' && document.orphaned ? { deleted: true as const } : {}),
       ...(settingsScope !== undefined ? { settingsScope } : {}),
       ...(document.kind === 'text' && document.searchEditor ? { searchEditor: this.searchEditorOf(document) } : {}),
@@ -1617,7 +1751,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     if (tab.diff || tab.documentId === undefined) return undefined;
     const document = this.deps.documents.get(tab.documentId);
     if (!document) return undefined;
-    const backupId = document.kind === 'text' && isDocumentDirty(document) ? document.backupId : undefined;
+    const backupId = document.kind === 'text' && (isDocumentDirty(document) || document.pendingUpload) ? document.backupId : undefined;
     const withBackup = backupId !== undefined ? { backupId } : {};
     if (tab.kind === 'log') return document.location ? { kind: 'log', name: path.basename(document.location.path) } : undefined;
     if (tab.kind === 'untitled') return backupId !== undefined ? { kind: 'untitled', backupId } : undefined;

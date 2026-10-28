@@ -10,6 +10,7 @@ import { EDITOR_STORE } from './editor-store';
 import { attachDiffGit, type DiffGit } from './diff-git';
 import { addEditorGitKeybindings, gitKeyLabels } from './editor-keys';
 import NotDisplayedNotice from './NotDisplayedNotice.vue';
+import LoadFailedNotice from './LoadFailedNotice.vue';
 
 // A diff tab: the original side is always read-only; the modified side is editable when main says the tab is (Compare from
 // the conflict bar shows the dirty document there). Both sides share the models every other tab of those documents uses.
@@ -37,6 +38,10 @@ let stopCommands: (() => void) | undefined;
 const sides = props.tab.diff.sides;
 const textSide = sides === undefined ? undefined : sides.original.kind === 'text' ? 'original' : sides.modified.kind === 'text' ? 'modified' : null;
 const columns = sides ? (['original', 'modified'] as const).map((key) => ({ key, side: sides[key] })) : [];
+const sideId = (side: 'original' | 'modified'): string => (side === 'original' ? props.tab.diff.originalId : props.tab.diff.modifiedId);
+// The documents shown as text; a remount of the tab asks main again for one whose load failed.
+const textIds = textSide === undefined ? [sideId('original'), sideId('modified')] : textSide === null ? [] : [sideId(textSide)];
+const failed = computed(() => textIds.some((documentId) => store.loadFailed(documentId)));
 
 function setSideHost(element: unknown): void {
   sideHost.value = element instanceof HTMLElement ? element : null;
@@ -68,7 +73,9 @@ function takeSingleModel(previous: MonacoEditor.ITextModel, next: MonacoEditor.I
 }
 
 async function mountSingle(side: 'original' | 'modified'): Promise<void> {
-  const [module, model] = await Promise.all([store.monaco(), store.model(side === 'original' ? props.tab.diff.originalId : props.tab.diff.modifiedId)]);
+  const [module, content] = await Promise.all([store.monaco(), store.loadShown(sideId(side))]);
+  if (content?.kind !== 'text') return;
+  const model = await store.model(sideId(side));
   const host = sideHost.value;
   if (!host) return;
   const monaco = module.useMonaco();
@@ -90,7 +97,9 @@ async function mountSingle(side: 'original' | 'modified'): Promise<void> {
 }
 
 async function mountDiff(): Promise<void> {
-  const [module, original, modified] = await Promise.all([store.monaco(), store.model(props.tab.diff.originalId), store.model(props.tab.diff.modifiedId)]);
+  const [module, ...contents] = await Promise.all([store.monaco(), store.loadShown(sideId('original')), store.loadShown(sideId('modified'))]);
+  if (contents.some((content) => content?.kind !== 'text')) return;
+  const [original, modified] = await Promise.all([store.model(sideId('original')), store.model(sideId('modified'))]);
   const host = container.value;
   if (!host) return;
   const monaco = module.useMonaco();
@@ -170,49 +179,56 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div
-    v-if="sides"
-    data-testid="diff-editor"
-    :data-monaco-ready="ready ? 'true' : undefined"
-    class="absolute inset-0 grid grid-cols-2"
-  >
+  <div class="absolute inset-0">
     <div
-      v-for="{ key, side } in columns"
-      :key="key"
-      :data-side="key"
-      class="relative min-w-0"
-      :class="key === 'modified' ? 'border-l border-(--d-border)' : ''"
+      v-if="sides"
+      data-testid="diff-editor"
+      :data-monaco-ready="ready ? 'true' : undefined"
+      class="absolute inset-0 grid grid-cols-2"
     >
-      <NotDisplayedNotice
-        v-if="side.kind === 'notDisplayed'"
-        data-testid="diff-not-displayed"
-        :reason="side.reason"
-        :bytes="side.bytes"
-      >
-        <Button
-          v-if="side.openable"
-          size="sm"
-          variant="outline"
-          data-testid="diff-open-anyway"
-          class="d-press mt-1 h-7 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-12 hover:border-(--d-accent) hover:bg-(--d-card) [&_svg]:size-3.5"
-          @click="api.editorTab({ action: 'openFile', tabId: tab.id })"
-        >
-          <ExternalLink aria-hidden="true" />{{ t('editor.notDisplayed.openAnyway') }}
-        </Button>
-      </NotDisplayedNotice>
       <div
-        v-else
-        :ref="setSideHost"
-        data-testid="diff-text-side"
-        class="absolute inset-0"
-      />
+        v-for="{ key, side } in columns"
+        :key="key"
+        :data-side="key"
+        class="relative min-w-0"
+        :class="key === 'modified' ? 'border-l border-(--d-border)' : ''"
+      >
+        <NotDisplayedNotice
+          v-if="side.kind === 'notDisplayed'"
+          data-testid="diff-not-displayed"
+          :reason="side.reason"
+          :bytes="side.bytes"
+        >
+          <Button
+            v-if="side.openable"
+            size="sm"
+            variant="outline"
+            data-testid="diff-open-anyway"
+            class="d-press mt-1 h-7 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-12 hover:border-(--d-accent) hover:bg-(--d-card) [&_svg]:size-3.5"
+            @click="api.editorTab({ action: 'openFile', tabId: tab.id })"
+          >
+            <ExternalLink aria-hidden="true" />{{ t('editor.notDisplayed.openAnyway') }}
+          </Button>
+        </NotDisplayedNotice>
+        <div
+          v-else
+          :ref="setSideHost"
+          data-testid="diff-text-side"
+          class="absolute inset-0"
+        />
+      </div>
     </div>
+    <div
+      v-else
+      ref="container"
+      data-testid="diff-editor"
+      :data-monaco-ready="ready ? 'true' : undefined"
+      class="absolute inset-0"
+    />
+    <LoadFailedNotice
+      v-if="failed"
+      :tab="tab"
+      class="absolute inset-0 bg-(--d-bg)"
+    />
   </div>
-  <div
-    v-else
-    ref="container"
-    data-testid="diff-editor"
-    :data-monaco-ready="ready ? 'true' : undefined"
-    class="absolute inset-0"
-  />
 </template>

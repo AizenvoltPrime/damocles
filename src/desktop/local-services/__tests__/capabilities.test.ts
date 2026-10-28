@@ -21,6 +21,7 @@ describe('desktop host capabilities', () => {
       windowLayout: true,
       chatReview: true,
       worktrees: true,
+      bypassPermissions: true,
     });
   });
 });

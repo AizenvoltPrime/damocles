@@ -116,7 +116,7 @@ async function execOnce(
  * tool is registered on every platform, so the candidates are tried here instead.
  * The thrown `aborted` and `timeout:<seconds>` messages are the two pi's shell tool matches on.
  */
-export function createTrackedPowerShellOperations(shellJob: SessionJob | undefined, extraEnv: () => Readonly<Record<string, string>> | undefined = () => undefined): PowerShellOperations {
+export function createTrackedPowerShellOperations(shellJob: SessionJob | undefined, extraEnv: () => Readonly<Record<string, string | undefined>> | undefined = () => undefined): PowerShellOperations {
   return {
     exec: async (command, cwd, { onData, signal, timeout, env: piEnv }) => {
       const extra = extraEnv();
@@ -152,7 +152,7 @@ export function createTrackedPowerShellOperations(shellJob: SessionJob | undefin
  * built-in, and `mapPiToolName`, the permission gate and the read-only-shell classifier all key off
  * the exact spelling. `pi-session.test.ts` pins that the two never converge.
  */
-export function createPowerShellTool(pi: PiCodingAgentModule, cwd: string, shellJob: SessionJob | undefined, extraEnv?: () => Readonly<Record<string, string>> | undefined): ToolDefinition {
+export function createPowerShellTool(pi: PiCodingAgentModule, cwd: string, shellJob: SessionJob | undefined, extraEnv?: () => Readonly<Record<string, string | undefined>> | undefined): ToolDefinition {
   const operations = createTrackedPowerShellOperations(shellJob, extraEnv);
   const definition: AnyToolDefinition = pi.createPowerShellToolDefinition(cwd, { operations });
   return { ...definition, name: TOOL_POWERSHELL, label: 'PowerShell', parameters: withCommandDescription(definition.parameters) };

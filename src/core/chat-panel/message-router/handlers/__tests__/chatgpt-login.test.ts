@@ -97,9 +97,13 @@ describe("Sign in with ChatGPT through pi's real login", () => {
       postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => sent.push(message),
       getPanels: () => new Map([["panel-1", { host, session: { publishAccountInfo: () => {}, publishAvailableModels: () => {}, openaiSignInEnded: async () => {} } }]]),
       platform,
+      broadcastAccountState: async (_what: string, _row: string, read: () => Promise<ExtensionToWebviewMessage | undefined>) => {
+        const message = await read();
+        if (message) sent.push(message);
+      },
     } as unknown as HandlerDependencies;
     handlers = createOpenAIHandlers(deps);
-    ctx = { host, folder: { fsPath: agentDir } } as unknown as HandlerContext;
+    ctx = { host, reply: host, folder: { fsPath: agentDir } } as unknown as HandlerContext;
   });
 
   afterEach(async () => {

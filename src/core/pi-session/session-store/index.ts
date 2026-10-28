@@ -22,7 +22,7 @@ export {
 } from './reading';
 export { piSessionIdFromFile } from './meta-index/protocol';
 export { SessionMetaIndex } from './meta-index/client';
-export { loadPiSessionHistory } from './history-loader';
+export { loadPiSessionHistory, replaySessionFileReadOnly } from './history-loader';
 export { storedTypedText } from './prompt-context';
 export { extractTerminalAttachmentCounts } from './terminal-attachments';
 export { renamePiSession, deletePiSession, tagPiSession, titleStoredPiSession, type LiveTitleOutcome } from './mutations';

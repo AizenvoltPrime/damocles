@@ -1,10 +1,12 @@
-import { promises as fs } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { agentSocketFile } from '../../core-protocol/agent-sockets';
 import type { HostStarters, PtyHostProcess } from '../../workspace/host-starters';
 import type { TerminalPost } from '../../workspace/messages';
+import { daemonAnswers } from '../attach';
 import type { CoreAttach } from '../control-messages';
 import type { ForkedChild } from '../process-starts';
 import { buildDaemon, EXIT_LOCK_LOST, EXIT_SHUTDOWN_FAILED, type Daemon, type DaemonDeps } from '../serve';
@@ -133,7 +135,10 @@ describe('daemon shutdown', () => {
     const pty = stubbornPtyHost();
     const core = stubbornCore();
     const lines: string[] = [];
-    const daemon = await startInProcessDaemon({ starters: { ...NO_HOSTS, startPtyHost: pty.start }, forkCore: core.fork, log: (line) => lines.push(line) });
+    const daemon = await startInProcessDaemon({ starters: { ...NO_HOSTS, startPtyHost: pty.start }, forkCore: core.fork, credentialRelay: true, log: (line) => lines.push(line) });
+    // the folders under the socket base are this daemon's alone, so they go even when the run folder is left to the new owner
+    const ownFolders = [daemon.daemon.agentProxy.folder(), process.platform === 'win32' ? undefined : path.dirname(daemon.relay!.identity().handle)].filter((folder) => folder !== undefined);
+    expect(ownFolders).toHaveLength(process.platform === 'win32' ? 0 : 2);
     const client = await connectClient(await daemon.connect());
     await client.control.request('attachCore', CORE_ATTACH);
     client.workspace.emit('terminals.post', { request: SPAWN });
@@ -154,6 +159,7 @@ describe('daemon shutdown', () => {
     expect(lines.some((line) => line.startsWith('[daemon] shutting down'))).toBe(false);
     expect(await readPidFile(daemon.paths.pidFile)).toEqual(newer);
     expect((await fs.stat(daemon.paths.lockFile)).mtimeMs).toBe(taken.getTime());
+    for (const folder of ownFolders) expect(existsSync(folder)).toBe(false);
     await fs.rm(daemon.paths.lockFile, { recursive: true });
     await fs.rm(daemon.paths.pidFile);
   }, LOCK_UPDATE_MS * 3);
@@ -180,12 +186,39 @@ describe('daemon shutdown', () => {
       exited = true;
     });
     const shutdown = daemon.shutdown();
-    const lock = await acquireDaemonLock(daemon.paths, () => undefined);
+    // the real probe: a daemon shutting down closed its endpoint first, so the start waits for the lock instead of giving up
+    const lock = await acquireDaemonLock(daemon.paths, () => undefined, () => daemonAnswers(daemon.paths));
     expect(lock.held).toBe(true);
     expect(exited).toBe(true);
     if (lock.held) await lock.release();
     await shutdown;
   }, 20_000);
+});
+
+describe.runIf(process.platform !== 'win32')('a shutdown on POSIX', () => {
+  it('removes every socket folder the daemon made, a client\'s agent socket included, and exits 0', async () => {
+    const agents = await fs.mkdtemp(path.join(os.tmpdir(), 'dm-agent-'));
+    const agentSock = path.join(agents, 'agent.1');
+    const agent = net.createServer((socket) => socket.end());
+    await new Promise<void>((resolve) => agent.listen(agentSock, resolve));
+    try {
+      const daemon = await startInProcessDaemon({ starters: NO_HOSTS, credentialRelay: true });
+      const client = await connectClient(await daemon.connect(agentSock), { clientId: 'laptop' });
+      expect(client.outcome.kind).toBe('welcome');
+      await daemon.daemon.agentProxy.settled();
+      const agentFolder = daemon.daemon.agentProxy.folder()!;
+      expect(existsSync(agentSocketFile(agentFolder, 'laptop'))).toBe(true);
+      const folders = [(await readPidFile(daemon.paths.pidFile))!.socketFolder!, agentFolder, path.dirname(daemon.relay!.identity().handle)];
+      expect(new Set(folders).size).toBe(3);
+      await daemon.shutdown();
+      expect(await daemon.exitCode).toBe(0);
+      for (const folder of folders) expect(existsSync(folder)).toBe(false);
+      expect(await readPidFile(daemon.paths.pidFile)).toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve) => agent.close(() => resolve()));
+      await fs.rm(agents, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('a shutdown during a rebind', () => {

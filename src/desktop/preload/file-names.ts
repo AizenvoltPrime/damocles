@@ -1,7 +1,10 @@
 import { isUnsafeWindowsName } from '../../shared/relative-path';
 import { MAX_FILE_NAME_LENGTH } from './shell-channels';
 
-/** A name for create and rename: one segment the OS accepts, VS Code's validateFileName rules. platform: process.platform. */
+/**
+ * A name for create and rename: one segment the OS accepts, VS Code's validateFileName rules. platform: the OS the folder is
+ * on (a project's ShellProject.platform, a target's os), never this computer's for a remote project.
+ */
 export function isValidFileName(name: unknown, platform: string): name is string {
   if (typeof name !== 'string' || name.length === 0 || name.length > MAX_FILE_NAME_LENGTH) return false;
   if (name === '.' || name === '..' || /[/\\\0]/.test(name) || name.trim() !== name) return false;

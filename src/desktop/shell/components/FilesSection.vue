@@ -32,9 +32,16 @@ const props = defineProps<{
   // the New Chat in This Worktree shortcut the branch chip's menu shows
   newChatInWorktreeShortcut?: string | undefined;
   projectName: string;
+  // this computer's OS, for shortcut labels
   platform: ShellPlatform;
+  // the OS the project's files are on, whose file name rules a typed name follows
+  projectPlatform: ShellPlatform;
+  // false: the project's host has no trash, so a delete is permanent
+  trash: boolean;
   collapsed: boolean;
   bodySize?: number | undefined;
+  // the project's host is away: the tree stays readable, dimmed
+  away?: boolean | undefined;
 }>();
 const emit = defineEmits<{ toggle: []; expand: [] }>();
 const { t } = useI18n();
@@ -106,11 +113,15 @@ function load(dir: string, report = false): Promise<void> {
   if (key === undefined) return Promise.resolve();
   if (!listings.value.has(dir)) setListing(dir, { state: 'loading' });
   const requests = pending;
-  const request: Promise<void> = props.api.listFiles({ projectKey: key, relativeDir: dir, ...(report ? { report } : {}) }).then((result) => {
+  const request: Promise<void> = props.api.listFiles({ projectKey: key, relativeDir: dir, ...(report ? { report } : {}) }).then((result): Promise<void> | undefined => {
+    // Answers may arrive out of order: only the newest request's is shown, and an older request settles with it.
+    const newest = requests.get(dir);
+    if (newest !== request) return newest;
     // The project changed while the listing was on its way.
-    if (key !== props.projectKey) return;
+    if (key !== props.projectKey) return undefined;
     setListing(dir, result.ok ? { state: 'loaded', entries: result.entries } : { state: 'failed' });
     if (!result.ok && dir !== '') collapse(dir);
+    return undefined;
   }).finally(() => {
     if (requests.get(dir) === request) requests.delete(dir);
   });
@@ -327,7 +338,7 @@ const editSiblings = computed<readonly string[]>(() => {
   const own = current.mode === 'rename' ? nameOf(current.path) : undefined;
   return listing?.state === 'loaded' ? listing.entries.flatMap((entry) => (entry.name === own ? [] : [entry.name])) : [];
 });
-const editProblem = computed(() => (edit.value ? fileNameProblem(editName.value.trim(), editSiblings.value, props.platform) : undefined));
+const editProblem = computed(() => (edit.value ? fileNameProblem(editName.value.trim(), editSiblings.value, props.projectPlatform) : undefined));
 // Shown once the user has typed or pressed Enter, so a new entry's empty box opens without an error.
 const editMessage = computed(() => (editTouched.value && editProblem.value ? t(`files.error.${editProblem.value}`, { name: visibleText(editName.value.trim()) }) : null));
 
@@ -434,6 +445,7 @@ async function openMenu(row: Extract<TreeRow, { kind: 'entry' }>, rect: DOMRect 
         item('newFolder', t('files.newFolder'), 'folder-plus'),
         separator,
         item('findInFolder', t('files.menu.findInFolder'), 'search', props.platform === 'darwin' ? '⇧⌥F' : 'Shift+Alt+F'),
+        item('openAsProject', t('files.menu.openAsProject'), 'folder-plus'),
         separator,
       ]
     : [
@@ -447,7 +459,7 @@ async function openMenu(row: Extract<TreeRow, { kind: 'entry' }>, rect: DOMRect 
       ];
   items.push(
     item('rename', t('files.menu.rename'), 'pencil', 'F2'),
-    { kind: 'item', id: 'delete', label: t('files.menu.delete'), icon: 'trash-2', shortcut: 'Del', danger: true },
+    { kind: 'item', id: 'delete', label: props.trash ? t('files.menu.delete') : t('files.menu.deletePermanently'), icon: 'trash-2', shortcut: 'Del', danger: true },
     separator,
     item('copyPath', t('files.menu.copyPath'), 'copy'),
     item('copyRelativePath', t('files.menu.copyRelativePath'), 'copy'),
@@ -470,6 +482,7 @@ async function openMenu(row: Extract<TreeRow, { kind: 'entry' }>, rect: DOMRect 
     case 'newFile': await startCreate('newFile', row.path); break;
     case 'newFolder': await startCreate('newFolder', row.path); break;
     case 'findInFolder': await props.api.findInFolder(file); break;
+    case 'openAsProject': await props.api.openAsProject({ projectKey: file.projectKey, relativePath: file.relativePath }); break;
     case 'rename': startRename(row.path); break;
     case 'delete': await remove(row.path); break;
     case 'copyPath': await props.api.copyFilePath(file, false); break;
@@ -653,7 +666,9 @@ defineExpose({ reveal, startCreate, collapseAll });
       data-testid="files-tree"
       :aria-label="t('files.treeLabel', { project: projectName })"
       :aria-describedby="helpId"
-      class="min-h-0 flex-1 overflow-x-hidden pb-2 outline-none"
+      :data-away="away || undefined"
+      class="d-dim-transition min-h-0 flex-1 overflow-x-hidden pb-2 outline-none"
+      :class="{ 'opacity-(--d-opacity-disabled)': away }"
       @keydown="onKeydown"
     >
       <div v-bind="wrapperProps">

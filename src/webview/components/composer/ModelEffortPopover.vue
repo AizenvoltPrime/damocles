@@ -8,6 +8,7 @@ import type { EffortLevel, ModelInfo } from '@shared/types/settings';
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
@@ -41,14 +42,34 @@ const pickerModels = usePickerModels();
 const openSettings = useOpenSettings();
 const noProvidersId = useId();
 
-const groups = computed(() => {
+function vendorGroups(list: readonly ModelInfo[]): Array<{ vendor: ModelVendor; name: string; models: ModelInfo[] }> {
   const byVendor = new Map<ModelVendor, ModelInfo[]>();
-  for (const model of pickerModels.value) {
+  for (const model of list) {
     const vendor = modelVendor(model);
     byVendor.set(vendor, [...(byVendor.get(vendor) ?? []), model]);
   }
   return [...byVendor].map(([vendor, models]) => ({ vendor, name: MODEL_VENDOR_NAMES[vendor], models }));
+}
+
+// A remote chat whose host runs some models on its own credentials shows the user's sign-in and the host's environment
+// apart, each named as this computer names it; otherwise one list.
+const host = useChatHost();
+const sources = computed(() => {
+  const label = host.value;
+  const hosted = pickerModels.value.filter((model) => model.credentialSource === 'host');
+  if (!label || hosted.length === 0) return [{ source: undefined, label: undefined, groups: vendorGroups(pickerModels.value) }];
+  const own = pickerModels.value.filter((model) => model.credentialSource !== 'host');
+  return [
+    { source: 'client' as const, label: t('composer.modelSourceSignIn', { computer: label.computer }), groups: vendorGroups(own) },
+    { source: 'host' as const, label: t('composer.modelSourceHost', { host: label.name }), groups: vendorGroups(hosted) },
+  ].filter((group) => group.groups.length > 0);
 });
+const noProviders = computed(() => sources.value.every((source) => source.groups.length === 0));
+
+function hostHint(model: ModelInfo): string | undefined {
+  if (model.credentialSource !== 'host' || !host.value) return undefined;
+  return t('composer.modelHostHint', { host: host.value.name, provider: MODEL_VENDOR_NAMES[modelVendor(model)] });
+}
 
 const thinkingModel = computed(() => availableModels.value.find((model) => model.value === (panelThinkingModel.value || chatModel.value)));
 const effortLevels = computed<EffortLevel[]>(() => thinkingModel.value?.supportedEffortLevels ?? []);
@@ -79,7 +100,6 @@ function selectEffort(value: AcceptableValue): void {
 const currentVendor = computed(() => (current.value ? modelVendor(current.value) : undefined));
 
 // A model core marks unavailable (outside the user's plan, or a remote chat's loopback endpoint): shown, muted, never picked.
-const host = useChatHost();
 function unavailableTitle(model: ModelInfo): string | undefined {
   const unavailable = model.unavailable;
   if (!unavailable) return model.description;
@@ -133,59 +153,86 @@ function unavailableReason(model: ModelInfo): string {
         :aria-label="t('composer.modelFor')"
         @update:model-value="selectModel"
       >
-        <template
-          v-for="group in groups"
-          :key="group.vendor"
+        <DropdownMenuGroup
+          v-for="(source, sourceIndex) in sources"
+          :key="source.source ?? 'all'"
+          :aria-label="source.label"
+          :data-credential-source="source.source"
         >
-          <div
-            class="flex items-center gap-1.75 px-2.25 pb-0.75 pt-1.5 text-10.5 text-(--d-faint)"
-            role="presentation"
-            data-testid="composer-model-group"
-          >
-            <ProviderLogo
-              :provider="group.vendor"
-              class="size-3"
+          <template v-if="source.label">
+            <DropdownMenuSeparator
+              v-if="sourceIndex > 0"
+              class="mx-0.5 my-1.5 bg-(--d-border)"
             />
-            {{ group.name }}
-          </div>
-          <DropdownMenuRadioItem
-            v-for="model in group.models"
-            :key="model.value"
-            :value="model.value"
-            :title="unavailableTitle(model)"
-            :disabled="model.unavailable !== undefined"
-            :data-unavailable="model.unavailable?.reason"
-            class="gap-2.25 rounded-7 px-2.25 py-1.5 text-13 text-(--d-text) focus:bg-(--d-hover) focus:text-(--d-text) data-[state=checked]:bg-(--d-accent-soft) data-disabled:pointer-events-auto data-disabled:cursor-default data-disabled:opacity-100 [&>span:first-child]:hidden"
-            data-testid="composer-model-option"
+            <div
+              class="truncate px-2 pt-1.5 pb-0.5 text-10 font-semibold tracking-[.06em] text-(--d-faint) uppercase"
+              role="presentation"
+              data-testid="composer-model-source"
+              :data-credential-source="source.source"
+            >
+              {{ source.label }}
+            </div>
+          </template>
+          <template
+            v-for="group in source.groups"
+            :key="group.vendor"
           >
-            <!-- an unavailable model dims its logo and name only, so its reason keeps its token's contrast (palette-contrast.test.ts) -->
-            <ProviderLogo
-              :provider="group.vendor"
-              class="size-3.75"
-              :class="model.unavailable && 'opacity-50'"
-            />
-            <span class="flex min-w-0 flex-1 flex-col">
-              <span
-                class="truncate"
+            <div
+              class="flex items-center gap-1.75 px-2.25 pb-0.75 pt-1.5 text-10.5 text-(--d-faint)"
+              role="presentation"
+              data-testid="composer-model-group"
+            >
+              <ProviderLogo
+                :provider="group.vendor"
+                class="size-3"
+              />
+              {{ group.name }}
+            </div>
+            <DropdownMenuRadioItem
+              v-for="model in group.models"
+              :key="model.value"
+              :value="model.value"
+              :title="unavailableTitle(model)"
+              :disabled="model.unavailable !== undefined"
+              :data-unavailable="model.unavailable?.reason"
+              class="gap-2.25 rounded-7 px-2.25 py-1.5 text-13 text-(--d-text) focus:bg-(--d-hover) focus:text-(--d-text) data-[state=checked]:bg-(--d-accent-soft) data-disabled:pointer-events-auto data-disabled:cursor-default data-disabled:opacity-100 [&>span:first-child]:hidden"
+              data-testid="composer-model-option"
+            >
+              <!-- an unavailable model dims its logo and name only, so its reason keeps its token's contrast (palette-contrast.test.ts) -->
+              <ProviderLogo
+                :provider="group.vendor"
+                class="size-3.75"
                 :class="model.unavailable && 'opacity-50'"
-              >{{ model.displayName }}</span>
-              <!-- on its own line, so the model it marks keeps its name at any width -->
-              <span
-                v-if="model.unavailable"
-                class="truncate text-11 text-(--d-faint-text)"
-              >{{ unavailableReason(model) }}</span>
-            </span>
-            <Check
-              class="size-3.25 shrink-0 text-(--d-accent) transition-opacity"
-              :class="model.value === chatModel ? 'opacity-100' : 'opacity-0'"
-              aria-hidden="true"
-            />
-          </DropdownMenuRadioItem>
-        </template>
+              />
+              <span class="flex min-w-0 flex-1 flex-col">
+                <span
+                  class="truncate"
+                  :class="model.unavailable && 'opacity-50'"
+                >{{ model.displayName }}</span>
+                <!-- on its own line, so the model it marks keeps its name at any width -->
+                <span
+                  v-if="model.unavailable"
+                  class="truncate text-11 text-(--d-faint-text)"
+                >{{ unavailableReason(model) }}</span>
+                <!-- wraps, so the whole hint reads at the menu's width -->
+                <span
+                  v-else-if="hostHint(model)"
+                  class="text-11/snug text-(--d-faint-text)"
+                  data-testid="composer-model-hint"
+                >{{ hostHint(model) }}</span>
+              </span>
+              <Check
+                class="size-3.25 shrink-0 text-(--d-accent) transition-opacity"
+                :class="model.value === chatModel ? 'opacity-100' : 'opacity-0'"
+                aria-hidden="true"
+              />
+            </DropdownMenuRadioItem>
+          </template>
+        </DropdownMenuGroup>
       </DropdownMenuRadioGroup>
       <!-- arrow keys never reach text in a menu, so Manage models… carries it as its description -->
       <p
-        v-if="groups.length === 0"
+        v-if="noProviders"
         :id="noProvidersId"
         class="px-2.25 py-1.5 text-12 text-(--d-faint-text)"
         role="presentation"
@@ -228,7 +275,7 @@ function unavailableReason(model: ModelInfo): string {
       <DropdownMenuSeparator class="mx-0.5 my-1.5 bg-(--d-border)" />
       <DropdownMenuItem
         class="gap-2.25 rounded-7 px-2.25 py-1.5 text-13 text-(--d-muted) focus:bg-(--d-hover) focus:text-(--d-text)"
-        :aria-describedby="groups.length === 0 ? noProvidersId : undefined"
+        :aria-describedby="noProviders ? noProvidersId : undefined"
         data-testid="composer-manage-models"
         @select="openSettings('accounts')"
       >

@@ -45,6 +45,8 @@ export interface OverlayDialog {
   readonly root: ShallowRef<HTMLElement | null>;
   /** Bind as the root's `aria-labelledby` and as the `id` of the heading that names the dialog. */
   readonly titleId: string;
+  /** Moves focus to the control the dialog opens on, as it does on mount; for a focus trap that took focus back first. */
+  readonly focusInitial: () => void;
 }
 
 /**
@@ -71,10 +73,12 @@ export function useOverlayDialog(onClose: () => void, options: OverlayDialogOpti
     return Array.from(el.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
   }
 
-  onMounted(() => {
+  function focusInitial(): void {
     const el = root.value;
     (el?.querySelector<HTMLElement>(INITIAL_FOCUS_SELECTOR) ?? el?.querySelector<HTMLElement>(FALLBACK_FOCUS_SELECTOR) ?? focusableItems()[0] ?? el)?.focus();
-  });
+  }
+
+  onMounted(focusInitial);
 
   onScopeDispose(() => restoreFocus(opener));
 
@@ -121,5 +125,5 @@ export function useOverlayDialog(onClose: () => void, options: OverlayDialogOpti
     { target: document },
   );
 
-  return { zIndex, isTop, root, titleId };
+  return { zIndex, isTop, root, titleId, focusInitial };
 }

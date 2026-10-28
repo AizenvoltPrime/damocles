@@ -11,6 +11,7 @@ import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
 import { deferredToolNames, initialActiveToolNames, loadableToolNames, resolveToolSearchEntries, userScopeToolNames } from '../tools/deferred-tools';
 import { isLoopbackEndpoint, markLoopbackEndpoints } from '../pi-models';
+import { clientProviderEndpoints } from '../custom-providers';
 import type { ModelInfo } from '../../../shared/types/settings';
 import { DEFAULT_MODELS } from '../../../shared/types/constants';
 import type { OpenAIAuthStatus } from '../openai-auth';
@@ -41,18 +42,33 @@ describe('loopback provider endpoints in a remote chat\'s model list', () => {
     for (const url of ['https://api.anthropic.com', 'http://10.0.0.5:8080', 'http://128.0.0.1', 'http://[::ffff:a00:5]/v1', 'http://localhost.example.com', 'not a url']) expect(isLoopbackEndpoint(url), url).toBe(false);
   });
 
-  it('marks a model whose provider endpoint is loopback unavailable, keeping it in the list', () => {
-    const models: ModelInfo[] = [DEFAULT_MODELS.find((m) => m.backend === undefined && m.piProvider === undefined)!, DEFAULT_MODELS.find((m) => m.piProvider === 'deepseek')!];
-    const registry = {
-      getModel: (provider: string) => ({ provider, baseUrl: provider === 'deepseek' ? 'http://127.0.0.1:4000/v1' : 'https://api.anthropic.com' }),
-      hasConfiguredAuth: () => true,
-    };
-    const openai: OpenAIAuthStatus = { apiKey: false, chatgpt: false, codex: false };
-    const marked = markLoopbackEndpoints(models, registry as never, openai, false, false);
+  const models: ModelInfo[] = [DEFAULT_MODELS.find((m) => m.backend === undefined && m.piProvider === undefined)!, DEFAULT_MODELS.find((m) => m.piProvider === 'deepseek')!];
+  const openai: OpenAIAuthStatus = { apiKey: false, chatgpt: false, codex: false };
+  const registryAt = (deepseekUrl: string) => ({
+    getModel: (provider: string) => ({ provider, baseUrl: provider === 'deepseek' ? deepseekUrl : 'https://api.anthropic.com' }),
+    hasConfiguredAuth: () => true,
+  });
+
+  it('marks a model whose client-configured provider endpoint is loopback unavailable, keeping it in the list', () => {
+    const registry = registryAt('http://127.0.0.1:4000/v1');
+    const marked = markLoopbackEndpoints(models, registry as never, openai, false, false, new Set(['http://127.0.0.1:4000/v1']));
     expect(marked[0]).toEqual(models[0]);
     expect(marked[1]).toEqual({ ...models[1], unavailable: { reason: 'loopback-endpoint', endpoint: 'http://127.0.0.1:4000/v1' } });
-    // a target on the client's own machine reaches its loopback
-    expect(markLoopbackEndpoints(models, registry as never, openai, false, true)).toEqual(models);
+  });
+
+  it('leaves a provider the target itself points at its own loopback available', () => {
+    const registry = registryAt('http://127.0.0.1:5000/v1');
+    expect(markLoopbackEndpoints(models, registry as never, openai, false, false, new Set(['http://127.0.0.1:4000/v1']))).toEqual(models);
+    expect(markLoopbackEndpoints(models, registry as never, openai, false, false, clientProviderEndpoints())).toEqual(models);
+  });
+
+  it('marks nothing on a target that shares the client loopback', () => {
+    const registry = registryAt('http://127.0.0.1:4000/v1');
+    expect(markLoopbackEndpoints(models, registry as never, openai, false, true, new Set(['http://127.0.0.1:4000/v1']))).toEqual(models);
+  });
+
+  it('counts as client-configured only the endpoints Damocles registers for the client key providers', () => {
+    expect([...clientProviderEndpoints()]).toEqual(['https://api.stepfun.ai/step_plan']);
   });
 });
 

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Disposable } from '../../../platform/disposable';
 import type { PanelHost } from '../../../platform/window-service';
-import { createCoreEndpoint, createLoopback, createMainEndpoint, type ChatEntry, type ChatPermissions, type MainEndpoint } from '../../core-protocol';
+import { createCoreEndpoint, createLoopback, createMainEndpoint, processActor, type ChatEntry, type ChatPermissions, type MainEndpoint } from '../../core-protocol';
+import { createActorContext, type ActorContext } from '../../core-protocol/actor';
 import type { CorePlatform } from '../platform';
 
 const H = vi.hoisted(() => ({
@@ -16,6 +17,8 @@ const H = vi.hoisted(() => ({
   restored: [] as unknown[][],
   foreignDispatched: [] as unknown[][],
   clientAuthListeners: [] as Array<() => void>,
+  attached: [] as Array<{ panelId: string; view: { clientId?: string } }>,
+  dispatched: [] as unknown[][],
 }));
 
 vi.mock('../../../core/logger', () => ({ log: (line: string) => H.order.push(`log: ${line}`) }));
@@ -62,6 +65,11 @@ vi.mock('../../../core/chat-panel', () => {
     },
     broadcast: () => undefined,
     setWorktreeOptIn: async () => undefined,
+    attachView: (panelId: string, view: { clientId?: string }) => {
+      H.attached.push({ panelId, view });
+      return none();
+    },
+    dispatchFromView: async (panelId: string, view: { clientId?: string }, message: { type: string }) => void H.dispatched.push([panelId, view.clientId, message.type]),
   };
   return {
     ChatPanelProvider: class {
@@ -108,15 +116,18 @@ afterEach(() => {
   H.restored.length = 0;
   H.foreignDispatched.length = 0;
   H.clientAuthListeners.length = 0;
+  H.attached.length = 0;
+  H.dispatched.length = 0;
   H.disposeProvider = () => Promise.resolve();
   H.disposeRuntime = () => Promise.resolve();
   H.holdsPages = () => false;
 });
 
-function start(teardown: () => Promise<void> = async () => void H.order.push('teardown'), remote?: object): { main: MainEndpoint; addChat(panelId: string, viewId: string): Chat; foreign: Map<string, PanelHost> } {
+// actors: the forwarding side's actor context, as a daemon stamps a client's requests; core then serves them as that client
+function start(teardown: () => Promise<void> = async () => void H.order.push('teardown'), remote?: object, actors?: ActorContext): { main: MainEndpoint; addChat(panelId: string, viewId: string): Chat; foreign: Map<string, PanelHost> } {
   const loopback = createLoopback();
-  const core = createCoreEndpoint(loopback.core, () => undefined);
-  const main = createMainEndpoint(loopback.main, () => undefined);
+  const core = createCoreEndpoint(loopback.core, () => undefined, undefined, actors ? processActor : undefined);
+  const main = createMainEndpoint(loopback.main, () => undefined, undefined, actors);
   const hosts = new Map<string, PanelHost>();
   const foreign = new Map<string, PanelHost>();
   const platform = {
@@ -231,6 +242,26 @@ describe('a chat\'s permissions', () => {
     await main.request('chats.restore', { viewId: 'view-1', folderKey: '/p', permissions: ASK_NO_YOLO });
     await main.request('chats.restore', { viewId: 'view-1' });
     expect(H.restored).toEqual([[chat.host, '/p', ASK_NO_YOLO], [chat.host, undefined, undefined]]);
+  });
+});
+
+describe('settingsView.attach', () => {
+  it('names the device whose overlay attached, so only that device\'s posts and replies reach it', async () => {
+    const actors = createActorContext();
+    const { main } = start(undefined, undefined, actors);
+    await actors.run('laptop', () => main.request('settingsView.attach', { panelId: 'panel-1', attachment: 1, scope: 'user' }));
+    await main.request('settingsView.attach', { panelId: 'panel-2', attachment: 2 });
+    expect(H.attached.map(({ panelId, view }) => [panelId, view.clientId])).toEqual([['panel-1', 'laptop'], ['panel-2', undefined]]);
+  });
+
+  it('runs each device\'s request on one chat as the view that device attached', async () => {
+    const actors = createActorContext();
+    const { main } = start(undefined, undefined, actors);
+    await actors.run('laptop', () => main.request('settingsView.attach', { panelId: 'panel-1', attachment: 1 }));
+    await actors.run('desktop', () => main.request('settingsView.attach', { panelId: 'panel-1', attachment: 2 }));
+    await actors.run('desktop', () => main.request('settingsView.dispatch', { attachment: 2, message: { type: 'requestSettingsState' } }));
+    await actors.run('laptop', () => main.request('settingsView.dispatch', { attachment: 1, message: { type: 'requestSettingsState' } }));
+    expect(H.dispatched).toEqual([['panel-1', 'desktop', 'requestSettingsState'], ['panel-1', 'laptop', 'requestSettingsState']]);
   });
 });
 

@@ -33,7 +33,7 @@ describe('openAppSettings', () => {
     const platform = createFakePlatform({ capabilities: { settingsInPanel } });
     const posted: ExtensionToWebviewMessage[] = [];
     const handlers = createWorkspaceHandlers({ platform, postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message) } as unknown as HandlerDependencies);
-    const open = (message: WebviewToExtensionMessage): unknown => handlers.openAppSettings!(message, { host: { reveal: () => {} }, panelId: 'p1', folder } as unknown as HandlerContext);
+    const open = (message: WebviewToExtensionMessage): unknown => handlers.openAppSettings!(message, { reply: { reveal: () => {} }, panelId: 'p1', folder } as unknown as HandlerContext);
     return { platform, posted, open };
   }
 
@@ -109,7 +109,7 @@ describe('requestSettingsState', () => {
       postSettingsFileAvailability,
       postClaudeAuthState,
     } as unknown as HandlerDependencies;
-    const ctx = { host: {}, panelId: 'p1', folder, permissionHandler: {}, session: { publishAccountInfo: vi.fn(), publishAvailableModels: vi.fn(), getToolStatus: () => ({ tools: [] }) } } as unknown as HandlerContext;
+    const ctx = { host: {}, reply: {}, panelId: 'p1', folder, permissionHandler: {}, session: { publishAccountInfo: vi.fn(), publishAvailableModels: vi.fn(), getToolStatus: () => ({ tools: [] }) } } as unknown as HandlerContext;
     const handlers = createSettingsHandlers(deps);
     const request = (extra: Partial<HandlerContext> = {}): unknown => handlers.requestSettingsState!({ type: 'requestSettingsState' }, { ...ctx, ...extra });
     return { view, posted, request, settingsManager, postSettingsFileAvailability, platform };

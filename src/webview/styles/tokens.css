@@ -30,6 +30,8 @@
   /* Black or white by WCAG luminance against 0.179, where both reach the same ratio (4.58:1) on the fill. */
   --d-on-danger: color(from var(--d-danger) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
   --d-on-warning: color(from var(--d-warning) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
+  --d-on-success: color(from var(--d-success) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
+  --d-on-info: color(from var(--d-info) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
 
   --d-accent-soft: color-mix(in srgb, var(--d-accent) 15%, transparent);
   /* Text on a tint of its tone, a hover or a diff row: leaning toward the theme foreground gains contrast in dark, light and high contrast themes alike. */
@@ -42,4 +44,6 @@
   /* A near-black taken from the background, so a light theme gets a softer shadow and scrim than a dark one. */
   --d-shadow: 0 12px 32px color-mix(in srgb, color-mix(in srgb, var(--d-bg) 30%, black) 40%, transparent);
   --d-scrim: color-mix(in srgb, color-mix(in srgb, var(--d-bg) 30%, black) 55%, transparent);
+  /* A view that waits for its host (offline Files, a reconnecting terminal) dims to this; it fades there over 200 ms. */
+  --d-opacity-disabled: 0.48;
 }

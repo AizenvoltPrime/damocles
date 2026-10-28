@@ -631,7 +631,7 @@ describe('overlay locale', () => {
     const wrapper = mountOverlay();
     await flushPromises();
     expect(document.documentElement.lang).toBe('en');
-    api.pushState({ locale: 'el', platform: 'win32' });
+    api.pushState({ locale: 'el', platform: 'win32', remoteEnabled: true });
     await flushPromises();
     expect(document.documentElement.lang).toBe('el');
     await open(wrapper, 'r1', MENU);
@@ -641,7 +641,7 @@ describe('overlay locale', () => {
   it('labels the popup page\'s stack and its collapsed toasts in Greek after a language change', async () => {
     const wrapper = mountNotifier();
     await flushPromises();
-    api.pushState({ locale: 'el', platform: 'win32' });
+    api.pushState({ locale: 'el', platform: 'win32', remoteEnabled: true });
     for (const id of ['t1', 't2', 't3', 't4']) api.toast(notice(id, 'info', `toast ${id}`, []));
     await flushPromises();
 
@@ -778,6 +778,21 @@ describe('toasts', () => {
     await flushPromises();
     expect(politeHeard.filter(Boolean)).toEqual(['Information: saved', 'Warning: careful', 'Information: saved']);
     expect(polite.findAll('p').map((node) => node.text())).toEqual(['Warning: careful', 'Information: saved']);
+  });
+
+  it('relabels a showing toast main sends again under its id in place, without a second toast or a second announcement', async () => {
+    const wrapper = mountNotifier();
+    await flushPromises();
+    const polite = wrapper.get('[data-testid="overlay-toasts-polite"]');
+    api.toast(notice('n', 'info', 'Connected to prod', []));
+    api.toast(notice('m', 'info', 'other', []));
+    await flushPromises();
+    api.toast(notice('n', 'info', 'Connected to prod-1', []));
+    await flushPromises();
+    const toasts = wrapper.findAll('[data-testid="overlay-toast"]');
+    expect(toasts.map((toast) => toast.attributes('data-toast-id'))).toEqual(['n', 'm']);
+    expect(toasts[0]!.text()).toContain('Connected to prod-1');
+    expect(polite.findAll('p').map((node) => node.text())).toEqual(['Information: Connected to prod', 'Information: other']);
   });
 
   it('takes F6 focus on the newest toast, keeps Tab inside the stack, hands Escape to main and refocuses when the focused toast goes', async () => {
@@ -1061,7 +1076,7 @@ describe('command palette', () => {
   });
 
   it('in Greek finds a command by its English title', async () => {
-    vi.mocked(api.getState).mockResolvedValue({ locale: 'el', platform: 'win32' });
+    vi.mocked(api.getState).mockResolvedValue({ locale: 'el', platform: 'win32', remoteEnabled: true });
     api.commands.list = [{ ...COMMANDS[1]!, label: 'Συνομιλία: Χρήση περιβάλλοντος', category: 'Συνομιλία' }];
     const wrapper = mountOverlay();
     await flushPromises();

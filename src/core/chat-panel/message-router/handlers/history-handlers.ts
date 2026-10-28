@@ -2,7 +2,7 @@ import type { HandlerDependencies, HandlerRegistry } from "../types";
 import type { SkippedFile, SkippedFilesTarget, ToolResultOwner } from "../../../../shared/types/session";
 import type { ImageBlock } from "../../../../shared/types/content";
 import { log } from "../../../logger";
-import { isSafeAgentPathId } from "../../../pi-session/agent-records";
+import { isSafeAgentPathId } from "../../../../shared/agent-path-id";
 import { loadToolResultImages } from "../../../pi-session/session-store/tool-result-images";
 import { isSafeRefId } from "../../../pi-session/checkpoints";
 
@@ -64,16 +64,16 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
     requestRewindHistory: async (_msg, ctx) => {
       const currentSessionId = ctx.session.currentSessionId;
       if (!currentSessionId) {
-        postMessage(ctx.host, { type: "rewindHistory", prompts: [], restorePoints: [], canFork: true });
+        postMessage(ctx.reply, { type: "rewindHistory", prompts: [], restorePoints: [], canFork: true });
         return;
       }
 
       try {
         const history = await historyManager.extractRewindHistory(ctx.folder.fsPath, currentSessionId, ctx.session.fileCheckpoints);
-        postMessage(ctx.host, { type: "rewindHistory", prompts: history.items, restorePoints: history.restorePoints, canFork: true });
+        postMessage(ctx.reply, { type: "rewindHistory", prompts: history.items, restorePoints: history.restorePoints, canFork: true });
       } catch (err) {
         log("[MessageRouter] Error extracting rewind history:", err);
-        postMessage(ctx.host, { type: "rewindHistory", prompts: [], restorePoints: [], canFork: true });
+        postMessage(ctx.reply, { type: "rewindHistory", prompts: [], restorePoints: [], canFork: true });
       }
     },
 
@@ -95,7 +95,7 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
         if (read.ok) files = read.value;
         else log("[HistoryHandlers] reading the skipped list for %o failed: %s", target, read.error);
       }
-      postMessage(ctx.host, { type: "skippedFiles", target, files });
+      postMessage(ctx.reply, { type: "skippedFiles", target, files });
     },
 
     requestMoreSessions: async (msg, ctx) => {
@@ -105,7 +105,7 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
         undefined,
         msg.selectedSessionId
       );
-      postMessage(ctx.host, {
+      postMessage(ctx.reply, {
         type: "storedSessions",
         sessions,
         hasMore,
@@ -123,7 +123,7 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
           offset,
           msg.selectedSessionId
         );
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "storedSessions",
           sessions,
           hasMore,
@@ -132,7 +132,7 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
         });
       } catch (err) {
         log("[MessageRouter] Error searching sessions:", err);
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "storedSessions",
           sessions: [],
           hasMore: false,
@@ -149,7 +149,7 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
         log("[HistoryHandlers] requestToolResultImages dropped: invalid requestId");
         return;
       }
-      const reply = (images: readonly ImageBlock[]) => postMessage(ctx.host, { type: "toolResultImages", requestId, images: [...images] });
+      const reply = (images: readonly ImageBlock[]) => postMessage(ctx.reply, { type: "toolResultImages", requestId, images: [...images] });
       const owner = parseToolResultOwner(msg.owner);
       if (!isToolUseId(toolUseId) || !owner) {
         reply([]);
@@ -175,10 +175,10 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
       try {
         const offset = msg.offset ?? 0;
         const { history, hasMore } = await storageManager.getPromptHistory(offset);
-        postMessage(ctx.host, { type: "promptHistory", history, hasMore });
+        postMessage(ctx.reply, { type: "promptHistory", history, hasMore });
       } catch (err) {
         log("Failed to extract prompt history:", err);
-        postMessage(ctx.host, { type: "promptHistory", history: [], hasMore: false });
+        postMessage(ctx.reply, { type: "promptHistory", history: [], hasMore: false });
       }
     },
   };

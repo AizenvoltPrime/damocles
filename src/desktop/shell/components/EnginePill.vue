@@ -61,7 +61,16 @@ const PILL = 'title-bar-control d-press mr-1.5 flex h-6 shrink-0 gap-1.5 rounded
         class="size-3.25 shrink-0"
         :class="engine.state === 'restarting' && 'd-spinning'"
       />
-      <span class="max-w-60 truncate">{{ engine.state === 'restarting' ? t('engine.hostRestarting', { host: engine.name }) : t('engine.hostStopped', { host: engine.name }) }}</span>
+      <!-- A rename swaps the old name for the new one. -->
+      <Transition
+        name="t-swap"
+        mode="out-in"
+      >
+        <span
+          :key="engine.name"
+          class="max-w-60 truncate"
+        >{{ engine.state === 'restarting' ? t('engine.hostRestarting', { host: engine.name }) : t('engine.hostStopped', { host: engine.name }) }}</span>
+      </Transition>
     </Button>
   </TransitionGroup>
 </template>

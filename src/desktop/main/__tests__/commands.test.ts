@@ -25,9 +25,9 @@ const actions = new Proxy({} as MenuActions, {
 });
 
 const PROJECTS = [{ fsPath: 'C:\\work\\alpha', name: 'alpha' }] as never;
-const CHAT: MenuState = { chat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, terminalCreate: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined };
+const CHAT: MenuState = { chat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, terminalCreate: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false };
 const EDITOR: MenuState = { ...CHAT, editor: true, focus: 'editor' };
-const NONE: MenuState = { chat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, terminalCreate: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined };
+const NONE: MenuState = { chat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, terminalCreate: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false };
 const PLATFORMS = ['win32', 'linux', 'darwin'] as const;
 
 const en = createDesktopLocalizationService(process.cwd(), 'en', () => undefined);
@@ -510,5 +510,36 @@ describe('editor git and chat review commands', () => {
     palette().run(MENU_IDS.gitToggleInlineBlame, FILE);
     palette().run(MENU_IDS.chatReviewChanges, { ...CHAT, selectedChatHasChanges: true });
     expect(calls).toEqual(['editorCommand:stageSelectedRanges', 'editorCommand:acceptAllIncoming', 'toggleInlineBlame', 'reviewChatChanges']);
+  });
+});
+
+describe('remote commands', () => {
+  it('exist only while MenuActions.remote does, and Disconnect Host needs a connected remote project', () => {
+    const remote = { connectToHost: vi.fn(), disconnectHost: vi.fn(), openFolderOnHost: vi.fn() };
+    // an object without remote, as main builds the actions while the remote gate is closed
+    const local = {} as MenuActions;
+    expect(desktopCommands(PROJECTS, local, 'win32').some((command) => command.id === MENU_IDS.connectToHost)).toBe(false);
+    const byId = new Map(desktopCommands(PROJECTS, { ...local, remote }, 'win32').map((command) => [command.id, command]));
+    const disconnect = byId.get(MENU_IDS.disconnectHost)!;
+    expect(isEnabled(disconnect, CHAT)).toBe(false);
+    expect(isEnabled(disconnect, { ...CHAT, remoteHostConnected: true })).toBe(true);
+    byId.get(MENU_IDS.connectToHost)!.run(CHAT, 'menu');
+    expect(remote.connectToHost).toHaveBeenCalled();
+  });
+
+  it('lists Remote: Open Folder on Host... only while remote features are enabled and a host is saved', () => {
+    const remote = { connectToHost: vi.fn(), disconnectHost: vi.fn(), openFolderOnHost: vi.fn() };
+    const local = {} as MenuActions;
+    expect(desktopCommands(PROJECTS, local, 'win32').some((command) => command.id === MENU_IDS.openFolderOnHost)).toBe(false);
+    const command = desktopCommands(PROJECTS, { ...local, remote }, 'win32').find((candidate) => candidate.id === MENU_IDS.openFolderOnHost)!;
+    expect(command.title).toMatchObject({ message: 'Open Folder on Host...' });
+    expect(command.category).toMatchObject({ message: 'Remote' });
+    const saved = { ...CHAT, remoteHostSaved: true };
+    expect(isEnabled(command, CHAT)).toBe(false);
+    expect(command.palette!(CHAT)).toBe(false);
+    expect(isEnabled(command, saved)).toBe(true);
+    expect(command.palette!(saved)).toBe(true);
+    command.run(saved, 'palette');
+    expect(remote.openFolderOnHost).toHaveBeenCalledOnce();
   });
 });

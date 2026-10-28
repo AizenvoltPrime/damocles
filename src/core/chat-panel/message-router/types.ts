@@ -23,15 +23,20 @@ import type { PanelWorktrees } from "../panel-worktrees";
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../../../shared/types/messages";
 
 export interface HandlerContext {
+  /** The panel's host: every view of the chat, which shared chat state (conversation, mode, effort) reaches; state read from the user layer or account goes per device (`forEachDevice`). */
   host: PanelHost;
+  /** The sending view's host, for what answers the sender alone (a request's reply, an ack, an error, a refusal); `host` when the panel has one view. */
+  reply: PanelHost;
   session: ChatSession;
   permissionHandler: PermissionHandler;
   ideContextManager: IdeContextManager;
   terminalAttachments: TerminalAttachmentManager;
   panelId: string;
   folder: FolderTarget;
-  /** The attached settings view that sent the message, for a message from `PanelManager.dispatchFromView`; replies still go to `host`, which copies the view's types to it. */
+  /** The attached settings view that sent the message, for a message from `PanelManager.dispatchFromView`; replies go to `reply`, its device's chat views, which copy the view's types to it. */
   view?: AttachedView;
+  /** The chat view of several that sent the message (a daemon's client), whose host `reply` is; what core gives back from its send goes to it alone (send-senders.ts). */
+  viewKey?: string;
 }
 
 export type MessageHandler = (
@@ -72,6 +77,8 @@ export interface HandlerDependencies {
   usageStatsService: UsageStatsService;
   markUserTypedDuringTurn?: () => void;
   postSettingsFileAvailability?: (ctx: HandlerContext) => void;
+  /** Posts account state to every panel, on a daemon's core to each device's views read as that device's client (`ChatPanelProvider.broadcastAccountState`). */
+  broadcastAccountState: (what: string, row: string, read: () => Promise<ExtensionToWebviewMessage | undefined>) => Promise<void>;
   postClaudeAuthState?: (host: PanelHost) => void;
   postProviderSignInState?: (host: PanelHost) => void;
   folderRegistry: WorkspaceFolderRegistry;

@@ -11,7 +11,7 @@ import { killTree, run, windowsProcessTree } from '../../e2e/desktop/support/app
 const ROOT = join(__dirname, '..', '..');
 const SYNC_CHILD_CALLS = new Set(['spawnSync', 'execFileSync', 'execSync']);
 
-// Files under e2e/desktop that never run on a worker's event loop.
+// Files under e2e that never run on a worker's event loop.
 const OWN_PROCESS: Record<string, string> = {
   'e2e/desktop/global-setup.ts': "Playwright's runner process, before any worker starts",
   'e2e/desktop/update/': 'the update driver, a Node process of its own',
@@ -19,6 +19,8 @@ const OWN_PROCESS: Record<string, string> = {
   'e2e/desktop/fixtures/': 'stand-ins the app under test loads',
   'e2e/desktop/support/hold-chat-pages.cjs': 'the Electron main process, through LaunchOptions.require',
   'e2e/desktop/support/mcp-stdio-server.cjs': 'an MCP server process the app spawns',
+  'e2e/remote/support/reference-package.mjs': 'the reference package build, a Node process of its own',
+  'e2e/remote/support/proxy-connect.cjs': "ssh's ProxyCommand, a process of its own",
 };
 
 function syncChildCalls(fileName: string, source: string): string[] {
@@ -64,11 +66,12 @@ async function withFailingPowerShell<T>(body: () => Promise<T>): Promise<T> {
 
 describe('e2e child processes', () => {
   it('never run synchronously in code a Playwright worker runs', () => {
-    const files = globSync('e2e/desktop/**/*.{ts,cjs,mjs,js}', { cwd: ROOT })
+    const files = globSync('e2e/{desktop,remote}/**/*.{ts,cjs,mjs,js}', { cwd: ROOT })
       .map((file) => file.replaceAll('\\', '/'))
       .filter((file) => !Object.keys(OWN_PROCESS).some((excluded) => file.startsWith(excluded)));
     expect(files.filter((file) => file.startsWith('e2e/desktop/support/')).length).toBeGreaterThan(10);
-    expect(files.filter((file) => file.endsWith('.spec.ts')).length).toBeGreaterThan(10);
+    expect(files.filter((file) => file.startsWith('e2e/desktop/') && file.endsWith('.spec.ts')).length).toBeGreaterThan(10);
+    expect(files.filter((file) => file.startsWith('e2e/remote/') && file.endsWith('.spec.ts')).length).toBeGreaterThan(10);
     expect(files.flatMap((file) => syncChildCalls(file, readFileSync(join(ROOT, file), 'utf8')))).toEqual([]);
   });
 

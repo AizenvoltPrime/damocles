@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Platform } from '../../platform/platform';
 import type { SettingsFolder } from '../../platform/settings-store';
 import { DiffManager } from './diff-manager';
@@ -14,7 +15,7 @@ import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
 import type { PermissionUpdate, PromptApprover, PromptOwner } from '../../shared/types/permissions';
 import { log } from '../logger';
-import { bypassAllowed } from '../client-snapshots';
+import { bypassAllowed, hostDefaultMode } from '../client-snapshots';
 import type { PermissionResult, CanUseToolContext, SettledApproval, McpToolIdentity, ChatPermissions } from './types';
 import { buildUnaskedDenyResult } from './utils';
 import type { McpResourceRuleFilter } from './mcp-resource-rule';
@@ -71,7 +72,8 @@ export class PermissionHandler {
     this.evaluatorManager = new EvaluatorManager(this.state, platform);
     this.elicitationManager = new ElicitationManager(this.state, getPostMessage);
 
-    this.state.permissionMode = platform.settings.get<PermissionMode>('damocles.permissionMode', 'default', settingsFolder);
+    // a daemon's core starts a new chat in the mode the acting client configured for this host, else the settings' default
+    this.state.permissionMode = hostDefaultMode(platform) ?? platform.settings.get<PermissionMode>('damocles.permissionMode', 'default', settingsFolder);
     this.state.dangerouslySkipPermissions = this.allowedBypass(platform.settings.get<boolean>('damocles.dangerouslySkipPermissions', false, settingsFolder));
   }
 
@@ -92,6 +94,11 @@ export class PermissionHandler {
 
   getPermissionMode(): PermissionMode {
     return this.state.permissionMode;
+  }
+
+  /** The mode the pinned (else acting) client's turn runs in, which every plan mode check reads; differs from the chat's only for a refused YOLO. */
+  turnPermissionMode(): PermissionMode {
+    return this.evaluatorManager.mode();
   }
 
   /** False when the host's policy refused YOLO, which then stays off. */
@@ -182,6 +189,35 @@ export class PermissionHandler {
   /** Wire who raised each prompt, resolved as it is raised and stated on its message. Supplied by PiSession. */
   setPromptOwnerResolver(fn: ((parentToolUseId: string | null | undefined) => PromptOwner) | null): void {
     this.state.promptOwnerResolver = fn;
+  }
+
+  /**
+   * Raises the token broker's Sign-in needed prompt for a turn whose device is away; disposing it (the wait ended) tells
+   * the webview. continueWith and cancel are the broker's.
+   */
+  raiseSignIn(provider: string, actions: { readonly continueWith: (clientId: string) => void; readonly cancel: () => void }): { dispose(): void } {
+    const requestId = `signin-${randomUUID()}`;
+    const request = { type: 'signInRequest' as const, requestId, provider };
+    this.state.addPendingSignIn(requestId, { request, ...actions });
+    this.state.postMessageToWebview?.(request);
+    return {
+      dispose: () => {
+        if (!this.state.pendingSignIns.has(requestId)) return;
+        this.state.removePendingSignIn(requestId);
+        this.state.postMessageToWebview?.({ type: 'signInResolved', requestId });
+      },
+    };
+  }
+
+  /** "Continue with my sign-in" clicked: the turn moves to the device whose view sent the click, never to any other. */
+  continueWithSignIn(requestId: string): void {
+    const signIn = this.state.pendingSignIns.get(requestId);
+    const clientId = this.platform.remote?.clients.actor();
+    if (signIn === undefined || clientId === undefined) {
+      log('[PermissionHandler] Continue with my sign-in for %s: %s', requestId, signIn === undefined ? 'no such prompt is open' : 'the click names no device');
+      return;
+    }
+    signIn.continueWith(clientId);
   }
 
   /** The unanswered prompts on this panel's `PermissionState`, in the order raised. */
@@ -286,7 +322,7 @@ export class PermissionHandler {
     input: Record<string, unknown>,
     context: CanUseToolContext
   ): Promise<PermissionResult> {
-    if (toolName === TOOL_EXIT_PLAN_MODE && this.state.permissionMode === 'plan') {
+    if (toolName === TOOL_EXIT_PLAN_MODE && this.turnPermissionMode() === 'plan') {
       return this.planManager.handleExitPlanMode(input, context);
     }
 

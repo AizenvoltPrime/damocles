@@ -194,6 +194,44 @@ describe('notification toasts', () => {
   });
 });
 
+describe('host badge tone', () => {
+  const ON_PROD = { ...CHAT, host: 'prod-1', hostTone: 'danger' as const };
+  const badge = (root: Element): Element => root.querySelector('[data-testid="host-name-badge"]')!;
+
+  it("tints a toast's host badge with its tone, keeps a host without one muted, and recolors a showing toast in place", async () => {
+    const wrapper = mountNotifier();
+    await flushPromises();
+    api.toast(toast('a1', { ...APPROVAL, chat: ON_PROD }));
+    api.toast(toast('n1', { kind: 'notice', severity: 'info', message: 'Reconnected', actions: [], host: 'lab' }));
+    await flushPromises();
+    expect(badge(wrapper.get('[data-toast-id="a1"]').element).classList.contains('d-tone-danger')).toBe(true);
+    expect(badge(wrapper.get('[data-toast-id="n1"]').element).classList.contains('d-tone-muted')).toBe(true);
+    api.toast(toast('a1', { ...APPROVAL, chat: { ...ON_PROD, host: 'prod-eu', hostTone: 'info' } }));
+    await flushPromises();
+    expect(wrapper.findAll('[data-toast-id="a1"]')).toHaveLength(1);
+    const recolored = badge(wrapper.get('[data-toast-id="a1"]').element);
+    expect(recolored.classList.contains('d-tone-info')).toBe(true);
+    // the badge swaps the old name for the new one
+    await vi.waitFor(() => expect(recolored.textContent).toContain('prod-eu'));
+  });
+
+  it("tints a center row's host badge and follows main's push after a recolor", async () => {
+    api.center.state = { entries: [entry('e1', { ...APPROVAL, chat: ON_PROD })], doNotDisturb: false, popupsOff: false };
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'c1', CENTER);
+    await flushPromises();
+    const row = (): Element => wrapper.get('[data-testid="notification-row"]').element;
+    expect(badge(row()).classList.contains('d-tone-danger')).toBe(true);
+    api.pushNotifications({ entries: [entry('e1', { ...APPROVAL, chat: { ...ON_PROD, hostTone: 'success' } })], doNotDisturb: false, popupsOff: false });
+    await flushPromises();
+    expect(badge(row()).classList.contains('d-tone-success')).toBe(true);
+    api.pushNotifications({ entries: [entry('e1', { ...APPROVAL, chat: { ...CHAT, host: 'prod-1' } })], doNotDisturb: false, popupsOff: false });
+    await flushPromises();
+    expect(badge(row()).classList.contains('d-tone-muted')).toBe(true);
+  });
+});
+
 describe('popup sound', () => {
   it('plays main\'s chimes on the popup page and closes its audio context with the page', async () => {
     const contexts: Array<{ closed: number; gains: number }> = [];

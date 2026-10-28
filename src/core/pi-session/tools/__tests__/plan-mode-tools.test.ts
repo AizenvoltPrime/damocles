@@ -8,7 +8,7 @@ function fakePi(): PiCodingAgentModule {
 }
 
 function fakePermissionHandler(activate = vi.fn(async () => undefined)): PermissionHandler {
-  return { activatePlanMode: activate, getPermissionMode: () => 'plan' } as unknown as PermissionHandler;
+  return { activatePlanMode: activate, getPermissionMode: () => 'plan', turnPermissionMode: () => 'plan' } as unknown as PermissionHandler;
 }
 
 async function runEnter(getPlanFilePath?: () => string) {
@@ -43,5 +43,17 @@ describe('EnterPlanMode tool', () => {
   it('falls back to a system-prompt reference when no path getter is wired (subagents)', async () => {
     const { text } = await runEnter(undefined);
     expect(text).toContain('named in your system prompt');
+  });
+});
+
+describe('ExitPlanMode tool', () => {
+  it('asks for approval in the mode the turn runs in, which a refused YOLO sets to the client\'s plan default', async () => {
+    const canUseTool = vi.fn(async () => ({ behavior: 'allow' as const, updatedInput: {} }));
+    const handler = { getPermissionMode: () => 'default', turnPermissionMode: () => 'plan', canUseTool } as unknown as PermissionHandler;
+    const [, exit] = createPlanModeTools(fakePi(), handler);
+    const ctx = { sessionManager: { getBranch: () => [] } };
+    const result = await (exit as unknown as { execute: (id: string, p: unknown, s: unknown, u: unknown, c: unknown) => Promise<{ content: { text: string }[] }> }).execute('t1', {}, undefined, undefined, ctx);
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+    expect(result.content[0]?.text).toBe('Plan approved. Proceeding with implementation.');
   });
 });

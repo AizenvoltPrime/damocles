@@ -77,6 +77,11 @@ export const DAMOCLES_AGENT_INVOCATION_ENTRY = 'damocles-agent-invocation';
 
 /** Agent-file custom entry: the agent's launch config, the first custom entry of its pi session. */
 export const DAMOCLES_AGENT_LAUNCH_ENTRY = 'damocles-agent-launch';
+/**
+ * A daemon's core, at a run's start when it changed: `{ clientProviders: string[] }`, the providers the run's client holds a
+ * credential for. Spend after it on any other provider used the host's own credential (`docs/invariants.md`, "Usage accounting").
+ */
+export const DAMOCLES_CREDENTIAL_SOURCE_ENTRY = 'damocles-credential-source';
 /** Where a chat works (AD12): `{ worktreeId, projectPath, place }`; the latest decides the folder a resume binds to. */
 export const DAMOCLES_WORKTREE_ENTRY = 'damocles.worktree';
 

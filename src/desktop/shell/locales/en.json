@@ -22,7 +22,8 @@
     "toggleTerminal": "Toggle terminal ({shortcut})",
     "toggleEditor": "Toggle editor & browser pane",
     "quickOpen": "Search files in all projects",
-    "quickOpenTitle": "Go to File ({shortcut})"
+    "quickOpenTitle": "Go to File ({shortcut})",
+    "hostStripe": "On {host}"
   },
   "sidebar": {
     "label": "Sidebar",
@@ -40,6 +41,7 @@
     "heading": "Projects",
     "listLabel": "Projects",
     "add": "Open a project folder",
+    "connect": "Connect to host",
     "empty": "No projects yet. New chats open in your home folder.",
     "untrusted": "Untrusted",
     "untrustedTitle": "Not trusted. Click to review.",
@@ -51,7 +53,7 @@
     "remove": "Remove project",
     "menuLabel": "Actions for {name}",
     "removeRefused": "Could not remove project {name}: {reason}",
-    "keyboardHelp": "Arrow keys move, Enter selects, Shift+F10 opens the menu.",
+    "keyboardHelp": "Arrow keys move, Enter selects or opens a group, Alt+Up and Alt+Down reorder, Shift+F10 opens the menu.",
     "home": "Home folder",
     "worktreeOf": "A worktree of {project}, opened as its own project",
     "hostState": "{host}, {state}",
@@ -60,8 +62,38 @@
       "connecting": "Connecting",
       "connected": "Connected",
       "failed": "Couldn't connect",
-      "offline": "Not connected"
-    }
+      "offline": "Not connected",
+      "reconnecting": "Reconnecting",
+      "reconnectFailed": "Couldn't reconnect"
+    },
+    "latency": "{host} · {ms} ms",
+    "slowConnection": "Slow connection to {host} ({ms} ms)",
+    "view": {
+      "label": "Project view",
+      "flat": "Flat",
+      "flatTitle": "One list of all projects",
+      "grouped": "By host",
+      "groupedTitle": "Group projects by host"
+    },
+    "group": {
+      "local": "This computer",
+      "expanded": "expanded",
+      "collapsed": "collapsed",
+      "busy": "{count} chat working or waiting | {count} chats working or waiting",
+      "openFolder": "Open folder on {name}...",
+      "rename": "Rename..."
+    },
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "movedUp": "Moved {name} up",
+    "movedDown": "Moved {name} down",
+    "openAnotherFolder": "Open another folder on {name}...",
+    "renameHost": "Rename {name}...",
+    "otherGroup": "{project} is on {host}. Open a folder on {target} instead?",
+    "otherGroupFromLocal": "{project} is on this computer. Open a folder on {target} instead?",
+    "otherGroupToLocal": "{project} is on {host}. Open a folder on this computer instead?",
+    "openLocalFolder": "Open a local folder...",
+    "orderFailed": "The order could not be saved. Try again."
   },
   "chats": {
     "heading": "Chats",
@@ -243,6 +275,10 @@
       "sourceControl": {
         "label": "Source control",
         "subtitle": "Applies to every project on this machine."
+      },
+      "remoteHosts": {
+        "label": "Remote hosts",
+        "subtitle": "The SSH hosts saved on this computer: their names, colors and safety settings."
       }
     },
     "groups": {
@@ -607,6 +643,62 @@
       "gitBlameEditorDecorationEnabled": {
         "label": "Inline blame",
         "description": "Show who last changed the cursor's line, at the line's end."
+      },
+      "remoteTerminalIdleDays": {
+        "label": "End forgotten terminals",
+        "description": "A terminal on a remote host that no device has opened for this many days ends. 0 keeps them forever."
+      },
+      "remoteHosts": {
+        "label": "Host",
+        "description": "Choose the saved host to change."
+      },
+      "remoteHostName": {
+        "label": "Name",
+        "description": "Shown on its projects, its group, the title bar and notifications. Only this computer uses it."
+      },
+      "remoteHostColor": {
+        "label": "Color",
+        "description": "Tints the host's badge, group and title bar stripe."
+      },
+      "remoteHostMode": {
+        "label": "Default permission mode",
+        "description": "New chats on the host start in this mode."
+      },
+      "remoteHostYolo": {
+        "label": "Allow YOLO",
+        "description": "When off, no chat on the host can skip permission prompts, from any device."
+      },
+      "remoteHostAgent": {
+        "label": "Forward my SSH agent",
+        "description": "Lets git on the host use your local keys. Any process running as you there can use them while this is on."
+      },
+      "remoteHostRemember": {
+        "label": "Remember password",
+        "description": "When the host asks for a password, offer to remember it on this computer, in the system keychain."
+      },
+      "remoteHostLocalNetwork": {
+        "label": "Let the agent's browser reach this computer's local network",
+        "description": "Off: the browser of a chat on the host cannot open pages on this computer or its local network. The host's forwarded ports always work."
+      },
+      "remoteHostLinks": {
+        "label": "Open links from the host's terminals without asking",
+        "description": "Links that the agent opens still always ask."
+      },
+      "remoteHostCredentials": {
+        "label": "Saved credentials the host may always use",
+        "description": "Git on the host gets the credentials for these hosts from this computer without asking."
+      },
+      "remoteHostOs": {
+        "label": "Operating system",
+        "description": "Damocles detects it on the first connection. Change it only if detection got it wrong."
+      },
+      "remoteHostInstallFolder": {
+        "label": "Install folder",
+        "description": "Where the Damocles server lives on the host. Use this when your home folder is small or does not allow running programs."
+      },
+      "remoteHostActions": {
+        "label": "Host actions",
+        "description": "Passwordless login, the host's log, removing the Damocles server and forgetting the host."
       }
     },
     "restoreDefaults": "Restore defaults",
@@ -891,6 +983,7 @@
     "breadcrumbs": "File path",
     "diffStats": "{added} lines added, {removed} removed",
     "saveFailed": "Failed to save '{name}': Damocles could not finish the save. Try again.",
+    "loadFailed": "Damocles could not open '{name}'.",
     "formatting": "Formatting…",
     "tab": {
       "preview": "preview",
@@ -899,7 +992,9 @@
       "unsaved": "unsaved changes",
       "deleted": "Deleted",
       "conflict": "Changed on disk",
-      "closeTitle": "Close ({shortcut})"
+      "closeTitle": "Close ({shortcut})",
+      "pendingUpload": "Saved on this computer. Uploads when {host} reconnects.",
+      "uploaded": "Uploaded to {host}."
     },
     "menu": {
       "label": "Actions for {title}",
@@ -1022,11 +1117,13 @@
       "drag": "Drag",
       "rename": "Rename",
       "delete": "Delete",
+      "deletePermanently": "Delete Permanently",
       "copyPath": "Copy path",
       "copyRelativePath": "Copy relative path",
       "reveal": "Reveal in File Explorer",
       "findInFolder": "Find in Folder...",
-      "openTimeline": "Open Timeline"
+      "openTimeline": "Open Timeline",
+      "openAsProject": "Open as project"
     },
     "decoration": {
       "submodule": "Submodule"
@@ -1110,7 +1207,7 @@
     "openInEditorTooltip": "Copy current search results to an editor",
     "bufferWarning": {
       "unsupportedRegex": "Open editors were not searched: this regular expression cannot run in the editor.",
-      "timedOut": "Open editors were not fully searched: the regular expression took too long."
+      "timedOut": "Open editors were not fully searched: matching them took too long."
     },
     "searching": "Searching",
     "noProject": "Open a project to search its files.",
@@ -1191,7 +1288,8 @@
     },
     "status": {
       "starting": "Starting",
-      "running": "Running"
+      "running": "Running",
+      "reconnecting": "Reconnecting"
     },
     "find": {
       "label": "Find in terminal",
@@ -2082,5 +2180,422 @@
       "failed": "Some references could not be loaded.",
       "omitted": "{n} more reference not shown | {n} more references not shown"
     }
+  },
+  "remote": {
+    "connect": {
+      "title": "Connect to host",
+      "close": "Close",
+      "back": "Back",
+      "search": "Search hosts or enter a new one",
+      "searchPlaceholder": "Search, or type user{'@'}host or paste an ssh command",
+      "savedHosts": "Saved hosts",
+      "savedHostsNote": "named in Damocles",
+      "sshHosts": "SSH hosts",
+      "sshHostsNote": "from ~/.ssh/config",
+      "newHost": "Connect to {destination}",
+      "newHostNote": "Saved to Damocles' host list, never to ~/.ssh/config",
+      "parsedOptions": "Parsed options",
+      "refusal": {
+        "option": "{option} is not allowed. Damocles passes only -l, -p, -i, -J, -4, -6, -C and allowed -o options to ssh.",
+        "fixed": "Damocles sets {option} itself, since it decides how soon a dropped connection is noticed. Remove it.",
+        "value": "The value given to {option} is not allowed.",
+        "relativePath": "Give {option} a full path, such as ~/.ssh/id_ed25519. ssh would look for this one in Damocles' own folder.",
+        "conflict": "{option} gives a different value than another part of the command. Give it once.",
+        "typography": "The command holds {option}, which an editor puts in place of a plain dash or quote. Type it plainly.",
+        "quotes": "Damocles could not read this ssh command. Check its quotes.",
+        "missing": "{option} needs a value.",
+        "input": "Type the ssh command on one line, in at most 4096 characters.",
+        "destination": "Type a host as user{'@'}host, host:port or a pasted ssh command.",
+        "destination_host": "ssh does not take this host name. Use letters, digits, dots and dashes, an IP address, or the xn-- form of an international name.",
+        "destination_user": "The user name holds a character ssh refuses, such as a quote, a backslash or a semicolon.",
+        "destination_port": "The port must be a number from 1 to 65535.",
+        "command": "Remove the command after the host. Damocles starts its own server there."
+      },
+      "details": "Details for {name}",
+      "card": "{name}, {destination}, {state}",
+      "aliasCard": "{alias}, from ~/.ssh/config",
+      "noHosts": "No saved hosts yet. Type user{'@'}host or paste an ssh command to add one.",
+      "noMatch": "No saved host matches. Type user{'@'}host or paste an ssh command to add one.",
+      "keysMove": "↑ ↓ move",
+      "keysConnect": "Enter connect",
+      "keysDetails": "→ details",
+      "keysClose": "Esc close",
+      "actionFailed": "That did not work. Try again, or see the log."
+    },
+    "name": {
+      "title": "Name this host",
+      "label": "Name",
+      "note": "Saved in Damocles, never in ~/.ssh/config. Rename it any time.",
+      "preview": "Preview",
+      "connect": "Connect",
+      "empty": "Enter a name.",
+      "tooLong": "Use at most 64 characters.",
+      "controlChars": "Remove the control characters.",
+      "bidiChars": "Remove the text direction characters.",
+      "taken": "Another host is already called {name}",
+      "checkFailed": "The name could not be checked. Try again.",
+      "saveFailed": "The name could not be saved. Try again."
+    },
+    "step": {
+      "connecting": "Connecting",
+      "authenticating": "Authenticating",
+      "checking": "Checking server",
+      "installing": "Installing",
+      "starting": "Starting"
+    },
+    "timeline": {
+      "label": "Connecting to {name}",
+      "steps": "Steps",
+      "cancel": "Cancel",
+      "connected": "Connected",
+      "failedAt": "Failed at {step}",
+      "progress": "{step}, {percent}%",
+      "percent": "{percent}%",
+      "continue": "Continue",
+      "retry": "Retry",
+      "editHost": "Edit host",
+      "secret": {
+        "password": "Password",
+        "passphrase": "Passphrase",
+        "pin": "PIN",
+        "otp": "Verification code",
+        "other": "Answer",
+        "show": "Show typed text",
+        "hide": "Hide typed text"
+      },
+      "remember": "Remember on this computer"
+    },
+    "failure": {
+      "hostKeyChanged": "{name}'s host key has changed, so Damocles did not connect.",
+      "hostKeyRefused": "The host key was not accepted, so nothing connected.",
+      "permissionDenied": "{name} refused the sign-in. Check your key, agent or password.",
+      "permissionDenied_hop": "{hop}, a jump host on the way to {name}, refused the sign-in. Check your key, agent or password.",
+      "unresolved": "The address of {name} could not be found.",
+      "refused": "{name} refused the connection.",
+      "timedOut": "The connection to {name} timed out.",
+      "unreachable": "{name} could not be reached. Check that it is on and that this computer's network can reach it.",
+      "cancelled": "The connection was cancelled.",
+      "unsupportedOs": "{name} runs {os}, which Damocles does not support.",
+      "glibcTooOld": "{name} runs glibc {found}. Damocles needs {needed} or newer.",
+      "glibcxxMissing": "{name} has no usable libstdc++ (GLIBCXX_3.4.25), which Damocles needs.",
+      "kernelTooOld": "{name} runs Linux {found}. Damocles needs {needed} or newer.",
+      "macosTooOld": "{name} runs macOS {found}. Damocles needs {needed} or newer.",
+      "windowsBuildTooOld": "{name} runs Windows build {found}. Damocles needs build {needed} or newer.",
+      "nixLdMissing": "{name} runs NixOS without nix-ld. The server's Node and node-pty need nix-ld set up.",
+      "noexec": "Programs cannot run from {folder} on {name}. Choose another install folder.",
+      "noexecNotWritable": "Damocles cannot create or write {folder} on {name}. Choose another install folder.",
+      "lowSpace": "{folder} on {name} has {freeMb} MB free. Damocles needs {neededMb} MB. Choose another install folder.",
+      "installFolderInvalid": "The install folder must be an absolute path or start with ~, on one line.",
+      "installFolderUnsafe": "Other users on {name} can change {folder}, so Damocles does not install there. Make it writable only by you, or choose another install folder.",
+      "hashMismatch": "The downloaded server package did not match its checksum, so nothing was installed.",
+      "downloadAndUploadFailed": "The server package could neither be downloaded on {name} nor uploaded from this computer.",
+      "selfTestFailed": "The Damocles server did not pass its self-test on {name}.",
+      "bridgeFailed": "The Damocles server on {name} did not start.",
+      "destinationRefused": "Damocles no longer accepts the saved {setting} of {name}, so ssh did not start. Forget the host and add it again.",
+      "handshakeFailed": "The Damocles server on {name} did not answer as expected.",
+      "unknown": "The connection to {name} failed. Show log has the details.",
+      "unknown_sshMissing": "No OpenSSH client was found on this computer. Install OpenSSH and try again.",
+      "unknown_noPackage": "This build of Damocles carries no server package for {name} ({target})."
+    },
+    "notice": {
+      "noLinger": "{name} ends {user}'s processes at sign-out, so a running agent stops with your last session.",
+      "wmiBlocked": "Policy on {name} blocks starting processes through WMI, so the Damocles server stops when the SSH session ends.",
+      "noGitBash": "Git Bash is not installed on {name}, so the agent's Bash tool is unavailable there. The PowerShell tool still works.",
+      "watchLimit": "{name} ran out of file watches for {project}, so changes in some of its folders are not shown. Damocles changes nothing; to raise the limit, run:",
+      "sharedHome": "{others} also runs Damocles in this home. Chats and memories are shared between them. | {others} also run Damocles in this home. Chats and memories are shared between them.",
+      "clockAhead": "{name}'s clock is {minutes} minutes ahead of this computer's. Sign-ins and file times may be wrong.",
+      "clockBehind": "{name}'s clock is {minutes} minutes behind this computer's. Sign-ins and file times may be wrong."
+    },
+    "hostKey": {
+      "unknownTitle": "First connection to {name}",
+      "unknownBody": "This computer has not seen {host}'s {keyType} key before. Compare the fingerprint with the one the server's admin gave you.",
+      "connect": "Connect",
+      "cancel": "Cancel",
+      "changedTitle": "{name}'s host key has changed",
+      "changedBody": "The key {host} presented is not the one this computer recorded. Someone may be intercepting the connection, or the server was reinstalled. Damocles did not connect.",
+      "changedFix": "If the server's admin confirms the new key, remove the old one with this command, then connect again:",
+      "changedFixNoHost": "If the server's admin confirms the new key, remove the old one from ~/.ssh/known_hosts with ssh-keygen -R, then connect again.",
+      "copy": "Copy command",
+      "copied": "Copied",
+      "failed": "The command could not be copied.",
+      "close": "Close"
+    },
+    "folders": {
+      "title": "Open a folder on {name}",
+      "recent": "Recent folders",
+      "home": "Home",
+      "path": "Path",
+      "filter": "Filter folders",
+      "list": "Folders",
+      "alreadyProject": "Already a project",
+      "empty": "No folders here.",
+      "noMatch": "No folder matches.",
+      "open": "Open",
+      "cancel": "Cancel",
+      "missing": "That folder no longer exists.",
+      "failed": "The folders could not be listed.",
+      "notConnected": "{name} is not connected.",
+      "privacy": "macOS kept Damocles out of {folder}. To open folders there, give {helper} Full Disk Access in System Settings, Privacy & Security, on that Mac.",
+      "outside": "That folder is outside the projects on {name}."
+    },
+    "pick": {
+      "fileTitle": "Choose a file on {name}",
+      "folderTitle": "Choose a folder on {name}",
+      "titled": "{name}: {title}",
+      "roots": "Projects",
+      "root": "Project folder",
+      "filter": "Filter",
+      "list": "Folders and files",
+      "empty": "No folders or files here.",
+      "noMatch": "Nothing matches.",
+      "choose": "Choose"
+    },
+    "card": {
+      "title": "Details for {name}",
+      "rename": "Rename {name}",
+      "renameLabel": "Host name",
+      "notices": "Notices",
+      "running": "Running on {name}",
+      "runsLoading": "Listing what runs…",
+      "runsFailed": "The running terminals could not be listed.",
+      "nothingRunning": "Nothing is running.",
+      "kill": "Kill {title}",
+      "killShort": "Kill",
+      "open": "Open {title}",
+      "openShort": "Open",
+      "runState": {
+        "running": "running",
+        "waiting": "waiting",
+        "background": "in the background"
+      },
+      "showLog": "Show log",
+      "connect": "Connect",
+      "reconnect": "Reconnect",
+      "openFolder": "Open folder on {name}...",
+      "devices": "Devices attached ({count})",
+      "thisDevice": "(this device)",
+      "otherDevices": "{count} other device is connected to {name} | {count} other devices are connected to {name}",
+      "accountAdvice": "People who share a server account share its chats, files and tokens. Give each person their own account on {name}.",
+      "safety": "Safety",
+      "mode": "{mode} mode",
+      "hostMode": "The host's own mode",
+      "yoloAllowed": "YOLO allowed",
+      "yoloNotAllowed": "YOLO not allowed",
+      "signsInWithKey": "Signs in with your SSH key",
+      "signsInWithPassword": "Signs in with a password",
+      "hostSettings": "Host settings"
+    },
+    "installFolder": {
+      "heading": "Install folder",
+      "default": "Default (~/.damocles/server)",
+      "choose": "Choose install folder",
+      "label": "Install folder",
+      "placeholder": "/opt/damocles or ~/tools",
+      "save": "Save",
+      "invalid": "Use an absolute path or one starting with ~, on one line.",
+      "failed": "The install folder could not be saved.",
+      "browse": "Choose...",
+      "useFolder": "Use this folder"
+    },
+    "banner": {
+      "offline": "{name} is offline",
+      "reconnect": "Reconnect",
+      "signIn": "{name} is waiting for you to sign in",
+      "signInAction": "Sign in to {name}",
+      "reconnectingIn": "Reconnecting to {name} in {seconds} s",
+      "reconnecting": "Reconnecting to {name}…",
+      "reconnectNow": "Reconnect now",
+      "failed": "Couldn't reconnect to {name}. Edits and messages are kept on this computer.",
+      "retry": "Retry",
+      "showLog": "Show log",
+      "editHost": "Edit host",
+      "reconnected": "Reconnected to {name}",
+      "announce": {
+        "reconnecting": "Reconnecting to {name}",
+        "failed": "Couldn't reconnect to {name}"
+      }
+    },
+    "editor": {
+      "offline": "{name} is offline.",
+      "reconnect": "Reconnect"
+    },
+    "add": {
+      "menuLabel": "Open a project",
+      "local": "Local folder...",
+      "remote": "Remote folder...",
+      "onHost": "Folder on {name}..."
+    },
+    "linger": {
+      "allow": "Allow background work",
+      "enabled": "Background work is allowed on {name}.",
+      "alreadyEnabled": "Background work was already allowed on {name}.",
+      "refused": "{name} needs an admin to allow it. Ask them to run:",
+      "failed": "Background work could not be allowed on {name}. Show log has the details."
+    },
+    "passwordless": {
+      "start": "Set up passwordless login",
+      "steps": "Setting up passwordless login on {name}",
+      "step": {
+        "generate": "Create a key just for Damocles (ed25519)",
+        "install": "Add it to ~/.ssh/authorized_keys on {name}",
+        "installWindows": "Add it to the authorized keys on {name}",
+        "verify": "Sign in again with the key"
+      },
+      "state": {
+        "pending": "waiting",
+        "running": "in progress",
+        "done": "done",
+        "failed": "failed"
+      },
+      "done": "Passwordless login works on {name}.",
+      "callFailed": "Passwordless login could not be set up on {name}. Show log has the details.",
+      "failure": {
+        "notConnected": "{name} is not connected. Connect, then try again.",
+        "keygenFailed": "ssh-keygen could not create the key on this computer. Show log has the details.",
+        "keyPairIncomplete": "Damocles' key on this computer is incomplete: only {path} is left. Delete that file, then try again.",
+        "unsupported": "The Damocles server on {name} is too old to install a key. Reconnect to update it, then try again.",
+        "ownership": "{path} on {name} belongs to another user, so ssh would ignore it. Nothing was changed.",
+        "notFile": "{path} on {name} is not a regular file. Nothing was changed.",
+        "writeFailed": "{path} on {name} could not be written.",
+        "aclFailed": "The permissions of {path} on {name} could not be set, so ssh would ignore the key.",
+        "accountFailed": "Damocles could not read which Windows account it runs as on {name}. Nothing was changed, and Show log has the details.",
+        "restricted": "{path} on {name} already lists Damocles' key with options that stop it from logging in (command=, from=, restrict, expiry-time= or cert-authority). Remove that line or its options, then try again. Nothing was changed.",
+        "verifyFailed": "{name} did not accept the key. Your password still works, and Show log has the details.",
+        "publickeyNotPreferred": "PreferredAuthentications for {name}, saved with the host or set in your ssh config, asks for a password before publickey or leaves publickey out, so Damocles' key would not log in on its own. Change that setting, then try again.",
+        "configUnreadable": "Damocles could not read the ssh configuration for {name} on this computer. Nothing was changed, and Show log has the details.",
+        "installFailed": "The Damocles server on {name} could not add the key. Show log has the details."
+      }
+    },
+    "removeServer": {
+      "open": "Remove Damocles server...",
+      "title": "Remove the Damocles server from {name}?",
+      "body": "This deletes Damocles' server files on {name} and stops what it runs there.",
+      "runs": "Running on {name}",
+      "kind": {
+        "chat": "agent",
+        "terminal": "terminal"
+      },
+      "stays": "Your project files and git history stay.",
+      "removeKey": "Remove the key Damocles installed",
+      "disableLinger": "Disable linger",
+      "cancel": "Cancel",
+      "confirm": "Remove server",
+      "needsConnection": "Connect to {name} to remove its Damocles server.",
+      "running": "Removing the Damocles server from {name}…",
+      "done": "Removed the Damocles server from {name}. Only what Damocles installed was removed. Reconnect any time to install it again.",
+      "failure": {
+        "notConnected": "{name} is not connected, so nothing was removed.",
+        "unsupported": "The Damocles server on {name} is too old to remove itself. Reconnect to update it first.",
+        "daemonRunning": "Damocles was still running on {name}, so nothing was removed. Try again in a moment. If it keeps running, connect to {name} and remove it again."
+      },
+      "stageFailed": {
+        "exit": "Removing the files on {name} failed with exit code {exitCode}. Show log has the details.",
+        "killed": "Removing the files on {name} was stopped before it finished. Show log has the details.",
+        "protocol": "Removing the files on {name} gave an answer Damocles could not read. Show log has the details.",
+        "keyFile": "The Damocles server files on {name} were removed, but the file holding the key Damocles installed could not be read or rewritten, so the key is still there. Show log has the details.",
+        "runKey": "Damocles gave the removal on {name} a machine key it refused, so nothing was removed. Show log has the details.",
+        "userName": "The account on {name} reported no user name, so nothing was removed."
+      },
+      "retry": "Try again",
+      "notice": {
+        "versionKept": "Version {version} stays, because {machine} still uses it.",
+        "serverFolderKept": "~/.damocles/server stays, because other files are still in it.",
+        "keyNotFound": "The key Damocles installed was no longer in authorized_keys.",
+        "lingerFailed": "Linger could not be disabled. Show log has the details.",
+        "deleteFailed": "{entry} could not be deleted. Show log has the details.",
+        "installInProgress": "Damocles' files in {folder} stay, because another device is installing the server there."
+      }
+    },
+    "forget": {
+      "open": "Forget host",
+      "title": "Forget {name}?",
+      "body": "Damocles removes this host, its saved password, its session mirror, its browser profile and its forwarded-port settings from this computer. Nothing changes on {name}.",
+      "cancel": "Cancel",
+      "removeFirst": "Remove the server first...",
+      "confirm": "Forget host"
+    },
+    "hostActions": {
+      "failed": {
+        "removalInfo": "What runs on {name} could not be listed.",
+        "remove": "The Damocles server could not be removed from {name}. Show log has the details.",
+        "forget": "{name} could not be forgotten."
+      }
+    }
+  },
+  "closeRemote": {
+    "title": "Quit Damocles?",
+    "body": "This chat runs on a remote host and can keep running there after you quit: | These chats run on a remote host and can keep running there after you quit:",
+    "listLabel": "Remote chats",
+    "newChat": "New chat",
+    "cancel": "Cancel",
+    "stop": "Stop agents",
+    "keep": "Keep running",
+    "dontAskAgain": "Don't ask again",
+    "status": {
+      "running": "Working",
+      "waiting": "Waiting for your answer",
+      "signIn": "Sign-in needed",
+      "idle": "Finished"
+    },
+    "tokenNote": "{provider} token valid for {minutes} min | {provider} token valid for {minutes} min",
+    "linger": "{name} ends your processes when you log out there, so these agents stop then."
+  },
+  "hostUpdate": {
+    "running": "{host} is running {count} agent on Damocles {version} | {host} is running {count} agents on Damocles {version}",
+    "waiting": "Waiting for the agents on {host} to finish",
+    "switchWhenIdle": "Switch when they finish",
+    "switchNow": "Switch now"
+  },
+  "remoteHosts": {
+    "days": "days",
+    "hosts": "Hosts",
+    "none": "No hosts are saved yet. Connect to a host to add it.",
+    "loadFailed": "The saved hosts could not be listed.",
+    "saveFailed": "The setting could not be saved.",
+    "colorDescription": "Tints {name}'s badge, group and title bar stripe.",
+    "modeDescription": "New chats on {name} start in this mode.",
+    "mode": {
+      "host": "Use the host's setting",
+      "default": "Default",
+      "acceptEdits": "Accept edits",
+      "plan": "Plan"
+    },
+    "os": {
+      "detect": "Detect",
+      "detected": "Detect ({os})"
+    },
+    "linksLabel": "Open links from {name}'s terminals without asking",
+    "switch": {
+      "allowBypass": "When off, no chat on {name} can skip permission prompts, from any device.",
+      "forwardAgent": "Lets git on the host use your local keys. Any process running as you there can use them while this is on.",
+      "rememberPassword": "When {name} asks for a password, offer to remember it on this computer, in the system keychain.",
+      "browserLocalNetwork": "Off: the browser of a chat on {name} cannot open pages on this computer or its local network. {name}'s forwarded ports always work.",
+      "openLinksWithoutAsking": "Links that the agent opens still always ask."
+    },
+    "color": {
+      "none": "None",
+      "accent": "Blue",
+      "success": "Green",
+      "warning": "Amber",
+      "danger": "Red",
+      "info": "Indigo"
+    },
+    "credentialsLabel": "Saved credentials {name} may always use",
+    "credentialsDescription": "Git on {name} gets the credentials for these hosts from this computer without asking.",
+    "credentialsNone": "None yet. Choosing \"Always for {name}\" when git on {name} asks for your credentials adds a host here.",
+    "revoke": "Revoke",
+    "revokeHost": "Revoke {host}",
+    "revokeFailed": "It could not be revoked.",
+    "changeFolder": "Change...",
+    "cancelFolder": "Cancel",
+    "logFailed": "The log of {name} could not be opened."
+  },
+  "gitConsent": {
+    "title": "{host} wants to use your saved credentials for {credentialHost}",
+    "body": "Git on {host} wants the credentials saved on this computer. Damocles only reads them, and {host} can't change or erase them.",
+    "helperWarning": "{host} has a git credential helper of its own, so git will also save this credential on {host}.",
+    "once": "Allow once",
+    "always": "Always for {host}",
+    "deny": "Deny"
   }
 }

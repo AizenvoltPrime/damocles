@@ -10,3 +10,12 @@ resources/shell-integration/*.fish text eol=lf
 resources/shell-integration/*.zsh text eol=lf
 # The askpass helper scripts run under sh (Git for Windows' sh included), which reads CR as part of a line.
 resources/askpass/*.sh text eol=lf
+# The POSIX stage 1 runs under the target's sh, which reads CR as part of a line.
+src/desktop/main/remote/bootstrap/*.sh text eol=lf
+# The Windows stage scripts are bundled as text, so one line ending keeps the bundle's bytes the same on every build OS.
+src/desktop/main/remote/bootstrap/*.ps1 text eol=lf
+# The e2e images build and run on Linux, whose Docker and sshd read their files.
+e2e/remote/support/images/* text eol=lf
+# The git credential relay helper runs under sh (Git for Windows' sh included), which reads CR as part of a line.
+resources/git-credential/*.sh text eol=lf
+resources/git-credential/*.cmd text eol=crlf

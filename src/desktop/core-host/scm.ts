@@ -2,7 +2,9 @@
 // queue), served to desktop main over scm.* with a mirror of what main reads synchronously (docs/invariants.md "Desktop host").
 import { promises as fs } from 'node:fs';
 import { PiRuntime } from '../../core/pi-session/pi-runtime';
-import { createAskpassServer, removeAbandonedSocketFolders, type AskpassServer } from '../../core/scm/askpass/askpass-server';
+import { agentSocketPath } from '../../core/client-snapshots';
+import { createAskpassServer, removeAbandonedSocketFolders, type AskpassServer, type RelayCredential } from '../../core/scm/askpass/askpass-server';
+import { createRelayedPasswords, installCredentialRelay, type CredentialRelay } from '../../core/scm/askpass/credential-relay';
 import { generateCommitMessage } from '../../core/scm/commit-message';
 import { gitErrorText } from '../../core/scm/errors';
 import { createGitRunner, type GitCloner, type GitRunner } from '../../core/scm/git-runner';
@@ -69,14 +71,92 @@ function repositoryRead(repo: Repository, method: RepositoryCall, args: readonly
 export function startCoreScm(platform: CorePlatform, gitLog: LogSink, log: (line: string) => void): CoreScm {
   const { endpoint, init } = platform;
   const t = (message: string, ...args: Array<string | number>): string => platform.localization.t(message, ...args);
-  const askpass: AskpassServer = createAskpassServer({ paths: init.paths.askpass, prompt: credentialPrompt((prompt, signal) => endpoint.request('askpass.prompt', prompt, signal)), log: (line) => gitLog.appendLine(line) });
+  // a daemon's core relays git credentials to the acting client; the target's own helpers are reported for the consent, and
+  // an erase reaches the client only when it names the password the relay answered
+  const relayedPasswords = createRelayedPasswords();
+  let loggedUnnamedErase = false;
+  const helperProbe = (cwd: string, url: string): Promise<boolean> => {
+    if (runner === undefined) return Promise.resolve(false);
+    return runner.targetHasCredentialHelper(cwd, url, service.trustedProjectAt(cwd)).catch((err: unknown) => {
+      gitLog.appendLine(`[askpass] could not read the target's own credential helpers, so the consent warns of one: ${err instanceof Error ? err.message : String(err)}`);
+      return true;
+    });
+  };
+  const relayCredential: RelayCredential = async ({ op, cwd, fields, passwordHash }, signal) => {
+    if (op === 'erase') {
+      if (passwordHash === undefined) {
+        if (!loggedUnnamedErase) {
+          loggedUnnamedErase = true;
+          gitLog.appendLine('[askpass] git sent an erase that names no password, so the relay cannot tell it refused the credential your computer gave; such an erase is not passed on');
+        }
+        return { kind: 'none' };
+      }
+      if (!relayedPasswords.refused(fields, passwordHash)) return { kind: 'none' };
+      return endpoint.request('askpass.credential', { op, fields, targetHelper: false }, signal);
+    }
+    const targetHelper = await helperProbe(cwd, `${fields.protocol}://${fields.host}/${fields.path ?? ''}`);
+    const answer = await endpoint.request('askpass.credential', { op, fields, targetHelper }, signal);
+    if (answer.kind === 'credential') relayedPasswords.answered(fields, answer.password);
+    return answer;
+  };
+  const askpass: AskpassServer = createAskpassServer({
+    paths: init.paths.askpass,
+    prompt: credentialPrompt((prompt, signal) => endpoint.request('askpass.prompt', prompt, signal)),
+    ...(init.remote ? { credential: relayCredential } : {}),
+    log: (line) => gitLog.appendLine(line),
+  });
+  const relays = init.remote !== undefined && init.paths.askpass.credentialRelay !== undefined;
+  const relayFailed = (err: unknown): void => {
+    const line = `[scm] the git credential relay does not listen; the next git call or agent shell that wants it listens again: ${err instanceof Error ? err.message : String(err)}`;
+    log(line);
+    gitLog.appendLine(line);
+  };
+  // the relay while the askpass server listens at its handle; only the latest listen sets it
+  let relay: CredentialRelay | undefined;
+  let relayGeneration = 0;
+  let closed = false;
+  const listenRelay = (): Promise<void> => {
+    const generation = ++relayGeneration;
+    return askpass.relay().then(
+      (listening) => {
+        if (generation === relayGeneration) relay = listening;
+      },
+      (err: unknown) => {
+        if (generation === relayGeneration) relay = undefined;
+        relayFailed(err);
+      },
+    );
+  };
+  const readRelay = (): CredentialRelay | undefined => {
+    if (relay === undefined && relays && !closed) void listenRelay();
+    return relay;
+  };
+  // the daemon made the relay's removed folder again: the relay listens at its new handle from then on
+  const relayMoved = relays
+    ? endpoint.onMirror('hostSockets', ({ relayHandle }) => {
+      if (relayHandle === undefined) return;
+      relay = undefined;
+      askpass.moveRelay(relayHandle).then(listenRelay, relayFailed);
+    })
+    : undefined;
+  if (relays) {
+    installCredentialRelay(readRelay);
+    void listenRelay();
+  }
   // a core that crashed or was killed never closed its server; Windows' named pipes leave nothing behind
   if (process.platform !== 'win32') {
     removeAbandonedSocketFolders({ now: Date.now(), log: (line) => gitLog.appendLine(line) }).catch((err: unknown) => log(`[scm] the askpass folder sweep failed: ${err instanceof Error ? err.message : String(err)}`));
   }
   const { git } = init;
   const runner = git.available && git.path !== undefined && git.version !== undefined
-    ? createGitRunner({ git: { path: git.path, version: git.version }, log: gitLog, isTrusted: (project) => platform.trust.isTrusted(project) })
+    ? createGitRunner({
+      git: { path: git.path, version: git.version },
+      log: gitLog,
+      isTrusted: (project) => platform.trust.isTrusted(project),
+      credentialRelay: readRelay,
+      // a daemon's core: no git call runs with an inherited SSH_AUTH_SOCK
+      ...(init.remote ? { agentSocket: () => agentSocketPath(platform) } : {}),
+    })
     : undefined;
   const service = new ScmService({
     runner,
@@ -207,9 +287,16 @@ export function startCoreScm(platform: CorePlatform, gitLog: LogSink, log: (line
       repositoryListeners.add(listener);
       return { dispose: () => { repositoryListeners.delete(listener); } };
     },
-    close: () => askpass.dispose(),
+    close: () => {
+      closed = true;
+      relayGeneration++;
+      relay = undefined;
+      if (relays) installCredentialRelay(undefined);
+      return askpass.dispose();
+    },
     dispose: () => {
       subscription.dispose();
+      relayMoved?.dispose();
       refsListeners.clear();
       repositoryListeners.clear();
       service.dispose();

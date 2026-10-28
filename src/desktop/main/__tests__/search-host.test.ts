@@ -53,6 +53,10 @@ beforeEach(() => {
   copied = [];
   const t = (message: string, ...args: Array<string | number>): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]));
   documents = new DocumentService({
+    hostLabel: (authority) => ({ hostId: authority, name: authority }),
+    uploadsConflicted: () => undefined,
+    warn: () => undefined,
+    reopen: () => undefined,
     authorityOs: () => process.platform,
     projects: () => [project, other],
     workspaces: testWorkspaces({ watchers: platform.fileWatchers }),
@@ -60,7 +64,7 @@ beforeEach(() => {
     t,
     log: () => undefined,
     pickSavePath: async () => undefined,
-    backups: { changed: () => undefined, writeNow: async () => undefined, remove: () => undefined },
+    backups: { changed: () => undefined, writeNow: async () => true, remove: () => undefined },
     settings: { locate: () => path.join(root, 'settings.json'), save: async () => ({ ok: false, error: 'unused', conflict: false }) },
   });
   pane = new EditorPane({
@@ -89,6 +93,7 @@ beforeEach(() => {
     mention: async () => undefined,
     browser: () => undefined,
     warn: () => undefined,
+    hostName: (authority) => authority,
     searchEditorClosed: (documentId) => host.searchEditorClosed(documentId),
     reviewClosed: () => undefined,
     openChanges: async () => undefined,

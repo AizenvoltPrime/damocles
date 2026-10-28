@@ -17,12 +17,16 @@ import { withSettingsPolicy } from '../settings-policy';
 
 const HOUR = 60 * 60 * 1000;
 
+// a detach keeps the client's last clientAuth, as core-host/platform/clients.ts does
 function remoteHost(answer: (provider: string, clientId: string) => Promise<BrokerAnswer>) {
   let acting: string | undefined = 'client-a';
   const auth = new Map<string, HeldAuth>();
+  const attached = new Set<string>(['client-a', 'client-b']);
   const listeners = new Set<(change: { topic: ClientTopic; clientId?: string; before?: unknown }) => void>();
   const clients: ClientSnapshots = {
+    actor: () => undefined,
     acting: () => acting,
+    attached: (id) => attached.has(id),
     auth: (id) => auth.get(id),
     user: () => undefined,
     policy: () => undefined,
@@ -33,7 +37,7 @@ function remoteHost(answer: (provider: string, clientId: string) => Promise<Brok
   };
   const credentials = vi.fn(answer);
   const runProviders = vi.fn();
-  const remote: RemoteHost = { hostId: 'h', clients, credentials, speak: vi.fn(), runProviders };
+  const remote: RemoteHost = { hostId: 'h', clients, agentSocket: () => undefined, credentials, speak: vi.fn(), runProviders };
   return {
     remote,
     credentials,
@@ -41,9 +45,12 @@ function remoteHost(answer: (provider: string, clientId: string) => Promise<Brok
     setActing: (id: string | undefined) => { acting = id; },
     setAuth: (clientId: string, value: HeldAuth | undefined) => {
       const before = auth.get(clientId);
-      if (value === undefined) auth.delete(clientId);
-      else auth.set(clientId, value);
-      for (const cb of listeners) cb({ topic: 'clientAuth', clientId, before });
+      if (value === undefined) attached.delete(clientId);
+      else {
+        attached.add(clientId);
+        auth.set(clientId, value);
+      }
+      for (const cb of [...listeners]) cb({ topic: 'clientAuth', clientId, before });
     },
   };
 }
@@ -98,7 +105,7 @@ describe('BrokeredCredentialStore', () => {
     expect(credential).toEqual({ type: 'oauth', access: 't', refresh: '', accountId: 'acct-1', expires: 100 + HOUR });
   });
 
-  it('caches an API key until a clientAuth delta changes that provider, and keeps it across a detach', async () => {
+  it('caches an API key until a clientAuth delta changes that provider, and keeps it across a detach while a turn is pinned to that client', async () => {
     let n = 0;
     const host = remoteHost(async () => ({ type: 'api_key', key: `key-${++n}` }));
     const changed = vi.fn();
@@ -107,12 +114,16 @@ describe('BrokeredCredentialStore', () => {
     host.setAuth('client-a', { providers: { openai: { type: 'api_key', hasKey: true, flatFee: false }, deepseek: { type: 'api_key', hasKey: true, flatFee: false } } });
     expect(await read('openai')).toEqual({ type: 'api_key', key: 'key-1' });
     expect(await read('deepseek')).toEqual({ type: 'api_key', key: 'key-2' });
+    let settle!: () => void;
+    const running = runPinnedTurn(host.remote, 'panel-2', () => new Promise<void>((resolve) => { settle = resolve; }));
     host.setAuth('client-a', undefined);
     expect(await read('openai')).toEqual({ type: 'api_key', key: 'key-1' });
     host.setAuth('client-a', { providers: { openai: { type: 'api_key', hasKey: true, flatFee: false }, deepseek: { type: 'none', hasKey: false, flatFee: false } } });
     expect(changed).toHaveBeenCalledTimes(2);
     expect(await read('openai')).toEqual({ type: 'api_key', key: 'key-1' });
     expect(await read('deepseek')).toEqual({ type: 'api_key', key: 'key-3' });
+    settle();
+    await running;
   });
 
   it('keys the cache by client: another client\'s turn asks its own client', async () => {
@@ -150,6 +161,7 @@ describe('BrokeredCredentialStore', () => {
     await runPinnedTurn(host.remote, 'p1', () => broker.read('anthropic'));
     attached = false;
     expect(await runPinnedTurn(host.remote, 'p1', () => broker.read('anthropic'))).toMatchObject({ access: 't' });
+    host.setAuth('client-a', { providers: { anthropic: { type: 'oauth', expires: Date.now() + HOUR, hasKey: false, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false } } });
     const turn = runPinnedTurn(host.remote, 'p1', () => broker.read('openai'));
     await expect(turn).rejects.toThrow(/not connected/);
     const subcall = runPinnedSubcall(host.remote, () => broker.read('openai'));
@@ -397,7 +409,7 @@ describe('a run started outside every pin', () => {
       tools: [],
     } as never);
     sessions.push(session);
-    pinRunStarts(session, host.remote, 'panel-1');
+    pinRunStarts(session, host.remote, 'panel-1', { raise: () => { throw new Error('no sign-in in this test'); } });
     if (!extension) throw new Error('the extension never loaded');
     return { host, session, keys, extension };
   }
@@ -430,4 +442,136 @@ describe('a run started outside every pin', () => {
     expect(keys).toEqual(['sk-client']);
     expect(host.remote.credentials).toHaveBeenCalledWith('anthropic', 'client-a');
   }, 60_000);
+});
+
+describe('a pin names a device', () => {
+  const ANTHROPIC: HeldAuth = { providers: { anthropic: { type: 'oauth', expires: Date.now() + HOUR, hasKey: false, flatFee: false } } };
+
+  // each device answers on its current connection; a device with none is absent, as the daemon routes user.credentials by device id
+  function devices(now: () => number) {
+    const connections = new Map<string, string>();
+    const host = remoteHost(async (_provider, clientId) => {
+      const connection = connections.get(clientId);
+      if (connection === undefined) throw new Error(CREDENTIAL_CLIENT_ABSENT);
+      return oauth(`${connection}-token`, MIN_VALIDITY_MS + 60_000);
+    });
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn(), now });
+    const prompts: string[] = [];
+    let resolved = 0;
+    const signIn = {
+      raise: (provider: string) => {
+        prompts.push(provider);
+        return { dispose: () => { resolved++; } };
+      },
+    };
+    return {
+      host,
+      broker,
+      signIn,
+      prompts,
+      resolved: () => resolved,
+      attach: (clientId: string, connection: string) => {
+        connections.set(clientId, connection);
+        host.setAuth(clientId, ANTHROPIC);
+      },
+      detach: (clientId: string) => {
+        connections.delete(clientId);
+        host.setAuth(clientId, undefined);
+      },
+    };
+  }
+  const cached = (broker: BrokeredCredentialStore) => [...(broker as unknown as { cache: Map<string, unknown> }).cache.keys()];
+
+  it('a detached device\'s entries survive while a turn pinned to it runs, and are gone once the last one settles', async () => {
+    const d = devices(Date.now);
+    d.attach('client-a', 'connection-1');
+    const settles: Array<() => void> = [];
+    const turn = () => runPinnedTurn(d.host.remote, 'p1', async () => {
+      await d.broker.read('anthropic');
+      await new Promise<void>((resolve) => settles.push(resolve));
+    });
+    const first = turn();
+    const second = turn();
+    await vi.waitFor(() => expect(settles).toHaveLength(2));
+    d.detach('client-a');
+    expect(cached(d.broker)).toEqual(['client-a\nanthropic']);
+    settles[0]!();
+    await first;
+    expect(cached(d.broker)).toEqual(['client-a\nanthropic']);
+    expect(await runPinnedTurn(d.host.remote, 'p2', () => d.broker.read('anthropic'))).toMatchObject({ access: 'connection-1-token' });
+    expect(cached(d.broker)).toEqual(['client-a\nanthropic']);
+    settles[1]!();
+    await second;
+    await vi.waitFor(() => expect(cached(d.broker)).toEqual([]));
+    expect(d.host.credentials).toHaveBeenCalledTimes(1);
+    // a turn that later pins to that device asks again
+    await expect(runPinnedTurn(d.host.remote, 'p3', () => d.broker.read('anthropic'))).rejects.toThrow(/not connected/);
+    expect(d.host.credentials).toHaveBeenCalledTimes(2);
+  });
+
+  it('an attached device keeps its entries with no turn pinned, and loses them once it detaches', async () => {
+    const d = devices(Date.now);
+    d.attach('client-a', 'connection-1');
+    await runPinnedTurn(d.host.remote, 'p1', () => d.broker.read('anthropic'));
+    expect(cached(d.broker)).toEqual(['client-a\nanthropic']);
+    d.detach('client-a');
+    expect(cached(d.broker)).toEqual([]);
+  });
+
+  it('a turn pinned to a device whose connection closes and reattaches gets its next credential from the new connection, and another device\'s attach never serves it', async () => {
+    let now = 1_000_000;
+    const d = devices(() => now);
+    d.attach('client-a', 'connection-1');
+    const reads: unknown[] = [];
+    let next!: () => void;
+    const turn = runPinnedTurn(d.host.remote, 'p1', async () => {
+      reads.push(await d.broker.read('anthropic'));
+      await new Promise<void>((resolve) => { next = resolve; });
+      reads.push(await d.broker.read('anthropic'));
+    }, d.signIn);
+    await vi.waitFor(() => expect(reads).toHaveLength(1));
+    d.detach('client-a');
+    now += 61_000;
+    next();
+    await vi.waitFor(() => expect(d.prompts).toEqual(['anthropic']));
+    d.host.setActing('client-b');
+    d.attach('client-b', 'connection-2');
+    await Promise.resolve();
+    expect(reads).toHaveLength(1);
+    expect(d.host.credentials.mock.calls.filter(([, clientId]) => clientId === 'client-b')).toEqual([]);
+    d.attach('client-a', 'connection-3');
+    await turn;
+    expect(reads).toEqual([expect.objectContaining({ access: 'connection-1-token' }), expect.objectContaining({ access: 'connection-3-token' })]);
+    expect(d.resolved()).toBe(1);
+  });
+});
+
+describe('the provider sign-ins a remote chat runs on', () => {
+  // each sign-in as pi stores it on the client: the refresh token and an id token stay there
+  const stored = (provider: string): Record<string, unknown> => ({
+    type: 'oauth',
+    access: `access-${provider}`,
+    refresh: 'REFRESH-SECRET',
+    idToken: 'ID-SECRET',
+    expires: Date.now() + HOUR,
+    ...(provider === 'github-copilot' ? { enterpriseUrl: 'ghe.example.com' } : {}),
+  });
+
+  it.each([
+    ['github-copilot', { apiKey: 'access-github-copilot', baseUrl: 'https://copilot-api.ghe.example.com' }],
+    ['kimi-coding', { headers: { Authorization: 'Bearer access-kimi-coding' } }],
+    ['meta', { apiKey: 'access-meta' }],
+    ['xai', { apiKey: 'access-xai' }],
+    ['openrouter', { apiKey: 'access-openrouter' }],
+  ])('%s: a turn on the target authenticates with the device\'s access token and the extras pi needs, never its refresh token', async (provider, auth) => {
+    const answer = oauthAnswerOf(stored(provider), Date.now());
+    expect(JSON.stringify(answer)).not.toMatch(/SECRET/);
+    const host = remoteHost(async () => answer);
+    host.setAuth('client-a', { providers: { [provider]: { type: 'oauth', expires: Date.now() + HOUR, hasKey: false, flatFee: false } } });
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    const runtime = await ModelRuntime.create({ credentials: broker, modelsPath: null, refreshOnCreate: false });
+    const resolved = await runPinnedTurn(host.remote, 'p1', () => runtime.getAuth(provider));
+    expect(resolved?.auth).toMatchObject(auth);
+    expect(host.credentials.mock.calls).toEqual([[provider, 'client-a']]);
+  });
 });

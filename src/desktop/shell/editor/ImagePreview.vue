@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n';
 import type { ShellEditorTab } from '../../preload/shell-channels';
 import { EDITOR_STORE } from './editor-store';
 import { fileSize } from './file-size';
+import LoadFailedNotice from './LoadFailedNotice.vue';
 
 const props = defineProps<{ tab: ShellEditorTab }>();
 const { t, locale } = useI18n();
@@ -15,6 +16,7 @@ const IMAGE_DATA_URL = /^data:image\/(?:png|jpeg|gif|webp|bmp|x-icon|svg\+xml);b
 const content = computed(() => (props.tab.documentId === undefined ? undefined : store.contents.value.get(props.tab.documentId)));
 const source = computed(() => (content.value?.kind === 'image' && IMAGE_DATA_URL.test(content.value.dataUrl) ? content.value.dataUrl : undefined));
 const natural = ref<{ width: number; height: number } | null>(null);
+const failed = computed(() => props.tab.documentId !== undefined && store.loadFailed(props.tab.documentId));
 const bytes = computed(() => (content.value?.kind === 'image' ? content.value.bytes : 0));
 
 function onLoad(event: Event): void {
@@ -23,12 +25,17 @@ function onLoad(event: Event): void {
 }
 
 onMounted(() => {
-  if (props.tab.documentId !== undefined) void store.load(props.tab.documentId);
+  if (props.tab.documentId !== undefined) void store.loadShown(props.tab.documentId);
 });
 </script>
 
 <template>
+  <LoadFailedNotice
+    v-if="failed"
+    :tab="tab"
+  />
   <div
+    v-else
     data-testid="image-preview"
     class="image-preview absolute inset-0 flex flex-col items-center justify-center gap-3 overflow-auto p-6"
   >

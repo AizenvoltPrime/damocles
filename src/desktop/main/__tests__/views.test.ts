@@ -28,6 +28,8 @@ let revealed: DesktopPanel[];
 let savedSessionChanges: DesktopPanel[];
 let pageEvents: string[];
 let popupOpen: boolean;
+let hostActions: string[];
+let queueActions: string[];
 
 // What PanelViews tells the browser tabs, in order; browser-tabs.test.ts covers what they do with it.
 const pages: PagesHost = {
@@ -47,6 +49,10 @@ function views(width = 1200): PanelViews {
     resourceRoot: '/app',
     pageStrings: () => ({ error: ERROR_PAGE_STRINGS, browser: BROWSER_STRINGS }),
     hostLabel: () => undefined,
+    onHostAction: (panel, action) => hostActions.push(`${panel.authority}:${action}`),
+    connection: (panel) => (panel.authority === 'local' ? undefined : { state: { phase: 'offline' }, queued: [] }),
+    onQueueAction: (panel, action) => queueActions.push(`${panel.authority}:${action.action}:${action.id}`),
+    takeCoreMessage: (_panel, type) => type === 'promptReturned',
     states,
     pages,
     log: (line) => lines.push(line),
@@ -70,6 +76,8 @@ function open(tabs: PanelViews, restore?: { panelId: string; state: unknown }): 
 
 beforeEach(() => {
   states = fakeStates();
+  hostActions = [];
+  queueActions = [];
   gaveUp = [];
   lines = [];
   restacks = 0;
@@ -407,6 +415,57 @@ describe('panel IPC', () => {
 
     panel.close();
     expect(contents.ipc.listenerCount(PANEL_CHANNELS.post)).toBe(0);
+  });
+
+  it("takes a held message's Cancel or Discard only from a remote chat's own page, well formed", () => {
+    const tabs = views();
+    const remote = tabs.create({ options: CHAT, authority: 'ssh+h1' });
+    const local = tabs.create({ options: CHAT });
+    const send = (panel: DesktopPanel, payload: unknown): void => {
+      const contents = contentsOf(panel);
+      contents.ipc.emit(PANEL_CHANNELS.queueAction, { sender: contents, senderFrame: { url: panel.pageUrl, parent: null } }, payload);
+    };
+    send(remote, { action: 'cancel', id: 'q1' });
+    send(remote, { action: 'discard', id: 'q2', extra: 'ignored' });
+    send(remote, { action: 'send', id: 'q3' });
+    send(remote, { action: 'cancel', id: 'x'.repeat(65) });
+    send(remote, 'cancel');
+    send(local, { action: 'cancel', id: 'q1' });
+    expect(queueActions).toEqual(['ssh+h1:cancel:q1', 'ssh+h1:discard:q2']);
+    expect(lines.filter((line) => line.includes('dropped a malformed queue action'))).toHaveLength(4);
+  });
+
+  it('gives a remote chat page its connection at init and keeps from it the core messages main takes', () => {
+    const tabs = views();
+    const remote = tabs.create({ options: CHAT, authority: 'ssh+h1' });
+    const contents = contentsOf(remote);
+    const init = { sender: contents, senderFrame: { url: remote.pageUrl, parent: null }, returnValue: undefined as unknown };
+    contents.ipc.emit(PANEL_CHANNELS.init, init);
+    expect(init.returnValue).toMatchObject({ connection: { state: { phase: 'offline' }, queued: [] } });
+    remote.postJson('promptReturned', '{"type":"promptReturned"}');
+    remote.postJson('userMessage', '{"type":"userMessage"}');
+    expect(contents.send).toHaveBeenCalledWith(PANEL_CHANNELS.message, '{"type":"userMessage"}');
+    expect(contents.send).not.toHaveBeenCalledWith(PANEL_CHANNELS.message, '{"type":"promptReturned"}');
+  });
+
+  it("takes a host action only from a remote chat's own page, and only Reconnect, Sign in, Show log, Edit host or an update banner's switch", () => {
+    const tabs = views();
+    const remote = tabs.create({ options: CHAT, authority: 'ssh+h1' });
+    const local = tabs.create({ options: CHAT });
+    const send = (panel: DesktopPanel, action: unknown): void => {
+      const contents = contentsOf(panel);
+      contents.ipc.emit(PANEL_CHANNELS.hostAction, { sender: contents, senderFrame: { url: panel.pageUrl, parent: null } }, action);
+    };
+    send(remote, 'reconnect');
+    send(remote, 'signIn');
+    send(remote, 'showLog');
+    send(remote, 'editHost');
+    send(remote, 'switchWhenIdle');
+    send(remote, 'switchNow');
+    send(remote, 'disconnect');
+    send(local, 'reconnect');
+    expect(hostActions).toEqual(['ssh+h1:reconnect', 'ssh+h1:signIn', 'ssh+h1:showLog', 'ssh+h1:editHost', 'ssh+h1:switchWhenIdle', 'ssh+h1:switchNow']);
+    expect(lines.filter((line) => line.includes('dropped a host action'))).toHaveLength(2);
   });
 
   it('reads the saved session from the restore state, then from each webview state, and reports only a change of it', () => {

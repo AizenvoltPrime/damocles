@@ -101,6 +101,31 @@ function chatLine(chat: WaitingChat, t: Translate): string {
   return text === '' ? t('A message with images only') : visibleText(clip(text, EXCERPT_LENGTH));
 }
 
+export interface RemoteTerminalRelease {
+  // the removed project's terminal tabs
+  readonly tabs: readonly string[];
+  // ends a run on the host; undefined once the host is no longer connected
+  readonly endRun: ((runId: string) => void) | undefined;
+  readonly kill: (tabId: string) => void;
+  readonly detach: (tabId: string) => void;
+  readonly log: (line: string) => void;
+}
+
+/**
+ * A removed remote project's terminal tabs: End terminals ends its runs on the host and their tabs, Keep running detaches
+ * them. A host that dropped after the question keeps them running, as one that was not connected when asked.
+ */
+export function releaseRemoteTerminals(answer: { readonly end: boolean; readonly runs: readonly string[] }, release: RemoteTerminalRelease): void {
+  const { endRun } = release;
+  if (answer.end && endRun) {
+    for (const runId of answer.runs) endRun(runId);
+    for (const id of release.tabs) release.kill(id);
+    return;
+  }
+  if (answer.end) release.log(`[shell] the host is no longer connected; its ${answer.runs.length} terminals of the removed project keep running there`);
+  for (const id of release.tabs) release.detach(id);
+}
+
 // At most max code points, the last one an ellipsis when cut.
 function clip(text: string, max: number): string {
   const points = [...text];

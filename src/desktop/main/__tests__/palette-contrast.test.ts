@@ -99,7 +99,7 @@ describe('desktop palette contrast', () => {
     expect(colorMix(parse('#000000'), 0.5, parse('#ffffff')).map((c) => Math.round(c * 255))).toEqual([128, 128, 128, 255]);
   });
 
-  // tokens.css picks VS Code's --d-on-danger and --d-on-warning the same way: white below luminance 0.179, else black.
+  // tokens.css picks VS Code's --d-on-danger, --d-on-warning, --d-on-success and --d-on-info the same way: white below luminance 0.179, else black.
   it.each(['#f85149', '#f48771', '#a1260d', '#b5200d', '#cca700', '#bf8803', '#ffd370', '#895503'])('the VS Code foreground on a solid status fill reaches AA on %s', (fill) => {
     const on = luminance(parse(fill)) < 0.179 ? '#ffffff' : '#000000';
     expect(contrast(on, fill)).toBeGreaterThanOrEqual(AA);
@@ -113,10 +113,8 @@ describe('desktop palette contrast', () => {
       expect(failures(palette, [...TEXT_TOKENS, ...SYNTAX_TOKENS], SURFACES)).toEqual([]);
     });
 
-    it('text on an accent, danger or warning fill reaches AA', () => {
-      expect(failures(palette, ['--d-on-accent'], ['--d-accent'])).toEqual([]);
-      expect(failures(palette, ['--d-on-danger'], ['--d-danger'])).toEqual([]);
-      expect(failures(palette, ['--d-on-warning'], ['--d-warning'])).toEqual([]);
+    it.each(TONES)('text on a solid %s fill reaches AA', (tone) => {
+      expect(failures(palette, [`--d-on-${tone}`], [`--d-${tone}`])).toEqual([]);
     });
 
     it.each(TONES)('--d-%s-text reaches AA on its tone tinted up to MAX_TINT over every surface', (tone) => {

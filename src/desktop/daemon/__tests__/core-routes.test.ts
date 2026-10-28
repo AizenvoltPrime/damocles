@@ -2,7 +2,7 @@ import { runInNewContext } from 'node:vm';
 import { setFlagsFromString } from 'node:v8';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GitError } from '../../../core/scm/errors';
-import { createCoreEndpoint, createLoopback, createMainEndpoint, type MainEndpoint } from '../../core-protocol';
+import { createCoreEndpoint, createLoopback, createMainEndpoint, processActor, type MainEndpoint } from '../../core-protocol';
 import { CLIENT_STATE_KEYS, CORE_TO_MAIN, MAIN_TO_CORE, type ChatEntry, type StateScope } from '../../core-protocol/messages';
 import { LANGUAGE_PREFERENCE_KEY } from '../../../shared/language-preference';
 import { OPENAI_PREFER_API_KEY_STATE } from '../../../core/pi-session/openai-auth';
@@ -19,6 +19,7 @@ import {
   MAIN_PANEL_OP_ROUTES,
   MAIN_REQUEST_ROUTES,
   MIRROR_TOPIC_ROUTES,
+  type ClientMirrors,
   type CoreRouter,
 } from '../core-routes';
 import type { DaemonState } from '../daemon-state';
@@ -66,20 +67,24 @@ interface Harness {
   readonly registry: RunRegistry;
   readonly reload: ReturnType<typeof vi.fn>;
   readonly secrets: Map<string, string | undefined>;
-  client(id: string, hostId?: string): { readonly main: MainEndpoint; readonly close: ReturnType<typeof vi.fn>; readonly raw: { post(message: unknown): void }; detach(): void };
+  readonly mirrors: ClientMirrors;
+  // clientId: the hello's, the connection id when absent
+  // lose and resume: the connection enters and leaves its reconnection grace
+  client(id: string, hostId?: string, drained?: () => Promise<void>, clientId?: string): { readonly main: MainEndpoint; readonly close: ReturnType<typeof vi.fn>; readonly raw: { post(message: unknown): void }; detach(): void; lose(): void; resume(): void };
 }
 
 let current: Harness | undefined;
 
 function setUp(options: { e2eHooks?: boolean } = {}): Harness {
   const coreLoop = createLoopback();
-  const daemonMain = createMainEndpoint(coreLoop.main, quiet);
-  const core = createCoreEndpoint(coreLoop.core, quiet);
+  const daemonMain = createMainEndpoint(coreLoop.main, quiet, undefined, processActor);
+  const core = createCoreEndpoint(coreLoop.core, quiet, undefined, processActor);
   const state = memoryState();
   const registry = createRunRegistry();
   const reload = vi.fn();
   const secrets = new Map<string, string | undefined>();
-  const router = createCoreRouter({ core: daemonMain, state, registry, mirrors: createClientMirrors(), secrets, e2eHooks: options.e2eHooks ?? false, reload, log: quiet });
+  const mirrors = createClientMirrors();
+  const router = createCoreRouter({ core: daemonMain, state, registry, mirrors, secrets, e2eHooks: options.e2eHooks ?? false, reload, log: quiet });
   const harness: Harness = {
     core,
     router,
@@ -87,12 +92,23 @@ function setUp(options: { e2eHooks?: boolean } = {}): Harness {
     registry,
     reload,
     secrets,
-    client: (id, hostId = 'h1') => {
+    mirrors,
+    client: (id, hostId = 'h1', drained = () => Promise.resolve(), clientId = id) => {
       const loop = createLoopback();
       const close = vi.fn();
       const main = createMainEndpoint(loop.main, quiet, (error) => { throw error; });
-      const attached = router.attach({ id, hostId, transport: loop.core, mirrors: emptyMirrors, close });
-      return { main, close, raw: loop.main, detach: () => attached.dispose() };
+      let lost = false;
+      const lostChange = new Set<() => void>();
+      const setLost = (value: boolean): void => {
+        lost = value;
+        for (const listener of [...lostChange]) listener();
+      };
+      const onLostChange = (listener: () => void): { dispose(): void } => {
+        lostChange.add(listener);
+        return { dispose: () => { lostChange.delete(listener); } };
+      };
+      const attached = router.attach({ id, clientId, hostId, transport: loop.core, mirrors: emptyMirrors, close, drained, lost: () => lost, onLostChange });
+      return { main, close, raw: loop.main, detach: () => attached.dispose(), lose: () => setLost(true), resume: () => setLost(false) };
     },
   };
   current = harness;
@@ -156,6 +172,20 @@ describe('core routes', () => {
     // a client's message makes it the acting one
     await first.main.request('catalog.list', { projectKey: '/srv/app', complete: false }).catch(() => undefined);
     expect(await h.core.request('notifications.show', { severity: 'info', message: 'hi', actions: [] })).toBe('first');
+  });
+
+  it('publish a client that attached fresh after a drop as the acting client before its first message, so core refreshes for it', async () => {
+    const h = setUp();
+    const seen: string[] = [];
+    h.core.onMirror('actingClient', (patch) => seen.push(`acting:${(patch as { clientId?: string }).clientId ?? 'none'}`));
+    const before = h.client('connection-1');
+    await before.main.request('catalog.list', { projectKey: '/srv/app', complete: false }).catch(() => undefined);
+    // the daemon no longer held the dropped connection: the same device attaches again under a new connection id
+    before.detach();
+    const after = h.client('connection-2');
+    await after.main.request('catalog.list', { projectKey: '/srv/app', complete: false }).catch(() => undefined);
+    await flush();
+    expect(seen.filter((entry) => entry !== 'acting:none')).toEqual(['acting:connection-1', 'acting:connection-2']);
   });
 
   it('read editor.readText with no client only inside an open project', async () => {
@@ -260,7 +290,7 @@ describe('core routes', () => {
     const main = createMainEndpoint(loop.main, quiet, (error) => { throw error; });
     for (const topic of ['folderTargets', 'worktrees', 'chats', 'scm'] as const) main.onMirror(topic, (patch) => seen.push([topic, patch]));
     const close = vi.fn();
-    h.router.attach({ id: 'c2', hostId: 'h2', transport: loop.core, mirrors: emptyMirrors, close });
+    h.router.attach({ id: 'c2', clientId: 'c2', hostId: 'h2', transport: loop.core, mirrors: emptyMirrors, close, drained: () => Promise.resolve(), lost: () => false, onLostChange: () => ({ dispose: () => undefined }) });
     expect(seen.map(([topic]) => topic)).toEqual(['folderTargets', 'worktrees', 'scm', 'scm', 'scm', 'scm']);
     expect(close).not.toHaveBeenCalled();
 
@@ -269,7 +299,7 @@ describe('core routes', () => {
     const third = createLoopback();
     const thirdMain = createMainEndpoint(third.main, quiet);
     thirdMain.onMirror('chats', (patch) => chats.push(patch));
-    const attached = h.router.attach({ id: 'c1', hostId: 'h1', transport: third.core, mirrors: emptyMirrors, close: vi.fn() });
+    const attached = h.router.attach({ id: 'c1', clientId: 'c1', hostId: 'h1', transport: third.core, mirrors: emptyMirrors, close: vi.fn(), drained: () => Promise.resolve(), lost: () => false, onLostChange: () => ({ dispose: () => undefined }) });
     expect(chats).toEqual([]);
     attached.dispose();
   });
@@ -336,7 +366,7 @@ describe('core routes', () => {
     const h = setUp();
     const attach = (): WeakRef<object> => {
       const loop = createLoopback();
-      const attached = h.router.attach({ id: 'gone', hostId: 'h1', transport: loop.core, mirrors: emptyMirrors, close: () => undefined });
+      const attached = h.router.attach({ id: 'gone', clientId: 'gone', hostId: 'h1', transport: loop.core, mirrors: emptyMirrors, close: () => undefined, drained: () => Promise.resolve(), lost: () => false, onLostChange: () => ({ dispose: () => undefined }) });
       attached.dispose();
       return new WeakRef(loop.core);
     };
@@ -359,6 +389,20 @@ describe('core routes', () => {
     expect(await h.core.request('notifications.show', { severity: 'info', message: 'hi', actions: [] })).toBe('ok');
   });
 
+  it('answer views.drained once the viewing client\'s core channel drained, and at once for a view no client shows', async () => {
+    const h = setUp();
+    let release!: () => void;
+    h.client('c1', 'h1', () => new Promise<void>((resolve) => (release = resolve)));
+    h.core.postPanel('view-1', 'create', { kind: 'chat', title: 'Replay', localResourceRoots: [] });
+    await expect(h.core.request('views.drained', { viewId: 'view-9' })).resolves.toBeUndefined();
+    let answered = false;
+    void h.core.request('views.drained', { viewId: 'view-1' }).then(() => { answered = true; });
+    await flush();
+    expect(answered).toBe(false);
+    release();
+    await vi.waitFor(() => expect(answered).toBe(true));
+  });
+
   it('drive the run registry only from chat.activity and chat.turnSettled, under the chat\'s title', async () => {
     const h = setUp();
     h.client('c1');
@@ -376,11 +420,25 @@ describe('core routes', () => {
     expect(h.registry.isEmpty()).toBe(true);
   });
 
+  it('give a run to the client whose work started it, else to the acting client', async () => {
+    const h = setUp();
+    h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    h.client('connection-2', 'h1', () => Promise.resolve(), 'device-b');
+    const running = { state: 'running', pendingKinds: [], pendingPrompts: [], background: false } as const;
+    processActor.run('device-a', () => h.core.emit('chat.activity', { panelId: 'panel-1', activity: running }));
+    h.core.emit('chat.activity', { panelId: 'panel-2', activity: running });
+    await flush();
+    expect(h.registry.ownRuns('device-a').map((run) => run.id)).toEqual(['panel-1']);
+    expect(h.registry.ownRuns('device-b').map((run) => run.id)).toEqual(['panel-2']);
+  });
+
   it('keep a detached panel while its turn runs and dispose it once the turn settles', async () => {
     const h = setUp();
     const client = h.client('c1');
     const disposed: unknown[] = [];
-    h.core.onPanel((viewId, envelope) => disposed.push([viewId, envelope.op, envelope.payload]));
+    h.core.onPanel((viewId, envelope) => {
+      if (envelope.op === 'disposed') disposed.push([viewId, envelope.op, envelope.payload]);
+    });
     h.core.serve('chats.restore', () => undefined);
     await client.main.request('chats.restore', { viewId: 'view-1' });
     h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
@@ -395,7 +453,9 @@ describe('core routes', () => {
     const h = setUp();
     const client = h.client('c1');
     const ops: unknown[] = [];
-    h.core.onPanel((viewId, envelope) => ops.push([viewId, envelope.op, envelope.payload]));
+    h.core.onPanel((viewId, envelope) => {
+      if (envelope.op === 'disposed') ops.push([viewId, envelope.op, envelope.payload]);
+    });
     h.core.serve('chats.restore', () => undefined);
     const unload = vi.fn(() => true);
     h.core.serve('chats.unload', unload);
@@ -432,7 +492,7 @@ describe('core routes', () => {
     again.main.onMirror('chats', (patch) => chats.push(patch));
     expect(await again.main.request('views.join', { viewId: 'view-9', viewKey: 'unknown' })).toBeNull();
     expect(await again.main.request('views.join', { viewId: 'view-2', viewKey: 'token-1' })).toEqual({ panelId: 'panel-1' });
-    expect(joins).toEqual([{ viewId: 'view-1', viewKey: 'token-1' }]);
+    expect(joins).toEqual([{ viewId: 'view-1', viewKey: 'token-1', joining: 'view-2' }]);
     expect(chats).toEqual([{ panelId: 'panel-1', entry: { ...entry('panel-1', 'view-1'), viewId: 'view-2' } }]);
     h.core.postPanel('view-1', 'post', { type: 'partial', json: '{}' });
     expect(posted).toEqual([['view-2', 'post']]);
@@ -494,7 +554,7 @@ describe('a client the wire refuses a message for', () => {
       },
       onMessage: loop.core.onMessage,
     };
-    h.router.attach({ id, hostId: 'h1', transport, mirrors: emptyMirrors, close });
+    h.router.attach({ id, clientId: id, hostId: 'h1', transport, mirrors: emptyMirrors, close, drained: () => Promise.resolve(), lost: () => false, onLostChange: () => ({ dispose: () => undefined }) });
     return { main, close };
   }
 
@@ -542,5 +602,401 @@ describe('a client the wire refuses a message for', () => {
     await bounded.main.request('chats.restore', { viewId: 'view-1' });
     h.core.postPanel('view-1', 'post', { type: 'x', json: OVERSIZED });
     expect(bounded.close).toHaveBeenCalledOnce();
+  });
+});
+
+describe('several clients', () => {
+  // client a shows panel-1 in view-1 (its page holds token-1); client b joins it by its stored session
+  async function shared(h: Harness, drainedB?: () => Promise<void>) {
+    h.core.serve('chats.restore', () => undefined);
+    const joins: Array<Record<string, unknown>> = [];
+    h.core.serve('views.join', (params) => {
+      joins.push(params);
+      return { panelId: 'panel-1' };
+    });
+    const a = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    await a.main.request('chats.restore', { viewId: 'view-1' });
+    a.main.postPanel('view-1', 'message', { message: { type: 'ready', panelToken: 'token-1' } });
+    h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
+    const b = h.client('connection-2', 'h1', drainedB, 'device-b');
+    expect(await b.main.request('views.join', { viewId: 'view-b', viewKey: 'token-of-b', sessionId: 'S1' })).toEqual({ panelId: 'panel-1' });
+    const keyOfB = joins[0]!['joining'] as string;
+    return { a, b, joins, keyOfB };
+  }
+
+  it('let another device join a panel a client views, by the stored session it holds, with the panel\'s own token', async () => {
+    const h = setUp();
+    const { b, joins } = await shared(h);
+    expect(joins).toEqual([{ viewId: 'view-1', viewKey: 'token-1', joining: expect.stringMatching(/^view-\d+$/) }]);
+    const chats: unknown[] = [];
+    b.main.onMirror('chats', (patch) => chats.push(patch));
+    h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
+    expect(chats).toEqual([{ panelId: 'panel-1', entry: { ...entry('panel-1', 'view-1'), viewId: 'view-b' } }]);
+  });
+
+  it('fan panel ops out to every view, a keyed post to that view alone and an except post to the others', async () => {
+    const h = setUp();
+    const { a, b, keyOfB } = await shared(h);
+    const seen: Array<[string, string, string, unknown]> = [];
+    a.main.onPanel((viewId, envelope) => seen.push(['a', viewId, envelope.op, envelope.payload]));
+    b.main.onPanel((viewId, envelope) => seen.push(['b', viewId, envelope.op, envelope.payload]));
+    h.core.postPanel('view-1', 'setTitle', { title: 'Shared' });
+    h.core.postPanel('view-1', 'post', { type: 'sessionCleared', json: '{}', viewKey: keyOfB });
+    h.core.postPanel('view-1', 'post', { type: 'processing', json: '{}', except: [keyOfB] });
+    h.core.postPanel('view-1', 'post', { type: 'statusUpdate', json: '{}' });
+    expect(seen).toEqual([
+      ['a', 'view-1', 'setTitle', { title: 'Shared' }],
+      ['b', 'view-b', 'setTitle', { title: 'Shared' }],
+      ['b', 'view-b', 'post', { type: 'sessionCleared', json: '{}' }],
+      ['a', 'view-1', 'post', { type: 'processing', json: '{}' }],
+      ['a', 'view-1', 'post', { type: 'statusUpdate', json: '{}' }],
+      ['b', 'view-b', 'post', { type: 'statusUpdate', json: '{}' }],
+    ]);
+  });
+
+  it('stamp each message with the key of the view that sent it, over any key a client put there', async () => {
+    const h = setUp();
+    const { a, b, keyOfB } = await shared(h);
+    const messages: unknown[] = [];
+    h.core.onPanel((viewId, envelope) => messages.push([viewId, envelope.payload]));
+    b.main.postPanel('view-b', 'message', { message: { type: 'sendMessage' }, viewKey: 'view-forged' });
+    a.main.postPanel('view-1', 'message', { message: { type: 'sendMessage' } });
+    const keyOfA = (messages[1] as [string, { viewKey?: string }])[1].viewKey;
+    expect(messages).toEqual([
+      ['view-1', { message: { type: 'sendMessage' }, viewKey: keyOfB }],
+      ['view-1', { message: { type: 'sendMessage' }, viewKey: keyOfA }],
+    ]);
+    expect(typeof keyOfA).toBe('string');
+    expect(keyOfA).not.toBe(keyOfB);
+    // the key a's message carried is the one core reaches a's view alone by
+    const seen: string[] = [];
+    a.main.onPanel(() => seen.push('a'));
+    b.main.onPanel(() => seen.push('b'));
+    h.core.postPanel('view-1', 'post', { type: 'x', json: '{}', viewKey: keyOfA! });
+    expect(seen).toEqual(['a']);
+  });
+
+  it('keep a panel another client still shows when one closes or detaches from it', async () => {
+    const h = setUp();
+    const { a, b } = await shared(h);
+    const ops: unknown[] = [];
+    h.core.onPanel((viewId, envelope) => {
+      if (envelope.op === 'disposed') ops.push([viewId, envelope.op, envelope.payload]);
+    });
+    b.main.postPanel('view-b', 'disposed', { reason: 'user' });
+    const c = h.client('connection-3', 'h1', () => Promise.resolve(), 'device-c');
+    expect(await c.main.request('views.join', { viewId: 'view-c', viewKey: 'token-1' })).toEqual({ panelId: 'panel-1' });
+    a.detach();
+    expect(ops).toEqual([]);
+    c.main.postPanel('view-c', 'disposed', { reason: 'user' });
+    expect(ops).toEqual([['view-1', 'disposed', { reason: 'user' }]]);
+  });
+
+  it('answer a view\'s keyed views.drained once that view\'s client drained, whatever the other clients\' queues', async () => {
+    const h = setUp();
+    let releaseB!: () => void;
+    const backlog = new Promise<void>((resolve) => (releaseB = resolve));
+    const { keyOfB } = await shared(h, () => backlog);
+    let keyed = false;
+    let everyone = false;
+    void h.core.request('views.drained', { viewId: 'view-1', viewKey: keyOfB }).then(() => { keyed = true; });
+    void h.core.request('views.drained', { viewId: 'view-1' }).then(() => { everyone = true; });
+    await flush();
+    expect([keyed, everyone]).toEqual([false, false]);
+    releaseB();
+    await vi.waitFor(() => expect([keyed, everyone]).toEqual([true, true]));
+  });
+
+  it("answer a's keyed views.drained at once while only b's channel is backed up", async () => {
+    const h = setUp();
+    const { a } = await shared(h, () => new Promise<void>(() => undefined));
+    const keys: string[] = [];
+    h.core.onPanel((_viewId, envelope) => {
+      const key = (envelope.payload as { viewKey?: string }).viewKey;
+      if (key !== undefined) keys.push(key);
+    });
+    a.main.postPanel('view-1', 'message', { message: { type: 'x' } });
+    await expect(h.core.request('views.drained', { viewId: 'view-1', viewKey: keys[0]! })).resolves.toBeUndefined();
+  });
+
+  it('close only the unloading client\'s view of a panel another client still shows, without asking core', async () => {
+    const h = setUp();
+    const { a, b } = await shared(h);
+    const unload = vi.fn(() => true);
+    h.core.serve('chats.unload', unload);
+    const toCore: Array<[string, string]> = [];
+    h.core.onPanel((viewId, envelope) => toCore.push([viewId, envelope.op]));
+    const toA: unknown[] = [];
+    const toB: unknown[] = [];
+    a.main.onPanel((viewId, envelope) => toA.push([viewId, envelope.op]));
+    b.main.onPanel((viewId, envelope) => toB.push([viewId, envelope.op]));
+    const chatsOfA: unknown[] = [];
+    a.main.onMirror('chats', (patch) => chatsOfA.push(patch));
+    expect(await a.main.request('chats.unload', { viewId: 'view-1', empty: false })).toBe(true);
+    expect(unload).not.toHaveBeenCalled();
+    expect(toA).toEqual([['view-1', 'close']]);
+    expect(chatsOfA).toEqual([{ panelId: 'panel-1' }]);
+    expect(toCore.filter(([, op]) => op === 'disposed')).toEqual([]);
+    h.core.postPanel('view-1', 'post', { type: 'x', json: '{}' });
+    expect(toB).toEqual([['view-b', 'post']]);
+    expect(toA).toEqual([['view-1', 'close']]);
+    // the last view's unload is core's to decide
+    expect(await b.main.request('chats.unload', { viewId: 'view-b', empty: false })).toBe(true);
+    expect(unload).toHaveBeenCalledWith({ viewId: 'view-1', empty: false }, expect.anything());
+  });
+
+  it('tell core a view is gone when its client lets go of a panel that stays, so core forgets its key', async () => {
+    const h = setUp();
+    const { b, keyOfB } = await shared(h);
+    const toCore: unknown[] = [];
+    h.core.onPanel((viewId, envelope) => toCore.push([viewId, envelope.op, envelope.payload]));
+    b.main.postPanel('view-b', 'disposed', { reason: 'detach' });
+    expect(toCore).toEqual([['view-1', 'viewDetached', { viewKey: keyOfB }]]);
+  });
+
+  it('drop a client\'s viewDetached, which only the daemon sends', async () => {
+    const h = setUp();
+    const { a } = await shared(h);
+    const toCore: unknown[] = [];
+    h.core.onPanel((viewId, envelope) => toCore.push([viewId, envelope.op]));
+    a.main.postPanel('view-1', 'viewDetached', { viewKey: 'view-1' });
+    expect(toCore).toEqual([]);
+  });
+
+  it('send a binary post with a view key to that view alone and one with except to the others, without either field', async () => {
+    const h = setUp();
+    const { a, b, keyOfB } = await shared(h);
+    const seen: unknown[] = [];
+    a.main.onPanel((_viewId, envelope) => seen.push(['a', envelope.op, envelope.payload]));
+    b.main.onPanel((_viewId, envelope) => seen.push(['b', envelope.op, envelope.payload]));
+    h.core.postPanel('view-1', 'postBinary', { message: { type: 'frame', n: 1 }, viewKey: keyOfB });
+    h.core.postPanel('view-1', 'postBinary', { message: { type: 'frame', n: 2 }, except: [keyOfB] });
+    expect(seen).toEqual([
+      ['b', 'postBinary', { message: { type: 'frame', n: 1 } }],
+      ['a', 'postBinary', { message: { type: 'frame', n: 2 } }],
+    ]);
+  });
+
+  it('refuse a restore of a view another client shows, which only views.join joins', async () => {
+    const h = setUp();
+    const { b } = await shared(h);
+    let restores = 0;
+    h.core.serve('chats.restore', () => {
+      restores++;
+    });
+    await expect(b.main.request('chats.restore', { viewId: 'view-1' })).rejects.toThrow('belongs to another client');
+    expect(restores).toBe(0);
+  });
+
+  it('keep a view a client already shows when its rejoin finds no panel or fails', async () => {
+    const h = setUp();
+    const { a } = await shared(h);
+    const toA: unknown[] = [];
+    a.main.onPanel((viewId, envelope) => toA.push([viewId, envelope.op]));
+    h.core.serve('views.join', () => null);
+    expect(await a.main.request('views.join', { viewId: 'view-1', viewKey: 'token-1' })).toBeNull();
+    h.core.serve('views.join', () => {
+      throw new Error('core failed');
+    });
+    await expect(a.main.request('views.join', { viewId: 'view-1', viewKey: 'token-1' })).rejects.toThrow('core failed');
+    h.core.postPanel('view-1', 'post', { type: 'x', json: '{}' });
+    expect(toA).toEqual([['view-1', 'post']]);
+  });
+});
+
+describe('a client inside its reconnection grace', () => {
+  it('is absent for a credential ask, and answers again once it resumed', async () => {
+    const h = setUp();
+    const a = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    a.main.serve('user.credentials', () => ({ type: 'api_key' as const, key: 'from-a' }));
+    a.lose();
+    await expect(h.core.request('user.credentials', { provider: 'anthropic', clientId: 'device-a' })).rejects.toThrow('credential-client-absent');
+    a.resume();
+    expect(await h.core.request('user.credentials', { provider: 'anthropic', clientId: 'device-a' })).toEqual({ type: 'api_key', key: 'from-a' });
+  });
+
+  it('makes a credential ask it was answering fail as absent the moment it is lost', async () => {
+    const h = setUp();
+    const a = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    let asked!: () => void;
+    const pending = new Promise<void>((resolve) => (asked = resolve));
+    a.main.serve('user.credentials', async () => {
+      asked();
+      return new Promise<never>(() => undefined);
+    });
+    const answer = h.core.request('user.credentials', { provider: 'anthropic', clientId: 'device-a' });
+    await pending;
+    a.lose();
+    await expect(answer).rejects.toThrow('credential-client-absent');
+  });
+
+  it('reads as detached to core while lost and attached again on its resume, so core re-asks a turn waiting for it', async () => {
+    const h = setUp();
+    const auth: unknown[] = [];
+    h.core.onMirror('clientAuth', (patch) => auth.push(patch));
+    const a = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    await flush();
+    auth.length = 0;
+    a.lose();
+    await flush();
+    expect(auth).toEqual([{ clientId: 'device-a' }]);
+    a.resume();
+    await flush();
+    expect(auth).toEqual([{ clientId: 'device-a' }, { clientId: 'device-a', value: emptyMirrors.clientAuth }]);
+  });
+
+  it('is not waited for by an unkeyed views.drained, also when it is lost while the ask waits', async () => {
+    const h = setUp();
+    const { b } = await (async () => {
+      h.core.serve('chats.restore', () => undefined);
+      h.core.serve('views.join', () => ({ panelId: 'panel-1' }));
+      const first = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+      await first.main.request('chats.restore', { viewId: 'view-1' });
+      first.main.postPanel('view-1', 'message', { message: { type: 'ready', panelToken: 'token-1' } });
+      h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
+      const second = h.client('connection-2', 'h1', () => new Promise<void>(() => undefined), 'device-b');
+      await second.main.request('views.join', { viewId: 'view-b', viewKey: 'token-1' });
+      return { b: second };
+    })();
+    b.lose();
+    await expect(h.core.request('views.drained', { viewId: 'view-1' })).resolves.toBeUndefined();
+    b.resume();
+    let answered = false;
+    void h.core.request('views.drained', { viewId: 'view-1' }).then(() => { answered = true; });
+    await flush();
+    expect(answered).toBe(false);
+    b.lose();
+    await vi.waitFor(() => expect(answered).toBe(true));
+  });
+
+  it('is not waited for by a keyed views.drained of its view, so a join to it ends while it is away', async () => {
+    const h = setUp();
+    h.core.serve('chats.restore', () => undefined);
+    const joins: Array<Record<string, unknown>> = [];
+    h.core.serve('views.join', (params) => {
+      joins.push(params);
+      return { panelId: 'panel-1' };
+    });
+    const a = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    await a.main.request('chats.restore', { viewId: 'view-1' });
+    a.main.postPanel('view-1', 'message', { message: { type: 'ready', panelToken: 'token-1' } });
+    h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
+    const b = h.client('connection-2', 'h1', () => new Promise<void>(() => undefined), 'device-b');
+    await b.main.request('views.join', { viewId: 'view-b', viewKey: 'token-1' });
+    const keyOfB = joins[0]!['joining'] as string;
+    let answered = false;
+    void h.core.request('views.drained', { viewId: 'view-1', viewKey: keyOfB }).then(() => { answered = true; });
+    await flush();
+    expect(answered).toBe(false);
+    b.lose();
+    await vi.waitFor(() => expect(answered).toBe(true));
+    await expect(h.core.request('views.drained', { viewId: 'view-1', viewKey: keyOfB })).resolves.toBeUndefined();
+  });
+
+  it('is left out of the clientAuth and actingClient mirrors a restarted core starts from, and back in them on its resume', async () => {
+    const h = setUp();
+    const b = h.client('connection-2', 'h1', () => Promise.resolve(), 'device-b');
+    const a = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    await flush();
+    expect(h.mirrors.actingClient).toEqual({ clientId: 'device-a' });
+    a.lose();
+    expect([...h.mirrors.clientAuth.keys()]).toEqual(['device-b']);
+    expect(h.mirrors.actingClient).toEqual({ clientId: 'device-b' });
+    b.lose();
+    expect([...h.mirrors.clientAuth.keys()]).toEqual([]);
+    expect(h.mirrors.actingClient).toEqual({});
+    a.resume();
+    expect(h.mirrors.clientAuth.get('device-a')).toEqual(emptyMirrors.clientAuth);
+    expect(h.mirrors.actingClient).toEqual({ clientId: 'device-a' });
+  });
+
+  it('gets no request while it is the actor or acting client: another attached client does, else none', async () => {
+    const h = setUp();
+    const a = h.client('c1');
+    const b = h.client('c2');
+    a.main.serve('notifications.show', () => 'a');
+    b.main.serve('notifications.show', () => 'b');
+    const ask = (): Promise<unknown> => processActor.run('c1', () => h.core.request('notifications.show', { severity: 'info', message: 'hi', actions: [] }));
+    expect(await ask()).toBe('a');
+    a.lose();
+    expect(await ask()).toBe('b');
+    b.lose();
+    expect(await ask()).toBeUndefined();
+  });
+});
+
+describe('the actor of core\'s work', () => {
+  it('routes an acting-client event to the client whose work core emitted it from, not the client that acted last', async () => {
+    const h = setUp();
+    const a = h.client('c1');
+    const b = h.client('c2');
+    const seen: string[] = [];
+    a.main.onEvent('window.toggleTerminal', () => seen.push('a'));
+    b.main.onEvent('window.toggleTerminal', () => seen.push('b'));
+    processActor.run('c1', () => h.core.emit('window.toggleTerminal', {}));
+    h.core.emit('window.toggleTerminal', {});
+    await flush();
+    expect(seen).toEqual(['a', 'b']);
+  });
+
+  it('reloads core outside the actor of the client whose request asked for it', async () => {
+    const h = setUp();
+    h.client('c1');
+    let actor: string | undefined = 'unset';
+    h.reload.mockImplementation(() => {
+      actor = processActor.current();
+    });
+    await processActor.run('c1', () => h.core.request('lifecycle.reload', {}));
+    await flush();
+    expect(h.reload).toHaveBeenCalledTimes(1);
+    expect(actor).toBeUndefined();
+  });
+
+  it('keeps core\'s secrets in the namespace of the client whose work stores them, not the acting client\'s', async () => {
+    const h = setUp();
+    const a = h.client('c1', 'host-a');
+    const b = h.client('c2', 'host-b');
+    const stored: string[] = [];
+    a.main.serve('secrets.store', ({ key }) => { stored.push(`a:${key}`); });
+    b.main.serve('secrets.store', ({ key }) => { stored.push(`b:${key}`); });
+    await processActor.run('c1', () => h.core.request('secrets.store', { key: 'mcp.token', value: 'v' }));
+    expect(stored).toEqual(['a:remote/host-a/mcp.token']);
+  });
+});
+
+describe('a device that attaches again', () => {
+  it('is served user.credentials on its new connection, never by another device, and keeps its values when its old connection closes late', async () => {
+    const h = setUp();
+    const auth: unknown[] = [];
+    h.core.onMirror('clientAuth', (patch) => auth.push(patch));
+    const old = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    old.main.serve('user.credentials', () => ({ type: 'api_key' as const, key: 'from-old' }));
+    const other = h.client('connection-2', 'h1', () => Promise.resolve(), 'device-b');
+    other.main.serve('user.credentials', () => ({ type: 'api_key' as const, key: 'from-b' }));
+    const fresh = h.client('connection-3', 'h1', () => Promise.resolve(), 'device-a');
+    fresh.main.serve('user.credentials', () => ({ type: 'api_key' as const, key: 'from-new' }));
+    expect(await h.core.request('user.credentials', { provider: 'anthropic', clientId: 'device-a' })).toEqual({ type: 'api_key', key: 'from-new' });
+    auth.length = 0;
+    // the replaced connection's late close leaves the newer one's values alone
+    old.detach();
+    expect(auth).toEqual([]);
+    fresh.detach();
+    await expect(h.core.request('user.credentials', { provider: 'anthropic', clientId: 'device-a' })).rejects.toThrow('credential-client-absent');
+    expect(auth).toEqual([{ clientId: 'device-a' }]);
+  });
+
+  it('makes a credential ask whose client went away while it answered fail as the client being absent', async () => {
+    const h = setUp();
+    const client = h.client('connection-1', 'h1', () => Promise.resolve(), 'device-a');
+    let asked!: () => void;
+    const pending = new Promise<void>((resolve) => (asked = resolve));
+    client.main.serve('user.credentials', async () => {
+      asked();
+      return new Promise<never>(() => undefined);
+    });
+    const answer = h.core.request('user.credentials', { provider: 'anthropic', clientId: 'device-a' });
+    await pending;
+    client.detach();
+    await expect(answer).rejects.toThrow('credential-client-absent');
   });
 });

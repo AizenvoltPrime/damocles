@@ -24,15 +24,16 @@ const loopback = (connection: ProjectConnection): ShellProject => ({
   name: 'remote',
   fsPath: 'C:\\work\\remote',
   trusted: true,
-  authority: { kind: 'loopback', name: 'Local daemon' },
+  authority: { kind: 'loopback', key: 'loopback', name: 'Local daemon' },
   platform: 'win32',
   connection,
+  trash: false,
   running: 0,
   waiting: 0,
 });
 
 function mountWith(projects: readonly ShellProject[]): VueWrapper {
-  const wrapper = mount(ProjectsSection, { props: { api: fakeShellApi(), projects, selectedKey: 'p1', collapsed: false, bodySize: 150 }, global: { plugins: [shellI18n] }, attachTo: document.body });
+  const wrapper = mount(ProjectsSection, { props: { api: fakeShellApi(), projects, selectedKey: 'p1', remoteEnabled: false, hosts: [], view: 'flat', groups: STATE.projectGroups, platform: 'win32', collapsed: false, bodySize: 150 }, global: { plugins: [shellI18n] }, attachTo: document.body });
   mounted.push(wrapper);
   return wrapper;
 }

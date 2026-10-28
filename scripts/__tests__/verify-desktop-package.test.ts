@@ -9,6 +9,7 @@ import {
   checkAppUpdate,
   checkAsarEntries,
   checkAskpassScripts,
+  checkAskpassTrampoline,
   checkChangelog,
   checkCoreHost,
   checkNoDaemon,
@@ -222,7 +223,13 @@ describe('checkAskpassScripts', () => {
   });
 
   it('names every script in resources/askpass, which the desktop build copies', () => {
-    expect([...ASKPASS_SCRIPTS].sort()).toEqual(readdirSync(join(__dirname, '..', '..', 'resources', 'askpass')).sort());
+    expect([...ASKPASS_SCRIPTS].sort()).toEqual(readdirSync(join(__dirname, '..', '..', 'resources', 'askpass')).filter((file) => file.endsWith('.sh')).sort());
+  });
+
+  it('passes the Windows askpass trampoline only as a PE executable', () => {
+    expect(failures([checkAskpassTrampoline(undefined)])).toEqual(['askpass trampoline']);
+    expect(failures([checkAskpassTrampoline(Buffer.from('@echo off\r\n'))])).toEqual(['askpass trampoline']);
+    expect(failures([checkAskpassTrampoline(Buffer.from('MZ\x90\x00'))])).toEqual([]);
   });
 
   it('passes the repository\'s own scripts for line endings', () => {
@@ -391,6 +398,7 @@ describe('verifyPackage', () => {
       ),
     ];
     for (const file of unpackedFiles) put(join(unpacked, file));
+    if (platform === 'win32') put(join(unpacked, 'dist', 'askpass', 'ssh-askpass.exe'), 'MZ trampoline');
     // the desktop build gives the askpass scripts 0755 for every target, and a POSIX host checks it
     for (const file of ASKPASS_SCRIPTS) chmodSync(join(unpacked, 'dist', 'askpass', file), 0o755);
     if (platform === 'darwin') {

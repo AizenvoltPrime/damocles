@@ -12,6 +12,8 @@ export interface DesktopPrefs {
   readonly languageAtLaunch: ShallowRef<OverlayPrefs['languageAtLaunch'] | undefined>;
   /** undefined until main's overlay state answers; platform-only rows (macOS Option Is Meta) wait for it. */
   readonly platform: ShallowRef<ShellPlatform | undefined>;
+  /** false until main's overlay state answers that remote development is on; Remote hosts waits for it. */
+  readonly remoteEnabled: ShallowRef<boolean>;
   /** Shows the value at once and reverts it if main refuses the write or the call fails, like every other row (M7). */
   set(key: string, value: unknown): void;
   readonly api: DamoclesOverlayApi;
@@ -23,6 +25,7 @@ export function provideDesktopPrefs(api: DamoclesOverlayApi): DesktopPrefs {
   const values = shallowRef<Readonly<Record<string, unknown>>>({});
   const languageAtLaunch = shallowRef<OverlayPrefs['languageAtLaunch'] | undefined>(undefined);
   const platform = shallowRef<ShellPlatform | undefined>(undefined);
+  const remoteEnabled = shallowRef(false);
   const writes = useSettingWritesStore();
   const { t } = useI18n();
   // A read never overwrites a value set since it was asked for: the first read skips each key set before it answered,
@@ -46,6 +49,7 @@ export function provideDesktopPrefs(api: DamoclesOverlayApi): DesktopPrefs {
     values,
     languageAtLaunch,
     platform,
+    remoteEnabled,
     api,
     set(key, value) {
       if (!loaded) setBeforeLoad.add(key);
@@ -71,6 +75,7 @@ export function provideDesktopPrefs(api: DamoclesOverlayApi): DesktopPrefs {
   };
   void api.getState().then((state) => {
     platform.value = state.platform;
+    remoteEnabled.value = state.remoteEnabled;
   });
   void api.getPrefs().then((result) => {
     loaded = true;

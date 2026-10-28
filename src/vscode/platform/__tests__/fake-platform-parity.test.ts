@@ -113,6 +113,7 @@ describe('host capabilities parity', () => {
       windowLayout: false,
       chatReview: false,
       worktrees: false,
+      bypassPermissions: true,
     });
   });
 });

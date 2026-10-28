@@ -11,6 +11,7 @@
  * - dist/subscription-plugin/ holds the subscription plugin whose digest subscription-pin.ts pins, with its LICENSE;
  * - on glibc targets, no ELF file needs a symbol version newer than GLIBC_2.28 or GLIBCXX_3.4.25 (readelf);
  * - on Alpine, Node, node-pty and the watcher link against musl;
+ * - dist/git-credential/ holds the git credential relay helpers, the .sh with LF line ends and the .cmd with CRLF;
  * - the launcher and every other executable are mode 0755, and the gzip header is normalized;
  * - on the machine's own target, `bin/damocles-server self-test` passes; --require-self-test fails on another machine, and
  *   --skip-self-test leaves it to the caller (the release's Alpine legs run it in a clean container).
@@ -36,6 +37,19 @@ function newer(version, ceiling) {
     if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0);
   }
   return false;
+}
+
+/** Problems with the git credential relay helpers a daemon's core gives git (src/core/scm/askpass/credential-relay.ts). */
+export function credentialRelayProblems(entries) {
+  const problems = [];
+  const sh = entries.find((entry) => entry.path === 'dist/git-credential/git-credential-relay.sh');
+  const cmd = entries.find((entry) => entry.path === 'dist/git-credential/git-credential-relay.cmd');
+  if (!sh || sh.data.length === 0) problems.push('no dist/git-credential/git-credential-relay.sh');
+  else if (sh.data.includes(0x0d) || !sh.data.toString('utf8').startsWith('#!/bin/sh\n')) problems.push('dist/git-credential/git-credential-relay.sh is not an LF sh script');
+  if (!cmd || cmd.data.length === 0) problems.push('no dist/git-credential/git-credential-relay.cmd');
+  // .gitattributes keeps it CRLF: cmd.exe misparses a batch file with LF line ends, a label search above all
+  else if (/(?<!\r)\n/.test(cmd.data.toString('utf8'))) problems.push('dist/git-credential/git-credential-relay.cmd is not a CRLF batch file');
+  return problems;
 }
 
 /** The GLIBC_ and GLIBCXX_ versions in `readelf -V` output above the ceilings. */
@@ -173,6 +187,7 @@ async function main() {
 
   problems.push(...prebuildProblems(spec, paths));
   problems.push(...subscriptionPluginProblems(entries));
+  problems.push(...credentialRelayProblems(entries));
   for (const entry of entries) if (entry.mode !== modeOf(entry.path)) problems.push(`${entry.path} has mode ${entry.mode.toString(8)}, expected ${modeOf(entry.path).toString(8)}`);
   if (spec.platform !== 'win32') {
     const header = gzipHeader(data);

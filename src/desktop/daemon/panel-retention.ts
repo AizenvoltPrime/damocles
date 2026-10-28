@@ -1,7 +1,7 @@
 // The panel rule: a view detaching (a quit, a disconnect, a closed window) never disposes
 // a panel with a running turn, a pending prompt or background agents; a panel with none of those and no view is disposed,
-// and restored from its session file when a view opens it again; a user's close disposes at once. Runs come only from the
-// run registry.
+// and restored from its session file when a view opens it again; a user's close disposes at once unless another client's
+// view shows it. Runs come only from the run registry.
 import type { Disposable } from '../../platform/disposable';
 import type { RunRegistry } from './run-registry';
 
@@ -43,6 +43,8 @@ export function createPanelRetention(deps: PanelRetentionDeps): PanelRetention {
   });
   return {
     disposed: (viewId, reason) => {
+      // another client's view still shows the panel, whichever way this one let go
+      if (deps.viewed(viewId)) return;
       if (reason === 'detach' && running(viewId)) {
         kept.add(viewId);
         deps.log(`[core-host] keeping panel ${viewId} with no view: it has a run`);

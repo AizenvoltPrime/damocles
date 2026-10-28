@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { QuitLifecycle, shutDown, type QuitApp, type ShutdownSteps } from '../shutdown';
+import { detachRemotes, QuitLifecycle, shutDown, type QuitApp, type ShutdownSteps } from '../shutdown';
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -213,5 +213,40 @@ describe('QuitLifecycle', () => {
     await quit.relaunch();
     app.emitQuit();
     expect(app.relaunches).toBe(1);
+  });
+});
+
+describe('a quit\'s detach from its daemons', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // the disconnect makes the daemon end the connection, which a sync still receiving streams needs
+  it('lets a mirror sync under way land before it tells each daemon goodbye', async () => {
+    const order: string[] = [];
+    const sync = deferred();
+    const detached = detachRemotes({
+      mirrorsIdle: () => sync.promise.then(() => order.push('mirror idle')),
+      disconnect: async () => { order.push('disconnect'); },
+      waitMs: 1000,
+      log: () => undefined,
+    });
+    await Promise.resolve();
+    expect(order).toEqual([]);
+    sync.resolve();
+    await detached;
+    expect(order).toEqual(['mirror idle', 'disconnect']);
+  });
+
+  it('waits for neither past its bound', async () => {
+    vi.useFakeTimers();
+    const lines: string[] = [];
+    let done = false;
+    void detachRemotes({ mirrorsIdle: () => new Promise(() => undefined), disconnect: () => new Promise(() => undefined), waitMs: 1000, log: (line) => lines.push(line) }).then(() => { done = true; });
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(done).toBe(true);
+    expect(lines).toHaveLength(2);
   });
 });

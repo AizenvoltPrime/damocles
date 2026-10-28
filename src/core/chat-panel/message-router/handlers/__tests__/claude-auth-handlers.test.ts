@@ -30,7 +30,8 @@ const H = vi.hoisted(() => {
 type AuthInteractionLike = Parameters<typeof H.runtime.signInSubscription>[2];
 
 vi.mock("../../../../pi-session/pi-runtime", () => ({
-  PiRuntime: { get: () => H.runtime, exists: true, notifyMemoryJudgeChange: () => {} },
+  PiRuntime: { get: () => H.runtime, exists: true, notifyMemoryJudgeChange: () => {}, claudeAuthStatus: (): ClaudeAuthStatus => ({ mode: "none" }) },
+  remoteSignInRefusal: () => "Sign-ins change only in the User tab on your computer.",
 }));
 
 vi.mock("../../../../pi-session/agent-dir", () => ({
@@ -38,13 +39,9 @@ vi.mock("../../../../pi-session/agent-dir", () => ({
   PI_AGENT_DIR: "/fake/agent",
 }));
 
-vi.mock("../../../../pi-session/subscription", async (importActual) => {
-  const actual = await importActual<typeof import("../../../../pi-session/subscription")>();
-  return { ...actual, readClaudeAuthFromDisk: vi.fn((): ClaudeAuthStatus => ({ mode: "none" })) };
-});
-
 import { createClaudeAuthHandlers } from "../claude-auth-handlers";
 import { createFakePlatform, type FakePlatform } from "../../../../../__mocks__/fake-platform";
+import { createFakeRemoteHost } from "../../../../../__mocks__/fake-remote-host";
 import type { HandlerDependencies, HandlerContext } from "../../types";
 import type { ExtensionToWebviewMessage } from "../../../../../shared/types/messages";
 
@@ -85,7 +82,7 @@ function makeDeps(sent: ExtensionToWebviewMessage[], platform: FakePlatform): {
     platform,
   } as unknown as HandlerDependencies;
   const folder = { key: "/ws/b", fsPath: "/ws/B", name: "B", label: "B", projectScope: true };
-  return { deps, ctx: { host, folder } as HandlerContext, publishAccountInfo };
+  return { deps, ctx: { host, reply: host, folder } as HandlerContext, publishAccountInfo };
 }
 
 describe("createClaudeAuthHandlers", () => {
@@ -379,5 +376,38 @@ describe("createClaudeAuthHandlers", () => {
 
       expect(publishAccountInfo).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("a refused Claude operation on a daemon's core chat two devices show", () => {
+  it("reaches the asking device's views only, before any busy state or pi call", async () => {
+    vi.clearAllMocks();
+    const refusal = "Sign-ins change only in the User tab on your computer.";
+    const toView = new Map<string, ExtensionToWebviewMessage[]>([["view-a", []], ["view-b", []]]);
+    const viewHost = (viewKey: string) => ({
+      clientId: viewKey === "view-a" ? "device-a" : "device-b",
+      postMessage: async (m: ExtensionToWebviewMessage) => { toView.get(viewKey)!.push(m); return true; },
+    });
+    const panel = {
+      views: () => [{ viewKey: "view-a", clientId: "device-a" }, { viewKey: "view-b", clientId: "device-b" }],
+      viewHost,
+      postMessage: async (m: ExtensionToWebviewMessage) => { for (const shown of toView.values()) shown.push(m); return true; },
+    } as unknown as HandlerContext["host"];
+    const deps = {
+      postMessage: (target: HandlerContext["host"], message: ExtensionToWebviewMessage) => void target.postMessage(message),
+      getPanels: () => new Map([["panel-1", { host: panel, session: { publishAccountInfo: vi.fn(), publishAvailableModels: vi.fn() } }]]) as unknown as Map<string, never>,
+      platform: Object.assign(createFakePlatform(), { remote: createFakeRemoteHost().remote }),
+    } as unknown as HandlerDependencies;
+    const { handlers } = createClaudeAuthHandlers(deps);
+    const fromDeviceB = { host: panel, reply: viewHost("view-b"), folder: { key: "/ws/b", fsPath: "/ws/B", name: "B", label: "B", projectScope: true } } as unknown as HandlerContext;
+
+    await handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, fromDeviceB);
+    await handlers.claudeSetBilling!({ type: "claudeSetBilling", useAllowance: false }, fromDeviceB);
+    await handlers.claudeSetApiKey!({ type: "claudeSetApiKey", key: "sk-ant-x" }, fromDeviceB);
+    await handlers.claudeSignOut!({ type: "claudeSignOut" }, fromDeviceB);
+
+    expect(toView.get("view-b")).toEqual(Array.from({ length: 4 }, () => ({ type: "claudeAuthError", error: refusal })));
+    expect(toView.get("view-a")).toEqual([]);
+    for (const op of Object.values(H.runtime)) expect(op).not.toHaveBeenCalled();
   });
 });

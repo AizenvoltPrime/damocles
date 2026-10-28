@@ -58,7 +58,7 @@ describe('SessionManager pi consolidation-on-switch (US-006b)', () => {
 
   it('migrates + consolidates memory when the pi session id changes', async () => {
     const manager = makeManager();
-    await manager.createSessionForPanel({} as never, { getPermissionMode: () => 'default' } as never, 'panel-1', REPO);
+    await manager.createSessionForPanel({} as never, { getPermissionMode: () => 'default', turnPermissionMode: () => 'default' } as never, 'panel-1', REPO);
 
     expect(capturedOptions?.onSessionIdChange).toBeTypeOf('function');
     capturedOptions!.onSessionIdChange!('pi-session-42');
@@ -73,14 +73,14 @@ describe('SessionManager pi consolidation-on-switch (US-006b)', () => {
   it('runs the session in the raw folder fsPath, the workspace its memory candidates are filed under', async () => {
     const manager = makeManager();
     const folder = { key: String.raw`c:\repos\app`, fsPath: String.raw`C:\Repos\App`, name: 'App', label: 'App', projectScope: true };
-    await manager.createSessionForPanel({} as never, { getPermissionMode: () => 'default' } as never, 'panel-1', folder);
+    await manager.createSessionForPanel({} as never, { getPermissionMode: () => 'default', turnPermissionMode: () => 'default' } as never, 'panel-1', folder);
 
     expect(capturedOptions?.cwd).toBe(folder.fsPath);
   });
 
   it('does not consolidate when the session id is null', async () => {
     const manager = makeManager();
-    await manager.createSessionForPanel({} as never, { getPermissionMode: () => 'default' } as never, 'panel-1', REPO);
+    await manager.createSessionForPanel({} as never, { getPermissionMode: () => 'default', turnPermissionMode: () => 'default' } as never, 'panel-1', REPO);
 
     capturedOptions!.onSessionIdChange!(null);
     await Promise.resolve();

@@ -14,6 +14,8 @@ export interface SettingInspection<T> {
 
 export interface SettingsChange {
   affects(key: string): boolean;
+  // a daemon's core: the one device whose user layer changed, whose views alone need state rebuilt; undefined for every device
+  readonly clientId?: string;
 }
 
 /** The folder a chat reads its settings for (docs/invariants.md "Desktop settings come from three files"). */

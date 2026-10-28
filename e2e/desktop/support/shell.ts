@@ -57,10 +57,13 @@ export async function selectedProjectKey(app: ElectronApplication): Promise<stri
   return key!;
 }
 
-/** The desktop popup window's page, where every toast renders, once the first popup has opened the window. */
-export async function popupPage(app: ElectronApplication): Promise<Page> {
+/**
+ * The desktop popup window's page, where every toast renders, once the first popup has opened the window. The first toast
+ * opens it, so a caller waiting for that toast passes the wait it allows the toast as `timeout`.
+ */
+export async function popupPage(app: ElectronApplication, timeout?: number): Promise<Page> {
   const isPopup = (page: Page): boolean => page.url() === NOTIFIER_URL;
-  const page = app.windows().find(isPopup) ?? await app.waitForEvent('window', { predicate: isPopup });
+  const page = app.windows().find(isPopup) ?? await app.waitForEvent('window', { predicate: isPopup, ...(timeout !== undefined ? { timeout } : {}) });
   await page.waitForFunction(() => window.damoclesOverlay !== undefined);
   return page;
 }

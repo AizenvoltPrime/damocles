@@ -45,7 +45,7 @@ describe("the panel's model is the one its session committed", () => {
       getRawBrowserService: () => ({}),
       platform: createFakePlatform(),
     } as unknown as SessionManagerConfig);
-    await manager.createSessionForPanel(host, { getPermissionMode: () => 'default' } as never, 'panel-1', FOLDER);
+    await manager.createSessionForPanel(host, { getPermissionMode: () => 'default', turnPermissionMode: () => 'default' } as never, 'panel-1', FOLDER);
 
     captured!.onModelChange!('claude-haiku-5-5', 200_000, true);
     captured!.onModelChange!('claude-opus-5-5', 1_000_000, false);
@@ -72,7 +72,7 @@ describe("the panel's model is the one its session committed", () => {
       getRawBrowserService: () => ({}),
       platform: createFakePlatform(),
     } as unknown as SessionManagerConfig);
-    await manager.createSessionForPanel({} as PanelHost, { getPermissionMode: () => 'default' } as never, 'panel-1', FOLDER);
+    await manager.createSessionForPanel({} as PanelHost, { getPermissionMode: () => 'default', turnPermissionMode: () => 'default' } as never, 'panel-1', FOLDER);
     expect(captured).not.toHaveProperty('model');
 
     const unset = new SettingsManager({ postMessage: () => undefined, platform: installFakePlatform({ settings: {} }), folders: () => [] });
@@ -139,7 +139,7 @@ describe("the panel's model is the one its session committed", () => {
       platform: createFakePlatform(),
     } as unknown as SessionManagerConfig);
     const nextSession = async () => {
-      await manager.createSessionForPanel({} as PanelHost, { getPermissionMode: () => 'default' } as never, 'panel-1', FOLDER);
+      await manager.createSessionForPanel({} as PanelHost, { getPermissionMode: () => 'default', turnPermissionMode: () => 'default' } as never, 'panel-1', FOLDER);
       return captured!;
     };
 

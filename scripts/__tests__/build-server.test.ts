@@ -96,7 +96,10 @@ describe('the package file list', () => {
       'resources/grammars/tree-sitter-go.wasm', 'resources/shell-integration/shellIntegration-bash.sh', 'server-package.json',
     ]);
     const info = JSON.parse(entries.find((entry) => entry.path === 'server-package.json')!.data!.toString('utf8'));
-    expect(info).toEqual({ name: 'damocles-server', version: '1.0.0', target: 'linux-x64', node: '24.22.0', externals: ['zod'] });
+    expect(info).toEqual({
+      name: 'damocles-server', version: '1.0.0', target: 'linux-x64', node: '24.22.0', externals: ['zod'],
+      packages: ['@parcel/watcher-linux-x64-glibc', '@vscode/ripgrep-linux-x64', 'node-pty', 'zod'],
+    });
   });
 
   it('keeps the Windows prebuild without its debug symbols, and adds the .cmd launcher', () => {
@@ -108,8 +111,8 @@ describe('the package file list', () => {
   });
 
   it('marks only the launcher, Node, rg, spawn-helper and the askpass scripts executable', () => {
-    for (const path of ['bin/damocles-server', 'node/node', 'node_modules/@vscode/ripgrep-linux-x64/bin/rg', 'node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper', 'dist/askpass/askpass.sh']) expect({ path, mode: modeOf(path) }).toEqual({ path, mode: 0o755 });
-    for (const path of ['bin/damocles-server.cmd', 'node/node.exe', 'dist/daemon.js', 'node_modules/node-pty/prebuilds/linux-x64/pty.node', 'resources/shell-integration/shellIntegration-bash.sh']) expect({ path, mode: modeOf(path) }).toEqual({ path, mode: 0o644 });
+    for (const path of ['bin/damocles-server', 'node/node', 'node_modules/@vscode/ripgrep-linux-x64/bin/rg', 'node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper', 'dist/askpass/askpass.sh', 'dist/git-credential/git-credential-relay.sh']) expect({ path, mode: modeOf(path) }).toEqual({ path, mode: 0o755 });
+    for (const path of ['bin/damocles-server.cmd', 'node/node.exe', 'dist/daemon.js', 'node_modules/node-pty/prebuilds/linux-x64/pty.node', 'resources/shell-integration/shellIntegration-bash.sh', 'dist/git-credential/git-credential-relay.cmd']) expect({ path, mode: modeOf(path) }).toEqual({ path, mode: 0o644 });
   });
 
   it('takes node and its license from a Node archive, and an npm tarball\'s files under node_modules', () => {

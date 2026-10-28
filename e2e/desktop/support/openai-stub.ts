@@ -6,6 +6,8 @@ export interface RecordedRequest {
   method: string;
   url: string;
   host: string | undefined;
+  /** The Authorization header, which carries the API key the caller used. */
+  authorization: string | undefined;
   body: unknown;
 }
 
@@ -92,7 +94,7 @@ function lastUserText(messages: ChatMessage[]): string {
 }
 
 /** An OpenAI chat-completions endpoint on loopback, over HTTP or, given a certificate, HTTPS. */
-export async function startOpenAIStub(options: { tls?: { cert: string; key: string }; hostName?: string } = {}): Promise<OpenAIStub> {
+export async function startOpenAIStub(options: { tls?: { cert: string; key: string }; hostName?: string; listenAddress?: string } = {}): Promise<OpenAIStub> {
   const requests: RecordedRequest[] = [];
   const replies: StubReply[] = [];
   const subCallReplies = new Map<string, StubReply[]>();
@@ -111,7 +113,7 @@ export async function startOpenAIStub(options: { tls?: { cert: string; key: stri
           malformed = true;
         }
       }
-      requests.push({ method: req.method ?? '', url: req.url ?? '', host: req.headers.host, body });
+      requests.push({ method: req.method ?? '', url: req.url ?? '', host: req.headers.host, authorization: req.headers.authorization, body });
       // A throw here is outside any test's reach and would crash the worker.
       if (malformed) {
         res.writeHead(400, { 'content-type': 'application/json' });
@@ -140,7 +142,7 @@ export async function startOpenAIStub(options: { tls?: { cert: string; key: stri
   };
 
   const server = options.tls ? https.createServer({ cert: options.tls.cert, key: options.tls.key }, handler) : http.createServer(handler);
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) => server.listen(0, options.listenAddress ?? '127.0.0.1', resolve));
   const port = (server.address() as AddressInfo).port;
   const scheme = options.tls ? 'https' : 'http';
   const host = options.hostName ?? '127.0.0.1';

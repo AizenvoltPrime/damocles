@@ -1,6 +1,6 @@
 import { randomInt } from 'node:crypto';
 import * as path from 'node:path';
-import { isHostEnvEntry, MAX_HOST_ENV_ENTRIES, parseHostMessage, type HostMessage, type HostRequest } from '../../pty-host/protocol';
+import { isHostEnvEntry, MAX_HOST_ENV_ENTRIES, parseHostMessage, type HostMessage, type HostRequest, type TerminalView } from '../../pty-host/protocol';
 import {
   MAX_TERMINAL_ACK_CHARS,
   MAX_TERMINAL_GROUP_PANES,
@@ -55,11 +55,11 @@ import { MAX_OVERLAY_LABEL_LENGTH } from '../../preload/overlay-channels';
 import { cwdFolderName, newShellNonce, Osc633Stream, parseShellSequence, sanitizeDisplayText, sanitizeTitle } from './shell-integration';
 import type { PtyHostProcess } from '../../workspace/host-starters';
 import { NONCE_ENV } from '../../workspace/terminal/shell-integration-injection';
-import type { TerminalBackend } from '../../workspace/terminal/terminal-backend';
+import type { LiveTerminal, TerminalBackend } from '../../workspace/terminal/terminal-backend';
 import type { Workspaces } from '../workspace/workspaces';
 import { linkPathStyle, type LinkBase, type LinkPathStyle } from './terminal-links';
 import { pasteChunks } from './terminal-paste';
-import { authorityKeyOfProject } from '../../../shared/project-location';
+import { authorityKeyOfProject, targetFolderKeyOf } from '../../../shared/project-location';
 import type { RemoteTerminalRecord } from '../remote/remote-state';
 import type { TerminalAppearance } from '../terminal-pick';
 import type { LaunchProfile } from './user-profiles';
@@ -278,7 +278,8 @@ interface Terminal {
   name: string | null;
   customIcon: TerminalCustomIcon | null;
   color: TerminalColor | null;
-  // input for a restart still checking its folder, which the host would drop before the spawn
+  // input the host cannot take yet, posted in order once it can: for a restart still checking its folder, or typed while its
+  // connection was away (keys already on their way when the tab turned reconnecting)
   held?: string[] | undefined;
   // requests posted while its spawn waits on the backend's environment and injection, sent right after the spawn
   pending?: HostRequest[] | undefined;
@@ -643,12 +644,12 @@ export class TerminalService {
   }
 
   input(id: string, data: string): void {
-    if (this.live(id)) this.send(id, data);
+    if (this.takesInput(id)) this.send(id, data);
   }
 
   /** Prepared paste data; it goes to the pty in pieces the host accepts, unless the terminal stopped meanwhile. */
   write(id: string, data: string): void {
-    if (!this.live(id)) return;
+    if (!this.takesInput(id)) return;
     for (const chunk of pasteChunks(data)) this.send(id, chunk);
   }
 
@@ -844,13 +845,26 @@ export class TerminalService {
    * group's next active pane, else to the next group's, else the previous group's.
    */
   kill(id: string): void {
+    this.removeTerminal(id, true);
+  }
+
+  /** Closes the tab of a terminal on a remote host and leaves it running there, as closing the window does. */
+  detach(id: string): void {
+    const terminal = this.find(id);
+    if (!terminal || !isRemoteKey(terminal.projectKey)) throw new Error("Only a remote host's terminal can be left running");
+    this.removeTerminal(id, false);
+  }
+
+  private removeTerminal(id: string, end: boolean): void {
     const index = this.terminals.findIndex((terminal) => terminal.id === id);
     if (index < 0) return;
     const [terminal] = this.terminals.splice(index, 1);
-    if (terminal!.status !== 'exited') {
+    if (end && terminal!.status !== 'exited') {
       this.post(terminal!, { type: 'kill', id });
       terminal!.task?.onExit(null);
     }
+    // the daemon stops sending this client the terminal its other clients may still view
+    if (!end) this.post(terminal!, { type: 'detach', id });
     const group = this.groupOf(id)!;
     const groupIndex = this.groups.indexOf(group);
     this.removePane(group, id);
@@ -938,12 +952,63 @@ export class TerminalService {
    * already live is left alone.
    */
   async reattach(backend: TerminalBackend, records: readonly RemoteTerminalRecord[]): Promise<void> {
-    const live = new Map((await backend.list()).map((terminal) => [terminal.id, terminal]));
+    this.adopt(backend, records, await backend.list());
+  }
+
+  /**
+   * A terminal of the authority's host this window does not show, which another client may have started: its tab joins as a
+   * reattach's does, active and focused, and remote-state.json keeps it from then on. Throws when the host no longer runs it,
+   * did not record its view, or its folder is not open here.
+   */
+  async open(backend: TerminalBackend, authorityKey: string, id: string): Promise<void> {
+    if (this.shownLive(id)) {
+      this.select(id);
+      this.shell?.focus(id);
+      return;
+    }
+    const live = await backend.list();
+    const record = this.viewRecord(authorityKey, live.find((terminal) => terminal.id === id));
+    if (!record) throw new Error(`Terminal ${id} cannot be shown here: its host no longer runs it, or its folder is not open`);
+    this.adopt(backend, [record], live);
+    this.select(id);
+    this.shell?.focus(id);
+  }
+
+  /** Whether open() adds a tab for this host terminal: it has no live tab here, its host recorded its view, its folder is open. */
+  canOpen(authorityKey: string, terminal: LiveTerminal): boolean {
+    return !this.shownLive(terminal.id) && this.viewRecord(authorityKey, terminal) !== undefined;
+  }
+
+  // A tab of the terminal that has not exited, which open() selects instead of opening another.
+  private shownLive(id: string): boolean {
+    const shown = this.find(id);
+    return shown !== undefined && shown.status !== 'exited';
+  }
+
+  // Another client's terminal as this window keeps it, under the open root its view names; its look is this window's own.
+  private viewRecord(authorityKey: string, terminal: LiveTerminal | undefined): RemoteTerminalRecord | undefined {
+    const view = terminal?.view;
+    const root = view && this.deps.projects().find((project) => authorityKeyOfProject(project.key) === authorityKey && targetFolderKeyOf(project.key) === view.root);
+    if (!view || !root) return undefined;
+    return { id: terminal.id, projectKey: root.key, profile: view.profile, startCwd: view.startCwd, nonce: view.nonce, name: null, customIcon: null, color: null };
+  }
+
+  private adopt(backend: TerminalBackend, records: readonly RemoteTerminalRecord[], listed: readonly LiveTerminal[]): void {
+    const live = new Map(listed.map((terminal) => [terminal.id, terminal]));
     let added = false;
     for (const record of records) {
       const found = live.get(record.id);
       const existing = this.find(record.id);
-      if (!found || (existing && existing.status !== 'exited') || !this.deps.projects().some((project) => project.key === record.projectKey)) continue;
+      // a reconnecting tab whose terminal the daemon no longer has ended while its host was away
+      if (!found && existing?.status === 'reconnecting') {
+        if (existing.held?.length) this.deps.log(`[terminal] ${existing.id} ended while its host was away; ${existing.held.length} inputs typed meanwhile were not sent`);
+        existing.held = undefined;
+        existing.status = 'exited';
+        added = true;
+        continue;
+      }
+      const replaceable = !existing || existing.status === 'exited' || existing.status === 'reconnecting';
+      if (!found || !replaceable || !this.deps.projects().some((project) => project.key === record.projectKey)) continue;
       const shell = { ...newShellSession(record.startCwd), nonce: record.nonce, spawned: true };
       const terminal: Terminal = {
         id: record.id,
@@ -973,8 +1038,9 @@ export class TerminalService {
       }
       this.post(terminal, { type: 'clearAck', id: terminal.id });
       this.post(terminal, { type: 'serialize', id: terminal.id });
-      // after the serialize, which attaches this client: the hub takes a scrollback only from an attached one
+      // after the serialize, which attaches this client: the hub takes a scrollback and input only from an attached one
       this.post(terminal, { type: 'scrollback', id: terminal.id, scrollback: this.scrollback });
+      if (existing) this.flushHeld(existing, terminal);
       added = true;
     }
     if (added) {
@@ -983,6 +1049,71 @@ export class TerminalService {
     }
     // the kept list drops the terminals that ended while away
     if (records.length > 0) this.changed(true);
+  }
+
+  /**
+   * A launch's remote terminals whose host is not connected yet: each gets its tab back as reconnecting, with its name, icon
+   * and color, until the host reattaches it (reattach) or reports it gone.
+   */
+  showReconnecting(records: readonly RemoteTerminalRecord[]): void {
+    let added = false;
+    for (const record of records) {
+      if (this.find(record.id) || !this.deps.projects().some((project) => project.key === record.projectKey)) continue;
+      this.terminals.push({
+        id: record.id,
+        backend: undefined,
+        profile: { ...record.profile, source: 'detected', customIcon: null, color: null },
+        projectKey: record.projectKey,
+        startCwd: record.startCwd,
+        launchCwd: record.startCwd,
+        shell: { ...newShellSession(record.startCwd), nonce: record.nonce, spawned: true },
+        commands: new Map(),
+        nextCommandId: 1,
+        status: 'reconnecting',
+        exitCode: null,
+        cols: 80,
+        rows: 24,
+        name: record.name,
+        customIcon: record.customIcon,
+        color: record.color,
+        restoring: 0,
+      });
+      this.groups.push(this.newGroup([record.id]));
+      added = true;
+    }
+    if (!added) return;
+    this.order();
+    this.activeId ??= this.terminals.at(-1)?.id ?? null;
+    this.changed(false);
+  }
+
+  /**
+   * The authority's connection dropped: its terminals go on running on the host, and their tabs show reconnecting, taking no
+   * input, until the connection resumes (connectionResumed) or a fresh connection reattaches them (reattach).
+   */
+  connectionLost(authorityKey: string): void {
+    let changed = false;
+    for (const terminal of this.terminals) {
+      if (terminal.projectKey === null || authorityKeyOfProject(terminal.projectKey) !== authorityKey) continue;
+      if (terminal.status !== 'running' && terminal.status !== 'starting') continue;
+      terminal.status = 'reconnecting';
+      terminal.held ??= [];
+      changed = true;
+    }
+    if (changed) this.changed(false);
+  }
+
+  /** The dropped connection resumed with nothing lost: its replay carries each terminal's output on from where it stopped. */
+  connectionResumed(authorityKey: string): void {
+    let changed = false;
+    for (const terminal of this.terminals) {
+      // a launch's placeholder has no backend yet; only a reattach gives it one
+      if (terminal.backend === undefined || terminal.projectKey === null || authorityKeyOfProject(terminal.projectKey) !== authorityKey || terminal.status !== 'reconnecting') continue;
+      terminal.status = 'running';
+      this.flushHeld(terminal, terminal);
+      changed = true;
+    }
+    if (changed) this.changed(false);
   }
 
   /**
@@ -1129,6 +1260,19 @@ export class TerminalService {
     return status === 'starting' || status === 'running';
   }
 
+  // A reconnecting tab holds what reaches main before the shell page turned its input off.
+  private takesInput(id: string): boolean {
+    const terminal = this.find(id);
+    return this.live(id) || (terminal?.status === 'reconnecting' && terminal.held !== undefined);
+  }
+
+  // What from held, typed while the connection was away, now goes to target's host.
+  private flushHeld(from: Terminal, target: Terminal): void {
+    const held = from.held ?? [];
+    from.held = undefined;
+    for (const data of held) this.post(target, { type: 'input', id: target.id, data });
+  }
+
   // The shell starts with its integration script when the setting allows and VS Code's rules inject into it.
   // The environment and the injection come from the terminal's backend, a daemon's over its connection, so what is posted
   // meanwhile waits in pending and follows the spawn.
@@ -1161,8 +1305,9 @@ export class TerminalService {
   private async spawnRequest(terminal: Terminal, backend: TerminalBackend, cwd: string): Promise<HostRequest> {
     const env = { ...(await this.deps.env(terminal.projectKey)), ...(terminal.projectKey !== null ? this.deps.rootEnv(terminal.projectKey) : {}), ...terminal.task?.env };
     const { scrollback, shellIntegration } = this.deps.settings();
+    const view = this.viewOf(terminal);
     if (terminal.task) {
-      return { type: 'spawn', id: terminal.id, file: terminal.profile.file, args: [...terminal.task.args], cwd, env: { ...this.hostEnv(terminal, env, 1), [NONCE_ENV]: terminal.shell.nonce }, cols: terminal.cols, rows: terminal.rows, scrollback };
+      return { type: 'spawn', id: terminal.id, file: terminal.profile.file, args: [...terminal.task.args], cwd, env: { ...this.hostEnv(terminal, env, 1), [NONCE_ENV]: terminal.shell.nonce }, cols: terminal.cols, rows: terminal.rows, scrollback, ...view };
     }
     const injection = shellIntegration ? await backend.injection({ file: terminal.profile.file, args: terminal.profile.args, nonce: terminal.shell.nonce, env }) : undefined;
     return {
@@ -1175,7 +1320,16 @@ export class TerminalService {
       cols: terminal.cols,
       rows: terminal.rows,
       scrollback,
+      ...view,
     };
+  }
+
+  // What a daemon lists so its other clients can show a remote terminal; a local pty host has no other client.
+  private viewOf(terminal: Terminal): { view: TerminalView } | Record<string, never> {
+    const root = terminal.projectKey === null ? undefined : targetFolderKeyOf(terminal.projectKey);
+    if (root === undefined) return {};
+    const { id, name, file, args, icon } = terminal.profile;
+    return { view: { root, profile: { id, name, file, args: [...args], icon }, startCwd: terminal.startCwd, nonce: terminal.shell.nonce } };
   }
 
   // The host ends on a spawn outside its limits, which would end every terminal, so a variable it refuses (or one past its
@@ -1341,6 +1495,8 @@ export class TerminalService {
       this.deps.log(`[terminal] the pty host exited with code ${exit.code}${reason}${error}`);
       for (const terminal of this.terminals) {
         if (terminal.backend !== backend || terminal.status === 'exited') continue;
+        // a dropped connection's terminals still run on the host, and the next connection reattaches them
+        if (host.persistent && terminal.status === 'reconnecting') continue;
         terminal.status = 'exited';
         terminal.exitCode = null;
         terminal.restoring = 0;

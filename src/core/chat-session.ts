@@ -203,10 +203,11 @@ export interface ChatSession extends ActivitySource {
   openaiSignInEnded(signedIn: boolean): Promise<void>;
 
   /** Push the account state (model, dollar-metered flag) to the webview.
-   *  Callers own the timing: it is derived state with no publisher of its own. */
-  publishAccountInfo(): void;
+   *  Callers own the timing: it is derived state with no publisher of its own. clientId: on a daemon's core, the one
+   *  device whose views alone need it. */
+  publishAccountInfo(clientId?: string): void;
   /** Push the model list with the marks of models the chat cannot run; called with every account republish. */
-  publishAvailableModels(): void;
+  publishAvailableModels(clientId?: string): void;
 
   getSupportedModels(): Promise<ModelInfo[]>;
   getSupportedCommands(): Promise<SlashCommandInfo[]>;

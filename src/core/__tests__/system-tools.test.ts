@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { findBash, findOnAbsolutePath, findPwsh, isFileOrAppAlias, posixTool, windowsPowerShell, windowsSystemTool } from '../system-tools';
+import { findBash, findOnAbsolutePath, findPwsh, isFileOrAppAlias, posixTool, posixToolAsync, resolveSshExecutable, resolveSshKeygenExecutable, windowsPowerShell, windowsSystemTool } from '../system-tools';
 
 const SRC = path.join(__dirname, '..', '..');
 
@@ -68,6 +68,9 @@ async function onPlatform<T>(platform: NodeJS.Platform, run: () => Promise<T>): 
 
 const pathEnv = (...entries: string[]): Record<string, string> => ({ PATH: entries.join(path.delimiter) });
 
+// The tool this machine's OpenSSH installed, as the fallback folders find it, or undefined on a machine without it.
+const installedTool = (name: string): string | undefined => ['/usr/bin', '/bin'].map((dir) => path.posix.join(dir, name)).find((file) => fs.existsSync(file) && fs.statSync(file).isFile());
+
 describe('windowsSystemTool', () => {
   it('names the tool in SystemRoot\\System32, as VS Code names taskkill', () => {
     expect(windowsSystemTool('taskkill', { SystemRoot: 'D:\\Windows' })).toBe('D:\\Windows\\System32\\taskkill.exe');
@@ -119,6 +122,15 @@ describe('findOnAbsolutePath and posixTool', () => {
     expect(posixTool('bash', pathEnv(bin), [sbin])).toBe(path.join(sbin, 'bash'));
     expect(posixTool('bash', pathEnv('.', bin), [folder('empty')])).toBeUndefined();
   });
+
+  it.skipIf(process.platform === 'win32')('posixToolAsync finds what posixTool finds, never in a relative PATH folder', async () => {
+    const bin = folder('bin', 'ldconfig');
+    const sbin = folder('sbin', 'ldconfig', 'bash');
+    const relative = relativeFolder('planted-bash', 'bash');
+    expect(await posixToolAsync('ldconfig', pathEnv(bin), [sbin])).toBe(path.join(bin, 'ldconfig'));
+    expect(await posixToolAsync('bash', pathEnv(relative, bin), [sbin])).toBe(path.join(sbin, 'bash'));
+    expect(await posixToolAsync('bash', pathEnv(relative, bin), [folder('empty')])).toBeUndefined();
+  });
 });
 
 describe.runIf(process.platform === 'win32')('findBash', () => {
@@ -148,6 +160,46 @@ describe.runIf(process.platform === 'win32')('findBash', () => {
     expect(await findBash(env)).toBeUndefined();
     const msys = folder('msys', 'bash.exe');
     expect(await findBash({ ...env, PATH: [relative, msys].join(';') })).toBe(path.join(msys, 'bash.exe'));
+  });
+});
+
+describe('resolveSshExecutable', () => {
+  it.runIf(process.platform === 'win32')('takes an absolute PATH folder\'s ssh.exe, else Windows\' own OpenSSH client, never a relative folder', async () => {
+    const systemRoot = folder('Windows');
+    const relative = relativeFolder('planted-ssh', 'ssh.exe');
+    expect(await resolveSshExecutable({ SystemRoot: systemRoot, PATH: relative }, 'win32')).toBeUndefined();
+    fs.mkdirSync(path.join(systemRoot, 'System32', 'OpenSSH'), { recursive: true });
+    fs.writeFileSync(path.join(systemRoot, 'System32', 'OpenSSH', 'ssh.exe'), '');
+    expect(await resolveSshExecutable({ SystemRoot: systemRoot, PATH: relative }, 'win32')).toBe(path.join(systemRoot, 'System32', 'OpenSSH', 'ssh.exe'));
+    const onPath = folder('openssh', 'ssh.exe');
+    expect(await resolveSshExecutable({ SystemRoot: systemRoot, PATH: [relative, onPath].join(';') }, 'win32')).toBe(path.join(onPath, 'ssh.exe'));
+  });
+
+  it.runIf(process.platform !== 'win32')('takes an absolute PATH folder\'s ssh, never a relative folder\'s, else the one OpenSSH installs in /usr/bin', async () => {
+    const relative = relativeFolder('planted-ssh', 'ssh');
+    const onPath = folder('bin', 'ssh');
+    expect(await resolveSshExecutable({ PATH: [relative, onPath].join(':') }, process.platform)).toBe(path.join(onPath, 'ssh'));
+    expect(await resolveSshExecutable({ PATH: [relative, folder('empty')].join(':') }, process.platform)).toBe(installedTool('ssh'));
+  });
+});
+
+describe('resolveSshKeygenExecutable', () => {
+  it.runIf(process.platform === 'win32')('takes an absolute PATH folder\'s ssh-keygen.exe, else Windows\' own OpenSSH one, never a relative folder', async () => {
+    const systemRoot = folder('Windows');
+    const relative = relativeFolder('planted-keygen', 'ssh-keygen.exe');
+    expect(await resolveSshKeygenExecutable({ SystemRoot: systemRoot, PATH: relative }, 'win32')).toBeUndefined();
+    fs.mkdirSync(path.join(systemRoot, 'System32', 'OpenSSH'), { recursive: true });
+    fs.writeFileSync(path.join(systemRoot, 'System32', 'OpenSSH', 'ssh-keygen.exe'), '');
+    expect(await resolveSshKeygenExecutable({ SystemRoot: systemRoot, PATH: relative }, 'win32')).toBe(path.join(systemRoot, 'System32', 'OpenSSH', 'ssh-keygen.exe'));
+    const onPath = folder('openssh-keygen', 'ssh-keygen.exe');
+    expect(await resolveSshKeygenExecutable({ SystemRoot: systemRoot, PATH: [relative, onPath].join(';') }, 'win32')).toBe(path.join(onPath, 'ssh-keygen.exe'));
+  });
+
+  it.runIf(process.platform !== 'win32')('takes an absolute PATH folder\'s ssh-keygen, never a relative folder\'s, else the one OpenSSH installs in /usr/bin', async () => {
+    const relative = relativeFolder('planted-keygen', 'ssh-keygen');
+    const onPath = folder('keygen-bin', 'ssh-keygen');
+    expect(await resolveSshKeygenExecutable({ PATH: [relative, onPath].join(':') }, process.platform)).toBe(path.join(onPath, 'ssh-keygen'));
+    expect(await resolveSshKeygenExecutable({ PATH: [relative, folder('keygen-empty')].join(':') }, process.platform)).toBe(installedTool('ssh-keygen'));
   });
 });
 
@@ -293,9 +345,10 @@ function programIndex(callee: ts.Expression, spawners: Spawners): number | undef
   return namespaced ? 0 : undefined;
 }
 
-const LAUNCH_CALLS = new Set(['launch', 'runProcess']);
+// `run` is the name an injected runProcess takes (`deps.run({ file, ... })`)
+const LAUNCH_CALLS = new Set(['launch', 'runProcess', 'run']);
 
-/** The `file` of a process launcher start, `launcher.launch({ file, ... })` or `runProcess({ file, ... })`, else undefined. */
+/** The `file` of a process launcher start, `launcher.launch({ file, ... })`, `runProcess({ file, ... })` or `deps.run({ file, ... })`, else undefined. */
 function launchedFile(node: ts.CallExpression): ts.Expression | undefined {
   const callee = node.expression;
   const name = ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : undefined;
@@ -491,7 +544,7 @@ function barePrograms(expr: ts.Expression, bindings: Bindings, depth = 0): strin
 /** Every spawner call in one source text whose program can be a name that is not an absolute path. */
 function bareNameSpawnsIn(file: string, text: string): string[] {
   // A file naming neither seed of `fileSpawners` has no spawner, so it is not parsed.
-  if (!/child_process|exec['"`]|launch\(|runProcess\(/.test(text)) return [];
+  if (!/child_process|exec['"`]|launch\(|runProcess\(|\brun\(/.test(text)) return [];
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const spawners = fileSpawners(source);
   const constants = new Map<string, ts.Expression>();
@@ -558,6 +611,8 @@ describe('process spawns', () => {
       'g++',
     ],
     ['a property of a constant object', "const TOOL = { file: 'nvidia-smi' }; runProcess({ file: TOOL.file, args: [] });", 'nvidia-smi'],
+    ['an injected runner', "async function install(deps: Deps) { await deps.run({ file: 'restorecon', args: [] }, { timeoutMs: 1 }); }", 'restorecon'],
+    ['a local runner', "const run = deps.run ?? runProcess; const LOGINCTL = 'loginctl'; run({ file: LOGINCTL, args: [] }, { timeoutMs: 1 });", 'loginctl'],
   ])('sees a bare program through %s', (_case, text, program) => {
     expect(bareNameSpawnsIn('x.ts', text)).toEqual([`x.ts:1: ${program}`]);
   });

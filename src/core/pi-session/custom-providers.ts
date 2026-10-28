@@ -597,6 +597,11 @@ export async function syncCustomProviders(deps: SyncCustomProvidersDeps): Promis
   return { wired, aborted: cutShortAt >= 0, notWired, changed, keysSaved };
 }
 
+/** The endpoints a daemon's core registers for the client's key providers (`registerForBroker`); any other endpoint there is pi's or the host's own config. */
+export function clientProviderEndpoints(): ReadonlySet<string> {
+  return new Set(KEYED_PROVIDER_DEFS.flatMap((def) => (def.key.mode === 'register' && def.key.registerConfig?.baseUrl ? [def.key.registerConfig.baseUrl] : [])));
+}
+
 const brokerRegistered = new WeakSet<ModelRuntime>();
 
 // pi reads its runtime keys before any credential store, so a key there would serve every client's turns (plan "Token broker").

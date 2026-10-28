@@ -217,4 +217,26 @@ describe('handshake', () => {
     const outcome = await sayHello(bridge, { appVersion: '1', protocolVersion: 1, clientId: 'c', deviceName: 'd' });
     expect(outcome).toEqual({ kind: 'refused', refused: { reason: 'protocol', serverVersion: '9.0.0', protocolVersion: 9 } });
   });
+
+  it('detaches on a resumed welcome in the same turn, so a replay pipelined behind it is handed over unread', async () => {
+    const socket = fakeSocket();
+    const app = createPersistentProtocol({ socket, maxBodyBytes: HANDSHAKE_MAX_BYTES, log });
+    const regular: Uint8Array[] = [];
+    app.onMessage((body) => regular.push(body));
+    const outcome = sayHello(app, { appVersion: '1', protocolVersion: 1, clientId: 'c', deviceName: 'd', reconnectionToken: new Uint8Array(32) });
+    const answer = welcome();
+    if (answer.kind !== 'welcome') throw new Error('unreachable');
+    const resumed = message(2, 0, 0, encode({ type: 'welcome', ...answer.welcome, resumed: true, facts: { ...FACTS } }));
+    const replay = message(1, 7, 3, Uint8Array.of(42));
+    const chunk = new Uint8Array(resumed.length + replay.length);
+    chunk.set(resumed);
+    chunk.set(replay, resumed.length);
+    socket.receive(chunk);
+    const settled = await outcome;
+    expect(settled.kind === 'welcome' && settled.resumedRest ? [...settled.resumedRest] : undefined).toEqual([...replay]);
+    // the handshake's protocol read nothing past welcome and answered no gap with a replay request
+    expect(regular).toEqual([]);
+    expect(socket.written.map(parseHeader).map((header) => header.type)).toEqual([2]);
+    expect(socket.destroyed()).toBe(false);
+  });
 });

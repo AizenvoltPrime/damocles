@@ -989,6 +989,21 @@
         "maximum": 3650,
         "description": "A terminal on a remote host that no device has reattached for this many days ends on its own. 0 means never."
       },
+      "damocles.desktop.remote.closeWithRunningAgents": {
+        "type": "string",
+        "enum": [
+          "ask",
+          "keep",
+          "stop"
+        ],
+        "enumDescriptions": [
+          "Ask whether the agents keep running on their hosts.",
+          "The agents keep running on their hosts, and Damocles closes without asking.",
+          "The agents stop, and Damocles closes without asking."
+        ],
+        "default": "ask",
+        "description": "What happens to agents running on remote hosts when Damocles closes."
+      },
       "damocles.desktop.terminal.cursorStyle": {
         "type": "string",
         "enum": [
@@ -1584,6 +1599,19 @@
         "type": "boolean",
         "default": false,
         "description": "Controls the visibility of sidebar section actions. Section actions may either be always visible, or only visible when that section is focused or hovered over."
+      },
+      "damocles.desktop.projects.view": {
+        "type": "string",
+        "enum": [
+          "flat",
+          "grouped"
+        ],
+        "enumDescriptions": [
+          "Local and remote projects in one list.",
+          "One collapsible group per host, This computer for local projects."
+        ],
+        "default": "flat",
+        "description": "Controls how the Projects section lists projects: in one list, or grouped by host."
       },
       "permissions": {
         "type": "object",
@@ -2412,6 +2440,12 @@
         "doNotSuggest": true,
         "description": "damocles.desktop.remote.terminalIdleDays applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nA terminal on a remote host that no device has reattached for this many days ends on its own. 0 means never."
       },
+      "damocles.desktop.remote.closeWithRunningAgents": {
+        "not": {},
+        "errorMessage": "damocles.desktop.remote.closeWithRunningAgents applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.remote.closeWithRunningAgents applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhat happens to agents running on remote hosts when Damocles closes."
+      },
       "damocles.desktop.terminal.cursorStyle": {
         "not": {},
         "errorMessage": "damocles.desktop.terminal.cursorStyle applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
@@ -2783,6 +2817,12 @@
         "errorMessage": "damocles.desktop.sidebar.alwaysShowHeaderActions applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
         "description": "damocles.desktop.sidebar.alwaysShowHeaderActions applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls the visibility of sidebar section actions. Section actions may either be always visible, or only visible when that section is focused or hovered over."
+      },
+      "damocles.desktop.projects.view": {
+        "not": {},
+        "errorMessage": "damocles.desktop.projects.view applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.projects.view applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls how the Projects section lists projects: in one list, or grouped by host."
       },
       "permissions": {
         "type": "object",

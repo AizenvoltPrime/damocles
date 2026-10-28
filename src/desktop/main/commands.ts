@@ -87,6 +87,9 @@ export const MENU_IDS = {
   toggleBrowserDevTools: 'damocles.browser.toggleDevTools',
   showLog: 'damocles.showLog',
   restartEngine: 'damocles.restartEngine',
+  connectToHost: 'damocles.remote.connectToHost',
+  disconnectHost: 'damocles.remote.disconnectHost',
+  openFolderOnHost: 'damocles.remote.openFolderOnHost',
   openFolderThroughLocalDaemon: 'damocles.developer.openFolderThroughLocalDaemon',
   showLocalDaemonLog: 'damocles.developer.showLocalDaemonLog',
   openSettings: 'damocles.openSettings',
@@ -627,6 +630,18 @@ function loopbackCommands(loopback: NonNullable<MenuActions['loopback']>): Comma
   ];
 }
 
+// Only while remote features are enabled (MenuActions.remote): the Connect dialog, a saved host's folders, and ending the selected
+// project's host connection.
+function remoteCommands(remote: NonNullable<MenuActions['remote']>): Command[] {
+  const category = t('Remote');
+  const hostSaved = (context: MenuState): boolean => context.remoteHostSaved;
+  return [
+    { id: MENU_IDS.connectToHost, title: t('Connect to Host...'), category, run: () => remote.connectToHost() },
+    { id: MENU_IDS.openFolderOnHost, title: t('Open Folder on Host...'), category, enabled: hostSaved, palette: hostSaved, run: () => remote.openFolderOnHost() },
+    { id: MENU_IDS.disconnectHost, title: t('Disconnect Host'), category, enabled: (context) => context.remoteHostConnected, run: () => remote.disconnectHost() },
+  ];
+}
+
 /** Every desktop command, the per-project ones included; ids are unique. */
 export function desktopCommands(projects: readonly OpenFolder[], actions: MenuActions, platform: NodeJS.Platform): Command[] {
   const mac = platform === 'darwin';
@@ -789,6 +804,7 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
     { id: MENU_IDS.showLog, title: pkg('command.showLog.title'), category: chat, run: () => actions.showLog() },
     // VS Code's Restart Extension Host: a new engine replaces the running one, or the one left down after its fourth crash
     { id: MENU_IDS.restartEngine, title: t('Restart Engine'), category: chat, run: () => actions.restartEngine() },
+    ...(actions.remote ? remoteCommands(actions.remote) : []),
     ...(actions.loopback ? loopbackCommands(actions.loopback) : []),
     { id: MENU_IDS.about, title: t('About Damocles'), category: help, run: () => actions.about() },
     { id: MENU_IDS.releaseNotes, title: t('Release Notes'), category: help, run: () => actions.releaseNotes() },

@@ -24,8 +24,9 @@ export interface PanelRun {
 }
 
 export interface RunRegistry {
-  // a panel's latest chat.activity: a running turn, a pending prompt or background agents make it a run
-  panelActivity(panel: PanelRun, activity: ChatActivity): void;
+  // a panel's latest chat.activity: a running turn, a pending prompt or background agents make it a run. clientId: the
+  // event's actor, which owns the run when the event starts it
+  panelActivity(panel: PanelRun, activity: ChatActivity, clientId?: string): void;
   // chat.turnSettled: the turn ended, so only its pending prompts or background agents keep it a run
   panelSettled(panelId: string): void;
   // chat.providers: the providers the panel's runs read through the token broker
@@ -43,6 +44,8 @@ export interface RunRegistry {
   // a terminal nobody attached for the idle limit; the listener ends it
   onIdle(listener: (id: string) => void): void;
   runs(): readonly Run[];
+  // the chat runs the client started, so its close stops or keeps only its own
+  ownRuns(clientId: string): readonly Run[];
   isEmpty(): boolean;
   onChange(listener: () => void): Disposable;
   dispose(): void;
@@ -64,7 +67,7 @@ function panelState(activity: ChatActivity): Run['state'] | undefined {
 
 export function createRunRegistry(now: () => number = Date.now): RunRegistry {
   const terminals = new Map<string, Entry>();
-  const panels = new Map<string, { readonly run: PanelRun; activity: ChatActivity }>();
+  const panels = new Map<string, { readonly run: PanelRun; activity: ChatActivity; readonly owner: string | undefined }>();
   // kept while the panel lives, whether or not it has a run now
   const providers = new Map<string, readonly string[]>();
   const changed = new Set<() => void>();
@@ -104,10 +107,12 @@ export function createRunRegistry(now: () => number = Date.now): RunRegistry {
     fire();
   };
 
+  const panelRun = ({ run, activity }: { readonly run: PanelRun; readonly activity: ChatActivity }): Run => ({ kind: 'chat', id: run.panelId, projectKey: run.projectKey, title: title(run.title), state: panelState(activity) ?? 'running', providers: providers.get(run.panelId) ?? [] });
+
   return {
-    panelActivity: (run, activity) => {
+    panelActivity: (run, activity, clientId) => {
       const had = panels.get(run.panelId);
-      panels.set(run.panelId, { run, activity });
+      panels.set(run.panelId, { run, activity, owner: had ? had.owner : clientId });
       if (panelState(activity) === undefined) {
         panels.delete(run.panelId);
         if (had) fire();
@@ -154,9 +159,10 @@ export function createRunRegistry(now: () => number = Date.now): RunRegistry {
       idle.add(listener);
     },
     runs: () => [
-      ...[...panels.values()].map(({ run, activity }): Run => ({ kind: 'chat', id: run.panelId, projectKey: run.projectKey, title: title(run.title), state: panelState(activity) ?? 'running', providers: providers.get(run.panelId) ?? [] })),
+      ...[...panels.values()].map(panelRun),
       ...[...terminals.values()].map(({ run }): Run => ({ kind: 'terminal', id: run.id, projectKey: run.projectKey, title: title(run.title), state: 'running', providers: [] })),
     ],
+    ownRuns: (clientId) => [...panels.values()].filter((entry) => entry.owner === clientId).map(panelRun),
     isEmpty: () => terminals.size === 0 && panels.size === 0,
     onChange: (listener) => {
       changed.add(listener);

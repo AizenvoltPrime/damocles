@@ -77,7 +77,7 @@ beforeEach(() => {
   host = new OverlayHost({
     window: window as never,
     preloadPath: 'preload-overlay.js',
-    state: () => ({ locale: 'en', platform: 'win32' }),
+    state: () => ({ locale: 'en', platform: 'win32', remoteEnabled: false }),
     focusOutside: () => {
       focusedOutside++;
     },
@@ -128,7 +128,7 @@ describe('overlay sender check', () => {
     expect(lines.filter((line) => line.startsWith('[overlay] rejected'))).toHaveLength(3);
     const getState = view().webContents.ipc.handlers.get(OVERLAY_CHANNELS.getState)!;
     await expect(getState({ sender: { id: 9 }, senderFrame: { url: OVERLAY_PAGE_URL, parent: null } })).rejects.toThrow('Rejected');
-    await expect(getState(own())).resolves.toEqual({ locale: 'en', platform: 'win32' });
+    await expect(getState(own())).resolves.toEqual({ locale: 'en', platform: 'win32', remoteEnabled: false });
   });
 
   it('never receives a toast: it sends none to its page and answers none of the toast channels', async () => {
@@ -278,6 +278,16 @@ describe('overlay requests', () => {
     emit(OVERLAY_CHANNELS.answer, own(), trustId, { kind: 'message', action: 0 });
     await expect(trust).resolves.toEqual({ kind: 'message', action: 0 });
     expect(host.mode).toBe('hidden');
+  });
+
+  it('sends a theme pushed while the page loads once it has loaded, so the page never keeps the theme it was built with', () => {
+    host.load();
+    const theme = { kind: 'light', css: ':root{}', reducedMotion: false, fileIconTheme: 'material' } as const;
+    host.sendTheme(theme);
+    const themes = (): unknown[] => view().webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_CHANNELS.theme).map(([, payload]) => payload);
+    expect(themes()).toEqual([]);
+    view().webContents.emit('did-finish-load');
+    expect(themes()).toEqual([theme]);
   });
 
   it('answers an already withdrawn request dismissed without showing it, and withdraws a held one before it is sent', async () => {
@@ -828,7 +838,7 @@ describe('overlay dispose', () => {
     host.handleWhileOpen('test:popup', () => true, () => 'value');
     host.dispose();
     const getState = view().webContents.ipc.handlers.get(OVERLAY_CHANNELS.getState)!;
-    await expect(getState(own())).resolves.toEqual({ locale: 'en', platform: 'win32' });
+    await expect(getState(own())).resolves.toEqual({ locale: 'en', platform: 'win32', remoteEnabled: false });
     await expect(getState({ sender: { id: 9 }, senderFrame: { url: OVERLAY_PAGE_URL, parent: null } })).rejects.toThrow('Rejected');
     await expect(view().webContents.ipc.handlers.get('test:popup')!(own())).resolves.toEqual({ ok: false, reason: 'closed' });
   });

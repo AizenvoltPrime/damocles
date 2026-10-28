@@ -42,6 +42,7 @@ const EXECUTABLES = [
   /^node_modules\/@vscode\/ripgrep-[^/]+\/bin\/rg$/,
   /^node_modules\/node-pty\/prebuilds\/[^/]+\/spawn-helper$/,
   /^dist\/askpass\/[^/]+\.sh$/,
+  /^dist\/git-credential\/[^/]+\.sh$/,
 ];
 
 // Files from the checkout's root the daemon and its core read: the version and contributed configuration, the localized
@@ -169,7 +170,8 @@ export function packageEntries({ spec, target, version, nodeVersion, distDir, no
   }
   for (const name of ROOT_FILES) entries.push(file(name, join(root, name)));
   for (const folder of ROOT_FOLDERS) for (const relative of walk(join(root, folder))) entries.push(file(`${folder}/${relative}`, join(root, folder, relative)));
-  entries.push(bytes('server-package.json', `${JSON.stringify({ name: 'damocles-server', version, target, node: nodeVersion, externals }, null, 2)}\n`));
+  const packages = [...portable, ...spec.natives].sort();
+  entries.push(bytes('server-package.json', `${JSON.stringify({ name: 'damocles-server', version, target, node: nodeVersion, externals, packages }, null, 2)}\n`));
   return entries;
 }
 
@@ -230,7 +232,7 @@ export const serverFlavor = {
 
 /** Builds the server bundles into `<stage>/dist`, with the original-fs shim and the server flavor, beside the pinned subscription plugin. */
 export async function buildBundles(stage = STAGE_DIR) {
-  const { SERVER_BUNDLES, copyAskpassScripts } = await import('../esbuild.config.mjs');
+  const { SERVER_BUNDLES, copyAskpassScripts, copyCredentialRelayScripts } = await import('../esbuild.config.mjs');
   const dist = join(stage, 'dist');
   rmSync(dist, { recursive: true, force: true });
   await Promise.all(SERVER_BUNDLES.map((options) => esbuild.build({
@@ -241,6 +243,7 @@ export async function buildBundles(stage = STAGE_DIR) {
     plugins: [serverFlavor, ...(options.plugins ?? [])],
   })));
   copyAskpassScripts(join(dist, 'askpass'));
+  copyCredentialRelayScripts(join(dist, 'git-credential'));
   await vendorSubscriptionPlugin(join(dist, PLUGIN_DIR));
   if (!readFileSync(join(dist, 'daemon.js'), 'utf8').includes('SERVER_PACKAGE = true')) throw new Error('The staged daemon.js was not built with SERVER_PACKAGE true');
   return dist;

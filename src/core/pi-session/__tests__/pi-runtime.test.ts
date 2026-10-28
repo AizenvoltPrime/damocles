@@ -428,6 +428,7 @@ describe('subscription plugin migration', () => {
         h.providers.delete(name);
       },
       getRegisteredProviderConfig: (name: string) => h.providers.get(name),
+      hasConfiguredAuth: () => false,
       refresh: async (options: unknown) => {
         // A plugin swap must never reach the network.
         expect(options).toEqual({ allowNetwork: false });
@@ -1111,14 +1112,21 @@ describe('subscription plugin migration', () => {
       expect(fs.existsSync(h.cloneDir(LEGACY))).toBe(true);
     });
 
-    // ChatPanelProvider republishes every panel on the change (memory-judge-broadcast.test.ts); the runtime only reads it
-    it('bills the account state a view reads as the acting client chose', () => {
+    // the runtime refreshes pi's availability snapshot, which reads the acting client's sign-ins, and only then tells
+    // ChatPanelProvider, which republishes every panel (onActingClientRefreshed)
+    it('bills the account state a view reads as the acting client chose, and refreshes pi\'s availability snapshot', async () => {
       const { h, remote } = remoteSetup(SUBSCRIPTION, [], ['A']);
+      const refreshed = vi.fn();
+      const stop = PiRuntime.onActingClientRefreshed(refreshed);
       remote.set('clientAuth', 'client-b', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false } } });
+      const refreshes = h.calls.filter((c) => c === 'refresh').length;
 
       remote.setActing('client-b');
 
       expect(billing(h)).toEqual({ dollarBilled: true, subscription: undefined });
+      await vi.waitFor(() => expect(refreshed).toHaveBeenCalledTimes(1));
+      expect(h.calls.filter((c) => c === 'refresh')).toHaveLength(refreshes + 1);
+      stop();
     });
   });
 });

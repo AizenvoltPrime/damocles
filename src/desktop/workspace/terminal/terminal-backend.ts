@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { confineExisting, type Project } from '../../local-services/confine';
 import type { TerminalLinkKind } from '../../preload/terminal-channels';
+import type { TerminalView } from '../../pty-host/protocol';
 import type { HostStarters, PtyHostProcess } from '../host-starters';
 import { detectProfiles, systemProfileProbe, windowsBuildNumber, type TerminalProfile } from './profiles';
 import { shellIntegrationInjection, type Injection } from './shell-integration-injection';
@@ -22,6 +23,8 @@ export interface LiveTerminal {
   readonly pid: number;
   readonly cols: number;
   readonly rows: number;
+  // a daemon's terminal: what its spawning client sent, so another client can show it
+  readonly view?: TerminalView;
 }
 
 // Groups, names, OSC 633 parsing and its nonce check stay in main.

@@ -11,6 +11,7 @@ import type { WorkerName } from '../../platform/app-paths';
 import type { PickFileOptions, PickFolderOptions, InputBoxOptions } from '../../platform/dialog-service';
 import type { ActiveEditorContext, DiffSide, OpenFileOptions } from '../../platform/editor-service';
 import type { OpenFolder } from '../../platform/workspace-folders';
+import { parseCredentialFields, isCredentialValue, MAX_CREDENTIAL_PASSWORD_CHARS, MAX_CREDENTIAL_USERNAME_CHARS, type GitCredentialAnswer, type GitCredentialFields } from '../../shared/git-credential';
 import type { PageSpec } from '../../shared/panel-html';
 import { MAX_BROKER_EXPIRES_IN_MS, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, type BrokerAnswer, type ClientAuth, type ClientPolicy, type ClientUser, type HeldAuth } from '../../shared/remote-user';
 import { KEY_PROVIDER_IDS, SETTINGS_ACCOUNT_IDS, SETTINGS_SECTION_IDS, type SettingsAccountId, type SettingsSectionId } from '../../shared/settings-sections';
@@ -149,6 +150,9 @@ export interface CoreRequests {
   'dialogs.ask': Call<AskQuestion, number | undefined>;
   // a git or ssh credential prompt (core/scm/askpass); the answer is a credential and is never logged
   'askpass.prompt': Call<{ readonly kind: CredentialKind; readonly text: string }, { readonly answer?: string; readonly cancelled: boolean }>;
+  // a daemon's core: the git credential relay's get or erase, answered by the acting client; targetHelper: the target's
+  // git has a credential helper of its own for the URL. The answer is a credential and is never logged.
+  'askpass.credential': Call<{ readonly op: 'get' | 'erase'; readonly fields: GitCredentialFields; readonly targetHelper: boolean }, GitCredentialAnswer>;
   // Commit to a New Branch's name input for the commit main passed this token with (scm.commit)
   'scm.branchName': Call<{ readonly token: string }, string | undefined>;
   // the worktree UI main keeps (core/worktrees/host.ts WorktreeHostServices)
@@ -164,9 +168,15 @@ export interface CoreRequests {
   'user.credentials': Call<{ readonly provider: string; readonly clientId: string }, BrokerAnswer>;
   // a daemon's core: speak a chat's final reply on the client that shows the view
   'user.voice.speak': Call<{ readonly viewId: string; readonly text: string }, void>;
+  // answers once what core posted to the view before is within the flow window of the host's queue toward the page; with
+  // viewKey, of that one view's page only, else of every view's
+  'views.drained': Call<{ readonly viewId: string; readonly viewKey?: string }, void>;
 }
 
 export type { BrokerAnswer, ClientAuth, ClientPolicy, ClientUser, HeldAuth };
+
+/** A fresh OAuth access token main pushes to a daemon's core; a key is never pushed, since a cached one never expires. */
+export type PushedCredential = Extract<BrokerAnswer, { readonly type: 'oauth' }>;
 
 export type CredentialKind = 'username' | 'password' | 'passphrase' | 'confirm' | 'notice';
 
@@ -200,6 +210,12 @@ export interface MainRequests {
   // core attaches to a chat view main created and restores it there; settles once core set it up, registered or not
   'chats.restore': Call<{ readonly viewId: string; readonly folderKey?: string; readonly permissions?: ChatPermissions }, void>;
   'chats.startInWorktree': Call<{ readonly viewId: string; readonly projectKey: string; readonly worktreeId: string }, void>;
+  // a local core shows the session mirror's copy of a remote chat on the view main created, read-only: file lies under
+  // <userData>/remote/<hostId>/mirror/, which core checks again, and core writes nothing for it
+  'chats.openTranscript': Call<{ readonly viewId: string; readonly hostId: string; readonly file: string }, void>;
+  // a local core lists one project's chats of a host's session mirror (StoredSession rows, newest first), narrowed to query:
+  // folder is <userData>/remote/<hostId>/mirror/<project folder>, which core checks again, and core writes nothing for it
+  'chats.listMirrored': Call<{ readonly hostId: string; readonly folder: string; readonly query?: string }, readonly unknown[]>;
   // settles once core set up a chat it created itself, registered or not
   'chats.whenSetUp': Call<{ readonly viewId: string }, void>;
   'chats.setWorktreeOptIn': Call<{ readonly panelId: string; readonly startRef: string; readonly bringChanges: boolean }, void>;
@@ -212,6 +228,8 @@ export interface MainRequests {
   'chats.open': Call<object, void>;
   'chats.newSession': Call<object, void>;
   'chats.cancelSession': Call<object, void>;
+  // the Stop path of a chat's running turn, by core panel id, which records the turn stopped; refused for a chat that is not loaded
+  'chats.stop': Call<{ readonly panelId: string }, void>;
   'chats.postToActive': Call<{ readonly message: unknown }, void>;
   // only while the chat is loaded; never reveals or opens one
   'chats.post': Call<{ readonly panelId: string; readonly message: unknown }, void>;
@@ -253,7 +271,9 @@ export interface MainRequests {
   'settingsView.detach': Call<{ readonly attachment: number }, void>;
   // a view main made for a panel core holds, whose page holds the panel's token as viewKey; answers the panel's id, or null
   // when no panel holds that token. Core replays the conversation and live state to it, never changing the panel's token.
-  'views.join': Call<{ readonly viewId: string; readonly viewKey: string }, { readonly panelId: string } | null>;
+  // sessionId: another device's view of the panel holding that stored session, whatever its page's token (a daemon only).
+  // joining: the daemon's key of the joining view, which alone gets the replay while the panel's other views go on live
+  'views.join': Call<{ readonly viewId: string; readonly viewKey: string; readonly sessionId?: string; readonly joining?: string }, { readonly panelId: string } | null>;
   // core's ScmService (scm-calls.ts): a method of SCM_CALLS with its arguments, answered with its result
   'scm.call': Call<{ readonly method: ScmCall; readonly args: readonly unknown[] }, unknown>;
   // ScmService.commit; branchName names the token core asks scm.branchName with, saved the documents saved just before
@@ -284,10 +304,16 @@ export interface MainRequests {
   'e2e.fakeVoice': Call<{ readonly transcript: string }, { readonly pid: number }>;
   // how often core started a recorder since fakeVoice, and the last one's pid
   'e2e.voiceRecorder': Call<object, { readonly starts: number; readonly recorderPid: number | null }>;
+  // this computer's core signs in to a stub OAuth account whose tokens expire after expiresInMs; offline: its refresh fails
+  'e2e.stubOAuth': Call<{ readonly account: string; readonly expiresInMs: number; readonly offline?: boolean }, void>;
   // this computer's core: a credential for a daemon's broker, resolved and refreshed by its own pi
-  'user.resolveCredential': Call<{ readonly provider: string }, BrokerAnswer>;
+  // force: refreshed under pi's lock even while the token is not expiring (Keep running)
+  'user.resolveCredential': Call<{ readonly provider: string; readonly force?: boolean }, BrokerAnswer>;
   // this computer's core: every provider pi knows with its non-secret credential state, for the clientAuth mirror
   'user.clientAuth': Call<object, HeldAuth>;
+  // a daemon's core: a fresh credential of the pushing client (the request's actor), cached for that client alone; it resolves
+  // the credential waits of turns pinned to it. An OAuth refresh token never crosses: refresh is always ''.
+  'user.credentials.push': Call<{ readonly provider: string; readonly credential: PushedCredential }, void>;
   // this computer's core speaks a remote chat's reply; its voice consent applies
   'user.voice.speak': Call<{ readonly viewId: string; readonly text: string }, void>;
   // this computer's core: a proxy for a remote chat's view, which only VOICE_VIEW_MESSAGES reach
@@ -303,8 +329,9 @@ export type MentionTargetData = { readonly projectKey: string; readonly relative
 export interface CoreEvents {
   'window.openAppSettings': { readonly section?: SettingsSectionId; readonly account?: SettingsAccountId };
   'window.toggleTerminal': object;
-  // after the chats mirror shows the change
-  'chat.activity': { readonly panelId: string; readonly activity: ChatActivity };
+  // after the chats mirror shows the change; sessionId: the stored session the chat is on, which lets a client that does not
+  // view the chat (another device) show it running in its chat list
+  'chat.activity': { readonly panelId: string; readonly activity: ChatActivity; readonly sessionId?: string };
   'chat.turnSettled': { readonly panelId: string; readonly outcome: unknown };
   'chat.changes': { readonly panelId: string; readonly totals: unknown; readonly generation: number };
   'chat.usageThreshold': { readonly crossing: unknown };
@@ -395,6 +422,9 @@ export interface MirrorTopics {
   clientPolicy: ClientDelta<ClientPolicy>;
   // the daemon's: the client that most recently sent core a message, published before that message; a client's is dropped
   actingClient: { readonly clientId?: string };
+  // the daemon's, after a removed socket folder was made again: its agent folder (CoreInit.remote.agentFolder) and the git
+  // credential relay's handle (CoreInit.paths.askpass.credentialRelay), which core listens at from then on; a client's is dropped
+  hostSockets: { readonly agentFolder?: string; readonly relayHandle?: string };
 }
 
 /** A client's value of a per-client mirror; clientId is the daemon's id for that client, and a client never sets it. */
@@ -408,10 +438,11 @@ export interface CorePanelOps {
   create: PanelCreate;
   // main builds the page itself; core never sends HTML
   showPage: { readonly page: PageSpec };
-  // a webview message as JSON text, which main forwards unparsed; type is the message's own
-  post: { readonly type: string; readonly json: string };
-  // a webview message holding binary (a browser page's frame), structured-cloned
-  postBinary: { readonly message: unknown };
+  // a webview message as JSON text, which main forwards unparsed; type is the message's own. viewKey: the daemon's key of the
+  // one view it goes to; without it every view of the panel gets it but those except names (a daemon's views only)
+  post: { readonly type: string; readonly json: string; readonly viewKey?: string; readonly except?: readonly string[] };
+  // a webview message holding binary (a browser page's frame), structured-cloned; viewKey and except as post's
+  postBinary: { readonly message: unknown; readonly viewKey?: string; readonly except?: readonly string[] };
   setIcon: { readonly path?: string };
   setTitle: { readonly title: string };
   setFolderLabel: { readonly label?: string };
@@ -424,8 +455,11 @@ export interface CorePanelOps {
  * user closed the chat; detach, a quit, window teardown or disconnect took the view away (a daemon keeps a panel with a run).
  */
 export interface MainPanelOps {
-  message: { readonly message: unknown };
+  // viewKey: the daemon's key of the view that sent it, which a client never sets
+  message: { readonly message: unknown; readonly viewKey?: string };
   disposed: { readonly error?: string; readonly reason: 'user' | 'detach' };
+  // a daemon's: that view of the panel is gone while the panel stays, so core forgets its key; a client never sends it
+  viewDetached: { readonly viewKey: string };
 }
 
 /** What core needs from main before its platform exists: static host facts and every mirror's value at version 0. */
@@ -452,7 +486,9 @@ export interface CoreInit {
   // the worktree records main last read from a core, which the registry serves while registry.json does not parse
   readonly worktreeRecords: readonly unknown[];
   // set only for a daemon's core: it deletes permanently where it would trash and refuses every user-scope write
-  readonly remote?: { readonly hostId: string };
+  // agentFolder: the daemon's forwarded-agent proxy folder, holding agentSocketFile(agentFolder, clientId) for each client
+  // that forwards its agent; absent on a Windows target
+  readonly remote?: { readonly hostId: string; readonly agentFolder?: string };
   readonly mirrors: {
     readonly state: { readonly global: Readonly<Record<string, unknown>>; readonly workspace: Readonly<Record<string, unknown>> };
     readonly trust: { readonly keys: readonly string[] };
@@ -561,7 +597,7 @@ const chatEntry: Parser<ChatEntry> = obj({
   permissions: chatPermissions,
 });
 // A prompt id is a provider's tool call id, of no fixed length, so it takes a key's bound.
-const pendingKind = oneOf(['approval', 'question', 'plan', 'input'] as const);
+const pendingKind = oneOf(['approval', 'question', 'plan', 'input', 'signIn'] as const);
 const promptOwner = either(
   obj({ kind: oneOf(['main'] as const) }),
   either(
@@ -607,9 +643,11 @@ const viewRef = obj({ viewId: id });
 const panelRef = obj({ panelId: id });
 const attachmentRef = obj({ attachment: int(1, Number.MAX_SAFE_INTEGER) });
 const nothing = obj({});
-const postText = obj({ type: label, json: text });
+// the daemon's key of one client's view of a panel
+const viewKey = opt(id);
+const postText = obj({ type: label, json: text, viewKey, except: opt(arr(id, MAX_ACTIONS)) });
 // a page-state post must hold a JSON object, since main parses it
-const panelPost: Parser<{ readonly type: string; readonly json: string }> = (raw) => {
+const panelPost: Parser<CorePanelOps['post']> = (raw) => {
   const post = postText(raw);
   if (post === INVALID || !PAGE_STATE_TYPES.has(post.type)) return post;
   try {
@@ -657,12 +695,28 @@ const brokerAnswer: Parser<BrokerAnswer> = either(
   }),
   either(obj({ type: oneOf(['api_key'] as const), key: nonEmpty(MAX_MESSAGE_CHARS) }), obj({ type: oneOf(['none'] as const) })),
 );
+// a pushed token's bounds (security's credential-wire): a provider id as pi names one, extras at most 2048 characters
+const PROVIDER_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+const providerId: Parser<string> = (raw) => (typeof raw === 'string' && PROVIDER_ID.test(raw) ? raw : INVALID);
+const extra = nonEmpty(2048);
+const extras = arr(extra, 512);
+const pushedCredential: Parser<PushedCredential> = obj({
+  type: oneOf(['oauth'] as const),
+  access: nonEmpty(64 * 1024),
+  expiresIn: int(0, MAX_BROKER_EXPIRES_IN_MS),
+  refresh: oneOf([''] as const),
+  clientId: opt(extra),
+  scopes: opt(extras),
+  enterpriseUrl: opt(extra),
+  accountId: opt(extra),
+  availableModelIds: opt(planModelIds),
+});
 const authType = oneOf(['oauth', 'api_key', 'none'] as const);
 const clientAuth: Parser<ClientAuth> = obj({
-  providers: dict(obj({ type: authType, expiresIn: opt(int(0, Number.MAX_SAFE_INTEGER)), hasKey: bool, keySaved: opt(bool), flatFee: bool, allowance: opt(bool), availableModelIds: opt(planModelIds) }), MAX_ID_CHARS, MAX_ITEMS),
+  providers: dict(obj({ type: authType, expiresIn: opt(int(0, Number.MAX_SAFE_INTEGER)), hasKey: bool, keySaved: opt(bool), flatFee: bool, allowance: opt(bool), availableModelIds: opt(planModelIds), preferApiKey: opt(bool) }), MAX_ID_CHARS, MAX_ITEMS),
 });
 const heldAuth: Parser<HeldAuth> = obj({
-  providers: dict(obj({ type: authType, expires: opt(num), hasKey: bool, keySaved: opt(bool), flatFee: bool, allowance: opt(bool), availableModelIds: opt(planModelIds) }), MAX_ID_CHARS, MAX_ITEMS),
+  providers: dict(obj({ type: authType, expires: opt(num), hasKey: bool, keySaved: opt(bool), flatFee: bool, allowance: opt(bool), availableModelIds: opt(planModelIds), preferApiKey: opt(bool) }), MAX_ID_CHARS, MAX_ITEMS),
 });
 const clientUser: Parser<ClientUser> = obj({
   settings: dict(value, MAX_KEY_CHARS, MAX_ITEMS),
@@ -673,7 +727,18 @@ const clientPolicy: Parser<ClientPolicy> = obj({
   allowBypass: bool,
   defaultPermissionMode: opt(oneOf(['default', 'acceptEdits', 'plan'] as const)),
   sharedLoopback: opt(bool),
+  agentForwarding: opt(bool),
 });
+const credentialFields: Parser<GitCredentialFields> = (raw) => parseCredentialFields(raw) ?? INVALID;
+const credentialAnswer: Parser<GitCredentialAnswer> = either(
+  obj({ kind: oneOf(['none', 'notConnected'] as const) }),
+  obj({
+    kind: oneOf(['credential'] as const),
+    username: (raw) => (isCredentialValue(raw, MAX_CREDENTIAL_USERNAME_CHARS) ? raw : INVALID),
+    password: (raw) => (isCredentialValue(raw, MAX_CREDENTIAL_PASSWORD_CHARS) && raw !== '' ? raw : INVALID),
+  }),
+);
+const credentialNonce: Parser<string> = (raw) => (typeof raw === 'string' && /^[0-9a-f]{64}$/.test(raw) ? raw : INVALID);
 const clientDelta = <T>(parser: Parser<T>) => obj({ clientId: opt(id), value: opt(parser) });
 const actingClient = obj({ clientId: opt(id) });
 const pageSpec: Parser<PageSpec> = either(
@@ -751,6 +816,7 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
     obj({ kind: oneOf(['username', 'password', 'passphrase', 'confirm', 'notice'] as const), text: message }),
     obj({ answer: opt(message), cancelled: bool }),
   ),
+  'askpass.credential': method(obj({ op: oneOf(['get', 'erase'] as const), fields: credentialFields, targetHelper: bool }), credentialAnswer),
   'scm.branchName': method(obj({ token: id }), maybe(label)),
   'worktrees.reviewSetup': method(obj({ projectPath: filePath, projectName: label, commands: arr(text, MAX_ITEMS) }), oneOf(['run', 'skip'] as const)),
   'worktrees.runSetup': method(
@@ -767,6 +833,7 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'worktrees.showApplyConflicts': method(obj({ worktreeId: id, files: arr(filePath, MAX_ITEMS) }), done),
   'user.credentials': method(obj({ provider: id, clientId: id }), brokerAnswer),
   'user.voice.speak': method(obj({ viewId: id, text }), done),
+  'views.drained': method(obj({ viewId: id, viewKey }), done),
 };
 
 const MIRROR_TOPICS: Tables<MainToCore>['mirrors'] = {
@@ -781,12 +848,15 @@ const MIRROR_TOPICS: Tables<MainToCore>['mirrors'] = {
   clientUser: clientDelta(clientUser),
   clientPolicy: clientDelta(clientPolicy),
   actingClient,
+  hostSockets: obj({ agentFolder: opt(filePath), relayHandle: opt(filePath) }),
 };
 
 const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'core.shutdown': method(nothing, done),
   'chats.restore': method(obj({ viewId: id, folderKey: opt(filePath), permissions: opt(chatPermissions) }), done),
   'chats.startInWorktree': method(obj({ viewId: id, projectKey: filePath, worktreeId: id }), done),
+  'chats.openTranscript': method(obj({ viewId: id, hostId: id, file: filePath }), done),
+  'chats.listMirrored': method(obj({ hostId: id, folder: filePath, query: opt(label) }), rows),
   'chats.whenSetUp': method(viewRef, done),
   'chats.setWorktreeOptIn': method(obj({ panelId: id, startRef: label, bringChanges: bool }), done),
   'chats.restoreDraft': method(obj({ panelId: id, content: rows }), done),
@@ -797,6 +867,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'chats.open': method(nothing, done),
   'chats.newSession': method(nothing, done),
   'chats.cancelSession': method(nothing, done),
+  'chats.stop': method(panelRef, done),
   'chats.postToActive': method(obj({ message: value }), done),
   'chats.post': method(obj({ panelId: id, message: value }), done),
   'chats.deliver': method(obj({ panelId: opt(id), selected: opt(id), chats: arr(id, MAX_ITEMS), message: value }), id),
@@ -825,7 +896,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'settingsView.attach': method(obj({ panelId: id, attachment: int(1, Number.MAX_SAFE_INTEGER), scope: opt(oneOf(['user', 'machine', 'project'] as const)) }), done),
   'settingsView.dispatch': method(obj({ attachment: int(1, Number.MAX_SAFE_INTEGER), message: value }), done),
   'settingsView.detach': method(attachmentRef, done),
-  'views.join': method(obj({ viewId: id, viewKey: key }), either(obj({ panelId: id }), nul)),
+  'views.join': method(obj({ viewId: id, viewKey: key, sessionId: opt(id), joining: viewKey }), either(obj({ panelId: id }), nul)),
   'scm.call': method(obj({ method: oneOf(SCM_CALLS), args: callArgs }), value),
   'scm.commit': method(obj({ repoId: id, message: text, variant: value, saved: arr(filePath, MAX_ITEMS), branchName: opt(id) }), value),
   'scm.ignoredIn': method(obj({ projectKey: filePath, relativeDir: str(MAX_PATH_CHARS), entries: arr(obj({ name: filePath, dir: bool }), MAX_ITEMS) }), arr(filePath, MAX_ITEMS)),
@@ -844,8 +915,10 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'e2e.stopWatchProbe': method(obj({ folder: filePath }), done),
   'e2e.fakeVoice': method(obj({ transcript: text }), obj({ pid: int(1, 2 ** 32) })),
   'e2e.voiceRecorder': method(nothing, obj({ starts: count, recorderPid: nullable(int(1, 2 ** 32)) })),
-  'user.resolveCredential': method(obj({ provider: id }), brokerAnswer),
+  'e2e.stubOAuth': method(obj({ account: (raw) => (typeof raw === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(raw) ? raw : INVALID), expiresInMs: int(1000, 3_600_000), offline: opt(bool) }), done),
+  'user.resolveCredential': method(obj({ provider: id, force: opt(bool) }), brokerAnswer),
   'user.clientAuth': method(nothing, heldAuth),
+  'user.credentials.push': method(obj({ provider: providerId, credential: pushedCredential }), done),
   'user.voice.speak': method(obj({ viewId: id, text }), done),
   'panels.attachForeign': method(obj({ authority: filePath, viewId: id }), done),
   'panels.detachForeign': method(viewRef, done),
@@ -857,7 +930,7 @@ export const CORE_TO_MAIN: Tables<CoreToMain> = {
   events: {
     'window.openAppSettings': obj({ section: opt(section), account: opt(account) }),
     'window.toggleTerminal': nothing,
-    'chat.activity': obj({ panelId: id, activity: chatActivity }),
+    'chat.activity': obj({ panelId: id, activity: chatActivity, sessionId: opt(id) }),
     'chat.turnSettled': obj({ panelId: id, outcome: value }),
     'chat.changes': obj({ panelId: id, totals: value, generation: num }),
     'chat.usageThreshold': obj({ crossing: value }),
@@ -887,7 +960,7 @@ export const CORE_TO_MAIN: Tables<CoreToMain> = {
     create: panelCreate,
     showPage: obj({ page: pageSpec }),
     post: panelPost,
-    postBinary: obj({ message: value }),
+    postBinary: obj({ message: value, viewKey, except: opt(arr(id, MAX_ACTIONS)) }),
     setIcon: obj({ path: opt(filePath) }),
     setTitle: obj({ title: label }),
     setFolderLabel: obj({ label: opt(label) }),
@@ -906,8 +979,9 @@ export const MAIN_TO_CORE: Tables<MainToCore> = {
   },
   mirrors: MIRROR_TOPICS,
   panelOps: {
-    message: obj({ message: value }),
+    message: obj({ message: value, viewKey }),
     disposed: obj({ error: opt(message), reason: oneOf(['user', 'detach'] as const) }),
+    viewDetached: obj({ viewKey: id }),
   },
 };
 
@@ -930,12 +1004,12 @@ export const parseCoreInit: Parser<CoreInit> = obj({
       voiceExtract: filePath,
     }),
     watchWorker: filePath,
-    askpass: obj({ askpass: filePath, sshAskpass: filePath, node: filePath, main: filePath }),
+    askpass: obj({ askpass: filePath, sshAskpass: filePath, node: filePath, main: filePath, credentialRelay: opt(obj({ helper: filePath, handle: filePath, nonce: credentialNonce })) }),
   }),
   logs: obj({ dir: filePath, echo: bool }),
   endedCores: arr(obj({ pid: int(1, 2 ** 32), endedAt: int(0, Number.MAX_SAFE_INTEGER) }), MAX_ITEMS),
   worktreeRecords: rows,
-  remote: opt(obj({ hostId: id })),
+  remote: opt(obj({ hostId: id, agentFolder: opt(filePath) })),
   mirrors: obj({
     state: obj({ global: dict(value, MAX_KEY_CHARS, MAX_ITEMS), workspace: dict(value, MAX_KEY_CHARS, MAX_ITEMS) }),
     trust: obj({ keys: trustedKeys }),

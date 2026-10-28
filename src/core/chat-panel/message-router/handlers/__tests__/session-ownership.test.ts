@@ -54,7 +54,7 @@ function makePanel(panelId: string, holding: string | null) {
   const session = makeSession(holding);
   const host = { id: panelId, reveal: vi.fn() };
   const instance = { host, session, folder: FOLDER_A } as unknown as HostInstance;
-  const ctx = { host, session, panelId, permissionHandler: {}, terminalAttachments: new TerminalAttachmentManager(() => {}), folder: FOLDER_A } as unknown as HandlerContext;
+  const ctx = { host, reply: host, session, panelId, permissionHandler: {}, terminalAttachments: new TerminalAttachmentManager(() => {}), folder: FOLDER_A } as unknown as HandlerContext;
   return { panelId, session, host, instance, ctx, target: () => session.target() };
 }
 

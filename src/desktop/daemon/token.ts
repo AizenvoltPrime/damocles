@@ -8,6 +8,7 @@ import * as path from 'node:path';
 import { networkFileSystem } from '../../core/network-fs';
 import { runProcess } from '../../core/process-launcher';
 import { windowsSystemTool } from '../../core/system-tools';
+import { MAX_SHARED_HOME_HOSTS, OTHER_HOSTNAME } from './control-messages';
 import { machineRunKey } from './machine-id';
 
 export const TOKEN_BYTES = 32;
@@ -127,10 +128,10 @@ async function lingers(): Promise<boolean> {
   }
 }
 
-export async function socketFolderBase(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): Promise<string> {
+export async function socketFolderBase(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, lingering: () => Promise<boolean> = lingers): Promise<string> {
   if (platform === 'darwin') return env['TMPDIR'] || os.tmpdir();
   const runtime = env['XDG_RUNTIME_DIR'];
-  if (runtime && path.isAbsolute(runtime) && (await lingers())) return runtime;
+  if (runtime && path.isAbsolute(runtime) && (await lingering())) return runtime;
   return '/tmp';
 }
 
@@ -201,6 +202,50 @@ export async function readPidFile(file: string): Promise<PidRecord | undefined> 
   }
 }
 
+// The run folder's list of the socket folders its daemon has, one absolute path per line: the next start and a removal read
+// it, so a crashed daemon's agent and relay folders, which its pid file does not name, are found too.
+const SOCKET_FOLDERS_FILE = 'socket-folders';
+// the names a daemon makes in a socket folder: the endpoint's socket and token, the relay's socket (serve.ts), an agent
+// socket (agentSocketName); remove-posix.sh removes the same names
+const SOCKET_FOLDER_ENTRY = /^(?:daemon\.sock|token|askpass\.sock|agent-[0-9a-f]{24}\.sock)$/;
+
+export function socketFoldersFile(paths: RunPaths): string {
+  return path.join(paths.runDir, SOCKET_FOLDERS_FILE);
+}
+
+export async function writeSocketFolders(paths: RunPaths, folders: readonly string[]): Promise<void> {
+  const file = socketFoldersFile(paths);
+  const temp = `${file}.${process.pid}.tmp`;
+  await fs.writeFile(temp, folders.map((folder) => `${folder}\n`).join(''), { mode: 0o600 });
+  await fs.rename(temp, file);
+}
+
+/**
+ * Removes the socket folders an earlier daemon of this run folder recorded, when each is still this user's own: only the
+ * names a daemon makes there, then the folder; one already gone is done, and one holding anything else is logged and left.
+ * Only under the lock, before this daemon records its own.
+ */
+export async function removeRecordedSocketFolders(paths: RunPaths, log: (line: string) => void): Promise<void> {
+  let text: string;
+  try {
+    text = await fs.readFile(socketFoldersFile(paths), 'utf8');
+  } catch (err) {
+    if (errnoCode(err) === 'ENOENT') return;
+    throw err;
+  }
+  for (const folder of text.split('\n')) {
+    if (!path.isAbsolute(folder) || !path.basename(folder).startsWith(SOCKET_FOLDER_PREFIX)) continue;
+    try {
+      await checkSocketFolder(folder);
+      for (const name of await fs.readdir(folder)) if (SOCKET_FOLDER_ENTRY.test(name)) await fs.rm(path.join(folder, name), { force: true });
+      await fs.rmdir(folder);
+      log(`[daemon] removed the earlier socket folder ${folder}`);
+    } catch (err) {
+      if (errnoCode(err) !== 'ENOENT') log(`[daemon] leaving the earlier socket folder ${folder}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
 export async function writePidFile(file: string, record: PidRecord): Promise<void> {
   const temp = `${file}.${process.pid}.tmp`;
   await fs.writeFile(temp, `${JSON.stringify(record)}\n`, { mode: 0o600 });
@@ -220,7 +265,10 @@ export async function touch(files: readonly string[], now: Date = new Date()): P
   return true;
 }
 
-/** The hostnames other run folders' pid files in this home name, of those touched within SHARED_HOME_WINDOW_MS. */
+/**
+ * The hostnames other run folders' pid files in this home name, of those touched within SHARED_HOME_WINDOW_MS: each once,
+ * sorted, at most MAX_SHARED_HOME_HOSTS, and only those OTHER_HOSTNAME accepts, since another machine wrote them.
+ */
 export async function otherHostsInHome(paths: RunPaths, now: number = Date.now()): Promise<string[]> {
   let names: string[];
   try {
@@ -242,7 +290,7 @@ export async function otherHostsInHome(paths: RunPaths, now: number = Date.now()
       throw err;
     }
     const hostname = (await readPidFile(file))?.hostname;
-    if (hostname !== undefined) hosts.push(hostname);
+    if (hostname !== undefined && OTHER_HOSTNAME.test(hostname)) hosts.push(hostname);
   }
-  return hosts;
+  return [...new Set(hosts)].sort().slice(0, MAX_SHARED_HOME_HOSTS);
 }

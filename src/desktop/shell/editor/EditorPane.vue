@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { AtSign, CircleAlert, FolderSearch, LoaderCircle, Maximize2, Minimize2, MousePointerClick, X } from 'lucide-vue-next';
+import { AtSign, CircleAlert, CloudOff, FolderSearch, LoaderCircle, Maximize2, Minimize2, MousePointerClick, X } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import type { DamoclesShellApi, FileRef, ShellEditorTab, ShellState } from '../../preload/shell-channels';
 import PaneGrip from '../layout/PaneGrip.vue';
@@ -21,6 +21,7 @@ import ChatReviewTab from './ChatReviewTab.vue';
 import TimelineTab from './TimelineTab.vue';
 import MergeEditor from './merge/MergeEditor.vue';
 import NotDisplayedNotice from './NotDisplayedNotice.vue';
+import LoadFailedNotice from './LoadFailedNotice.vue';
 import { parseRootKey } from '../../preload/folder-root';
 
 const props = defineProps<{ api: DamoclesShellApi; state: ShellState }>();
@@ -41,9 +42,28 @@ const notDisplayed = computed(() => {
 });
 // A core-originated placeholder (a git side) is no file, so there is nothing to reveal.
 const notDisplayedOnDisk = computed(() => tab.value?.documentId !== undefined && store.state.value?.documents[tab.value.documentId]?.path !== undefined);
+// A text tab's content is loaded here too, since a remote file whose host is offline shows a placeholder, never the editor.
+const loadsHere = (current: ShellEditorTab | null): current is ShellEditorTab & { documentId: string } =>
+  current !== null && current.documentId !== undefined && (current.kind === 'notDisplayed' || TEXT_KINDS.has(current.kind));
 watch(tab, (current) => {
-  if (current?.kind === 'notDisplayed' && current.documentId !== undefined) void store.load(current.documentId);
+  if (loadsHere(current)) void store.loadShown(current.documentId);
 }, { immediate: true });
+const loadFailure = computed(() => (loadsHere(tab.value) && store.loadFailed(tab.value.documentId) ? tab.value : undefined));
+// A remote file whose host is not connected: main answers a placeholder until the host connects and the tab gets a new document.
+const offline = computed(() => {
+  const documentId = tab.value && TEXT_KINDS.has(tab.value.kind) ? tab.value.documentId : undefined;
+  const content = documentId === undefined ? undefined : store.contents.value.get(documentId);
+  return content?.kind === 'offline' ? content : undefined;
+});
+const reconnecting = ref(false);
+async function reconnect(hostId: string): Promise<void> {
+  reconnecting.value = true;
+  try {
+    await props.api.reconnectHost(hostId);
+  } finally {
+    reconnecting.value = false;
+  }
+}
 
 const diffTab = computed(() => (tab.value?.diff ? (tab.value as ShellEditorTab & { diff: NonNullable<ShellEditorTab['diff']> }) : undefined));
 const searchEditorTab = computed(() => (tab.value?.searchEditor && tab.value.documentId !== undefined ? (tab.value as ShellEditorTab & { searchEditor: NonNullable<ShellEditorTab['searchEditor']> }) : undefined));
@@ -124,6 +144,7 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
       <EditorTabs
         :api="api"
         :close-shortcut="state.shortcuts.closeEditor"
+        :projects="state.projects"
         @reveal-in-files="emit('revealInFiles', $event)"
         @focus-overlay="store.setFocusOverlay(true)"
       />
@@ -247,8 +268,34 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
         :aria-labelledby="`editor-tab-${tab.id}`"
         class="relative min-h-0 flex-1"
       >
+        <LoadFailedNotice
+          v-if="loadFailure"
+          :tab="loadFailure"
+        />
+        <div
+          v-else-if="offline"
+          data-testid="editor-offline"
+          class="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-13 text-(--d-muted)"
+        >
+          <CloudOff
+            aria-hidden="true"
+            class="size-6 text-(--d-faint)"
+          />
+          <p>{{ t('remote.editor.offline', { name: offline.hostName }) }}</p>
+          <Button
+            size="sm"
+            variant="outline"
+            data-testid="editor-reconnect"
+            class="d-press h-7 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-12 hover:border-(--d-accent) hover:bg-(--d-card)"
+            :disabled="reconnecting"
+            @click="reconnect(offline.hostId)"
+          >
+            {{ t('remote.editor.reconnect') }}
+          </Button>
+        </div>
         <CodeEditor
           v-if="TEXT_KINDS.has(tab.kind)"
+          v-show="!offline && !loadFailure"
           :api="api"
           :tab="tab"
           :menu-shortcuts="state.shortcuts.editorMenu"

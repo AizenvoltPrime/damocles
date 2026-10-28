@@ -7,6 +7,7 @@ import type { MemoryKind } from '@shared/types/memory';
 import type { ChatAttachmentInfo } from '@shared/types/chat-attachment';
 import type { SettingsAccountId, SettingsTarget } from '@shared/settings-sections';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { chatOffline } from '@/composables/useChatHost';
 
 type RewindSource = 'picker' | 'bubble' | null;
 
@@ -79,8 +80,10 @@ export const useUIStore = defineStore('ui', () => {
   const returnedPrompt = shallowRef<UserContentBlock[] | null>(null);
   // Text the host appended (composerAppend) before the composer mounted, in order.
   const appendedPrompt = shallowRef<string[] | null>(null);
-  // Rule 18: a chat whose worktree was deleted is read-only history, so nothing rewinds or forks it.
-  const historyReadOnly = computed(() => worktree.value?.phase === 'deleted');
+  // Rule 18: a chat whose worktree was deleted is read-only history, so nothing rewinds or forks it; nor does a remote
+  // chat's transcript shown from its mirror while its host is offline, which no core answers.
+  const offlineTranscript = chatOffline() !== undefined;
+  const historyReadOnly = computed(() => offlineTranscript || worktree.value?.phase === 'deleted');
 
   function setProcessing(value: boolean) {
     isProcessing.value = value;

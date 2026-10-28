@@ -12,9 +12,12 @@ const cancelButton = computed(() => props.request.cancelLabel !== undefined);
 // The index Escape and the scrim choose: the Cancel button, or one past the buttons when there is none.
 const cancel = computed(() => (cancelButton.value ? 0 : -1));
 const firstAction = computed(() => (cancelButton.value ? 1 : 0));
+// The filled button is the main action: the first, or in a danger dialog the last, which is the risky one ("Keep running",
+// then "End terminals").
+const fillIndex = computed(() => (props.request.severity === 'danger' ? props.request.actions.length - 1 : 0));
 const buttons = computed((): DialogButton[] => [
   ...(props.request.cancelLabel === undefined ? [] : [{ label: props.request.cancelLabel, variant: 'plain' as const, testId: 'overlay-message-cancel' }]),
-  ...props.request.actions.map((label, index): DialogButton => ({ label, variant: index === 0 ? 'fill' : 'plain', testId: `overlay-message-action-${index}` })),
+  ...props.request.actions.map((label, index): DialogButton => ({ label, variant: index === fillIndex.value ? 'fill' : 'plain', testId: `overlay-message-action-${index}` })),
 ]);
 const initialFocus = computed(() => (props.request.defaultAction === undefined ? Math.max(0, cancel.value) : props.request.defaultAction + firstAction.value));
 

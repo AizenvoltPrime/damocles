@@ -2,13 +2,16 @@
 // popup window's page both run the overlay preload; main listens on each one's own webContents.ipc, which only that page's
 // messages reach, and answers the popup page only on getState and the toast channels.
 
-import type { ChatsContinueWorktree, ChatsWorktreeOptions, DropZonesPointer, GridPane, GridSlot, NewChatWorktree, ShellGridLayout, ShellLocale, ShellPlatform } from './shell-channels';
+import type { ChatsContinueWorktree, ChatsWorktreeOptions, DropZonesPointer, GridPane, GridSlot, NewChatWorktree, ProjectConnection, ShellGridLayout, ShellLocale, ShellPlatform } from './shell-channels';
 import type { SettingsAccountId, SettingsSectionId, SettingsTarget } from '../../shared/settings-sections';
 import type { DesktopLanguageSetting } from '../local-services/desktop-configuration';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../shared/types/messages';
 import type { ChimeTone, NotificationBody, NotificationCenterState } from './notifications';
 import type { ReleaseIndex, ReleaseNotes, UpdateSnapshot, VersionInfo } from './updates';
 import type { ScmLetter } from './scm-channels';
+import type { HostLatency, HostReconnect } from '../../shared/host-connection';
+import type { HostTone } from '../../shared/host-tones';
+import type { PermissionMode } from '../../shared/types/settings';
 import type { TerminalColor, TerminalGlyph, TerminalProfileOption, TerminalProfileReport, TerminalProjectOption } from './terminal-channels';
 import { INPUT_VALIDATIONS, MAX_INPUT_VALUE_LENGTH, inputProblem, type InputPlatform, type InputValidation } from '../../shared/input-validation';
 import { visibleText } from '../../shared/visible-text';
@@ -73,6 +76,60 @@ export const OVERLAY_CHANNELS = {
   // {} → { message } | null from the Background model (D24) for the open mergeMessage dialog's worktree; answers closed unless
   // one is open, and null when no message came (main told the user why)
   worktreeGenerateMessage: 'damocles:overlay:worktree:generate-message',
+  // The Connect dialog and its host cards; each answers closed unless a connect request is open, and check-name, rename,
+  // connect answer, browse, show-log and set-install-folder also while a settings request is open.
+  // { name, hostId? } → NameCheck, the host store's own validator; hostId: the host being renamed, whose own name never clashes
+  hostsCheckName: 'damocles:overlay:hosts:check-name',
+  // { hostId, name } → NameCheck; saved only when it passes
+  hostsRename: 'damocles:overlay:hosts:rename',
+  // { input } → HostParseResult: "+ New host"'s user@host[:port] or pasted ssh command against the allowlist
+  hostsParse: 'damocles:overlay:hosts:parse',
+  // ConnectStartRequest → ConnectStartResult; progress follows on connectStep
+  connectStart: 'damocles:overlay:connect:start',
+  // { attemptId, promptId, answer: string | null }: a host key 'connect' or 'cancel', a secret, or null to cancel the prompt
+  connectAnswer: 'damocles:overlay:connect:answer',
+  // { attemptId }: Escape or Cancel during an attempt; ends its ssh
+  connectCancel: 'damocles:overlay:connect:cancel',
+  // { hostId, path?: string } → RemoteBrowseResult of a connected host; no path: the host's home
+  connectBrowse: 'damocles:overlay:connect:browse',
+  // { hostId, path } → { projectKey }: adds the folder as a project (asking trust) or selects the project it already is
+  connectPickFolder: 'damocles:overlay:connect:pick-folder',
+  // { hostId } → readonly HostRun[], the host's running terminals from its daemon
+  hostsRuns: 'damocles:overlay:hosts:runs',
+  // { hostId, runId }: ends that terminal on the host
+  hostsKillRun: 'damocles:overlay:hosts:kill-run',
+  // { hostId, runId }: that terminal gets a tab in this window's terminal panel, active and focused, and this computer keeps
+  // showing it; its other viewers keep theirs
+  hostsOpenRun: 'damocles:overlay:hosts:open-run',
+  // { hostId }: opens the host's daemon log and its last bridge stderr as read-only tabs
+  hostsShowLog: 'damocles:overlay:hosts:show-log',
+  // { hostId, folder: string | null } → InstallFolderResult; null goes back to ~/.damocles/server
+  hostsSetInstallFolder: 'damocles:overlay:hosts:set-install-folder',
+  // { hostId }: writes the host's hostKeyChanged failure's params.command (ssh-keygen -R with the name quoted for any shell)
+  // to the clipboard
+  hostsCopyHostKeyCommand: 'damocles:overlay:hosts:copy-host-key-command',
+  // { hostId } → LingerResult: loginctl enable-linger for the host's own user; answers closed unless a connect or closeRemote
+  // request is open
+  hostsAllowBackground: 'damocles:overlay:hosts:allow-background',
+  // Settings > Remote hosts and the host card's actions; each answers closed unless a connect or settings request is open
+  // {} -> readonly RemoteHostEntry[]
+  hostsList: 'damocles:overlay:hosts:list',
+  // { hostId, change: HostSettingChange }
+  hostsSetSetting: 'damocles:overlay:hosts:set-setting',
+  // { hostId, credentialHost }
+  hostsRevokeCredential: 'damocles:overlay:hosts:revoke-credential',
+  // { hostId } -> PasswordlessResult; its steps follow on hostsPasswordlessStep
+  hostsSetUpPasswordless: 'damocles:overlay:hosts:set-up-passwordless',
+  // { hostId } -> RemovalInfo of a connected host
+  hostsRemovalInfo: 'damocles:overlay:hosts:removal-info',
+  // { hostId, options: RemoveServerOptions } -> RemoveServerResult
+  hostsRemoveServer: 'damocles:overlay:hosts:remove-server',
+  // { hostId } -> RemoveServerResult: the removal stage that refused with daemonRunning, run again over ssh alone
+  hostsRetryRemoval: 'damocles:overlay:hosts:retry-removal',
+  // { hostId }: forgets the host and everything this computer keeps of it
+  hostsForget: 'damocles:overlay:hosts:forget',
+  // { hostId }: ends the connect request and opens Settings > Remote hosts at the host; answers while a connect request is open
+  hostsOpenSettings: 'damocles:overlay:hosts:open-settings',
   // main → renderer
   // OverlayState after the UI language changed
   state: 'damocles:overlay:state',
@@ -88,6 +145,8 @@ export const OVERLAY_CHANNELS = {
   settingsMessage: 'damocles:overlay:settings:message',
   // main → renderer, { generation }: the modal is attached to another chat now, and drops that chat's state
   settingsAttached: 'damocles:overlay:settings:attached',
+  // main -> renderer, OverlaySettingsScopes['host']: the attached remote chat's host was renamed or recolored while the modal shows
+  settingsScopeHost: 'damocles:overlay:settings:scope-host',
   // main → renderer, SettingsTarget: settings were asked for again while the modal shows
   settingsTarget: 'damocles:overlay:settings:target',
   // main → renderer, OverlayPrefs after a damocles.desktop.* setting changed while the modal shows
@@ -104,7 +163,358 @@ export const OVERLAY_CHANNELS = {
   updateState: 'damocles:overlay:update:state',
   // main → renderer, DropZonesPointer from the shell's pane drag while a dropZones request is open
   dropZonesPointer: 'damocles:overlay:drop-zones:pointer',
+  // main → renderer, ConnectStepEvent: an attempt's state after each change, while a connect request is open
+  connectStep: 'damocles:overlay:connect:step',
+  // main -> renderer, readonly RemoteHostEntry[] after any host change while a connect or settings request is open
+  hostsEntries: 'damocles:overlay:hosts:entries',
+  // main -> renderer, PasswordlessStepEvent
+  hostsPasswordlessStep: 'damocles:overlay:hosts:passwordless-step',
+  // main → renderer, readonly HostCardInfo[] after a host changed (renamed, connected, dropped) while a connect request is open
+  connectHosts: 'damocles:overlay:connect:hosts',
+  // main → renderer, readonly CloseRemoteRow[], every row whole, after a status or token note changed while a closeRemote
+  // request is open
+  closeRemoteRows: 'damocles:overlay:close-remote:rows',
 } as const;
+
+// The steps of a connection attempt, in the order they run; an attempt may skip installing.
+export const CONNECT_STEPS = ['connecting', 'authenticating', 'checking', 'installing', 'starting'] as const;
+export type ConnectStep = (typeof CONNECT_STEPS)[number];
+
+// Why an attempt failed; the overlay localizes remote.failure.<code> with its params.
+export const SSH_FAILURE_CODES = [
+  'hostKeyChanged', 'hostKeyRefused', 'permissionDenied', 'unresolved', 'refused', 'timedOut', 'unreachable', 'cancelled',
+  'unsupportedOs', 'glibcTooOld', 'glibcxxMissing', 'kernelTooOld', 'macosTooOld', 'windowsBuildTooOld', 'nixLdMissing',
+  'noexec', 'lowSpace', 'installFolderInvalid', 'installFolderUnsafe', 'hashMismatch', 'downloadAndUploadFailed', 'selfTestFailed', 'bridgeFailed',
+  // the host's saved address holds something the parser's rules now refuse (params.setting); ssh did not start
+  'destinationRefused', 'unknown',
+] as const;
+export type SshFailureCode = (typeof SSH_FAILURE_CODES)[number];
+// handshakeFailed: the bridge ran but hello, welcome or attach did not complete (params.reason)
+export type ConnectFailureCode = SshFailureCode | 'handshakeFailed';
+
+// Text produced on a target or by main for one: a code plus parameters the overlay localizes (remote.notice.<code>).
+export interface HostNotice {
+  readonly code: string;
+  readonly params: Readonly<Record<string, string | number>>;
+}
+
+// a sharedHome notice's hosts param joins the other machines' hostnames, which OTHER_HOSTNAME keeps free of line breaks
+export const SHARED_HOME_SEPARATOR = '\n';
+
+export interface ConnectFailure {
+  readonly code: ConnectFailureCode;
+  readonly params: Readonly<Record<string, string | number>>;
+}
+
+// What ssh asks during an attempt: a host key to accept (answered 'connect' or 'cancel') or a secret (answered with its text).
+export type SshPrompt =
+  | { readonly kind: 'hostKey'; readonly host: string; readonly keyType: string; readonly fingerprint: string }
+  // secretKind names the field only, which is masked for every kind; offerRemember: the host's Remember password setting is
+  // on and the prompt binds to exactly one hop
+  | { readonly kind: 'secret'; readonly secretKind: 'password' | 'passphrase' | 'pin' | 'otp' | 'other'; readonly text: string; readonly offerRemember?: true };
+
+// The user's answer to an SshPrompt; remember is true only when the prompt offered it and the user checked it.
+export interface SshPromptAnswer {
+  readonly answer: string;
+  readonly remember: boolean;
+}
+
+// A target's OS as platform detection found it once, with the shell Win32-OpenSSH runs commands in.
+export interface CachedPlatform {
+  readonly os: ShellPlatform;
+  readonly windowsShell?: 'cmd' | 'powershell';
+}
+
+// An attempt as the timeline shows it, sent whole after every change.
+export interface ConnectStepEvent {
+  readonly attemptId: string;
+  readonly hostId: string;
+  readonly step: ConnectStep | 'connected' | 'failed';
+  // the steps this attempt has entered, in order
+  readonly visited: readonly ConnectStep[];
+  // 0..1 while installing downloads or uploads
+  readonly progress?: number;
+  // the question ssh waits on; answer it through connectAnswer with promptId
+  readonly prompt?: { readonly promptId: string } & SshPrompt;
+  readonly failure?: ConnectFailure;
+  // the probe's non-fatal findings
+  readonly notices: readonly HostNotice[];
+}
+
+// A saved SSH host as the Connect dialog's card shows it; names and labels come from this computer's host store.
+export interface HostCardInfo {
+  readonly hostId: string;
+  readonly name: string;
+  readonly color?: HostTone;
+  // the ssh alias, or user@host:port
+  readonly destinationLabel: string;
+  readonly os?: ShellPlatform;
+  readonly connection: ProjectConnection;
+  // an attempt waits on a prompt the user has not seen yet
+  readonly signInNeeded: boolean;
+  // epoch ms
+  readonly lastUsed?: number;
+  // native to the host, most recent first
+  readonly recentFolders: readonly string[];
+  // folders of the host that are projects now, native to the host
+  readonly projectFolders: readonly string[];
+  readonly notices: readonly HostNotice[];
+  // the last attempt's failure while it is the host's state
+  readonly failure?: ConnectFailure;
+  // the handshake's measured skew, present only past CLOCK_SKEW_WARN_MS
+  readonly clockSkewMs?: number;
+  // the host's install folder setting; absent: ~/.damocles/server
+  readonly installFolder?: string;
+  // the reconnect loop's phase while the host is away
+  readonly reconnect?: HostReconnect;
+  // the latest round trip and the last ten, which the card's sparkline draws
+  readonly latency?: HostLatency;
+  // the devices attached to the host's daemon, this one included, while connected
+  readonly devices?: readonly HostDevice[];
+  // the safety profile the card's Safety line shows
+  readonly defaultPermissionMode?: PermissionMode;
+  readonly allowBypass: boolean;
+  // what Damocles changed on the host (RemoteHostFacts)
+  readonly passwordless: boolean;
+  readonly keyInstalledByDamocles: boolean;
+  readonly lingerEnabledByDamocles: boolean;
+}
+
+// A device attached to a host's daemon, named by the deviceName it sent in hello; self: this computer.
+export interface HostDevice {
+  readonly deviceName: string;
+  readonly self: boolean;
+}
+
+// Devices one host card lists, and characters of a device name.
+export const MAX_HOST_DEVICES = 32;
+export const MAX_DEVICE_NAME_LENGTH = 64;
+
+// What the daemon answered Allow background work: refused carries the host user an admin enables linger for.
+export type LingerResult =
+  | { readonly result: 'enabled' }
+  | { readonly result: 'alreadyEnabled' }
+  | { readonly result: 'refused'; readonly user: string }
+  | { readonly result: 'failed'; readonly code: string };
+
+// A chat's state in the close dialog: signIn waits with Sign-in needed, idle finished while the dialog was open.
+export const CLOSE_REMOTE_STATUSES = ['running', 'waiting', 'signIn', 'idle'] as const;
+export type CloseRemoteStatus = (typeof CLOSE_REMOTE_STATUSES)[number];
+
+// A remote chat whose run outlives the app; every label comes from this computer's host store and chat list.
+export interface CloseRemoteRow {
+  readonly hostId: string;
+  // the core panel id of the chat, unique among the rows
+  readonly panelId: string;
+  // '' is a new conversation, which the dialog labels itself
+  readonly title: string;
+  readonly projectLabel: string;
+  readonly hostLabel: string;
+  readonly hostTone?: HostTone;
+  readonly status: CloseRemoteStatus;
+  // the refresh of this provider's sign-in failed: the whole minutes its current token has left; provider is a pi provider id
+  // (PROVIDER_ID_PATTERN)
+  readonly tokenNote?: { readonly provider: string; readonly minutesLeft: number };
+  // the host ends the user's processes at logout and has no linger, so the run stops when the user logs out there
+  readonly lingerWarning?: true;
+}
+
+export type CloseRemoteChoice = 'keep' | 'stop' | 'cancel';
+
+// A close row's host part, which follows a rename, a recolor and the host's notices while the dialog shows.
+export type CloseRowHost = Pick<CloseRemoteRow, 'hostLabel' | 'hostTone' | 'lingerWarning'>;
+
+// A host's measured clock skew past this many ms shows a warning on its card.
+export const CLOCK_SKEW_WARN_MS: number = 2 * 60 * 1000;
+
+// Host names (a host store rule): 1..MAX_HOST_NAME_LENGTH characters after trimming and NFC.
+export const MAX_HOST_NAME_LENGTH = 64;
+export const NAME_REFUSALS = ['empty', 'tooLong', 'controlChars', 'bidiChars', 'taken'] as const;
+export type NameRefusal = (typeof NAME_REFUSALS)[number];
+// taken: clashWith is the other host's name or alias it equals
+export type NameCheck = { readonly ok: true; readonly name: string } | { readonly ok: false; readonly reason: NameRefusal; readonly clashWith?: string };
+
+// An option of a parsed "+ New host" entry as ssh names it (-J shows as ProxyJump), its value exactly as written.
+export interface ParsedSshOption {
+  readonly name: string;
+  readonly value: string;
+}
+
+// option: a flag or -o option outside the allowlist; fixed: an option Damocles sets itself; value: an allowed option with a value
+// it refuses; relativePath: an identity file that is not a full path; conflict: a second route gives a setting another value, or
+// a second -J; typography: a word processor's dash or quote; quotes: an unclosed quote; missing: a flag or option without its
+// value; input: past the length Damocles reads, or more than one line; destination: no host or a malformed one; command: a
+// remote command after the host
+export const HOST_PARSE_REFUSALS = ['option', 'fixed', 'value', 'relativePath', 'conflict', 'typography', 'quotes', 'missing', 'input', 'destination', 'command'] as const;
+export type HostParseRefusal = (typeof HOST_PARSE_REFUSALS)[number];
+
+// refused: the flag or option as the user would type it ('-F', 'ProxyCommand', 'StrictHostKeyChecking=no'), the character for
+// typography, 'input', 'command', and for destination the part that failed ('host', 'user', 'port') else 'destination'
+export type HostParseResult =
+  | { readonly ok: true; readonly destinationLabel: string; readonly options: readonly ParsedSshOption[]; readonly prefillName: string; readonly nameCheck: NameCheck }
+  | { readonly ok: false; readonly refused: string; readonly reason: HostParseRefusal };
+
+// A saved host, an ssh config alias to save under name, or "+ New host"'s input to parse again and save under name.
+export type ConnectTarget =
+  | { readonly hostId: string }
+  | { readonly alias: string; readonly name: string }
+  | { readonly input: string; readonly name: string };
+
+export type ConnectStartResult =
+  | { readonly ok: true; readonly attemptId: string; readonly hostId: string }
+  | { readonly ok: false; readonly reason: 'name'; readonly check: NameCheck }
+  | { readonly ok: false; readonly reason: 'refused'; readonly refused: string; readonly refusal: HostParseRefusal };
+
+// projectKey: the folder is a project already, which a pick selects instead of adding it again
+export interface RemoteBrowseFolder {
+  readonly name: string;
+  readonly projectKey?: string;
+}
+
+// eperm-privacy: macOS refused a privacy-protected folder (Desktop, Documents, Downloads, iCloud Drive) named by folder.
+// While a picker is open: root is the confinement root the listing lies in (no crumb above it), files the folder's files in
+// file mode, and outside a path no root holds.
+export type RemoteBrowseResult =
+  | {
+      readonly ok: true;
+      readonly path: string;
+      readonly parent?: string;
+      readonly home: string;
+      readonly separator: '/' | '\\';
+      readonly folders: readonly RemoteBrowseFolder[];
+      readonly root?: string;
+      readonly files?: readonly string[];
+    }
+  | { readonly ok: false; readonly error: 'eperm-privacy'; readonly folder: string }
+  | { readonly ok: false; readonly error: 'missing' | 'failed' | 'notConnected' | 'outside' };
+
+// A remote core's file or folder picker in the Connect dialog's folder browser; roots are the folders it is confined to.
+export interface RemotePick {
+  readonly mode: 'file' | 'folder';
+  readonly hostName: string;
+  readonly roots: readonly string[];
+  readonly title?: string;
+  readonly buttonLabel?: string;
+}
+
+// A terminal running on a host, from its daemon's run list; projectKey is this computer's key for its project, when listed.
+// canOpen: hosts.openRun adds a tab for it here: it has no live tab here, its folder is open here, and its host recorded
+// what a view needs.
+export interface HostRun {
+  readonly id: string;
+  readonly title: string;
+  readonly state: 'running' | 'waiting' | 'background';
+  readonly projectKey?: string;
+  readonly canOpen: boolean;
+}
+
+// invalid: not an absolute path or ~-prefixed, or it holds a newline or NUL
+export type InstallFolderResult = { readonly ok: true } | { readonly ok: false; readonly reason: 'invalid' };
+
+// Settings > Remote hosts: a host's own settings as its row shows them; an absent value is the default (off, none).
+export interface RemoteHostSettings {
+  readonly color?: HostTone;
+  // absent: the target's own damocles.permissionMode decides
+  readonly defaultPermissionMode?: PermissionMode;
+  readonly allowBypass: boolean;
+  readonly forwardAgent: boolean;
+  readonly rememberPassword: boolean;
+  readonly browserLocalNetwork: boolean;
+  readonly openLinksWithoutAsking: boolean;
+  readonly osOverride?: ShellPlatform;
+  readonly installFolder?: string;
+}
+
+// What Damocles changed on the host, which Remove Damocles server may undo.
+export interface RemoteHostFacts {
+  // Damocles' key is set up and verified, and ssh offers it
+  readonly passwordless: boolean;
+  // Damocles appended that key to the host's authorized keys
+  readonly keyInstalledByDamocles: boolean;
+  // Allow background work turned linger on
+  readonly lingerEnabledByDamocles: boolean;
+  // credential hosts (git over https) this host may use without asking, each with Revoke
+  readonly alwaysCredentialHosts: readonly string[];
+}
+
+// A saved SSH host in Settings > Remote hosts, in saved order; every label from this computer's host store.
+export interface RemoteHostEntry {
+  readonly hostId: string;
+  readonly authorityKey: string;
+  readonly name: string;
+  readonly destinationLabel: string;
+  // the override, else what detection found
+  readonly os?: ShellPlatform;
+  readonly detectedOs?: ShellPlatform;
+  readonly connection: ProjectConnection;
+  readonly settings: RemoteHostSettings;
+  readonly facts: RemoteHostFacts;
+}
+
+export const HOST_SWITCH_KEYS = ['allowBypass', 'forwardAgent', 'rememberPassword', 'browserLocalNetwork', 'openLinksWithoutAsking'] as const;
+export type HostSwitchKey = (typeof HOST_SWITCH_KEYS)[number];
+
+// One setting change; null clears the value (no color, the host's settings decide the mode, detection decides the OS).
+export type HostSettingChange =
+  | { readonly key: 'color'; readonly value: HostTone | null }
+  | { readonly key: 'defaultPermissionMode'; readonly value: PermissionMode | null }
+  | { readonly key: HostSwitchKey; readonly value: boolean }
+  | { readonly key: 'osOverride'; readonly value: ShellPlatform | null };
+
+export type PasswordlessStep = 'generate' | 'install' | 'verify';
+// path names the host file a failure concerns (ownership, notFile, writeFailed, aclFailed, restricted); keyPairIncomplete's
+// path is the half of Damocles' key pair left on this computer
+// publickeyNotPreferred: the PreferredAuthentications `ssh -G` resolves for the host would try another method before Damocles'
+// key; configUnreadable: no ssh, or `ssh -G` named none
+// accountFailed: whoami could not name the Windows account the key is installed for
+// installFailed: the daemon answered the install with an error; notConnected: the connection closed first
+export type PasswordlessFailureCode = 'notConnected' | 'keygenFailed' | 'keyPairIncomplete' | 'unsupported' | 'ownership' | 'notFile' | 'writeFailed' | 'aclFailed' | 'accountFailed' | 'restricted' | 'verifyFailed' | 'publickeyNotPreferred' | 'configUnreadable' | 'installFailed';
+export interface PasswordlessFailure {
+  readonly code: PasswordlessFailureCode;
+  readonly params: Readonly<Record<string, string>>;
+}
+// A step of Set up passwordless login, pushed while it runs.
+export interface PasswordlessStepEvent {
+  readonly hostId: string;
+  readonly step: PasswordlessStep;
+  readonly state: 'running' | 'done' | 'failed';
+  readonly failure?: PasswordlessFailure;
+}
+export type PasswordlessResult = { readonly ok: true } | ({ readonly ok: false; readonly step: PasswordlessStep } & PasswordlessFailure);
+
+// A running chat or terminal Remove Damocles server would end, from the daemon's listRuns.
+export interface RemovalRun {
+  readonly kind: 'chat' | 'terminal';
+  readonly id: string;
+  readonly title: string;
+  readonly state: 'running' | 'waiting' | 'background';
+  readonly projectKey?: string;
+}
+// The removal dialog: the running work, and each checkbox only when Damocles made that change.
+export interface RemovalInfo {
+  readonly runs: readonly RemovalRun[];
+  readonly offerRemoveKey: boolean;
+  readonly offerDisableLinger: boolean;
+}
+export interface RemoveServerOptions {
+  readonly removeKey: boolean;
+  readonly disableLinger: boolean;
+}
+// stageFailed: {code} of STAGE_FAILED_CODES, and {exitCode} with code exit; daemonRunning: this machine's daemon runs or holds its
+// lock
+export const STAGE_FAILED_CODES = ['keyFile', 'runKey', 'userName', 'protocol', 'killed', 'exit'] as const;
+export type RemoveServerFailureCode = 'notConnected' | 'unsupported' | 'daemonRunning' | 'stageFailed';
+// versionKept: {version, machine}, another machine's live daemon runs it; serverFolderKept: other machines' entries stay;
+// deleteFailed: {entry} could not be deleted; installInProgress: {folder} is kept while a stage installs there
+export type RemoveServerNoticeCode = 'versionKept' | 'serverFolderKept' | 'keyNotFound' | 'lingerFailed' | 'deleteFailed' | 'installInProgress';
+export type RemoveServerResult =
+  | { readonly ok: true; readonly notices: ReadonlyArray<{ readonly code: RemoveServerNoticeCode; readonly params: Readonly<Record<string, string>> }> }
+  | { readonly ok: false; readonly code: RemoveServerFailureCode; readonly params: Readonly<Record<string, string>> };
+
+// Characters of a "+ New host" input, a remote path and an ssh prompt answer the Connect channels accept.
+export const MAX_HOST_INPUT_LENGTH = 2000;
+export const MAX_REMOTE_PATH_LENGTH = 4096;
+export const MAX_PROMPT_ANSWER_LENGTH = 4096;
 
 // Lucide names a request may carry; main rejects a request naming any other icon.
 export const OVERLAY_ICONS = [
@@ -202,6 +612,9 @@ export const MAX_OVERLAY_ITEMS = 100;
 // MAX_OVERLAY_ITEMS.
 export const MAX_MENU_ITEMS = 160;
 export const MAX_OVERLAY_LABEL_LENGTH = 200;
+// The Connect dialog's ssh config aliases; an alias is at most isSafeAlias's 255 characters.
+export const MAX_SSH_CONFIG_ALIASES = 1000;
+export const MAX_SSH_ALIAS_LENGTH = 255;
 export const MAX_OVERLAY_ID_LENGTH = 200;
 // A palette command id; an Open Chat in Project id carries the project's absolute path.
 export const MAX_COMMAND_ID_LENGTH = 5000;
@@ -359,6 +772,8 @@ export type OverlayRequest =
       readonly account?: SettingsAccountId;
       // a release index version, which About's What's new expands and scrolls to
       readonly release?: string;
+      // a saved host's id, which the Remote hosts section shows
+      readonly host?: string;
       readonly generation: number;
       // present while the selected chat is remote: its User, host and Project tabs
       readonly scopes?: OverlaySettingsScopes;
@@ -410,7 +825,40 @@ export type OverlayRequest =
       readonly shortcut: string;
     }
   // Only main asks one (D41, slice 12a); it stacks above an open request as a message does.
-  | WorktreeDialogRequest;
+  | WorktreeDialogRequest
+  // Connect to Host (only main opens it): the host list, or with hostId straight to that host's attempt and folder browser;
+  // attempt is that host's attempt in flight, its waiting prompt included
+  | {
+      readonly kind: 'connect';
+      readonly hostId?: string;
+      // with hostId: the host's card, with its name field open for rename, starting no connection
+      readonly card?: 'rename' | 'show';
+      readonly hosts: readonly HostCardInfo[];
+      // Host aliases of ~/.ssh/config that are not saved hosts yet
+      readonly sshConfigAliases: readonly string[];
+      readonly attempt?: ConnectStepEvent;
+      // with hostId: the folder browser alone, as a remote core's picker, answering the picked path
+      readonly pick?: RemotePick;
+    }
+  // A close or quit while remote chats run (only main asks it): Keep running, Stop agents or Cancel; it stacks as a message
+  // does, and its rows follow on closeRemoteRows
+  | { readonly kind: 'closeRemote'; readonly rows: readonly CloseRemoteRow[] }
+  // A target asks for this computer's git credential (only main asks it); it stacks as a message does
+  | ({ readonly kind: 'gitCredentialConsent' } & GitCredentialConsent);
+
+// The host's name and tone come from this computer's host store; credentialHost is the https host the target's git asked
+// for, as main validated it; targetHelper: the target's git has a credential helper of its own that would save the credential.
+export interface GitCredentialConsent {
+  readonly hostName: string;
+  readonly hostColor?: HostTone;
+  readonly credentialHost: string;
+  readonly targetHelper: boolean;
+}
+
+export const GIT_CREDENTIAL_CONSENT_CHOICES = ['once', 'always', 'deny'] as const;
+export type GitCredentialConsentChoice = (typeof GIT_CREDENTIAL_CONSENT_CHOICES)[number];
+// The Connect dialog answers dismissed, a picked folder being added through connectPickFolder before it closes; a picker
+// answers its picked path.
 
 export type WorktreeDialogRequest = { readonly kind: 'worktreeDialog' } & WorktreeDialog;
 
@@ -658,7 +1106,12 @@ export type OverlayAnswer =
   // Continue in a worktree: one of the listed worktrees; the shell then calls newChatInWorktree
   | { readonly kind: 'newChatMenu'; readonly choice: 'continueInWorktree'; readonly worktreeId: string }
   // Escape answers dismissed, which main takes as Skip, Cancel or Close
-  | ({ readonly kind: 'worktreeDialog' } & WorktreeDialogAnswer);
+  | ({ readonly kind: 'worktreeDialog' } & WorktreeDialogAnswer)
+  // a picker's path, which main confines again; Escape and Cancel answer dismissed
+  | { readonly kind: 'connect'; readonly path: string }
+  // dontAskAgain only with keep or stop; Escape and the scrim answer cancel
+  | { readonly kind: 'closeRemote'; readonly choice: CloseRemoteChoice; readonly dontAskAgain: boolean }
+  | { readonly kind: 'gitCredentialConsent'; readonly choice: GitCredentialConsentChoice };
 
 // Each answers only the dialog of the same name.
 export type WorktreeDialogAnswer =
@@ -768,6 +1221,8 @@ export interface OverlayToast {
 export interface OverlayState {
   readonly locale: ShellLocale;
   readonly platform: ShellPlatform;
+  // remote features are on in this build; Settings lists Remote hosts only then
+  readonly remoteEnabled: boolean;
 }
 
 // CSS px of the measured toast stack with its margin, 0×0 when no toast shows; the area's bottom-right corner is the popup
@@ -788,7 +1243,7 @@ export type OverlaySettingsScope = 'user' | 'machine' | 'project';
 
 // A remote chat's settings tabs: User, its host (as this computer names it) and Project, with the tab shown.
 export interface OverlaySettingsScopes {
-  readonly host: { readonly name: string; readonly color?: string };
+  readonly host: { readonly name: string; readonly color?: HostTone };
   // the Project tab's settings file, its path native to the host
   readonly projectFile?: string;
   readonly active: OverlaySettingsScope;
@@ -846,6 +1301,8 @@ export interface DamoclesOverlayApi {
   settingsSend(generation: number, message: WebviewToExtensionMessage): void;
   onSettingsMessage(listener: (message: ExtensionToWebviewMessage) => void): () => void;
   onSettingsAttached(listener: (attached: OverlaySettingsAttached) => void): () => void;
+  // the host tab's name and color after a rename or recolor; returns the unsubscribe
+  onSettingsScopeHost(listener: (host: OverlaySettingsScopes['host']) => void): () => void;
   // a remote chat's settings tab; main re-attaches the modal and answers the tab attached, or rejects when it could not
   setSettingsScope(scope: OverlaySettingsScope): Promise<PopupAnswer<OverlaySettingsScope>>;
   onSettingsTarget(listener: (target: SettingsTarget) => void): () => void;
@@ -892,4 +1349,42 @@ export interface DamoclesOverlayApi {
   continueWorktrees(): Promise<PopupAnswer<readonly ChatsContinueWorktree[]>>;
   // Generate in the open mergeMessage dialog; null: no message came, and main told the user why
   generateWorktreeMessage(): Promise<PopupAnswer<{ readonly message: string } | null>>;
+  // The Connect dialog, from here on; each answers closed unless a connect request is open
+  checkHostName(name: string, hostId?: string): Promise<PopupAnswer<NameCheck>>;
+  renameHost(hostId: string, name: string): Promise<PopupAnswer<NameCheck>>;
+  parseHost(input: string): Promise<PopupAnswer<HostParseResult>>;
+  startConnect(target: ConnectTarget): Promise<PopupAnswer<ConnectStartResult>>;
+  // null cancels the prompt, which fails the attempt
+  // remember: "Remember on this computer", only for a secret prompt that offered it
+  answerConnect(attemptId: string, promptId: string, answer: string | null, remember?: boolean): Promise<PopupAnswer<void>>;
+  cancelConnect(attemptId: string): Promise<PopupAnswer<void>>;
+  browseHost(hostId: string, path?: string): Promise<PopupAnswer<RemoteBrowseResult>>;
+  pickHostFolder(hostId: string, path: string): Promise<PopupAnswer<{ readonly projectKey: string }>>;
+  hostRuns(hostId: string): Promise<PopupAnswer<readonly HostRun[]>>;
+  killHostRun(hostId: string, runId: string): Promise<PopupAnswer<void>>;
+  openHostRun(hostId: string, runId: string): Promise<PopupAnswer<void>>;
+  showHostLog(hostId: string): Promise<PopupAnswer<void>>;
+  setInstallFolder(hostId: string, folder: string | null): Promise<PopupAnswer<InstallFolderResult>>;
+  // rejects unless the host's failure is hostKeyChanged
+  copyHostKeyCommand(hostId: string): Promise<PopupAnswer<void>>;
+  // returns the unsubscribe
+  onConnectStep(listener: (event: ConnectStepEvent) => void): () => void;
+  onConnectHosts(listener: (hosts: readonly HostCardInfo[]) => void): () => void;
+  // answers closed unless a connect or closeRemote request is open
+  allowBackgroundWork(hostId: string): Promise<PopupAnswer<LingerResult>>;
+  // Settings > Remote hosts and the host card's actions; each answers closed unless a connect or settings request is open
+  listRemoteHosts(): Promise<PopupAnswer<readonly RemoteHostEntry[]>>;
+  setHostSetting(hostId: string, change: HostSettingChange): Promise<PopupAnswer<void>>;
+  revokeCredentialHost(hostId: string, credentialHost: string): Promise<PopupAnswer<void>>;
+  setUpPasswordless(hostId: string): Promise<PopupAnswer<PasswordlessResult>>;
+  removalInfo(hostId: string): Promise<PopupAnswer<RemovalInfo>>;
+  removeServer(hostId: string, options: RemoveServerOptions): Promise<PopupAnswer<RemoveServerResult>>;
+  retryRemoval(hostId: string): Promise<PopupAnswer<RemoveServerResult>>;
+  forgetHost(hostId: string): Promise<PopupAnswer<void>>;
+  // answers closed unless a connect request is open
+  openHostSettings(hostId: string): Promise<PopupAnswer<void>>;
+  // returns the unsubscribe
+  onHostEntries(listener: (hosts: readonly RemoteHostEntry[]) => void): () => void;
+  onPasswordlessStep(listener: (event: PasswordlessStepEvent) => void): () => void;
+  onCloseRemoteRows(listener: (rows: readonly CloseRemoteRow[]) => void): () => void;
 }

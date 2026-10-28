@@ -38,7 +38,7 @@ import type { UsageStatsQuery, UsageStatsReport } from './usage-stats';
 import type { SteerTargetInfo } from './subagents';
 import type { AgentUsageTotals } from '../usage-accounting';
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult, UserProfile, ObservationCursor } from './memory';
-import type { AccountProviderId, ExternalKeySource, KeyProviderId, ProviderCredentialActive, SignInProviderId } from '../settings-sections';
+import { ACCOUNT_PROVIDER_NAMES, type AccountProviderId, type ExternalKeySource, type KeyProviderId, type ProviderCredentialActive, type SignInProviderId } from '../settings-sections';
 import type { ModelVendor } from '../model-vendor';
 import type { PendingConsolidationCandidate, ConsolidationResult, ConsolidationPhaseEvent } from './consolidation';
 import type { MemoryInjectionDisplay } from './context-injection';
@@ -56,6 +56,17 @@ import type { CompassIndexStatus, CompassGraphData, CompassSearchResult, Compass
 import type { ToolsSnapshot, ToolGroup } from './tools';
 import type { WorkspaceFolderInfo } from './workspace-folders';
 import type { SettingsAccountId, SettingsSectionId } from '../settings-sections';
+
+// A pi provider id as a credential ask or a run's token note names it; main's user relays and the overlay refuse any other form.
+export const PROVIDER_ID_PATTERN: RegExp = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+// Proper nouns, never translated; any other provider shows its id.
+export const PROVIDER_NAMES: Readonly<Record<string, string>> = {
+  anthropic: "Claude",
+  "openai-codex": "ChatGPT",
+  openai: "OpenAI",
+  "google-gemini-cli": "Gemini",
+  ...ACCOUNT_PROVIDER_NAMES,
+};
 
 // Re-exported from ./memory (its true home) so existing transport-layer imports keep working.
 export type { ObservationCursor } from './memory';
@@ -118,6 +129,8 @@ export type WebviewToExtensionMessage =
   | { type: "requestSkippedFiles"; target: SkippedFilesTarget }
   | { type: "clearSession" }
   | { type: "interrupt" }
+  /** "Continue with my sign-in", sent only on its click on a `signInRequest` card: the turn re-pins to this view's device. */
+  | { type: "continueWithMySignIn"; requestId: string }
   /** `requestId` identifies the exact card the webview optimistically marked, since one tool call id can
    *  appear in the streaming, subagent and team stores at once. Echoed back on `toolCancelRejected`. */
   | { type: "cancelToolCall"; toolUseId: string; note?: string; requestId?: string }
@@ -387,8 +400,8 @@ export interface HostCapabilities {
   chatReview: boolean;
   /** Worktree chats (D30, D61): core posts `worktreeState` and accepts `worktreeAction` and `chatMove`. */
   worktrees: boolean;
-  /** False: the chat's host refuses YOLO (a remote host's policy), and core answers a change with `permissionModeRefused`. Absent: allowed. */
-  bypassPermissions?: boolean;
+  /** False: the chat's host refuses YOLO (a remote host's policy for the viewing client), the YOLO control is hidden and core answers a change with `permissionModeRefused`. */
+  bypassPermissions: boolean;
 }
 
 /** Where a worktree-capable chat works (D61). */
@@ -471,6 +484,7 @@ export const VSCODE_HOST_CAPABILITIES: Readonly<HostCapabilities> = {
   windowLayout: false,
   chatReview: false,
   worktrees: false,
+  bypassPermissions: true,
 };
 
 /** Text of a file or buffer the host shows in a chat panel editor; the host decides the body, the webview never reads files. */
@@ -532,6 +546,12 @@ export const CHAT_COMMANDS = [
   'viewSessionPlan',
 ] as const;
 export type ChatCommand = (typeof CHAT_COMMANDS)[number];
+
+/** One queued message of a send that combined several: its id and the text and images it put back. */
+export interface QueuedPart {
+  messageId: string;
+  content: UserContentBlock[];
+}
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -657,8 +677,9 @@ export type ExtensionToWebviewMessage =
   /** A prompt core did not send goes back into the composer, text and images; `reason` says why. */
   // detail: localized text the reason alone cannot carry; account: the Accounts row settings open at, whose sign-in lets the
   // chat's model run (modelSignInRequired, modelUnavailable) or whose credential failed (promptRejected, the `authFailure`
-  // card's account); correlationId: the transcript's echo of the prompt, which the transcript drops.
-  | { type: "promptReturned"; content: UserContentBlock[]; reason: PromptReturnReason; detail?: string; account?: SettingsAccountId; correlationId?: string }
+  // card's account); correlationId: the transcript's echo of the prompt, which the transcript drops; parts: the queued
+  // messages a send of several combined, whose text `content` joins, each for the view that queued it.
+  | { type: "promptReturned"; content: UserContentBlock[]; reason: PromptReturnReason; detail?: string; account?: SettingsAccountId; correlationId?: string; parts?: QueuedPart[] }
   | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; terminalAttachments?: ChatAttachmentInfo[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; steerTarget?: { agentId: string; agentType?: string; description?: string }; promptIndex?: number; timestamp?: number }
   | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[]; effort?: import('../effort-badge').EffortBadgeLevel }
   /** `authFailure`: the call failed on that account's credential, refused or missing, which the live view showed as its card. */
@@ -706,8 +727,9 @@ export type ExtensionToWebviewMessage =
   /**
    * `messageId`: a queued chip's id, or the correlation id of a prompt pi queued into the running run.
    * `returnToInput`: the message was never sent, and goes back into the composer rather than away.
+   * `sentAs`: the correlation id of the send that took the message's text, with the other messages queued beside it.
    */
-  | { type: "queueCancelled"; messageId: string; returnToInput?: boolean }
+  | { type: "queueCancelled"; messageId: string; returnToInput?: boolean; sentAs?: string }
   | { type: "flushedMessagesAssigned"; queueMessageIds: string[]; sdkMessageId: string }
   | ({ type: "mcpConfigUpdate"; servers: McpServerStatusInfo[]; configErrors: McpConfigError[] } & McpLocalUnignoredFlag)
   /** Rules naming renamed MCP tools in files Damocles does not rewrite; each file and rule is sent once. */
@@ -725,6 +747,13 @@ export type ExtensionToWebviewMessage =
   | { type: "projectTrust"; trusted: boolean }
   | { type: "requestQuestion"; toolUseId: string; questions: Question[]; owner: PromptOwner; parentToolUseId?: string | null }
   | { type: "requestForm"; toolUseId: string; form: FormSchema; owner: PromptOwner; parentToolUseId?: string | null }
+  /**
+   * A turn waits, while its pinned device is not attached, for that device's `provider` sign-in (a pi provider id, Sign-in
+   * needed), a prompt of kind `signIn`; every view showing it belongs to another device, so it offers "Continue with my sign-in".
+   */
+  | { type: "signInRequest"; requestId: string; provider: string }
+  /** The wait ended: a push from the pinned device, a continue, or Stop. */
+  | { type: "signInResolved"; requestId: string }
   | { type: "ideContextUpdate"; context: IdeContextDisplayInfo | null }
   // the composer's pending attachments (terminal output, commits, MCP resources), whole list, on every change; focusComposer: the user just added one
   | { type: "terminalAttachmentsUpdate"; attachments: ChatAttachmentInfo[]; focusComposer?: true }
@@ -751,6 +780,8 @@ export type ExtensionToWebviewMessage =
       promptContent: string;
       /** The typed text and images, for a prompt sent with images. */
       contentBlocks?: UserContentBlock[];
+      /** As `promptReturned`'s: the queued messages a send of several combined. */
+      parts?: QueuedPart[];
     }
   | { type: "languageChange"; locale: string }
   | { type: "showPlanContent"; content: string; filePath: string }

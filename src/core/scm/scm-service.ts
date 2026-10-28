@@ -20,7 +20,7 @@ import { discover, inspectFolder, isInside, samePath, type FoundRepository } fro
 import type { AskpassRegistration, AskpassServer } from './askpass/askpass-server';
 import { autofetchPeriodSeconds, Autofetcher, type AutofetchTarget } from './autofetch';
 import { cloneArgs, cloneFolderName, freeCloneTarget, removeCloneTarget } from './clone';
-import { GitQueueDisposedError, logText, MAX_CLI_LENGTH, revision, gitAtLeast, subcommandIndex, type GitCall, type GitCloner, type GitResult, type GitRunner, type GitVersion, type RepoQueue } from './git-runner';
+import { GitQueueDisposedError, logText, MAX_CLI_LENGTH, PROJECTS_RESOLVING, revision, gitAtLeast, subcommandIndex, type GitCall, type GitCloner, type GitResult, type GitRunner, type GitVersion, type RepoQueue } from './git-runner';
 import { GitError, GitUntrustedError, gitErrorText, RemoteCancelledError, StashKeptError, SyncBranchChangedError, type StashKeptOutcome, type SyncBranch } from './errors';
 import type { Remote } from './remotes';
 import { diffRefs, diffStash, entryPatch, readArtifacts, type ArtifactGroup, type Artifacts, type CommitPairDiff, type CommitPairEntry } from './artifacts';
@@ -438,6 +438,23 @@ export class ScmService implements Disposable {
     const entry = this.entry(repoId);
     const project = entry ? this.projects.get(entry.projectKey) : undefined;
     return entry && project ? { repo: entry.repo, projectKey: entry.projectKey, projectPath: project.path, kind: entry.kind } : undefined;
+  }
+
+  /**
+   * The trusted project whose repository config git may read in folder: the nearest registered project above it, else the
+   * project of an open repository rooted at folder (one opened at a repository's subfolder). PROJECTS_RESOLVING while a
+   * realpath is unknown; undefined when that project is not trusted.
+   */
+  trustedProjectAt(folder: string): string | typeof PROJECTS_RESOLVING | undefined {
+    if (this.realpathPending()) return PROJECTS_RESOLVING;
+    const resolved = path.resolve(folder);
+    const nearest = this.projectsAbove(resolved)[0];
+    if (nearest !== undefined) return this.deps.trust.isTrusted(nearest.path) ? nearest.path : undefined;
+    for (const project of this.projects.values()) {
+      if (!this.deps.trust.isTrusted(project.path)) continue;
+      for (const entry of project.repos.values()) if (samePath(entry.repo.root, resolved)) return project.path;
+    }
+    return undefined;
   }
 
   /** The project folder's realpath, which repository roots are given in; undefined while it resolves or when it does not exist. */
@@ -1289,7 +1306,7 @@ export class ScmService implements Disposable {
       target = await freeCloneTarget(parent, name, (folder) => this.deps.trust.isTrusted(folder));
       if (target === undefined) throw new Error(t('Every folder name for the clone already exists in {0}.', parent));
       registration = await this.register('clone', controller);
-      await runner.clone({ cwd: parent, args: cloneArgs(url, target, recursive), signal: controller.signal, ...(this.sessionJob ? { session: this.sessionJob } : {}), ...(registration ? { askpassEnv: registration.env } : {}) });
+      await runner.clone({ cwd: parent, args: cloneArgs(url, target, recursive), signal: controller.signal, relayCredentials: true, ...(this.sessionJob ? { session: this.sessionJob } : {}), ...(registration ? { askpassEnv: registration.env } : {}) });
       outcome = 'ok';
       return target;
     } catch (err) {
@@ -1441,7 +1458,7 @@ export class ScmService implements Disposable {
       await this.autofetcher.yieldTo(commonDir);
       if (locks) before = await entry.repo.lockFiles(locks);
       registration = await this.register(op, controller);
-      const result = await work({ signal: controller.signal, ...(registration ? { askpassEnv: registration.env } : {}) });
+      const result = await work({ signal: controller.signal, relayCredentials: true, ...(registration ? { askpassEnv: registration.env } : {}) });
       outcome = 'ok';
       return result;
     } catch (err) {

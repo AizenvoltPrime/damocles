@@ -712,6 +712,35 @@ describe('panel activity, from the same publisher', () => {
     await session.dispose();
   });
 
+  it('a Sign-in needed wait registers on PermissionState, reaches the activity as kind signIn, and returns the session to running once it ends', async () => {
+    const { session, permissionHandler, messages } = await startPanel();
+    const activity = watchActivity(session);
+    const finish = await openTurn(session);
+    const cancel = vi.fn();
+    const wait = permissionHandler.raiseSignIn('anthropic', { continueWith: vi.fn(), cancel });
+    const request = messages.find((m) => m.type === 'signInRequest') as Extract<ExtensionToWebviewMessage, { type: 'signInRequest' }>;
+    expect(request).toMatchObject({ type: 'signInRequest', provider: 'anthropic' });
+    expect(permissionHandler.pendingPrompts()).toEqual([{ id: request.requestId, kind: 'signIn', request }]);
+    wait.dispose();
+    expect(messages).toContainEqual({ type: 'signInResolved', requestId: request.requestId });
+    await finish();
+
+    expect(states(messages)).toEqual(['idle', 'running', 'requires_action', 'running', 'idle']);
+    expect(activity.map((a) => a.pendingKinds)).toEqual([[], [], ['signIn'], [], []]);
+    expect(cancel).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('a Sign-in needed wait still open when the chat closes is cancelled, never left waiting', async () => {
+    const { session, permissionHandler } = await startPanel();
+    const cancel = vi.fn();
+    permissionHandler.raiseSignIn('anthropic', { continueWith: vi.fn(), cancel });
+    await session.dispose();
+    await permissionHandler.dispose();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(permissionHandler.pendingPrompts()).toEqual([]);
+  });
+
   it('reports the first write of the session file, which changes the stored session id and not the state', async () => {
     const { session } = await startPanel();
     const finish = await openTurn(session);
@@ -1001,7 +1030,7 @@ describe('single-writer discipline', () => {
     expect(files.some((f) => f.rel === 'src/core/permission-handler/diff-manager.ts')).toBe(true);
 
     const mutation =
-      /pending(?:Approvals|Questions|Forms|PlanApprovals|SkillApprovals|Elicitations|PromptRequests)\s*\.\s*(?:set|delete|clear)\b/;
+      /pending(?:Approvals|Questions|Forms|PlanApprovals|SkillApprovals|Elicitations|SignIns|PromptRequests)\s*\.\s*(?:set|delete|clear)\b/;
     const offenders = files
       .filter((f) => f.rel !== 'src/core/permission-handler/state.ts' && mutation.test(readFileSync(f.path, 'utf8')))
       .map((f) => f.rel);

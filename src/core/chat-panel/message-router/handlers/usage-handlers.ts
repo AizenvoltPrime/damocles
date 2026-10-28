@@ -25,7 +25,7 @@ export function createUsageHandlers(deps: HandlerDependencies): Partial<HandlerR
           fetchedAt: Date.now(),
         };
       }
-      deps.postMessage(ctx.host, { type: "subscriptionUsage", data });
+      deps.postMessage(ctx.reply, { type: "subscriptionUsage", data });
     },
   };
 }

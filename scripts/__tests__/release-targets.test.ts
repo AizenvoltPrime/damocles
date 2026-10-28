@@ -19,6 +19,13 @@ type DesktopSpec = { runner: string; os: string; builder: string; arch: string; 
 
 const workflowText = readFileSync(join(__dirname, '..', '..', '.github', 'workflows', 'release.yml'), 'utf8');
 const workflow = parse(workflowText) as { jobs: Record<string, Job> };
+// A job that calls a reusable workflow has no steps of its own; the step checks read the called workflow's jobs.
+const stepJobs: [string, Job][] = Object.entries(workflow.jobs).flatMap(([name, job]): [string, Job][] => {
+  const uses = (job as { uses?: string }).uses;
+  if (uses === undefined) return [[name, job]];
+  const called = parse(readFileSync(join(__dirname, '..', '..', uses), 'utf8')) as { jobs: Record<string, Job> };
+  return Object.entries(called.jobs).map(([inner, calledJob]): [string, Job] => [`${name}/${inner}`, calledJob]);
+});
 const desktopTargets = DESKTOP_TARGETS as Record<string, DesktopSpec>;
 
 function include(job: string): Record<string, string | number | boolean>[] {
@@ -34,17 +41,21 @@ function releaseAssetGlobs(): string[] {
   return create.run!.split(/\r?\n/).map((line) => line.trim().replace(/\s*\\$/, '')).filter((line) => line.startsWith('dist-artifacts/'));
 }
 
-// The variables loading playwright.desktop.config.ts reads or sets; it sets ELECTRON_OVERRIDE_DIST_PATH at import on Windows.
-const PLAYWRIGHT_CONFIG_ENV = ['CI', 'ELECTRON_OVERRIDE_DIST_PATH'] as const;
+// The variables loading a Playwright config reads or sets; it sets ELECTRON_OVERRIDE_DIST_PATH at import on Windows.
+const PLAYWRIGHT_CONFIG_ENV = ['CI', 'ELECTRON_OVERRIDE_DIST_PATH', 'DAMOCLES_E2E_REMOTE_TARGETS'] as const;
 
-/** playwright.desktop.config.ts as evaluated with CI set to `ci`, leaving the environment as it found it. */
-async function loadPlaywrightConfig(ci: string | undefined): Promise<{ failOnFlakyTests?: boolean; globalTimeout?: number }> {
+type PlaywrightConfig = { failOnFlakyTests?: boolean; globalTimeout?: number; workers?: number };
+
+/** playwright.<suite>.config.ts as evaluated with CI set to `ci` and `targets` as the named target suites, leaving the environment as it found it. */
+async function loadPlaywrightConfig(ci: string | undefined, suite: 'desktop' | 'remote' = 'desktop', targets = ''): Promise<PlaywrightConfig> {
   const saved = PLAYWRIGHT_CONFIG_ENV.map((key) => [key, process.env[key]] as const);
   if (ci === undefined) delete process.env.CI;
   else process.env.CI = ci;
+  process.env.DAMOCLES_E2E_REMOTE_TARGETS = targets;
   try {
     vi.resetModules();
-    return ((await import('../../playwright.desktop.config')) as { default: { failOnFlakyTests?: boolean; globalTimeout?: number } }).default;
+    const config = suite === 'desktop' ? await import('../../playwright.desktop.config') : await import('../../playwright.remote.config');
+    return (config as { default: PlaywrightConfig }).default;
   } finally {
     for (const [key, value] of saved) {
       if (value === undefined) delete process.env[key];
@@ -154,7 +165,7 @@ describe('the dev end-to-end suite runs in shards on every desktop target', () =
   });
 
   it('uploads every e2e report unless the run was cancelled', () => {
-    const uploads = Object.values(workflow.jobs).flatMap((j) => j.steps).filter((step) => step.uses?.startsWith('actions/upload-artifact@') && step.with?.name?.startsWith('e2e-report-'));
+    const uploads = stepJobs.flatMap(([, j]) => j.steps).filter((step) => step.uses?.startsWith('actions/upload-artifact@') && step.with?.name?.startsWith('e2e-report-'));
     expect(uploads).toHaveLength(2);
     for (const step of uploads) {
       expect({ name: step.with!.name, if: step.if, retention: step.with!['retention-days'], missing: step.with!['if-no-files-found'] })
@@ -239,7 +250,7 @@ describe('the release workflow runs electron-builder safely', () => {
   });
 
   it('gives no electron-builder step a GitHub token', () => {
-    for (const job of Object.values(workflow.jobs)) {
+    for (const [, job] of stepJobs) {
       for (const step of job.steps) {
         if (!step.run?.includes('electron-builder')) continue;
         expect(JSON.stringify(step)).not.toMatch(/GH_TOKEN|GITHUB_TOKEN|secrets\./);
@@ -250,8 +261,8 @@ describe('the release workflow runs electron-builder safely', () => {
 
 // docs/release.md "The verify job": one upstream outage then fails one job, not every leg.
 describe('the release workflow downloads the grammars and wake models once', () => {
-  // Commands whose npm scripts run fetch:assets: pretest, build, vscode:prepublish (package), test:desktop.
-  const fetches = /\bnpm (test|run (fetch:assets|build|package|test:desktop))\b(?![:\w])/;
+  // Commands whose npm scripts run fetch:assets: pretest, build, vscode:prepublish (package), test:desktop, test:remote.
+  const fetches = /\bnpm (test|run (fetch:assets|build|package|test:desktop|test:remote))\b(?![:\w])/;
   const restores = (step: Step) => step.uses?.startsWith('actions/download-artifact@') === true && step.with?.name === 'fetched-assets';
 
   it('fetches them in verify alone and uploads them as fetched-assets', () => {
@@ -277,19 +288,19 @@ describe('the release workflow downloads the grammars and wake models once', () 
   });
 
   it('restores them in every other job before its first build or test', () => {
-    const late = Object.entries(workflow.jobs).filter(([name]) => name !== 'verify').flatMap(([name, job]) => {
+    const late = stepJobs.filter(([name]) => name !== 'verify').flatMap(([name, job]) => {
       const first = job.steps.findIndex((step) => fetches.test(step.run ?? ''));
       if (first === -1) return [];
       const restore = job.steps.findIndex(restores);
       return restore > -1 && restore < first ? [] : [name];
     });
     expect(late).toEqual([]);
-    expect(Object.values(workflow.jobs).flatMap((job) => job.steps).filter(restores).length).toBeGreaterThanOrEqual(4);
+    expect(stepJobs.flatMap(([, job]) => job.steps).filter(restores).length).toBeGreaterThanOrEqual(4);
   });
 });
 
 describe('the release workflow limits what a compromised action or token can reach', () => {
-  const jobs = Object.entries(workflow.jobs);
+  const jobs = stepJobs;
 
   // A tag can be moved to other code; a commit SHA cannot.
   it('pins every action to a full commit SHA', () => {
@@ -350,8 +361,9 @@ describe('the release attaches every desktop artifact', () => {
     expect(attest!.with!['subject-path']!.trim().split(/\r?\n/).map((line) => line.trim())).toEqual(releaseAssetGlobs());
   });
 
-  it('waits for the desktop build, signing, end-to-end suite, install and update checks', () => {
-    const checks = ['package', 'package-desktop', 'sign-windows', 'e2e-desktop', 'verify-desktop-install', 'verify-desktop-install-windows', 'desktop-update-test', 'desktop-update-test-windows'];
+  it('waits for the desktop build, signing, end-to-end suites, install and update checks', () => {
+    expect((workflow.jobs['remote-e2e'] as { uses?: string }).uses).toBe('./.github/workflows/remote-e2e-nightly.yml');
+    const checks = ['package', 'package-desktop', 'sign-windows', 'e2e-desktop', 'remote-e2e', 'reference-e2e', 'verify-desktop-install', 'verify-desktop-install-windows', 'desktop-update-test', 'desktop-update-test-windows'];
     expect(workflow.jobs.release!.needs).toEqual(expect.arrayContaining([...checks, 'attest']));
     expect(workflow.jobs.attest!.needs).toEqual(expect.arrayContaining(checks));
   });
@@ -410,13 +422,13 @@ describe('sign-windows signs the Windows legs (docs/desktop-signing.md)', () => 
   });
 
   // SignPath Foundation signs only files built from this repository; Electron's DLLs, ripgrep, koffi and node-pty ship as published.
-  it('submits only Damocles.exe from the apps', () => {
+  it('submits only Damocles.exe and the SSH askpass trampoline from the apps', () => {
     const upload = job.steps.find((step) => step.id === 'upload-unsigned-executables');
     const request = job.steps.find((step) => step.with?.['artifact-configuration-slug'] === 'app-executables');
     expect(request?.with!['github-artifact-id']).toBe('${{ steps.upload-unsigned-executables.outputs.artifact-id }}');
     const collect = job.steps.find((step) => step.id === 'collect-executables');
     const copied = collect!.run!.split('\n').filter((line) => line.trim().startsWith('cp ')).map((line) => line.trim().split(/\s+/)[1]);
-    expect(copied).toEqual(['unsigned/x64/Damocles.exe', 'unsigned/arm64/Damocles.exe']);
+    expect(copied).toEqual(['unsigned/x64/Damocles.exe', 'unsigned/x64/resources/app.asar.unpacked/dist/askpass/ssh-askpass.exe', 'unsigned/arm64/Damocles.exe', 'unsigned/arm64/resources/app.asar.unpacked/dist/askpass/ssh-askpass.exe']);
     expect(upload?.with?.path).toBe('executables/');
   });
 
@@ -514,5 +526,118 @@ describe('DESKTOP_TARGETS agrees with electron-builder.yml', () => {
       if (spec.os === 'darwin') expect(exe).toBe(config.productName);
       if (spec.os === 'linux') expect(exe).toBe(config.linux.executableName);
     }
+  });
+});
+
+describe('the verify job', () => {
+  // A tag can name a commit no pull request checked, so the release checks the wire's snapshot itself.
+  it('checks the committed protocol snapshot against the contracts', () => {
+    expect(workflow.jobs.verify!.steps.some((step) => step.run?.trim() === 'node scripts/protocol-compat.mjs --check')).toBe(true);
+  });
+});
+
+type Workflow = { permissions?: unknown; jobs: Record<string, Job & { 'runs-on'?: string; strategy?: { 'fail-fast'?: boolean; matrix: Record<string, unknown> } }> };
+const readWorkflow = (name: string): Workflow => parse(readFileSync(join(__dirname, '..', '..', '.github', 'workflows', name), 'utf8')) as Workflow;
+const prWorkflow = readWorkflow('pr.yml');
+const nightlyWorkflow = readWorkflow('remote-e2e-nightly.yml');
+
+// docs/release.md "Time limits": test:remote's builds before Playwright's clock starts (the app, the server packages it was not
+// given prebuilt, the fixture images) and the HTML report after.
+const REMOTE_BUILD_AND_REPORT_BUDGET_MIN = 15;
+const REMOTE_SUITE = /npm run test:remote\b/;
+const limitedMinutes = (job: Job): number => job.steps.reduce((total, step) => total + (step['timeout-minutes'] ?? 0), 0);
+
+describe('the remote suites keep a hung run\'s report (docs/release.md "Time limits")', () => {
+  const jobs: [string, Job][] = [
+    ['pr.yml ssh', prWorkflow.jobs.ssh!],
+    ['release.yml reference-e2e', workflow.jobs['reference-e2e']!],
+    ['remote-e2e-nightly.yml windows-target', nightlyWorkflow.jobs['windows-target']!],
+    ['remote-e2e-nightly.yml darwin-target', nightlyWorkflow.jobs['darwin-target']!],
+  ];
+
+  for (const [name, job] of jobs) {
+    it(`${name}: each suite step outlasts globalTimeout with test:remote's builds and report, and the job outlasts install, every limited step and each upload`, async () => {
+      const { globalTimeout } = await loadPlaywrightConfig('1', 'remote');
+      expect(globalTimeout).toBeGreaterThan(0);
+      const suites = job.steps.filter((step) => REMOTE_SUITE.test(step.run ?? ''));
+      expect(suites.length).toBeGreaterThan(0);
+      for (const step of suites) expect(step['timeout-minutes']! * 60_000, step.name).toBeGreaterThanOrEqual(globalTimeout! + REMOTE_BUILD_AND_REPORT_BUDGET_MIN * 60_000);
+      expect(job['timeout-minutes']).toBeGreaterThanOrEqual(INSTALL_BUDGET_MIN + limitedMinutes(job) + UPLOAD_BUDGET_MIN * suites.length);
+    });
+  }
+
+  it('pr.yml ssh-build: the job outlasts install, its two limited build steps and the uploads', () => {
+    const job = prWorkflow.jobs['ssh-build']!;
+    const builds = job.steps.filter((step) => /reference-package\.mjs .*--out|--build-server-packages/.test(step.run ?? ''));
+    expect(builds).toHaveLength(2);
+    for (const step of builds) expect(step['timeout-minutes'], step.name).toBeTypeOf('number');
+    expect(job['timeout-minutes']).toBeGreaterThanOrEqual(INSTALL_BUDGET_MIN + limitedMinutes(job) + UPLOAD_BUDGET_MIN);
+  });
+
+  it('fails a CI run on a flaky test, and runs the target suites, which share the runner account\'s daemon, one test at a time', async () => {
+    expect((await loadPlaywrightConfig('1', 'remote')).failOnFlakyTests).toBe(true);
+    expect((await loadPlaywrightConfig('1', 'remote', '@windows-target')).workers).toBe(1);
+    expect((await loadPlaywrightConfig('1', 'remote', '@darwin-target')).workers).toBe(1);
+  });
+
+  it('remote-e2e-nightly.yml windows-target: the PowerShell run reuses the cmd run\'s builds, and the OpenSSH install has its own limit', () => {
+    const job = nightlyWorkflow.jobs['windows-target']!;
+    expect(job.steps.filter((step) => REMOTE_SUITE.test(step.run ?? '')).map((step) => step.env?.DAMOCLES_E2E_PREBUILT)).toEqual([undefined, 'app,server-packages']);
+    expect(job.steps.find((step) => step.run?.includes('Add-WindowsCapability'))?.['timeout-minutes']).toBeTypeOf('number');
+  });
+});
+
+describe('the pull request ssh jobs', () => {
+  const ssh = prWorkflow.jobs.ssh!;
+  const build = prWorkflow.jobs['ssh-build']!;
+  const suiteAt = ssh.steps.findIndex((step) => REMOTE_SUITE.test(step.run ?? ''));
+  const artifactNames = (steps: Step[], action: string): string[] => steps.filter((step) => step.uses?.startsWith(`actions/${action}@`)).map((step) => step.with!.name!).sort();
+
+  it('runs shards 1 to N of the suite, where N is the shard count it passes to Playwright, and reports every shard', () => {
+    const matrix = ssh.strategy!.matrix as { shard: number[]; shards: number[] };
+    expect(matrix.shards).toEqual([4]);
+    expect(matrix.shard).toEqual([1, 2, 3, 4]);
+    expect(ssh.strategy!['fail-fast']).toBe(false);
+    expect(ssh.steps[suiteAt]!.run).toContain('--shard="$SHARD"');
+    expect(ssh.steps[suiteAt]!.env).toMatchObject({ SHARD: '${{ matrix.shard }}/${{ matrix.shards }}' });
+  });
+
+  it('builds what every shard shares once, in ssh-build, and each shard downloads all of it before its suite and builds none of it', () => {
+    expect(ssh.needs).toBe('ssh-build');
+    expect(artifactNames(ssh.steps.slice(0, suiteAt), 'download-artifact')).toEqual(artifactNames(build.steps, 'upload-artifact'));
+    expect(artifactNames(build.steps, 'upload-artifact')).toEqual(['fetched-assets', 'ssh-reference-package', 'ssh-server-packages']);
+    expect(ssh.steps[suiteAt]!.env?.DAMOCLES_E2E_PREBUILT).toBe('server-packages');
+    expect(ssh.steps.filter((step) => /build-server|reference-package\.mjs|fetch:assets/.test(step.run ?? ''))).toEqual([]);
+  });
+
+  it('checks the reference tag before it installs or builds anything', () => {
+    for (const job of [build, workflow.jobs['reference-e2e']!]) {
+      const runs = job.steps.map((step) => step.run?.trim() ?? '');
+      const check = runs.indexOf('node e2e/remote/support/reference-package.mjs --ref remote-protocol-ref --check');
+      expect(check).toBeGreaterThan(-1);
+      expect(check).toBeLessThan(runs.findIndex((run) => /\bnpm ci\b/.test(run)));
+    }
+  });
+
+  it('uploads each shard\'s report under its own name unless the run was cancelled', () => {
+    const uploads = ssh.steps.filter((step) => step.uses?.startsWith('actions/upload-artifact@'));
+    expect(uploads.map((step) => ({ name: step.with!.name, if: step.if, retention: step.with!['retention-days'], missing: step.with!['if-no-files-found'] })))
+      .toEqual([{ name: 'ssh-e2e-report-${{ matrix.shard }}', if: '${{ !cancelled() }}', retention: 7, missing: 'ignore' }]);
+  });
+
+  it('keeps the token read-only, persists no credentials, pins every action to a full commit SHA and reads no secret', () => {
+    expect(prWorkflow.permissions).toEqual({ contents: 'read' });
+    for (const [name, job] of Object.entries(prWorkflow.jobs)) {
+      expect({ name, permissions: job.permissions }).toEqual({ name, permissions: undefined });
+      for (const step of job.steps.filter((candidate) => candidate.uses !== undefined)) expect(`${name}: ${step.uses}`).toMatch(/@[0-9a-f]{40}$/);
+      for (const step of job.steps.filter((candidate) => candidate.uses?.startsWith('actions/checkout@'))) expect({ name, persist: step.with?.['persist-credentials'] }).toEqual({ name, persist: false });
+      expect(JSON.stringify(job)).not.toMatch(/secrets\./);
+    }
+  });
+
+  // A runner image update must not change the rules a pull request is checked against.
+  it('runs shellcheck from an image pinned by digest', () => {
+    const step = prWorkflow.jobs.shellcheck!.steps.find((candidate) => candidate.run?.includes('shellcheck'));
+    expect(step?.run).toMatch(/koalaman\/shellcheck:v[\d.]+@sha256:[0-9a-f]{64}\s/);
   });
 });

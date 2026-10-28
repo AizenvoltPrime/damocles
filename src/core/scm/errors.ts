@@ -23,6 +23,15 @@ export class GitError extends Error {
   }
 }
 
+// A failure main offers an action for, read from git's stderr where the GitError carries it; the stderr itself stays text
+// git printed, and only this code decides the action.
+export type GitFailureCode = 'publickeyDenied';
+
+export function gitFailureCode(err: unknown): GitFailureCode | undefined {
+  // OpenSSH's "Permission denied (publickey)." or "(publickey,password)." when no offered key was accepted
+  return err instanceof GitError && /Permission denied \(publickey[,)]/.test(err.stderr) ? 'publickeyDenied' : undefined;
+}
+
 // The engine runs no git for a project that is not trusted (D8); the runner refuses as the last line.
 export class GitUntrustedError extends Error {
   constructor() {

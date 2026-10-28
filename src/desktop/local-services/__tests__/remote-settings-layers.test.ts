@@ -6,7 +6,7 @@ import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { parseContributedConfiguration } from '../../../core/config/contributed-configuration';
 import type { SettingsObject } from '../../../core/config/settings-file';
 import type { TrustService } from '../../../platform/trust-service';
-import { DesktopSettingsStore, type RemoteSettings } from '../settings-store';
+import { DesktopSettingsStore, type ClientSettingsChange, type RemoteSettings } from '../settings-store';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { runPinnedTurn } from '../../../core/client-snapshots';
 import { remoteSettings } from '../../core-host/local';
@@ -37,7 +37,7 @@ let machineFile: string;
 let project: string;
 let fromHostTab = false;
 let client: SettingsObject = {};
-const clientListeners = new Set<() => void>();
+const clientListeners = new Set<(change: ClientSettingsChange) => void>();
 const stores: DesktopSettingsStore[] = [];
 
 function write(file: string, value: SettingsObject): void {
@@ -119,15 +119,31 @@ describe('a daemon\'s core\'s settings layers', () => {
     expect(remoteStore().inspect('damocles.voice.wakeWord')).toEqual({ defaultValue: 'jarvis' });
   });
 
-  it('fire a change when the client\'s user layer changes', () => {
+  it('fire a change for every device when the acting client changes to one with another user layer', () => {
     client = { 'damocles.model': 'one' };
     const store = remoteStore();
-    const changed: boolean[] = [];
-    store.onDidChange('damocles.model', (change) => changed.push(change.affects('damocles.model')));
+    const changed: Array<[boolean, string | undefined]> = [];
+    store.onDidChange('damocles.model', (change) => changed.push([change.affects('damocles.model'), change.clientId]));
     client = { 'damocles.model': 'two' };
-    for (const cb of clientListeners) cb();
-    expect(changed).toEqual([true]);
+    for (const cb of clientListeners) cb({});
+    expect(changed).toEqual([[true, undefined]]);
     expect(store.get('damocles.model')).toBe('two');
+  });
+
+  it('fire a change naming the device whose user layer changed, a device that is not acting included', () => {
+    const host = createFakeRemoteHost();
+    host.set('clientUser', 'device-a', { settings: { 'damocles.model': 'a-model' }, permissionRules: [] });
+    host.set('clientUser', 'device-b', { settings: { 'damocles.model': 'b-model' }, permissionRules: [] });
+    host.setActing('device-a');
+    const store = remoteStore(remoteSettings(host.remote));
+    const changed: Array<string | undefined> = [];
+    store.onDidChange('damocles.model', (change) => changed.push(change.clientId));
+
+    host.set('clientUser', 'device-b', { settings: { 'damocles.model': 'b-model-2' }, permissionRules: [] });
+    host.set('clientUser', 'device-a', { settings: { 'damocles.model': 'a-model-2' }, permissionRules: [] });
+    host.set('clientUser', 'device-b', { settings: { 'damocles.model': 'b-model-2', 'damocles.permissionMode': 'plan' }, permissionRules: [] });
+
+    expect(changed).toEqual(['device-b', 'device-a']);
   });
 
   it('read the user layer of the client a turn pinned, while another client acts mid-turn', async () => {

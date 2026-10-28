@@ -19,7 +19,20 @@ export interface PanelHost {
   // A host that builds the page itself from what it is told to show (desktop: main); core then sends no HTML.
   showPage?(page: PageSpec): void;
   postMessage(message: unknown): Promise<boolean>;
-  onMessage(listener: (message: unknown) => void): Disposable;
+  // A host whose posts can back up toward the page (a remote client): settles once they are back within its flow window.
+  drained?(): Promise<void>;
+  // viewKey: the view that sent it, on a host whose panel several views show (a daemon's core); undefined elsewhere.
+  onMessage(listener: (message: unknown, viewKey?: string) => void): Disposable;
+  // A host whose panel several views show: the host of one view, whose posts reach that view alone and which delegates the rest.
+  viewHost?(viewKey: string): PanelHost;
+  // Set on a host viewHost made: the panel's own host.
+  readonly panelHost?: PanelHost;
+  // Set on a host whose posts reach one device's views alone: that device's client id, once core heard from it.
+  readonly clientId?: string;
+  // The views core heard from and whose view is still there, each with the actor of its first message or join.
+  views?(): ReadonlyArray<{ readonly viewKey: string; readonly clientId?: string }>;
+  // Posts to every view but those named, which take the message from elsewhere (a joining view's replay).
+  postMessageExcept?(message: unknown, viewKeys: readonly string[]): Promise<boolean>;
   // Never called for a listener added after the host closed (VS Code's semantics), so subscribe before any await.
   onDispose(listener: () => void): Disposable;
   // Fires on every host view-state event, including a focus change that leaves visible unchanged.

@@ -15,7 +15,8 @@ export type ProviderSignIns = Readonly<Record<string, StoredProviderCredential>>
 
 /**
  * Global-state key: prefer the key saved in Damocles over a stored sign-in for a key provider. Global, as the OpenAI
- * flag is, and the client's on a daemon's core (`CLIENT_STATE_KEYS`).
+ * flag is, and the client's on a daemon's core (`CLIENT_STATE_KEYS`), which reads each client's from its clientAuth
+ * (`ClientAuthEntry.preferApiKey`).
  */
 export function providerPreferApiKeyState(provider: KeyProviderId): string {
   return `damocles.${provider}.preferApiKey`;

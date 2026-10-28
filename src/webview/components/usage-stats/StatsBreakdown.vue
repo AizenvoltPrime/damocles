@@ -18,7 +18,7 @@ const props = defineProps<{
   metric: StatsMetric;
 }>();
 
-type SectionId = 'model' | 'project' | 'source';
+type SectionId = 'model' | 'project' | 'source' | 'credential';
 type Column = 'name' | 'cost' | 'tokens' | 'share' | 'cache';
 
 interface Row {
@@ -115,13 +115,27 @@ const sourceRows = computed<Row[]>(() => {
   });
 });
 
+// Shown once any spend ran on a remote host's own credential; until then every row is the user's sign-in.
+const credentialRows = computed<Row[]>(() => {
+  const rows = props.report.byCredential ?? [];
+  if (!rows.some((r) => r.credential === 'host')) return [];
+  return [...rows].sort(byCost).map((r, rank) => ({
+    id: `credential:${r.credential}`,
+    label: t(`usageStats.breakdown.credential.${r.credential}`),
+    title: t(`usageStats.breakdown.credential.${r.credential}Title`),
+    color: chartColor(rank),
+    agg: r,
+  }));
+});
+
 const sections = computed(() => [
   { id: 'model' as const, title: t('usageStats.breakdown.byModel'), rows: modelRows.value },
   { id: 'project' as const, title: t('usageStats.breakdown.byProject'), rows: projectRows.value },
   { id: 'source' as const, title: t('usageStats.breakdown.bySource'), rows: sourceRows.value },
+  ...(credentialRows.value.length > 0 ? [{ id: 'credential' as const, title: t('usageStats.breakdown.byCredential'), rows: credentialRows.value }] : []),
 ]);
 
-const sort = reactive<Record<SectionId, { column: Column; desc: boolean } | null>>({ model: null, project: null, source: null });
+const sort = reactive<Record<SectionId, { column: Column; desc: boolean } | null>>({ model: null, project: null, source: null, credential: null });
 
 function sortOf(section: SectionId): { column: Column; desc: boolean } {
   return sort[section] ?? { column: props.metric, desc: true };

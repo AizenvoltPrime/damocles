@@ -1281,8 +1281,9 @@
     "build:shell": "vite build --config vite.shell.config.ts",
     "build:server": "node scripts/build-server.mjs",
     "dev:desktop": "npm run fetch:assets && install-electron && node scripts/brand-dev-electron.mjs && npm run build:webview && npm run build:desktop && node scripts/launch-desktop.mjs",
-    "test:desktop": "npm run fetch:assets && install-electron && node scripts/brand-dev-electron.mjs && npm run build:webview && npm run build:desktop && playwright test --config playwright.desktop.config.ts --project dev",
-    "test:desktop:packaged": "playwright test --config playwright.desktop.config.ts --project packaged",
+    "test:desktop": "npm run fetch:assets && install-electron && node scripts/brand-dev-electron.mjs && npm run build:webview && npm run build:desktop && playwright test --config playwright.desktop.config.ts --project=dev",
+    "test:desktop:packaged": "playwright test --config playwright.desktop.config.ts --project=packaged",
+    "test:remote": "node scripts/test-remote.mjs",
     "dist": "npm run build && npm run build:desktop && node scripts/dist-desktop.mjs",
     "dist:linux-wsl": "node scripts/dist-linux-wsl.mjs",
     "watch": "concurrently \"npm run watch:extension\" \"npm run watch:webview\"",
@@ -1292,7 +1293,7 @@
     "typecheck": "tsc --noEmit && npm run typecheck:core && npm run typecheck:desktop && npm run typecheck:e2e && npm run typecheck:tests && npm run typecheck:webview",
     "typecheck:core": "tsc -p tsconfig.core.json",
     "typecheck:desktop": "tsc -p tsconfig.desktop.json && tsc -p tsconfig.desktop-preload.json",
-    "typecheck:e2e": "tsc -p e2e/desktop/tsconfig.json",
+    "typecheck:e2e": "tsc -p e2e/desktop/tsconfig.json && tsc -p e2e/remote/tsconfig.json",
     "typecheck:tests": "tsc -p tsconfig.tests.json && tsc -p tsconfig.tests.dom.json",
     "typecheck:webview": "vue-tsc -p tsconfig.webview.json --noEmit",
     "sync:vscodeignore": "node scripts/sync-vscodeignore.mjs",
@@ -1337,6 +1338,7 @@
     "koffi": "^3.1.6"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
     "@chenglou/pretext": "^0.0.5",
     "@electron/asar": "3.4.1",
     "@electron/fuses": "2.1.3",

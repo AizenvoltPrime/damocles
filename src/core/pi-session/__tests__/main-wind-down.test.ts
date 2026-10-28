@@ -573,8 +573,9 @@ describe("the main chat's Stop while a handler pi awaits holds its run's wind-do
       await vi.waitFor(() => expect(enqueueTurnCandidate).toHaveBeenCalledTimes(2), { timeout: 10_000 });
       expect(dispositions).toEqual(['first: started', 'q1: started']);
       // A send of its own: its chip gives way to its echo, it takes the next prompt index, and nothing marks it mid-stream.
-      expect(emitted).toContainEqual({ type: 'queueCancelled', messageId: 'q1' });
-      expect(emitted).toContainEqual(expect.objectContaining({ type: 'userMessage', content: 'q1', promptIndex: 1 }));
+      const sentAs = (emitted.find((m) => m.type === 'queueCancelled' && m.messageId === 'q1') as { sentAs?: string } | undefined)?.sentAs;
+      expect(emitted).toContainEqual({ type: 'queueCancelled', messageId: 'q1', sentAs: expect.stringMatching(/^corr-/) });
+      expect(emitted).toContainEqual(expect.objectContaining({ type: 'userMessage', content: 'q1', promptIndex: 1, correlationId: sentAs }));
       expect(emitted.some((m) => m.type === 'queueBatchProcessed')).toBe(false);
       expect(customEntriesInFile(held.session, DAMOCLES_MID_STREAM_ENTRY)).toEqual([]);
       expect(nextPromptIndex(held.session.sessionManager.getBranch())).toBe(2);

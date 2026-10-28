@@ -13,7 +13,7 @@ export function createBrowserHandlers(deps: HandlerDependencies): Partial<Handle
   /** The browser of a chat on a remote host is its client's, so a daemon's core refuses it. */
   function refusedOnRemoteHost(ctx: HandlerContext): boolean {
     if (!userScopeRemote()) return false;
-    postMessage(ctx.host, { type: "notification", message: browserUnavailableReason(), notificationType: "warning" });
+    postMessage(ctx.reply, { type: "notification", message: browserUnavailableReason(), notificationType: "warning" });
     return true;
   }
 
@@ -22,7 +22,7 @@ export function createBrowserHandlers(deps: HandlerDependencies): Partial<Handle
       if (refusedOnRemoteHost(ctx)) return;
       const browserService = getBrowserService();
       if (!browserService?.isConnected()) {
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: "No browser session active. Open a browser first.",
           notificationType: "warning",
@@ -32,10 +32,10 @@ export function createBrowserHandlers(deps: HandlerDependencies): Partial<Handle
 
       try {
         const element = await browserService.pickElement(ctx.host);
-        postMessage(ctx.host, { type: "browserElementPicked", element });
+        postMessage(ctx.reply, { type: "browserElementPicked", element });
       } catch (err) {
         log("[BrowserHandlers] Element pick failed:", err);
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: `Element pick failed: ${err instanceof Error ? err.message : String(err)}`,
           notificationType: "error",
@@ -56,7 +56,7 @@ export function createBrowserHandlers(deps: HandlerDependencies): Partial<Handle
       if (refusedOnRemoteHost(ctx)) return;
       const browserService = getBrowserService();
       if (!browserService) {
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: "Browser service not available.",
           notificationType: "error",
@@ -68,7 +68,7 @@ export function createBrowserHandlers(deps: HandlerDependencies): Partial<Handle
         await browserService.showForChat(ctx.host);
       } catch (err) {
         log("[BrowserHandlers] Open browser failed:", err);
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: `Failed to open browser: ${err instanceof Error ? err.message : String(err)}`,
           notificationType: "error",

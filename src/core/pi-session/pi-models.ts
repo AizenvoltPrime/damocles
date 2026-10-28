@@ -209,8 +209,8 @@ export function modelInPlan(provider: string, modelId: string, registry: Pick<Mo
  * Resolve a Damocles model `value` to a pi `Model` under a SUPPORTED CANONICAL provider — never the
  * gateway/reseller duplicates (cloudflare-ai-gateway, opencode, bedrock, vertex, openrouter) that
  * carry the same ids without the user's auth. GPT values resolve in this order: the preferred API key
- * (`openai`), a ChatGPT grant (`openai`), a legacy Codex grant (`openai-codex`), the API key (`openai`),
- * else `openai` with `authRequired`. Claude values resolve against the first-party `anthropic` provider.
+ * (`openai`), a ChatGPT grant (`openai`), a legacy Codex grant (`openai-codex`), the API key or the host's own
+ * key on a daemon's core (`openai`), else `openai` with `authRequired`. Claude values resolve against the first-party `anthropic` provider.
  */
 export function resolvePiModel(
   value: string,
@@ -227,7 +227,7 @@ export function resolvePiModel(
     if (apiModel && ((preferApiKey && openai.apiKey) || openai.chatgpt)) return { model: apiModel, authed: true };
     const codexModel = openai.codex ? registry.getModel(OPENAI_CODEX_PROVIDER, id) : undefined;
     if (codexModel) return { model: codexModel, authed: true };
-    if (apiModel) return openai.apiKey ? { model: apiModel, authed: true } : { model: apiModel, authRequired: true };
+    if (apiModel) return openai.apiKey || openai.hostKey ? { model: apiModel, authed: true } : { model: apiModel, authRequired: true };
     return { authRequired: true };
   }
 
@@ -260,14 +260,43 @@ export function isLoopbackEndpoint(url: string): boolean {
 }
 
 /**
- * A remote chat's model list: a model whose provider's endpoint is a loopback address is marked unavailable, not hidden,
- * unless the target shares the client's loopback (sharedLoopback, ClientPolicy).
+ * A remote chat's model list: a model whose provider's endpoint is a loopback address the client configured is marked
+ * unavailable, not hidden, unless the target shares the client's loopback (sharedLoopback, ClientPolicy). An endpoint the
+ * target's own config sets is on the target's loopback, which its core reaches.
  */
-export function markLoopbackEndpoints(models: readonly ModelInfo[], registry: ModelLookup, openai: OpenAIAuthStatus, preferApiKey: boolean, sharedLoopback: boolean): ModelInfo[] {
+export function markLoopbackEndpoints(
+  models: readonly ModelInfo[],
+  registry: ModelLookup,
+  openai: OpenAIAuthStatus,
+  preferApiKey: boolean,
+  sharedLoopback: boolean,
+  clientEndpoints: ReadonlySet<string>,
+): ModelInfo[] {
   if (sharedLoopback) return [...models];
   return models.map((info) => {
     const endpoint = resolvePiModel(info.value, registry, openai, preferApiKey).model?.baseUrl;
-    return endpoint !== undefined && isLoopbackEndpoint(endpoint) ? { ...info, unavailable: { reason: 'loopback-endpoint', endpoint } } : info;
+    return endpoint !== undefined && clientEndpoints.has(endpoint) && isLoopbackEndpoint(endpoint)
+      ? { ...info, unavailable: { reason: 'loopback-endpoint', endpoint } }
+      : info;
+  });
+}
+
+/**
+ * A remote chat's model list: a model whose resolved provider the client holds no credential for while the host has one of
+ * its own runs on the host's credential (`credentialSource: 'host'`). Reads presence only, never a key.
+ */
+export function markCredentialSources(
+  models: readonly ModelInfo[],
+  registry: ModelLookup,
+  openai: OpenAIAuthStatus,
+  preferApiKey: boolean,
+  clientHasCredential: (providerId: string) => boolean,
+  hostHasOwnCredential: (providerId: string) => boolean,
+): ModelInfo[] {
+  return models.map((info) => {
+    const resolution = resolvePiModel(info.value, registry, openai, preferApiKey);
+    const provider = resolution.authed ? resolution.model?.provider : undefined;
+    return provider !== undefined && !clientHasCredential(provider) && hostHasOwnCredential(provider) ? { ...info, credentialSource: 'host' } : info;
   });
 }
 

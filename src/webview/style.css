@@ -170,25 +170,31 @@
     opacity: 0.5;
   }
 
-  /* A label on a tint of a tone chosen at runtime: the tint mixes from --tone, the tone itself, and the text takes its AA shade. */
+  /* A label on a tint of a tone chosen at runtime: the tint mixes from --tone, the tone itself, and the text takes its AA shade;
+     --tone-on is the text on a solid --tone fill. */
   .d-tone-accent {
     --tone: var(--d-accent);
+    --tone-on: var(--d-on-accent);
     color: var(--d-accent-text);
   }
   .d-tone-success {
     --tone: var(--d-success);
+    --tone-on: var(--d-on-success);
     color: var(--d-success-text);
   }
   .d-tone-warning {
     --tone: var(--d-warning);
+    --tone-on: var(--d-on-warning);
     color: var(--d-warning-text);
   }
   .d-tone-danger {
     --tone: var(--d-danger);
+    --tone-on: var(--d-on-danger);
     color: var(--d-danger-text);
   }
   .d-tone-info {
     --tone: var(--d-info);
+    --tone-on: var(--d-on-info);
     color: var(--d-info-text);
   }
   .d-tone-muted {

@@ -7,7 +7,7 @@ import { defaultProjectPath, DEFAULT_WORKSPACE_FOLDER_STATE_KEY } from '../../co
 import type { AppPaths } from '../../platform/app-paths';
 import type { Disposable } from '../../platform/disposable';
 import type { SettingsFolder } from '../../platform/settings-store';
-import type { CoreInit } from '../core-protocol';
+import type { ClientUser, CoreInit } from '../core-protocol';
 import { currentPin } from '../../core/client-snapshots';
 import { desktopHostCapabilities, remoteHostCapabilities } from '../local-services/capabilities';
 import { Emitter } from '../local-services/emitter';
@@ -48,7 +48,10 @@ export function remoteSettings(remote: RemoteHost): NonNullable<DesktopSettingsS
     fromHostTab: () => settingsViewScope() === 'machine',
     clientSettings: () => currentPin(remote).user?.settings as SettingsObject | undefined,
     onDidChangeClientSettings: (cb) => remote.clients.onDidChange((change) => {
-      if (change.topic === 'clientUser' || change.topic === 'actingClient') cb();
+      if (change.topic === 'clientUser' && change.clientId !== undefined) {
+        const before = change.before as ClientUser | undefined;
+        cb({ clientId: change.clientId, before: before?.settings as SettingsObject | undefined, after: remote.clients.user(change.clientId)?.settings as SettingsObject | undefined });
+      } else if (change.topic === 'actingClient') cb({});
     }),
   };
 }

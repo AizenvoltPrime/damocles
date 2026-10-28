@@ -10,8 +10,10 @@ const LOCK_TARGET = path.join(os.tmpdir(), 'damocles-e2e-foreground');
 // other worker has one.
 const OPEN_APPS = path.join(os.tmpdir(), 'damocles-e2e-open-apps');
 const OPEN_APPS_POLL_MS = 250;
-// Longer than the slowest test's own timeout (300 s) plus its teardown, so a waiter outlasts every other worker's test.
-export const FOREGROUND_WAIT_MS = 330_000;
+// The longest timeout any e2e test or config sets, as long as another worker may hold the foreground or an app open (e2e-foreground-bound.test.ts).
+export const LONGEST_TEST_MS = 1_500_000;
+// A waiter outlasts every other worker's test plus its teardown.
+export const FOREGROUND_WAIT_MS = LONGEST_TEST_MS + 30_000;
 
 let holding = false;
 let opened = 0;

@@ -250,12 +250,14 @@ test('a sidebar section dragged by its header lands on the half it is dropped on
     await expect.poll(() => visualOrder(shell)).toEqual(moved);
     await expect(shell.getByTestId('sidebar-announcement')).toHaveText('Source control moved to position 2 of 7');
     // Tab follows the order on screen (reading-flow), not the DOM's. Collapsing Projects makes its rows inert and disables the
-    // projects and scm sash, so Tab from Projects' header lands on Source control's.
+    // projects and scm sash, so Tab from Projects' header passes its view toggle (one stop) and lands on Source control's.
     expect(await shell.getByTestId('sidebar').evaluate((nav) => getComputedStyle(nav).getPropertyValue('reading-flow'))).toBe('flex-visual');
-    await header(shell, 'projects').locator('button[aria-expanded]').click();
-    await header(shell, 'projects').locator('button[aria-expanded]').focus();
+    await header(shell, 'projects').locator('button[aria-controls][aria-expanded]').click();
+    await header(shell, 'projects').locator('button[aria-controls][aria-expanded]').focus();
     await shell.keyboard.press('Tab');
-    await expect(header(shell, 'scm').locator('button[aria-expanded]')).toBeFocused();
+    await expect(shell.getByTestId('projects-view-flat')).toBeFocused();
+    await shell.keyboard.press('Tab');
+    await expect(header(shell, 'scm').locator('button[aria-controls][aria-expanded]')).toBeFocused();
     await close();
   }
   const { app } = await launch();
@@ -265,7 +267,7 @@ test('a sidebar section dragged by its header lands on the half it is dropped on
   await expect.poll(() => visualOrder(shell)).toEqual(moved);
 
   // Shift+F10 on a header opens its menu; Move Down swaps it with the section below.
-  await header(shell, 'scm').locator('button[aria-expanded]').focus();
+  await header(shell, 'scm').locator('button[aria-controls][aria-expanded]').focus();
   await shell.keyboard.press('Shift+F10');
   await chooseMenuItem(app, 'down');
   await expect.poll(() => visualOrder(shell)).toEqual(['projects', 'chats', 'scm', 'files', 'graph', 'repos', 'search']);
@@ -300,7 +302,7 @@ test('a sash sits in every gap between sidebar sections wherever they are, and o
   };
   const enabledAtEveryGap = (between: string[]) => between.map((pair) => ({ between: pair, atGap: true, hit: true, disabled: false }));
 
-  const toggle = (name: string) => shell.locator(`section[data-section="${name}"] [data-testid="sidebar-section-header"] button[aria-expanded]`);
+  const toggle = (name: string) => shell.locator(`section[data-section="${name}"] [data-testid="sidebar-section-header"] button[aria-controls][aria-expanded]`);
   // Repositories and Search are collapsed below the Graph by default and can give or take nothing: VS Code disables those two
   // sashes.
   expect(await gaps()).toEqual([

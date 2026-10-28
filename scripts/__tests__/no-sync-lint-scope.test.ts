@@ -55,7 +55,7 @@ async function hostInputs(entry: string): Promise<Set<string>> {
     metafile: true,
     packages: 'external',
     external: ['electron', 'vscode'],
-    loader: { '.node': 'empty' },
+    loader: { '.node': 'empty', '.sh': 'text', '.ps1': 'text' },
     logLevel: 'silent',
   });
   return new Set(Object.keys(result.metafile.inputs).map((file) => file.replaceAll('\\', '/')));

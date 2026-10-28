@@ -1,5 +1,6 @@
 // The notification center's data, shared by main (which builds it) and the overlay and shell apps (which render it).
 // Entries are structured: every renderer localizes them, the desktop popup window (D52) included.
+import type { HostTone } from '../../shared/host-tones';
 
 export const NOTIFICATION_KINDS = ['approval', 'plan', 'question', 'team', 'done', 'error', 'limit'] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
@@ -26,8 +27,9 @@ export interface NotificationChat {
   readonly project: NotificationProject;
   // '' is a chat with no title yet, which renderers label "New chat"
   readonly title: string;
-  // a remote chat's host as this computer's host store names it, never a name a core sent
+  // a remote chat's host as this computer's host store names and colors it, never a name a core sent
   readonly host?: string;
+  readonly hostTone?: HostTone;
 }
 
 export type NotificationBody =
@@ -50,7 +52,13 @@ export type NotificationBody =
     }
   // A core NotificationService call: its text is already localized, and an action answers the caller. host: a remote core's,
   // named by this computer's host store
-  | { readonly kind: 'notice'; readonly severity: NoticeSeverity; readonly message: string; readonly actions: readonly string[]; readonly host?: string };
+  | { readonly kind: 'notice'; readonly severity: NoticeSeverity; readonly title?: string; readonly message: string; readonly actions: readonly string[]; readonly host?: string; readonly hostTone?: HostTone };
+
+// A remote host as a notification names it: this computer's host store's name and safety color.
+export interface NotificationHost {
+  readonly name: string;
+  readonly tone?: HostTone;
+}
 
 export interface NotificationEntry {
   // issued by main

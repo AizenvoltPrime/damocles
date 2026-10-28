@@ -75,7 +75,6 @@
       "tooltip": "YOLO mode. Approves every tool call automatically, except plan approval and questions.",
       "active": "YOLO",
       "inactive": "YOLO",
-      "notAllowedOnHost": "Not allowed on {host}",
       "refusedOnHost": "YOLO is off for your turns on {host}.",
       "refused": "YOLO is off for your turns on this host."
     },
@@ -887,6 +886,13 @@
       "byModel": "By model",
       "byProject": "By project",
       "bySource": "By source",
+      "byCredential": "By credential",
+      "credential": {
+        "signIn": "Your sign-ins",
+        "signInTitle": "Spend on your own sign-ins and keys, on this computer or sent to a remote host",
+        "host": "Remote hosts' own credentials",
+        "hostTitle": "Spend a remote host paid with a credential of its own, for a provider you were not signed in to"
+      },
       "columns": {
         "name": "Name",
         "cost": "Cost",
@@ -3114,7 +3120,10 @@
     "modelNotInPlan": "Not in your plan",
     "modelNotInPlanTitle": "Your {provider} plan does not include {model}.",
     "manageModels": "Manage models…",
-    "noProvidersShown": "No providers are shown. Turn one on in Models & accounts."
+    "noProvidersShown": "No providers are shown. Turn one on in Models & accounts.",
+    "modelSourceSignIn": "Your sign-in · {computer}",
+    "modelSourceHost": "{host}'s environment",
+    "modelHostHint": "Uses {host}'s {provider} credentials. Spend counts under {host}."
   },
   "emptyState": {
     "title": "What should we work on in {project}?",
@@ -3207,5 +3216,47 @@
       "update": "Updating this worktree. You can send when it finishes.",
       "delete": "Deleting this worktree. You can send when it finishes."
     }
+  },
+  "remote": {
+    "offline": "{host} is offline",
+    "offlineNote": "This chat is read-only until {host} reconnects. Its transcript is the copy this computer keeps.",
+    "signIn": "{host} is waiting for you to sign in",
+    "reconnect": "Reconnect",
+    "signInAction": "Sign in to {host}",
+    "reconnectingIn": "Reconnecting to {host} in {seconds} s",
+    "reconnecting": "Reconnecting to {host}…",
+    "reconnectNow": "Reconnect now",
+    "failed": "Couldn't reconnect to {host}. Edits and messages are kept on this computer.",
+    "retry": "Retry",
+    "showLog": "Show log",
+    "editHost": "Edit host",
+    "reconnected": "Reconnected to {host}",
+    "announce": {
+      "reconnecting": "Reconnecting to {host}",
+      "failed": "Couldn't reconnect to {host}"
+    },
+    "queue": {
+      "label": "Messages waiting to send",
+      "queued": "Queued · sends when {host} reconnects",
+      "notSent": "Not sent: this chat moved to another conversation",
+      "cancel": "Cancel queued message",
+      "copy": "Copy",
+      "discard": "Discard",
+      "images": "{n} image | {n} images",
+      "announceQueued": "Message queued until {host} reconnects",
+      "answerLater": "{host} is not connected. You can answer once it reconnects."
+    }
+  },
+  "signIn": {
+    "title": "Sign-in needed",
+    "body": "Sign in to {provider} on a computer connected to {host}.",
+    "continue": "Continue with my sign-in",
+    "stop": "Stop"
+  },
+  "hostUpdate": {
+    "running": "{host} is running {count} agent on Damocles {version} | {host} is running {count} agents on Damocles {version}",
+    "waiting": "Waiting for the agents on {host} to finish",
+    "switchWhenIdle": "Switch when they finish",
+    "switchNow": "Switch now"
   }
 }

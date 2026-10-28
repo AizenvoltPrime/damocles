@@ -1,12 +1,12 @@
 // Source control in main (plan AD4, "Who does what"): the damocles:scm:* requests, the user flows keyed by op, the selected
 // repository per project, the pushes to the shell, the editor tabs and the palette's entry points.
-import { authorityKeyOfProject } from '../../../shared/project-location';
+import { authorityKeyOfProject, isInsideFolder, pathFor } from '../../../shared/project-location';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { SettingsStore } from '../../../platform/settings-store';
 import { isInside, samePath } from '../../../core/scm/discovery';
-import { gitErrorText, GitUntrustedError, redactUrls, RemoteCancelledError, StashKeptError, SyncBranchChangedError, type SyncBranch } from '../../../core/scm/errors';
+import { gitErrorText, gitFailureCode, GitUntrustedError, redactUrls, RemoteCancelledError, StashKeptError, SyncBranchChangedError, type SyncBranch } from '../../../core/scm/errors';
 import { isRemoteName, isRemoteUrl, type Remote } from '../../../core/scm/remotes';
 import { isObjectName, type CommitPairDiff, type StashArtifact, type WorktreeArtifact } from '../../../core/scm/artifacts';
 import type { Change, ChangeGroup } from '../../../core/scm/repository';
@@ -15,7 +15,7 @@ import type { ProjectView } from '../../../core/scm/scm-service';
 import { SCM_SETTING_KEYS, type OpenAfterClone, type PostCommitCommand, type PromptToSaveFilesBeforeCommit } from '../../../core/scm/settings-keys';
 import { canStashStaged } from '../../../core/scm/stash';
 import type { CommitAttachmentInput } from '../../../shared/types/chat-attachment';
-import { folderKey } from '../../../core/workspace-folders/folder-key';
+import { folderKey, folderKeyOn } from '../../../core/workspace-folders/folder-key';
 import { inputProblem } from '../../../shared/input-validation';
 import { visibleText } from '../../../shared/visible-text';
 import type { FileRef, ShellFileGit } from '../../preload/shell-channels';
@@ -51,6 +51,8 @@ import {
   type ScmStageRangesRequest,
   type ScmTimelineResult,
   type ScmUnstageRangesRequest,
+  type ScmRangeAction,
+  type ScmRangeRefusal,
   type ScmArtifactGroup,
   type ScmCopyKind,
   type ScmCopyRequest,
@@ -88,7 +90,7 @@ import {
 import { isDesktopSettingValue } from '../../local-services/desktop-configuration';
 import { confineExisting, type Project } from '../../local-services/confine';
 import { parseRootKey } from '../../preload/folder-root';
-import type { Document, DocumentService } from '../documents/document-service';
+import type { Document, DocumentService, Location } from '../documents/document-service';
 import type { EditorPane, NotShownSide } from '../editor-pane';
 import type { AskMessage } from '../message-dialog';
 import type { AskInput } from '../overlay';
@@ -112,8 +114,8 @@ export interface ScmQuickPickItem {
 }
 
 export interface ScmWorktreeDeps {
-  // D33's Delete when a live chat worktree's root is at worktreePath; false for any other worktree
-  deleteChatWorktreeAt(worktreePath: string): Promise<boolean>;
+  // D33's Delete when a live chat worktree of the authority's registry has its root at worktreePath; false for any other worktree
+  deleteChatWorktreeAt(authority: string, worktreePath: string): Promise<boolean>;
   // the adopted record of a worktree holding an open project, before its delete (rule 16)
   adopt(project: Project, worktree: WorktreeArtifact, repositoryRoot: string, mainProject: Project | undefined): Promise<void>;
   // Create Worktree's adopted record, under the project the repository belongs to (rule 16)
@@ -122,10 +124,10 @@ export interface ScmWorktreeDeps {
   markRemoved(worktreePath: string): Promise<void>;
   // closes a project and its chats as Remove Project does, asking first about terminals running a process
   closeProject(projectKey: string): Promise<'closed' | 'cancelled' | { readonly reason: string }>;
-  // Open on a registered chat worktree's row: its most recently viewed chat, or undefined for any other worktree
-  chatOf(worktreePath: string): ScmWorktreeChat | undefined;
-  // New Chat in This Worktree's target for the row: a live chat worktree of an open, trusted project
-  newChatTargetAt(worktreePath: string): { readonly projectKey: string; readonly worktreeId: string } | undefined;
+  // Open on a chat worktree's row of the authority's registry: its most recently viewed chat, or undefined for any other worktree
+  chatOf(authority: string, worktreePath: string): ScmWorktreeChat | undefined;
+  // New Chat in This Worktree's target for the row: a live chat worktree of an open, trusted project of the authority
+  newChatTargetAt(authority: string, worktreePath: string): { readonly projectKey: string; readonly worktreeId: string } | undefined;
   selectChat(chatId: string): Promise<void>;
   // Open on the worktree holding the project folder: the views show the project folder again (D31)
   showProjectFolder(projectKey: string): void;
@@ -134,11 +136,22 @@ export interface ScmWorktreeDeps {
   projectCopyOf(rootKey: string, absolutePath: string): { readonly project: Project; readonly relativePath: string } | undefined;
 }
 
+// The host's name from this computer's host store, and the setting change that turns forwarding on (it reconnects the host).
+export interface AgentForwardingOffer {
+  readonly hostName: string;
+  enable(): Promise<void>;
+}
+
+// the operations that reach a remote, whose publickey failure forwarding can fix
+const REMOTE_OPS: ReadonlySet<string> = new Set(['fetch', 'pull', 'pullFrom', 'push', 'sync', 'publish', 'pushTags']);
+
 export interface ScmHostDeps {
   // A remote repository's file as the project file it is: a path its core answered, inside one of that authority's projects
   // by the target's own path rules; undefined for any other path (another root, a UNC or drive path, another authority).
   readonly remoteFileRef: (authority: string, targetPath: string) => FileRef | undefined;
   readonly hostName: (authority: string) => string;
+  // the OS whose path rules an authority's paths follow: this computer's, or the target's
+  readonly authorityOs: (authority: string) => NodeJS.Platform;
   // core's ScmService (scm-client.ts)
   readonly service: ScmServiceClient;
   readonly settings: SettingsStore;
@@ -157,13 +170,15 @@ export interface ScmHostDeps {
   };
   readonly t: (message: string, ...args: Array<string | number>) => string;
   readonly showGitLog: () => void;
+  // a remote authority's offer to turn on agent forwarding: its POSIX host with forwarding off, else undefined
+  readonly agentForwarding: (authority: string) => AgentForwardingOffer | undefined;
   readonly copy: (text: string) => Promise<void>;
   readonly reveal: (absolutePath: string) => Promise<void>;
   readonly openExternal: (url: string) => Promise<void>;
   // the OS folder picker; title names what the folder is for, buttonLabel its confirm button
   readonly pickFolder: (defaultPath: string, title?: string, buttonLabel?: string) => Promise<string | undefined>;
-  // adds a folder to the project list, asking for trust as any added project does (Clone, a worktree's Open)
-  readonly addProject: (folder: string) => Promise<void>;
+  // adds a folder of the authority to the project list, asking for trust as any added project does (Clone, a worktree's Open)
+  readonly addProject: (authority: string, folder: string) => Promise<void>;
   // selects a project of the list, as its Projects row does (a worktree's Open)
   readonly selectProject: (projectKey: string) => Promise<void>;
   // worktree chats (slice 12a): D33's delete, rule 14's close-first order and the registry's adopted records
@@ -196,6 +211,16 @@ export interface ScmHostDeps {
   readonly log: (line: string) => void;
   readonly platform: NodeJS.Platform;
 }
+
+// An authority's path rules, which its repositories' paths follow: this computer's, or the target's.
+export interface PathRules {
+  readonly os: NodeJS.Platform;
+  readonly flavor: path.PlatformPath;
+  same(a: string, b: string): boolean;
+  inside(folder: string, target: string): boolean;
+}
+
+type Resource = { readonly repoId: string; readonly relativePath: string; readonly group?: ChangeGroup };
 
 export type ScmPaletteRequest =
   | { readonly op: 'init' | 'openRepository' | 'reopenClosed' | 'openParentRepositories' | 'manageUnsafeRepositories' }
@@ -406,6 +431,7 @@ const FLOWS: FlowRegistry = {
   compareWithWorkspace: (host, request) => host.compareWithWorkspace(request.repoId, request.path),
   stageRanges: (host, request) => host.stageRanges(request),
   unstageRanges: (host, request) => host.stageRanges(request),
+  refuseRanges: async (host, request) => host.refuseRanges(request.action, request.reason),
   completeMerge: (host, request) => host.completeMerge(request.repoId, request.path, request.documentId),
   openCommit: (host, request) => host.withCommit(request.repoId, request.commit, () => host.openCommit(request.repoId, request.commit, request.path)),
   openTimeline: (host, request) => host.openTimeline(request.repoId, request.path),
@@ -461,7 +487,7 @@ export class ScmHost {
     this.refs = new RefFlows({
       deps,
       repo: (repoId) => this.repo(repoId),
-      localOnly: (repoId) => this.localOnly(repoId),
+      pathsOf: (authority) => this.pathsOf(authority),
       setting: (key, fallback) => this.read(key, fallback),
       closeStashTabs: (repoId, hash) => this.closeStashTabs(repoId, hash),
       openStash: (repoId, stash) => this.openStash(repoId, stash),
@@ -608,7 +634,7 @@ export class ScmHost {
         void this.deps.notify.warn(this.syncBranchChanged(err));
         return TOLD;
       }
-      this.failed(gitErrorText(err));
+      this.failed(gitErrorText(err), this.forwardingOffer(request, err));
       return TOLD;
     }
   }
@@ -722,10 +748,9 @@ export class ScmHost {
   async quickDiffBase(raw: unknown): Promise<ScmQuickDiffBaseResult> {
     const request = parseScmPath(raw);
     if (!request) throw new Error('Malformed quick diff request from the shell');
-    this.localOnly(request.repoId);
     const repo = this.deps.service.repository(request.repoId)?.repo;
     if (!repo) return { ok: false, reason: 'unknown' };
-    const document = this.documentAt(path.join(repo.root, ...request.path.split('/')));
+    const document = this.documentOf(repo, request.path);
     if (document && document.kind !== 'text') return { ok: false, reason: document.kind === 'notDisplayed' && document.reason === 'tooLarge' ? 'tooLarge' : 'binary' };
     if (document?.readOnlyReason === 'tooLarge') return { ok: false, reason: 'tooLarge' };
     const base = await this.whileOpen(request.repoId, () => this.deps.service.quickDiffBase(request.repoId, request.path, document ? codecOf(document) : undefined), undefined);
@@ -826,10 +851,9 @@ export class ScmHost {
   async mergeInputs(raw: unknown): Promise<ScmMergeInputsResult> {
     const request = parseScmPath(raw);
     if (!request) throw new Error('Malformed merge request from the shell');
-    this.localOnly(request.repoId);
     const repo = this.deps.service.repository(request.repoId)?.repo;
     if (!repo) return { ok: false, reason: 'unknown' };
-    const document = this.documentAt(path.join(repo.root, ...request.path.split('/')));
+    const document = this.documentOf(repo, request.path);
     if (document?.kind !== 'text') return { ok: false, reason: document ? 'binary' : 'notOpen' };
     try {
       return await this.deps.service.mergeInputs(request.repoId, request.path, codecOf(document), document.text);
@@ -843,10 +867,9 @@ export class ScmHost {
   async mergeFile(raw: unknown): Promise<ScmMergeFileResult> {
     const request = parseScmMergeFile(raw);
     if (!request) throw new Error('Malformed merge request from the shell');
-    this.localOnly(request.repoId);
     const repo = this.deps.service.repository(request.repoId)?.repo;
     if (!repo) return { ok: false, reason: 'unknown' };
-    const document = this.documentAt(path.join(repo.root, ...request.path.split('/')));
+    const document = this.documentOf(repo, request.path);
     if (document?.kind !== 'text') return { ok: false, reason: document ? 'binary' : 'notOpen' };
     try {
       return await this.deps.service.mergeFile(request.repoId, request.path, codecOf(document), request.diff3, document.text);
@@ -862,20 +885,23 @@ export class ScmHost {
     if (!request) throw new Error('Malformed resource request from the shell');
     const project = this.deps.projects().find((candidate) => candidate.key === request.projectKey);
     if (!project) return null;
-    const found = this.resourceAt(path.join(this.projectFolders(project)[0]!, ...request.relativePath.split('/')));
+    const authority = authorityKeyOfProject(project.key);
+    const segments = request.relativePath.split('/');
+    const found = authority === 'local'
+      ? this.resourceAt(path.join(this.projectFolders(project)[0]!, ...segments))
+      : this.resourceOf({ path: this.pathsOf(authority).flavor.join(project.fsPath, ...segments), projectKey: project.key, relativePath: request.relativePath });
     return found ? { repoId: found.repoId, path: found.relativePath } : null;
   }
 
-  /** A file's place in an open repository (ShellEditorTab.git); untrusted projects have none open. */
-  gitOf(absolutePath: string): ShellFileGit | undefined {
-    const found = this.resourceAt(absolutePath);
+  /** A file's place in an open repository of its own authority (ShellEditorTab.git); untrusted projects have none open. */
+  gitOf(location: Location): ShellFileGit | undefined {
+    const found = this.resourceOf(location);
     return found ? { repoId: found.repoId, path: found.relativePath } : undefined;
   }
 
   async fileDiff(raw: unknown): Promise<ScmFileDiffResult> {
     const request = parseScmFileDiff(raw);
     if (!request) throw new Error('Malformed diff request from the shell');
-    this.localOnly(request.repoId);
     const repo = this.deps.service.repository(request.repoId)?.repo;
     const source = request.source;
     if (!repo) return { kind: 'missing' };
@@ -952,7 +978,8 @@ export class ScmHost {
       return row.commit.hash;
     }
     const listed = await service.artifacts(repoId, 'worktrees');
-    const worktree = listed.group === 'worktrees' ? listed.rows.find((row) => samePath(row.path, value)) : undefined;
+    const paths = this.pathsOf(this.repo(repoId).authority);
+    const worktree = listed.group === 'worktrees' ? listed.rows.find((row) => paths.same(row.path, value)) : undefined;
     if (!worktree) return undefined;
     if (kind === 'worktreePath') return worktree.path;
     const text = kind === 'commitHash' ? worktree.commit?.hash : worktree.branch;
@@ -968,11 +995,11 @@ export class ScmHost {
     try {
       const artifacts = await this.deps.service.artifacts(request.repoId, request.group);
       if (artifacts.group !== 'worktrees') return { ok: true, artifacts };
-      // a remote repository's worktree paths name no chat or project of this computer
-      const local = this.repo(request.repoId).authority === 'local';
+      // a worktree path names a chat or a project of its repository's own authority only
+      const authority = this.repo(request.repoId).authority;
       const rows = artifacts.rows.map((row): ScmWorktreeArtifact => {
-        const chat = local ? this.deps.worktrees.chatOf(row.path) : undefined;
-        const newChatIn = local ? this.deps.worktrees.newChatTargetAt(row.path) : undefined;
+        const chat = this.deps.worktrees.chatOf(authority, row.path);
+        const newChatIn = this.deps.worktrees.newChatTargetAt(authority, row.path);
         const target = newChatIn ? { newChatIn } : {};
         if (chat) return { ...row, opens: 'chat', chat, ...target };
         return { ...row, opens: this.worktreeProject(request.repoId, row.path) === undefined ? 'addProject' : 'project', ...target };
@@ -1049,7 +1076,7 @@ export class ScmHost {
         void this.guarded(request.op, () => this.openAllChanges(repoId));
         return;
       case 'closeAllDiffEditors':
-        void this.guarded(request.op, () => this.deps.editorPane.closeScmDiffs(this.repo(repoId).root));
+        void this.guarded(request.op, () => this.deps.editorPane.closeScmDiffs(repoId));
         return;
       default:
         void this.runRequest({ ...request, repoId });
@@ -1081,8 +1108,8 @@ export class ScmHost {
   }
 
   /** A code tab's Open Changes. */
-  async openChangesOf(absolutePath: string): Promise<void> {
-    const found = this.resourceAt(absolutePath);
+  async openChangesOf(location: Location): Promise<void> {
+    const found = this.resourceOf(location);
     if (found?.group === undefined) return;
     await this.runRequest({ op: 'openChanges', repoId: found.repoId, path: found.relativePath, group: found.group });
   }
@@ -1271,7 +1298,7 @@ export class ScmHost {
       const choice = await this.deps.ask({ severity: 'info', message: t('Would you like to open the cloned repository?'), detail: visibleText(target), actions: [t('Add Project')], cancelLabel: t('Cancel'), defaultAction: 0 });
       if (choice !== 0) return OK;
     }
-    await this.deps.addProject(target);
+    await this.deps.addProject('local', target);
     return OK;
   }
 
@@ -1317,9 +1344,10 @@ export class ScmHost {
   }
 
   // VS Code's git.rename on the active file: git mv, then its tabs follow it as a Files rename's do, keeping unsaved edits; a
-  // file outside every project closes and opens again at its new path, as VS Code's command does.
+  // file outside every project, or moved to another project, closes and opens again at its new path, as VS Code's command
+  // does. A remote repository's files are named only as its host's project files (remoteRef), both before git runs.
   async rename(repoId: string, from: string): Promise<void> {
-    this.localOnly(repoId);
+    const repo = this.repo(repoId);
     const t = this.deps.t;
     const answer = await this.deps.askInput({
       title: t('Rename'),
@@ -1331,13 +1359,13 @@ export class ScmHost {
     const to = answer?.trim();
     if (!to || to === from) return;
     // the answer passed validation before the trim, and core refuses a Windows-unsafe name with a generic failure
-    if (inputProblem('path', to, { windows: this.deps.platform === 'win32' }) !== undefined) {
+    if (inputProblem('path', to, { windows: this.pathsOf(repo.authority).os === 'win32' }) !== undefined) {
       void this.deps.notify.warn(t('{0} is not a valid file or folder name.', visibleText(to)));
       return;
     }
-    const repo = this.repo(repoId);
-    const source = this.fileRefOf(path.join(repo.root, ...from.split('/')));
-    const target = this.fileRefOf(path.join(repo.root, ...to.split('/')));
+    const remote = repo.authority !== 'local';
+    const source = remote ? this.remotePathRef(repo, from) : this.fileRefOf(path.join(repo.root, ...from.split('/')));
+    const target = remote ? this.remotePathRef(repo, to) : this.fileRefOf(path.join(repo.root, ...to.split('/')));
     if (source && target && source.projectKey === target.projectKey) {
       await this.deps.editorPane.fileRenamed(source.projectKey, source.relativePath, async () => {
         await this.deps.service.move(repoId, from, to);
@@ -1346,53 +1374,46 @@ export class ScmHost {
       return;
     }
     await this.deps.service.move(repoId, from, to);
-    await this.deps.editorPane.closeActive({ cleanOnly: false });
-    await this.openAbsolute(await repo.confinedEntry(to));
+    await this.deps.editorPane.closeActive(source ?? { path: path.join(repo.root, ...from.split('/')) }, { cleanOnly: false });
+    await this.openRepoFile(repo, await repo.confinedEntry(to));
   }
 
   // VS Code's git.delete: a file with uncommitted changes is refused; otherwise git rm, and its tab closes unless it is dirty.
+  // A remote repository's file is its host's project file (remoteRef), resolved before git runs.
   async delete(repoId: string, relativePath: string, changed: boolean): Promise<void> {
-    this.localOnly(repoId);
     if (changed) {
       void this.deps.notify.info(this.deps.t('Git: Delete can only be performed on committed files without uncommitted changes.'));
       return;
     }
-    const absolute = path.join(this.repo(repoId).root, ...relativePath.split('/'));
+    const repo = this.repo(repoId);
+    const file = repo.authority === 'local' ? { path: path.join(repo.root, ...relativePath.split('/')) } : this.remotePathRef(repo, relativePath);
     await this.deps.service.remove(repoId, [relativePath]);
-    const active = this.deps.editorPane.activeContext()?.filePath;
-    if (active !== undefined && folderKey(active) === folderKey(absolute)) await this.deps.editorPane.closeActive({ cleanOnly: true });
+    await this.deps.editorPane.closeActive(file, { cleanOnly: true });
   }
 
   // VS Code's git.openAllChanges: every working tree and untracked change that still exists, opened without taking the active tab.
   async openAllChanges(repoId: string): Promise<void> {
-    this.localOnly(repoId);
     const repo = this.repo(repoId);
     const groups = repo.lastStatus?.groups;
     const gone: ReadonlySet<string> = new Set(['DELETED', 'DELETED_BY_THEM', 'DELETED_BY_US', 'BOTH_DELETED']);
-    const files: string[] = [];
+    const files: Array<{ readonly path: string } | { readonly file: FileRef }> = [];
     for (const change of [...(groups?.workingTree ?? []), ...(groups?.untracked ?? [])]) {
-      if (!gone.has(change.status) && !change.submodule) files.push(await repo.confinedEntry(change.path));
+      if (gone.has(change.status) || change.submodule) continue;
+      files.push(repo.authority === 'local' ? { path: await repo.confinedEntry(change.path) } : { file: this.remotePathRef(repo, change.path) });
     }
     await this.deps.editorPane.openInBackground(files);
   }
 
   // VS Code's git.closeAllUnmodifiedEditors: a clean text tab closes unless its file has a change in any open repository.
   async closeAllUnmodified(): Promise<void> {
-    const changed = new Set<string>();
-    for (const projectKey of this.deps.service.projectKeys()) {
-      for (const { repoId } of this.deps.service.view(projectKey)?.repos ?? []) {
-        const repo = this.deps.service.repository(repoId)?.repo;
-        for (const group of SCM_GROUP_NAMES) for (const change of repo?.lastStatus?.groups[group] ?? []) changed.add(folderKey(path.join(repo!.root, ...change.path.split('/'))));
-      }
-    }
-    await this.deps.editorPane.closeUnmodified((absolute) => changed.has(folderKey(absolute)));
+    await this.deps.editorPane.closeUnmodified((location) => this.resourceOf(location)?.group !== undefined);
   }
 
   async openRepository(projectKey: string): Promise<ScmRunResult> {
     const project = this.deps.projects().find((candidate) => candidate.key === projectKey);
     if (!project) return { ok: false, reason: 'unknown' };
     // the folder picker browses this computer only
-    this.localAuthorityOnly(authorityKeyOfProject(projectKey));
+    this.refuseRemote(authorityKeyOfProject(projectKey));
     const folder = await this.deps.pickFolder(project.fsPath);
     if (folder === undefined) return CANCELLED;
     const t = this.deps.t;
@@ -1424,34 +1445,32 @@ export class ScmHost {
   // VS Code's resolveChangeCommand: a diff of its left and right sides, or the one side when there is no left (added,
   // untracked, deleted); a conflicted file opens itself.
   async openChanges(repoId: string, relativePath: string, group: ChangeGroup): Promise<ScmRunResult> {
-    this.localOnly(repoId);
     const repo = this.repo(repoId);
     const change = repo.lastStatus?.groups[group].find((candidate) => candidate.path === relativePath);
     if (!change) return OK;
     const name = path.basename(change.path);
     if (group === 'merge') {
-      await this.openAbsolute(await repo.confinedEntry(change.path));
+      await this.openRepoFile(repo, await repo.confinedEntry(change.path));
       return OK;
     }
     const title = (fileName: string): string => titleOf(change.status, fileName, this.deps.t);
+    const confined = (): Promise<string> => repo.confinedEntry(change.path);
     switch (change.status) {
       case 'INDEX_MODIFIED':
       case 'INDEX_RENAMED':
       case 'TYPE_CHANGED': {
         const left = await this.gitSide(repo, 'HEAD', change.originalPath ?? change.path, name);
         if (group !== 'index') {
-          const absolute = await repo.confinedEntry(change.path);
-          await this.diff(repoId, repo.root, title, absolute, left, { path: absolute });
+          await this.diff(repo, title, change.path, confined, left, 'file');
           return OK;
         }
         const right = await this.gitSide(repo, 'index', change.path, name);
-        await this.diff(repoId, repo.root, title, await entryOrLexical(repo, change.path), left, right, { path: change.path, group: 'index' });
+        await this.diff(repo, title, change.path, () => entryOrLexical(repo, change.path), left, right, { path: change.path, group: 'index' });
         return OK;
       }
       case 'MODIFIED': {
-        const absolute = await repo.confinedEntry(change.path);
         const left = await this.gitSide(repo, 'index', change.path, name);
-        await this.diff(repoId, repo.root, title, absolute, left, { path: absolute }, { path: change.path, group: 'workingTree' });
+        await this.diff(repo, title, change.path, confined, left, 'file', { path: change.path, group: 'workingTree' });
         return OK;
       }
       case 'INDEX_ADDED':
@@ -1463,7 +1482,7 @@ export class ScmHost {
         this.openSide(title(name), await this.gitSide(repo, 'HEAD', change.path, name));
         return OK;
       default:
-        await this.openAbsolute(await repo.confinedEntry(change.path));
+        await this.openRepoFile(repo, await repo.confinedEntry(change.path));
         return OK;
     }
   }
@@ -1475,26 +1494,25 @@ export class ScmHost {
    * document encoding when it is open, else in the index blob's own. A refusal is a notice.
    */
   async stageRanges(request: ScmStageRangesRequest | ScmUnstageRangesRequest): Promise<ScmRunResult> {
-    this.localOnly(request.repoId);
     const named = this.deps.documents.get(request.documentId);
     const buffer = named?.kind === 'text' ? named.text : undefined;
     const repo = this.repo(request.repoId);
-    const absolute = path.join(repo.root, ...request.path.split('/'));
-    const isFile = named?.location !== undefined && folderKey(named.location.path) === folderKey(absolute);
+    const isFile = named !== undefined && this.sameFile(repo, request.path)(named.location);
     const gitSide = request.op === 'unstageRanges' && this.deps.editorPane.scmDiffTabs().some((tab) => tab.repoId === request.repoId && tab.git.path === request.path && (tab.originalId === request.documentId || tab.modifiedId === request.documentId));
     if (!isFile && !gitSide) throw new Error('The document is not the file the request names');
-    const document = isFile ? named : this.documentAt(absolute);
+    const document = isFile ? named : this.documentOf(repo, request.path);
     // an unstage applies HEAD's blob, the one its ranges were computed against, at the path core reads from its own status
     const side = request.op === 'stageRanges' ? { buffer: buffer! } : { headOid: request.headOid };
+    const action: ScmRangeAction = request.op === 'stageRanges' ? 'stage' : 'unstage';
     if (!document) {
       const outcome = await this.deps.service.stageRanges(request.repoId, { path: request.path, ranges: request.ranges, indexOid: request.indexOid, ...side });
-      return outcome.ok ? OK : this.refuseStage(outcome.reason);
+      return outcome.ok ? OK : this.refuseStage(action, outcome.reason);
     }
     const refusal: StageRefusal | 'readOnly' | undefined =
       document.kind !== 'text'
         ? document.kind === 'notDisplayed' && document.reason === 'tooLarge' ? 'tooLarge' : 'binary'
         : document.readOnlyReason === 'encoding' ? 'encoding' : document.readOnlyReason === 'tooLarge' ? 'tooLarge' : document.readOnlyReason !== undefined ? 'readOnly' : undefined;
-    if (refusal !== undefined || document.kind !== 'text') return this.refuseStage(refusal ?? 'binary');
+    if (refusal !== undefined || document.kind !== 'text') return this.refuseStage(action, refusal ?? 'binary');
     const outcome = await this.deps.service.stageRanges(request.repoId, {
       path: request.path,
       ranges: request.ranges,
@@ -1502,13 +1520,27 @@ export class ScmHost {
       codec: codecOf(document),
       ...side,
     });
-    return outcome.ok ? OK : this.refuseStage(outcome.reason);
+    return outcome.ok ? OK : this.refuseStage(action, outcome.reason);
   }
 
-  private refuseStage(reason: StageRefusal | 'readOnly'): ScmRunResult {
+  private refuseStage(action: ScmRangeAction, reason: StageRefusal | 'readOnly'): ScmRunResult {
     const t = this.deps.t;
+    const stale: Record<ScmRangeAction, { readonly changed: string; readonly outOfRange: string }> = {
+      stage: {
+        changed: t('The staged version of this file changed since the changes were shown, so nothing was staged. Try again.'),
+        outOfRange: t('The file changed while the changes were staged, so nothing was staged. Try again.'),
+      },
+      unstage: {
+        changed: t('The staged version of this file changed since the changes were shown, so nothing was unstaged. Try again.'),
+        outOfRange: t('The file changed while the changes were unstaged, so nothing was unstaged. Try again.'),
+      },
+      revert: {
+        changed: t('The file changed since the changes were shown, so nothing was reverted. Try again.'),
+        outOfRange: t('The file changed while the changes were reverted, so nothing was reverted. Try again.'),
+      },
+    };
     const texts: Record<StageRefusal | 'readOnly', string> = {
-      changed: t('The staged version of this file changed since the changes were shown, so nothing was staged. Try again.'),
+      changed: stale[action].changed,
       conflicted: t('This file has merge conflicts. Resolve them before staging parts of it.'),
       declined: t('That folder belongs to a project you have not trusted, so source control runs no git there.'),
       symlink: t('Parts of a symbolic link cannot be staged.'),
@@ -1517,42 +1549,59 @@ export class ScmHost {
       binary: t('Parts of a binary file cannot be staged.'),
       tooLarge: t('This file is too large to stage parts of it.'),
       encoding: t('This file is not valid in its encoding, so parts of it cannot be staged.'),
-      outOfRange: t('The file changed while the changes were staged, so nothing was staged. Try again.'),
+      outOfRange: stale[action].outOfRange,
       readOnly: t('This file is read-only in the editor, so parts of it cannot be staged.'),
     };
     void this.deps.notify.warn(texts[reason]);
     return TOLD;
   }
 
-  /** Complete Merge: the Result document saved, then the file staged as resolved, and its merge editor closed. */
+  /** A Selected Ranges action the shell could not apply. */
+  refuseRanges(action: ScmRangeAction, reason: ScmRangeRefusal): ScmRunResult {
+    const t = this.deps.t;
+    if (reason === 'noQuickDiff') {
+      void this.deps.notify.warn(t('Source control cannot show this file\'s changes line by line, so the selected ranges were not applied.'));
+      return TOLD;
+    }
+    if (reason !== 'noChanges') return this.refuseStage(action, reason);
+    const texts: Record<ScmRangeAction, string> = {
+      stage: t('The selection holds no unstaged changes, so nothing was staged.'),
+      unstage: t('The selection holds no staged changes, so nothing was unstaged.'),
+      revert: t('The selection holds no changes, so nothing was reverted.'),
+    };
+    void this.deps.notify.warn(texts[action]);
+    return TOLD;
+  }
+
+  /**
+   * Complete Merge: the Result document saved through its authority's workspace, then the file staged as resolved by its
+   * repository, and its merge editor closed by the document; a remote Result is its host's project file (sameFile).
+   */
   async completeMerge(repoId: string, relativePath: string, documentId: string): Promise<ScmRunResult> {
-    this.localOnly(repoId);
     const repo = this.repo(repoId);
     const document = this.deps.documents.get(documentId);
-    if (document?.kind !== 'text' || !document.location || folderKey(document.location.path) !== folderKey(path.join(repo.root, ...relativePath.split('/')))) {
-      throw new Error('The document is not the file the request names');
-    }
+    if (document?.kind !== 'text' || !this.sameFile(repo, relativePath)(document.location)) throw new Error('The document is not the file the request names');
     if (!(await this.deps.editorPane.saveDocuments([documentId]))) {
       void this.deps.notify.warn(this.deps.t('The file could not be saved, so the merge was not completed.'));
       return TOLD;
     }
     await this.deps.service.completeMerge(repoId, relativePath);
-    await this.deps.editorPane.closeMerge(repoId, relativePath);
+    await this.deps.editorPane.closeMerge(documentId);
     return OK;
   }
 
   /** A conflicted file's merge editor when all three stages exist (UU, AA); any other merge row opens the file, as slice 10 does. */
   async openMergeEditor(repoId: string, relativePath: string): Promise<ScmRunResult> {
-    this.localOnly(repoId);
     const repo = this.repo(repoId);
     const change = repo.lastStatus?.groups.merge.find((candidate) => candidate.path === relativePath);
     if (!change) return OK;
     const absolute = await repo.confinedEntry(relativePath);
     if (change.status !== 'BOTH_MODIFIED' && change.status !== 'BOTH_ADDED') {
-      await this.openAbsolute(absolute);
+      await this.openRepoFile(repo, absolute);
       return OK;
     }
-    const ref = this.fileRefOf(absolute);
+    // a remote Result is its host's project file, opened through that host's workspace
+    const ref = repo.authority === 'local' ? this.fileRefOf(absolute) : this.remoteRef(repo, absolute);
     const document = ref ? await this.deps.documents.openProjectFile(ref.projectKey, ref.relativePath) : undefined;
     if (!document?.ok) throw this.notOpened(relativePath, document?.reason ?? 'outside');
     this.deps.editorPane.showMerge({ repoId, path: relativePath }, document.document, this.deps.t('Merging: {0}', path.basename(relativePath)), { focus: true });
@@ -1561,21 +1610,30 @@ export class ScmHost {
 
   /** B40's Compare with Workspace: the project folder's copy of a changed file of a chat worktree against the worktree's. */
   async compareWithWorkspace(repoId: string, relativePath: string): Promise<ScmRunResult> {
-    this.localOnly(repoId);
     const target = this.deps.service.repository(repoId);
     if (!target) return { ok: false, reason: 'unknown' };
-    const absolute = await target.repo.confinedEntry(relativePath);
-    const projectCopy = this.deps.worktrees.projectCopyOf(target.projectKey, absolute);
-    if (projectCopy === undefined) {
+    const notWorktree = (): ScmRunResult => {
       void this.deps.notify.info(this.deps.t('Compare with Workspace compares a file of a worktree chat with the project folder\'s copy.'));
       return TOLD;
+    };
+    const title = (fileName: string): string => this.deps.t('{0} (project folder) ↔ {0} (worktree)', fileName);
+    if (target.repo.authority !== 'local') {
+      // the file is a chat worktree's when its host's roots resolve it inside a worktree root, and its copy is the same path in that project
+      const file = this.remotePathRef(target.repo, relativePath);
+      const worktreeOf = parseRootKey(file.projectKey);
+      if (worktreeOf?.worktreeId === undefined) return notWorktree();
+      await this.deps.editorPane.showRemoteDiff(title, file, { file: { projectKey: worktreeOf.projectKey, relativePath: file.relativePath } }, { file }, { focus: true });
+      return OK;
     }
+    const absolute = await target.repo.confinedEntry(relativePath);
+    const projectCopy = this.deps.worktrees.projectCopyOf(target.projectKey, absolute);
+    if (projectCopy === undefined) return notWorktree();
     const name = path.basename(absolute);
     // a copy confinement refuses (a link out of the project folder) or one that is missing shows as an empty side
     const confined = await confineExisting(projectCopy.project, projectCopy.relativePath);
     const file = confined.ok && (await fs.promises.stat(confined.path)).isFile() ? confined.path : undefined;
     await this.deps.editorPane.showDiff(
-      (fileName) => this.deps.t('{0} (project folder) ↔ {0} (worktree)', fileName),
+      title,
       absolute,
       file !== undefined ? { path: file } : { name, content: '' },
       { path: absolute },
@@ -1585,7 +1643,6 @@ export class ScmHost {
   }
 
   async openTimeline(repoId: string, relativePath: string): Promise<ScmRunResult> {
-    this.localOnly(repoId);
     this.repo(repoId);
     this.deps.editorPane.showTimeline({ repoId, path: relativePath }, this.deps.t('Timeline: {0}', path.basename(relativePath)), { focus: true });
     return OK;
@@ -1597,7 +1654,6 @@ export class ScmHost {
    * compared with the empty tree.
    */
   async openCommit(repoId: string, commit: string, relativePath: string | undefined): Promise<ScmRunResult> {
-    this.localOnly(repoId);
     const repo = this.repo(repoId);
     const object = await repo.commitObject(commit);
     const parent = object.parents[0] ?? (await this.deps.service.emptyTree(repoId));
@@ -1619,7 +1675,6 @@ export class ScmHost {
 
   /** One diff tab of two versions of a file, each at its own path; titled as VS Code's timeline titles a diff. */
   async compareCommits(repoId: string, left: ScmCommitFile, right: ScmCommitFile): Promise<ScmRunResult> {
-    this.localOnly(repoId);
     const repo = this.repo(repoId);
     const [leftSide, rightSide] = await Promise.all([this.commitSide(repoId, left), this.commitSide(repoId, right)]);
     const t = this.deps.t;
@@ -1628,7 +1683,7 @@ export class ScmHost {
     const title = (fileName: string): string => (leftName === path.posix.basename(right.path)
       ? t('{0} ({1}) ↔ {0} ({2})', fileName, shortHash(left.commit), shortHash(right.commit))
       : t('{0} ({1}) ↔ {2} ({3})', leftName, shortHash(left.commit), fileName, shortHash(right.commit)));
-    await this.deps.editorPane.showDiff(title, path.join(repo.root, ...right.path.split('/')), leftSide, rightSide, { focus: true, scm: { root: repo.root, repoId } });
+    await this.diff(repo, title, right.path, async () => path.join(repo.root, ...right.path.split('/')), leftSide, rightSide);
     return OK;
   }
 
@@ -1642,17 +1697,27 @@ export class ScmHost {
     return decoded ? { name, content: decoded.text } : { name, notDisplayed: 'binary', bytes: bytes.length };
   }
 
-  // The open document of a file on disk (never an untitled, settings or Search Editor document), by native path.
-  private documentAt(absolute: string): Document | undefined {
-    const key = folderKey(absolute);
+  // The open document of a repository's file on disk (never an untitled, settings or Search Editor document).
+  private documentOf(repo: ScmRepository, relativePath: string): Document | undefined {
+    const isFile = this.sameFile(repo, relativePath);
     return this.deps.documents.all().find((document) => {
       if (document.kind === 'text' && (document.untitled || document.settingsScope !== undefined || document.searchEditor)) return false;
-      return document.location !== undefined && folderKey(document.location.path) === key;
+      return isFile(document.location);
     });
   }
 
+  // Whether a location is a repository's file: a local file by its native path, a remote one only as the project file its
+  // host's roots resolve the path to (remoteRef), so no document of another authority ever matches.
+  private sameFile(repo: ScmRepository, relativePath: string): (location: Location | undefined) => boolean {
+    if (repo.authority === 'local') {
+      const key = folderKey(path.join(repo.root, ...relativePath.split('/')));
+      return (location) => location !== undefined && location.host === undefined && (location.projectKey === undefined || authorityKeyOfProject(location.projectKey) === 'local') && folderKey(location.path) === key;
+    }
+    const ref = this.remotePathRef(repo, relativePath);
+    return (location) => location !== undefined && location.host === undefined && location.projectKey === ref.projectKey && location.relativePath === ref.relativePath;
+  }
+
   async openFileHead(repoId: string, relativePath: string): Promise<ScmRunResult> {
-    this.localOnly(repoId);
     const repo = this.repo(repoId);
     const change = [...(repo.lastStatus?.groups.index ?? []), ...(repo.lastStatus?.groups.workingTree ?? [])].find((candidate) => candidate.path === relativePath);
     const name = path.basename(relativePath);
@@ -1662,7 +1727,6 @@ export class ScmHost {
 
   // VS Code's git.viewChanges family: one multi-file diff tab per repository and group, titled "<repository>: <group>".
   async openGroupChanges(repoId: string, group: ChangeGroup): Promise<ScmRunResult> {
-    this.localOnly(repoId);
     const target = this.deps.service.repository(repoId);
     if (!target) return { ok: false, reason: 'unknown' };
     const entries = target.repo.lastStatus?.groups[group] ?? [];
@@ -1701,7 +1765,6 @@ export class ScmHost {
   // VS Code's git.graph.compareWithRemote and compareWithMergeBase: the upstream's or the base ref's tip on the left, the
   // commit on the right; refused without one.
   async compareWithHeadRef(repoId: string, commit: string, which: 'upstream' | 'base'): Promise<ScmRunResult> {
-    this.localOnly(repoId);
     const ref = (await this.deps.service.headRefs(repoId))?.[which];
     if (!ref) {
       const t = this.deps.t;
@@ -1713,7 +1776,6 @@ export class ScmHost {
 
   // The Graph's Incoming and Outgoing Changes: the merge base of HEAD and its upstream against the upstream or HEAD, all read now.
   async openGraphChanges(repoId: string, direction: 'incoming' | 'outgoing'): Promise<ScmRunResult> {
-    this.localOnly(repoId);
     const t = this.deps.t;
     const refs = await this.deps.service.headRefs(repoId);
     const base = refs?.upstream ? await this.deps.service.mergeBase(repoId, refs.head.revision, refs.upstream.revision) : undefined;
@@ -1763,7 +1825,6 @@ export class ScmHost {
    * "left ↔ right" (VS Code's _openChangesBetweenRefs); the labels name the refs the user picked.
    */
   async openRefsChanges(repoId: string, left: { readonly hash: string; readonly label: string }, right: { readonly hash: string; readonly label: string }): Promise<ScmRunResult> {
-    this.localOnly(repoId);
     const diff = await this.deps.service.diffRefs(repoId, left.hash, right.hash);
     if (diff.entries.length === 0) {
       void this.deps.notify.info(this.deps.t('There are no changes between "{0}" and "{1}".', visibleText(left.label), visibleText(right.label)));
@@ -1780,21 +1841,22 @@ export class ScmHost {
    * any other worktree is added as a project, which asks for trust as any added project does.
    */
   async openWorktree(repoId: string, worktreePath: string): Promise<ScmRunResult> {
-    this.localOnly(repoId);
+    const { authority } = this.repo(repoId);
+    const paths = this.pathsOf(authority);
     const listed = await this.deps.service.artifacts(repoId, 'worktrees');
-    const worktree = listed.group === 'worktrees' ? listed.rows.find((row) => samePath(row.path, worktreePath)) : undefined;
+    const worktree = listed.group === 'worktrees' ? listed.rows.find((row) => paths.same(row.path, worktreePath)) : undefined;
     if (!worktree) {
       void this.deps.notify.warn(this.deps.t('"{0}" is no longer in this repository.', visibleText(worktreePath)));
       return TOLD;
     }
-    const chat = this.deps.worktrees.chatOf(worktree.path);
+    const chat = this.deps.worktrees.chatOf(authority, worktree.path);
     if (chat) {
       await this.deps.worktrees.selectChat(chat.chatId);
       return OK;
     }
     const project = this.worktreeProject(repoId, worktree.path);
     if (project === undefined) {
-      await this.deps.addProject(worktree.path);
+      await this.deps.addProject(authority, worktree.path);
       return OK;
     }
     await this.deps.selectProject(project.key);
@@ -1802,12 +1864,15 @@ export class ScmHost {
     return OK;
   }
 
-  // The project a worktree's Open selects: the repository's own project when the worktree holds its folder, else a project
-  // whose folder lies in the worktree, so Open never adds a folder the list already has. Chat worktree roots are no projects.
+  // The project a worktree's Open selects: the repository's own project when the worktree holds its folder, else a project of
+  // the repository's authority whose folder lies in the worktree, so Open never adds a folder the list already has. Chat
+  // worktree roots are no projects.
   private worktreeProject(repoId: string, worktreePath: string): Project | undefined {
     const own = this.ownProjectKey(repoId);
-    const holds = (project: Project): boolean => this.projectFolders(project).some((folder) => isInside(worktreePath, folder));
-    const projects = this.deps.projects().filter((project) => parseRootKey(project.key)?.worktreeId === undefined);
+    const { authority } = this.repo(repoId);
+    const paths = this.pathsOf(authority);
+    const holds = (project: Project): boolean => this.projectFolders(project).some((folder) => paths.inside(worktreePath, folder));
+    const projects = this.deps.projects().filter((project) => parseRootKey(project.key)?.worktreeId === undefined && authorityKeyOfProject(project.key) === authority);
     return projects.find((project) => project.key === own && holds(project)) ?? projects.find(holds);
   }
 
@@ -1819,7 +1884,6 @@ export class ScmHost {
 
   // VS Code's _viewStash: the stash's files against its base, titled as VS Code titles it.
   private async openStash(repoId: string, stash: StashArtifact): Promise<ScmRunResult> {
-    this.localOnly(repoId);
     const diff = await this.deps.service.diffStash(repoId, stash.hash);
     if (diff.entries.length === 0) return OK;
     const source: ScmDiffSource = { kind: 'stash', index: stash.index, hash: stash.hash };
@@ -1881,22 +1945,28 @@ export class ScmHost {
     return target.repo;
   }
 
-  // Diffs, merges, ranges and file moves read and match this computer's buffers and files by path, so a remote repository's
-  // are refused.
-  localOnly(repoId: string): void {
-    this.localAuthorityOnly(this.deps.service.repository(repoId)?.repo.authority ?? 'local');
-  }
-
-  private localAuthorityOnly(authority: string): void {
+  private refuseRemote(authority: string): void {
     if (authority === 'local') return;
     throw new Error(this.deps.t('This source control action is not available on {0} yet.', this.deps.hostName(authority)));
   }
 
-  // A path a remote repository's core answered, as the project file it names; anything else is refused.
+  /** An authority's path rules: this computer's for a local repository, its host's for a remote one. */
+  pathsOf(authority: string): PathRules {
+    if (authority === 'local') return { os: this.deps.platform, flavor: path, same: samePath, inside: isInside };
+    const os = this.deps.authorityOs(authority);
+    return { os, flavor: pathFor({ os }), same: (a, b) => folderKeyOn(os, a) === folderKeyOn(os, b), inside: (folder, target) => isInsideFolder({ os }, folder, target) };
+  }
+
+  // A path a remote repository's core answered, as the project file it is; anything else is refused.
   remoteRef(repo: ScmRepository, targetPath: string): FileRef {
     const ref = this.deps.remoteFileRef(repo.authority, targetPath);
     if (!ref) throw new Error(this.deps.t('{0} named a file outside its projects.', this.deps.hostName(repo.authority)));
     return ref;
+  }
+
+  // A remote repository's file by its repository path, joined in its host's path rules and resolved only by remoteRef.
+  private remotePathRef(repo: ScmRepository, relativePath: string): FileRef {
+    return this.remoteRef(repo, this.pathsOf(repo.authority).flavor.join(repo.root, ...relativePath.split('/')));
   }
 
   // A repository's file in the editor: a local one as openAbsolute opens it, a remote one only as a file of its projects,
@@ -1940,17 +2010,26 @@ export class ScmHost {
     await this.deps.editorPane.openPath(absolute, { focus: true });
   }
 
-  // git: a working tree or index change, whose index side refreshes after each status (refreshGitSides)
+  // A diff of a repository's file. 'file' is the file on disk as the editable side: a local one at localPath, a remote one only as
+  // the project file remotePathRef resolves, opened through its host's workspace. git: a working tree or index change, whose
+  // index side refreshes after each status (refreshGitSides).
   private async diff(
-    repoId: string,
-    root: string,
+    repo: ScmRepository,
     title: (fileName: string) => string,
-    absolute: string,
+    relativePath: string,
+    localPath: () => Promise<string>,
     left: GitSide,
-    right: GitSide | { path: string },
+    right: GitSide | 'file',
     git?: { readonly path: string; readonly group: 'workingTree' | 'index' },
   ): Promise<void> {
-    await this.deps.editorPane.showDiff(title, absolute, left, right, { focus: true, scm: { root, repoId, ...(git ? { git } : {}) } });
+    const opts = { focus: true, scm: { repoId: repo.repoId, ...(git ? { git } : {}) } };
+    if (repo.authority !== 'local') {
+      const file = this.remotePathRef(repo, relativePath);
+      await this.deps.editorPane.showRemoteDiff(title, file, left, right === 'file' ? { file } : right, opts);
+      return;
+    }
+    const absolute = await localPath();
+    await this.deps.editorPane.showDiff(title, absolute, left, right === 'file' ? { path: absolute } : right, opts);
   }
 
   // The git sides of the open working tree and index diffs of these repositories, read again after a status: a stage, an
@@ -2087,12 +2166,21 @@ export class ScmHost {
     return new Error(this.deps.t('{0} could not be opened.', path.posix.basename(relativePath)));
   }
 
-  private failed(message: string): void {
+  // forward: a remote operation of a host with agent forwarding off failed with Permission denied (publickey)
+  private failed(message: string, forward?: AgentForwardingOffer): void {
     const t = this.deps.t;
     const show = t('Show Git Output');
-    void this.deps.notify.error(message, show).then((choice) => {
+    const enable = forward && t('Forward your SSH agent to {0}', forward.hostName);
+    void this.deps.notify.error(message, ...(enable !== undefined ? [enable] : []), show).then((choice) => {
       if (choice === show) this.deps.showGitLog();
+      else if (choice !== undefined && choice === enable) forward!.enable().catch((err: unknown) => this.deps.log(`[scm] turning on agent forwarding failed: ${err instanceof Error ? err.message : String(err)}`));
     });
+  }
+
+  private forwardingOffer(request: ScmRunRequest, err: unknown): AgentForwardingOffer | undefined {
+    if (!REMOTE_OPS.has(request.op) || !('repoId' in request) || gitFailureCode(err) !== 'publickeyDenied') return undefined;
+    const authority = this.deps.service.repository(request.repoId)?.repo.authority;
+    return authority === undefined || authority === 'local' ? undefined : this.deps.agentForwarding(authority);
   }
 
   private settings(): ScmSettings {
@@ -2178,22 +2266,40 @@ export class ScmHost {
 
   // The active editor's file in an open repository, with the group its change sits in (unstaged first, as VS Code's
   // getSCMResource picks the working tree resource).
-  private activeResource(): { readonly repoId: string; readonly relativePath: string; readonly group?: ChangeGroup } | undefined {
-    const filePath = this.deps.editorPane.activeContext()?.filePath;
-    return filePath === undefined ? undefined : this.resourceAt(filePath);
+  private activeResource(): Resource | undefined {
+    const location = this.deps.editorPane.activeLocation();
+    return location === undefined ? undefined : this.resourceOf(location);
   }
 
-  private resourceAt(absolute: string): { readonly repoId: string; readonly relativePath: string; readonly group?: ChangeGroup } | undefined {
+  // A file's place in an open repository of its own authority: a local file by its native path, a remote one only when its path
+  // resolves through remoteFileRef to the project file the location names.
+  private resourceOf(location: Location): Resource | undefined {
+    if (location.host !== undefined) return undefined;
+    const authority = location.projectKey === undefined ? 'local' : authorityKeyOfProject(location.projectKey);
+    if (authority === 'local') return this.resourceAt(location.path);
+    const ref = this.deps.remoteFileRef(authority, location.path);
+    if (!ref || ref.projectKey !== location.projectKey || ref.relativePath !== location.relativePath) return undefined;
+    // repository roots are the project's realpath on the target, which the registered folder may reach through a link
+    const real = this.deps.service.projectRealPath(ref.projectKey);
+    return this.resourceIn(authority, real === undefined ? location.path : this.pathsOf(authority).flavor.join(real, ...ref.relativePath.split('/')));
+  }
+
+  private resourceAt(absolute: string): Resource | undefined {
+    return this.resourceIn('local', absolute);
+  }
+
+  // The deepest open repository of the authority holding absolute, a path in that authority's own rules.
+  private resourceIn(authority: string, absolute: string): Resource | undefined {
+    const paths = this.pathsOf(authority);
     let best: { repoId: string; root: string } | undefined;
     for (const key of this.deps.service.projectKeys()) {
-      // a remote repository's root is a target path, never one of this computer's
-      if (authorityKeyOfProject(key) !== 'local') continue;
+      if (authorityKeyOfProject(key) !== authority) continue;
       for (const repo of this.deps.service.view(key)?.repos ?? []) {
-        if (isInside(repo.root, absolute) && (!best || repo.root.length > best.root.length)) best = { repoId: repo.repoId, root: repo.root };
+        if (paths.inside(repo.root, absolute) && (!best || repo.root.length > best.root.length)) best = { repoId: repo.repoId, root: repo.root };
       }
     }
     if (!best) return undefined;
-    const relativePath = path.relative(best.root, absolute).split(path.sep).join('/');
+    const relativePath = paths.flavor.relative(best.root, absolute).split(paths.flavor.sep).join('/');
     const groups = this.deps.service.repository(best.repoId)?.repo.lastStatus?.groups;
     const group = (['workingTree', 'untracked', 'index', 'merge'] as const).find((candidate) => groups?.[candidate].some((change) => change.path === relativePath));
     return { repoId: best.repoId, relativePath, ...(group ? { group } : {}) };

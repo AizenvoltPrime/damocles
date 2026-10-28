@@ -22,11 +22,20 @@ export interface WorkspaceModules {
   // detection, environment, injection and links; its own pty host is never started, the hub's is
   readonly terminals: Omit<TerminalBackend, 'startHost' | 'list'>;
   readonly hub: TerminalHub;
+  // what a new terminal of clientId adds to its environment: the git credential relay and that client's forwarded agent's
+  // socket; a value of undefined removes the variable
+  readonly terminalCredentials: (base: Readonly<Record<string, string>>, clientId: string) => Readonly<Record<string, string | undefined>>;
+  // the watcher's roots that ran out of inotify watches, and the limit they ran into
+  readonly watchLimits: {
+    roots(): readonly string[];
+    onReached(listener: (root: string) => void): Disposable;
+    limit(): Promise<number | null>;
+  };
 }
 
 export interface WorkspaceHost {
-  // serves one connection until the returned disposable or onViolation ends it
-  serve(connectionId: string, transport: CoreTransport, onViolation: (reason: string) => void): Disposable;
+  // serves one connection of clientId (its hello's) until the returned disposable or onViolation ends it
+  serve(connectionId: string, clientId: string, transport: CoreTransport, onViolation: (reason: string) => void): Disposable;
 }
 
 const wireIdentity = (identity: EntryIdentity): WireIdentity => ({ dev: identity.dev.toString(), ino: identity.ino.toString(), birthtimeNs: identity.birthtimeNs.toString() });
@@ -37,7 +46,7 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
   const retain = (): void => modules.format.retain([...new Set([...retained.values()].flat())]);
 
   return {
-    serve(connectionId, transport, onViolation) {
+    serve(connectionId, clientId, transport, onViolation) {
       const endpoint = createEndpoint<WorkspaceToClient, ClientToWorkspace>({
         transport,
         outgoing: WORKSPACE_TO_CLIENT,
@@ -89,6 +98,7 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
         watches.get(watchId)?.dispose();
         watches.delete(watchId);
       });
+      endpoint.serve('files.watchLimits', async () => ({ roots: modules.watchLimits.roots(), limit: await modules.watchLimits.limit() }));
       endpoint.serve('tree.list', ({ project, relativeDir, excludes }) => tree.list(project, relativeDir, excludes));
       endpoint.serve('search.run', ({ runId, cwd, args }) => {
         fresh(searches, runId, 'search');
@@ -128,7 +138,14 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
       endpoint.serve('format.release', ({ projectKey }) => format.release(projectKey));
       endpoint.serve('format.running', ({ projectKey }) => format.running(projectKey));
       endpoint.serve('terminals.detectProfiles', () => terminals.detectProfiles());
-      endpoint.serve('terminals.environment', ({ locale }) => terminals.environment(locale));
+      endpoint.serve('terminals.environment', async ({ locale }) => {
+        const env: Record<string, string> = { ...(await terminals.environment(locale)) };
+        for (const [key, value] of Object.entries(modules.terminalCredentials(env, clientId))) {
+          if (value === undefined) delete env[key];
+          else env[key] = value;
+        }
+        return env;
+      });
       endpoint.serve('terminals.injection', ({ request }) => terminals.injection(request));
       endpoint.serve('terminals.linkKind', ({ project, relativePath }) => terminals.linkKind(project, relativePath));
       endpoint.serve('terminals.list', () => hub.list());
@@ -136,6 +153,10 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
       const subscriptions = [
         endpoint.onEvent('terminals.post', ({ request, projectKey }) => hub.post(client, request, projectKey)),
         endpoint.onEvent('terminals.detach', () => hub.detach(client)),
+        // every client hears it: the watch is shared, and each one names its own project from the folder
+        modules.watchLimits.onReached((root) => {
+          void modules.watchLimits.limit().then((limit) => endpoint.emit('files.watchLimit', { root, limit }));
+        }),
       ];
 
       return {

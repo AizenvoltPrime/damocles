@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MAX_MESSAGE_PREVIEW_LINES } from '../../preload/overlay-channels';
 import type { MessageQuestion } from '../message-dialog';
-import { removeProject, removeProjectQuestion, type RemoveProjectDeps, type WaitingChat } from '../remove-project';
+import { releaseRemoteTerminals, removeProject, removeProjectQuestion, type RemoveProjectDeps, type WaitingChat } from '../remove-project';
 import type { KillListEntry } from '../terminal/terminal-service';
 
 const t = (message: string, ...args: string[]): string => message.replace(/\{(\d+)\}/g, (_, index: string) => args[Number(index)] ?? '');
@@ -143,5 +143,39 @@ describe('removeProjectQuestion', () => {
     expect([...preview[0]!.replace(/\\u\{[0-9A-F]+\}/g, 'x')].length).toBeLessThanOrEqual(40);
     expect(preview[1]).toBe('A message with images only');
     expect(preview.at(-1)).toBe('and 3 more');
+  });
+});
+
+describe('a removed remote project\'s terminals', () => {
+  function release(connected: boolean) {
+    const trail: string[] = [];
+    const lines: string[] = [];
+    const deps = {
+      tabs: ['tab-1', 'tab-2'],
+      endRun: connected ? (runId: string) => trail.push(`end ${runId}`) : undefined,
+      kill: (id: string) => trail.push(`kill ${id}`),
+      detach: (id: string) => trail.push(`detach ${id}`),
+      log: (line: string) => lines.push(line),
+    };
+    return { deps, trail, lines };
+  }
+
+  it('End terminals ends the runs on the host and closes their tabs', () => {
+    const { deps, trail } = release(true);
+    releaseRemoteTerminals({ end: true, runs: ['run-1'] }, deps);
+    expect(trail).toEqual(['end run-1', 'kill tab-1', 'kill tab-2']);
+  });
+
+  it('Keep running detaches the tabs and leaves the runs on the host', () => {
+    const { deps, trail } = release(true);
+    releaseRemoteTerminals({ end: false, runs: [] }, deps);
+    expect(trail).toEqual(['detach tab-1', 'detach tab-2']);
+  });
+
+  it('a host that dropped after End terminals was chosen keeps them running, with a log line, and the removal goes on', () => {
+    const { deps, trail, lines } = release(false);
+    expect(() => releaseRemoteTerminals({ end: true, runs: ['run-1'] }, deps)).not.toThrow();
+    expect(trail).toEqual(['detach tab-1', 'detach tab-2']);
+    expect(lines).toEqual([expect.stringContaining('no longer connected')]);
   });
 });

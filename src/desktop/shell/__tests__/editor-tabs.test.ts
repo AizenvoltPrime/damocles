@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import type { ScmDecorations } from '../../preload/scm-channels';
-import type { ShellEditorTab } from '../../preload/shell-channels';
+import type { ShellEditorTab, ShellProject } from '../../preload/shell-channels';
 import ConflictBar from '../editor/ConflictBar.vue';
 import EditorTabs from '../editor/EditorTabs.vue';
 import { tabFileName } from '../editor/editor-place';
@@ -28,14 +28,14 @@ function codeTab(id: string, title: string, extra: Partial<ShellEditorTab> = {})
   return { id, kind: 'code', documentId: `d-${id}`, title, projectKey: 'home', relativePath: `src/${title}`, displayPath: `C:\\work\\src\\${title}`, dirty: false, readOnly: false, conflict: false, ...extra };
 }
 
-async function mountTabs(tabs: ShellEditorTab[], decorations: ScmDecorations['files'] = {}): Promise<VueWrapper> {
+async function mountTabs(tabs: ShellEditorTab[], decorations: ScmDecorations['files'] = {}, projects: readonly ShellProject[] = []): Promise<VueWrapper> {
   const api = fakeShellApi([], { getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs, activeTabId: tabs[0]!.id })) });
   const store = createEditorStore(api);
   await store.start();
   const scm = createScmStore(api.scm);
   await scm.start();
   api.scm.pushDecorations({ projectKey: 'home', files: decorations });
-  const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W' }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm } }, attachTo: document.body });
+  const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W', projects }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm } }, attachTo: document.body });
   mounted.push(wrapper);
   await flushPromises();
   return wrapper;
@@ -58,6 +58,67 @@ describe('a deleted file\'s tab', () => {
     shellI18n.global.locale.value = 'el';
     const wrapper = await mountTabs([codeTab('a', 'gone.ts', { deleted: true })]);
     expect(wrapper.get('[data-editor-tab]').attributes('title')).toBe('C:\\work\\src\\gone.ts\nΔιαγράφηκε');
+  });
+});
+
+describe('a remote file saved while its host is away', () => {
+  const remote = (name: string): ShellProject => ({ key: 'ssh+h1|/srv/app', name: 'app', authority: { name } } as unknown as ShellProject);
+  const pending = codeTab('p', 'notes.md', { projectKey: 'ssh+h1|/srv/app', relativePath: 'notes.md', pendingUpload: true });
+  const uploadedTab = codeTab('p', 'notes.md', { projectKey: 'ssh+h1|/srv/app', relativePath: 'notes.md' });
+
+  it('shows the cloud-off glyph, not the unsaved dot, saying where the save is and naming the host as ShellState names it now', async () => {
+    const wrapper = await mountTabs([pending], {}, [remote('prod-1')]);
+    const glyph = wrapper.get('[data-testid="editor-tab-pending-upload"]');
+    expect(glyph.attributes('title')).toBe('Saved on this computer. Uploads when prod-1 reconnects.');
+    expect(glyph.text()).toBe('Saved on this computer. Uploads when prod-1 reconnects.');
+    expect(wrapper.get('[data-testid="editor-tab"]').attributes('data-dirty')).toBeUndefined();
+    await wrapper.setProps({ projects: [remote('billing-prod')] });
+    expect(wrapper.get('[data-testid="editor-tab-pending-upload"]').attributes('title')).toBe('Saved on this computer. Uploads when billing-prod reconnects.');
+  });
+
+  it('shows the uploaded glyph once the save uploads, and leaves no timer behind when the tabs unmount', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const api = fakeShellApi([], { getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs: [pending], activeTabId: pending.id })) });
+      const store = createEditorStore(api);
+      await store.start();
+      const scm = createScmStore(api.scm);
+      await scm.start();
+      const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W', projects: [remote('prod-1')] }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm } }, attachTo: document.body });
+      await flushPromises();
+      api.pushEditorState({ ...EDITOR_STATE, tabs: [uploadedTab], activeTabId: pending.id });
+      api.pushEditorState({ ...EDITOR_STATE, tabs: [pending], activeTabId: pending.id });
+      await flushPromises();
+      const before = vi.getTimerCount();
+      api.pushEditorState({ ...EDITOR_STATE, tabs: [uploadedTab], activeTabId: pending.id });
+      await flushPromises();
+      expect(wrapper.find('[data-testid="editor-tab-uploaded"]').exists()).toBe(true);
+      expect(vi.getTimerCount()).toBe(before + 1);
+      wrapper.unmount();
+      expect(vi.getTimerCount()).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows the uploaded glyph for a tab that was already pending when the tabs mounted', async () => {
+    const api = fakeShellApi([], { getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs: [pending], activeTabId: pending.id })) });
+    const store = createEditorStore(api);
+    await store.start();
+    const scm = createScmStore(api.scm);
+    await scm.start();
+    const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W', projects: [remote('prod-1')] }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm } }, attachTo: document.body });
+    await flushPromises();
+    api.pushEditorState({ ...EDITOR_STATE, tabs: [uploadedTab], activeTabId: pending.id });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="editor-tab-uploaded"]').attributes('title')).toBe('Uploaded to prod-1.');
+    wrapper.unmount();
+  });
+
+  it('says it in Greek', async () => {
+    shellI18n.global.locale.value = 'el';
+    const wrapper = await mountTabs([pending], {}, [remote('prod-1')]);
+    expect(wrapper.get('[data-testid="editor-tab-pending-upload"]').attributes('title')).toBe('Αποθηκεύτηκε σε αυτόν τον υπολογιστή. Θα ανέβει όταν επανασυνδεθεί το prod-1.');
   });
 });
 

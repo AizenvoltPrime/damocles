@@ -90,7 +90,7 @@ it('bundles exactly the allowlisted modules from main\'s own files, and not the 
     metafile: true,
     packages: 'external',
     external: ['electron', 'vscode'],
-    loader: { '.node': 'empty' },
+    loader: { '.node': 'empty', '.sh': 'text', '.ps1': 'text' },
     logLevel: 'silent',
   });
   const inputs = Object.entries(result.metafile.inputs).map(([file, input]) => [file.replaceAll('\\', '/'), input.imports.map((entry) => entry.path.replaceAll('\\', '/'))] as const);

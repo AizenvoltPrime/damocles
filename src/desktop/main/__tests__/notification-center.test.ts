@@ -121,6 +121,27 @@ describe('notification center: prompts', () => {
     expect(ran).toEqual([{ kind: 'team', chat: CHAT, teamId: 'team-9' }, { kind: 'attention', chat: CHAT, attention: 'question' }]);
   });
 
+  it('gives a remote host\'s entries and showing toasts its new name and color once it was renamed or recolored', async () => {
+    const remote: ChatRef = { ...CHAT, host: 'prod-1' };
+    const notifications = center({ describeChat: async () => remote });
+    notifications.activity('host-1', activity(prompt('t1', 'approval')));
+    await settle();
+    void notifications.notice('info', 'prod-1\'s Damocles server restarted', [], { name: 'prod-1' });
+    void notifications.notice('info', 'another host', [], { name: 'dev-1', tone: 'success' });
+    notifications.relabelHost('prod-1', { name: 'PROD', tone: 'danger' });
+    const bodies = notifications.state().entries.map((entry) => entry.body);
+    expect(bodies).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'approval', chat: expect.objectContaining({ host: 'PROD', hostTone: 'danger' }) }),
+      expect.objectContaining({ kind: 'notice', message: 'prod-1\'s Damocles server restarted', host: 'PROD', hostTone: 'danger' }),
+      expect.objectContaining({ kind: 'notice', message: 'another host', host: 'dev-1', hostTone: 'success' }),
+    ]));
+    // the showing toasts are sent again with the host as it is now
+    expect(shown.filter((toast) => JSON.stringify(toast).includes('"hostTone":"danger"')).length).toBeGreaterThanOrEqual(2);
+    // a recolor back to no color drops the tone
+    notifications.relabelHost('PROD', { name: 'PROD' });
+    expect(notifications.state().entries.some((entry) => JSON.stringify(entry.body).includes('hostTone":"danger'))).toBe(false);
+  });
+
   it('withdraws a resolved prompt\'s popup and keeps its entry', async () => {
     const notifications = center();
     notifications.activity('host-1', activity(prompt('p1', 'plan')));

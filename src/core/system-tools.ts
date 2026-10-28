@@ -104,6 +104,36 @@ function isMissing(err: unknown): boolean {
   return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
+// Where OpenSSH installs its client tools when no absolute PATH folder holds them.
+const POSIX_OPENSSH_FOLDERS: readonly string[] = ['/usr/bin', '/bin'];
+
+/**
+ * An OpenSSH client tool as an absolute path: an absolute PATH folder's, else Windows' own `%SystemRoot%\System32\OpenSSH`
+ * one or, elsewhere, `/usr/bin`'s or `/bin`'s; undefined when none exists.
+ */
+async function openSshTool(name: 'ssh' | 'ssh-keygen', env: Env, platform: NodeJS.Platform): Promise<string | undefined> {
+  if (platform !== 'win32') return (await findOnAbsolutePathAsync(name, platform, env)) ?? firstFile(POSIX_OPENSSH_FOLDERS.map((dir) => path.posix.join(dir, name)));
+  const onPath = await findOnAbsolutePathAsync(`${name}.exe`, 'win32', env);
+  if (onPath !== undefined) return onPath;
+  const builtIn = path.win32.join(windowsSystemDirectory(env), 'OpenSSH', `${name}.exe`);
+  return (await isFileAsync(builtIn)) ? builtIn : undefined;
+}
+
+async function firstFile(candidates: readonly string[]): Promise<string | undefined> {
+  for (const candidate of candidates) if (await isFileAsync(candidate)) return candidate;
+  return undefined;
+}
+
+/** The OpenSSH client as an absolute path (openSshTool). */
+export function resolveSshExecutable(env: Env = process.env, platform: NodeJS.Platform = process.platform): Promise<string | undefined> {
+  return openSshTool('ssh', env, platform);
+}
+
+/** OpenSSH's ssh-keygen as an absolute path (openSshTool). */
+export function resolveSshKeygenExecutable(env: Env = process.env, platform: NodeJS.Platform = process.platform): Promise<string | undefined> {
+  return openSshTool('ssh-keygen', env, platform);
+}
+
 /** `%SystemRoot%\System32`; a root that is not a local absolute path falls back to C:\Windows. */
 export function windowsSystemDirectory(env: Env = process.env): string {
   const root = [env['SystemRoot'], env['windir'], env['WINDIR']].find((value) => value !== undefined && executablePathForm(value, 'win32').kind === 'absolute');
@@ -121,13 +151,18 @@ export function windowsPowerShell(env: Env = process.env): string {
 }
 
 // Where the tool is installed when no absolute PATH folder holds it: a regular user's PATH often lacks /sbin.
-const POSIX_TOOL_FOLDERS: Readonly<Record<PosixToolName, readonly string[]>> = { ldconfig: ['/sbin', '/usr/sbin'], bash: ['/bin', '/usr/bin'], tar: ['/bin', '/usr/bin'] };
+const POSIX_TOOL_FOLDERS: Readonly<Record<PosixToolName, readonly string[]>> = { ldconfig: ['/sbin', '/usr/sbin'], bash: ['/bin', '/usr/bin'], tar: ['/bin', '/usr/bin'], loginctl: ['/bin', '/usr/bin'], restorecon: ['/sbin', '/usr/sbin'] };
 
-type PosixToolName = 'ldconfig' | 'bash' | 'tar';
+type PosixToolName = 'ldconfig' | 'bash' | 'tar' | 'loginctl' | 'restorecon';
 
 /** A POSIX tool from an absolute PATH folder, else from the folders it is installed in, or undefined when none holds it. */
 export function posixTool(name: PosixToolName, env: Env = process.env, folders: readonly string[] = POSIX_TOOL_FOLDERS[name]): string | undefined {
   return findOnAbsolutePath(name, process.platform, env) ?? folders.map((dir) => path.posix.join(dir, name)).find(isFile);
+}
+
+/** posixTool without blocking the thread, for a process whose main thread serves others (the daemon). */
+export async function posixToolAsync(name: PosixToolName, env: Env = process.env, folders: readonly string[] = POSIX_TOOL_FOLDERS[name]): Promise<string | undefined> {
+  return (await findOnAbsolutePathAsync(name, process.platform, env)) ?? firstFile(folders.map((dir) => path.posix.join(dir, name)));
 }
 
 function isFile(candidate: string): boolean {

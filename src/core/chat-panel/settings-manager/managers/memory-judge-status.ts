@@ -2,7 +2,7 @@ import type { Platform } from "../../../../platform/platform";
 import { PROVIDER_SECRET_KEYS } from "../../../pi-session/explore-providers";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { keyProviderOfSecret, providerKeyStored, TYPESAFE_SECRET_KEY } from "../../../pi-session/custom-providers";
-import { clientHasKey, clientKeySaved } from "../../../client-snapshots";
+import { clientHasKey, clientKeySaved, clientPrefersApiKey } from "../../../client-snapshots";
 import { readProviderSignIns } from "../../../pi-session/provider-auth";
 import { CLASSIFIER_ENV_KEYS, CLASSIFIER_MODELS, classifierCredential, classifierModelOf, memoryJudgeOf, pickClassifierModel } from "../../../pi-session/classifier-model";
 import { OPENAI_API_KEY_SECRET, openaiAuthStatus, readOpenAIAuthFromDisk, readPreferOpenAIApiKey } from "../../../pi-session/openai-auth";
@@ -46,7 +46,7 @@ export async function memoryJudgeStatus(platform: Platform): Promise<Extract<Ext
     openrouter: inEnv("openrouter") || openrouterKey || openrouterSignedIn,
     openai: openai.apiKey || openai.chatgpt || inEnv("openai"),
   };
-  const preferApiKey = readPreferOpenAIApiKey(platform.state);
+  const preferApiKey = platform.remote ? clientPrefersApiKey(platform.remote, "openai") : readPreferOpenAIApiKey(platform.state);
   const classifierCredentials = Object.fromEntries(
     CLASSIFIER_MODELS.map(({ provider }) => [provider, classifierCredential(provider, (p) => keyed[p], { status: openai, preferApiKey })]),
   ) as Record<ClassifierProvider, ClassifierCredential>;

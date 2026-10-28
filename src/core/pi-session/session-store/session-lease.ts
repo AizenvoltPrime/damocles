@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import * as lockfile from 'proper-lockfile';
 import { DAMOCLES_HOME_DIR } from '../../paths';
 import { log } from '../../logger';
-import { isSafeAgentPathId } from '../agent-records';
+import { isSafeAgentPathId } from '../../../shared/agent-path-id';
 import { isUuid } from '../../../shared/uuid';
 
 /** Outside every session dir, so pi's session listing, the session watcher and the list cache never see a lease. */

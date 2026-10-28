@@ -93,27 +93,42 @@ export async function openEndpoint(paths: RunPaths, onConnection: (socket: net.S
   };
 }
 
+/** A folder the daemon keeps, or the files beside it: touched every interval, bound again once one of its files is gone. */
+export interface KeptFolder {
+  // the socket folder these files are in (POSIX), which the run folder records (writeSocketFolders)
+  readonly folder?: string;
+  // each must exist; one missing means a cleaner or the user removed it
+  readonly files: readonly string[];
+  // touched while present: a socket another process (core) listens at, absent while none does
+  readonly whilePresent?: readonly string[];
+  readonly rebind: () => Promise<void>;
+}
+
+/** The endpoint's files: the pid file, the token and (POSIX) the socket folder and socket. */
+export function endpointFiles(paths: RunPaths, endpoint: ListeningEndpoint): string[] {
+  return [paths.pidFile, tokenPath(paths, endpoint), ...(endpoint.socketFolder ? [endpoint.socketFolder, endpoint.endpoint] : [])];
+}
+
 export interface FreshnessOptions {
-  readonly paths: RunPaths;
   readonly intervalMs: number;
-  readonly current: () => ListeningEndpoint | undefined;
-  // the folder, socket or token is gone: close the endpoint, bind a new one and update the pid file
-  readonly rebind: (stale: ListeningEndpoint) => Promise<void>;
+  // read at every touch, since a rebind changes them
+  readonly folders: () => readonly KeptFolder[];
   readonly failed: (error: unknown) => void;
 }
 
-/** Touches the pid file, the token and (POSIX) the socket folder and socket every interval, binding again once one is gone. */
-export function keepEndpointFresh(options: FreshnessOptions): NodeJS.Timeout {
+/** Touches every kept folder's files each interval, one folder at a time, binding a folder again once one of its files is gone. */
+export function keepSocketFoldersFresh(options: FreshnessOptions): NodeJS.Timeout {
   // one touch at a time: a rebind can outlast a short interval
   let busy = false;
   return setInterval(() => {
-    const current = options.current();
-    if (!current || busy) return;
+    if (busy) return;
     busy = true;
-    const files = [options.paths.pidFile, tokenPath(options.paths, current), ...(current.socketFolder ? [current.socketFolder, current.endpoint] : [])];
-    void touch(files).then(async (present) => {
-      if (!present && options.current() === current) await options.rebind(current);
-    }).catch(options.failed).finally(() => {
+    void (async () => {
+      for (const kept of options.folders()) {
+        if (!(await touch(kept.files))) await kept.rebind();
+        else for (const file of kept.whilePresent ?? []) await touch([file]);
+      }
+    })().catch(options.failed).finally(() => {
       busy = false;
     });
   }, options.intervalMs);

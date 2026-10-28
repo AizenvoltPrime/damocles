@@ -5,7 +5,7 @@ import type { PromptOwner } from '../../shared/types/permissions';
 export type SessionState = Extract<ExtensionToWebviewMessage, { type: 'sessionStateChanged' }>['state'];
 
 /** What an unanswered prompt asks of the user; `input` covers forms, MCP elicitations and extension UI dialogs. */
-export type PendingKind = 'approval' | 'question' | 'plan' | 'input';
+export type PendingKind = 'approval' | 'question' | 'plan' | 'input' | 'signIn';
 
 /** One unanswered prompt, for attention routing; a notification keys on `id`, so one prompt notifies once. */
 export interface PendingPrompt {

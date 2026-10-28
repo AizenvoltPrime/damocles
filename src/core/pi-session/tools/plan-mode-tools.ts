@@ -71,7 +71,7 @@ export function createPlanModeTools(
       const planVersion = planVersionOnBranch(ctx.sessionManager.getBranch(), toolCallId);
       // Recorded on every outcome, so a reload shows the number the call was stamped with.
       const details: ExitPlanModeDetails = { [PLAN_VERSION_DETAIL_KEY]: planVersion };
-      if (permissionHandler.getPermissionMode() !== 'plan') {
+      if (permissionHandler.turnPermissionMode() !== 'plan') {
         return { content: [{ type: 'text', text: 'Not in plan mode; proceeding.' }], details: NO_PLAN_VERSION };
       }
       const result = await permissionHandler.canUseTool(

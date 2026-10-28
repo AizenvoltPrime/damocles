@@ -2,6 +2,7 @@ import type { WebContents } from 'electron';
 import type { Disposable } from '../../platform/disposable';
 import type { SettingsStore } from '../../platform/settings-store';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../shared/types/messages';
+import type { HostTone } from '../../shared/host-tones';
 import { isSettingsAccountId, isSettingsSectionId, type SettingsTarget } from '../../shared/settings-sections';
 import { SETTINGS_VIEW_REQUEST_TYPES } from '../../shared/settings-view-messages';
 import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayPrefs, type OverlayPrefWrite, type OverlaySettingsScopes } from '../preload/overlay-channels';
@@ -29,7 +30,7 @@ export interface SettingsAttachTarget {
 
 // The tabs a remote chat's settings show: User (the local core), its host (machine scope) and Project.
 export interface SettingsScopes {
-  readonly host: { readonly authority: string; readonly name: string; readonly color?: string };
+  readonly host: { readonly authority: string; readonly name: string; readonly color?: HostTone };
   readonly projectFile?: string;
 }
 
@@ -49,6 +50,8 @@ export interface OverlaySettingsDeps {
   readonly terminalProfiles: () => TerminalProfileReport;
   readonly log: (line: string) => void;
   readonly languageAtLaunch: DesktopLanguageSetting;
+  // a saved SSH host's id, which a target's host must name
+  readonly knownHost: (hostId: string) => boolean;
 }
 
 /** The one write path for a damocles.desktop.* value: checked against its declaration, written to user settings (D37). */
@@ -80,8 +83,8 @@ export class OverlaySettings {
   // the tab attached while the selected chat is remote; the host tab first, as a remote chat's settings open on it
   private scope: SettingsScope | undefined;
   private scopeHost: string | undefined;
-  // sign-ins and provider keys change only in the User tab, so a target naming them opens it
-  private signIn = false;
+  // sign-ins, provider keys and this computer's hosts change only in the User tab, so a target naming them opens it
+  private userTab = false;
   // attach work runs one at a time, so a selection change during an attach never leaves two views
   private attaching: Promise<void> = Promise.resolve();
   private readonly prefsWatch: Disposable;
@@ -110,23 +113,25 @@ export class OverlaySettings {
    * resolves once it has closed. While it shows, the modal goes to the target instead.
    */
   async show(request: SettingsTarget): Promise<void> {
-    const { section, account, release } = request;
+    const { section, account, release, host } = request;
     if (section !== undefined && !isSettingsSectionId(section)) throw new Error('Unknown settings section');
     if (account !== undefined && !isSettingsAccountId(account)) throw new Error('Unknown settings account');
     if (release !== undefined && !isVersion(release)) throw new Error('Unknown release');
+    if (host !== undefined && !this.deps.knownHost(host)) throw new Error('Unknown host');
     const target: SettingsTarget = {
       ...(section !== undefined ? { section } : {}),
       ...(account !== undefined ? { account } : {}),
       ...(release !== undefined ? { release } : {}),
+      ...(host !== undefined ? { host } : {}),
     };
-    const signIn = section === 'accounts' || account !== undefined;
+    const userTab = section === 'accounts' || account !== undefined || section === 'remoteHosts' || host !== undefined;
     if (this.open) {
       this.deps.overlay.send(OVERLAY_CHANNELS.settingsTarget, target);
-      if (signIn && this.scope !== undefined && this.scope !== 'user') await this.reattach('user');
+      if (userTab && this.scope !== undefined && this.scope !== 'user') await this.reattach('user');
       return;
     }
     this.open = true;
-    this.signIn = signIn;
+    this.userTab = userTab;
     const returnFocus = this.deps.focused();
     try {
       await this.reattach();
@@ -140,7 +145,7 @@ export class OverlaySettings {
       this.open = false;
       this.scope = undefined;
       this.scopeHost = undefined;
-      this.signIn = false;
+      this.userTab = false;
       this.generation++;
       const attachment = this.attachment;
       this.attachment = undefined;
@@ -200,7 +205,14 @@ export class OverlaySettings {
     const host = scopes.host.authority;
     if (requested !== undefined) return { scope: requested, host };
     if (this.scopeHost === host && this.scope !== undefined) return { scope: this.scope, host };
-    return { scope: this.signIn ? 'user' : 'machine', host };
+    return { scope: this.userTab ? 'user' : 'machine', host };
+  }
+
+  /** A host was renamed or recolored: the open modal's host tab follows when it shows that host. */
+  hostChanged(authority: string): void {
+    const scopes = this.deps.scopes();
+    if (!this.open || this.scope === undefined || scopes?.host.authority !== authority) return;
+    this.deps.overlay.send(OVERLAY_CHANNELS.settingsScopeHost, { name: scopes.host.name, ...(scopes.host.color !== undefined ? { color: scopes.host.color } : {}) });
   }
 
   private scopesShown(): OverlaySettingsScopes | undefined {

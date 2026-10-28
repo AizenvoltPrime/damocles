@@ -8,6 +8,8 @@ import {
   MAX_TERMINAL_ROWS,
   MAX_TERMINAL_SCREEN_CHARS,
   MAX_TERMINAL_SCREEN_MARKS,
+  TERMINAL_ICONS,
+  type TerminalIcon,
 } from '../preload/terminal-channels';
 
 // The host sends a pty's output every TERMINAL_BATCH_MS, or as soon as TERMINAL_BATCH_CHARS are buffered, in messages of at
@@ -32,11 +34,23 @@ export const SELF_ACKNOWLEDGE_ARG = '--self-acknowledge';
 export const MAX_SCREEN_SCROLLBACK = 100_000;
 
 const TERMINAL_ID = /^term-[1-9][0-9]{0,14}$/;
+// A shell-integration nonce: newShellNonce's 32 hex digits.
+const NONCE = /^[0-9a-f]{32}$/;
+
+// What another client needs to show a daemon's terminal: its root key's part after the authority key (the same on every
+// client), the profile it started with, its start folder and its shell-integration nonce. A pty host ignores it.
+export interface TerminalView {
+  readonly root: string;
+  readonly profile: { readonly id: string; readonly name: string; readonly file: string; readonly args: readonly string[]; readonly icon: TerminalIcon };
+  readonly startCwd: string;
+  readonly nonce: string;
+}
 
 /**
  * main → host. killAll kills every pty (the window closed); shutdown kills every pty and ends the host; clearAck forgets a
  * pty's unacknowledged output (a reloaded shell); serialize answers the pty's screen after every data message before it;
- * clear clears that screen as the shell's Clear does; scrollback sets the scrollback that screen keeps.
+ * clear clears that screen as the shell's Clear does; scrollback sets the scrollback that screen keeps; detach: a client's
+ * view closed, which only a daemon's hub reads.
  */
 export type HostRequest =
   | {
@@ -49,6 +63,8 @@ export type HostRequest =
       readonly cols: number;
       readonly rows: number;
       readonly scrollback: number;
+      // a remote terminal's, which the daemon lists to its other clients
+      readonly view?: TerminalView;
     }
   | { readonly type: 'input'; readonly id: string; readonly data: string }
   | { readonly type: 'resize'; readonly id: string; readonly cols: number; readonly rows: number }
@@ -58,6 +74,7 @@ export type HostRequest =
   | { readonly type: 'clear'; readonly id: string }
   | { readonly type: 'scrollback'; readonly id: string; readonly scrollback: number }
   | { readonly type: 'kill'; readonly id: string }
+  | { readonly type: 'detach'; readonly id: string }
   | { readonly type: 'killAll' }
   | { readonly type: 'shutdown' };
 
@@ -102,6 +119,24 @@ export function isHostEnvEntry(key: string, value: unknown): value is string {
   return key.length > 0 && !key.includes('=') && !key.includes('\0') && typeof value === 'string' && !value.includes('\0') && key.length + value.length <= MAX_HOST_ENV_CHARS;
 }
 
+/** A terminal's view as a spawn carries it and a daemon lists it; anything outside the contract is undefined. */
+export function parseTerminalView(raw: unknown): TerminalView | undefined {
+  const value = record(raw);
+  const profile = value && record(own(value, 'profile'));
+  if (!value || !profile) return undefined;
+  const root = own(value, 'root');
+  const startCwd = own(value, 'startCwd');
+  const nonce = own(value, 'nonce');
+  const id = own(profile, 'id');
+  const name = own(profile, 'name');
+  const file = own(profile, 'file');
+  const args = parseArgs(own(profile, 'args'));
+  const icon = own(profile, 'icon');
+  if (!isText(root, MAX_HOST_PATH_CHARS) || root.length === 0 || !isPath(startCwd) || typeof nonce !== 'string' || !NONCE.test(nonce)) return undefined;
+  if (!isPath(id) || !isText(name, MAX_HOST_PATH_CHARS) || !isPath(file) || !args || !(TERMINAL_ICONS as readonly unknown[]).includes(icon)) return undefined;
+  return { root, profile: { id, name, file, args, icon: icon as TerminalIcon }, startCwd, nonce };
+}
+
 function parseEnv(raw: unknown): Record<string, string> | undefined {
   const value = record(raw);
   if (!value) return undefined;
@@ -132,8 +167,11 @@ export function parseHostRequest(raw: unknown): HostRequest | undefined {
       const cols = own(value, 'cols');
       const rows = own(value, 'rows');
       const scrollback = own(value, 'scrollback');
+      const rawView = own(value, 'view');
+      const view = rawView === undefined ? undefined : parseTerminalView(rawView);
       if (!isPath(file) || !args || !isPath(cwd) || !env || !isInteger(cols, 1, MAX_TERMINAL_COLS) || !isInteger(rows, 1, MAX_TERMINAL_ROWS) || !isInteger(scrollback, 0, MAX_SCREEN_SCROLLBACK)) return undefined;
-      return { type, id, file, args, cwd, env, cols, rows, scrollback };
+      if (rawView !== undefined && !view) return undefined;
+      return { type, id, file, args, cwd, env, cols, rows, scrollback, ...(view ? { view } : {}) };
     }
     case 'input': {
       const data = own(value, 'data');
@@ -156,6 +194,7 @@ export function parseHostRequest(raw: unknown): HostRequest | undefined {
     case 'serialize':
     case 'clear':
     case 'kill':
+    case 'detach':
       return { type, id };
     default:
       return undefined;

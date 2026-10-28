@@ -16,7 +16,7 @@ import {
   suggestedFileName,
 } from '../search/search-editor-format';
 import type { AskMessage } from '../message-dialog';
-import { decodeDocument, encodeDocument, encodedLength, languageIdForName, majorityEol, withEol } from '../platform/editor-document';
+import { decodeDocument, encodeDocument, encodedLength, languageIdForName, majorityEol, withEol, type DecodedText } from '../platform/editor-document';
 import { isRelativeFilePath } from '../../../shared/relative-path';
 import { visibleText } from '../../../shared/visible-text';
 import type { Project } from '../../local-services/confine';
@@ -25,6 +25,7 @@ import type { FileBytes } from '../../local-services/file-bytes';
 import { WriteRefusedError, type WatchEvent, type WorkspaceFileSystem, type WriteRefusal } from '../../workspace/file-system';
 import type { ClosedFileRead, ClosedFileWrite, DiskState, TextEncoding } from '../../workspace/search/types';
 import { NotConnectedError, type Workspaces } from '../workspace/workspaces';
+import { mergeWithMarkers } from '../../../shared/scm/merge-markers';
 
 // Images preview from a data: URL of at most this many bytes; a larger one is not displayed.
 export const MAX_IMAGE_BYTES: number = 10 * 1024 * 1024;
@@ -46,11 +47,33 @@ export function imageMimeOf(name: string): string | undefined {
   return Object.hasOwn(IMAGE_MIME, extension) ? IMAGE_MIME[extension] : undefined;
 }
 
+const readLimitOf = (name: string): number => (imageMimeOf(name) ? MAX_IMAGE_BYTES : EDITOR_MAX_DOCUMENT_BYTES);
+
+type FileContent =
+  | { readonly kind: 'tooLarge'; readonly bytes: number }
+  | { readonly kind: 'unreadable'; readonly error: string }
+  | { readonly kind: 'image'; readonly mime: string; readonly bytes: Buffer }
+  | { readonly kind: 'binary'; readonly bytes: number }
+  // bytes: undefined for a missing file, which opens as empty text
+  | { readonly kind: 'text'; readonly decoded: DecodedText; readonly bytes: Buffer | undefined };
+
+// What the editor makes of a file named name: the one rule an open and a backup's adoption on connect both follow.
+function fileContentOf(name: string, read: FileBytes | { readonly kind: 'outside' }): FileContent {
+  if (read.kind === 'tooLarge') return { kind: 'tooLarge', bytes: read.bytes };
+  if (read.kind === 'unreadable') return { kind: 'unreadable', error: read.error };
+  if (read.kind === 'outside') return { kind: 'unreadable', error: 'it leads outside the file it names' };
+  const mime = imageMimeOf(name);
+  if (mime && read.kind === 'bytes') return { kind: 'image', mime, bytes: read.bytes };
+  const bytes = read.kind === 'bytes' ? read.bytes : undefined;
+  const decoded = decodeDocument(bytes ?? Buffer.alloc(0));
+  return decoded ? { kind: 'text', decoded, bytes } : { kind: 'binary', bytes: bytes?.length ?? 0 };
+}
+
 type Eol = '\n' | '\r\n';
 
 const MISSING: DiskState = { exists: false, mtimeMs: 0, size: 0, sha256: '' };
 
-interface Location {
+export interface Location {
   // the file's native realpath; for a missing file, the path it will be written to
   readonly path: string;
   // present when the file lies inside an open project
@@ -93,6 +116,23 @@ export interface TextDocument {
   watcher: Disposable | undefined;
   // a Search Editor: its text is the results body, its header lives here
   searchEditor: SearchEditorState | undefined;
+  // a hot-exit backup of a remote file restored while its host was not connected: no disk text is known yet, and the location
+  // is the project's folder joined with the relative path until the host connects and confines it
+  awaitingHost?: true;
+  // the connected host could not confine or read the awaiting file; the user was told once, and a save retries
+  hostReadFailed?: true;
+  // a remote file saved while its host was not connected: text is the buffer saved, kept in the backup until it uploads on
+  // reconnect, which writes it only while the target still holds `disk`
+  pendingUpload?: { readonly text: string };
+  // the offline save found the target changed on reconnect: the merge editor's inputs until Complete Merge
+  uploadConflict?: UploadConflict;
+}
+
+// base: the text last read from the target; current: the target's text on reconnect; incoming: the text saved offline
+export interface UploadConflict {
+  readonly base: string;
+  readonly current: string;
+  readonly incoming: string;
 }
 
 // VS Code's SearchEditorInput state beside the body.
@@ -124,7 +164,21 @@ export interface NotDisplayedDocument {
   readonly bytes?: number;
 }
 
-export type Document = TextDocument | ImageDocument | NotDisplayedDocument;
+// A remote file whose host is not connected: its tab shows the offline placeholder, and the file opens once the host connects.
+export interface OfflineDocument {
+  readonly id: string;
+  readonly kind: 'offline';
+  location: Location & { readonly projectKey: string; readonly relativePath: string };
+  name: string;
+}
+
+export type Document = TextDocument | ImageDocument | NotDisplayedDocument | OfflineDocument;
+
+// A document that took another's place: an offline placeholder whose host connected.
+export interface DocumentReplacement {
+  readonly from: string;
+  readonly to: string;
+}
 
 export type ShellEdit = Omit<EditorEditReport, 'documentId'>;
 
@@ -150,8 +204,8 @@ export interface DocumentChange {
 export interface Backups {
   // the buffer changed while dirty; written after the debounce, or at once when now is set
   changed(document: TextDocument, now?: boolean): void;
-  // written at once; settles once the write landed or failed, and never rejects
-  writeNow(document: TextDocument): Promise<void>;
+  // written at once; resolves whether the write landed, and never rejects
+  writeNow(document: TextDocument): Promise<boolean>;
   // the buffer became clean or the document closed with the user's consent
   remove(backupId: string): void;
 }
@@ -174,6 +228,14 @@ export interface DocumentServiceDeps {
   readonly pickSavePath: (defaultPath: string) => Promise<string | undefined>;
   readonly backups: Backups;
   readonly settings: SettingsFiles;
+  // a remote authority's host as this computer names it, for the offline placeholder
+  readonly hostLabel: (authority: string) => { readonly hostId: string; readonly name: string };
+  // one reconnect's offline saves that found the target changed, each now holding its uploadConflict, all of one authority
+  readonly uploadsConflicted: (authority: string, documents: readonly TextDocument[]) => void;
+  // a warning toast: an offline save that did not upload, a restored backup its file cannot take
+  readonly warn: (message: string) => void;
+  // a pending upload whose last tab closed did not upload: it is dirty again, so a tab shows it
+  readonly reopen: (document: TextDocument) => void;
 }
 
 function sha256(bytes: Buffer): string {
@@ -212,6 +274,7 @@ function settingsParseError(text: string, filePath: string): string | undefined 
 function isDirty(document: TextDocument): boolean {
   if (document.readOnlyReason !== undefined) return false;
   if (document.saveFailed) return true;
+  if (document.pendingUpload) return document.text !== document.pendingUpload.text;
   if (document.searchEditor) return document.searchEditor.dirty;
   return document.untitled ? document.text.length > 0 : document.text !== document.diskText;
 }
@@ -240,6 +303,7 @@ export class DocumentService {
   private readonly deps: DocumentServiceDeps;
   private readonly documents = new Map<string, Document>();
   private readonly listeners = new Set<(change: DocumentChange) => void>();
+  private readonly replacements = new Set<(replacement: DocumentReplacement) => void>();
   private readonly textListeners = new Set<(change: TextChange) => void>();
   // each document's last queued save, overwrite or revert, by document id
   private readonly turns = new Map<string, Promise<void>>();
@@ -249,9 +313,15 @@ export class DocumentService {
   private readonly opening = new Set<Promise<void>>();
   private renaming: Promise<void> = Promise.resolve();
   // a read that makes a document, by the key openResolved matches documents on, so opens of one file share it
-  private readonly resolving = new Map<string, Promise<Document>>();
+  private readonly resolving = new Map<string, { readonly read: Promise<Document>; callers: number }>();
+  // how many opens openResolved handed each document it read to; an abandoned placeholder's open releases only its own
+  private readonly handedOut = new WeakMap<Document, number>();
   // the file system each document's watcher runs on; a remote one's watch ends with its connection
   private readonly watchedOn = new WeakMap<TextDocument, WorkspaceFileSystem>();
+  // pending uploads whose last tab closed: released once their upload lands
+  private readonly tabless = new Set<TextDocument>();
+  // offline placeholders whose file is opening
+  private readonly placeholderOpens = new Set<OfflineDocument>();
 
   constructor(deps: DocumentServiceDeps) {
     this.deps = deps;
@@ -260,6 +330,12 @@ export class DocumentService {
   onDidChange(listener: (change: DocumentChange) => void): Disposable {
     this.listeners.add(listener);
     return { dispose: () => this.listeners.delete(listener) };
+  }
+
+  /** An offline placeholder's host connected and its file opened as another document, which every tab of it now shows. */
+  onDidReplace(listener: (replacement: DocumentReplacement) => void): Disposable {
+    this.replacements.add(listener);
+    return { dispose: () => this.replacements.delete(listener) };
   }
 
   /** Every change of a text document's buffer, a keystroke included; Search's live updates follow it. */
@@ -291,6 +367,83 @@ export class DocumentService {
     const confined = await this.files(project.key).confineExisting(project, relativePath);
     if (confined.ok) return { ok: true, document: await this.openResolved(confined.path, { projectKey: project.key, relativePath }) };
     return confined.reason === 'missing' && opts.missing ? this.openMissing(project, relativePath, opts.missing) : confined;
+  }
+
+  /** Whether a project's files wait on a remote host that is not connected. */
+  awaitsHost(projectKey: string): boolean {
+    if (authorityKeyOfProject(projectKey) === 'local') return false;
+    try {
+      this.files(projectKey);
+      return false;
+    } catch (err) {
+      if (err instanceof NotConnectedError) return true;
+      throw err;
+    }
+  }
+
+  /**
+   * The offline placeholder of a remote project's file while its host is not connected: no content of this computer's disk
+   * shows, and the file opens once the host connects (connectionsChanged). A document of that file already open (a backup
+   * restored into it) is that document.
+   */
+  openOffline(projectKey: string, relativePath: string): Document {
+    const location = this.awaitingLocation(projectKey, relativePath);
+    const existing = this.fileDocument(location);
+    if (existing) return existing;
+    const document: OfflineDocument = { id: randomUUID(), kind: 'offline', location, name: this.flavorOf(location).basename(location.path) };
+    this.documents.set(document.id, document);
+    return document;
+  }
+
+  /**
+   * The document a hot-exit backup of a remote file restores into while its host is not connected: its text is the backup's,
+   * so it opens dirty, and once the host connects the file's disk text becomes its baseline (connectionsChanged). A document
+   * of that file already open (a backup restored first) is that document; an offline placeholder's tabs show the new one.
+   */
+  openAwaitingHost(projectKey: string, relativePath: string, format: MissingFileFormat): Document {
+    const location = this.awaitingLocation(projectKey, relativePath);
+    const existing = this.fileDocument(location);
+    if (existing && existing.kind !== 'offline') return existing;
+    const name = this.flavorOf(location).basename(location.path);
+    const searchEditor = isSearchEditorPath(name);
+    const document: TextDocument = {
+      id: randomUUID(),
+      kind: 'text',
+      location,
+      name,
+      languageId: searchEditor ? SEARCH_RESULT_LANGUAGE_ID : languageIdForName(name),
+      encoding: format.encoding,
+      bom: format.bom,
+      eol: searchEditor ? '\n' : format.eol,
+      diskText: '',
+      text: '',
+      disk: MISSING,
+      version: 1,
+      editSeq: 0,
+      readOnlyReason: undefined,
+      conflict: false,
+      untitled: false,
+      orphaned: false,
+      saveFailed: false,
+      settingsScope: undefined,
+      backupId: randomUUID(),
+      watcher: undefined,
+      searchEditor: searchEditor ? { config: DEFAULT_SEARCH_EDITOR_CONFIG, dirty: false, projectKey, running: false, message: undefined } : undefined,
+      awaitingHost: true,
+    };
+    this.documents.set(document.id, document);
+    if (existing) {
+      this.documents.delete(existing.id);
+      this.replaced(existing.id, document.id);
+    }
+    return document;
+  }
+
+  // A remote project file's location before its host confines it: the project's folder joined in the target's flavor.
+  private awaitingLocation(projectKey: string, relativePath: string): OfflineDocument['location'] {
+    const project = this.deps.projects().find((candidate) => candidate.key === projectKey);
+    if (!project || authorityKeyOfProject(projectKey) === 'local' || !isRelativeFilePath(relativePath)) throw new Error(`${relativePath} is not a file of an open remote project`);
+    return { path: this.flavorOf({ projectKey }).join(project.fsPath, ...relativePath.split('/')), projectKey, relativePath };
   }
 
   // VS Code resolves a backup whose file is gone as an orphaned model (textFileEditorModel.ts doResolveFromBackup): the
@@ -585,6 +738,10 @@ export class DocumentService {
 
   content(id: string): ShellDocumentContent {
     const document = this.require(id);
+    if (document.kind === 'offline') {
+      const host = this.deps.hostLabel(this.authorityOf(document.location));
+      return { kind: 'offline', documentId: id, hostId: host.hostId, hostName: host.name };
+    }
     if (document.kind === 'image') return { kind: 'image', documentId: id, dataUrl: document.dataUrl, bytes: document.bytes };
     if (document.kind === 'notDisplayed') {
       return { kind: 'notDisplayed', documentId: id, reason: document.reason, ...(document.bytes !== undefined ? { bytes: document.bytes } : {}) };
@@ -627,15 +784,57 @@ export class DocumentService {
 
   private async saveInTurn(document: TextDocument): Promise<EditorSaveResult> {
     if (document.readOnlyReason !== undefined) return { ok: false, reason: 'readOnly' };
+    // its file is known only once the host confines it, so nothing is written to the path it was restored at
+    if (document.awaitingHost) {
+      const unadopted = await this.adoptBeforeSave(document);
+      if (unadopted) return unadopted;
+    }
     if (document.conflict) return this.refuseConflict(document);
     const refused = this.oversize(savedText(document), document);
     if (refused) return { ok: false, reason: 'failed', message: refused };
     if (document.settingsScope !== undefined) return this.saveSettings(document, this.settingsBaseVersion(document));
     const location = document.location!;
+    if (!document.searchEditor && location.host === undefined && this.authorityOf(location) !== 'local' && !this.connected(location)) return this.saveOffline(document);
     const current = await this.readDiskState(location);
     if (!current.ok) return current;
     if (!sameDisk(current.disk, document.disk)) return this.refuseConflict(document);
     return this.write(document, location, document);
+  }
+
+  // A connected host takes the awaiting file first; the save goes on only once it did.
+  private async adoptBeforeSave(document: TextDocument): Promise<EditorSaveResult | undefined> {
+    const location = document.location!;
+    if (this.connected(location)) {
+      try {
+        await this.adoptDisk(document);
+      } catch (err) {
+        if (!(err instanceof NotConnectedError)) throw err;
+      }
+    }
+    // its text moved to an untitled buffer, whose warning says why
+    if (this.documents.get(document.id) !== document) return { ok: false, reason: 'failed' };
+    if (!document.awaitingHost) return undefined;
+    const host = this.deps.hostLabel(this.authorityOf(location)).name;
+    const message = this.connected(location)
+      ? this.deps.t('{0} could not be read on {1}, so it was not saved. Its changes stay in the editor.', visibleText(document.name), host)
+      : this.deps.t('{0} is not connected, so the file was not saved. Its changes stay in the editor.', host);
+    return { ok: false, reason: 'failed', message };
+  }
+
+  // The buffer is kept in its backup, not written: the file uploads once its host reconnects (uploadPending), and disk and
+  // diskText stay what was last read from the target, the base a changed target merges against.
+  private async saveOffline(document: TextDocument): Promise<EditorSaveResult> {
+    const previous = document.pendingUpload;
+    document.pendingUpload = { text: document.text };
+    if (!(await this.deps.backups.writeNow(document))) {
+      if (previous) document.pendingUpload = previous;
+      else delete document.pendingUpload;
+      const host = this.deps.hostLabel(this.authorityOf(document.location!)).name;
+      return { ok: false, reason: 'failed', message: this.saveFailure(document.location!, this.deps.t('{0} is not connected, and the copy on this computer could not be written.', host)) };
+    }
+    document.saveFailed = false;
+    this.emit(document.id, false);
+    return { ok: true };
   }
 
   /** Save As through the native dialog, confined to an open project; the document moves to the new path. */
@@ -723,6 +922,8 @@ export class DocumentService {
       if (document.searchEditor) document.searchEditor.dirty = false;
       document.conflict = false;
       document.saveFailed = false;
+      delete document.pendingUpload;
+      delete document.uploadConflict;
       this.deps.backups.remove(document.backupId);
       this.emit(id, false);
       return { ok: true };
@@ -838,10 +1039,22 @@ export class DocumentService {
     if (document?.readOnlyReason === 'log') await this.reload(document, { force: false });
   }
 
-  /** Drops the document; its backup goes only when discard is set (the user chose Don't Save, or it is clean). */
+  /**
+   * Drops the document; its backup goes only when discard is set (the user chose Don't Save, or it is clean). A pending upload
+   * stays held without a tab until it uploads, since its save already happened.
+   */
   release(id: string, discard: boolean): void {
     const document = this.documents.get(id);
     if (!document) return;
+    if (document.kind === 'text' && document.pendingUpload) {
+      // Don't Save drops only the edits made after the offline save
+      if (discard && isDirty(document)) {
+        this.replaceText(document, document.pendingUpload.text);
+        this.deps.backups.changed(document, true);
+      }
+      this.tabless.add(document);
+      return;
+    }
     this.documents.delete(id);
     if (document.kind !== 'text') return;
     document.watcher?.dispose();
@@ -857,28 +1070,45 @@ export class DocumentService {
 
   private async openResolved(filePath: string, location: Omit<Location, 'path'>, readOnlyReason?: EditorReadOnlyReason, settingsScope?: SettingsFileScope): Promise<Document> {
     const key = this.identity({ path: filePath, ...location });
-    // A settings file opened by Edit settings.json is a document of its own, so its saves keep the settings file rules.
+    // A settings file opened by Edit settings.json is a document of its own, so its saves keep the settings file rules. An
+    // offline placeholder is no open file: the open replaces it.
     for (const existing of this.documents.values()) {
+      if (existing.kind === 'offline') continue;
       const scope = existing.kind === 'text' ? existing.settingsScope : undefined;
-      if (existing.location && existing.location.host === undefined && this.identity(existing.location) === key && scope === settingsScope && !(existing.kind === 'text' && existing.untitled)) return existing;
+      if (existing.location && existing.location.host === undefined && this.identity(existing.location) === key && scope === settingsScope && !(existing.kind === 'text' && existing.untitled)) {
+        if (existing.kind === 'text') this.tabless.delete(existing);
+        const handed = this.handedOut.get(existing);
+        if (handed !== undefined) this.handedOut.set(existing, handed + 1);
+        return existing;
+      }
     }
     return this.joined(`${key}\0${settingsScope ?? ''}`, async () => {
-      const read = await this.files(location.projectKey).read(filePath, imageMimeOf(this.flavorOf(location).basename(filePath)) ? MAX_IMAGE_BYTES : EDITOR_MAX_DOCUMENT_BYTES);
+      const read = await this.files(location.projectKey).read(filePath, readLimitOf(this.flavorOf(location).basename(filePath)));
       return this.documentOf({ path: filePath, ...location }, read, readOnlyReason, settingsScope);
     });
   }
 
   // textFileEditorModelManager.ts joinPendingResolves: a second open of a file still being read gets the same document.
-  private async joined(resolvingKey: string, resolve: () => Promise<Document>): Promise<Document> {
+  // The count reaches the document before any caller resumes, so a release decided in one caller's continuation sees the others.
+  private joined(resolvingKey: string, resolve: () => Promise<Document>): Promise<Document> {
     const pending = this.resolving.get(resolvingKey);
-    if (pending) return pending;
-    const read = resolve();
-    this.resolving.set(resolvingKey, read);
-    try {
-      return await read;
-    } finally {
-      this.resolving.delete(resolvingKey);
+    if (pending) {
+      pending.callers++;
+      return pending.read;
     }
+    const entry = {
+      callers: 1,
+      read: resolve().then((document) => {
+        this.resolving.delete(resolvingKey);
+        this.handedOut.set(document, entry.callers);
+        return document;
+      }, (err: unknown) => {
+        this.resolving.delete(resolvingKey);
+        throw err;
+      }),
+    };
+    this.resolving.set(resolvingKey, entry);
+    return entry.read;
   }
 
   private documentOf(
@@ -890,61 +1120,58 @@ export class DocumentService {
   ): Document {
     const filePath = location.path;
     const id = randomUUID();
-    const mime = imageMimeOf(name);
+    const content = fileContentOf(name, read);
     let document: Document;
-    if (read.kind === 'tooLarge') {
-      document = { id, kind: 'notDisplayed', location, name, reason: 'tooLarge', bytes: read.bytes };
-    } else if (read.kind === 'unreadable' || read.kind === 'outside') {
-      this.deps.log(`[documents] cannot read ${filePath}: ${read.kind === 'outside' ? 'it leads outside the file it names' : read.error}`);
+    if (content.kind === 'tooLarge') {
+      document = { id, kind: 'notDisplayed', location, name, reason: 'tooLarge', bytes: content.bytes };
+    } else if (content.kind === 'unreadable') {
+      this.deps.log(`[documents] cannot read ${filePath}: ${content.error}`);
       document = { id, kind: 'notDisplayed', location, name, reason: 'unreadable' };
-    } else if (mime && read.kind === 'bytes') {
-      document = { id, kind: 'image', location, name, dataUrl: `data:${mime};base64,${read.bytes.toString('base64')}`, bytes: read.bytes.length };
+    } else if (content.kind === 'image') {
+      document = { id, kind: 'image', location, name, dataUrl: `data:${content.mime};base64,${content.bytes.toString('base64')}`, bytes: content.bytes.length };
+    } else if (content.kind === 'binary') {
+      document = { id, kind: 'notDisplayed', location, name, reason: 'binary', bytes: content.bytes };
     } else {
-      const bytes = read.kind === 'bytes' ? read.bytes : Buffer.alloc(0);
-      const decoded = decodeDocument(bytes);
-      if (!decoded) {
-        document = { id, kind: 'notDisplayed', location, name, reason: 'binary', bytes: bytes.length };
-      } else {
-        const parsed = settingsScope === undefined && readOnlyReason === undefined && decoded.valid && isSearchEditorPath(name) ? parseSearchEditor(decoded.text) : undefined;
-        const eol = parsed ? '\n' : majorityEol(decoded.text);
-        const text = parsed ? parsed.body : withEol(decoded.text, eol);
-        document = {
-          id,
-          kind: 'text',
-          location,
-          name,
-          languageId: settingsScope !== undefined || location.host !== undefined ? 'json' : parsed ? SEARCH_RESULT_LANGUAGE_ID : languageIdForName(name),
-          encoding: decoded.encoding,
-          bom: decoded.bom,
-          eol,
-          diskText: text,
-          text,
-          disk: read.kind === 'bytes' ? { exists: true, mtimeMs: read.mtimeMs, size: bytes.length, sha256: sha256(bytes) } : MISSING,
-          version: 1,
-          editSeq: 0,
-          readOnlyReason: readOnlyReason ?? (decoded.valid ? undefined : 'encoding'),
-          conflict: false,
-          untitled: false,
-          orphaned: false,
-          saveFailed: false,
-          settingsScope,
-          backupId: randomUUID(),
-          watcher: undefined,
-          searchEditor: parsed
-            ? {
-              config: parsed.config,
-              dirty: false,
-              projectKey: location.projectKey,
-              running: false,
-              message: parsed.headerError
-                ? { kind: 'headerError', text: this.deps.t('All backslashes in Query string must be escaped ({0})', '\\\\') }
-                : parsed.config.query !== '' && parsed.body === '' ? { kind: 'stale' } : undefined,
-            }
-            : undefined,
-        };
-        // The log changes on every logged line; its tab re-reads it on a timer instead (reloadLog).
-        if (readOnlyReason !== 'log') this.watch(document);
-      }
+      const { decoded, bytes } = content;
+      const parsed = settingsScope === undefined && readOnlyReason === undefined && decoded.valid && isSearchEditorPath(name) ? parseSearchEditor(decoded.text) : undefined;
+      const eol = parsed ? '\n' : majorityEol(decoded.text);
+      const text = parsed ? parsed.body : withEol(decoded.text, eol);
+      document = {
+        id,
+        kind: 'text',
+        location,
+        name,
+        languageId: settingsScope !== undefined || location.host !== undefined ? 'json' : parsed ? SEARCH_RESULT_LANGUAGE_ID : languageIdForName(name),
+        encoding: decoded.encoding,
+        bom: decoded.bom,
+        eol,
+        diskText: text,
+        text,
+        disk: bytes && read.kind === 'bytes' ? { exists: true, mtimeMs: read.mtimeMs, size: bytes.length, sha256: sha256(bytes) } : MISSING,
+        version: 1,
+        editSeq: 0,
+        readOnlyReason: readOnlyReason ?? (decoded.valid ? undefined : 'encoding'),
+        conflict: false,
+        untitled: false,
+        orphaned: false,
+        saveFailed: false,
+        settingsScope,
+        backupId: randomUUID(),
+        watcher: undefined,
+        searchEditor: parsed
+          ? {
+            config: parsed.config,
+            dirty: false,
+            projectKey: location.projectKey,
+            running: false,
+            message: parsed.headerError
+              ? { kind: 'headerError', text: this.deps.t('All backslashes in Query string must be escaped ({0})', '\\\\') }
+              : parsed.config.query !== '' && parsed.body === '' ? { kind: 'stale' } : undefined,
+          }
+          : undefined,
+      };
+      // The log changes on every logged line; its tab re-reads it on a timer instead (reloadLog).
+      if (readOnlyReason !== 'log') this.watch(document);
     }
     this.documents.set(id, document);
     return document;
@@ -968,9 +1195,21 @@ export class DocumentService {
     this.reload(document, { force: false }).catch((err: unknown) => this.deps.log(`[documents] reloading ${filePath} failed: ${errorText(err)}`));
   }
 
-  /** A host connected or went away: each watched document whose host now serves a new connection is watched over it and read again. */
+  /**
+   * A host connected or went away: each watched document whose host now serves a new connection is watched over it and read
+   * again, each offline placeholder of a connected host opens its file, and each backup awaiting its host takes the file's
+   * disk text as its baseline.
+   */
   connectionsChanged(): void {
-    for (const document of this.documents.values()) {
+    for (const document of [...this.documents.values()]) {
+      if (document.kind === 'offline') {
+        if (this.connected(document.location)) this.openFromPlaceholder(document);
+        continue;
+      }
+      if (document.kind === 'text' && document.awaitingHost && document.location) {
+        if (this.connected(document.location)) this.adoptLogged(document);
+        continue;
+      }
       if (document.kind !== 'text' || !document.watcher || !document.location) continue;
       let files: WorkspaceFileSystem;
       try {
@@ -986,12 +1225,240 @@ export class DocumentService {
     }
   }
 
+  /**
+   * The host is usable again (a resume inside the grace or a fresh attach): each offline save of its files uploads when the
+   * target still holds the disk state it was saved over, else its document turns into an upload conflict, reported together
+   * with the others of this pass; every other open file of the host reads its disk again.
+   */
+  hostConnected(authority: string): void {
+    const pending: TextDocument[] = [];
+    for (const document of this.documents.values()) {
+      const location = document.location;
+      if (document.kind !== 'text' || !location || location.host !== undefined || document.awaitingHost || this.authorityOf(location) !== authority) continue;
+      if (document.pendingUpload) pending.push(document);
+      else if (document.watcher) this.reloadLogged(document);
+    }
+    if (pending.length === 0) return;
+    void Promise.all(pending.map((document) => this.inTurn(document, () => this.upload(document)).catch((err: unknown) => {
+      this.uploadFailed(document, errorText(err));
+      return false;
+    }))).then((conflicted) => {
+      const documents = pending.filter((_document, index) => conflicted[index]);
+      // each opens in a merge tab, which holds it from now on
+      for (const document of documents) this.tabless.delete(document);
+      if (documents.length > 0) this.deps.uploadsConflicted(authority, documents);
+    });
+  }
+
+  // Resolves whether the target changed under the offline save: the buffer then holds the three-way merge's markers.
+  private async upload(document: TextDocument): Promise<boolean> {
+    const pending = document.pendingUpload;
+    const location = document.location;
+    if (!pending || !location || this.documents.get(document.id) !== document || !this.connected(location)) return false;
+    let read: Awaited<ReturnType<DocumentService['readLocation']>>;
+    try {
+      read = await this.readLocation(location);
+    } catch (err) {
+      // gone again: the next connection uploads it
+      if (err instanceof NotConnectedError) return false;
+      throw err;
+    }
+    if (document.location !== location || document.pendingUpload !== pending) return false;
+    const disk = read.kind === 'bytes' ? { exists: true, mtimeMs: read.mtimeMs, size: read.bytes.length, sha256: sha256(read.bytes) } : MISSING;
+    if ((read.kind === 'bytes' || read.kind === 'missing') && sameDisk(disk, document.disk)) {
+      const result = await this.write(document, location, document, pending.text);
+      if (!result.ok) this.uploadFailed(document, result.message ?? result.reason);
+      else if (this.tabless.has(document)) this.finishRelease(document);
+      return false;
+    }
+    const decoded = read.kind === 'bytes' ? decodeDocument(read.bytes) : undefined;
+    if (read.kind !== 'missing' && !decoded?.valid) {
+      this.uploadFailed(document, this.deps.t('The file on {0} is no longer text the editor can merge.', this.deps.hostLabel(this.authorityOf(location)).name));
+      return false;
+    }
+    const current = decoded ? withEol(decoded.text, document.eol) : '';
+    const base = document.diskText;
+    const incoming = document.text;
+    delete document.pendingUpload;
+    document.disk = disk;
+    document.diskText = current;
+    document.orphaned = read.kind === 'missing';
+    if (incoming === current) {
+      this.deps.backups.remove(document.backupId);
+      this.emit(document.id, false);
+      if (this.tabless.has(document)) this.finishRelease(document);
+      return false;
+    }
+    document.uploadConflict = { base, current, incoming };
+    const labels = uploadMergeLabels(this.deps.hostLabel(this.authorityOf(location)).name, this.deps.t);
+    const merged = mergeWithMarkers(base, current, incoming, { current: labels.current.detail, incoming: labels.incoming.detail, base: labels.base.title }, document.eol);
+    if (merged === null) this.deps.log(`[documents] ${location.path} is too long to merge line by line; its Result starts as the editor's text`);
+    else if (merged !== document.text) this.replaceText(document, merged);
+    this.deps.backups.changed(document, true);
+    this.emit(document.id, false);
+    return true;
+  }
+
+  // The upload did not land: the tab shows a failed save instead of the pending glyph, the backup keeps the text, and the
+  // user is told, since the save they made offline is not on the host.
+  private uploadFailed(document: TextDocument, reason: string): void {
+    const location = document.location;
+    this.deps.log(`[documents] uploading ${location?.path} failed: ${reason}`);
+    delete document.pendingUpload;
+    document.saveFailed = true;
+    this.deps.backups.changed(document, true);
+    this.emit(document.id, false);
+    const host = location ? this.deps.hostLabel(this.authorityOf(location)).name : '';
+    this.deps.warn(this.deps.t('{0} was saved on this computer while {1} was away and could not be uploaded: {2}', visibleText(document.name), host, reason));
+    if (this.tabless.delete(document)) this.deps.reopen(document);
+  }
+
+  // A pending upload whose last tab closed has landed: it leaves as a clean document's release does.
+  private finishRelease(document: TextDocument): void {
+    this.tabless.delete(document);
+    if (this.documents.get(document.id) !== document || isDirty(document)) return;
+    this.documents.delete(document.id);
+    document.watcher?.dispose();
+    this.deps.backups.remove(document.backupId);
+  }
+
+  /** The Result was saved: its merge inputs go. */
+  endUploadConflict(id: string): void {
+    const document = this.text(id);
+    if (document) delete document.uploadConflict;
+  }
+
+  private connected(location: Location): boolean {
+    try {
+      this.filesAt(location);
+      return true;
+    } catch (err) {
+      if (err instanceof NotConnectedError) return false;
+      throw err;
+    }
+  }
+
+  // The placeholder stays in the map, which its tabs read, until the file replaces it; a second connect meanwhile opens nothing.
+  // A placeholder released meanwhile (its tabs closed) replaces nothing, and its file goes unless another open took it too.
+  private openFromPlaceholder(placeholder: OfflineDocument): void {
+    if (this.placeholderOpens.has(placeholder)) return;
+    this.placeholderOpens.add(placeholder);
+    const { projectKey, relativePath } = placeholder.location;
+    this.openProjectFile(projectKey, relativePath).then((opened) => {
+      this.placeholderOpens.delete(placeholder);
+      if (this.documents.get(placeholder.id) !== placeholder) {
+        if (opened.ok && this.handedOut.get(opened.document) === 1) this.release(opened.document.id, false);
+        return;
+      }
+      this.documents.delete(placeholder.id);
+      this.replaced(placeholder.id, (opened.ok ? opened.document : this.notDisplayedAt(placeholder)).id);
+    }, (err: unknown) => {
+      this.placeholderOpens.delete(placeholder);
+      this.deps.log(`[documents] opening ${relativePath} once its host connected failed: ${errorText(err)}`);
+      // the host went away again: the placeholder waits for the next connect
+      if (err instanceof NotConnectedError || this.documents.get(placeholder.id) !== placeholder) return;
+      this.documents.delete(placeholder.id);
+      this.replaced(placeholder.id, this.notDisplayedAt(placeholder).id);
+    });
+  }
+
+  private replaced(from: string, to: string): void {
+    for (const listener of [...this.replacements]) listener({ from, to });
+  }
+
+  private notDisplayedAt(placeholder: OfflineDocument): NotDisplayedDocument {
+    const document: NotDisplayedDocument = { id: randomUUID(), kind: 'notDisplayed', location: placeholder.location, name: placeholder.name, reason: 'unreadable' };
+    this.documents.set(document.id, document);
+    return document;
+  }
+
+  private adoptLogged(document: TextDocument): void {
+    this.adoptDisk(document).catch((err: unknown) => this.deps.log(`[documents] reading ${document.location?.relativePath} once its host connected failed: ${errorText(err)}`));
+  }
+
+  // A backup restored while its host was away: the file, now confined on the host, gives its disk text as the baseline and the
+  // buffer keeps the backup's text, as a backup restored into an open file does; a file that is gone leaves it orphaned. A file
+  // the restore path would refuse (outside its project, its project folder gone, an image, binary, too large, not valid UTF-8) leaves the
+  // text in an untitled buffer, as it does. A file the host fails to confine or read keeps the document awaiting.
+  private async adoptDisk(document: TextDocument): Promise<void> {
+    const location = document.location;
+    const project = this.deps.projects().find((candidate) => candidate.key === location?.projectKey);
+    if (!location || !project || location.relativePath === undefined || !document.awaitingHost) return;
+    const files = this.files(project.key);
+    const confined = await files.confineExisting(project, location.relativePath);
+    if (!document.awaitingHost || this.documents.get(document.id) !== document) return;
+    if (!confined.ok) {
+      const missing = confined.reason === 'missing' ? await files.confineMissing(project, location.relativePath) : confined;
+      if (!document.awaitingHost || this.documents.get(document.id) !== document) return;
+      if (missing.ok) this.adoptMissing(document, missing.path);
+      else if (missing.reason === 'outside') this.keepAsUntitled(document, this.deps.t('It is now outside its project.'));
+      else if (missing.reason === 'missing') this.keepAsUntitled(document, this.deps.t('Its project folder is missing.'));
+      else this.hostReadFailed(document, 'its path could not be resolved');
+      return;
+    }
+    const name = this.flavorOf(location).basename(confined.path);
+    const read = await files.read(confined.path, readLimitOf(name));
+    if (!document.awaitingHost || this.documents.get(document.id) !== document) return;
+    if (read.kind === 'missing' || read.kind === 'unreadable') {
+      if (read.kind === 'missing') this.adoptMissing(document, confined.path);
+      else this.hostReadFailed(document, read.error);
+      return;
+    }
+    const content = fileContentOf(name, read);
+    if (read.kind !== 'bytes' || content.kind !== 'text' || !content.decoded.valid) {
+      this.keepAsUntitled(document, this.deps.t('The editor cannot change it as it is on disk now.'));
+      return;
+    }
+    const { decoded } = content;
+    delete document.awaitingHost;
+    delete document.hostReadFailed;
+    document.location = { ...location, path: confined.path };
+    document.disk = { exists: true, mtimeMs: read.mtimeMs, size: read.bytes.length, sha256: sha256(read.bytes) };
+    document.diskText = document.searchEditor ? parseSearchEditor(decoded.text).body : withEol(decoded.text, document.eol);
+    document.encoding = decoded.encoding;
+    document.bom = decoded.bom;
+    if (!isDirty(document)) this.deps.backups.remove(document.backupId);
+    this.watch(document);
+    this.emit(document.id, false);
+  }
+
+  private adoptMissing(document: TextDocument, filePath: string): void {
+    delete document.awaitingHost;
+    delete document.hostReadFailed;
+    document.location = { ...document.location!, path: filePath };
+    document.orphaned = true;
+    this.watch(document);
+    this.emit(document.id, false);
+  }
+
+  // The document keeps awaiting, so a save is still refused; the user is told once, and a save or a connection change retries.
+  private hostReadFailed(document: TextDocument, reason: string): void {
+    this.deps.log(`[documents] ${document.location?.path} could not be read on its host (${reason}); the buffer keeps its text`);
+    if (document.hostReadFailed) return;
+    document.hostReadFailed = true;
+    const host = this.deps.hostLabel(this.authorityOf(document.location!)).name;
+    this.deps.warn(this.deps.t('{0} could not be read on {1}, so its unsaved changes stay in the editor. Saving it tries again.', visibleText(document.name), host));
+  }
+
+  // The awaiting document's text and backup move to an untitled buffer, which its tabs show (onDidReplace), and the user is told why.
+  private keepAsUntitled(document: TextDocument, reason: string): void {
+    const text = savedText(document);
+    const untitled = this.openMemory(document.name, text, { untitled: true, languageId: document.languageId });
+    this.restoreBuffer(untitled.id, text, document.backupId);
+    this.documents.delete(document.id);
+    document.watcher?.dispose();
+    this.deps.log(`[documents] ${document.location?.path} cannot take its backup once its host connected: ${reason}`);
+    this.deps.warn(this.deps.t('The unsaved changes to {0} are in an untitled editor: {1}', visibleText(document.name), reason));
+    this.replaced(document.id, untitled.id);
+  }
+
   // The watcher path (agent writes, checkpoint restores, git checkout, any editor): a clean buffer takes the disk text,
   // a dirty one is flagged; force (Revert) takes the disk text either way. A document moved meanwhile ignores the read.
   // Resolves whether the buffer took the disk text, or for Revert of a missing file kept its own as clean.
   private async reload(document: TextDocument, opts: { readonly force: boolean }): Promise<boolean> {
     const location = document.location;
-    if (!location || this.documents.get(document.id) !== document) return false;
+    // the upload decides what a text saved offline meets on the target
+    if (!location || this.documents.get(document.id) !== document || (document.pendingUpload && !opts.force)) return false;
     const read = await this.readLocation(location);
     if (document.location !== location) return false;
     if (read.kind === 'outside') {
@@ -1060,7 +1527,8 @@ export class DocumentService {
     if (document.searchEditor) document.searchEditor.dirty = true;
     const dirty = isDirty(document);
     this.emitText(document.id);
-    if (dirty || this.writing.has(document)) this.deps.backups.changed(document);
+    // a pending upload's backup is the only copy of the text saved offline
+    if (dirty || this.writing.has(document) || document.pendingUpload) this.deps.backups.changed(document);
     else this.deps.backups.remove(document.backupId);
     return dirty !== wasDirty;
   }
@@ -1076,14 +1544,14 @@ export class DocumentService {
   // the write landed. A dirty buffer's backup lands first, so a write torn by a crash leaves the text in the backup. As in
   // VS Code's doSave, handleSaveSuccess and handleSaveError (textFileEditorModel.ts:769, :959, :973), the buffer stays dirty
   // when it changed while the write ran, and after a failed write, which may have torn the file.
-  private async write(document: TextDocument, location: Location, format: { readonly encoding: TextEncoding; readonly bom: boolean }): Promise<EditorSaveResult> {
+  // buffer: the text written, the buffer unless an upload writes the text saved offline.
+  private async write(document: TextDocument, location: Location, format: { readonly encoding: TextEncoding; readonly bom: boolean }, buffer: string = document.text): Promise<EditorSaveResult> {
     const unparsed = location.host !== undefined ? settingsParseError(savedText(document), location.path) : undefined;
     if (unparsed !== undefined) return { ok: false, reason: 'failed', message: this.deps.t('Not saved: the text is not valid JSON. {0}', unparsed) };
     if (isDirty(document)) await this.deps.backups.writeNow(document);
-    const buffer = document.text;
     const header = document.searchEditor ? serializeSearchConfiguration(document.searchEditor.config) : undefined;
     const text = document.searchEditor ? buffer : withEol(buffer, document.eol);
-    const bytes = encodeDocument(savedText(document), format.encoding, format.bom);
+    const bytes = encodeDocument(document.searchEditor ? serializeSearchEditor(document.searchEditor.config, buffer) : text, format.encoding, format.bom);
     let mtimeMs: number;
     this.writing.add(document);
     try {
@@ -1108,6 +1576,7 @@ export class DocumentService {
     document.conflict = false;
     document.orphaned = false;
     document.saveFailed = false;
+    delete document.pendingUpload;
     if (document.searchEditor && unchanged) document.searchEditor.dirty = false;
     if (isDirty(document)) this.deps.backups.changed(document);
     else this.deps.backups.remove(document.backupId);
@@ -1267,7 +1736,7 @@ export class DocumentService {
       }
       if (this.identity({ ...location, path: confined.path }) !== this.identity(location)) return { kind: 'outside' };
     }
-    return this.files(location.projectKey).read(location.path);
+    return this.files(location.projectKey).read(location.path, readLimitOf(this.flavorOf(location).basename(location.path)));
   }
 
   // The files of the workspace holding a project; this computer's for a path outside every project.
@@ -1297,6 +1766,11 @@ export class DocumentService {
   private emitText(documentId: string): void {
     for (const listener of [...this.textListeners]) listener({ documentId });
   }
+}
+
+/** The upload merge's sides: Current is the target's, Incoming the text saved on this computer; details name the markers. */
+export function uploadMergeLabels(hostName: string, t: (message: string, ...args: Array<string | number>) => string): { readonly current: { readonly title: string; readonly detail: string }; readonly incoming: { readonly title: string; readonly detail: string }; readonly base: { readonly title: string } } {
+  return { current: { title: t('Current'), detail: hostName }, incoming: { title: t('Incoming'), detail: t('Saved on this computer') }, base: { title: t('Base') } };
 }
 
 // The content decides: a touch that keeps the bytes is no change, and a rewrite with the same mtime is one.

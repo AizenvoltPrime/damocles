@@ -53,10 +53,12 @@ export interface HostInstance {
 export interface AttachedView {
   /** Called from inside attachView too, with the host prompts the attach moves into this view. */
   post(message: ExtensionToWebviewMessage): void;
-  /** Called once, when the panel closes, another view is attached in its place or a dispose detaches it. */
+  /** Called once, when the panel closes, its device attaches another view in its place or a dispose detaches it. */
   detached(): void;
   /** The settings overlay tab the view serves (desktop scope tabs); absent for a local chat's overlay. */
   readonly scope?: SettingsViewScope;
+  /** On a daemon's core, the device whose overlay it is: only that device's views' posts and replies reach it. */
+  readonly clientId?: string;
 }
 
 export type SettingsViewScope = 'user' | 'machine' | 'project';

@@ -10,6 +10,7 @@ import { SCM_STORE } from '../scm/scm-store';
 import { attachEditorGit, type EditorGit } from './editor-git';
 import { attachConflictLens, type ConflictLens } from './merge/code-lens';
 import { addEditorGitKeybindings, editorChordLabels, gitKeyLabels } from './editor-keys';
+import LoadFailedNotice from './LoadFailedNotice.vue';
 
 // One Monaco editor for every text tab: switching tabs swaps the shared model and restores that tab's view state, which the
 // store keeps per tab, so it outlives this editor while another kind of tab shows.
@@ -35,6 +36,7 @@ const SELECTION_THROTTLE_MS = 150;
 const container = ref<HTMLElement | null>(null);
 const editor = shallowRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
 const shownTabId = ref<string | null>(null);
+const failed = computed(() => props.tab.documentId !== undefined && store.loadFailed(props.tab.documentId));
 const disposables: IDisposable[] = [];
 let unmounted = false;
 let modelListener: IDisposable | undefined;
@@ -121,6 +123,8 @@ async function show(tab: ShellEditorTab): Promise<void> {
   const documentId = tab.documentId;
   if (!current || documentId === undefined) return;
   if (shownTabId.value !== null) store.rememberViewState(shownTabId.value, current.saveViewState());
+  // A remote file whose host is offline has no text yet; the pane shows its placeholder instead of this editor.
+  if ((await store.loadShown(documentId))?.kind !== 'text') return;
   const model = await store.model(documentId);
   // While the model loaded, another tab's show started (it wins) or this editor unmounted.
   if (unmounted || props.tab.id !== tab.id || model.isDisposed()) return;
@@ -252,14 +256,21 @@ defineExpose({ focus: () => editor.value?.focus(), isLog, editor, shownTabId, gi
 </script>
 
 <template>
-  <div
-    ref="container"
-    data-testid="code-editor"
-    :data-monaco-ready="shownTabId === tab.id ? 'true' : undefined"
-    :data-document-id="tab.documentId"
-    :data-quick-diff="quickDiffMarks"
-    :data-quick-diff-state="quickDiffState"
-    :data-inline-blame="inlineBlame"
-    class="absolute inset-0"
-  />
+  <div class="absolute inset-0">
+    <div
+      ref="container"
+      data-testid="code-editor"
+      :data-monaco-ready="shownTabId === tab.id ? 'true' : undefined"
+      :data-document-id="tab.documentId"
+      :data-quick-diff="quickDiffMarks"
+      :data-quick-diff-state="quickDiffState"
+      :data-inline-blame="inlineBlame"
+      class="absolute inset-0"
+    />
+    <LoadFailedNotice
+      v-if="failed"
+      :tab="tab"
+      class="absolute inset-0 bg-(--d-bg)"
+    />
+  </div>
 </template>

@@ -3,6 +3,7 @@ import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import type { PanelHost } from '../../../platform/window-service';
 import { bypassAllowed, currentPin, runPinnedTurn } from '../../../core/client-snapshots';
 import { allowanceProvider, clientClaudeAuthStatus } from '../../../core/pi-session/allowance-transport';
+import { BrokeredCredentialStore, MIN_VALIDITY_MS } from '../../../core/pi-session/credential-broker';
 import { CREDENTIAL_CLIENT_ABSENT, type ClientAuth, type ClientPolicy, type ClientUser } from '../../../shared/remote-user';
 import { createCoreEndpoint, createLoopback, createMainEndpoint, type MainEndpoint } from '../../core-protocol';
 import { parseClientValues, type CoreInit } from '../../core-protocol/messages';
@@ -36,10 +37,12 @@ function setUp() {
     const main = createMainEndpoint(loop.main, quiet, (error) => { throw error; });
     const attached = router!.attach({
       id,
+      clientId: id,
       hostId: 'h1',
       transport: loop.core,
       mirrors: { state: { global: {}, workspace: {} }, trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' }, ...mirrors },
       close: vi.fn(),
+      drained: () => Promise.resolve(), lost: () => false, onLostChange: () => ({ dispose: () => undefined }),
     });
     return { main, detach: () => attached.dispose() };
   };
@@ -177,5 +180,103 @@ describe('client snapshots on a daemon\'s core', () => {
     await expect(fake.remote.speak(host, 'Done.')).rejects.toThrow('The chat that replied has no view');
     fake.showView(host);
     await expect(fake.remote.speak(host, 'Done.')).resolves.toBeUndefined();
+  });
+});
+
+describe('a pin names a device across its connections', () => {
+  it('a turn pinned to a device whose connection closes gets its next credential from the device\'s new connection, and never from another device', async () => {
+    const { remote } = setUp();
+    let now = 1_000_000;
+    const broker = new BrokeredCredentialStore({ remote, credentialsChanged: vi.fn(), now: () => now });
+    const connect = (connection: string, device: string, name: string) => {
+      const loop = createLoopback();
+      const main = createMainEndpoint(loop.main, quiet, (error) => { throw error; });
+      main.serve('user.credentials', async () => ({ type: 'oauth' as const, access: `token-${connection}`, expiresIn: MIN_VALIDITY_MS + 60_000, refresh: '' as const }));
+      const attached = router!.attach({
+        id: connection,
+        clientId: device,
+        hostId: 'h1',
+        transport: loop.core,
+        mirrors: { state: { global: {}, workspace: {} }, trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' }, ...values(name) },
+        close: vi.fn(),
+        drained: () => Promise.resolve(), lost: () => false, onLostChange: () => ({ dispose: () => undefined }),
+      });
+      return { detach: () => attached.dispose() };
+    };
+    const first = connect('connection-1', 'device-a', 'a');
+    await flush();
+    const raised: string[] = [];
+    const signIn = { raise: (provider: string) => { raised.push(provider); return { dispose: vi.fn() }; } };
+    const reads: unknown[] = [];
+    let next!: () => void;
+    const turn = runPinnedTurn(remote, 'panel-1', async () => {
+      reads.push(await broker.read('anthropic'));
+      await new Promise<void>((resolve) => { next = resolve; });
+      reads.push(await broker.read('anthropic'));
+    }, signIn);
+    await vi.waitFor(() => expect(reads).toHaveLength(1));
+    first.detach();
+    await flush();
+    now += 61_000;
+    next();
+    await vi.waitFor(() => expect(raised).toEqual(['anthropic']));
+    connect('connection-2', 'device-b', 'b');
+    await flush();
+    expect(reads).toHaveLength(1);
+    connect('connection-3', 'device-a', 'a');
+    await turn;
+    expect(reads).toEqual([expect.objectContaining({ access: 'token-connection-1' }), expect.objectContaining({ access: 'token-connection-3' })]);
+    broker.dispose();
+  });
+
+  it('a turn pinned to a device whose connection is lost waits behind Sign-in needed, and asks the same connection again once it resumed', async () => {
+    const { remote } = setUp();
+    let now = 1_000_000;
+    const broker = new BrokeredCredentialStore({ remote, credentialsChanged: vi.fn(), now: () => now });
+    const loop = createLoopback();
+    const main = createMainEndpoint(loop.main, quiet, (error) => { throw error; });
+    let asks = 0;
+    main.serve('user.credentials', async () => ({ type: 'oauth' as const, access: `token-${++asks}`, expiresIn: MIN_VALIDITY_MS + 60_000, refresh: '' as const }));
+    let lost = false;
+    const lostChange = new Set<() => void>();
+    router!.attach({
+      id: 'connection-1',
+      clientId: 'device-a',
+      hostId: 'h1',
+      transport: loop.core,
+      mirrors: { state: { global: {}, workspace: {} }, trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' }, ...values('a') },
+      close: vi.fn(),
+      drained: () => Promise.resolve(),
+      lost: () => lost,
+      onLostChange: (listener) => {
+        lostChange.add(listener);
+        return { dispose: () => { lostChange.delete(listener); } };
+      },
+    });
+    const setLost = (value: boolean): void => {
+      lost = value;
+      for (const listener of [...lostChange]) listener();
+    };
+    await flush();
+    const raised: string[] = [];
+    const signIn = { raise: (provider: string) => { raised.push(provider); return { dispose: vi.fn() }; } };
+    const reads: unknown[] = [];
+    let next!: () => void;
+    const turn = runPinnedTurn(remote, 'panel-1', async () => {
+      reads.push(await broker.read('anthropic'));
+      await new Promise<void>((resolve) => { next = resolve; });
+      reads.push(await broker.read('anthropic'));
+    }, signIn);
+    await vi.waitFor(() => expect(reads).toHaveLength(1));
+    setLost(true);
+    await flush();
+    now += 61_000;
+    next();
+    await vi.waitFor(() => expect(raised).toEqual(['anthropic']));
+    expect(asks).toBe(1);
+    setLost(false);
+    await turn;
+    expect(reads).toEqual([expect.objectContaining({ access: 'token-1' }), expect.objectContaining({ access: 'token-2' })]);
+    broker.dispose();
   });
 });

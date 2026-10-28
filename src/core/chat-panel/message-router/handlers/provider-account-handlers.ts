@@ -212,7 +212,7 @@ export function createProviderAccountHandlers(deps: HandlerDependencies): Provid
       if (!isSignInProviderId(provider)) throw new Error("Unknown sign-in provider");
       if (flows.has(provider)) return;
       if (platform.remote) {
-        refuse(ctx.host, provider);
+        refuse(ctx.reply, provider);
         return;
       }
       const flow: SignInFlow = { abort: new AbortController(), state: { phase: "starting" }, shown: false };
@@ -259,7 +259,7 @@ export function createProviderAccountHandlers(deps: HandlerDependencies): Provid
       const { provider } = msg;
       // a daemon's core would write the target's clipboard
       if (platform.remote) {
-        refuse(ctx.host, provider);
+        refuse(ctx.reply, provider);
         return;
       }
       const state = flows.get(provider)?.state;
@@ -272,7 +272,7 @@ export function createProviderAccountHandlers(deps: HandlerDependencies): Provid
           log("[ProviderSignIn:%s] could not copy the code: %s", provider, err instanceof Error ? err.name : typeof err);
         }
       }
-      postMessage(ctx.host, { type: "providerSignInCopyCodeAck", provider, ok });
+      postMessage(ctx.reply, { type: "providerSignInCopyCodeAck", provider, ok });
     },
 
     providerSignInCancel: async (msg) => {
@@ -285,7 +285,7 @@ export function createProviderAccountHandlers(deps: HandlerDependencies): Provid
       const { provider } = msg;
       if (!isSignInProviderId(provider)) throw new Error("Unknown sign-in provider");
       if (platform.remote) {
-        refuse(ctx.host, provider);
+        refuse(ctx.reply, provider);
         return;
       }
       await abortFlow(provider);
@@ -307,22 +307,22 @@ export function createProviderAccountHandlers(deps: HandlerDependencies): Provid
       if (typeof msg.key !== "string") throw new Error("Malformed API key");
       // the secrets proxy would refuse too, but with a store failure instead of the reason
       if (platform.remote) {
-        postMessage(ctx.host, { type: "setProviderApiKeyAck", provider, requestId, ok: false, error: remoteSignInRefusal() });
+        postMessage(ctx.reply, { type: "setProviderApiKeyAck", provider, requestId, ok: false, error: remoteSignInRefusal() });
         return;
       }
       const key = msg.key.trim();
       if (!key) {
-        postMessage(ctx.host, { type: "setProviderApiKeyAck", provider, requestId, ok: false, error: t("API key cannot be empty") });
+        postMessage(ctx.reply, { type: "setProviderApiKeyAck", provider, requestId, ok: false, error: t("API key cannot be empty") });
         return;
       }
       await abortFlow(provider);
       try {
         await storeProviderKey(platform, provider, key);
-        postMessage(ctx.host, { type: "setProviderApiKeyAck", provider, requestId, ok: true });
+        postMessage(ctx.reply, { type: "setProviderApiKeyAck", provider, requestId, ok: true });
       } catch (err) {
         log("[ProviderAccounts] Failed to store the %s key:", provider, err);
         // The store's error text is not localized and can name a keyring path, so only the log carries it.
-        postMessage(ctx.host, { type: "setProviderApiKeyAck", provider, requestId, ok: false, error: t("Failed to store API key") });
+        postMessage(ctx.reply, { type: "setProviderApiKeyAck", provider, requestId, ok: false, error: t("Failed to store API key") });
         return;
       }
       credentialChanged(provider);
@@ -333,16 +333,16 @@ export function createProviderAccountHandlers(deps: HandlerDependencies): Provid
       const { provider, requestId } = msg;
       if (!isKeyProviderId(provider)) throw new Error("Unknown key provider");
       if (platform.remote) {
-        postMessage(ctx.host, { type: "clearProviderApiKeyAck", provider, requestId, ok: false, error: remoteSignInRefusal() });
+        postMessage(ctx.reply, { type: "clearProviderApiKeyAck", provider, requestId, ok: false, error: remoteSignInRefusal() });
         return;
       }
       await abortFlow(provider);
       try {
         await deleteProviderKey(platform, provider);
-        postMessage(ctx.host, { type: "clearProviderApiKeyAck", provider, requestId, ok: true });
+        postMessage(ctx.reply, { type: "clearProviderApiKeyAck", provider, requestId, ok: true });
       } catch (err) {
         log("[ProviderAccounts] Failed to clear the %s key:", provider, err);
-        postMessage(ctx.host, { type: "clearProviderApiKeyAck", provider, requestId, ok: false, error: t("Failed to clear API key") });
+        postMessage(ctx.reply, { type: "clearProviderApiKeyAck", provider, requestId, ok: false, error: t("Failed to clear API key") });
         return;
       }
       credentialChanged(provider);

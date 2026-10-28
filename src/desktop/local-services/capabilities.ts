@@ -19,6 +19,7 @@ export function desktopHostCapabilities(platform: NodeJS.Platform): HostCapabili
     windowLayout: true,
     chatReview: true,
     worktrees: true,
+    bypassPermissions: true,
   };
 }
 

@@ -7,7 +7,7 @@ import { MAX_SEARCH_LENGTH, type DamoclesShellApi, type ShellChat, type ShellCha
 import { MAX_OVERLAY_ITEMS, tidyMenu, type OverlayMenuItem, type OverlayRect } from '../../preload/overlay-channels';
 import { Button } from '@/components/ui/button';
 import { remPx } from '@/composables/useRemPx';
-import { chatListRows, hasSavedConversation, tagCounts, type ChatListRow } from '../chat-list';
+import { chatListRows, chatOffers as offers, tagCounts, type ChatListRow } from '../chat-list';
 import SidebarSection from './SidebarSection.vue';
 import ChatRow from './ChatRow.vue';
 import { finishActionOf, finishMenuItems } from '../worktree-menu';
@@ -232,14 +232,16 @@ async function confirmDelete(chat: ShellChat): Promise<void> {
 
 async function openMenu(chat: ShellChat, anchor: OverlayRect, rowElement: Element | null): Promise<void> {
   activeId.value = chat.id;
-  const edits: OverlayMenuItem[] = hasSavedConversation(chat)
-    ? [
-        { kind: 'item', id: 'rename', label: t('chats.rename'), icon: 'pencil' },
-        { kind: 'item', id: 'tag', label: chat.tag ? t('chats.changeTag') : t('chats.tag'), icon: 'tag' },
-        ...(chat.tag ? [{ kind: 'item', id: 'removeTag', label: t('chats.removeTag'), icon: 'x' } as const] : []),
-        { kind: 'separator' },
-      ]
-    : [];
+  const edits: OverlayMenuItem[] = [
+    ...(offers(chat, 'rename') ? [{ kind: 'item', id: 'rename', label: t('chats.rename'), icon: 'pencil' } as const] : []),
+    ...(offers(chat, 'tag')
+      ? [
+          { kind: 'item', id: 'tag', label: chat.tag ? t('chats.changeTag') : t('chats.tag'), icon: 'tag' } as const,
+          ...(chat.tag ? [{ kind: 'item', id: 'removeTag', label: t('chats.removeTag'), icon: 'x' } as const] : []),
+        ]
+      : []),
+    { kind: 'separator' },
+  ];
   // D33: a chat that owns a worktree keeps New chat in this worktree and the finish actions in one Worktree submenu.
   const worktree = chat.worktree;
   const opensHere = canOpenHere(chat);
@@ -256,13 +258,13 @@ async function openMenu(chat: ShellChat, anchor: OverlayRect, rowElement: Elemen
     kind: 'menu',
     label: t('chats.menuLabel', { title: chat.title || t('chats.newChat') }),
     anchor,
-    items: [
+    items: tidyMenu([
       { kind: 'item', id: 'open', label: t('chats.open'), icon: 'message-square' },
       { kind: 'separator' },
       ...finish,
       ...edits,
-      { kind: 'item', id: 'delete', label: t('chats.delete'), icon: 'trash-2', danger: true },
-    ],
+      ...(offers(chat, 'delete') ? [{ kind: 'item', id: 'delete', label: t('chats.delete'), icon: 'trash-2', danger: true } as const] : []),
+    ]),
   });
   if (answer.kind !== 'menu') return;
   if (answer.itemId === NEW_IN_WORKTREE) {
@@ -308,8 +310,8 @@ function onKeydown(event: KeyboardEvent): void {
   else if (event.key === 'Home') moveTo(0, 1);
   else if (event.key === 'End') moveTo(rows.value.length - 1, -1);
   else if (event.key === 'Enter' || event.key === ' ') select(chat);
-  else if (event.key === 'F2' && hasSavedConversation(chat)) startRename(chat);
-  else if (event.key === 'Delete') void confirmDelete(chat);
+  else if (event.key === 'F2' && offers(chat, 'rename')) startRename(chat);
+  else if (event.key === 'Delete' && offers(chat, 'delete')) void confirmDelete(chat);
   else if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
     reveal(index);
     const element = rowElement(chat);

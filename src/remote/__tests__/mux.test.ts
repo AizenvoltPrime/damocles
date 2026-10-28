@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMux, FRAGMENT_BYTES, MAX_FRAME_BYTES, MAX_OPEN_STREAMS, MESSAGE_WINDOW_BYTES, type Mux } from '../mux';
 import { createPersistentProtocol, type PersistentProtocol } from '../persistent-protocol';
-import { socketPair } from './sockets';
+import { fakeSocket, socketPair } from './sockets';
 
 const log = (): void => undefined;
 
@@ -259,13 +259,84 @@ describe('mux', () => {
     await vi.waitFor(() => expect(later).toBe(true));
   });
 
-  it('drops the connection state once a live backlog passes the bound', () => {
+  it('drops a live connection once its backlog passes the bound, the longest queued message not counted', () => {
     const { daemon } = connected(4 * 1024 * 1024);
     const out = daemon.mux.messageChannel(2, 64 << 20);
-    // the message being sent is not counted; the three queued behind it are
+    // one of them, the longest, is not counted; the other three are
     for (let index = 0; index < 3; index++) out.send(new Uint8Array(2 * 1024 * 1024));
+    expect(daemon.mux.heldBytes()).toBe(4 * 1024 * 1024);
     expect(daemon.overflowed).toBe(false);
     out.send(new Uint8Array(2 * 1024 * 1024));
     expect(daemon.overflowed).toBe(true);
+  });
+
+  it('does not count a message larger than the bound queued behind small ones that have the credit to go out', async () => {
+    const { client, daemon } = connected(2 * 1024 * 1024);
+    const out = daemon.mux.messageChannel(3, 64 << 20);
+    const received: number[] = [];
+    client.mux.messageChannel(3, 64 << 20).onMessage((message) => received.push(message.length));
+    // a rejoin's replay as measured: sessionCleared, the user message and one 5.4 MB assistant message in one turn
+    out.send(new Uint8Array(24));
+    out.send(new Uint8Array(34));
+    out.send(new Uint8Array(5_400_081));
+    expect(daemon.overflowed).toBe(false);
+    await vi.waitFor(() => expect(received).toEqual([24, 34, 5_400_081]));
+    expect(daemon.overflowed).toBe(false);
+  });
+
+  it('settles a message channel\'s drained once its queue is back within the window, and on dispose', async () => {
+    const { client, daemon } = connected();
+    const out = daemon.mux.messageChannel(2, 64 << 20);
+    const into = client.mux.messageChannel(2, 64 << 20);
+    await expect(out.drained()).resolves.toBeUndefined();
+    let consumed = 0;
+    into.onMessage(() => consumed++);
+    for (let index = 0; index < 4; index++) out.send(new Uint8Array(MESSAGE_WINDOW_BYTES));
+    let drained = false;
+    void out.drained().then(() => { drained = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    await vi.waitFor(() => expect(drained).toBe(true));
+    expect(consumed).toBeGreaterThanOrEqual(2);
+    for (let index = 0; index < 4; index++) out.send(new Uint8Array(MESSAGE_WINDOW_BYTES));
+    const stuck = out.drained();
+    daemon.mux.dispose();
+    await expect(stuck).resolves.toBeUndefined();
+  });
+
+  it('counts what a dropped connection holds, and an overflow drops its state so the client attaches fresh', async () => {
+    const socket = fakeSocket();
+    const protocol = createPersistentProtocol({ socket, maxBodyBytes: MAX_FRAME_BYTES, log });
+    protocol.holdOnDrop();
+    let overflowed = 0;
+    const mux = createMux({ protocol, side: 'daemon', acceptStreams: false, maxHeldBytes: 1024 * 1024, onOverflow: () => { overflowed++; }, onViolation: () => undefined, log });
+    const out = mux.messageChannel(2, 64 << 20);
+    // sent and never acknowledged
+    out.send(new Uint8Array(200 * 1024));
+    await vi.waitFor(() => expect(protocol.unackedBytes()).toBeGreaterThan(200 * 1024));
+    socket.close();
+    expect(protocol.lost()).toBe(true);
+    // the longest of the three is not counted; the other two and the unacknowledged bytes stay within the bound
+    for (let index = 0; index < 3; index++) out.send(new Uint8Array(300 * 1024));
+    expect(mux.heldBytes()).toBeGreaterThan(800 * 1024);
+    expect(overflowed).toBe(0);
+    out.send(new Uint8Array(300 * 1024));
+    expect(overflowed).toBe(1);
+    // nothing is held for a resume any more
+    expect(mux.heldBytes()).toBe(protocol.unackedBytes());
+    protocol.close('done');
+  });
+
+  it('counts a message once it went out unacknowledged, so the flush that sends past the bound drops the connection', async () => {
+    const socket = fakeSocket();
+    const protocol = createPersistentProtocol({ socket, maxBodyBytes: MAX_FRAME_BYTES, log });
+    let overflowed = 0;
+    const mux = createMux({ protocol, side: 'daemon', acceptStreams: false, maxHeldBytes: 300 * 1024, onOverflow: () => { overflowed++; }, onViolation: () => undefined, log });
+    // queued, it is the longest message and not counted; sent within the credit and never acknowledged, it is
+    mux.messageChannel(2, 64 << 20).send(new Uint8Array(1024 * 1024));
+    expect(overflowed).toBe(0);
+    await vi.waitFor(() => expect(overflowed).toBe(1));
+    expect(protocol.unackedBytes()).toBeGreaterThan(300 * 1024);
+    protocol.close('done');
   });
 });

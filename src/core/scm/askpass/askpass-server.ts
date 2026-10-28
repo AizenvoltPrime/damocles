@@ -6,14 +6,17 @@ import * as fs from 'node:fs/promises';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { parseCredentialFields, PASSWORD_HASH, type GitCredentialAnswer, type GitCredentialFields } from '../../../shared/git-credential';
 import { MAX_INPUT_VALUE_LENGTH } from '../../../shared/input-validation';
 import { redactUrls } from '../errors';
+import type { CredentialRelay, RelayIdentity } from './credential-relay';
 
 // notice: ssh's information-only message (SSH_ASKPASS_PROMPT=none, a security key's touch request), which ssh ends by
 // killing the helper; it takes no answer.
 export type CredentialKind = 'username' | 'password' | 'passphrase' | 'confirm' | 'notice';
 
-// SSH_ASKPASS_PROMPT as ssh sets it for the helper: confirm for a yes/no question, none for a notice.
+// SSH_ASKPASS_PROMPT as ssh sets it for the helper: confirm for a permission question (a key use), none for a notice. ssh's
+// host key yes/no question carries no hint and is told by its text.
 export type SshPromptHint = 'confirm' | 'none';
 
 // text is git's or ssh's prompt, untrusted: control, format and bidi characters removed, URL userinfo redacted, bounded
@@ -37,11 +40,27 @@ export interface AskpassPaths {
   readonly node: string;
   // dist/askpass-main.js
   readonly main: string;
+  // a daemon's core only: the daemon's relay, whose handle this server listens at (credential-relay.ts)
+  readonly credentialRelay?: RelayIdentity;
 }
+
+// A get or erase the relay helper sent; cwd is the folder git ran the helper in, on the target.
+export interface CredentialRequest {
+  readonly op: 'get' | 'erase';
+  readonly cwd: string;
+  readonly fields: GitCredentialFields;
+  // an erase's: the SHA-256 of the password git names, absent when git sent none
+  readonly passwordHash?: string;
+}
+
+// Answers a relay request; signal aborts when the helper goes away or the server is disposed.
+export type RelayCredential = (request: CredentialRequest, signal: AbortSignal) => Promise<GitCredentialAnswer>;
 
 export interface AskpassServerDeps {
   readonly paths: AskpassPaths;
   readonly prompt: PromptCredential;
+  // a daemon's core: answers the credential relay, whose nonce is accepted for nothing else; needs paths.credentialRelay
+  readonly credential?: RelayCredential;
   readonly log: (line: string) => void;
   readonly platform?: NodeJS.Platform;
   readonly tmpdir?: () => string;
@@ -62,7 +81,14 @@ export interface AskpassRegistration {
 }
 
 export interface AskpassServer {
-  register(mode: AskpassMode, label: string): Promise<AskpassRegistration>;
+  // prompt: this registration's own, answering its helpers instead of the server's
+  register(mode: AskpassMode, label: string, prompt?: PromptCredential): Promise<AskpassRegistration>;
+  // starts listening; the relay of this server's life, or undefined without deps.credential or paths.credentialRelay; a
+  // failed listen rejects and the next call listens again
+  relay(): Promise<CredentialRelay | undefined>;
+  // the relay's old handle is gone: stops listening there, and the next relay() or register() listens at handle; helpers
+  // already connected finish where they are
+  moveRelay(handle: string): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -122,8 +148,27 @@ interface AskpassRequest {
   readonly sshPrompt?: SshPromptHint;
 }
 
-/** One request line as the helper sends it, or undefined: exactly nonce, kind and argv, and sshPrompt for ssh, each within its bounds. */
-export function parseAskpassRequest(line: Buffer): AskpassRequest | undefined {
+interface RelayRequest extends CredentialRequest {
+  readonly nonce: string;
+  readonly kind: 'credential';
+}
+
+function parseRelayRequest(value: Record<string, unknown>): RelayRequest | undefined {
+  const hashed = Object.hasOwn(value, 'passwordHash');
+  if (Object.keys(value).length !== (hashed ? 6 : 5) || !['nonce', 'op', 'cwd', 'fields'].every((key) => Object.hasOwn(value, key))) return undefined;
+  const { nonce, op, cwd, fields, passwordHash } = value;
+  if (typeof nonce !== 'string' || !NONCE_HEX.test(nonce) || (op !== 'get' && op !== 'erase')) return undefined;
+  if (typeof cwd !== 'string' || cwd === '' || cwd.length > MAX_ASKPASS_ARG_CHARS || /[\0\r\n]/.test(cwd)) return undefined;
+  if (hashed && (op !== 'erase' || typeof passwordHash !== 'string' || !PASSWORD_HASH.test(passwordHash))) return undefined;
+  const parsed = parseCredentialFields(fields);
+  return parsed && { nonce, kind: 'credential', op, cwd, fields: parsed, ...(hashed ? { passwordHash: passwordHash as string } : {}) };
+}
+
+/**
+ * One request line as the helper sends it, or undefined: a prompt is exactly nonce, kind and argv, and sshPrompt for ssh; a
+ * relay request exactly nonce, kind, op, cwd and fields; each within its bounds.
+ */
+export function parseAskpassRequest(line: Buffer): AskpassRequest | RelayRequest | undefined {
   let raw: unknown;
   try {
     raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(line));
@@ -132,6 +177,7 @@ export function parseAskpassRequest(line: Buffer): AskpassRequest | undefined {
   }
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
   const value = raw as Record<string, unknown>;
+  if (value['kind'] === 'credential') return parseRelayRequest(value);
   const keys = Object.hasOwn(value, 'sshPrompt') ? 4 : 3;
   if (Object.keys(value).length !== keys || !['nonce', 'kind', 'argv'].every((key) => Object.hasOwn(value, key))) return undefined;
   const { nonce, kind, argv, sshPrompt } = value;
@@ -150,6 +196,7 @@ export function isSendableAnswer(answer: string): boolean {
 interface Registration {
   readonly mode: AskpassMode;
   readonly label: string;
+  readonly prompt: PromptCredential;
   readonly nonce: Buffer;
   readonly ended: AbortController;
   readonly cancelled: AbortController;
@@ -239,6 +286,10 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
   let disposed = false;
   // one prompt at a time: the overlay replaces an open box with the next, which would swap it under the user's fingers
   let prompts: Promise<unknown> = Promise.resolve();
+  let relayIdentity = deps.credential ? deps.paths.credentialRelay : undefined;
+  const relayNonce = relayIdentity && Buffer.from(relayIdentity.nonce, 'hex');
+  // aborts every relay request in flight once the server is disposed
+  const relayEnded = new AbortController();
 
   const drop = (socket: net.Socket, reason: string): void => {
     if (socket.destroyed) return;
@@ -301,7 +352,7 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
     const run = prompts.then(async () => {
       if (withdrawn.signal.aborted) return undefined;
       started = true;
-      return deps.prompt(prompt, withdrawn.signal);
+      return registration.prompt(prompt, withdrawn.signal);
     });
     prompts = lineEnd(run, withdrawn.signal, () => started);
     try {
@@ -328,6 +379,21 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
       socket.off('close', onEnd);
     }
   };
+
+  const relayAnswer = async (socket: net.Socket, request: RelayRequest): Promise<void> => {
+    const gone = new AbortController();
+    const onGone = (): void => gone.abort();
+    socket.once('close', onGone);
+    try {
+      const asked: CredentialRequest = { op: request.op, cwd: request.cwd, fields: request.fields, ...(request.passwordHash !== undefined ? { passwordHash: request.passwordHash } : {}) };
+      const answer = await deps.credential!(asked, AbortSignal.any([gone.signal, relayEnded.signal]));
+      if (!socket.destroyed) socket.end(`${JSON.stringify(answer)}\n`);
+    } finally {
+      socket.off('close', onGone);
+    }
+  };
+
+  const isRelayNonce = (nonce: string): boolean => relayNonce !== undefined && timingSafeEqual(relayNonce, Buffer.from(nonce, 'hex'));
 
   const onConnection = (socket: net.Socket): void => {
     if (disposed) {
@@ -379,13 +445,28 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
         drop(socket, 'malformed request');
         return;
       }
+      if (request.kind === 'credential') {
+        if (!isRelayNonce(request.nonce)) {
+          drop(socket, 'a credential request without the relay nonce');
+          return;
+        }
+        relayAnswer(socket, request).catch((err: unknown) => {
+          deps.log(`[askpass] the credential relay failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+          if (!socket.destroyed) socket.end(`${JSON.stringify({ kind: 'none' } satisfies GitCredentialAnswer)}\n`);
+        });
+        return;
+      }
+      if (isRelayNonce(request.nonce)) {
+        drop(socket, 'a prompt with the credential relay nonce');
+        return;
+      }
       const registration = find(request.nonce);
       if (!registration) {
         drop(socket, 'unknown nonce');
         return;
       }
       answer(socket, registration, request).catch((err: unknown) => {
-        deps.log(`[askpass] the credential prompt failed: ${err instanceof Error ? err.name : 'unknown error'}`);
+        deps.log(`[askpass] the credential prompt failed: ${err instanceof Error ? redactUrls(err.message) : 'unknown error'}`);
         reply(socket, undefined);
       });
     });
@@ -427,6 +508,14 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
   const start = async (): Promise<Listening> => {
     const server = net.createServer(onConnection);
     server.on('error', (err) => deps.log(`[askpass] the server failed: ${err.message}`));
+    const relay = relayIdentity;
+    if (relay) {
+      // The daemon made the handle's folder private to the user and runs one core at a time, so a socket there is an
+      // ended core's; a Windows pipe name frees with its process.
+      if (platform !== 'win32') await fs.rm(relay.handle, { force: true });
+      await listenOn(server, relay.handle);
+      return { server, handle: relay.handle };
+    }
     if (platform === 'win32') {
       // libuv creates the first instance exclusively, so a name another process holds fails and a new one is tried
       for (let attempt = 0; ; attempt++) {
@@ -450,21 +539,41 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
     throw failure;
   };
 
+  const listen = (): Promise<Listening> => {
+    if (!listening) {
+      const started = start();
+      listening = started;
+      // a failed start is the caller's error; the next call tries again
+      started.catch(() => {
+        if (listening === started) listening = undefined;
+      });
+    }
+    return listening;
+  };
+
   return {
-    async register(mode, label) {
+    async relay() {
       if (disposed) throw new Error('The askpass server was disposed');
-      if (!listening) {
-        const started = start();
-        listening = started;
-        // a failed start is the caller's error; the next registration tries again
-        started.catch(() => {
-          if (listening === started) listening = undefined;
-        });
-      }
-      const { handle } = await listening;
+      if (!relayIdentity) return undefined;
+      const { handle } = await listen();
+      return { ...relayIdentity, handle, node: deps.paths.node, main: deps.paths.main };
+    },
+    async moveRelay(handle) {
+      if (disposed) throw new Error('The askpass server was disposed');
+      if (!relayIdentity) throw new Error('This askpass server relays no credentials');
+      if (relayIdentity.handle === handle) return;
+      relayIdentity = { ...relayIdentity, handle };
+      const previous = listening;
+      listening = undefined;
+      // stops accepting at once; its close callback would wait for the connections still answering
+      (await previous?.catch(() => undefined))?.server.close();
+    },
+    async register(mode, label, prompt) {
+      if (disposed) throw new Error('The askpass server was disposed');
+      const { handle } = await listen();
       if (disposed) throw new Error('The askpass server was disposed');
       const nonce = randomBytes(32);
-      const registration: Registration = { mode, label, nonce, ended: new AbortController(), cancelled: new AbortController(), loggedRefusal: false };
+      const registration: Registration = { mode, label, prompt: prompt ?? deps.prompt, nonce, ended: new AbortController(), cancelled: new AbortController(), loggedRefusal: false };
       registrations.add(registration);
       const env: Record<string, string> = {
         GIT_ASKPASS: deps.paths.askpass,
@@ -489,6 +598,7 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
     async dispose() {
       if (disposed) return;
       disposed = true;
+      relayEnded.abort();
       for (const registration of registrations) registration.ended.abort();
       registrations.clear();
       for (const socket of sockets) socket.destroy();

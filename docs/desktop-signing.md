@@ -33,7 +33,7 @@ Apply to the SignPath Foundation open source program at https://signpath.org wit
 - the roles (below);
 - the browser feature disclosure (below).
 
-SignPath Foundation signs only software built from the project's own source code; upstream open source binaries may ship inside a signed package, unsigned ("Conditions for using the SignPath Foundation certificate", https://signpath.org/terms.html). So only `Damocles.exe`, which electron-builder writes from Electron's binary with Damocles' name, icon and version, and the installers are signed. Electron's DLLs, `elevate.exe`, `rg.exe` and the koffi and node-pty modules ship as their projects publish them.
+SignPath Foundation signs only software built from the project's own source code; upstream open source binaries may ship inside a signed package, unsigned ("Conditions for using the SignPath Foundation certificate", https://signpath.org/terms.html). So only `Damocles.exe`, which electron-builder writes from Electron's binary with Damocles' name, icon and version, `ssh-askpass.exe`, which the desktop build compiles from `resources/askpass/ssh-askpass.cs`, and the installers are signed. Electron's DLLs, `elevate.exe`, `rg.exe` and the koffi and node-pty modules ship as their projects publish them.
 
 ### SignPath setup
 
@@ -60,9 +60,9 @@ One electron-builder behavior shapes every step below: it writes `resources/app-
 
 1. **Each Windows leg of `package-desktop`** builds the `nsis` target, not `--dir`, so the after-pack step writes `resources/app-update.yml` (GitHub provider, `channel: latest-<arch>`, `publisherName: [SignPath Foundation]`) into the unpacked app. The fuses are flipped and the asar integrity hash is embedded in this step, before anything is signed. The leg checks the unpacked app, runs the packaged end-to-end suite against it, checks it is still clean, and uploads it as `unpacked-<target>`. The unsigned installer the build also writes is never uploaded.
 
-2. **The `sign-windows` job** on `windows-latest` waits for `verify`, `package`, `package-desktop`, `e2e-desktop`, and the macOS and Linux install and update tests (`verify-desktop-install`, `desktop-update-test`), every job that does not test the signed files, so a run that fails a check never spends SignPath's yearly artifact quota. A failure in a later job reruns with `gh run rerun --failed`, which keeps the signed artifacts and does not sign again. The job installs with `npm ci --ignore-scripts` (it holds the SignPath token), downloads both unpacked apps into `unsigned/x64` and `unsigned/arm64`, uploads their two `Damocles.exe` files as one artifact (`x64/Damocles.exe`, `arm64/Damocles.exe`) and submits it with the `app-executables` configuration. Both requests pass the `package.json` version as the `version` parameter (on a tag, `verify` has checked it equals the tag). A tag push signs with `release-signing`, and a manual run with its `sign` input on signs with `test-signing`. A manual run with `sign` off, the default, skips every SignPath step: the apps stay unsigned, step 4 builds the installers from them, and the feeds electron-builder wrote already describe those installers, so the install and update tests still run on Windows without spending quota. The action waits up to 3600 seconds per request for the approval, and the job's limit is 150 minutes.
+2. **The `sign-windows` job** on `windows-latest` waits for `verify`, `package`, `package-desktop`, `e2e-desktop`, the remote suites (`remote-e2e`, `reference-e2e`), and the macOS and Linux install and update tests (`verify-desktop-install`, `desktop-update-test`), every job that does not test the signed files, so a run that fails a check never spends SignPath's yearly artifact quota. A failure in a later job reruns with `gh run rerun --failed`, which keeps the signed artifacts and does not sign again. The job installs with `npm ci --ignore-scripts` (it holds the SignPath token), downloads both unpacked apps into `unsigned/x64` and `unsigned/arm64`, uploads their two `Damocles.exe` files and their two SSH askpass trampolines (`resources/app.asar.unpacked/dist/askpass/ssh-askpass.exe`) as one artifact (`x64/Damocles.exe`, `x64/ssh-askpass.exe`, `arm64/Damocles.exe`, `arm64/ssh-askpass.exe`) and submits it with the `app-executables` configuration. Both requests pass the `package.json` version as the `version` parameter (on a tag, `verify` has checked it equals the tag). A tag push signs with `release-signing`, and a manual run with its `sign` input on signs with `test-signing`. A manual run with `sign` off, the default, skips every SignPath step: the apps stay unsigned, step 4 builds the installers from them, and the feeds electron-builder wrote already describe those installers, so the install and update tests still run on Windows without spending quota. The action waits up to 3600 seconds per request for the approval, and the job's limit is 150 minutes.
 
-3. **It puts the signed executables into the apps and checks them.** The signed `Damocles.exe` replaces the unsigned one in each app, which becomes `signed/<arch>`. `scripts/verify-desktop-package.mjs` runs again on each, proving signing left the fuse wire, the tree and `app-update.yml` untouched; the job first downloads `verify`'s `fetched-assets` artifact, because the check compares the apps' grammars and wake models with the repository's. `scripts/check-authenticode.ps1` fails unless both executables carry a signature from one signer. On a tag it also requires that signer to be a trusted "SignPath Foundation" certificate.
+3. **It puts the signed executables into the apps and checks them.** The signed `Damocles.exe` and `ssh-askpass.exe` replace the unsigned ones in each app, which becomes `signed/<arch>`. `scripts/verify-desktop-package.mjs` runs again on each, proving signing left the fuse wire, the tree and `app-update.yml` untouched; the job first downloads `verify`'s `fetched-assets` artifact, because the check compares the apps' grammars and wake models with the repository's. `scripts/check-authenticode.ps1` fails unless all four executables, both apps' `Damocles.exe` and `ssh-askpass.exe`, carry a signature from one signer. On a tag it also requires that signer to be a trusted "SignPath Foundation" certificate.
 
 4. **It builds both NSIS installers from the signed directories** with no certificate in the environment and `win.signAndEditExecutable` off, so electron-builder neither edits nor re-signs the signed binaries:
 
@@ -77,7 +77,7 @@ One electron-builder behavior shapes every step below: it writes `resources/app-
 
 6. **It rebuilds the update metadata from the signed installers**: `node scripts/signed-windows-feed.mjs --rewrite dist-desktop x64 arm64` regenerates each `.blockmap` and writes the signed file's `sha512` and `size` into `latest-<arch>.yml`, in the `files` entry and the top level `sha512`, keeping every other field as electron-builder wrote it. It uses electron-builder's `buildBlockMap(file, "gzip", file + ".blockmap")` from `app-builder-lib/out/targets/blockmap/blockmap.js`, an internal module, so electron-builder stays pinned and the path is re-checked when it is bumped.
 
-7. **It checks the result before anything downstream runs**: `check-authenticode.ps1` on both installers and both executables, so the two requests' signer is one, `signed-windows-feed.mjs --check`, which recomputes `sha512` and `size` of every file each feed names and rebuilds each blockmap to compare it byte for byte, and the release artifact check for `win-x64,win-arm64`. It uploads `desktop-win-x64` and `desktop-win-arm64`.
+7. **It checks the result before anything downstream runs**: `check-authenticode.ps1` on both installers and all four executables, so the two requests' signer is one, `signed-windows-feed.mjs --check`, which recomputes `sha512` and `size` of every file each feed names and rebuilds each blockmap to compare it byte for byte, and the release artifact check for `win-x64,win-arm64`. It uploads `desktop-win-x64` and `desktop-win-arm64`.
 
 8. **Downstream jobs use only the signed files.** `verify-desktop-install-windows` (`nsis`) and `desktop-update-test-windows` (`win-arm64`) install the signed installer, with the same steps as their macOS and Linux counterparts, and `attest` and `release` attach and attest the signed installers, blockmaps and feeds; all four need `sign-windows`. The N+1 installer the update test serves stays unsigned, because it is never released, and `scripts/desktop-update-override.mjs` drops `publisherName` from the test install's `app-update.yml`, so that test skips the publisher check; the signed N+1 to N+2 update in "Verifying a signed release" is what covers it.
 
@@ -87,7 +87,7 @@ The NSIS uninstaller stays unsigned. NSIS generates it inside the installer at i
 
 Both configurations take a required `version` parameter, which the workflow sets to the `package.json` version, and enforce it with the product name on every file they sign, so a request signs only a file built for that release (SignPath Foundation's metadata condition). electron-builder writes `ProductName` `Damocles` and `FileVersion` the version into both. `ProductVersion` is the same version in two notations: in `Damocles.exe` it is the four-part Windows form `x.y.z.0` (app-builder-lib `winPackager.js`, `getVersionInWeirdWindowsForm`), in the installer the version itself (`NsisTarget.js`, `computeVersionKey`). A prerelease version (`x.y.z-beta.1`) therefore fails `app-executables`; releases are plain versions.
 
-`app-executables` signs the two `Damocles.exe` files. No other file reaches SignPath, so nothing else can be signed by the Foundation's certificate.
+`app-executables` signs the two `Damocles.exe` files and the two `ssh-askpass.exe` trampolines, which the desktop build compiles from `resources/askpass/ssh-askpass.cs` with the same product name and versions (docs/release.md "Desktop installers"). No other file reaches SignPath, so nothing else can be signed by the Foundation's certificate. The configuration lives in the SignPath project, not in this repository: the two trampoline lines below must be added there before the first release that ships them, or the signing request fails.
 
 ```xml
 <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
@@ -97,7 +97,9 @@ Both configurations take a required `version` parameter, which the workflow sets
   <zip-file>
     <pe-file-set product-name="Damocles" product-version="${version}.0" file-version="${version}">
       <include path="x64/Damocles.exe" />
+      <include path="x64/ssh-askpass.exe" />
       <include path="arm64/Damocles.exe" />
+      <include path="arm64/ssh-askpass.exe" />
       <for-each>
         <authenticode-sign />
       </for-each>
@@ -131,7 +133,7 @@ Actions > "Create Release from Tag" > Run workflow with "sign" ticked (`gh workf
 
 ### Verifying a signed release
 
-- `signtool verify /pa /v` passes on `Damocles.exe` and both installers, and names SignPath Foundation as the publisher.
+- `signtool verify /pa /v` passes on `Damocles.exe`, `resources\app.asar.unpacked\dist\askpass\ssh-askpass.exe` and both installers, and names SignPath Foundation as the publisher.
 - Every `latest-*.yml` entry matches its signed file (the check in step 7).
 - An update from an unsigned N to a signed N+1 applies. The unsigned N has no `publisherName`, so it accepts the signed installer.
 - An update from a signed N+1 to a signed N+2 applies, which proves electron-updater's publisher check passes.
@@ -141,7 +143,7 @@ Actions > "Create Release from Tag" > Run workflow with "sign" ticked (`gh workf
 
 - **Roles.** Declare the Authors, Reviewers and Approvers roles publicly in the README's "Code signing policy" section. One maintainer holds all three: AizenvoltPrime (Authors: commit rights; Reviewers: reviews every change before release; Approvers: approves each signing request in SignPath).
 - **Code signing policy.** The README section states what is signed, by whom, and carries SignPath's attribution and the privacy statement. Keep this document's text and the README's identical; change both in one commit.
-- **Metadata.** Every signed binary carries product name and version metadata, and both artifact configurations enforce them against the release version ("Artifact configurations"). electron-builder writes them into `Damocles.exe` and the installers from `productName` and `package.json` `version`.
+- **Metadata.** Every signed binary carries product name and version metadata, and both artifact configurations enforce them against the release version ("Artifact configurations"). electron-builder writes them into `Damocles.exe` and the installers from `productName` and `package.json` `version`, and `scripts/askpass-trampoline.mjs` writes the same values into `ssh-askpass.exe`.
 - **Own code only.** Only files built from this repository are signed ("Applying"). A new executable this repository builds joins `app-executables`; an upstream binary never does.
 - **Publisher check.** `win.signtoolOptions.publisherName` in `electron-builder.yml` is set to the certificate's common name (electron-builder 26 has no top level `win.publisherName` key, and electron-updater accepts a common name or a full distinguished name), so electron-updater verifies the Authenticode publisher of every downloaded update before it runs it (`NsisUpdater` reads `publisherName` from the packaged `app-update.yml`).
 - **Browser feature disclosure.** The application states the browser feature in the text below.
@@ -153,7 +155,7 @@ Actions > "Create Release from Tag" > Run workflow with "sign" ticked (`gh workf
 >
 > Team roles: Authors, Reviewers and Approvers are all [AizenvoltPrime](https://github.com/AizenvoltPrime), the sole maintainer.
 >
-> Signed files: `Damocles.exe` and the Windows installers, each built by this repository's release workflow from a tagged commit. Each signing request is approved by hand. The open source components the app includes (Electron's libraries, ripgrep, koffi, node-pty) ship as their projects publish them and are not signed by this project.
+> Signed files: `Damocles.exe`, `ssh-askpass.exe` (the SSH password prompt helper, compiled from `resources/askpass/ssh-askpass.cs`) and the Windows installers, each built by this repository's release workflow from a tagged commit. Each signing request is approved by hand. The open source components the app includes (Electron's libraries, ripgrep, koffi, node-pty) ship as their projects publish them and are not signed by this project.
 
 ### Privacy statement (README)
 

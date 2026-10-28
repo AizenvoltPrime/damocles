@@ -45,6 +45,7 @@ import { createOpenAIHandlers } from "../openai-handlers";
 import type { HandlerDependencies, HandlerContext } from "../../types";
 import type { ExtensionToWebviewMessage } from "../../../../../shared/types/messages";
 import { installFakePlatform, type FakePlatform } from "../../../../../__mocks__/fake-platform";
+import { createFakeRemoteHost } from "../../../../../__mocks__/fake-remote-host";
 
 interface AuthPrompt {
   type: "text" | "secret" | "manual_code" | "select";
@@ -117,8 +118,13 @@ function makeDeps(sent: ExtensionToWebviewMessage[], platform: FakePlatform): {
     postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => { sent.push(message); },
     getPanels: () => new Map([["panel-1", { host, session: { publishAccountInfo, publishAvailableModels: vi.fn(), openaiSignInEnded } }]]) as unknown as Map<string, never>,
     platform,
+    // one panel and one device: the read posts to it
+    broadcastAccountState: async (_what: string, _row: string, read: () => Promise<ExtensionToWebviewMessage | undefined>) => {
+      const message = await read();
+      if (message) sent.push(message);
+    },
   } as unknown as HandlerDependencies;
-  return { deps, ctx: { host, folder: { fsPath: "/work" } } as unknown as HandlerContext, publishAccountInfo, openaiSignInEnded };
+  return { deps, ctx: { host, reply: host, folder: { fsPath: "/work" } } as unknown as HandlerContext, publishAccountInfo, openaiSignInEnded };
 }
 
 /** Every string any message posted to the webview carries, to prove no key reaches it. */
@@ -228,6 +234,7 @@ describe("createOpenAIHandlers", () => {
           ["panel-2", { host: otherHost, session: { publishAccountInfo, publishAvailableModels: vi.fn(), openaiSignInEnded } }],
         ]) as unknown as Map<string, never>,
       platform,
+      broadcastAccountState: async () => {},
     } as unknown as HandlerDependencies;
     const twoPanels = createOpenAIHandlers(deps);
 
@@ -599,5 +606,38 @@ describe("createOpenAIHandlers", () => {
       expect(sent.some((m) => m.type === "openaiAuthStatusChanged")).toBe(true);
       expect(publishAccountInfo).not.toHaveBeenCalled();
     });
+  });
+
+  it("on a daemon's core chat two devices show, gives a refused ChatGPT sign-in's progress and refusal to the asking device's views only", async () => {
+    const remote = createFakeRemoteHost();
+    remote.set("clientAuth", "device-a", { providers: {} });
+    remote.set("clientAuth", "device-b", { providers: {} });
+    Object.assign(platform, { remote: remote.remote });
+    const toView = new Map<string, ExtensionToWebviewMessage[]>([["view-a", []], ["view-b", []]]);
+    const viewHost = (viewKey: string) => ({
+      clientId: viewKey === "view-a" ? "device-a" : "device-b",
+      postMessage: async (m: ExtensionToWebviewMessage) => { toView.get(viewKey)!.push(m); return true; },
+    });
+    const panel = {
+      views: () => [{ viewKey: "view-a", clientId: "device-a" }, { viewKey: "view-b", clientId: "device-b" }],
+      viewHost,
+      postMessage: async (m: ExtensionToWebviewMessage) => { for (const shown of toView.values()) shown.push(m); return true; },
+    } as unknown as HandlerContext["host"];
+    const twoDevices = createOpenAIHandlers({
+      postMessage: (target: HandlerContext["host"], message: ExtensionToWebviewMessage) => void target.postMessage(message),
+      getPanels: () => new Map([["panel-1", { host: panel, session: { publishAccountInfo, publishAvailableModels: vi.fn(), openaiSignInEnded } }]]) as unknown as Map<string, never>,
+      platform,
+      broadcastAccountState: async () => {},
+    } as unknown as HandlerDependencies);
+
+    await twoDevices.startChatGPTOAuth!({ type: "startChatGPTOAuth" }, { host: panel, reply: viewHost("view-b"), folder: { fsPath: "/work" } } as unknown as HandlerContext);
+
+    const flow = (viewKey: string) => toView.get(viewKey)!.filter((m) => m.type.startsWith("openaiChatGPTAuth"));
+    expect(flow("view-b")).toEqual([
+      { type: "openaiChatGPTAuthStarted" },
+      { type: "openaiChatGPTAuthFailed", error: "Sign-ins change only in the User tab on your computer." },
+    ]);
+    expect(flow("view-a")).toEqual([]);
+    expect(mock.modelRuntime.login).not.toHaveBeenCalled();
   });
 });

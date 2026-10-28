@@ -15,13 +15,18 @@ import { cn } from "@/lib/utils"
 import { definedProps } from "@/lib/definedProps"
 import { useDialogLayer } from "@/composables/useOverlayEscape"
 
+defineOptions({
+  inheritAttrs: false,
+})
+
 const props = withDefaults(
-  defineProps<DialogContentProps & { class?: HTMLAttributes["class"]; showClose?: boolean }>(),
-  { showClose: true },
+  // inline: rendered in place, not teleported to body, so the leave transition of the element holding it plays its exit
+  defineProps<DialogContentProps & { class?: HTMLAttributes["class"]; showClose?: boolean; inline?: boolean }>(),
+  { showClose: true, inline: false },
 )
 const emits = defineEmits<DialogContentEmits>()
 
-const delegatedProps = reactiveOmit(props, "class", "showClose")
+const delegatedProps = reactiveOmit(props, "class", "showClose", "inline")
 
 const forwarded = useForwardPropsEmits(delegatedProps, emits)
 const { t } = useI18n()
@@ -31,14 +36,14 @@ const zIndex = useDialogLayer(useTemplateRef<ComponentPublicInstance>("content")
 </script>
 
 <template>
-  <DialogPortal>
+  <DialogPortal :disabled="props.inline">
     <DialogOverlay
       class="d-scrim fixed inset-0 bg-(--d-scrim) backdrop-blur-xs"
       :style="{ zIndex }"
     />
     <DialogContent
       ref="content"
-      v-bind="definedProps(forwarded)"
+      v-bind="{ ...definedProps(forwarded), ...$attrs }"
       :style="{ zIndex }"
       :class="
         cn(

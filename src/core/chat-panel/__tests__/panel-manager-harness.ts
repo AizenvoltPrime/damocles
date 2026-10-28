@@ -1,4 +1,5 @@
 import * as path from 'path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { vi } from 'vitest';
 import { PanelManager } from '../panel-manager';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
@@ -11,6 +12,9 @@ import type { PanelHost } from '../../../platform/window-service';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../../shared/types/messages';
 
 /** A `PanelManager` over fake webview hosts and fake sessions, with a real registry and permission handler. */
+
+/** A test's stand-in for the request's actor: what a routed message records it was handled under. */
+export const handlingContext: AsyncLocalStorage<string> = new AsyncLocalStorage<string>();
 
 /** A session worktree of a chat that never had one: no state is published and nothing is read-only. */
 export function inertSessionWorktree(): ChatSession['worktree'] {
@@ -59,11 +63,47 @@ export interface FakeHost extends PanelHost {
   title: string;
   folderLabel: string | undefined;
   send(message: WebviewToExtensionMessage): void;
+  // a message from one view of a panel several views show
+  sendFrom(message: WebviewToExtensionMessage, viewKey: string): void;
   closeFromUser(): void;
 }
 
+/** A host whose panel several views show: posts to one view, and to every view but some, are recorded apart. */
+export interface FakeMultiViewHost extends FakeHost {
+  readonly toView: Map<string, ExtensionToWebviewMessage[]>;
+  readonly except: Array<{ readonly message: ExtensionToWebviewMessage; readonly except: readonly string[] }>;
+}
+
+export function makeMultiViewHost(): FakeMultiViewHost {
+  const host = makeFakeHost() as FakeMultiViewHost;
+  const views = new Map<string, PanelHost>();
+  Object.assign(host, {
+    toView: new Map<string, ExtensionToWebviewMessage[]>(),
+    except: [],
+    viewHost: (viewKey: string): PanelHost => {
+      let view = views.get(viewKey);
+      if (!view) {
+        view = Object.assign(Object.create(host) as PanelHost, {
+          panelHost: host,
+          postMessage: (m: unknown) => {
+            host.toView.set(viewKey, [...(host.toView.get(viewKey) ?? []), m as ExtensionToWebviewMessage]);
+            return Promise.resolve(true);
+          },
+        });
+        views.set(viewKey, view);
+      }
+      return view;
+    },
+    postMessageExcept: (m: unknown, keys: readonly string[]) => {
+      host.except.push({ message: m as ExtensionToWebviewMessage, except: keys });
+      return Promise.resolve(true);
+    },
+  });
+  return host;
+}
+
 export function makeFakeHost(): FakeHost {
-  const messageCbs: Array<(m: unknown) => void> = [];
+  const messageCbs: Array<(m: unknown, viewKey?: string) => void> = [];
   const disposeCbs: Array<() => void> = [];
   const host: FakeHost = {
     posted: [],
@@ -99,6 +139,7 @@ export function makeFakeHost(): FakeHost {
       host.title = label === undefined ? 'Damocles' : `Damocles · ${label}`;
     },
     send: (m) => { for (const cb of [...messageCbs]) cb(m); },
+    sendFrom: (m, viewKey) => { for (const cb of [...messageCbs]) cb(m, viewKey); },
     closeFromUser: () => { for (const cb of [...disposeCbs]) cb(); },
   };
   return host;
@@ -114,7 +155,7 @@ export interface Harness {
   registry: WorkspaceFolderRegistry;
   sessions: FakeSession[];
   /** Every webview message the router received, with the session the panel held at that moment. */
-  routed: Array<{ message: WebviewToExtensionMessage; panelId: string; session: ChatSession | undefined; view?: AttachedView }>;
+  routed: Array<{ message: WebviewToExtensionMessage; panelId: string; session: ChatSession | undefined; view?: AttachedView; viewKey?: string; context?: string }>;
   released: string[];
   /** A folder key here makes its release reject with that error, after it is recorded in `released`. */
   releaseErrors: Map<string, Error>;
@@ -142,7 +183,10 @@ export interface HarnessOptions {
   readonly createSession?: (folder: FolderTarget) => ChatSession;
   readonly loadHistory?: (cwd: string, sessionId: string, host: PanelHost, session: ChatSession) => Promise<string[] | null>;
   /** The router's views.join; the default posts nothing. */
-  readonly joinView?: (panelId: string, gate: ViewJoinGate) => Promise<void>;
+  readonly joinView?: (panelId: string, gate: ViewJoinGate, host: PanelHost) => Promise<void>;
+  /** The settings manager's sends of a panel's settings and thinking state; the defaults post nothing. */
+  readonly sendCurrentSettings?: (host: PanelHost) => Promise<void>;
+  readonly sendThinkingForPanel?: (host: PanelHost, panelId: string) => void;
 }
 
 export function createHarness(initial: ReturnType<typeof folderEntry>[], options: HarnessOptions = {}): Harness {
@@ -200,18 +244,19 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[], options
       sessions.push(session);
       return session as unknown as ChatSession;
     },
-    handleWebviewMessage: async (message, panelId, view) => {
-      routed.push({ message, panelId, session: manager.getPanels().get(panelId)?.session, ...(view ? { view } : {}) });
+    handleWebviewMessage: async (message, panelId, view, viewKey) => {
+      const context = handlingContext.getStore();
+      routed.push({ message, panelId, session: manager.getPanels().get(panelId)?.session, ...(view ? { view } : {}), ...(viewKey !== undefined ? { viewKey } : {}), ...(context !== undefined ? { context } : {}) });
       if (message.type === 'ready' && holdReady.gate) await holdReady.gate;
     },
     joinView: options.joinView ?? (async () => undefined),
-    sendCurrentSettings: async () => undefined,
+    sendCurrentSettings: options.sendCurrentSettings ?? (async () => undefined),
     getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
     invalidateSessionsCache: () => undefined,
     initPanelModel: () => undefined,
     cleanupPanelModel: () => undefined,
     cleanupPanelThinking: () => undefined,
-    sendThinkingForPanel: () => undefined,
+    sendThinkingForPanel: options.sendThinkingForPanel ?? (() => undefined),
     getInitialMessages: (folder) => { initialMessageFolders.push(folder.key); return []; },
     onActivePanelChanged: () => { activePanelChanges.count++; },
     inheritSettingsFromPanel: () => undefined,

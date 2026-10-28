@@ -13,10 +13,15 @@ import { createPersistentProtocol } from '../../../remote/persistent-protocol';
 import { streamSocket } from '../../../remote/stream-transport';
 import { WriteRefusedError } from '../../workspace/file-system';
 import type { HostStarters } from '../../workspace/host-starters';
-import { MAX_UNAUTHENTICATED } from '../connections';
-import { readPidFile } from '../token';
+import { createConnections, MAX_UNAUTHENTICATED, type ConnectionPresence } from '../connections';
+import type { CoreTransport } from '../../core-protocol/endpoint';
+import type { ClientLink } from '../core-routes';
+import { authenticateBridge } from '../../../remote/handshake';
+import { duplexPair, type Duplex } from 'node:stream';
+import { TEST_FACTS } from './in-process-daemon';
+import { readPidFile, runPaths, SHARED_HOME_WINDOW_MS, writePidFile } from '../token';
 import { startInProcessDaemon, type InProcessDaemon } from './in-process-daemon';
-import { connectClient } from './test-client';
+import { connectClient, resumeClient } from './test-client';
 
 // no terminal or formatter runs in these tests
 const NO_HOSTS: HostStarters = {
@@ -44,6 +49,8 @@ describe('daemon connections', () => {
     expect(client.outcome.kind).toBe('welcome');
     await client.control.request('attach', { terminalIdleDays: 7 });
     expect(await client.control.request('listRuns', {})).toEqual({ runs: [] });
+    expect(client.outcome.kind === 'welcome' && client.outcome.welcome.features).toEqual(expect.arrayContaining(['protocol.resume', 'control.ping']));
+    expect(await client.control.request('ping', {})).toEqual({});
     const folder = fs.mkdtempSync(`${process.env['TMP'] ?? '/tmp'}/dm-conn-`);
     fs.writeFileSync(`${folder}/a.txt`, 'bytes');
     const read = await client.workspace.request('files.read', { path: `${folder}/a.txt` });
@@ -52,6 +59,52 @@ describe('daemon connections', () => {
     const logs = await client.control.request('logs.list', {});
     expect(logs.logs.map((entry) => entry.name)).toEqual([]);
     client.protocol.close('done');
+  });
+
+  it('names the other machines whose daemon used this home within the window, once each, by a hostname it accepts', async () => {
+    const now = Date.now();
+    const others: ReadonlyArray<readonly [string, string, number]> = [
+      ['aaaaaaaaaaaaaaaa', 'lab-03', 0],
+      ['bbbbbbbbbbbbbbbb', 'lab-02.example.org', 60_000],
+      ['cccccccccccccccc', 'lab-03', 0],
+      ['dddddddddddddddd', 'evil\u202Ename', 0],
+      ['eeeeeeeeeeeeeeee', 'lab-09', SHARED_HOME_WINDOW_MS + 60_000],
+    ];
+    for (const [key, hostname, age] of others) {
+      const pidFile = runPaths(path.dirname(path.dirname(daemon.paths.serverDir)), key).pidFile;
+      fs.mkdirSync(path.dirname(pidFile), { recursive: true });
+      await writePidFile(pidFile, { version: '1', pid: 7, hostname, endpoint: '/tmp/damocles-x/daemon.sock', socketFolder: '/tmp/damocles-x', updatedAt: now - age });
+      fs.utimesSync(pidFile, new Date(now - age), new Date(now - age));
+    }
+    const client = await connectClient(await daemon.connect());
+    expect(client.outcome.kind === 'welcome' && client.outcome.welcome.features).toContain('control.sharedHome');
+    expect(await client.control.request('sharedHome', {})).toEqual({ hosts: ['lab-02.example.org', 'lab-03'] });
+    client.protocol.close('done');
+  });
+
+  it('tells each client that asked which devices are attached, by device name and never client id, on every attach and close', async () => {
+    const desk = await connectClient(await daemon.connect(), { clientId: 'client-desk', deviceName: 'desk' });
+    const seen: unknown[] = [];
+    desk.control.onEvent('clients', (event) => seen.push(event));
+    await desk.control.request('attach', { terminalIdleDays: 7, watchClients: true });
+    const quiet = await connectClient(await daemon.connect(), { clientId: 'client-quiet', deviceName: 'old app' });
+    const unasked = vi.fn();
+    quiet.control.onEvent('clients', unasked);
+    await quiet.control.request('attach', { terminalIdleDays: 7 });
+    const laptop = await connectClient(await daemon.connect(), { clientId: 'client-laptop', deviceName: 'laptop' });
+    await laptop.control.request('attach', { terminalIdleDays: 7, watchClients: true });
+    laptop.protocol.close('done');
+    await vi.waitFor(() => expect(seen).toHaveLength(4));
+    expect(seen).toEqual([
+      { clients: [{ deviceName: 'desk', self: true }] },
+      { clients: [{ deviceName: 'desk', self: true }, { deviceName: 'old app', self: false }] },
+      { clients: [{ deviceName: 'desk', self: true }, { deviceName: 'old app', self: false }, { deviceName: 'laptop', self: false }] },
+      { clients: [{ deviceName: 'desk', self: true }, { deviceName: 'old app', self: false }] },
+    ]);
+    expect(JSON.stringify(seen)).not.toContain('client-');
+    expect(unasked).not.toHaveBeenCalled();
+    desk.protocol.close('done');
+    quiet.protocol.close('done');
   });
 
   it('carries WriteRefusedError by name with its refusal', async () => {
@@ -122,6 +175,52 @@ describe('daemon connections', () => {
     expect(await client.closed).toBeTruthy();
   });
 
+  it('resumes a dropped connection inside its grace, and what the client sent while away arrives', async () => {
+    const lines: string[] = [];
+    await daemon.shutdown();
+    daemon = await startInProcessDaemon({ starters: NO_HOSTS, log: (line) => lines.push(line) });
+    const socket = await daemon.connect();
+    const client = await connectClient(socket, { clientId: 'roaming' });
+    client.protocol.holdOnDrop();
+    await client.control.request('attach', { terminalIdleDays: 7 });
+    const lost = new Promise((resolve) => client.protocol.onLost(resolve));
+    socket.destroy();
+    await lost;
+    await vi.waitFor(() => expect(lines.some((line) => /connection-\d+ lost/.test(line))).toBe(true));
+    const runs = client.control.request('listRuns', {});
+    const outcome = await resumeClient(client, await daemon.connect(), 'roaming');
+    expect(outcome).toMatchObject({ kind: 'welcome', welcome: { resumed: true } });
+    expect(await runs).toEqual({ runs: [] });
+    expect(lines.some((line) => /connection-\d+ resumed/.test(line))).toBe(true);
+    client.protocol.close('done');
+  });
+
+  it('refuses the token once the grace ended, and a fresh connection is welcomed', async () => {
+    const lines: string[] = [];
+    await daemon.shutdown();
+    daemon = await startInProcessDaemon({ starters: NO_HOSTS, graceMs: 50, log: (line) => lines.push(line) });
+    const socket = await daemon.connect();
+    const client = await connectClient(socket, { clientId: 'late' });
+    client.protocol.holdOnDrop();
+    socket.destroy();
+    await vi.waitFor(() => expect(lines.some((line) => line.includes('the grace ended'))).toBe(true));
+    expect(await resumeClient(client, await daemon.connect(), 'late')).toMatchObject({ kind: 'refused', refused: { reason: 'unknown-token' } });
+    const fresh = await connectClient(await daemon.connect(), { clientId: 'late' });
+    expect(fresh.outcome).toMatchObject({ kind: 'welcome', welcome: { resumed: false } });
+    fresh.protocol.close('done');
+  });
+
+  it('answers disconnect, then ends the connection without holding it for a resume', async () => {
+    const client = await connectClient(await daemon.connect(), { clientId: 'leaving' });
+    client.protocol.holdOnDrop();
+    await client.control.request('attach', { terminalIdleDays: 7 });
+    const lost = new Promise((resolve) => client.protocol.onLost(resolve));
+    await client.control.request('disconnect', {});
+    expect(await lost).toBe('the connection closed');
+    expect(await resumeClient(client, await daemon.connect(), 'leaving')).toMatchObject({ kind: 'refused', refused: { reason: 'unknown-token' } });
+    client.protocol.close('done');
+  });
+
   it('replaces a live clientId with the new connection', async () => {
     const first = await connectClient(await daemon.connect(), { clientId: 'same' });
     const second = await connectClient(await daemon.connect(), { clientId: 'same' });
@@ -154,5 +253,182 @@ describe('daemon connections', () => {
     await client.control.request('shutdownNow', {});
     expect(await daemon.exited).toBe('control.shutdownNow');
     expect(await readPidFile(daemon.paths.pidFile)).toBeUndefined();
+  });
+});
+
+// Connections alone, with a core channel the test posts on, so traffic queues while the client is away in a known order.
+describe('daemon connections inside the grace', () => {
+  const token = randomBytes(32);
+
+  function harness(maxHeldBytes: number) {
+    let core: CoreTransport | undefined;
+    let coreDrained: (() => Promise<void>) | undefined;
+    const links: ClientLink[] = [];
+    const presence: Array<readonly ConnectionPresence[]> = [];
+    const lines: string[] = [];
+    const connections = createConnections({
+      serverVersion: '0.0.0-test',
+      facts: TEST_FACTS,
+      workspace: { serve: () => ({ dispose: () => undefined }) },
+      core: {
+        epoch: () => null,
+        onState: () => ({ dispose: () => undefined }),
+        connect: (_id, _clientId, channel, _close, link) => {
+          core = channel;
+          coreDrained = link.drained;
+          links.push(link);
+          return { attach: () => { throw new Error('no core in this test'); }, dispose: () => undefined };
+        },
+      },
+      control: {} as never,
+      connectionsChanged: (connected) => presence.push(connected),
+      agentSock: () => undefined,
+      maxHeldBytes,
+      log: (line) => lines.push(line),
+    });
+    // what the attach bridge hands the app: a socket past the bridge's authentication
+    // a duplexPair side's destroy never reaches the other, so a drop destroys both
+    const ends = new Map<Duplex, Duplex>();
+    const drop = (ours: Duplex): void => {
+      ours.destroy();
+      ends.get(ours)?.destroy();
+    };
+    const socket = async (): Promise<Duplex> => {
+      const [ours, theirs] = duplexPair();
+      ends.set(ours, theirs);
+      connections.accept(theirs, token);
+      const bridge = createPersistentProtocol({ socket: streamSocket(ours), maxBodyBytes: HANDSHAKE_MAX_BYTES, log: () => undefined });
+      await authenticateBridge(bridge, token);
+      const rest = bridge.detach();
+      if (rest.length > 0) ours.unshift(Buffer.from(rest));
+      return ours;
+    };
+    return { connections, socket, drop, presence, lines, links, core: () => core!, coreDrained: () => coreDrained!() };
+  }
+
+  it('drops a dropped connection whose held frames pass the bound, so the next resume is refused unknown-token', async () => {
+    const { connections, socket, drop, presence, lines, core } = harness(64 * 1024);
+    const first = await socket();
+    const client = await connectClient(first, { clientId: 'away' });
+    client.protocol.holdOnDrop();
+    drop(first);
+    await vi.waitFor(() => expect(presence.at(-1)).toEqual(['inGrace']));
+    // core keeps talking while the client is away: nothing is sent, the longest queued message (the latest of equal ones) is
+    // exempt, so the third passes the bound
+    core().post({ filler: 'x'.repeat(40 * 1024) });
+    core().post({ filler: 'x'.repeat(40 * 1024) });
+    expect(lines.join('\n')).not.toContain('held frames passed');
+    core().post({ filler: 'x'.repeat(40 * 1024) });
+    expect(lines.join('\n')).toContain('held frames passed the per-connection bound');
+    expect(presence.at(-1)).toEqual([]);
+    expect(await resumeClient(client, await socket(), 'away')).toMatchObject({ kind: 'refused', refused: { reason: 'unknown-token' } });
+    client.protocol.close('done');
+    await connections.endAll();
+  });
+
+  // what core posts while a client is too slow: 16 KiB messages, each its own message on the core channel
+  const FILLER = { filler: 'x'.repeat(16 * 1024) };
+  const overflows = (lines: readonly string[]): number => lines.filter((line) => line.includes('held frames passed the per-connection bound')).length;
+
+  it('drops a live connection whose client stops reading once its backlog passes the bound, and the client attaches fresh once', async () => {
+    // above the channel's 1 MiB window, which a waiting producer may still fill
+    const bound = 4 * 1024 * 1024;
+    const { connections, socket, presence, lines, core, coreDrained } = harness(bound);
+    const first = await socket();
+    const slow = await connectClient(first, { clientId: 'slow' });
+    slow.protocol.holdOnDrop();
+    // the client stops reading; the connection stays up, so nothing counts it as dropped
+    first.pause();
+    let posted = 0;
+    while (overflows(lines) === 0 && posted < 8 * bound) {
+      core().post(FILLER);
+      posted += FILLER.filler.length;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(overflows(lines)).toBe(1);
+    expect(posted).toBeLessThan(2 * bound);
+    expect(lines.join('\n')).not.toContain(' lost (');
+    expect(presence.at(-1)).toEqual([]);
+    expect(await resumeClient(slow, await socket(), 'slow')).toMatchObject({ kind: 'refused', refused: { reason: 'unknown-token' } });
+    // the fresh attach reads, and core waits for the channel to drain, so the same volume again passes no bound
+    const fresh = await connectClient(await socket(), { clientId: 'slow' });
+    const received: number[] = [];
+    fresh.mux.messageChannel(3, 1 << 20).onMessage((bytes) => received.push(bytes.length));
+    for (let index = 0; index * FILLER.filler.length < 2 * bound; index++) {
+      core().post(FILLER);
+      await coreDrained();
+    }
+    await vi.waitFor(() => expect(received).toHaveLength(2 * bound / FILLER.filler.length));
+    expect(overflows(lines)).toBe(1);
+    fresh.protocol.close('done');
+    slow.protocol.close('done');
+    await connections.endAll();
+  });
+
+  it('delivers a replay many times the bound to a reading client without an overflow when core waits for the channel to drain', async () => {
+    // above the channel's 1 MiB window, which a waiting producer may still fill
+    const bound = 4 * 1024 * 1024;
+    const { connections, socket, lines, core, coreDrained } = harness(bound);
+    const client = await connectClient(await socket(), { clientId: 'rejoining' });
+    client.protocol.holdOnDrop();
+    const received: number[] = [];
+    client.mux.messageChannel(3, 1 << 20).onMessage((bytes) => received.push(bytes.length));
+    const messages = 3 * bound / FILLER.filler.length;
+    for (let index = 0; index < messages; index++) {
+      core().post(FILLER);
+      await coreDrained();
+    }
+    await vi.waitFor(() => expect(received).toHaveLength(messages));
+    expect(overflows(lines)).toBe(0);
+    client.protocol.close('done');
+    await connections.endAll();
+  });
+
+  it('refuses a resume whose token is not the connection\'s, and one from another client id with the right token', async () => {
+    const { connections, socket, drop } = harness(64 * 1024 * 1024);
+    const first = await socket();
+    const client = await connectClient(first, { clientId: 'owner' });
+    client.protocol.holdOnDrop();
+    drop(first);
+    await vi.waitFor(() => expect(client.protocol.lost()).toBe(true));
+    const forged = { ...client, outcome: client.outcome.kind === 'welcome' ? { ...client.outcome, welcome: { ...client.outcome.welcome, reconnectionToken: randomBytes(32) } } : client.outcome };
+    expect(await resumeClient(forged, await socket(), 'owner')).toMatchObject({ kind: 'refused', refused: { reason: 'unknown-token' } });
+    expect(await resumeClient(client, await socket(), 'someone-else')).toMatchObject({ kind: 'refused', refused: { reason: 'unknown-token' } });
+    expect(await resumeClient(client, await socket(), 'owner')).toMatchObject({ kind: 'welcome', welcome: { resumed: true } });
+    client.protocol.close('done');
+    await connections.endAll();
+  });
+
+  it("tells the core channel's link when the connection is lost and when it resumes", async () => {
+    const { connections, socket, drop, links } = harness(64 * 1024 * 1024);
+    const first = await socket();
+    const client = await connectClient(first, { clientId: 'roaming' });
+    client.protocol.holdOnDrop();
+    const link = links[0]!;
+    const seen: boolean[] = [];
+    link.onLostChange(() => seen.push(link.lost()));
+    expect(link.lost()).toBe(false);
+    drop(first);
+    await vi.waitFor(() => expect(seen).toEqual([true]));
+    await vi.waitFor(() => expect(client.protocol.lost()).toBe(true));
+    expect(await resumeClient(client, await socket(), 'roaming')).toMatchObject({ kind: 'welcome', welcome: { resumed: true } });
+    expect(seen).toEqual([true, false]);
+    client.protocol.close('done');
+    await connections.endAll();
+  });
+
+  it('counts a connection inside its grace as inGrace, and connected again once resumed', async () => {
+    const { connections, socket, drop, presence } = harness(64 * 1024 * 1024);
+    const first = await socket();
+    const client = await connectClient(first, { clientId: 'back' });
+    client.protocol.holdOnDrop();
+    expect(presence.at(-1)).toEqual(['connected']);
+    drop(first);
+    await vi.waitFor(() => expect(presence.at(-1)).toEqual(['inGrace']));
+    await vi.waitFor(() => expect(client.protocol.lost()).toBe(true));
+    expect(await resumeClient(client, await socket(), 'back')).toMatchObject({ kind: 'welcome', welcome: { resumed: true } });
+    expect(presence.at(-1)).toEqual(['connected']);
+    client.protocol.close('done');
+    await connections.endAll();
   });
 });

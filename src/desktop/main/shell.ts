@@ -3,7 +3,8 @@ import { ipcMain, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent
 import { HOST_THEME_STYLE_ID } from '../../shared/host-theme';
 import { isSettingsSectionId, type SettingsSectionId } from '../../shared/settings-sections';
 import { MAX_BROWSER_URL_LENGTH } from '../../shared/typed-address';
-import type { OverlayAnswer, OverlayRequest } from '../preload/overlay-channels';
+import { HOST_ID } from '../daemon/control-messages';
+import { MAX_HOST_NAME_LENGTH, type NameCheck, type OverlayAnswer, type OverlayRequest } from '../preload/overlay-channels';
 import type { PanelTheme } from '../preload/panel-channels';
 import {
   BROWSER_ACTIONS,
@@ -22,6 +23,7 @@ import {
   MAX_SEARCH_LENGTH,
   MAX_SEARCH_PAYLOAD_MATCHES,
   MAX_SHELL_COORDINATE,
+  MAX_REORDER_KEYS,
   MAX_TAG_LENGTH,
   SHELL_CHANNELS,
   SHELL_FOCUS_PARTS,
@@ -53,6 +55,9 @@ import {
   type FilesChanged,
   type ShellDocumentContent,
   type ShellEditorState,
+  type OpenAsProjectRequest,
+  type OpenAsProjectResult,
+  type ProjectsView,
   type RemoveProjectResult,
   type SelectChatResult,
   type ShellChatList,
@@ -152,6 +157,7 @@ import { isRelativeFilePath } from '../../shared/relative-path';
 import { MAX_CONTEXT_LINES, MAX_REPLACEMENT_LENGTH, MAX_SEARCH_GLOBS_LENGTH, MAX_SEARCH_PATTERN_LENGTH, type SearchQuery, type SearchRange } from '../../shared/text-search';
 import { GestureGrant, isActivationKey, isContextMenuKey, isContextMenuMouse, isPrimaryClick } from './clipboard-gestures';
 import { isRelativeOrRoot } from '../local-services/confine';
+import { PROJECTS_VIEWS } from '../local-services/desktop-configuration';
 import { parseOverlayRequest } from './overlay';
 import { APP_ORIGIN, SHELL_PAGE_URL } from './protocol';
 import { loadAppPage, loggableUrl, mainFrameLoadFailed } from './security';
@@ -189,6 +195,25 @@ export interface ShellActions {
   toggleTheme(): void;
   // authority: a remote host's engine (the pill on its halted core); none: the local engine
   restartEngine(authority?: string): void;
+  // Remote hosts; every hostId is resolved against the host store
+  // null: main could not save the name
+  renameHost(hostId: string, name: string): Promise<NameCheck | null>;
+  renameHostOnCard(hostId: string): Promise<void>;
+  openConnect(): Promise<void>;
+  openHostFolder(hostId: string): Promise<void>;
+  reconnectHost(hostId: string): Promise<void>;
+  signInHost(hostId: string): Promise<void>;
+  showHostLog(hostId: string): Promise<void>;
+  // a busy daemon of another protocol: switch once its agents finish, or now after a confirmation (false: the user kept it)
+  switchHostWhenIdle(hostId: string): Promise<void>;
+  switchHostNow(hostId: string): Promise<boolean>;
+  // the Projects section; keys and groups are checked against main's own lists when the store writes
+  setProjectsView(view: ProjectsView): Promise<void>;
+  setProjectGroupCollapsed(group: string, collapsed: boolean): Promise<void>;
+  reorderProjects(order: readonly string[]): Promise<boolean>;
+  reorderProjectGroups(groupOrder: readonly string[]): Promise<boolean>;
+  // relativePath passed isRelativeFilePath
+  openAsProject(request: OpenAsProjectRequest): Promise<OpenAsProjectResult | null>;
   toggleSidebar(): void;
   showSidebar(): void;
   windowControl(control: WindowControl): void;
@@ -347,6 +372,8 @@ export interface ShellEditorActions {
   formatFailed(failure: EditorBuiltinFormatFailure): void;
   selection(documentId: string, range: EditorSelectionRange | null): void;
   mention(tabId: string): Promise<void>;
+  uploadMergeInputs(tabId: string): ScmMergeInputsResult;
+  completeUploadMerge(tabId: string): Promise<void>;
   setFocusOverlay(open: boolean): void;
   flushed(requestId: string): void;
 }
@@ -501,6 +528,15 @@ function errorText(err: unknown): string {
 
 export function isShellId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_LENGTH;
+}
+
+const isHostId = (value: unknown): value is string => typeof value === 'string' && HOST_ID.test(value);
+// A name as typed, before trimming; the host store's rule bounds the trimmed name.
+const MAX_TYPED_HOST_NAME_LENGTH = MAX_HOST_NAME_LENGTH * 8;
+
+// A copy of an array of ids within MAX_REORDER_KEYS; undefined for anything else.
+function keyList(raw: unknown): string[] | undefined {
+  return Array.isArray(raw) && raw.length <= MAX_REORDER_KEYS && raw.every(isShellId) ? [...raw] : undefined;
 }
 
 // A plain object with exactly these keys.
@@ -1079,6 +1115,75 @@ export class ShellHost {
       if (authority !== undefined && (typeof authority !== 'string' || authority === '' || authority.length > 256)) throw new Error('Malformed engine from the shell');
       this.actions.restartEngine(authority);
     });
+    this.handle(SHELL_CHANNELS.hostsRename, (raw) => {
+      const call = exactRecord(raw, ['hostId', 'name']);
+      if (!call || !isHostId(call['hostId']) || typeof call['name'] !== 'string' || call['name'].length > MAX_TYPED_HOST_NAME_LENGTH) throw new Error('Malformed host rename from the shell');
+      return this.actions.renameHost(call['hostId'], call['name']);
+    });
+    this.handle(SHELL_CHANNELS.connectOpen, (raw) => {
+      if (!exactRecord(raw, [])) throw new Error('Malformed Connect request from the shell');
+      return this.actions.openConnect();
+    });
+    this.handle(SHELL_CHANNELS.hostsOpenFolder, (raw) => {
+      const call = exactRecord(raw, ['hostId']);
+      if (!call || !isHostId(call['hostId'])) throw new Error('Malformed open folder request from the shell');
+      return this.actions.openHostFolder(call['hostId']);
+    });
+    this.handle(SHELL_CHANNELS.hostsRenameOnCard, (raw) => {
+      const call = exactRecord(raw, ['hostId']);
+      if (!call || !isHostId(call['hostId'])) throw new Error('Malformed host rename from the shell');
+      return this.actions.renameHostOnCard(call['hostId']);
+    });
+    this.handle(SHELL_CHANNELS.projectsSetView, (raw) => {
+      const call = exactRecord(raw, ['view']);
+      if (!call || !PROJECTS_VIEWS.includes(call['view'] as ProjectsView)) throw new Error('Malformed projects view from the shell');
+      return this.actions.setProjectsView(call['view'] as ProjectsView);
+    });
+    this.handle(SHELL_CHANNELS.projectsSetGroupCollapsed, (raw) => {
+      const call = exactRecord(raw, ['group', 'collapsed']);
+      if (!call || !isShellId(call['group']) || typeof call['collapsed'] !== 'boolean') throw new Error('Malformed project group from the shell');
+      return this.actions.setProjectGroupCollapsed(call['group'], call['collapsed']);
+    });
+    this.handle(SHELL_CHANNELS.projectsReorder, (raw) => {
+      const order = keyList(exactRecord(raw, ['order'])?.['order']);
+      if (!order) throw new Error('Malformed project order from the shell');
+      return this.actions.reorderProjects(order);
+    });
+    this.handle(SHELL_CHANNELS.projectsReorderGroups, (raw) => {
+      const groupOrder = keyList(exactRecord(raw, ['groupOrder'])?.['groupOrder']);
+      if (!groupOrder) throw new Error('Malformed group order from the shell');
+      return this.actions.reorderProjectGroups(groupOrder);
+    });
+    this.handle(SHELL_CHANNELS.projectsOpenAsProject, (raw) => {
+      const call = exactRecord(raw, ['projectKey', 'relativePath']);
+      if (!call || !isShellId(call['projectKey']) || !isRelativeFilePath(call['relativePath'])) throw new Error('Malformed open as project request from the shell');
+      return this.actions.openAsProject({ projectKey: call['projectKey'], relativePath: call['relativePath'] });
+    });
+    this.handle(SHELL_CHANNELS.hostsReconnect, (raw) => {
+      const call = exactRecord(raw, ['hostId']);
+      if (!call || !isHostId(call['hostId'])) throw new Error('Malformed reconnect from the shell');
+      return this.actions.reconnectHost(call['hostId']);
+    });
+    this.handle(SHELL_CHANNELS.hostsSignIn, (raw) => {
+      const call = exactRecord(raw, ['hostId']);
+      if (!call || !isHostId(call['hostId'])) throw new Error('Malformed sign-in from the shell');
+      return this.actions.signInHost(call['hostId']);
+    });
+    this.handle(SHELL_CHANNELS.hostsShowLog, (raw) => {
+      const call = exactRecord(raw, ['hostId']);
+      if (!call || !isHostId(call['hostId'])) throw new Error('Malformed show log from the shell');
+      return this.actions.showHostLog(call['hostId']);
+    });
+    this.handle(SHELL_CHANNELS.hostsSwitchWhenIdle, (raw) => {
+      const call = exactRecord(raw, ['hostId']);
+      if (!call || !isHostId(call['hostId'])) throw new Error('Malformed switch when idle from the shell');
+      return this.actions.switchHostWhenIdle(call['hostId']);
+    });
+    this.handle(SHELL_CHANNELS.hostsSwitchNow, (raw) => {
+      const call = exactRecord(raw, ['hostId']);
+      if (!call || !isHostId(call['hostId'])) throw new Error('Malformed switch now from the shell');
+      return this.actions.switchHostNow(call['hostId']);
+    });
     this.handle(SHELL_CHANNELS.toggleSidebar, () => this.actions.toggleSidebar());
     this.handle(SHELL_CHANNELS.showSidebar, () => this.actions.showSidebar());
     this.handle(SHELL_CHANNELS.windowControl, (control) => {
@@ -1269,6 +1374,14 @@ export class ShellHost {
       if (!isShellId(tabId)) throw new Error('Malformed tab id from the shell');
       return editor.mention(tabId);
     });
+    for (const channel of [SHELL_CHANNELS.editorMergeInputs, SHELL_CHANNELS.editorCompleteMerge]) {
+      this.handle(channel, (raw) => {
+        const value = record(raw);
+        const tabId = value ? own(value, 'tabId') : undefined;
+        if (!isShellId(tabId)) throw new Error('Malformed tab id from the shell');
+        return channel === SHELL_CHANNELS.editorMergeInputs ? editor.uploadMergeInputs(tabId) : editor.completeUploadMerge(tabId);
+      });
+    }
     this.handle(SHELL_CHANNELS.editorFocusOverlay, (raw) => {
       const value = record(raw);
       const open = value ? own(value, 'open') : undefined;

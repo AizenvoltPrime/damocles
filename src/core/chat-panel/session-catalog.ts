@@ -9,7 +9,7 @@ import { log } from "../logger";
 import { t } from "../l10n";
 import { deletePiSession, renamePiSession, tagPiSession } from "../pi-session/session-store";
 import { PiRuntime } from "../pi-session/pi-runtime";
-import { isSafeAgentPathId } from "../pi-session/agent-records";
+import { isSafeAgentPathId } from "../../shared/agent-path-id";
 import { whileSessionLeased } from "./session-ownership";
 
 export const MAX_SESSION_NAME_CHARS = 200;

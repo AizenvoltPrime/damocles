@@ -192,6 +192,17 @@ describe('the askpass server', () => {
     expect(log.join('\n')).not.toContain('secret-host');
   });
 
+  it('answers a failed prompt with a cancel and logs why it failed, its URL userinfo redacted', async () => {
+    const { server, log } = start(async () => {
+      throw new Error('the keychain at https://ada:hunter2@vault.example.com is locked');
+    });
+    const registration = await server.register('interactive', 'push');
+    const reply = await exchange(registration.env['DAMOCLES_ASKPASS_HANDLE']!, line({ nonce: registration.env['DAMOCLES_ASKPASS_NONCE'], kind: 'askpass', argv: ['Password: '] }));
+    expect(reply.reply).toBe(`${JSON.stringify({ cancel: true })}\n`);
+    expect(log.find((entry) => entry.startsWith('[askpass] the credential prompt failed:'))).toContain('vault.example.com is locked');
+    expect(log.join('\n')).not.toContain('hunter2');
+  });
+
   it('withdraws an open prompt when its registration ends, and refuses the registration afterwards', async () => {
     let signal: AbortSignal | undefined;
     // as the desktop bridge does, the prompt settles when its signal withdraws it
@@ -385,7 +396,7 @@ describe('askpass requests and prompts', () => {
     expect(classifyPrompt('ssh', 'Enter PIN for authenticator:')).toBe('password');
   });
 
-  it('takes SSH_ASKPASS_PROMPT over the text: confirm is the yes/no question, none a notice', () => {
+  it('takes SSH_ASKPASS_PROMPT over the text: confirm is a permission question, none a notice', () => {
     expect(classifyPrompt('ssh', 'Allow shared connection to example.com? ', 'confirm')).toBe('confirm');
     expect(classifyPrompt('ssh', 'Confirm user presence for key ED25519-SK SHA256:abc', 'none')).toBe('notice');
     expect(classifyPrompt('ssh', 'Enter passphrase for key:', 'none')).toBe('notice');

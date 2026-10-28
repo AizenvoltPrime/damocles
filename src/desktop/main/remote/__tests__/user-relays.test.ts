@@ -73,6 +73,15 @@ describe('clientAuthOf', () => {
     } });
   });
 
+  it('keeps preferApiKey only when the client said true', () => {
+    const raw = { providers: { openai: { type: 'oauth', hasKey: true, flatFee: false, preferApiKey: true }, xai: { type: 'none', hasKey: true, flatFee: false, preferApiKey: 'yes' }, deepseek: { type: 'none', hasKey: true, flatFee: false, preferApiKey: false } } } as unknown as HeldAuth;
+    expect(clientAuthOf(raw)).toEqual({ providers: {
+      openai: { type: 'oauth', hasKey: true, flatFee: false, preferApiKey: true },
+      xai: { type: 'none', hasKey: true, flatFee: false },
+      deepseek: { type: 'none', hasKey: true, flatFee: false },
+    } });
+  });
+
   it('keeps allowance only on an OAuth sign-in', () => {
     const raw = { providers: { anthropic: { type: 'oauth', hasKey: false, flatFee: false, allowance: true }, deepseek: { type: 'api_key', hasKey: true, flatFee: false, allowance: true } } } as HeldAuth;
     expect(clientAuthOf(raw)).toEqual({ providers: { anthropic: { type: 'oauth', hasKey: false, flatFee: false, allowance: true }, deepseek: { type: 'api_key', hasKey: true, flatFee: false } } });
@@ -139,6 +148,7 @@ describe('UserRelays', () => {
         homedir: home,
         userSettingKeys: () => ['damocles.language'],
         userValue: () => 'en',
+        hostPolicy: () => ({ allowBypass: false }),
         log: (line) => lines.push(line),
         ...overrides,
       }),
@@ -153,6 +163,18 @@ describe('UserRelays', () => {
     expect(lines).toEqual(['[remote] user.credentials anthropic for loopback']);
   });
 
+  it('judges an ask that arrives while the local core start\'s sign-in read is under way against that read, never the empty snapshot', async () => {
+    let loaded: ((auth: HeldAuth) => void) | undefined;
+    const { relays: user } = await relays({ clientAuth: () => new Promise<HeldAuth>((resolve) => { loaded = resolve; }) });
+    // the local core became ready and its runtime is still loading this computer's sign-ins
+    const startup = user.authChanged();
+    await vi.waitFor(() => expect(loaded).toBeDefined());
+    const asked = user.credentials('ssh+h1', 'openai');
+    loaded!(KNOWN);
+    await startup;
+    await expect(asked).resolves.toEqual({ type: 'oauth', access: 'a', expiresIn: 60_000, refresh: '' });
+  });
+
   it('refuses an answer the local core sent with a refresh token', async () => {
     const { relays: user } = await relays({ resolveCredential: async () => ({ type: 'oauth', access: 'a', expiresIn: 1, refresh: 'rt' }) as unknown as BrokerAnswer });
     await expect(user.credentials('loopback', 'anthropic')).rejects.toThrow('refresh token');
@@ -161,10 +183,10 @@ describe('UserRelays', () => {
   it('starts each attach from its values and publishes later changes to every attach, with YOLO refused', async () => {
     const { relays: user } = await relays();
     const published: Array<[string, unknown]> = [];
-    const attach = user.attach((topic, value) => published.push([topic, value]), false);
+    const attach = user.attach((topic, value) => published.push([topic, value]), 'ssh+h1', false);
     expect(attach.mirrors.clientPolicy).toEqual({ voice: true, allowBypass: false });
     // a host on this computer reaches this computer's loopback endpoints
-    expect(user.attach(() => undefined, true).mirrors.clientPolicy).toEqual({ voice: true, allowBypass: false, sharedLoopback: true });
+    expect(user.attach(() => undefined, 'loopback', true).mirrors.clientPolicy).toEqual({ voice: true, allowBypass: false, sharedLoopback: true });
     await user.authChanged();
     await user.userChanged();
     expect(published).toEqual([
@@ -176,6 +198,24 @@ describe('UserRelays', () => {
     attach.subscription.dispose();
     await user.userChanged();
     expect(published).toHaveLength(2);
+  });
+
+  it('gives each attach its host\'s configured policy and publishes a change only to that host\'s attaches', async () => {
+    const settings = new Map<string, { allowBypass: boolean; defaultPermissionMode?: 'plan' | 'acceptEdits'; agentForwarding?: boolean }>([
+      ['ssh+prod', { allowBypass: false, defaultPermissionMode: 'plan' }],
+      ['ssh+dev', { allowBypass: true, agentForwarding: true }],
+    ]);
+    const { relays: user } = await relays({ hostPolicy: (authority) => settings.get(authority) ?? { allowBypass: false } });
+    const prod: Array<[string, unknown]> = [];
+    const dev: Array<[string, unknown]> = [];
+    expect(user.attach((topic, value) => prod.push([topic, value]), 'ssh+prod', false).mirrors.clientPolicy).toEqual({ voice: true, allowBypass: false, defaultPermissionMode: 'plan' });
+    expect(user.attach((topic, value) => dev.push([topic, value]), 'ssh+dev', false).mirrors.clientPolicy).toEqual({ voice: true, allowBypass: true, agentForwarding: true });
+    settings.set('ssh+prod', { allowBypass: true, defaultPermissionMode: 'acceptEdits' });
+    user.policyChanged('ssh+prod');
+    // an unchanged policy publishes nothing
+    user.policyChanged('ssh+dev');
+    expect(prod).toEqual([['clientPolicy', { voice: true, allowBypass: true, defaultPermissionMode: 'acceptEdits' }]]);
+    expect(dev).toEqual([]);
   });
 
   it('publishes the snapshot read last when refreshes overlap, however their reads finish', async () => {
@@ -190,7 +230,7 @@ describe('UserRelays', () => {
       },
     });
     const published: unknown[] = [];
-    user.attach((_topic, value) => published.push(value), false);
+    user.attach((_topic, value) => published.push(value), 'ssh+h1', false);
     let settled = 0;
     const first = user.authChanged().then(() => settled++);
     current = newer;
@@ -209,10 +249,10 @@ describe('UserRelays', () => {
     const held: HeldAuth = { providers: { anthropic: { type: 'oauth', expires: 1_000_000 + 3_600_000, hasKey: false, flatFee: false } } };
     const { relays: user } = await relays({ clientAuth: async () => held });
     const published: unknown[] = [];
-    user.attach((_topic, value) => published.push(value), false);
+    user.attach((_topic, value) => published.push(value), 'ssh+h1', false);
     await user.authChanged();
     now.mockReturnValue(1_000_000 + 60_000);
-    expect(user.attach(() => undefined, false).mirrors.clientAuth).toEqual({ providers: { anthropic: { type: 'oauth', expiresIn: 3_540_000, hasKey: false, flatFee: false } } });
+    expect(user.attach(() => undefined, 'ssh+h1', false).mirrors.clientAuth).toEqual({ providers: { anthropic: { type: 'oauth', expiresIn: 3_540_000, hasKey: false, flatFee: false } } });
     expect(published).toEqual([{ providers: { anthropic: { type: 'oauth', expiresIn: 3_600_000, hasKey: false, flatFee: false } } }]);
     now.mockRestore();
   });

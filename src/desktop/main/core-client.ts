@@ -10,6 +10,7 @@ import type { UserContentBlock } from '../../shared/types/content';
 import type { ChatPlace, ChatReviewScope, ExtensionToWebviewMessage, WebviewToExtensionMessage, WorktreeFinishAction } from '../../shared/types/messages';
 import type { StoredSession } from '../../shared/types/session';
 import type { BrokerAnswer, HeldAuth } from '../../shared/remote-user';
+import type { PushedCredential } from '../core-protocol/messages';
 import type { ChatEntry, ChatPermissions, FolderTargetEntry, MainRequests, MentionTargetData, RepositoryCall, ScmCall, ScmMirrorPatch, WorktreeCall } from '../core-protocol';
 import type { MainEndpoint } from '../core-protocol';
 import type { ReviewSession } from './chat-review-host';
@@ -109,8 +110,9 @@ export class CoreClient implements Disposable {
 
   // ---- events
 
-  onActivity(listener: (panelId: string, activity: ChatActivity) => void): Disposable {
-    return this.endpoint.onEvent('chat.activity', ({ panelId, activity }) => listener(panelId, activity));
+  // sessionId: the stored session the chat is on, when core names it
+  onActivity(listener: (panelId: string, activity: ChatActivity, sessionId: string | undefined) => void): Disposable {
+    return this.endpoint.onEvent('chat.activity', ({ panelId, activity, sessionId }) => listener(panelId, activity, sessionId));
   }
 
   onTurnSettled(listener: (panelId: string, outcome: TurnOutcome) => void): Disposable {
@@ -156,9 +158,15 @@ export class CoreClient implements Disposable {
     }));
   }
 
+  /** This computer's core shows a remote chat's session mirror copy on the view, read-only; file is under that host's mirror. */
+  openTranscript(view: RelayView, hostId: string, file: string): Promise<void> {
+    return this.adoptView(view, () => this.request('chats.openTranscript', { viewId: view.panelId, hostId, file }));
+  }
+
   /** A rejoining view (already relayed, its ready held) joins the panel its page token names; null: none, so main restores it. */
-  joinView(viewId: string, viewKey: string): Promise<{ readonly panelId: string } | null> {
-    return this.request('views.join', { viewId, viewKey });
+  // sessionId: another device's view, which names the panel by the stored session it holds
+  joinView(viewId: string, viewKey: string, sessionId?: string): Promise<{ readonly panelId: string } | null> {
+    return this.request('views.join', { viewId, viewKey, ...(sessionId !== undefined ? { sessionId } : {}) });
   }
 
   /** chats.restore for a view main already relays (a rejoin core refused). */
@@ -258,6 +266,11 @@ export class CoreClient implements Disposable {
 
   async listSessions(projectKey: string, complete = false): Promise<readonly StoredSession[]> {
     return ((await this.request('catalog.list', { projectKey: this.keys.toCore(projectKey), complete })) as readonly StoredSession[]).map((row) => storedSessionToShell(this.keys, row));
+  }
+
+  /** This computer's core lists one project's chats of a host's session mirror, read-only; folder is under that host's mirror. */
+  async listMirroredSessions(hostId: string, folder: string, query: string): Promise<readonly StoredSession[]> {
+    return (await this.request('chats.listMirrored', { hostId, folder, ...(query !== '' ? { query } : {}) })) as readonly StoredSession[];
   }
 
   async searchSessions(projectKey: string, query: string): Promise<readonly StoredSession[]> {
@@ -406,8 +419,19 @@ export class CoreClient implements Disposable {
 
   // ---- this computer's user scope, which the local core serves to remote chats
 
-  resolveCredential(provider: string): Promise<BrokerAnswer> {
-    return this.request('user.resolveCredential', { provider });
+  /** The Stop path of a chat's running turn, by core panel id (Stop agents). */
+  stopChat(panelId: string): Promise<void> {
+    return this.request('chats.stop', { panelId });
+  }
+
+  // force: refreshed even while the token is not expiring (Keep running)
+  resolveCredential(provider: string, force?: boolean): Promise<BrokerAnswer> {
+    return this.request('user.resolveCredential', { provider, ...(force ? { force } : {}) });
+  }
+
+  // a daemon's core: this computer's fresh OAuth token, cached for this client alone
+  pushCredential(provider: string, credential: PushedCredential, signal?: AbortSignal): Promise<void> {
+    return this.endpoint.request('user.credentials.push', { provider, credential }, signal);
   }
 
   clientAuth(): Promise<HeldAuth> {
@@ -486,6 +510,10 @@ export class CoreClient implements Disposable {
 
   e2eStopWatchProbe(folder: string): Promise<void> {
     return this.request('e2e.stopWatchProbe', { folder });
+  }
+
+  e2eStubOAuth(account: string, expiresInMs: number, offline?: boolean): Promise<void> {
+    return this.request('e2e.stubOAuth', { account, expiresInMs, ...(offline !== undefined ? { offline } : {}) });
   }
 
   private request<M extends keyof MainRequests>(method: M, params: Params<M>): Promise<Result<M>> {

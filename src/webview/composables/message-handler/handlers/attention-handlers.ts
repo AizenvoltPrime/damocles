@@ -14,7 +14,7 @@ export function createAttentionHandlers(): Partial<HandlerRegistry> {
       }
       const pending = msg.kind === "approval"
         ? permissionStore.currentPermission !== null || permissionStore.pendingSkillApproval !== null
-        : questionStore.pendingQuestion !== null || formStore.pendingForm !== null || elicitationStore.pendingElicitations.length > 0;
+        : questionStore.pendingQuestion !== null || formStore.pendingForm !== null || elicitationStore.pendingElicitations.length > 0 || permissionStore.pendingSignIns.length > 0;
       requestAttention(msg.kind, pending);
     },
 

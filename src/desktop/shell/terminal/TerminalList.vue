@@ -214,7 +214,7 @@ const tabLabel = (terminal: TerminalInfo): string => [terminal.title, terminal.d
           </span>
           <span class="relative flex size-3.25 shrink-0 items-center justify-center">
             <LoaderCircle
-              v-if="terminal.status === 'starting'"
+              v-if="terminal.status === 'starting' || terminal.status === 'reconnecting'"
               aria-hidden="true"
               class="d-spinning size-3.25 text-(--d-muted)"
             />
@@ -229,7 +229,7 @@ const tabLabel = (terminal: TerminalInfo): string => [terminal.title, terminal.d
               :style="{ color: terminalGlyph(terminal).color }"
             />
             <span
-              v-if="terminal.status !== 'starting'"
+              v-if="terminal.status !== 'starting' && terminal.status !== 'reconnecting'"
               aria-hidden="true"
               data-testid="terminal-row-status"
               class="terminal-status-dot absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full"

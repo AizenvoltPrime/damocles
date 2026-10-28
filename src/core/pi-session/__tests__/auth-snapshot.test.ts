@@ -6,7 +6,7 @@ import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { installPlatform, platform } from '../../platform-host';
 import { installLogSink } from '../../logger';
-import { runPinnedTurn } from '../../client-snapshots';
+import { asClient, runPinnedTurn } from '../../client-snapshots';
 import { readAuthFile } from '../auth-file';
 import { PiRuntime } from '../pi-runtime';
 import { readOpenAIAuthFromDisk } from '../openai-auth';
@@ -179,6 +179,24 @@ describe('this computer\'s clientAuth snapshot', () => {
     expect(JSON.stringify(snapshot)).not.toContain('xai-key');
   }, 60_000);
 
+  it('sends each prefer-API-key flag that is on, and signals a key provider\'s flag change that changes no key pi holds', async () => {
+    const runtime = PiRuntime.get(agentDir);
+    await runtime.init();
+    const xaiKey = async (key: string) => (key === 'damocles.xai.apiKey' ? 'xai-key' : undefined);
+    await runtime.syncCustomProviders(xaiKey);
+    const auth = vi.fn();
+    const stopAuth = PiRuntime.onClientAuthChange(auth);
+    // no sign-in, so the key stays applied whatever the flag says
+    await platform().state.global.update('damocles.xai.preferApiKey', true);
+    await runtime.syncCustomProviders(xaiKey);
+    stopAuth();
+    expect(auth).toHaveBeenCalled();
+    await platform().state.global.update('damocles.openai.preferApiKey', true);
+    const snapshot = await runtime.clientAuthSnapshot();
+    expect([snapshot.providers['xai']?.preferApiKey, snapshot.providers['openai']?.preferApiKey]).toEqual([true, true]);
+    expect(snapshot.providers['deepseek']).not.toHaveProperty('preferApiKey');
+  }, 60_000);
+
   it('marks a Claude sign-in that bills the allowance, so a daemon can bill its requests the same way', async () => {
     const runtime = PiRuntime.get(agentDir);
     await runtime.init();
@@ -191,16 +209,12 @@ describe('this computer\'s clientAuth snapshot', () => {
     const runtime = PiRuntime.get(agentDir);
     await runtime.init();
     const auth = vi.fn();
-    const judge = vi.fn();
     const stopAuth = PiRuntime.onClientAuthChange(auth);
-    const stopJudge = PiRuntime.onMemoryJudgeChange(judge);
     await platform().settings.update('damocles.memory.judge', 'off', 'user');
-    expect(judge).toHaveBeenCalled();
     expect(auth).not.toHaveBeenCalled();
     PiRuntime.notifyMemoryJudgeChange();
     expect(auth).toHaveBeenCalledTimes(1);
     stopAuth();
-    stopJudge();
   }, 60_000);
 });
 
@@ -225,6 +239,26 @@ describe('OpenAI account state on a daemon\'s core', () => {
       return runtime.getOpenAIAuthStatus().apiKey;
     });
     expect(pinnedToA).toBe(true);
+  });
+
+  it('reads the prefer-API-key flags of the client it reads as, never the acting client\'s state mirror', async () => {
+    const host = createFakeRemoteHost();
+    const fake = createFakePlatform();
+    installPlatform({ ...fake, remote: host.remote });
+    await fake.state.global.update('damocles.openai.preferApiKey', true);
+    await fake.state.global.update('damocles.xai.preferApiKey', true);
+    const signedInWithKey = { type: 'oauth', expires: 9_999_999_999_999, hasKey: true, flatFee: false } as const;
+    host.set('clientAuth', 'client-a', { providers: { openai: { ...signedInWithKey, preferApiKey: true }, xai: { ...signedInWithKey, preferApiKey: true } } });
+    host.set('clientAuth', 'client-b', { providers: { openai: signedInWithKey, xai: signedInWithKey } });
+    host.setActing('client-a');
+    const runtime = PiRuntime.get(agentDir);
+
+    const flags = (clientId: string) => asClient(host.remote, clientId, () => [runtime.preferOpenAIApiKey(), runtime.preferProviderApiKey('xai')]);
+    expect([flags('client-a'), flags('client-b')]).toEqual([[true, true], [false, false]]);
+    await PiRuntime.disposeInstance();
+    // before pi starts, the judge reads them too: the preferred key is the request credential, else the sign-in is
+    const judge = (clientId: string) => asClient(host.remote, clientId, () => memoryJudgeStatus(platform())).then((status) => status.classifierCredentials.openai);
+    expect([await judge('client-a'), await judge('client-b')]).toEqual(['ok', 'chatgpt-active']);
   });
 });
 

@@ -1,0 +1,173 @@
+name: Remote target end-to-end
+
+# The remote suites against a Windows and a macOS target: each runner's own sshd on localhost. release.yml calls this
+# workflow, and its release job waits for it.
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_call:
+    inputs:
+      # The caller's run has the grammars and wake models as the fetched-assets artifact (release.yml verify).
+      fetched-assets:
+        type: boolean
+        default: false
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-target:
+    runs-on: windows-latest
+    # npm ci, the OpenSSH install, two suite steps and their uploads (docs/release.md "Time limits").
+    timeout-minutes: 170
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      # Test homes leave the Windows OS disk, as in release.yml e2e-desktop; job-level env cannot read the runner context.
+      - name: Point TEMP at the runner's temp folder
+        run: |
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ inputs.fetched-assets }}
+        with:
+          name: fetched-assets
+
+      - name: Install and start the OpenSSH server
+        timeout-minutes: 15
+        run: |
+          Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+          Set-Service -Name sshd -StartupType Manual
+          Start-Service sshd
+
+      # The runner account is an administrator, whose keys sshd reads only from administrators_authorized_keys, which must be
+      # readable by SYSTEM and Administrators alone. The suite copies the key and known host into each test's temp ~/.ssh.
+      - name: Authorize a key for the runner account
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'target-ssh'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $key = Join-Path $dir 'id_ed25519'
+          & "$env:SystemRoot\System32\OpenSSH\ssh-keygen.exe" -q -t ed25519 -N '' -f $key
+          $authorized = Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
+          Get-Content "$key.pub" | Add-Content -Encoding ascii $authorized
+          icacls $authorized /inheritance:r /grant 'SYSTEM:(F)' /grant 'BUILTIN\Administrators:(F)'
+          & "$env:SystemRoot\System32\OpenSSH\ssh-keyscan.exe" -t ed25519 127.0.0.1 | Out-File -Encoding ascii (Join-Path $dir 'known_hosts')
+          "DAMOCLES_E2E_TARGET_IDENTITY=$key" >> $env:GITHUB_ENV
+          "DAMOCLES_E2E_TARGET_KNOWN_HOSTS=$(Join-Path $dir 'known_hosts')" >> $env:GITHUB_ENV
+          "DAMOCLES_E2E_TARGET_USER=$env:USERNAME" >> $env:GITHUB_ENV
+
+      # Win32-OpenSSH runs commands in cmd without a DefaultShell value.
+      - name: Windows target suite, DefaultShell cmd
+        timeout-minutes: 60
+        env:
+          DAMOCLES_E2E_TARGET_SHELL: cmd
+        run: npm run test:remote -- --grep '@windows-target'
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: windows-target-cmd-report
+          path: |
+            dist/e2e-report/remote-dev
+            dist/e2e-results/remote-dev
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Make PowerShell the DefaultShell
+        run: |
+          New-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell -Value "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -PropertyType String -Force | Out-Null
+          Restart-Service sshd
+
+      # The cmd run built the app and the win32 server package.
+      - name: Windows target suite, DefaultShell PowerShell
+        if: ${{ !cancelled() }}
+        timeout-minutes: 60
+        env:
+          DAMOCLES_E2E_TARGET_SHELL: powershell
+          DAMOCLES_E2E_PREBUILT: app,server-packages
+        run: npm run test:remote -- --grep '@windows-target'
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: windows-target-powershell-report
+          path: |
+            dist/e2e-report/remote-dev
+            dist/e2e-results/remote-dev
+          retention-days: 7
+          if-no-files-found: ignore
+
+  darwin-target:
+    runs-on: macos-latest
+    # npm ci, the suite step and the upload (docs/release.md "Time limits").
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ inputs.fetched-assets }}
+        with:
+          name: fetched-assets
+
+      # Remote Login is macOS's sshd; launchctl starts it without the Full Disk Access systemsetup needs.
+      - name: Enable Remote Login
+        run: sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist
+
+      # The runner's home is discarded with the runner; the suite copies the key and known host into each test's temp ~/.ssh.
+      - name: Authorize a key for the runner account
+        run: |
+          dir="$RUNNER_TEMP/target-ssh"
+          mkdir -p "$dir" ~/.ssh
+          ssh-keygen -q -t ed25519 -N '' -f "$dir/id_ed25519"
+          cat "$dir/id_ed25519.pub" >> ~/.ssh/authorized_keys
+          chmod 700 ~/.ssh
+          chmod 600 ~/.ssh/authorized_keys
+          for _ in $(seq 30); do ssh-keyscan -t ed25519 127.0.0.1 > "$dir/known_hosts" 2>/dev/null && [ -s "$dir/known_hosts" ] && break; sleep 1; done
+          test -s "$dir/known_hosts"
+          {
+            echo "DAMOCLES_E2E_TARGET_IDENTITY=$dir/id_ed25519"
+            echo "DAMOCLES_E2E_TARGET_KNOWN_HOSTS=$dir/known_hosts"
+            echo "DAMOCLES_E2E_TARGET_USER=$(id -un)"
+          } >> "$GITHUB_ENV"
+
+      - name: macOS target suite
+        timeout-minutes: 60
+        run: npm run test:remote -- --grep '@darwin-target'
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: darwin-target-report
+          path: |
+            dist/e2e-report/remote-dev
+            dist/e2e-results/remote-dev
+          retention-days: 7
+          if-no-files-found: ignore

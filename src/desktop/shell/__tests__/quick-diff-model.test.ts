@@ -2,12 +2,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { editor as MonacoEditor } from 'monaco-editor/editor/editor.api';
 import type { DamoclesScmApi, ScmQuickDiffBaseResult } from '../../preload/scm-channels';
-import type { QuickDiffRequest } from '../editor/quick-diff/quick-diff-compute';
+import { createQuickDiffHandler, type QuickDiffReply, type QuickDiffRequest } from '../editor/quick-diff/quick-diff-compute';
 
 const workers = vi.hoisted(() => {
   // The quick diff worker double: it records what it is sent and fails on demand, as a worker that cannot load does.
   class FakeWorker extends EventTarget {
     static started: FakeWorker[] = [];
+    // set, every worker answers as the real one does, a task later
+    static handle: ((request: QuickDiffRequest) => QuickDiffReply | undefined) | undefined;
     readonly sent: QuickDiffRequest[] = [];
     terminated = false;
     constructor() {
@@ -16,6 +18,8 @@ const workers = vi.hoisted(() => {
     }
     postMessage(request: QuickDiffRequest): void {
       this.sent.push(request);
+      const reply = FakeWorker.handle?.(request);
+      if (reply) setTimeout(() => this.dispatchEvent(new MessageEvent('message', { data: reply })));
     }
     terminate(): void {
       this.terminated = true;
@@ -44,6 +48,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.useRealTimers();
+  workers.handle = undefined;
 });
 
 describe('the quick diff model', () => {
@@ -66,6 +71,31 @@ describe('the quick diff model', () => {
     await vi.waitFor(() => expect(model.status.value).toBe('none'));
     expect(model.state.value).toBeNull();
     expect(await model.current()).toBeNull();
+    model.dispose();
+  });
+
+  it('answers an action that comes before the first base read lands with that base, not with no state', async () => {
+    workers.handle = createQuickDiffHandler();
+    let answer: (base: ScmQuickDiffBaseResult) => void = () => undefined;
+    const model = createQuickDiffModel(api(() => new Promise((resolve) => (answer = resolve))), fakeModel(), target, () => () => undefined);
+    const waiting = model.current();
+    answer(BASE);
+    expect(await waiting).toMatchObject({ indexOid: BASE.indexOid, primary: [{ originalStartLineNumber: 1, originalEndLineNumber: 1, modifiedStartLineNumber: 1, modifiedEndLineNumber: 1 }] });
+    model.dispose();
+  });
+
+  it('answers an action after the status revision moved with the index read for it, never the index before', async () => {
+    workers.handle = createQuickDiffHandler();
+    let index: ScmQuickDiffBaseResult = BASE;
+    let revision: () => void = () => undefined;
+    const model = createQuickDiffModel(api(async () => index), fakeModel(), target, (listener) => {
+      revision = listener;
+      return () => undefined;
+    });
+    await vi.waitFor(() => expect(model.status.value).toBe('ready'));
+    index = { ...BASE, indexText: 'b\n', indexOid: 'b'.repeat(40) };
+    revision();
+    expect(await model.current()).toMatchObject({ indexOid: 'b'.repeat(40), primary: [] });
     model.dispose();
   });
 

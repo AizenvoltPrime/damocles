@@ -31,7 +31,7 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
-const page = provideSettingsPage(() => props.query, props.rows, () => props.scopeView?.listed);
+const page = provideSettingsPage(() => props.query, () => props.rows, () => props.scopeView?.listed);
 
 const scopeEmpty = computed(() => (props.scopeView && !props.query && page.shown.value.size === 0
   ? props.scopeView.empty?.(props.sections[0]!.id) ?? t('settingsModal.emptyScope')

@@ -12,7 +12,7 @@ import type { SettingsStore } from '../../../platform/settings-store';
 import type { TrustService } from '../../../platform/trust-service';
 import type { WorkspaceFolders } from '../../../platform/workspace-folders';
 import type { HostCapabilities } from '../../../shared/types/messages';
-import { createCoreEndpoint, type CoreEndpoint, type CoreInit, type CoreProtocolError, type CoreTransport } from '../../core-protocol';
+import { createCoreEndpoint, processActor, type CoreEndpoint, type CoreInit, type CoreProtocolError, type CoreTransport } from '../../core-protocol';
 import { createClientSnapshots, createRemoteHost } from './clients';
 import { createEditorProxy } from './editor';
 import { createFoldersMirror, createStateMirror, createTrustMirror, type StateMirror } from './mirrored';
@@ -71,7 +71,8 @@ export function createCorePlatform(
   createLocal: (shared: CoreShared) => CoreLocalServices,
   onViolation?: (error: CoreProtocolError) => void,
 ): CorePlatform {
-  const endpoint = createCoreEndpoint(channel, (line) => log(line), onViolation);
+  // only a daemon names the client a request or panel message came from
+  const endpoint = createCoreEndpoint(channel, (line) => log(line), onViolation, init.remote ? processActor : undefined);
   let worktrees: WorktreeHostServices | undefined;
   const trust = createTrustMirror(endpoint, init, () => worktrees);
   const state = createStateMirror(endpoint, init);
@@ -86,7 +87,7 @@ export function createCorePlatform(
   const editor = createEditorProxy(endpoint, init);
   const window = createWindowProxy(endpoint, init, panels);
   let prompts: ChatPrompts | undefined;
-  const owned = [panels, trust, state, workspaceFolders, secrets, editor, window, clients];
+  const owned = [panels, trust, state, workspaceFolders, secrets, editor, window, clients, ...(remote ? [remote] : [])];
   return {
     get capabilities() {
       return local.capabilities();

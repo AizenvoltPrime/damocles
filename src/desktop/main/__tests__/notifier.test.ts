@@ -155,7 +155,7 @@ function notifier(platform: NodeJS.Platform): NotifierHost {
   return new NotifierHost({
     platform,
     preloadPath: 'preload-overlay.js',
-    state: () => ({ locale: 'en', platform: 'win32' }),
+    state: () => ({ locale: 'en', platform: 'win32', remoteEnabled: false }),
     resolveToast: (id, action) => resolved.push([id, action]),
     holdToast: (id, held) => holds.push([id, held]),
     leave: () => {
@@ -407,7 +407,7 @@ describe('desktop popup window (D52)', () => {
     expect(resolved).toEqual([['t1', 'open'], ['t1', undefined]]);
     expect(holds).toEqual([['t1', true]]);
     expect(lines.some((line) => line.startsWith('[notifier] rejected'))).toBe(true);
-    await expect(Promise.resolve(contents.ipc.handlers.get(OVERLAY_CHANNELS.getState)!(own()))).resolves.toEqual({ locale: 'en', platform: 'win32' });
+    await expect(Promise.resolve(contents.ipc.handlers.get(OVERLAY_CHANNELS.getState)!(own()))).resolves.toEqual({ locale: 'en', platform: 'win32', remoteEnabled: false });
     expect(() => contents.ipc.handlers.get(OVERLAY_CHANNELS.getState)!({ sender: {}, senderFrame: { url: NOTIFIER_PAGE_URL, parent: null } })).toThrow('Rejected');
   });
 
@@ -504,7 +504,7 @@ describe('desktop popup window (D52)', () => {
     const contents = win().webContents;
     const closing = own();
     win().emit('closed');
-    await expect(Promise.resolve(contents.ipc.handlers.get(OVERLAY_CHANNELS.getState)!(closing))).resolves.toEqual({ locale: 'en', platform: 'win32' });
+    await expect(Promise.resolve(contents.ipc.handlers.get(OVERLAY_CHANNELS.getState)!(closing))).resolves.toEqual({ locale: 'en', platform: 'win32', remoteEnabled: false });
     contents.ipc.emit(OVERLAY_CHANNELS.toastHold, closing, 't1', true);
     contents.ipc.emit(OVERLAY_CHANNELS.toastArea, closing, AREA);
     expect(holds).toEqual([]);

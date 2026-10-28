@@ -13,8 +13,13 @@ window.damoclesBridge = {
   onMessage: () => () => {},
   getState: () => undefined,
   setState: () => {},
-  getHost: () => ({ hostId: 'h1', name: 'prod-1' }),
+  getHost: () => ({ hostId: 'h1', name: 'prod-1', computer: 'ALEXIOS-PC' }),
   onHost: () => () => {},
+  getOffline: () => undefined,
+  hostAction: () => undefined,
+  getConnection: () => undefined,
+  onConnection: () => () => undefined,
+  queueAction: () => undefined,
 };
 
 describe('the rule destination picker on a remote chat', () => {

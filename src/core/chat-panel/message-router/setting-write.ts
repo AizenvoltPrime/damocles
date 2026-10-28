@@ -25,14 +25,14 @@ export async function writeSetting(
   } catch (err) {
     const detail = err instanceof Error ? err.message : "Unknown error";
     log("[MessageRouter] Error saving %s: %s", key, detail);
-    postMessage(ctx.host, { type: "notification", message: failure(detail), notificationType: "error" });
-    postMessage(ctx.host, { type: "settingWriteResult", key, ok: false, error: detail });
+    postMessage(ctx.reply, { type: "notification", message: failure(detail), notificationType: "error" });
+    postMessage(ctx.reply, { type: "settingWriteResult", key, ok: false, error: detail });
     return false;
   }
   const folder = CHAT_SETTING_KEYS.has(written.key) ? settingsFolderOf(ctx.folder) : undefined;
   // a scope tab's write landed in that tab's file, whichever file the value comes from now
   const scope = settingsViewWriteScope(folder !== undefined) ?? effectiveScope(platform, written.key, folder);
   const file = scope === undefined ? undefined : platform.settings.scopeFile(scope, folder);
-  postMessage(ctx.host, { type: "settingWriteResult", key, ok: true, scope: scope ?? written.home, ...(file !== undefined ? { file } : {}) });
+  postMessage(ctx.reply, { type: "settingWriteResult", key, ok: true, scope: scope ?? written.home, ...(file !== undefined ? { file } : {}) });
   return true;
 }

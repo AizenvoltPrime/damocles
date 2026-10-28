@@ -4,15 +4,16 @@
 import { randomBytes } from 'node:crypto';
 import * as path from 'node:path';
 import type { EndedLeaseHolder } from '../../core/pi-session/session-store/session-lease';
+import type { RelayIdentity } from '../../core/scm/askpass/credential-relay';
 import type { WorkerName } from '../../platform/app-paths';
 import type { Disposable } from '../../platform/disposable';
 import { isAttachedFrame } from '../core-protocol/attached-transport';
-import { createMainEndpoint, type CoreTransport, type MainEndpoint } from '../core-protocol';
-import type { CoreInit } from '../core-protocol/messages';
+import { createMainEndpoint, processActor, type CoreTransport, type MainEndpoint } from '../core-protocol';
+import type { ClientPolicy, CoreInit } from '../core-protocol/messages';
 import { restartDecision } from '../local-services/restart-policy';
 import type { GitProbe } from '../local-services/shell-env';
 import type { CoreAttach, CoreState } from './control-messages';
-import { createClientMirrors, createCoreRouter, type CoreRouter } from './core-routes';
+import { createClientMirrors, createCoreRouter, type ClientLink, type CoreRouter } from './core-routes';
 import type { DaemonState } from './daemon-state';
 import type { ForkedChild } from './process-starts';
 import type { RunRegistry } from './run-registry';
@@ -42,6 +43,10 @@ export interface RemoteCoreHostDeps {
   readonly state: DaemonState;
   readonly registry: RunRegistry;
   readonly fork: (entry: string, args: readonly string[]) => ForkedChild;
+  // the agent proxy's folder (POSIX), whose socket for the pinned (else acting) client core injects
+  readonly agentFolder: () => string | undefined;
+  // the daemon's git credential relay, which every core it starts listens at; absent for the self-test's core
+  readonly credentialRelay?: () => RelayIdentity;
   readonly log: (line: string) => void;
   readonly now?: () => number;
 }
@@ -54,12 +59,18 @@ export interface CoreConnection extends Disposable {
 export interface RemoteCoreHost {
   state(): CoreState;
   onState(listener: (state: CoreState) => void): Disposable;
-  connect(connectionId: string, channel: CoreTransport, close: (reason: string) => void): CoreConnection;
+  // clientId: the hello's, which core names the client by
+  connect(connectionId: string, clientId: string, channel: CoreTransport, close: (reason: string) => void, link: ClientLink): CoreConnection;
   restart(): CoreState;
   // core.shutdown, then the process ends; nothing restarts it
   shutdown(): Promise<void>;
   // kills core without core.shutdown and settles once it exited; nothing restarts it
   kill(): Promise<void>;
+  // the client core acts for now, and an attached client's policy, as the router keeps them
+  actingClient(): string | undefined;
+  clientPolicy(clientId: string): ClientPolicy | undefined;
+  // the agent folder or the relay's handle moved: a running core hears the new paths, a later one reads them in its init
+  socketsMoved(): void;
 }
 
 interface Running {
@@ -75,13 +86,17 @@ interface Running {
 
 interface Connection {
   readonly id: string;
+  readonly clientId: string;
   readonly channel: CoreTransport;
   readonly close: (reason: string) => void;
+  readonly link: ClientLink;
   attach: number;
   payload: CoreAttach | undefined;
   readonly listeners: Set<(raw: unknown) => void>;
   served: Disposable | undefined;
 }
+
+const agentFolderOf = (agentFolder: string | undefined): { agentFolder?: string } => (agentFolder !== undefined ? { agentFolder } : {});
 
 export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
   const { log } = deps;
@@ -126,10 +141,14 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
     if (!running || running.stopping || !payload) return;
     connection.served = running.router.attach({
       id: connection.id,
+      clientId: connection.clientId,
       hostId: payload.hostId,
       transport: generation(connection),
       mirrors: payload.mirrors,
       close: connection.close,
+      drained: connection.link.drained,
+      lost: connection.link.lost,
+      onLostChange: connection.link.onLostChange,
     });
   };
 
@@ -147,12 +166,18 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
         unpackedRoot: deps.root,
         workers: Object.fromEntries(Object.entries(WORKER_BUNDLES).map(([name, file]) => [name, dist(file)])) as Record<WorkerName, string>,
         watchWorker: dist('watch-worker.js'),
-        askpass: { askpass: dist('askpass', 'askpass.sh'), sshAskpass: dist('askpass', 'ssh-askpass.sh'), node: process.execPath, main: dist('askpass-main.js') },
+        askpass: {
+          askpass: dist('askpass', 'askpass.sh'),
+          sshAskpass: dist('askpass', 'ssh-askpass.sh'),
+          node: process.execPath,
+          main: dist('askpass-main.js'),
+          ...(deps.credentialRelay ? { credentialRelay: deps.credentialRelay() } : {}),
+        },
       },
       logs: { dir: deps.paths.logsDir, echo: false },
       endedCores: [...endedCores],
       worktreeRecords,
-      remote: { hostId },
+      remote: { hostId, ...agentFolderOf(deps.agentFolder()) },
       mirrors: {
         state: { global: deps.state.snapshot('global'), workspace: deps.state.snapshot('workspace') },
         trust: { keys: [...mirrors.trust] },
@@ -172,7 +197,8 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
   const start = (): void => {
     if (!first || closed || (running && !running.stopping)) return;
     const epoch = randomBytes(16).toString('hex');
-    const child = deps.fork(path.join(deps.root, 'dist', 'core-host.js'), []);
+    // the child's channel keeps the context it was made in, so every message from core would otherwise run as that actor
+    const child = processActor.run(undefined, () => deps.fork(path.join(deps.root, 'dist', 'core-host.js'), []));
     const coreListeners = new Set<(raw: unknown) => void>();
     child.onMessage((message) => {
       for (const listener of [...coreListeners]) listener(message);
@@ -185,10 +211,11 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
       },
     };
     // core's own violation ends core, which restarts by the policy; it never ends the daemon
+    // the actor stamps every request and panel message forwarded for a client with that client's id
     const endpoint = createMainEndpoint(transport, log, (error) => {
       log(`[core-host] protocol violation by core (${error.message}); killing it`);
       child.kill();
-    });
+    }, processActor);
     child.postMessage(init(first));
     let exit!: () => void;
     const current: Running = {
@@ -281,8 +308,8 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
       listeners.add(listener);
       return { dispose: () => { listeners.delete(listener); } };
     },
-    connect: (id, channel, close) => {
-      const connection: Connection = { id, channel, close, attach: 0, payload: undefined, listeners: new Set(), served: undefined };
+    connect: (id, clientId, channel, close, link) => {
+      const connection: Connection = { id, clientId, channel, close, link, attach: 0, payload: undefined, listeners: new Set(), served: undefined };
       connections.set(id, connection);
       const subscription = channel.onMessage((raw) => {
         if (!isAttachedFrame(raw)) {
@@ -303,11 +330,11 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
           connection.attach = payload.attach;
           connection.payload = payload;
           // a core started for this attach reads the client's values in its init, so its settings never start without them
-          mirrors.clientAuth.set(id, payload.mirrors.clientAuth);
-          mirrors.clientUser.set(id, payload.mirrors.clientUser);
-          mirrors.clientPolicy.set(id, payload.mirrors.clientPolicy);
+          mirrors.clientAuth.set(clientId, payload.mirrors.clientAuth);
+          mirrors.clientUser.set(clientId, payload.mirrors.clientUser);
+          mirrors.clientPolicy.set(clientId, payload.mirrors.clientPolicy);
           if (!first) {
-            mirrors.actingClient = { clientId: id };
+            mirrors.actingClient = { clientId };
             first = payload;
             start();
           }
@@ -318,10 +345,12 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
           subscription.dispose();
           connection.served?.dispose();
           connections.delete(id);
-          mirrors.clientAuth.delete(id);
-          mirrors.clientUser.delete(id);
-          mirrors.clientPolicy.delete(id);
-          if (mirrors.actingClient.clientId === id) mirrors.actingClient = {};
+          // a newer connection of the same client keeps its values
+          if ([...connections.values()].some((other) => other.clientId === clientId)) return;
+          mirrors.clientAuth.delete(clientId);
+          mirrors.clientUser.delete(clientId);
+          mirrors.clientPolicy.delete(clientId);
+          if (mirrors.actingClient.clientId === clientId) mirrors.actingClient = {};
         },
       };
     },
@@ -336,6 +365,13 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
       closed = true;
       const current = running;
       if (current) await stop(current);
+    },
+    actingClient: () => mirrors.actingClient.clientId,
+    clientPolicy: (clientId) => mirrors.clientPolicy.get(clientId),
+    socketsMoved: () => {
+      if (!running || running.stopping) return;
+      const relayHandle = deps.credentialRelay?.().handle;
+      running.endpoint.publish('hostSockets', { ...agentFolderOf(deps.agentFolder()), ...(relayHandle !== undefined ? { relayHandle } : {}) });
     },
     kill: async () => {
       closed = true;

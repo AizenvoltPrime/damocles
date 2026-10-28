@@ -1,5 +1,5 @@
 import { catalogEntryOfPiModel, modelLabel as catalogModelLabel } from '@shared/model-vendor';
-import { NEW_CHAT_ID_PREFIX, type ShellChat } from '../preload/shell-channels';
+import type { ShellChat, ShellChatAction } from '../preload/shell-channels';
 
 export type ChatGroup = 'today' | 'yesterday' | 'earlier';
 
@@ -34,9 +34,9 @@ export function tagCounts(chats: readonly ShellChat[]): Array<{ readonly tag: st
   return [...counts].map(([tag, count]) => ({ tag, count })).sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
 }
 
-/** False for a chat with no session file yet, which main refuses to rename or tag. */
-export function hasSavedConversation(chat: ShellChat): boolean {
-  return !chat.id.startsWith(NEW_CHAT_ID_PREFIX);
+/** Whether main offers the action on the chat's row; its menu, buttons and keys all ask this. */
+export function chatOffers(chat: ShellChat, action: ShellChatAction): boolean {
+  return chat.actions.includes(action);
 }
 
 /** A chat's recorded pi model as the model lists name it; its pi id when it is outside the catalog. */

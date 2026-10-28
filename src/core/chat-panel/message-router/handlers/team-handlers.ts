@@ -18,7 +18,7 @@ export function createTeamHandlers(deps: HandlerDependencies): Partial<HandlerRe
       if (!sessionId) return;
       try {
         const team = await loadTeam(ctx.session, ctx.folder.fsPath, sessionId, msg.teamId);
-        if (team) postMessage(ctx.host, { type: "teamStarted", team });
+        if (team) postMessage(ctx.reply, { type: "teamStarted", team });
       } catch (err) {
         console.error('[TeamHandlers] Failed to load team data:', err);
       }
@@ -32,7 +32,7 @@ export function createTeamHandlers(deps: HandlerDependencies): Partial<HandlerRe
         const teamId = await findTeamIdByToolUse(ctx.folder.fsPath, sessionId, msg.toolUseId);
         if (!teamId) return;
         const team = await loadTeam(ctx.session, ctx.folder.fsPath, sessionId, teamId);
-        if (team) postMessage(ctx.host, { type: "teamStarted", team });
+        if (team) postMessage(ctx.reply, { type: "teamStarted", team });
       } catch (err) {
         log('[TeamHandlers] Failed to load team by toolUseId %s: %O', msg.toolUseId, err);
       }
@@ -55,7 +55,7 @@ export function createTeamHandlers(deps: HandlerDependencies): Partial<HandlerRe
       if (msg.type !== "cancelTeam") return;
       // The team's own completion reports a stop that landed; a late click is answered so "Stopping..." clears.
       if (ctx.session.teamService?.stopTeam(msg.teamId)) return;
-      postMessage(ctx.host, { type: "teamCancelRejected", teamId: msg.teamId });
+      postMessage(ctx.reply, { type: "teamCancelRejected", teamId: msg.teamId });
     },
 
     requestTeamAgentData: async (msg, ctx) => {
@@ -65,9 +65,9 @@ export function createTeamHandlers(deps: HandlerDependencies): Partial<HandlerRe
         const messages = sessionId
           ? await loadAgentConversation(ctx.folder.fsPath, sessionId, msg.teamId, msg.agentId)
           : [];
-        postMessage(ctx.host, { type: "teamAgentDataLoaded", teamId: msg.teamId, agentId: msg.agentId, messages });
+        postMessage(ctx.reply, { type: "teamAgentDataLoaded", teamId: msg.teamId, agentId: msg.agentId, messages });
       } catch {
-        postMessage(ctx.host, { type: "teamAgentDataLoaded", teamId: msg.teamId, agentId: msg.agentId, messages: [] });
+        postMessage(ctx.reply, { type: "teamAgentDataLoaded", teamId: msg.teamId, agentId: msg.agentId, messages: [] });
       }
     },
   };

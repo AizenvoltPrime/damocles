@@ -15,10 +15,10 @@ describe('daemon lifetime', () => {
     const registry = createRunRegistry();
     const exits: string[] = [];
     const lifetime = createLifetime(registry, (reason) => exits.push(reason));
-    lifetime.clientsChanged(1);
+    lifetime.connectionsChanged(['connected']);
     vi.advanceTimersByTime(IDLE_EXIT_MS * 3);
     expect(exits).toEqual([]);
-    lifetime.clientsChanged(0);
+    lifetime.connectionsChanged([]);
     vi.advanceTimersByTime(IDLE_EXIT_MS - 1);
     expect(exits).toEqual([]);
     vi.advanceTimersByTime(1);
@@ -30,7 +30,7 @@ describe('daemon lifetime', () => {
     const exits: string[] = [];
     const lifetime = createLifetime(registry, (reason) => exits.push(reason));
     registry.addTerminal({ id: 'term-1', projectKey: '', title: 'sh' });
-    lifetime.clientsChanged(0);
+    lifetime.connectionsChanged([]);
     vi.advanceTimersByTime(IDLE_EXIT_MS * 10);
     expect(exits).toEqual([]);
     registry.removeTerminal('term-1');
@@ -42,11 +42,23 @@ describe('daemon lifetime', () => {
     const registry = createRunRegistry();
     const exits: string[] = [];
     const lifetime = createLifetime(registry, (reason) => exits.push(reason));
-    lifetime.clientsChanged(2);
+    lifetime.connectionsChanged(['connected', 'connected']);
     registry.addTerminal({ id: 'term-1', projectKey: '', title: 'sh' });
     lifetime.shutdownWhenIdle();
     expect(exits).toEqual([]);
     registry.removeTerminal('term-1');
     expect(exits).toEqual(['shutdownWhenIdle, and no run or terminal is left']);
+  });
+
+  it('does not stay alive for a connection inside its reconnection grace', () => {
+    const registry = createRunRegistry();
+    const exits: string[] = [];
+    const lifetime = createLifetime(registry, (reason) => exits.push(reason));
+    lifetime.connectionsChanged(['connected', 'inGrace']);
+    vi.advanceTimersByTime(IDLE_EXIT_MS * 3);
+    expect(exits).toEqual([]);
+    lifetime.connectionsChanged(['inGrace']);
+    vi.advanceTimersByTime(IDLE_EXIT_MS);
+    expect(exits).toEqual([`no client, run or terminal for ${IDLE_EXIT_MS} ms`]);
   });
 });

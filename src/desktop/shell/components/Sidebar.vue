@@ -5,6 +5,7 @@ import { useElementSize, useWindowSize } from '@vueuse/core';
 import { boundGraphChoices, boundRepositoryViewStates, MAX_SEARCH_VIEW_STATES, MIN_SECTION_SIZE, MIN_SIDEBAR_WIDTH, SIDEBAR_SECTIONS, type DamoclesShellApi, type FileRef, type GraphRefChoice, type SearchViewState, type ShellLayout, type ScmViewOptions, type ShellSidebarLayout, type ShellState, type SidebarSectionId } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import { remPx } from '@/composables/useRemPx';
+import { useHostConnection } from '@/composables/useHostConnection';
 import { atRootFont, GRID_SASH_REM, ROW_SASH_OVERLAP_REM, ROW_SASH_REM, SASH_KEY_STEP_REM, SECTION_HEADER_REM } from '../layout';
 import ProjectsSection from './ProjectsSection.vue';
 import ChatsSection from './ChatsSection.vue';
@@ -150,6 +151,14 @@ const selectedProject = computed(() => props.state.projects.find((project) => pr
 // D31: Files, Search, Source control and Repositories read the folder shown for the selected project, by its root key.
 const shownFolder = computed(() => (selectedProject.value ? props.state.shownFolders[selectedProject.value.key] : undefined));
 const viewKey = computed(() => shownFolder.value?.rootKey ?? selectedProject.value?.key);
+// The selected project's host as its banner shows it: away once a drop outlasted the grace, or while it is not connected at all.
+const selectedHost = computed(() => props.state.hosts.find((host) => host.authorityKey === selectedProject.value?.authority.key));
+const hostView = useHostConnection(() => (selectedHost.value ? { hostId: selectedHost.value.hostId, connected: selectedHost.value.connection === 'connected', reconnect: selectedHost.value.reconnect } : undefined));
+const filesAway = computed(() => {
+  const project = selectedProject.value;
+  if (!project || project.authority.kind === 'local') return false;
+  return selectedHost.value?.reconnect ? hostView.shown.value !== undefined : project.connection !== 'connected';
+});
 
 // A collapsed section keeps the size it had, so it reopens at that size even after the sidebar got shorter.
 function report(): void {
@@ -318,6 +327,11 @@ defineExpose({
       :api="api"
       :projects="state.projects"
       :selected-key="state.selected.projectKey"
+      :remote-enabled="state.remoteEnabled"
+      :hosts="state.hosts"
+      :view="state.projectsView"
+      :groups="state.projectGroups"
+      :platform="state.platform"
       :collapsed="layout.sections.projects.collapsed"
       :body-size="bodySize('projects')"
       @toggle="toggleSection('projects')"
@@ -362,8 +376,11 @@ defineExpose({
       :new-chat-in-worktree-shortcut="state.shortcuts.newChatInWorktree"
       :project-name="selectedProject?.name ?? t('projects.home')"
       :platform="state.platform"
+      :project-platform="selectedProject?.platform ?? state.platform"
+      :trash="selectedProject?.trash ?? true"
       :collapsed="layout.sections.files.collapsed"
       :body-size="bodySize('files')"
+      :away="filesAway"
       @toggle="toggleSection('files')"
       @expand="expand('files')"
     />

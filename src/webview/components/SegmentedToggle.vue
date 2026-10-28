@@ -26,7 +26,12 @@ const props = withDefaults(defineProps<{
   disabled?: boolean;
   /** `md` is the settings modal's control (Desktop template settings rows): larger options that wrap onto right-aligned lines. */
   size?: 'sm' | 'md';
-}>(), { selectedClass: 'text-(--d-text)', disabled: false, size: 'sm' });
+  /**
+   * `equal` (size `sm`): the options are equal grid columns and the selected pill moves one column per option by transform, so its place
+   * never depends on measured text widths. `measured`: the indicator measures the selected option.
+   */
+  variant?: 'measured' | 'equal';
+}>(), { selectedClass: 'text-(--d-text)', disabled: false, size: 'sm', variant: 'measured' });
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: T): void;
@@ -37,10 +42,12 @@ const SIZES = {
   md: { root: 'flex-wrap justify-end rounded-9 p-0.75', item: 'rounded-7 px-2.75 py-1 text-xs/normal', unselected: 'text-(--d-muted)', radius: 7 },
 } as const;
 const sized = computed(() => SIZES[props.size]);
+// the equal variant's pill, inset by the `sm` track's padding
+const EQUAL_PILL = 'inset-y-0.5 left-0.5 w-[calc((100%-0.25rem)/var(--segments))] rounded-5';
 
 const root = useTemplateRef('root');
 const selected = computed(() => props.options.findIndex((option) => option.value === props.modelValue));
-const { box, animate } = useSlidingIndicator(() => root.value?.$el as HTMLElement | undefined, '[data-segment]', selected);
+const { box, animate } = useSlidingIndicator(() => (props.variant === 'measured' ? root.value?.$el as HTMLElement | undefined : undefined), '[data-segment]', selected);
 
 function onUpdate(value: AcceptableValue): void {
   const option = props.options.find((candidate) => candidate.value === value);
@@ -54,11 +61,22 @@ function onUpdate(value: AcceptableValue): void {
     type="single"
     :model-value="modelValue"
     :disabled="disabled === true"
-    class="relative isolate flex"
-    :class="sized.root"
+    class="relative isolate"
+    :class="[sized.root, variant === 'equal' ? 'grid auto-cols-[1fr] grid-flow-col' : 'flex']"
+    :style="variant === 'equal' ? { '--segments': options.length } : undefined"
     @update:model-value="onUpdate"
   >
     <SlidingIndicator
+      v-if="variant === 'equal'"
+      :box="null"
+      :radius="sized.radius"
+      :animate="false"
+      :columns="{ index: selected }"
+      data-testid="segmented-pill"
+      :class="[EQUAL_PILL, indicatorClass]"
+    />
+    <SlidingIndicator
+      v-else
       :box="box"
       :radius="sized.radius"
       :animate="animate"
@@ -71,7 +89,7 @@ function onUpdate(value: AcceptableValue): void {
       v-bind="option.attrs"
       data-segment
       class="relative z-1 flex items-center gap-1 whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--d-accent)"
-      :class="[sized.item, option.value === modelValue ? selectedClass : [sized.unselected, 'enabled:hover:text-(--d-text)']]"
+      :class="[sized.item, variant === 'equal' && 'justify-center', option.value === modelValue ? selectedClass : [sized.unselected, 'enabled:hover:text-(--d-text)']]"
     >
       <component
         :is="option.icon"

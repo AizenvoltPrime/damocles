@@ -258,7 +258,7 @@ describe('PiRuntime.init lifecycle', () => {
     stopSynced();
   });
 
-  it('tells memory-judge listeners when a folder starts, a provider sync ends, the account republishes or a Memory judge setting changes', async () => {
+  it('tells memory-judge listeners when a folder starts, a provider sync ends or the account republishes, never for a Memory judge setting, which the panels watch themselves', async () => {
     const changes = vi.fn();
     const stop = PiRuntime.onMemoryJudgeChange(changes);
     const runtime = PiRuntime.get('/agent');
@@ -271,15 +271,10 @@ describe('PiRuntime.init lifecycle', () => {
     expect(changes).toHaveBeenCalledTimes(2);
     expect(runtime.memoryJudgeKnown).toBe(true);
     await fake.settings.update('damocles.memory.judge', 'step-5-preview', 'user');
-    expect(changes).toHaveBeenCalledTimes(3);
     await fake.settings.update('damocles.memory.judgeEffort', 'high', 'user');
-    expect(changes).toHaveBeenCalledTimes(4);
-    // The Background model never chooses the judge.
-    await fake.settings.update('damocles.background.model', 'step-5-preview', 'user');
-    await fake.settings.update('damocles.memory.enabled', false, 'user');
-    expect(changes).toHaveBeenCalledTimes(4);
+    expect(changes).toHaveBeenCalledTimes(2);
     PiRuntime.notifyMemoryJudgeChange();
-    expect(changes).toHaveBeenCalledTimes(5);
+    expect(changes).toHaveBeenCalledTimes(3);
     stop();
   });
 

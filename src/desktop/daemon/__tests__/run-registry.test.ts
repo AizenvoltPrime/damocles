@@ -96,6 +96,22 @@ describe('run registry, panels', () => {
     expect(changes).toHaveBeenCalledTimes(4);
   });
 
+  // device A's close must never stop or keep a turn device B started on the same daemon
+  it('lists for a client only the chat runs its own work started, kept through the run, and forgets the owner with it', () => {
+    const registry = createRunRegistry();
+    registry.panelActivity(panel, running, 'device-a');
+    registry.panelActivity({ ...panel, panelId: 'panel-2' }, running, 'device-b');
+    // another device answering a prompt of A's turn does not take it over
+    registry.panelActivity(panel, waiting, 'device-b');
+    registry.addTerminal({ id: 'term-1', projectKey: '/srv/app', title: 'bash' });
+    expect(registry.ownRuns('device-a').map((run) => run.id)).toEqual(['panel-1']);
+    expect(registry.ownRuns('device-b').map((run) => run.id)).toEqual(['panel-2']);
+    registry.panelActivity(panel, idle);
+    registry.panelActivity(panel, running, 'device-b');
+    expect(registry.ownRuns('device-a')).toEqual([]);
+    expect(registry.ownRuns('device-b').map((run) => run.id)).toEqual(['panel-2', 'panel-1']);
+  });
+
   it('a settled turn ends the run unless a prompt or background agents still hold it', () => {
     const registry = createRunRegistry();
     registry.panelActivity(panel, running);

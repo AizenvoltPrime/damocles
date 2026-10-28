@@ -50,6 +50,7 @@ function select(id: string): void {
         :terminal="terminal"
         :platform="state.platform"
         :split-shortcut="state.shortcuts.splitTerminal"
+        :hosts="state.hosts"
       />
       <Transition name="t-fade">
         <div

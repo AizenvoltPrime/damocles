@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
-import { MAX_REPOSITORY_ROW_ID_LENGTH, MAX_REPOSITORY_VIEW_STATES, type ContentBounds, type DamoclesShellApi, type ShellChat, type ShellEditorTab, type ShellState } from '../../preload/shell-channels';
+import { MAX_REPOSITORY_ROW_ID_LENGTH, MAX_REPOSITORY_VIEW_STATES, type ContentBounds, type DamoclesShellApi, type ShellChat, type ShellEditorTab, type ShellHost, type ShellState } from '../../preload/shell-channels';
 import type { OverlayRequest } from '../../preload/overlay-channels';
 import App from '../App.vue';
 import ChatsSection from '../components/ChatsSection.vue';
@@ -10,6 +10,7 @@ import Sidebar from '../components/Sidebar.vue';
 import RepositoriesSection from '../scm/RepositoriesSection.vue';
 import Sash from '../layout/Sash.vue';
 import { shellI18n } from '../i18n';
+import { OFFLINE_GRACE_MS } from '@shared/host-connection';
 import { LAYOUT_SETTLED_EVENT, watchContentBounds } from '../content-bounds';
 import { chatGroupOf, chatListRows, modelLabel, tagCounts } from '../chat-list';
 import { avatarHue, avatarInitial } from '../project-avatar';
@@ -175,6 +176,79 @@ describe('Reveal in Files', () => {
     expect(api.setFocusOverlay).toHaveBeenLastCalledWith(false);
     expect(api.showSidebar).not.toHaveBeenCalled();
     expect(wrapper.find('[data-testid="focus-overlay-scrim"]').exists()).toBe(false);
+  });
+});
+
+describe('a remote host that is not connected', () => {
+  const HOST: ShellHost = { hostId: 'h1', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'offline', signInNeeded: false };
+  const REMOTE: ShellState = {
+    ...STATE,
+    remoteEnabled: true,
+    hosts: [HOST],
+    projects: [{ ...STATE.projects[0]!, key: 'ssh:h1|/srv/app', authority: { kind: 'ssh', key: 'ssh+h1', hostId: 'h1', name: 'prod-1' }, platform: 'linux', connection: 'offline', trash: false }],
+    selected: { projectKey: 'ssh:h1|/srv/app', chatId: 'c1' },
+  };
+  const TAB: ShellEditorTab = { id: 't1', kind: 'code', documentId: 'd1', title: 'a.ts', projectKey: 'ssh:h1|/srv/app', relativePath: 'a.ts', displayPath: '/srv/app/a.ts', dirty: false, readOnly: false, conflict: false };
+
+  it('shows the offline placeholder in its file tab, whose Reconnect asks main', async () => {
+    const api = fakeShellApi([], {
+      getState: vi.fn(async () => REMOTE),
+      getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs: [TAB], activeTabId: TAB.id })),
+      getDocument: vi.fn(async (documentId: string) => ({ kind: 'offline' as const, documentId, hostId: 'h1', hostName: 'prod-1' })),
+    });
+    const wrapper = track(mount(App, { props: { api }, global: { plugins: [shellI18n], stubs: { CodeEditor: true, Breadcrumbs: true } }, attachTo: document.body }));
+    await flushPromises();
+    const placeholder = wrapper.get('[data-testid="editor-offline"]');
+    expect(placeholder.text()).toBe('prod-1 is offline.Reconnect');
+    await placeholder.get('button').trigger('click');
+    expect(api.reconnectHost).toHaveBeenCalledWith('h1');
+  });
+
+  it('says in its file tab that the file could not be opened when main cannot read it', async () => {
+    const api = fakeShellApi([], {
+      getState: vi.fn(async () => REMOTE),
+      getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs: [TAB], activeTabId: TAB.id })),
+      getDocument: vi.fn(async () => {
+        throw new Error('the document is gone');
+      }),
+    });
+    const wrapper = track(mount(App, { props: { api }, global: { plugins: [shellI18n], stubs: { CodeEditor: true, Breadcrumbs: true } }, attachTo: document.body }));
+    await flushPromises();
+    const failure = wrapper.get('[data-testid="editor-load-failed"]');
+    expect(failure.attributes('role')).toBe('alert');
+    expect(failure.text()).toBe("Damocles could not open 'a.ts'.");
+    expect(wrapper.find('[data-testid="editor-offline"]').exists()).toBe(false);
+  });
+
+  it("shows the banner over the chat pane of the selected project's host while no chat page covers it, green for a moment once it connects, and none under a chat page or for a local project", async () => {
+    const EMPTY: ShellState = { ...REMOTE, selected: { projectKey: 'ssh:h1|/srv/app' } };
+    const api = fakeShellApi([], { getState: vi.fn(async () => EMPTY) });
+    const wrapper = mountApp(api);
+    await flushPromises();
+    const banner = wrapper.get('[data-testid="grid-pane-chat"] [data-testid="connection-banner"]');
+    expect(banner.text()).toContain('prod-1 is offline');
+    await banner.get('button').trigger('click');
+    expect(api.reconnectHost).toHaveBeenCalledWith('h1');
+    api.push({ ...EMPTY, hosts: [{ ...HOST, connection: 'connected' }] });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="connection-banner"]').attributes('data-state')).toBe('reconnected');
+    api.push({ ...EMPTY, hosts: [{ ...HOST, connection: 'connecting', signInNeeded: true }] });
+    await flushPromises();
+    await wrapper.get('[data-testid="connection-banner"] button').trigger('click');
+    expect(api.signInHost).toHaveBeenCalledWith('h1');
+    // a chat page covers the slot and shows the banner under its own header, which stays at the pane's top; the gutter beside
+    // the page continues that banner, so it spans the pane's whole width
+    api.push(REMOTE);
+    await flushPromises();
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="connection-banner"]').exists()).toBe(false));
+    expect(wrapper.find('[data-testid="grid-pane-chat"] [data-testid="connection-banner-edge"]').exists()).toBe(true);
+    api.push({ ...REMOTE, hosts: [{ ...HOST, connection: 'connected' }] });
+    await flushPromises();
+    // the edge goes green with the page's banner, then both collapse
+    expect(wrapper.get('[data-testid="connection-banner-edge"]').attributes('data-state')).toBe('reconnected');
+    api.push({ ...EMPTY, selected: { projectKey: STATE.projects[0]!.key }, projects: [...REMOTE.projects, STATE.projects[0]!] });
+    await flushPromises();
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="connection-banner"]').exists()).toBe(false));
   });
 });
 
@@ -344,9 +418,9 @@ describe('App and title bar', () => {
   });
 });
 
-function mountProjects(api: DamoclesShellApi, selectedKey = 'p1') {
+function mountProjects(api: DamoclesShellApi, selectedKey = 'p1', remoteEnabled = false, hosts: readonly ShellHost[] = []) {
   return track(mount(ProjectsSection, {
-    props: { api, projects: STATE.projects, selectedKey, collapsed: false, bodySize: 150 },
+    props: { api, projects: STATE.projects, selectedKey, remoteEnabled, hosts, view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
     global: { plugins: [shellI18n] },
     attachTo: document.body,
   }));
@@ -400,9 +474,67 @@ describe('projects section', () => {
 
     const request = api.overlayRequests[0];
     expect(request).toMatchObject({ kind: 'menu', label: 'Actions for beta', anchor: { x: 30, y: 40, width: 0, height: 0 } });
-    expect(request?.kind === 'menu' && request.items.map((item) => (item.kind === 'item' ? item.label : '-'))).toEqual(['Trust project', '-', 'Remove project']);
+    expect(request?.kind === 'menu' && request.items.map((item) => (item.kind === 'item' ? item.label : '-'))).toEqual(['Trust project', '-', 'Move up', 'Move down', '-', 'Remove project']);
     expect(api.removeProject).toHaveBeenCalledWith('p2');
     expect(wrapper.get('[role="alert"]').text()).toBe('Could not remove project beta: a chat is running');
+  });
+
+  const PROD: ShellHost = { hostId: 'h1', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'connected', signInNeeded: false };
+  const STAGING: ShellHost = { hostId: 'h2', authorityKey: 'ssh+h2', name: 'staging', connection: 'offline', signInNeeded: false };
+  const addMenu = async (api: ReturnType<typeof fakeShellApi>, remoteEnabled: boolean): Promise<string[]> => {
+    const wrapper = mountProjects(api, 'p1', remoteEnabled, [PROD, STAGING]);
+    await wrapper.get('[data-testid="add-project"]').trigger('click');
+    await flushPromises();
+    const request = api.overlayRequests.at(-1);
+    return request?.kind === 'menu' ? request.items.map((item) => (item.kind === 'item' ? item.label : '-')) : [];
+  };
+
+  it('opens the add menu: a local folder, a remote folder and a folder on each saved host', async () => {
+    const api = fakeShellApi();
+    api.answerNext({ kind: 'menu', itemId: 'host:h2' });
+    expect(await addMenu(api, true)).toEqual(['Local folder...', 'Remote folder...', '-', 'Folder on prod-1...', 'Folder on staging...']);
+    expect(api.openHostFolder).toHaveBeenCalledWith('h2');
+    expect(api.openConnect).not.toHaveBeenCalled();
+    expect(api.addProject).not.toHaveBeenCalled();
+  });
+
+  it('shows no remote entry while remote is disabled: the add button opens the OS folder picker with no menu', async () => {
+    const api = fakeShellApi();
+    const wrapper = mountProjects(api, 'p1', false, [PROD, STAGING]);
+    const button = wrapper.get('[data-testid="add-project"]');
+    expect(button.attributes('aria-haspopup')).toBeUndefined();
+    await button.trigger('click');
+    await flushPromises();
+    expect(api.overlayRequests).toEqual([]);
+    expect(api.addProject).toHaveBeenCalledOnce();
+    expect(api.openConnect).not.toHaveBeenCalled();
+  });
+
+  it('opens the OS folder picker from Local folder...', async () => {
+    const api = fakeShellApi();
+    api.answerNext({ kind: 'menu', itemId: 'local' });
+    await addMenu(api, true);
+    expect(api.addProject).toHaveBeenCalledOnce();
+    expect(api.openConnect).not.toHaveBeenCalled();
+  });
+
+  it('puts Connect to host before the add button while remote is enabled, opening the Connect dialog on its host list', async () => {
+    const api = fakeShellApi();
+    const wrapper = mountProjects(api, 'p1', true, [PROD]);
+    const actions = wrapper.findAll('[data-testid="sidebar-section-actions"] button');
+    expect(actions.map((button) => button.attributes('data-testid'))).toEqual(['connect-host', 'add-project']);
+    expect(actions[0]!.attributes()).toMatchObject({ 'aria-label': 'Connect to host', title: 'Connect to host' });
+    await actions[0]!.trigger('click');
+    expect(api.openConnect).toHaveBeenCalledWith();
+    expect(api.overlayRequests).toEqual([]);
+    expect(mountProjects(fakeShellApi(), 'p1', false, [PROD]).find('[data-testid="connect-host"]').exists()).toBe(false);
+  });
+
+  it('opens the Connect dialog on its host list from Remote folder...', async () => {
+    const api = fakeShellApi();
+    api.answerNext({ kind: 'menu', itemId: 'remote' });
+    await addMenu(api, true);
+    expect(api.openConnect).toHaveBeenCalledWith();
   });
 });
 
@@ -530,7 +662,7 @@ describe('chats section', () => {
   });
 
   it('offers only Open and Delete for a chat with no saved conversation, by menu, row buttons and F2', async () => {
-    const api = fakeShellApi([chat({ id: 'new:panel-1', title: '' }), ...CHATS]);
+    const api = fakeShellApi([chat({ id: 'new:panel-1', title: '', actions: ['delete'] }), ...CHATS]);
     const wrapper = mountChats(api, 'new:panel-1');
     await flushPromises();
 
@@ -546,6 +678,36 @@ describe('chats section', () => {
     expect(row.find('[data-testid="chat-action-delete"]').exists()).toBe(true);
     await wrapper.get('[role="listbox"]').trigger('keydown', { key: 'F2' });
     expect(wrapper.find('[data-testid="chat-rename"]').exists()).toBe(false);
+  });
+
+  it('offers only Open for a mirrored chat of a host with no connection, by menu, row buttons and keys', async () => {
+    const mirrored = chat({
+      id: 'm1',
+      title: 'Mirrored',
+      tag: 'auth',
+      actions: [],
+      worktree: { worktreeId: 'a1b2c3d4', branch: 'damocles/m1', status: 'live' },
+    });
+    const api = fakeShellApi([mirrored]);
+    const wrapper = mountChats(api, 'm1');
+    await flushPromises();
+
+    await wrapper.get('[data-chat-id="m1"]').trigger('contextmenu', { clientX: 10, clientY: 20 });
+    await flushPromises();
+    const request = api.overlayRequests[0];
+    expect(request?.kind === 'menu' && request.items.map((item) => (item.kind === 'separator' ? '-' : item.label))).toEqual(['Open']);
+
+    const row = wrapper.get('[data-chat-id="m1"]');
+    for (const action of ['rename', 'tag', 'delete', 'new-in-worktree']) expect(row.find(`[data-testid="chat-action-${action}"]`).exists()).toBe(false);
+    const list = wrapper.get('[role="listbox"]');
+    await list.trigger('keydown', { key: 'F2' });
+    await list.trigger('keydown', { key: 'Delete' });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="chat-rename"]').exists()).toBe(false);
+    expect(api.overlayRequests).toHaveLength(1);
+    expect(api.renameChat).not.toHaveBeenCalled();
+    expect(api.tagChat).not.toHaveBeenCalled();
+    expect(api.deleteChat).not.toHaveBeenCalled();
   });
 
   it('confirms a delete in the overlay, warns for a running or waiting chat and deletes only when confirmed', async () => {
@@ -781,6 +943,37 @@ describe('sidebar layout', () => {
     await wrapper.setProps({ state: STATE });
     await flushPromises();
     expect(api.listFiles).toHaveBeenCalledWith({ projectKey: 'p1', relativeDir: '' });
+  });
+
+  it('dims the Files tree of a remote project once its host\'s drop outlasted the grace, or while it is not connected at all', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      vi.setSystemTime(1_000_000);
+      const host: ShellHost = { hostId: 'h1', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'connected', signInNeeded: false };
+      const project = { ...STATE.projects[0]!, key: 'ssh+h1|/srv/app', authority: { kind: 'ssh' as const, key: 'ssh+h1', hostId: 'h1', name: 'prod-1' }, platform: 'linux' as const, connection: 'connected' as const, trash: false };
+      const remote: ShellState = { ...STATE, remoteEnabled: true, hosts: [host], projects: [project], selected: { projectKey: project.key, chatId: 'c1' } };
+      const api = fakeShellApi(CHATS);
+      const wrapper = track(mount(Sidebar, { props: { api, state: remote }, global: sidebarGlobal(api), attachTo: document.body }));
+      await flushPromises();
+      const away = () => wrapper.get('[data-testid="files-tree"]').attributes('data-away');
+      expect(away()).toBeUndefined();
+      await wrapper.setProps({ state: { ...remote, hosts: [{ ...host, reconnect: { phase: 'suspect', since: Date.now() } }] } });
+      expect(away()).toBeUndefined();
+      vi.advanceTimersByTime(OFFLINE_GRACE_MS);
+      await flushPromises();
+      expect(away()).toBe('true');
+      expect(wrapper.get('[data-testid="files-tree"]').classes()).toContain('opacity-(--d-opacity-disabled)');
+      await wrapper.setProps({ state: remote });
+      expect(away()).toBeUndefined();
+      // a host the loop does not run for dims as soon as its project is not connected
+      await wrapper.setProps({ state: { ...remote, hosts: [{ ...host, connection: 'offline' }], projects: [{ ...project, connection: 'offline' }] } });
+      expect(away()).toBe('true');
+      // a local project never dims
+      await wrapper.setProps({ state: STATE });
+      expect(away()).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // jsdom has no DataTransfer; the one a header drag fills is the one each drop target reads.

@@ -11,6 +11,7 @@ import Sidebar from './components/Sidebar.vue';
 import LayoutGrid from './layout/LayoutGrid.vue';
 import EditorPane from './editor/EditorPane.vue';
 import FocusOverlay from './editor/FocusOverlay.vue';
+import ConnectionBanner from './components/ConnectionBanner.vue';
 import { createEditorStore, EDITOR_STORE } from './editor/editor-store';
 import { createTerminalStore, TERMINAL_STORE } from './terminal/terminal-store';
 import { createScmStore, SCM_STORE } from './scm/scm-store';
@@ -32,6 +33,13 @@ const scm = createScmStore(props.api.scm);
 provide(SCM_STORE, scm);
 watch(() => state.value?.projects, (projects) => {
   if (projects) scm.retainProjects(new Set(projects.map((project) => project.key)));
+});
+
+// The selected project's remote host, whose banner shows over the chat while it is offline or waits for a sign-in.
+const selectedHost = computed(() => {
+  const current = state.value;
+  const hostId = current?.projects.find((project) => project.key === current.selected.projectKey)?.authority.hostId;
+  return hostId === undefined ? undefined : current?.hosts.find((host) => host.hostId === hostId);
 });
 
 // Reveals waiting for main to show the sidebar they asked for.
@@ -155,6 +163,32 @@ onBeforeUnmount(() => {
         :focus-overlay="editor.focusOverlay.value"
         :sidebar-sliding="sidebarSliding"
       >
+        <!-- A chat page covers the slot and shows its own banner under its header, which stays level with the other panes'. -->
+        <template
+          v-if="state.selected.chatId === undefined"
+          #chatBanner
+        >
+          <ConnectionBanner
+            :key="selectedHost?.hostId ?? 'none'"
+            :host="selectedHost"
+            @reconnect="api.reconnectHost($event)"
+            @sign-in="api.signInHost($event)"
+            @show-log="api.showHostLog($event)"
+            @edit-host="api.renameHostOnCard($event)"
+            @switch-when-idle="api.switchHostWhenIdle($event)"
+            @switch-now="api.switchHostNow($event)"
+          />
+        </template>
+        <template
+          v-else
+          #chatGutter
+        >
+          <ConnectionBanner
+            :key="selectedHost?.hostId ?? 'none'"
+            :host="selectedHost"
+            edge
+          />
+        </template>
         <template #chat>
           <FocusOverlay
             v-if="editor.focusOverlay.value && state.selectedChat"

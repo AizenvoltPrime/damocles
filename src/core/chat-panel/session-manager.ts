@@ -10,6 +10,7 @@ import type { BrowserService } from "../browser";
 import { TeamService } from "../team";
 import type { CompassService } from "../compass";
 import type { PanelHost } from "../../platform/window-service";
+import { postToSenders } from "./send-senders";
 import { settingsFolderOf, type FolderTarget } from "../workspace-folders/folder-registry";
 import type { SettingsFolder } from "../../platform/settings-store";
 import type { ForkContext, ForkSpawnArgs } from "../../shared/types/session";
@@ -30,7 +31,7 @@ export interface SessionManagerConfig {
   restoreRecordedSelection: (panelId: string, model: string, thinkingLevel: string | undefined) => void;
   /** The model the panel's session shows, which becomes the panel's once the session committed it. */
   adoptSessionModel: (host: PanelHost, panelId: string, folder: FolderTarget, model: string, contextWindow: number, committed: boolean) => void;
-  postMessage: (host: PanelHost, message: ExtensionToWebviewMessage) => void;
+  postMessage: (host: PanelHost, message: ExtensionToWebviewMessage, except?: readonly string[]) => void;
   setupSessionWatcher: (folderKey: string) => Promise<void>;
   addOrUpdateSession: (sessionId: string, folderKey: string) => Promise<void>;
   getMemoryService: () => MemoryService | null;
@@ -120,7 +121,13 @@ export class SessionManager {
       settingsFolder: settingsFolderOf(folder),
       projectScope: folder.projectScope,
       permissionHandler,
-      onMessage: (message) => this.postMessage(host, message),
+      // a give-back of a send reaches the view that sent it alone (send-senders.ts)
+      onMessage: (message) => postToSenders(host, message, (target, routed, except) => this.postMessage(target, routed, except)),
+      ...(host.views && host.viewHost ? {
+        onViewMessages: (build: (clientId: string | undefined) => readonly ExtensionToWebviewMessage[]) => {
+          for (const { viewKey, clientId } of host.views!()) for (const message of build(clientId)) this.postMessage(host.viewHost!(viewKey), message);
+        },
+      } : {}),
       onSessionIdChange: (sessionId, stored, resumed) => {
         // The router posts a resumed conversation's sessionStarted once it replayed its history, so the webview never shows it early.
         if (!resumed) this.postMessage(host, { type: "sessionStarted", sessionId: sessionId || "", stored });

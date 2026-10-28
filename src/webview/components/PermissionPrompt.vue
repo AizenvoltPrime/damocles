@@ -278,7 +278,10 @@ watch(() => props.toolUseId, resetState);
             scope="global"
           >
             <template #host>
-              <HostBadge :name="host.name" />
+              <HostBadge
+                :name="host.name"
+                :tone="host.color"
+              />
             </template>
             <template #tool>
               {{ toolName }}

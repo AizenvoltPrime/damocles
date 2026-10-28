@@ -1,4 +1,5 @@
 import * as path from "path";
+import { AsyncResource } from "node:async_hooks";
 import type { Disposable } from "../../platform/disposable";
 import type { PlatformWithWorktrees } from "../worktrees/host";
 import type { PanelHost } from "../../platform/window-service";
@@ -16,6 +17,7 @@ import type { ForkContext, ForkSpawnArgs, StoredSession } from "../../shared/typ
 import type { AttachedView, HostInstance, ViewJoinGate } from "./types";
 import type { PromptTarget } from "./webview-prompts";
 import { claimStoredSession } from "./session-ownership";
+import { partialStreamKey } from "./partial-stream";
 import { PanelWorktrees, type PanelWorktreeStateEvent, type WorktreeOptIn } from "./panel-worktrees";
 import { sessionLeaseBlocker } from "../pi-session/session-store/session-lease";
 import { folderContains } from "../worktrees/records";
@@ -25,6 +27,7 @@ import { settingsFolderOf, type FolderChange, type FolderTarget, type WorkspaceF
 import { chatPageHtml, ERROR_PAGE_STRINGS, errorPageHtml } from "../../shared/panel-html";
 import { readContributedConfiguration } from "../config/read-contributed-configuration";
 import { writableKeysOf } from "./settings-view-scope";
+import { hostForChange } from "./device-hosts";
 import { PanelActivity, type PanelActivityListener, type PanelChatChangesListener, type PanelTurnSettledListener, type UsageThresholdListener } from "./activity";
 import type { UsageThresholdCrossing } from "../pi-session/usage-thresholds";
 import { SETTINGS_VIEW_MESSAGE_TYPES, SETTINGS_VIEW_REQUEST_TYPES } from "../../shared/settings-view-messages";
@@ -71,13 +74,27 @@ async function settledOrAborted(work: Promise<unknown>, signal: AbortSignal | un
   }
 }
 
-/** Webview messages that arrive while the panel has no usable session wait here, in order; `view` marks one from an attached view. */
+/**
+ * Webview messages that arrive while the panel has no usable session wait here, in order; `view` marks one from an attached
+ * view, `viewKey` the chat view of several that sent it, and `within` runs its handling in the async context it arrived in,
+ * so a queued message keeps the client it came from (the request's actor on a daemon's core).
+ */
 interface MessageGate {
   open: boolean;
   // A `ready` is being handled; it restores the conversation every later message addresses, so they wait for it.
   readying: boolean;
-  queue: Array<{ message: WebviewToExtensionMessage; view?: AttachedView }>;
+  queue: Array<{ message: WebviewToExtensionMessage; view?: AttachedView; viewKey?: string; within: <T>(body: () => T) => T }>;
 }
+
+/** A view joining a panel: the panel's posts it waits for, and its view key when the panel's other views go on live. */
+interface Join {
+  readonly session: ChatSession;
+  // each held post with the views it is not for
+  held: Array<{ readonly message: ExtensionToWebviewMessage; readonly except?: readonly string[] }> | undefined;
+  readonly joining?: string;
+}
+
+const arrivalContext = (): (<T>(body: () => T) => T) => AsyncResource.bind(<T>(body: () => T): T => body());
 
 export interface PanelManagerConfig {
   platform: PlatformWithWorktrees;
@@ -94,8 +111,9 @@ export interface PanelManagerConfig {
   /** Release a folder that left the workspace, once no panel targets it any more. */
   releaseFolder: (key: string) => Promise<void>;
   /** `view` is set for a message an attached view sent through `dispatchFromView`. */
-  handleWebviewMessage: (message: WebviewToExtensionMessage, panelId: string, view?: AttachedView) => Promise<void>;
-  joinView: (panelId: string, gate: ViewJoinGate) => Promise<void>;
+  handleWebviewMessage: (message: WebviewToExtensionMessage, panelId: string, view?: AttachedView, viewKey?: string) => Promise<void>;
+  // host: the joining view's own host, which the replay goes to
+  joinView: (panelId: string, gate: ViewJoinGate, host: PanelHost) => Promise<void>;
   sendCurrentSettings: (host: PanelHost, permissionHandler: PermissionHandler, folder: FolderTarget) => Promise<void>;
   getStoredSessions: () => Promise<{ sessions: StoredSession[]; hasMore: boolean; nextOffset: number }>;
   invalidateSessionsCache: () => void;
@@ -136,7 +154,9 @@ export class PanelManager {
   private readonly handleWebviewMessage: PanelManagerConfig["handleWebviewMessage"];
   private readonly joinViewOf: PanelManagerConfig["joinView"];
   /** The panel posts waiting while a view joins its host, each with the session whose live events it may hold. */
-  private readonly joins = new Map<PanelHost, { readonly session: ChatSession; held: ExtensionToWebviewMessage[] | undefined }>();
+  private readonly joins = new Map<PanelHost, Join>();
+  /** Per panel host, the join that runs last: a join waits for the one before it, so one view at a time takes the replay. */
+  private readonly joinQueues = new Map<PanelHost, Promise<void>>();
   private readonly sendCurrentSettings: PanelManagerConfig["sendCurrentSettings"];
   private readonly getStoredSessions: PanelManagerConfig["getStoredSessions"];
   private readonly initPanelModel: PanelManagerConfig["initPanelModel"];
@@ -161,8 +181,8 @@ export class PanelManager {
   /** Each host's setup, made by whenSetUp or initializeHost, whichever asks first, so a host asked about while core creates it waits too. */
   private readonly setUps = new WeakMap<PanelHost, HostSetUp>();
   private readonly activity = new PanelActivity();
-  /** At most one settings view per panel. */
-  private readonly attachments = new Map<string, AttachedView>();
+  /** Per panel, at most one settings view per device (`AttachedView.clientId`). */
+  private readonly attachments = new Map<string, Map<string | undefined, AttachedView>>();
   private readonly attachmentListeners = new Set<(panelId: string) => void>();
   private readonly restoreRetryListeners = new Set<(panelId: string) => void>();
   private readonly permissionsListeners = new Set<(panelId: string) => void>();
@@ -340,13 +360,14 @@ export class PanelManager {
    * signal aborted first.
    */
   async promptTarget(signal: AbortSignal | undefined): Promise<PromptTarget | undefined> {
+    const clientId = this.platform.remote?.clients.acting();
     const panelId = await this.promptPanelId(signal);
     if (panelId === undefined) return undefined;
     const instance = this.panels.get(panelId);
     if (!instance) return undefined;
     if (instance.webviewReady) await settledOrAborted(instance.webviewReady, signal);
     if (signal?.aborted || this.panels.get(panelId) !== instance) return undefined;
-    return { panelId, host: instance.host };
+    return { panelId, host: instance.host, ...(clientId !== undefined ? { clientId } : {}) };
   }
 
   // A panel registers only once its session exists, well after its webview shows, so one still opening is waited for.
@@ -495,14 +516,14 @@ export class PanelManager {
     disposables.push({ dispose: () => signalWebviewReady() });
 
     disposables.push(
-      host.onMessage((received) => {
+      host.onMessage((received, viewKey) => {
         const message = received as WebviewToExtensionMessage;
         if (message.type === "ready") {
           signalWebviewReady();
           htmlToReadySpans.get(host)?.end();
           htmlToReadySpans.delete(host);
         }
-        gate.queue.push({ message });
+        gate.queue.push({ message, ...(viewKey !== undefined ? { viewKey } : {}), within: arrivalContext() });
         this.drainGate(panelId, gate);
       }),
     );
@@ -514,7 +535,7 @@ export class PanelManager {
         closed = true;
         const instance = this.panels.get(panelId);
         if (!instance) return;
-        this.detachPanelView(panelId);
+        this.detachPanelViews(panelId);
         this.releasePanel(panelId, instance);
         this.worktrees.panelClosed(panelId);
         this.panels.delete(panelId);
@@ -676,12 +697,13 @@ export class PanelManager {
       this.platform.settings.onDidChange("damocles", (e) => {
         const current = this.panels.get(panelId);
         if (!current) return;
-        void this.sendCurrentSettings(host, permissionHandler, current.folder);
+        const target = hostForChange(host, e);
+        void this.sendCurrentSettings(target, permissionHandler, current.folder);
         if (
           e.affects("damocles.thinkingDisabled") ||
           e.affects("damocles.effortByModel")
         ) {
-          this.sendThinkingForPanel(host, panelId, current.folder);
+          this.sendThinkingForPanel(target, panelId, current.folder);
         }
       }),
       // A grant changes whether the Workspace section can be written even when no setting changed.
@@ -798,14 +820,14 @@ export class PanelManager {
     while (gate.open && !gate.readying) {
       const next = gate.queue.shift();
       if (!next) return;
-      const { message, view } = next;
-      if (view !== undefined && this.attachments.get(panelId) !== view) continue;
+      const { message, view, viewKey, within } = next;
+      if (view !== undefined && this.attachedView(panelId, view.clientId) !== view) continue;
       if (message.type !== "ready") {
-        this.handleWebviewMessage(message, panelId, view);
+        void within(() => this.handleWebviewMessage(message, panelId, view, viewKey));
         continue;
       }
       gate.readying = true;
-      void this.handleWebviewMessage(message, panelId).finally(() => {
+      void within(() => this.handleWebviewMessage(message, panelId, undefined, viewKey)).finally(() => {
         gate.readying = false;
         this.drainGate(panelId, gate);
       });
@@ -1102,42 +1124,74 @@ export class PanelManager {
     });
   }
 
-  postMessage(host: PanelHost, message: ExtensionToWebviewMessage): void {
-    const held = this.joins.get(host)?.held;
+  /** except: the views of a panel several views show that this post is not for. */
+  postMessage(host: PanelHost, message: ExtensionToWebviewMessage, except?: readonly string[]): void {
+    const join = this.joins.get(host);
+    const held = join?.held;
     if (held) {
-      held.push(message);
+      // a newer partial replaces its stream's older one among the partials held last, which keeps every other message's order
+      const key = partialStreamKey(message);
+      for (let at = held.length - 1; key !== undefined && at >= 0 && held[at]!.message.type === "partial"; at--) {
+        if (partialStreamKey(held[at]!.message) !== key) continue;
+        held.splice(at, 1);
+        break;
+      }
+      held.push({ message, ...(except !== undefined ? { except } : {}) });
+      // the panel's other views take it live; only the joining one waits for its replay
+      if (join.joining !== undefined && host.postMessageExcept) this.deliver(host, message, [...new Set([...(except ?? []), join.joining])]);
       return;
     }
-    this.deliver(host, message);
+    this.deliver(host, message, except);
   }
 
-  private deliver(host: PanelHost, message: ExtensionToWebviewMessage): void {
+  // toSettingsView false: the attached settings view already has this message
+  private deliver(host: PanelHost, message: ExtensionToWebviewMessage, except?: readonly string[], toSettingsView = true): void {
     try {
-      void host.postMessage(message);
+      void (except !== undefined && host.postMessageExcept ? host.postMessageExcept(message, except) : host.postMessage(message));
     } catch {
       // Host was disposed - will be cleaned up by onDidDispose handler
     }
-    if (this.attachments.size === 0 || !SETTINGS_VIEW_MESSAGE_TYPES.has(message.type)) return;
-    const view = this.viewOfHost(host);
-    // a scope tab lists only the keys its scope writes
-    if (view?.scope !== undefined && message.type === "settingsUpdate") view.post({ ...message, writableKeys: writableKeysOf(view.scope, readContributedConfiguration(this.resourceRoot)) });
-    else view?.post(message);
+    if (!toSettingsView || this.attachments.size === 0 || !SETTINGS_VIEW_MESSAGE_TYPES.has(message.type)) return;
+    for (const view of this.viewsOfHost(host)) {
+      // a post to one device's views is that device's own (its account state, a reply to it)
+      if (view.clientId !== undefined && host.panelHost !== undefined && host.clientId !== view.clientId) continue;
+      // a scope tab lists only the keys its scope writes
+      if (view.scope !== undefined && message.type === "settingsUpdate") view.post({ ...message, writableKeys: writableKeysOf(view.scope, readContributedConfiguration(this.resourceRoot)) });
+      else view.post(message);
+    }
   }
 
   /**
    * A view main made for this panel's host joins its chat (views.join): `viewKey` must be the panel's token. Resolves the
-   * panel id, or undefined when no open panel holds that host and token. Never changes the panel's token.
+   * panel id, or undefined when no open panel holds that host and token. Never changes the panel's token. A join waits for
+   * the panel's join in flight, so a post's `except` names at most the joining view and a give-back's sender.
    */
-  async joinView(host: PanelHost, viewKey: string): Promise<string | undefined> {
+  async joinView(host: PanelHost, viewKey: string, joining?: string): Promise<string | undefined> {
+    const before = this.joinQueues.get(host) ?? Promise.resolve();
+    let done!: () => void;
+    const finished = new Promise<void>((resolve) => { done = resolve; });
+    const queued = before.then(() => finished);
+    this.joinQueues.set(host, queued);
+    try {
+      await before;
+      return await this.joinViewNow(host, viewKey, joining);
+    } finally {
+      done();
+      if (this.joinQueues.get(host) === queued) this.joinQueues.delete(host);
+    }
+  }
+
+  private async joinViewNow(host: PanelHost, viewKey: string, joining?: string): Promise<string | undefined> {
     const found = [...this.panels].find(([, instance]) => instance.host === host);
     if (!found || found[1].panelToken === null || found[1].panelToken !== viewKey) return undefined;
     const [panelId, instance] = found;
-    if (this.joins.has(host)) throw new Error("A view is already joining this chat");
-    const join: { readonly session: ChatSession; held: ExtensionToWebviewMessage[] | undefined } = { session: instance.session, held: undefined };
+    // a view of a panel several views show gets the replay alone, and the others go on live meanwhile
+    const joinHost = joining !== undefined && host.viewHost ? host.viewHost(joining) : host;
+    const join: Join = { session: instance.session, held: undefined, ...(joinHost !== host && joining !== undefined ? { joining } : {}) };
     this.joins.set(host, join);
     let released = false;
     const gate: ViewJoinGate = {
-      post: (message) => this.deliver(host, message),
+      post: (message) => this.deliver(joinHost, message),
       hold: () => {
         join.held ??= [];
       },
@@ -1146,14 +1200,17 @@ export class PanelManager {
         released = true;
         const held = join.held ?? [];
         this.joins.delete(host);
-        for (const message of held) {
+        // the other views' live copy of a held post already reached the settings view
+        const copiedWhenHeld = join.joining !== undefined && host.postMessageExcept !== undefined;
+        for (const { message, except } of held) {
+          if (join.joining !== undefined && except?.includes(join.joining)) continue;
           const seq = join.session.eventSeqOf(message);
-          if (seq === undefined || seq > snapshotSeq) this.deliver(host, message);
+          if (seq === undefined || seq > snapshotSeq) this.deliver(joinHost, message, joinHost === host ? except : undefined, !copiedWhenHeld);
         }
       },
     };
     try {
-      await this.joinViewOf(panelId, gate);
+      await this.joinViewOf(panelId, gate, joinHost);
     } finally {
       // a join that failed before its release delivers everything it held
       gate.release(-1);
@@ -1162,13 +1219,19 @@ export class PanelManager {
   }
 
   /**
-   * Attaches a settings view to an open panel, replacing (and detaching) any view attached before. From then on the
-   * panel's messages of a SETTINGS_VIEW_MESSAGES type are copied to the view. Disposing the result detaches it.
+   * Attaches a settings view to an open panel, replacing (and detaching) the view its device attached before; other
+   * devices' views stay. From then on the panel's messages of a SETTINGS_VIEW_MESSAGES type are copied to the view.
+   * Disposing the result detaches it.
    */
   attachView(panelId: string, view: AttachedView): Disposable {
     if (!this.panels.has(panelId)) throw new Error(`No open chat panel ${panelId}`);
-    const previous = this.attachments.get(panelId);
-    this.attachments.set(panelId, view);
+    let views = this.attachments.get(panelId);
+    if (!views) {
+      views = new Map();
+      this.attachments.set(panelId, views);
+    }
+    const previous = views.get(view.clientId);
+    views.set(view.clientId, view);
     if (previous !== view) {
       previous?.detached();
       this.notifyAttachmentChanged(panelId);
@@ -1176,8 +1239,9 @@ export class PanelManager {
     return { dispose: (): void => this.detachView(panelId, view) };
   }
 
-  attachedView(panelId: string): AttachedView | undefined {
-    return this.attachments.get(panelId);
+  /** The settings view a device attached to the panel; `clientId` undefined on a core with no clients. */
+  attachedView(panelId: string, clientId?: string): AttachedView | undefined {
+    return this.attachments.get(panelId)?.get(clientId);
   }
 
   /** Fires after a panel's attached view changed: attached, replaced or detached. */
@@ -1187,14 +1251,13 @@ export class PanelManager {
   }
 
   /**
-   * Runs a message from the panel's attached view through the router with the panel's context, after messages the
-   * chat queued before it. Only SETTINGS_VIEW_REQUESTS types run; anything else, or a panel with no view, is dropped.
+   * Runs a message from a view attached to the panel through the router with the panel's context, after messages the
+   * chat queued before it. Only SETTINGS_VIEW_REQUESTS types run; anything else, or a view no longer attached, is dropped.
    */
-  async dispatchFromView(panelId: string, message: WebviewToExtensionMessage): Promise<void> {
-    const view = this.attachments.get(panelId);
+  async dispatchFromView(panelId: string, view: AttachedView, message: WebviewToExtensionMessage): Promise<void> {
     const gate = this.messageGates.get(panelId);
-    if (!view || !gate) {
-      log("[PanelManager] dropping a settings view message for %s, which has no attached view", panelId);
+    if (this.attachedView(panelId, view.clientId) !== view || !gate) {
+      log("[PanelManager] dropping a settings view message for %s from a view not attached to it", panelId);
       return;
     }
     // The type is the only part logged: view messages carry API keys and prompt answers.
@@ -1203,23 +1266,23 @@ export class PanelManager {
       return;
     }
     if (!gate.open || gate.readying) {
-      gate.queue.push({ message, view });
+      gate.queue.push({ message, view, within: arrivalContext() });
       return;
     }
     await this.handleWebviewMessage(message, panelId, view);
   }
 
   private detachView(panelId: string, view: AttachedView): void {
-    if (this.attachments.get(panelId) !== view) return;
-    this.detachPanelView(panelId);
-  }
-
-  private detachPanelView(panelId: string): void {
-    const view = this.attachments.get(panelId);
-    if (!view) return;
-    this.attachments.delete(panelId);
+    const views = this.attachments.get(panelId);
+    if (views?.get(view.clientId) !== view) return;
+    views.delete(view.clientId);
+    if (views.size === 0) this.attachments.delete(panelId);
     view.detached();
     this.notifyAttachmentChanged(panelId);
+  }
+
+  private detachPanelViews(panelId: string): void {
+    for (const view of [...(this.attachments.get(panelId)?.values() ?? [])]) this.detachView(panelId, view);
   }
 
   private notifyAttachmentChanged(panelId: string): void {
@@ -1232,11 +1295,12 @@ export class PanelManager {
     }
   }
 
-  private viewOfHost(host: PanelHost): AttachedView | undefined {
-    for (const [panelId, view] of this.attachments) {
-      if (this.panels.get(panelId)?.host === host) return view;
+  private viewsOfHost(host: PanelHost): AttachedView[] {
+    const panelHost = host.panelHost ?? host;
+    for (const [panelId, views] of this.attachments) {
+      if (this.panels.get(panelId)?.host === panelHost) return [...views.values()];
     }
-    return undefined;
+    return [];
   }
 
   broadcast(message: ExtensionToWebviewMessage): void {
@@ -1337,7 +1401,7 @@ export class PanelManager {
    */
   dispose(): Promise<void> {
     this.folderChangeSubscription.dispose();
-    for (const panelId of [...this.attachments.keys()]) this.detachPanelView(panelId);
+    for (const panelId of [...this.attachments.keys()]) this.detachPanelViews(panelId);
     for (const [panelId, instance] of this.panels) {
       this.releasePanel(panelId, instance);
       instance.host.close();

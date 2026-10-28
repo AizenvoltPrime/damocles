@@ -130,7 +130,8 @@ export type TerminalGlyph = TerminalIcon | TerminalCustomIcon;
 export type TerminalColor = (typeof TERMINAL_COLORS)[number];
 
 // starting: spawned, no pid yet; exited with exitCode null: the pty host stopped
-export type TerminalStatus = 'starting' | 'running' | 'exited';
+// reconnecting: a restored remote terminal whose host is not connected yet
+export type TerminalStatus = 'starting' | 'running' | 'exited' | 'reconnecting';
 
 export interface TerminalInfo {
   // `term-<n>`, issued by main; kept across a restart

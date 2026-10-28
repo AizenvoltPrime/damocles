@@ -18,8 +18,8 @@ export const SHELL_EXIT_OUTPUT_GRACE_MS = 100;
 export interface ShellOptions {
   commandPrefix?: string;
   shellPath?: string;
-  /** Added to each command's environment through pi's spawnHook (D32's worktree variables); never written into process.env. */
-  env?: Readonly<Record<string, string>>;
+  /** Added to each command's environment through pi's spawnHook (D32's worktree variables); never written into process.env. A value of undefined removes the variable. */
+  env?: Readonly<Record<string, string | undefined>>;
 }
 
 

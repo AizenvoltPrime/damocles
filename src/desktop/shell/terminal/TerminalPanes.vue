@@ -3,7 +3,8 @@ import { computed, ref, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useElementSize } from '@vueuse/core';
 import { remPx } from '@/composables/useRemPx';
-import type { DamoclesShellApi, ShellPlatform } from '../../preload/shell-channels';
+import { authorityKeyOfProject } from '@shared/project-location';
+import type { DamoclesShellApi, ShellHost, ShellPlatform } from '../../preload/shell-channels';
 import { MIN_TERMINAL_PANE_FRACTION, type TerminalGroupInfo, type TerminalState } from '../../preload/terminal-channels';
 import Sash from '../layout/Sash.vue';
 import { equalSizes, moveSash, paneMinPx, paneOffsets, RESIZE_PANE_CELLS, resizePaneWidths, TERMINAL_PANE_MIN_REM, toFractions } from './terminal-split';
@@ -11,7 +12,9 @@ import TerminalView from './TerminalView.vue';
 
 // Every terminal's view, each in its group's pane box; only the active group's panes show, side by side, with a sash
 // between each two. A view never moves to another parent, so a split or unsplit keeps its xterm.
-const props = defineProps<{ api: DamoclesShellApi; terminal: TerminalState; platform: ShellPlatform; splitShortcut: string }>();
+// hosts: the saved SSH hosts, whose reconnect phase a remote terminal's label and dim wait on
+const props = defineProps<{ api: DamoclesShellApi; terminal: TerminalState; platform: ShellPlatform; splitShortcut: string; hosts: readonly ShellHost[] }>();
+const hostOf = (projectKey: string | null): ShellHost | undefined => (projectKey === null ? undefined : props.hosts.find((host) => host.authorityKey === authorityKeyOfProject(projectKey)));
 const { t } = useI18n();
 
 const root = ref<HTMLElement | null>(null);
@@ -178,6 +181,7 @@ function faded(key: string): void {
         :pass-keys="terminal.passKeys"
         :platform="platform"
         :split-shortcut="splitShortcut"
+        :remote-host="hostOf(item.projectKey)"
         :screen-reader="terminal.screenReader"
         @resize-pane="(direction: 'left' | 'right', cellPx: number) => resizePane(item.id, direction, cellPx)"
       />

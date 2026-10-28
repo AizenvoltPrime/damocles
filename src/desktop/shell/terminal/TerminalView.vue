@@ -10,8 +10,9 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 import { Button } from '@/components/ui/button';
 import { remPx } from '@/composables/useRemPx';
+import { useHostConnection } from '@/composables/useHostConnection';
 import type { OverlayRect } from '../../preload/overlay-channels';
-import type { DamoclesShellApi, ShellPlatform } from '../../preload/shell-channels';
+import type { DamoclesShellApi, ShellHost, ShellPlatform } from '../../preload/shell-channels';
 import { MAX_TERMINAL_COLS, MAX_TERMINAL_ROWS, TERMINAL_ACK_CHARS, type TerminalAction, type TerminalInfo, type TerminalPaste, type TerminalScreen, type TerminalSettings } from '../../preload/terminal-channels';
 import { capTerminalText } from '../../preload/terminal-attachment-cap';
 import { groupPanes, TERMINAL_STORE } from './terminal-store';
@@ -42,6 +43,8 @@ const props = defineProps<{
   splitShortcut: string;
   // TerminalState.screenReader
   screenReader: boolean;
+  // a remote terminal's saved host, whose reconnect phase the label and dim wait on
+  remoteHost?: ShellHost | undefined;
 }>();
 // resizePane: main's Resize Pane Left or Right, with this xterm's cell width in px, which the split layout moves by
 const emit = defineEmits<{ resizePane: [direction: 'left' | 'right', cellPx: number] }>();
@@ -59,6 +62,11 @@ const atEnd = ref(true);
 const revealed = ref(!props.terminal.restoring && !store.screenWaits(props.terminal.id));
 let screenReceived = false;
 const exited = computed(() => props.terminal.status === 'exited');
+// A terminal whose host is away takes no input until main reattaches it; its process keeps running there.
+const inputOff = computed(() => exited.value || props.terminal.status === 'reconnecting');
+// The label and dim wait for the host's grace like its dot and banner, so a short drop shows nothing; input stops at once.
+const hostView = useHostConnection(() => (props.remoteHost ? { connected: props.remoteHost.connection === 'connected', reconnect: props.remoteHost.reconnect } : undefined));
+const awayShown = computed(() => props.terminal.status === 'reconnecting' && (!props.remoteHost?.reconnect || hostView.shown.value !== undefined));
 const mac = props.platform === 'darwin';
 const passChords = computed(() => props.passKeys.flatMap((key) => parseAccelerator(key, mac) ?? ([] as KeyChord[])));
 const linkHover = shallowRef<LinkHover | null>(null);
@@ -146,7 +154,7 @@ function restoreScreen(xterm: Terminal, commandMarks: TerminalMarks, screen: Ter
 // writes to the pty itself.
 function paste(source: TerminalPaste['source']): void {
   const xterm = term.value;
-  if (!xterm || exited.value) return;
+  if (!xterm || inputOff.value) return;
   ptyResize.flush();
   props.api.terminal.paste({ id: props.terminal.id, bracketedPasteMode: xterm.modes.bracketedPasteMode, source });
 }
@@ -198,7 +206,7 @@ function attach(source: 'selection' | 'command', text: string, commandId: number
 function rerun(command: XtermCommand): void {
   const xterm = term.value;
   const line = command.commandLine;
-  if (!xterm || exited.value || line === '') return;
+  if (!xterm || inputOff.value || line === '') return;
   send(`${line.includes('\n') && xterm.modes.bracketedPasteMode ? `\x1b[200~${line}\x1b[201~` : line}\r`);
   // The rerun runs at the prompt, so the reader follows it there from wherever navigation left them.
   xterm.scrollToBottom();
@@ -548,7 +556,7 @@ async function open(): Promise<void> {
     allowProposedApi: true,
     ...initial,
     cursorInactiveStyle: 'outline',
-    disableStdin: exited.value,
+    disableStdin: inputOff.value,
     theme: terminalTheme(getComputedStyle(document.documentElement)),
     // Program colours are lifted to AA against the theme's background (G26); not a setting.
     minimumContrastRatio: 4.5,
@@ -687,7 +695,6 @@ watch(options, async (next, before) => {
 watch(exited, (now, before) => {
   const xterm = term.value;
   if (!xterm) return;
-  xterm.options.disableStdin = now;
   if (before && !now) {
     xterm.reset();
     marks?.reset();
@@ -696,6 +703,10 @@ watch(exited, (now, before) => {
     ptyResize.reset();
     refit();
   }
+});
+
+watch(inputOff, (now) => {
+  if (term.value) term.value.options.disableStdin = now;
 });
 
 onMounted(() => void open());
@@ -727,10 +738,25 @@ defineExpose({ focus, openFind });
     <div class="relative min-h-0 flex-1">
       <div
         ref="host"
-        class="terminal-host absolute inset-0"
-        :class="{ 'terminal-host-marks': settings.decorationsEnabled, invisible: !revealed }"
+        class="terminal-host d-dim-transition absolute inset-0"
+        :class="{ 'terminal-host-marks': settings.decorationsEnabled, invisible: !revealed, 'opacity-(--d-opacity-disabled)': awayShown }"
         @contextmenu="onContextMenu"
       />
+      <!-- A restored remote terminal waits for its host; main reattaches it there and then it runs again. -->
+      <Transition name="t-fade">
+        <p
+          v-if="awayShown"
+          role="status"
+          data-testid="terminal-reconnecting"
+          class="absolute top-2 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-(--d-border2) bg-(--d-card) px-3 py-1 text-12 text-(--d-muted) shadow-(--d-shadow)"
+        >
+          <span
+            aria-hidden="true"
+            class="d-pulsing size-1.5 rounded-full bg-(--d-warning)"
+          />
+          {{ t('terminal.status.reconnecting') }}
+        </p>
+      </Transition>
       <TerminalMarkHover
         :hover="markHover"
         :width="hostWidth"

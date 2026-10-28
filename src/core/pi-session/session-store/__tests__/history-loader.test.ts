@@ -600,6 +600,24 @@ describe('loadPiSessionHistory — rewindable ids', () => {
     expect(posts.find((m) => m.type === 'checkpointInfo')).toEqual({ type: 'checkpointInfo', userMessageIds: ['u1', 'u2'] });
   });
 
+  it('posts each transcript message only once the host took the ones before, and a replay superseded meanwhile stops', async () => {
+    hoisted.branch = [userMsg('u1', 'one'), assistantMsg('a1', 'r1'), userMsg('u2', 'two'), assistantMsg('a2', 'r2')];
+    const posts: ExtensionToWebviewMessage[] = [];
+    const waits: Array<() => void> = [];
+    const paced = (): Promise<void> => new Promise((resolve) => waits.push(resolve));
+    const controller = new AbortController();
+    const replay = loadPiSessionHistory('/cwd', 'sess-paced', (m) => posts.push(m), controller.signal, undefined, true, paced);
+    await vi.waitFor(() => expect(waits).toHaveLength(1));
+    expect(posts.map((m) => m.type)).toEqual(['sessionCleared']);
+    waits[0]!();
+    await vi.waitFor(() => expect(waits).toHaveLength(2));
+    expect(posts.map((m) => m.type)).toEqual(['sessionCleared', 'userReplay']);
+    controller.abort();
+    waits[1]!();
+    await replay;
+    expect(posts.map((m) => m.type)).toEqual(['sessionCleared', 'userReplay']);
+  });
+
   it('a replay superseded while it resolved the file posts no error and no done', async () => {
     const controller = new AbortController();
     vi.mocked(resolvePiSessionFile).mockImplementationOnce(async () => {

@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ElectronApplication, Page } from '@playwright/test';
+import { mainLog } from './support/app';
 import { expect, test } from './support/fixtures';
 import { writeUserSettings, type HermeticHome } from './support/hermetic';
 import { overlayPage, pressKeys, PRIMARY, shellPage, shellState } from './support/shell';
@@ -171,13 +172,16 @@ test('a folder opened through the local daemon has its host badge, and its files
     expect(fs.existsSync(path.join(home.damoclesDir, 'server'))).toBe(false);
     expect(await pidIn(os.homedir())).not.toBe(await daemonPid(home));
 
-    // Teardown: no daemon, pty host or formatter process is left; the dot turns red with its own glyph and words.
+    // Teardown: no daemon, pty host or formatter process is left; a shutdown this client asked for disconnects the host as
+    // Disconnect Host does, so its dot is offline and nothing reconnects.
     await shutdownDaemon(app, home);
-    await expect(badge.getByRole('img', { name: `${LOCAL_DAEMON}, Couldn't connect` })).toHaveAttribute('data-connection', 'failed');
+    await expect(badge.getByTestId('host-status-dot')).toHaveAttribute('data-connection', 'offline');
+    expect(await app.evaluate(() => (globalThis as unknown as { __damoclesE2e: { loopback: { state(): string } } }).__damoclesE2e.loopback.state())).toBe('offline');
+    expect(await app.evaluate(() => (globalThis as unknown as { __damoclesE2e: { remote: { reconnectPhase(key: string): unknown } } }).__damoclesE2e.remote.reconnectPhase('loopback'))).toBeUndefined();
     if (REVIEW_SHOTS !== undefined) {
       for (const theme of ['dark', 'light'] as const) {
         await showShellTheme(app, theme);
-        await shootBadge(shell, key, `badge-failed-${theme}`);
+        await shootBadge(shell, key, `badge-offline-${theme}`);
       }
     }
     // the quit's question about the conflicted buffer, whose text the test leaves unsaved
@@ -236,14 +240,27 @@ test('a loopback terminal running a date loop survives an app quit and relaunch,
     }, keptId);
     await expect.poll(keptText).toBe('before the drop\n');
 
-    // A dropped connection exits the tab; selecting the project connects again, the terminal, still running on the daemon,
-    // comes back live in this window with its screen, Files sees changes again, and the open file takes what changed meanwhile.
-    await dropConnection(second.app, key);
-    await expect(activeTerminal(again)).toHaveAttribute('data-status', 'exited');
+    // A connection closed for good leaves the tab reconnecting, never exited, since the terminal still runs on the daemon; the
+    // reconnect loop attaches fresh and it comes back live through serialize with its screen, Files sees changes again, and
+    // the open file takes what changed meanwhile.
+    // the fresh attach can come back within a frame of the drop, so every status a terminal view takes is recorded
+    await again.evaluate(() => {
+      const seen: string[] = [];
+      (window as unknown as { __e2eTerminalStatuses: string[] }).__e2eTerminalStatuses = seen;
+      const views = (node: Node): Element[] => (node instanceof Element ? [...(node.matches('[data-testid="terminal-view"]') ? [node] : []), ...node.querySelectorAll('[data-testid="terminal-view"]')] : []);
+      new MutationObserver((records) => {
+        for (const record of records) {
+          const changed = record.type === 'attributes' ? views(record.target) : [...record.addedNodes].flatMap(views);
+          for (const view of changed) seen.push(view.getAttribute('data-status') ?? '');
+        }
+      }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-status'] });
+    });
+    await dropConnection(second.app, home);
+    await expect.poll(() => again.evaluate(() => (window as unknown as { __e2eTerminalStatuses: string[] }).__e2eTerminalStatuses)).toContain('reconnecting');
     fs.writeFileSync(kept, 'changed while away\n');
-    await again.evaluate((projectKey) => window.damoclesShell!.selectProject(projectKey), key);
     const back = await reattached(second.app, key, id!);
     await expect(activeTerminal(back)).toHaveAttribute('data-status', 'running');
+    expect(await again.evaluate(() => (window as unknown as { __e2eTerminalStatuses: string[] }).__e2eTerminalStatuses)).not.toContain('exited');
     await untilWatchLive(back, folder);
     await expect.poll(keptText, { timeout: 30_000 }).toBe('changed while away\n');
     const before = ticks(await terminalText(back)).at(-1) ?? 0;
@@ -255,8 +272,7 @@ test('a loopback terminal running a date loop survives an app quit and relaunch,
     await back.evaluate((terminalId) => window.damoclesShell!.terminal.split(terminalId), id!);
     await expect.poll(async () => (await terminalLayout(back)).statuses, { timeout: 30_000 }).toEqual(['running', 'running']);
     const split = (await terminalLayout(back)).groups;
-    await dropConnection(second.app, key);
-    await back.evaluate((projectKey) => window.damoclesShell!.selectProject(projectKey), key);
+    await dropConnection(second.app, home);
     await expect.poll(() => terminalLayout(back), { timeout: 60_000 }).toEqual({ groups: split, statuses: ['running', 'running'] });
     await shutdownDaemon(second.app, home);
   } catch (error) {
@@ -271,10 +287,14 @@ interface DropHooks {
   __damoclesE2e: { loopback: { dropConnection(): void } };
 }
 
-// Drops the loopback connection and waits until the project no longer shows it connected.
-async function dropConnection(app: ElectronApplication, key: string): Promise<void> {
+const DROPPED = '[remote] the connection to loopback ended: the e2e hooks dropped it';
+
+// Drops the loopback connection and waits until main logged it; the reconnect loop may attach again within a frame, so the
+// project's connection state is no witness of the drop.
+async function dropConnection(app: ElectronApplication, home: HermeticHome): Promise<void> {
+  const before = mainLog(home).split(DROPPED).length;
   await app.evaluate(() => (globalThis as unknown as DropHooks).__damoclesE2e.loopback.dropConnection());
-  await expect.poll(async () => (await shellState(app)).projects.find((project) => project.key === key)?.connection).not.toBe('connected');
+  await expect.poll(() => mainLog(home).split(DROPPED).length).toBe(before + 1);
 }
 
 // The terminals' groups (without the active pane, which a selection moves) and statuses, in list order.

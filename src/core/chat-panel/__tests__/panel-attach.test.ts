@@ -8,6 +8,7 @@ import { createPermissionHandlers } from '../message-router/handlers/permission-
 import type { HandlerContext, HandlerDependencies } from '../message-router/types';
 import type { AttachedView } from '../types';
 import type { FakePanelHost } from '../../../__mocks__/fake-platform';
+import type { PanelHost } from '../../../platform/window-service';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../../shared/types/messages';
 import { SETTINGS_VIEW_MESSAGES, SETTINGS_VIEW_PROMPTS, SETTINGS_VIEW_REQUESTS } from '../../../shared/settings-view-messages';
 
@@ -27,12 +28,13 @@ interface FakeView extends AttachedView {
   detachCount: number;
 }
 
-function makeView(): FakeView {
+function makeView(clientId?: string): FakeView {
   const view: FakeView = {
     posted: [],
     detachCount: 0,
     post: (message) => { view.posted.push(message); },
     detached: () => { view.detachCount++; },
+    ...(clientId !== undefined ? { clientId } : {}),
   };
   return view;
 }
@@ -90,6 +92,52 @@ describe('PanelManager view attachment', () => {
     expect(host.posted).toContainEqual({ type: 'processing', isProcessing: true });
   });
 
+  it('on a panel several devices show, copies a post to one device\'s views only to that device\'s settings view', async () => {
+    h = createHarness([folderEntry(A)]);
+    const { panelId, host } = await openPanel();
+    const viewOf = (clientId: string | undefined): PanelHost => Object.assign(Object.create(host) as PanelHost, { panelHost: host, clientId, postMessage: async () => true });
+    const view: FakeView = makeView('laptop');
+    h!.manager.attachView(panelId, view);
+
+    h!.manager.postMessage(viewOf('desktop'), { type: 'projectTrust', trusted: false });
+    h!.manager.postMessage(viewOf(undefined), { type: 'projectTrust', trusted: false });
+    h!.manager.postMessage(viewOf('laptop'), { type: 'projectTrust', trusted: true });
+    h!.manager.postMessage(host, { type: 'projectTrust', trusted: false });
+
+    // a post to every view is the chat's shared state
+    expect(view.posted).toEqual([{ type: 'projectTrust', trusted: true }, { type: 'projectTrust', trusted: false }]);
+  });
+
+  it('keeps one settings view per device on a chat several devices show, each with its own device\'s posts and requests', async () => {
+    h = createHarness([folderEntry(A)]);
+    const { panelId, host } = await openPanel();
+    const viewOf = (clientId: string): PanelHost => Object.assign(Object.create(host) as PanelHost, { panelHost: host, clientId, postMessage: async () => true });
+    const laptop: FakeView = makeView('laptop');
+    const desktop: FakeView = makeView('desktop');
+    h!.manager.attachView(panelId, laptop);
+    h!.manager.attachView(panelId, desktop);
+
+    expect([laptop.detachCount, desktop.detachCount]).toEqual([0, 0]);
+    expect([h!.manager.attachedView(panelId, 'laptop'), h!.manager.attachedView(panelId, 'desktop')]).toEqual([laptop, desktop]);
+    h!.manager.postMessage(viewOf('laptop'), { type: 'projectTrust', trusted: true });
+    h!.manager.postMessage(viewOf('desktop'), { type: 'projectTrust', trusted: false });
+    const shared: ExtensionToWebviewMessage = { type: 'toolStatus', data: { groups: [] } as never };
+    h!.manager.postMessage(host, shared);
+    expect(laptop.posted).toEqual([{ type: 'projectTrust', trusted: true }, shared]);
+    expect(desktop.posted).toEqual([{ type: 'projectTrust', trusted: false }, shared]);
+
+    h!.routed.length = 0;
+    await h!.manager.dispatchFromView(panelId, desktop, { type: 'setBudgetLimit', budgetUsd: 5 });
+    await h!.manager.dispatchFromView(panelId, laptop, { type: 'setBudgetLimit', budgetUsd: 7 });
+    expect(h!.routed.map((r) => r.view)).toEqual([desktop, laptop]);
+
+    // a device opening its settings again replaces only its own view
+    const laptopAgain: FakeView = makeView('laptop');
+    h!.manager.attachView(panelId, laptopAgain);
+    expect([laptop.detachCount, desktop.detachCount]).toEqual([1, 0]);
+    expect(h!.manager.attachedView(panelId, 'laptop')).toBe(laptopAgain);
+  });
+
   it('refuses to attach to a panel that is not open', () => {
     h = createHarness([folderEntry(A)]);
     expect(() => h!.manager.attachView('host-404', makeView())).toThrow(/No open chat panel/);
@@ -102,19 +150,23 @@ describe('PanelManager view attachment', () => {
     h!.manager.attachView(panelId, view);
     h!.routed.length = 0;
 
-    await h!.manager.dispatchFromView(panelId, { type: 'setBudgetLimit', budgetUsd: 5 });
-    await h!.manager.dispatchFromView(panelId, { type: 'ready', panelToken: '00000000-0000-4000-8000-000000000000' });
-    await h!.manager.dispatchFromView(panelId, { type: 'sendMessage', content: SENTINEL_KEY, sessionId: null });
-    await h!.manager.dispatchFromView(panelId, { type: '__proto__' } as unknown as WebviewToExtensionMessage);
+    await h!.manager.dispatchFromView(panelId, view, { type: 'setBudgetLimit', budgetUsd: 5 });
+    await h!.manager.dispatchFromView(panelId, view, { type: 'ready', panelToken: '00000000-0000-4000-8000-000000000000' });
+    await h!.manager.dispatchFromView(panelId, view, { type: 'sendMessage', content: SENTINEL_KEY, sessionId: null });
+    await h!.manager.dispatchFromView(panelId, view, { type: '__proto__' } as unknown as WebviewToExtensionMessage);
 
     expect(h!.routed.map((r) => [r.message.type, r.panelId, r.view])).toEqual([['setBudgetLimit', panelId, view]]);
   });
 
-  it('drops a view message for a panel with no attached view', async () => {
+  it('drops a view message from a view not attached to the panel', async () => {
     h = createHarness([folderEntry(A)]);
     const { panelId } = await openPanel();
+    const { panelId: other } = await openPanel();
+    const view = makeView();
+    h!.manager.attachView(other, view);
     h!.routed.length = 0;
-    await h!.manager.dispatchFromView(panelId, { type: 'setBudgetLimit', budgetUsd: 5 });
+    await h!.manager.dispatchFromView(panelId, makeView(), { type: 'setBudgetLimit', budgetUsd: 5 });
+    await h!.manager.dispatchFromView(panelId, view, { type: 'setBudgetLimit', budgetUsd: 5 });
     expect(h!.routed).toEqual([]);
   });
 
@@ -181,9 +233,16 @@ describe('host prompt redirect', () => {
   const requestIn = (posted: readonly unknown[]): UiRequest | undefined =>
     [...posted].reverse().find((m): m is UiRequest => (m as { type: string }).type === 'extensionUiRequest');
 
-  function wire(): { prompts: WebviewPrompts; answer: (msg: WebviewToExtensionMessage, ctx: Partial<HandlerContext>) => Promise<void> } {
+  // asking: the device a daemon's core asks the prompt of
+  function wire(asking?: string): { prompts: WebviewPrompts; answer: (msg: WebviewToExtensionMessage, ctx: Partial<HandlerContext>) => Promise<void> } {
     const prompts = new WebviewPrompts(
-      { target: (signal) => h!.manager.promptTarget(signal), attachedView: (id) => h!.manager.attachedView(id) },
+      {
+        target: async (signal) => {
+          const target = await h!.manager.promptTarget(signal);
+          return target && asking !== undefined ? { ...target, clientId: asking } : target;
+        },
+        attachedView: (id, clientId) => h!.manager.attachedView(id, clientId),
+      },
       (host, message) => h!.manager.postMessage(host, message),
     );
     h!.manager.onDidChangeAttachment((id) => prompts.resurface(id));
@@ -212,6 +271,27 @@ describe('host prompt redirect', () => {
     expect(resolveExtensionUiResponse).not.toHaveBeenCalled();
     expect(logged.join('\n')).not.toContain(SENTINEL_KEY);
     expect(logged.join('\n')).not.toContain('from-chat');
+  });
+
+  it('shows a prompt only in the settings view of the device it asks, and takes its answer only from there', async () => {
+    h = createHarness([folderEntry(A)]);
+    const { panelId, host } = await openPanel();
+    const desktop: FakeView = makeView('desktop');
+    h!.manager.attachView(panelId, desktop);
+    const { prompts, answer } = wire('laptop');
+    const pending = prompts.inputBox({ prompt: 'Code' });
+    await tick();
+    const request = requestIn(host.posted)!;
+    expect(request).toMatchObject({ kind: 'input', title: 'Code' });
+
+    const laptop: FakeView = makeView('laptop');
+    h!.manager.attachView(panelId, laptop);
+    expect(laptop.posted).toEqual([request]);
+    expect(requestIn(desktop.posted)).toBeUndefined();
+
+    await answer({ type: 'extensionUiResponse', requestId: request.requestId, value: 'from-desktop' }, { panelId, view: desktop });
+    await answer({ type: 'extensionUiResponse', requestId: request.requestId, value: '42' }, { panelId, view: laptop });
+    await expect(pending).resolves.toBe('42');
   });
 
   it('never hands a view answer to a PiSession dialog', async () => {

@@ -1,16 +1,18 @@
 import { randomUUID } from 'node:crypto';
+import { partialStreamKey } from '../../../core/chat-panel/partial-stream';
 import { log } from '../../../core/logger';
 import type { Disposable } from '../../../platform/disposable';
 import type { PanelHost, PanelOptions } from '../../../platform/window-service';
 import { APP_ORIGIN, appResourceUri, CHAT_WORKER_SRC } from '../../app-urls';
-import type { CoreEndpoint, MirrorTopics, PanelCreate } from '../../core-protocol';
+import { currentActor, type CoreEndpoint, type MirrorTopics, type PanelCreate } from '../../core-protocol';
 import { createForeignViews } from './foreign-views';
 import { Listeners } from './listeners';
 
 interface PanelProxy {
   readonly host: PanelHost;
   viewState(patch: MirrorTopics['panel']): void;
-  message(message: unknown): void;
+  message(message: unknown, viewKey: string | undefined): void;
+  viewDetached(viewKey: string): void;
   disposed(error: string | undefined): void;
 }
 
@@ -34,6 +36,9 @@ export interface CorePanelsDeps {
 
 const isBinary = (value: unknown): boolean => value instanceof ArrayBuffer || ArrayBuffer.isView(value);
 
+// posted JSON characters after which a panel asks its host whether the queue toward its page is back within its flow window
+export const PACE_CHARS: number = 1024 * 1024;
+
 /**
  * Every panel core holds is a proxy named by its view's id: one core creates gets a core-issued id at once and main creates
  * the view when the create envelope arrives; one main created is attached by the id main gave it. View state and
@@ -48,11 +53,65 @@ export function createCorePanels(deps: CorePanelsDeps): CorePanels {
   const proxy = (panelId: string, kind: PanelOptions['kind']): PanelProxy => {
     let state: MirrorTopics['panel'] = { panelId, visible: false, active: false };
     let closed = false;
-    const messages = new Listeners<[unknown]>('panel message');
+    const messages = new Listeners<[unknown, string | undefined]>('panel message');
     const disposes = new Listeners<[]>('panel dispose');
     const viewStates = new Listeners<[]>('panel view state');
     const post: CoreEndpoint['postPanel'] = (id, op, payload) => {
       if (!closed) endpoint.postPanel(id, op, payload);
+    };
+    // One poster per audience: the whole panel, or one view of it (a daemon's client); each is paced by its own views.drained.
+    const poster = (viewKey: string | undefined): { send(message: unknown, except?: readonly string[]): void; drained(): Promise<void> } => {
+      // characters posted since the last views.drained, and that request while it is out
+      let unpaced = 0;
+      let pacing: Promise<void> | undefined;
+      // partials that arrived while a request was out, in order of their latest arrival
+      const heldPartials = new Map<string, { readonly message: unknown; readonly except: readonly string[] | undefined }>();
+      const flushHeld = (): void => {
+        const held = [...heldPartials.values()];
+        heldPartials.clear();
+        for (const entry of held) postNow(entry.message, entry.except);
+      };
+      const postNow = (message: unknown, except: readonly string[] | undefined): void => {
+        const audience = { ...(viewKey !== undefined ? { viewKey } : {}), ...(except !== undefined && except.length > 0 ? { except } : {}) };
+        // Binary travels only as a top-level field (a browser page's frame); JSON text would turn it into {}.
+        const fields = typeof message === 'object' && message !== null ? Object.values(message) : [];
+        if (fields.some(isBinary)) {
+          post(panelId, 'postBinary', { message, ...audience });
+          return;
+        }
+        const json = JSON.stringify(message);
+        post(panelId, 'post', { type: String((message as { type?: unknown } | null)?.type ?? ''), json, ...audience });
+        unpaced += json.length;
+        if (unpaced < PACE_CHARS || pacing || closed) return;
+        unpaced = 0;
+        // a failed ask ends the pause as an answer does, so a replay awaiting drained() goes on
+        pacing = endpoint.request('views.drained', { viewId: panelId, ...(viewKey !== undefined ? { viewKey } : {}) })
+          .catch((err: unknown) => log(`[core-host] pacing view ${panelId} failed: ${err instanceof Error ? err.message : String(err)}`))
+          .finally(() => {
+            pacing = undefined;
+            flushHeld();
+          });
+      };
+      return {
+        send: (message, except) => {
+          const key = pacing ? partialStreamKey(message) : undefined;
+          if (key !== undefined) {
+            heldPartials.delete(key);
+            heldPartials.set(key, { message, except });
+            return;
+          }
+          flushHeld();
+          postNow(message, except);
+        },
+        drained: () => pacing ?? Promise.resolve(),
+      };
+    };
+    const everyView = poster(undefined);
+    const viewHosts = new Map<string, PanelHost>();
+    // each view key core heard from, with the client it came from (the actor of its first message or join)
+    const viewClients = new Map<string, string | undefined>();
+    const heardFrom = (viewKey: string): void => {
+      if (!viewClients.has(viewKey)) viewClients.set(viewKey, currentActor());
     };
     const dispose = (error: string | undefined): void => {
       if (closed) return;
@@ -86,11 +145,35 @@ export function createCorePanels(deps: CorePanelsDeps): CorePanels {
       showPage: (page) => post(panelId, 'showPage', { page }),
       postMessage: (message) => {
         if (closed) return Promise.resolve(false);
-        // Binary travels only as a top-level field (a browser page's frame); JSON text would turn it into {}.
-        const fields = typeof message === 'object' && message !== null ? Object.values(message) : [];
-        if (fields.some(isBinary)) post(panelId, 'postBinary', { message });
-        else post(panelId, 'post', { type: String((message as { type?: unknown } | null)?.type ?? ''), json: JSON.stringify(message) });
+        everyView.send(message);
         return Promise.resolve(true);
+      },
+      postMessageExcept: (message, viewKeys) => {
+        if (closed) return Promise.resolve(false);
+        everyView.send(message, viewKeys);
+        return Promise.resolve(true);
+      },
+      drained: () => everyView.drained(),
+      views: () => [...viewClients].map(([viewKey, clientId]) => ({ viewKey, ...(clientId !== undefined ? { clientId } : {}) })),
+      viewHost: (viewKey) => {
+        heardFrom(viewKey);
+        let view = viewHosts.get(viewKey);
+        if (!view) {
+          const toView = poster(viewKey);
+          // the panel host's members, its getters read live, with posts to this view alone
+          view = Object.assign(Object.create(host) as PanelHost, {
+            panelHost: host,
+            postMessage: (message: unknown) => {
+              if (closed) return Promise.resolve(false);
+              toView.send(message);
+              return Promise.resolve(true);
+            },
+            drained: () => toView.drained(),
+          });
+          Object.defineProperty(view, 'clientId', { get: () => viewClients.get(viewKey), enumerable: true });
+          viewHosts.set(viewKey, view);
+        }
+        return view;
       },
       onMessage: (listener) => messages.add(listener),
       onDispose: (listener) => (closed ? { dispose: () => undefined } : disposes.add(listener)),
@@ -112,7 +195,14 @@ export function createCorePanels(deps: CorePanelsDeps): CorePanels {
         state = patch;
         viewStates.fire();
       },
-      message: (message) => messages.fire(message),
+      message: (message, viewKey) => {
+        if (viewKey !== undefined) heardFrom(viewKey);
+        messages.fire(message, viewKey);
+      },
+      viewDetached: (viewKey) => {
+        viewClients.delete(viewKey);
+        viewHosts.delete(viewKey);
+      },
       disposed: dispose,
     };
     proxies.set(panelId, entry);
@@ -130,7 +220,8 @@ export function createCorePanels(deps: CorePanelsDeps): CorePanels {
       // an envelope for a panel core already closed crossed its close
       const panel = proxies.get(panelId);
       if (!panel) return;
-      if (envelope.op === 'message') panel.message(envelope.payload.message);
+      if (envelope.op === 'message') panel.message(envelope.payload.message, envelope.payload.viewKey);
+      else if (envelope.op === 'viewDetached') panel.viewDetached(envelope.payload.viewKey);
       else panel.disposed(envelope.payload.error);
     }),
     endpoint.onMirror('panel', (patch) => proxies.get(patch.panelId)?.viewState(patch)),

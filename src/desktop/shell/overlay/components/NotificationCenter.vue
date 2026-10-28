@@ -285,6 +285,7 @@ onBeforeUnmount(() => {
                   <HostBadge
                     v-if="view.host"
                     :name="view.host"
+                    :tone="view.hostTone"
                     class="self-center"
                   />
                   <span class="flex-1" />

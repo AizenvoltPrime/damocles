@@ -1,6 +1,7 @@
 // `daemon.js self-test`: proves a server package runs on this machine with its own Node (scripts/verify-server-package.mjs).
-// Every external the bundles load is imported, node:sqlite opens with FTS5, ripgrep runs through the launcher's worker
-// thread, the pty host's node-pty runs echo, and Damocles Core forks and answers its init through parentChannel().
+// Every package of node_modules is present, every external the bundles load is imported, node:sqlite opens with FTS5,
+// ripgrep runs through the launcher's worker thread, the pty host's node-pty runs echo, and Damocles Core forks and answers
+// its init through parentChannel().
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -26,6 +27,8 @@ interface PackageInfo {
   readonly version: string;
   readonly target: string;
   readonly externals: readonly string[];
+  // every top-level package of node_modules, so one no import reaches at load time is checked too
+  readonly packages: readonly string[];
 }
 
 function within<T>(what: string, promise: Promise<T>): Promise<T> {
@@ -36,7 +39,20 @@ function within<T>(what: string, promise: Promise<T>): Promise<T> {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-async function importExternals(info: PackageInfo): Promise<string> {
+async function checkPackages(root: string, info: PackageInfo): Promise<void> {
+  for (const name of info.packages) {
+    let manifest: unknown;
+    try {
+      manifest = JSON.parse(await fs.readFile(path.join(root, 'node_modules', name, 'package.json'), 'utf8'));
+    } catch (err) {
+      throw new Error(`${name} is missing from node_modules: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if ((manifest as { name?: unknown } | null)?.name !== name) throw new Error(`node_modules/${name}/package.json does not name ${name}`);
+  }
+}
+
+async function importExternals(root: string, info: PackageInfo): Promise<string> {
+  await checkPackages(root, info);
   for (const name of info.externals) {
     try {
       await import(name);
@@ -44,7 +60,7 @@ async function importExternals(info: PackageInfo): Promise<string> {
       throw new Error(`${name} does not load: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  return `${info.externals.length} packages`;
+  return `${info.packages.length} packages, ${info.externals.length} imported`;
 }
 
 function openSqlite(): string {
@@ -97,6 +113,7 @@ async function startCore(root: string, version: string, log: (line: string) => v
     state,
     registry: createRunRegistry(),
     fork: (entry, args) => forkChild(entry, args, daemonChildEnv('node')),
+    agentFolder: () => undefined,
     log,
   });
   const attach: CoreAttach = {
@@ -123,7 +140,7 @@ async function startCore(root: string, version: string, log: (line: string) => v
       if (next.phase === 'restarting' || next.phase === 'halted') reject(new Error('Damocles Core ended before it answered its init'));
     });
   });
-  const connection = core.connect('self-test', { post: () => undefined, onMessage: () => ({ dispose: () => undefined }) }, () => undefined);
+  const connection = core.connect('self-test', 'self-test', { post: () => undefined, onMessage: () => ({ dispose: () => undefined }) }, () => undefined, { drained: () => Promise.resolve(), lost: () => false, onLostChange: () => ({ dispose: () => undefined }) });
   connection.attach(attach);
   try {
     const running = await within('Damocles Core', answered);
@@ -143,7 +160,7 @@ export async function selfTest(root: string): Promise<boolean> {
   lockThreadSpawns();
   installProcessLauncher(createLauncherPool({ workerPath: path.join(root, 'dist', 'process-launcher-worker.js'), sentinelPath: path.join(root, 'dist', 'sentinel.js') }));
   const steps: ReadonlyArray<readonly [string, () => Promise<string> | string]> = [
-    ['modules', () => importExternals(info)],
+    ['modules', () => importExternals(root, info)],
     ['node:sqlite', () => openSqlite()],
     ['launcher worker and ripgrep', () => runRipgrep(root)],
     ['node-pty', () => echoThroughPty(root)],

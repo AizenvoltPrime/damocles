@@ -1,17 +1,19 @@
 // Shared by the shell preload, main and (as types only) the shell app; the shell never sees panel channels.
 
-import type { OverlayAnswer, OverlayRequest } from './overlay-channels';
+import type { NameCheck, OverlayAnswer, OverlayRequest } from './overlay-channels';
 import type { NotificationBell } from './notifications';
 import type { SettingsSectionId } from '../../shared/settings-sections';
 import type { UpdateAction, UpdateSnapshot } from './updates';
 import type { SettingsFileScope } from '../../shared/types/messages';
 import type { AuthorityKind } from '../../shared/project-location';
+import type { HostLatency, HostReconnect } from '../../shared/host-connection';
+import type { HostTone } from '../../shared/host-tones';
 import type { SearchFileKey, SearchFileResult, SearchQuery, SearchRange, SearchSortOrder } from '../../shared/text-search';
 import type { DamoclesTerminalApi } from './terminal-channels';
-import type { DamoclesScmApi, ScmChangesTab } from './scm-channels';
+import type { DamoclesScmApi, ScmChangesTab, ScmMergeInputsResult } from './scm-channels';
 import type { ChatReviewTab, DamoclesReviewApi } from './review-channels';
 import { MAX_ROOT_KEY_LENGTH, type FolderRoot } from './folder-root';
-import type { SEARCH_ACTIONS_POSITIONS, SEARCH_COLLAPSE_RESULTS, SEARCH_DEFAULT_VIEW_MODES, SEARCH_EDITOR_DOUBLE_CLICK, SEARCH_MODES } from '../local-services/desktop-configuration';
+import type { PROJECTS_VIEWS, SEARCH_ACTIONS_POSITIONS, SEARCH_COLLAPSE_RESULTS, SEARCH_DEFAULT_VIEW_MODES, SEARCH_EDITOR_DOUBLE_CLICK, SEARCH_MODES } from '../local-services/desktop-configuration';
 
 export type { SearchFileKey, SearchFileResult, SearchMatch, SearchPreview, SearchQuery, SearchRange, SearchSortOrder } from '../../shared/text-search';
 
@@ -52,6 +54,36 @@ export const SHELL_CHANNELS = {
   // the title-bar pill: UpdateSnapshot, and an UpdateAction main runs when its state offers it
   updateGet: 'damocles:shell:update:get',
   updateRun: 'damocles:shell:update:run',
+  // Remote hosts; main refuses an unknown hostId
+  // { hostId, name } → NameCheck through the host store's one validator
+  hostsRename: 'damocles:shell:hosts:rename',
+  // { hostId } → void: the host's folder browser in the Connect dialog, connecting it first (every "open another folder" entry)
+  hostsOpenFolder: 'damocles:shell:hosts:open-folder',
+  // { hostId } → void: the Connect dialog on the host's card with its name field open; no connection starts
+  hostsRenameOnCard: 'damocles:shell:hosts:rename-on-card',
+  // {}: the Connect dialog on its host list
+  connectOpen: 'damocles:shell:connect:open',
+  // { hostId }: a failed or offline host connects again (the banner's and the offline placeholder's Reconnect)
+  hostsReconnect: 'damocles:shell:hosts:reconnect',
+  // { hostId }: the banner's "Sign in to <name>": the Connect dialog on that host's waiting prompt
+  hostsSignIn: 'damocles:shell:hosts:sign-in',
+  // { hostId }: the failure banner's Show log: the host's ssh output and daemon log as read-only tabs
+  hostsShowLog: 'damocles:shell:hosts:show-log',
+  // { hostId }: the update banner's "Switch when they finish": the old daemon exits once idle, then the host connects again
+  hostsSwitchWhenIdle: 'damocles:shell:hosts:switch-when-idle',
+  // { hostId } → boolean: "Switch now" after main's confirmation listing the agents and terminals; false: the user cancelled it
+  hostsSwitchNow: 'damocles:shell:hosts:switch-now',
+  // Projects section views and order; each resolves once main wrote it, and the next ShellState shows it
+  // { view: ProjectsView }
+  projectsSetView: 'damocles:shell:projects:set-view',
+  // { group, collapsed }: group is a key of ShellState.projectGroups.order
+  projectsSetGroupCollapsed: 'damocles:shell:projects:set-group-collapsed',
+  // { order } → boolean: every shown project key in the new order; false, and nothing written, for any other list
+  projectsReorder: 'damocles:shell:projects:reorder',
+  // { groupOrder } → boolean: ShellState.projectGroups.order's keys in the new order; false for any other list
+  projectsReorderGroups: 'damocles:shell:projects:reorder-groups',
+  // OpenAsProjectRequest → OpenAsProjectResult: a folder in Files as its own project on the same authority
+  projectsOpenAsProject: 'damocles:shell:projects:open-as-project',
   // renderer → main, send
   contentBounds: 'damocles:shell:content-bounds',
   sidebarLayout: 'damocles:shell:sidebar-layout',
@@ -95,6 +127,10 @@ export const SHELL_CHANNELS = {
   editorConflict: 'damocles:shell:editor:conflict',
   // { tabId }: Mention this file in chat
   editorMention: 'damocles:shell:editor:mention',
+  // { tabId } of an upload merge tab → ScmMergeInputsResult
+  editorMergeInputs: 'damocles:shell:editor:merge-inputs',
+  // { tabId } of an upload merge tab: Complete Merge; the shell flushes editor:edit first
+  editorCompleteMerge: 'damocles:shell:editor:complete-merge',
   // { open: boolean }: main hides the chat view while the focus overlay is open
   editorFocusOverlay: 'damocles:shell:editor:focus-overlay',
   // Editor pane, renderer → main, send
@@ -248,12 +284,14 @@ export const PROJECT_CONNECTIONS = ['connecting', 'connected', 'failed', 'offlin
 export type ProjectConnection = (typeof PROJECT_CONNECTIONS)[number];
 
 export interface ShellProjectAuthority {
+  // the authority key ('local', 'loopback', 'ssh+<hostId>'), which also keys the project's group
+  readonly key: string;
   readonly kind: AuthorityKind;
   // the host store's id; absent for local and loopback projects
   readonly hostId?: string;
   // the host's name as the badge shows it
   readonly name: string;
-  readonly color?: string;
+  readonly color?: HostTone;
 }
 
 export interface ShellProject {
@@ -266,6 +304,8 @@ export interface ShellProject {
   // the OS the project's files are on
   readonly platform: ShellPlatform;
   readonly connection: ProjectConnection;
+  // deleting a file can move it to the OS trash; false on remote targets, which delete permanently
+  readonly trash: boolean;
   // the project's branch from git's HEAD file (D42); undefined outside git
   readonly branch?: string;
   // a linked worktree opened as its own project (an adopted record): the name of the project holding its main worktree, or of
@@ -291,7 +331,11 @@ export interface ShellChat {
   readonly worktree?: ShellChatWorktree;
   // the chat's worktree is gone: it opens as read-only history (slice 12a rule 18)
   readonly readOnly: boolean;
+  // what the row's menu, buttons and keys offer besides Open; main refuses the others for this chat
+  readonly actions: readonly ShellChatAction[];
 }
+
+export type ShellChatAction = 'rename' | 'tag' | 'delete';
 
 // pending: opted in, nothing created yet, branch is the Start from branch; live: it works in its worktree; inProjectFolder:
 // handed back to the project folder and still owning the worktree; deleted: the worktree is gone ("Worktree deleted").
@@ -674,6 +718,8 @@ export interface ShellEditorTab {
   readonly conflict: boolean;
   // the file was deleted on disk (VS Code's orphaned editor): dirty only when edited, and a save recreates it
   readonly deleted?: true;
+  // a remote file saved on this computer while its host was not connected; it uploads on reconnect
+  readonly pendingUpload?: true;
   // settings tabs only: which settings file, for the JSON schema variant (user, or project/local)
   readonly settingsScope?: SettingsFileScope;
   // searchEditor tabs only: main's config of the editor, whether its search runs, and what its message line says
@@ -707,12 +753,12 @@ export interface ShellTimelineTab {
   readonly path: string;
 }
 
-// documentId: the Result, the file's own document from the document service
-export interface ShellMergeTab {
-  readonly repoId: string;
-  readonly path: string;
-  readonly documentId: string;
-}
+// documentId: the Result, the file's own document from the document service. upload: an offline save that met a changed
+// target on reconnect, with no repository; its inputs and Complete Merge go through editor:merge-inputs and
+// editor:complete-merge, and path is its project-relative path.
+export type ShellMergeTab =
+  | { readonly repoId: string; readonly path: string; readonly documentId: string }
+  | { readonly upload: true; readonly path: string; readonly documentId: string };
 
 // A Search Editor's query (VS Code's SearchConfiguration without the notebook filters).
 export interface SearchEditorConfig {
@@ -806,7 +852,9 @@ export type ShellDocumentContent =
     }
   // dataUrl: a size-capped data: URL of a png, jpeg, gif, webp, bmp, x-icon or svg+xml image, for an <img> only
   | { readonly kind: 'image'; readonly documentId: string; readonly dataUrl: string; readonly bytes: number }
-  | { readonly kind: 'notDisplayed'; readonly documentId: string; readonly reason: NotDisplayedReason; readonly bytes?: number };
+  | { readonly kind: 'notDisplayed'; readonly documentId: string; readonly reason: NotDisplayedReason; readonly bytes?: number }
+  // a remote file whose host is not connected; its tab takes a new documentId once the host connects
+  | { readonly kind: 'offline'; readonly documentId: string; readonly hostId: string; readonly hostName: string };
 
 // missing: a git side that does not exist there (a core-originated placeholder, never a file)
 export type NotDisplayedReason = 'binary' | 'tooLarge' | 'unreadable' | 'missing';
@@ -1234,6 +1282,32 @@ export interface ShellSearchSettings {
   readonly searchEditor: { readonly doubleClickBehaviour: (typeof SEARCH_EDITOR_DOUBLE_CLICK)[number]; readonly focusResultsOnSearch: boolean };
 }
 
+// damocles.desktop.projects.view: one list, or one group per authority
+export type ProjectsView = (typeof PROJECTS_VIEWS)[number];
+
+// The grouped view's groups, by authority key ('local' for this computer).
+export interface ShellProjectGroups {
+  // 'local' and the authority of every shown project, in the stored group order
+  readonly order: readonly string[];
+  // the collapsed groups among order
+  readonly collapsed: readonly string[];
+}
+
+// Files' Open as project: a folder of a project (or of its shown worktree) by root key and relative path.
+export interface OpenAsProjectRequest {
+  readonly projectKey: string;
+  readonly relativePath: string;
+}
+
+// added: false when the folder was a project already, which is selected instead
+export interface OpenAsProjectResult {
+  readonly projectKey: string;
+  readonly added: boolean;
+}
+
+// The most keys a reorder may name; far above any project list a sidebar shows.
+export const MAX_REORDER_KEYS = 10_000;
+
 // damocles.desktop.sidebar.*, republished on every change
 export interface ShellSidebarSettings {
   // section title actions show whenever the section is expanded, not only while it is hovered or holds focus
@@ -1246,6 +1320,43 @@ export interface ShellEngine {
   // the host's name as this computer names it
   readonly name: string;
   readonly state: 'starting' | 'running' | 'restarting' | 'halted';
+}
+
+// A saved remote host as the sidebar and banners show it, named by this computer's host store.
+export interface ShellHost {
+  readonly hostId: string;
+  readonly authorityKey: string;
+  readonly name: string;
+  readonly color?: HostTone;
+  readonly os?: ShellPlatform;
+  readonly connection: ProjectConnection;
+  // an attempt made without the user waits on a prompt ("Sign in to <name>")
+  readonly signInNeeded: boolean;
+  // the handshake's measured clock skew, present only past CLOCK_SKEW_WARN_MS
+  readonly clockSkewMs?: number;
+  // the reconnect loop's phase while the host is away; absent while connected, before its first connection and after Disconnect
+  readonly reconnect?: HostReconnect;
+  // the latest round trip and the last ten; absent before the first measurement
+  readonly latency?: HostLatency;
+  // a daemon of another protocol that still runs agents, whose chats show read-only from the session mirror
+  readonly update?: HostUpdate;
+}
+
+export interface HostUpdate {
+  // the running daemon's app version, e.g. "3.7.0"
+  readonly serverVersion: string;
+  // the chat runs its listRuns reports
+  readonly runningAgents: number;
+  // waiting: "Switch when they finish" was chosen, and the switch follows the old daemon's exit
+  readonly phase: 'offer' | 'waiting';
+}
+
+export type HostAttention = 'offline' | 'signIn';
+
+/** What a host's connection banners say: an attempt waiting for the user to sign in, else the host being away. */
+export function hostAttention(host: Pick<ShellHost, 'connection' | 'signInNeeded'>): HostAttention | undefined {
+  if (host.signInNeeded) return 'signIn';
+  return host.connection === 'offline' || host.connection === 'failed' ? 'offline' : undefined;
 }
 
 export interface ShellState {
@@ -1286,8 +1397,14 @@ export interface ShellState {
   readonly engineHalted: boolean;
   // each remote host's engine, the daemon's core as main last heard of it
   readonly engines: readonly ShellEngine[];
+  // remote features show (a development build, or DAMOCLES_REMOTE=1); false hides every remote entry point
+  readonly remoteEnabled: boolean;
+  // the saved SSH hosts, empty while remoteEnabled is false
+  readonly hosts: readonly ShellHost[];
   readonly search: ShellSearchSettings;
   readonly sidebar: ShellSidebarSettings;
+  readonly projectsView: ProjectsView;
+  readonly projectGroups: ShellProjectGroups;
 }
 
 // CSS px relative to the window's content area; main scales by the shell's zoom factor.
@@ -1342,6 +1459,30 @@ export interface DamoclesShellApi {
   // a new engine replaces the halted or running one (the Restart Engine command)
   // authority names a remote host's engine; none restarts the local one
   restartEngine(authority?: string): Promise<void>;
+  // Remote hosts (ShellState.hosts)
+  // null: main could not save the name, which it logged
+  renameHost(hostId: string, name: string): Promise<NameCheck | null>;
+  // resolves once main opened the Connect dialog on the host's card with its name field open
+  renameHostOnCard(hostId: string): Promise<void>;
+  // resolves once main opened the Connect dialog on its host list
+  openConnect(): Promise<void>;
+  // resolves once main opened the Connect dialog on the host's folder browser (connecting it first)
+  openHostFolder(hostId: string): Promise<void>;
+  reconnectHost(hostId: string): Promise<void>;
+  signInHost(hostId: string): Promise<void>;
+  showHostLog(hostId: string): Promise<void>;
+  switchHostWhenIdle(hostId: string): Promise<void>;
+  // false: the user cancelled main's confirmation
+  switchHostNow(hostId: string): Promise<boolean>;
+  // Projects section; each resolves once main wrote it, and the next state shows it
+  setProjectsView(view: ProjectsView): Promise<void>;
+  setProjectGroupCollapsed(group: string, collapsed: boolean): Promise<void>;
+  // false: order is not every shown project key once, or the write failed; nothing was written, and only the shell tells the user
+  reorderProjects(order: readonly string[]): Promise<boolean>;
+  // false: groupOrder is not every key of projectGroups.order once, or the write failed; nothing was written
+  reorderProjectGroups(groupOrder: readonly string[]): Promise<boolean>;
+  // the folder's project is selected once this resolves; null: it failed, and a toast told the user
+  openAsProject(request: OpenAsProjectRequest): Promise<OpenAsProjectResult | null>;
   toggleSidebar(): Promise<void>;
   // resolves once main showed the sidebar; the state that says so follows
   showSidebar(): Promise<void>;
@@ -1379,6 +1520,8 @@ export interface DamoclesShellApi {
   reportFormatFailure(failure: EditorBuiltinFormatFailure): void;
   reportSelection(report: EditorSelectionReport): void;
   mentionTab(tabId: string): Promise<void>;
+  uploadMergeInputs(tabId: string): Promise<ScmMergeInputsResult>;
+  completeUploadMerge(tabId: string): Promise<void>;
   setFocusOverlay(open: boolean): Promise<void>;
   onEditorCommand(listener: (command: EditorCommand) => void): () => void;
   // answer each with editorFlushed(requestId) after formatting the named documents and sending every pending edit

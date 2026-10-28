@@ -98,7 +98,7 @@ function harness(): Harness {
     cwd: '/cwd',
     projectScope: true,
     platform: createFakePlatform(),
-    permissionHandler: { getPermissionMode: () => 'default', setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [] } as unknown as PermissionHandler,
+    permissionHandler: { getPermissionMode: () => 'default', turnPermissionMode: () => 'default', setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [] } as unknown as PermissionHandler,
     onMessage: (message: ExtensionToWebviewMessage) => emitted.push(message),
     resolveThinking: () => ({ thinkingDisabled: true, effort: null }),
   } as unknown as SessionOptions;

@@ -30,6 +30,13 @@ const sharedTest = {
 const hermeticHome = 'src/__mocks__/hermetic-home.setup.ts';
 const fakePlatform = 'src/__mocks__/fake-platform.setup.ts';
 
+// Main imports the remote stage scripts as text, as esbuild's text loader bundles them (esbuild.config.mjs desktopMainOptions).
+const stageScriptText = {
+  name: 'stage-script-text',
+  enforce: 'pre' as const,
+  transform: (code: string, id: string) => (/\.(sh|ps1)$/.test(id) ? { code: `export default ${JSON.stringify(code)};`, map: null } : undefined),
+};
+
 const sharedAlias = { '@shared': path.resolve(__dirname, 'src/shared') };
 const webviewAlias = { '@': path.resolve(__dirname, 'src/webview') };
 
@@ -66,6 +73,7 @@ export default defineConfig({
         },
       },
       {
+        plugins: [stageScriptText],
         resolve: {
           alias: {
             ...sharedAlias,

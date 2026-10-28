@@ -63,7 +63,7 @@ async function joiningChat() {
   });
   const historyManager = {
     liveReplayContext: async () => ({ reasons: undefined, isContextOverflow: undefined }),
-    replayLive: async (_context: unknown, _cwd: string, _session: unknown, post: (m: ExtensionToWebviewMessage) => void, captured: { snapshot: LiveSnapshot }) => {
+    replayLive: async (_context: unknown, _cwd: string, _session: unknown, _host: unknown, post: (m: ExtensionToWebviewMessage) => void, captured: { snapshot: LiveSnapshot }) => {
       post({ type: 'sessionCleared', sessionId: 'S1' });
       post({ type: 'userReplay', content: 'hi', isSynthetic: false, sdkMessageId: 'u1' });
       await replaying.promise;
@@ -94,6 +94,7 @@ async function joiningChat() {
   const viewJoin = createViewJoin(deps);
   joins.run = (id, gate) => viewJoin({
     host,
+    reply: host,
     session: instance.session,
     permissionHandler: instance.permissionHandler,
     ideContextManager: instance.ideContextManager,
@@ -151,6 +152,26 @@ describe('views.join in core', () => {
     // after the join, posts go straight to the view again
     live(7, { type: 'processing', isProcessing: false });
     expect(host.posted.at(-1)).toEqual({ type: 'processing', isProcessing: false });
+  });
+
+  it('holds only the newest partial of a stream among the partials it held last, so a long replay never piles them up', async () => {
+    const { h, host, settled, replaying, live } = await joiningChat();
+    settled.resolve();
+    host.posted.length = 0;
+    const joined = h.manager.joinView(host, TOKEN);
+    await vi.waitFor(() => expect(host.posted.some((m) => m.type === 'userReplay')).toBe(true));
+    const partial = (streamingText: string) => ({ type: 'partial' as const, data: { type: 'partial' as const, content: [], session_id: 'S1', messageId: 'S1:a:1:1', streamingText } });
+    live(6, partial('Hello'));
+    live(7, partial('Hello wo'));
+    live(undefined, { type: 'statusUpdate', status: 'ready' });
+    live(8, partial('Hello world'));
+    live(9, partial('Hello world!'));
+    replaying.resolve();
+    await joined;
+    const types = host.posted.map((m) => (m.type === 'partial' ? `partial:${(m.data as { streamingText?: string }).streamingText}` : m.type));
+    const started = types.indexOf('sessionStarted');
+    expect(types.slice(started + 1, started + 4)).toEqual(['partial:Hello wo', 'statusUpdate', 'partial:Hello world!']);
+    expect(types.slice(started + 1).filter((type) => type.startsWith('partial:'))).toHaveLength(2);
   });
 
   it('delivers everything it held when the join fails', async () => {

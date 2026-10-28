@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, provide, ref, shallowRef } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { FileCode2, FolderSearch, GitBranch, Info, Palette, SquareTerminal } from 'lucide-vue-next';
+import { FileCode2, FolderSearch, GitBranch, Info, Palette, Server, SquareTerminal } from 'lucide-vue-next';
 import type { SettingsAccountId, SettingsSectionId, SettingsTarget } from '@shared/settings-sections';
 import type { ExtensionToWebviewMessage, SettingsFileScope } from '@shared/types/messages';
 import SettingsModal, { type SettingsFooter } from '@/components/settings/SettingsModal.vue';
 import ExtensionUiDialog from '@/components/ExtensionUiDialog.vue';
-import { NO_HOST_SETTINGS, type HostSettings, type SettingsScopeView } from '@/components/settings/settings-rows';
+import { NO_HOST_SETTINGS, type HostSettings, type HostSettingsSection, type SettingsScopeView } from '@/components/settings/settings-rows';
 import { useSettingWritesStore } from '@/components/settings/settings-writes';
 import { settingsViewHandlers, type SettingsHandlerContext, type SettingsViewHandlers } from '@/composables/message-handler/handlers/settings-handlers';
 import { useSettingsStore } from '@/stores/useSettingsStore';
@@ -19,6 +19,8 @@ import AboutSection from './AboutSection.vue';
 import AppearanceSection from './AppearanceSection.vue';
 import EditorSection from './EditorSection.vue';
 import FilesSearchSection from './FilesSearchSection.vue';
+import RemoteHostsSection from './RemoteHostsSection.vue';
+import { REMOTE_HOSTS_TARGET } from './remote-hosts-target';
 import SourceControlSection from './SourceControlSection.vue';
 import TerminalSection from './TerminalSection.vue';
 import { EDIT_SETTINGS_FILE } from './settings-file-link';
@@ -71,6 +73,7 @@ import {
   GIT_SMART_COMMIT_CHANGES_SETTING,
   GIT_SUGGEST_SMART_COMMIT_SETTING,
   GIT_UNTRACKED_CHANGES_SETTING,
+  REMOTE_TERMINAL_IDLE_DAYS_SETTING,
   SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING,
   SEARCH_ACTIONS_POSITION_SETTING,
   SEARCH_COLLAPSE_RESULTS_SETTING,
@@ -209,6 +212,35 @@ const GIT_SETTINGS = [
   GIT_BLAME_EDITOR_DECORATION_SETTING,
 ] as const;
 
+// Remote hosts' rows after the idle-terminal limit, in the order RemoteHostsSection renders them: [row id, settingsHost.rows name].
+const REMOTE_HOST_ROWS = [
+  ['remote-hosts', 'remoteHosts'],
+  ['remote-host-name', 'remoteHostName'],
+  ['remote-host-color', 'remoteHostColor'],
+  ['remote-host-mode', 'remoteHostMode'],
+  ['remote-host-yolo', 'remoteHostYolo'],
+  ['remote-host-agent', 'remoteHostAgent'],
+  ['remote-host-remember', 'remoteHostRemember'],
+  ['remote-host-local-network', 'remoteHostLocalNetwork'],
+  ['remote-host-links', 'remoteHostLinks'],
+  ['remote-host-credentials', 'remoteHostCredentials'],
+  ['remote-host-os', 'remoteHostOs'],
+  ['remote-host-install-folder', 'remoteHostInstallFolder'],
+  ['remote-host-actions', 'remoteHostActions'],
+] as const;
+
+const REMOTE_HOSTS_SECTION: HostSettingsSection = {
+  id: 'remoteHosts',
+  label: 'settingsHost.sections.remoteHosts.label',
+  subtitle: 'settingsHost.sections.remoteHosts.subtitle',
+  icon: Server,
+  component: RemoteHostsSection,
+  rows: [
+    { id: REMOTE_TERMINAL_IDLE_DAYS_SETTING, section: 'remoteHosts', label: 'settingsHost.rows.remoteTerminalIdleDays.label', description: 'settingsHost.rows.remoteTerminalIdleDays.description', keys: [REMOTE_TERMINAL_IDLE_DAYS_SETTING] },
+    ...REMOTE_HOST_ROWS.map(([id, name]) => ({ id, section: 'remoteHosts' as const, label: `settingsHost.rows.${name}.label`, description: `settingsHost.rows.${name}.description` })),
+  ],
+};
+
 const DESKTOP_SETTINGS = computed((): HostSettings => ({
   sections: [{
     id: 'appearance',
@@ -275,7 +307,7 @@ const DESKTOP_SETTINGS = computed((): HostSettings => ({
       const name = gitRowName(key);
       return { id: key, section: 'sourceControl' as const, label: `settingsHost.rows.${name}.label`, description: `settingsHost.rows.${name}.description`, keys: [key] };
     }),
-  }, {
+  }, ...(prefs.remoteEnabled.value ? [REMOTE_HOSTS_SECTION] : []), {
     id: 'about',
     label: 'settingsHost.sections.about.label',
     subtitle: 'settingsHost.sections.about.subtitle',
@@ -401,6 +433,10 @@ stops.push(props.api.onSettingsAttached(({ generation, scopes: next }) => {
   attach(generation);
 }));
 stops.push(props.api.onSettingsTarget((next) => (target.value = next)));
+// the scope tab's host renamed or recolored while the modal shows it
+stops.push(props.api.onSettingsScopeHost((host) => {
+  if (scopes.value) scopes.value = { ...scopes.value, host };
+}));
 
 onBeforeUnmount(() => {
   for (const stop of stops) stop();
@@ -412,6 +448,7 @@ function editSettingsFile(scope: SettingsFileScope, key?: string): void {
   modal.value?.close();
 }
 provide(EDIT_SETTINGS_FILE, editSettingsFile);
+provide(REMOTE_HOSTS_TARGET, computed(() => target.value.host));
 
 const modal = ref<InstanceType<typeof SettingsModal> | null>(null);
 </script>

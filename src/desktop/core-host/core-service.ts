@@ -2,11 +2,13 @@ import { promises as fsPromises } from 'node:fs';
 import * as path from 'node:path';
 import { ChatPanelProvider, flushCoreWrites } from '../../core/chat-panel';
 import { announceLeaseRefusal, leaseRefusalFor } from '../../core/chat-panel/session-ownership';
-import type { CompassViewsHandle, HostInstance } from '../../core/chat-panel/types';
+import { listMirroredSessions, mirroredProjectFolder, mirroredSessionFile } from '../../core/chat-panel/transcript-view';
+import type { AttachedView, CompassViewsHandle, HostInstance } from '../../core/chat-panel/types';
 import { log } from '../../core/logger';
 import { runCheckpointMaintenance, setCheckpointGitAvailability } from '../../core/pi-session/checkpoints';
 import { setMcpSecretStorage } from '../../core/pi-session/mcp/mcp-auth';
 import { PiRuntime } from '../../core/pi-session/pi-runtime';
+import { signInStubOAuth } from '../../core/pi-session/e2e-stub-oauth';
 import type { ChatActivity } from '../../core/pi-session/session-state';
 import { setupAutoDisable } from '../../core/voice/auto-disable';
 import { e2eVoiceRecorder, fakeVoiceForE2e } from '../../core/voice/recorder';
@@ -17,6 +19,7 @@ import { holdsWorktreeSetup, isActiveActivity } from '../../shared/chat-retentio
 import { VOICE_VIEW_MESSAGES } from '../../shared/remote-user';
 import type { WebviewToExtensionMessage, WorktreePhase } from '../../shared/types/messages';
 import type { ChatEntry, FolderTargetEntry } from '../core-protocol';
+import { currentActor } from '../core-protocol/actor';
 import { resolveChatTab } from './chat-tab-target';
 import type { ChatFolderSource } from './local';
 import type { CorePlatform } from './platform';
@@ -176,7 +179,8 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
     panelManager.onActivity((panelId, activity) => {
       activities.set(panelId, activity);
       publishChat(panelId);
-      endpoint.emit('chat.activity', { panelId, activity });
+      const sessionId = panelManager.getPanels().get(panelId)?.session.storedSessionId ?? undefined;
+      endpoint.emit('chat.activity', { panelId, activity, ...(sessionId !== undefined ? { sessionId } : {}) });
     }),
     panelManager.onTurnSettled((panelId, outcome) => {
       publishChat(panelId);
@@ -202,7 +206,7 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   options.chatFolders.set(() => [...panelManager.getPanels().values()].flatMap((instance) => settingsFolderOf(instance.folder) ?? []));
 
   const { finishHolds } = options;
-  const settingsViews = new Map<number, { readonly panelId: string; readonly handle: Disposable }>();
+  const settingsViews = new Map<number, { readonly panelId: string; readonly view: AttachedView; readonly handle: Disposable }>();
   const routed: string[] = [];
   let shutdown: Promise<void> | undefined;
   // e2e.holdShutdown: the next core.shutdown never settles
@@ -236,6 +240,20 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
     await provider.restorePanel(host, folderKey, permissions);
     publishHost(host);
   });
+  // only this computer's core, and only a file of the session mirror, which is checked here again
+  endpoint.serve('chats.openTranscript', async ({ viewId, hostId, file }) => {
+    if (platform.init.remote) throw new Error('A remote core shows no mirrored transcript');
+    const mirrored = await mirroredSessionFile(path.dirname(platform.init.logs.dir), hostId, file);
+    if (!mirrored) throw new Error('The transcript is not a file of the session mirror');
+    provider.openTranscript(panels.attach(viewId), mirrored.path, mirrored.sessionId);
+  });
+  // only this computer's core, and only a project folder of the session mirror, which is checked here again
+  endpoint.serve('chats.listMirrored', async ({ hostId, folder, query }) => {
+    if (platform.init.remote) throw new Error('A remote core lists no session mirror');
+    const mirrored = await mirroredProjectFolder(path.dirname(platform.init.logs.dir), hostId, folder);
+    if (mirrored === undefined) throw new Error('The folder is not a project folder of the session mirror');
+    return mirrored === null ? [] : listMirroredSessions(mirrored, query ?? '');
+  });
   endpoint.serve('chats.startInWorktree', async ({ viewId, projectKey, worktreeId }) => {
     const host = panels.attach(viewId);
     publishChat(await provider.startInWorktree(host, projectKey, worktreeId));
@@ -268,6 +286,10 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   endpoint.serve('chats.open', () => provider.show());
   endpoint.serve('chats.newSession', () => provider.newSession());
   endpoint.serve('chats.cancelSession', () => provider.cancelSession());
+  endpoint.serve('chats.stop', async ({ panelId }) => {
+    log(`[core] stopping chat ${panelId}'s turn for a client`);
+    await requireInstance(panelId).session.interrupt();
+  });
   endpoint.serve('chats.postToActive', ({ message }) => {
     panelManager.postToActivePanel(message as Parameters<typeof panelManager.postToActivePanel>[0]);
   });
@@ -331,7 +353,9 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   });
   endpoint.serve('browser.newPage', ({ chatViewId }) => provider.getBrowserService().openNewPageForChat(requireHost(chatViewId)));
   // this computer's user scope for remote chats: main asks only this core, and checks every answer before it leaves
-  endpoint.serve('user.resolveCredential', ({ provider }) => PiRuntime.get().resolveCredentialForBroker(provider));
+  endpoint.serve('user.resolveCredential', ({ provider, force }) => PiRuntime.get().resolveCredentialForBroker(provider, force === true));
+  // the daemon stamps the pushing client as the actor, so the token lands only in that client's broker entries
+  endpoint.serve('user.credentials.push', ({ provider, credential }) => PiRuntime.get().acceptPushedCredential(currentActor(), provider, credential));
   endpoint.serve('user.clientAuth', () => PiRuntime.get().clientAuthSnapshot());
   // a daemon's core has no user scope of its own to relay
   if (!platform.remote) {
@@ -364,26 +388,29 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   endpoint.serve('review.stale', ({ panelId, checks }) => requireInstance(panelId).session.chatReviewStale(checks as Parameters<Session['chatReviewStale']>[0]));
   endpoint.serve('review.submit', ({ panelId, drafts }) => requireInstance(panelId).session.submitReview(drafts as Parameters<Session['submitReview']>[0]));
   endpoint.serve('settingsView.attach', ({ panelId, attachment, scope }) => {
-    const handle = panelManager.attachView(panelId, {
+    const clientId = currentActor();
+    const view: AttachedView = {
       post: (message) => endpoint.emit('settingsView.post', { attachment, message }),
       detached: () => {
         settingsViews.delete(attachment);
         endpoint.emit('settingsView.detached', { attachment });
       },
       ...(scope !== undefined ? { scope } : {}),
-    });
-    settingsViews.set(attachment, { panelId, handle });
+      ...(clientId !== undefined ? { clientId } : {}),
+    };
+    const handle = panelManager.attachView(panelId, view);
+    settingsViews.set(attachment, { panelId, view, handle });
   });
   // a view main made for a panel this core holds; the panel's token never changes
-  endpoint.serve('views.join', async ({ viewId, viewKey }) => {
+  endpoint.serve('views.join', async ({ viewId, viewKey, joining }) => {
     const host = panels.get(viewId);
     if (!host) return null;
-    const panelId = await panelManager.joinView(host, viewKey);
+    const panelId = await panelManager.joinView(host, viewKey, joining);
     return panelId === undefined ? null : { panelId };
   });
   endpoint.serve('settingsView.dispatch', async ({ attachment, message }) => {
-    const view = settingsViews.get(attachment);
-    if (view) await panelManager.dispatchFromView(view.panelId, message as Parameters<typeof panelManager.dispatchFromView>[1]);
+    const attached = settingsViews.get(attachment);
+    if (attached) await panelManager.dispatchFromView(attached.panelId, attached.view, message as Parameters<typeof panelManager.dispatchFromView>[2]);
   });
   endpoint.serve('settingsView.detach', ({ attachment }) => {
     settingsViews.get(attachment)?.handle.dispose();
@@ -413,6 +440,8 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
       holdShutdown = true;
     });
     endpoint.serve('e2e.inputBox', (options) => platform.dialogs.inputBox(options));
+    // this computer's ChatGPT sign-in, signed in and refreshed by a stub with short-lived tokens
+    endpoint.serve('e2e.stubOAuth', ({ account, expiresInMs, offline }) => signInStubOAuth(PiRuntime.get(), account, expiresInMs, offline));
     // this core's recorder starts a stand-in under its own launcher, so a test can tell which process records
     endpoint.serve('e2e.fakeVoice', ({ transcript }) => {
       fakeVoiceForE2e(transcript);

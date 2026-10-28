@@ -27,7 +27,9 @@ import { PI_AGENT_DIR } from "../../pi-session/agent-dir";
 import { createFakeRemoteHost } from "../../../__mocks__/fake-remote-host";
 import * as path from "path";
 import type { Disposable } from "../../../platform/disposable";
-import type { ExtensionToWebviewMessage } from "../../../shared/types/messages";
+import { VSCODE_HOST_CAPABILITIES, type ExtensionToWebviewMessage } from "../../../shared/types/messages";
+import { asClient, bypassAllowed } from "../../client-snapshots";
+import { SUBSCRIPTION_SOURCE } from "../../pi-session/subscription";
 
 type Posted = ExtensionToWebviewMessage;
 
@@ -47,13 +49,13 @@ function addPanel(panels: Map<string, unknown>, id: string): Posted[] {
   return posted;
 }
 
-function harness(): { posted: Posted[]; panels: Map<string, unknown> } {
+function harness(): { posted: Posted[]; panels: Map<string, unknown>; provider: ChatPanelProvider } {
   const provider = new ChatPanelProvider(platform, {
     subscriptions,
     createCompassViews: () => ({ register: () => {}, setActive: () => {}, dispose: () => {} }),
   });
   const panels = (provider as unknown as { panelManager: { getPanels: () => Map<string, unknown> } }).panelManager.getPanels();
-  return { posted: addPanel(panels, "p1"), panels };
+  return { posted: addPanel(panels, "p1"), panels, provider };
 }
 
 const judgeUpdates = (posted: Posted[]) =>
@@ -296,6 +298,26 @@ describe("account state in panels that have not started", () => {
     });
   });
 
+  it("shows the views of a client whose host policy changed the YOLO control that policy now allows, and no other client's views", async () => {
+    const host = createFakeRemoteHost();
+    Object.assign(platform, { remote: host.remote });
+    Object.defineProperty(platform, "capabilities", { get: () => ({ ...VSCODE_HOST_CAPABILITIES, bypassPermissions: bypassAllowed(platform) }) });
+    host.set("clientPolicy", "laptop", { voice: false, allowBypass: false });
+    host.set("clientPolicy", "desktop", { voice: false, allowBypass: false });
+    host.setActing("desktop");
+    const { panels } = harness();
+    const views = new Map<string, Posted[]>([["view-laptop", []], ["view-desktop", []]]);
+    const entry = panels.get("p1") as { host: Record<string, unknown> };
+    entry.host["views"] = () => [{ viewKey: "view-laptop", clientId: "laptop" }, { viewKey: "view-desktop", clientId: "desktop" }];
+    entry.host["viewHost"] = (viewKey: string) => ({ postMessage: async (m: Posted) => { views.get(viewKey)!.push(m); return true; } });
+
+    host.set("clientPolicy", "laptop", { voice: false, allowBypass: true });
+
+    const capabilities = (posted: Posted[]) => posted.flatMap((m) => (m.type === "hostCapabilities" ? [m.capabilities.bypassPermissions] : []));
+    expect(capabilities(views.get("view-laptop")!)).toEqual([true]);
+    expect(capabilities(views.get("view-desktop")!)).toEqual([]);
+  });
+
   // A sign-in on the client changes no key the daemon applies, so the key sync alone would not republish unstarted panels.
   it("follows the acting client's sign-in on a daemon's core, before pi starts", async () => {
     const host = createFakeRemoteHost();
@@ -310,5 +332,116 @@ describe("account state in panels that have not started", () => {
     expect(publishes(panels)).toEqual([1, 1]);
     await vi.waitFor(() => expect(keyStatuses(posted).find((status) => status.provider === "github-copilot")).toMatchObject({ signedIn: true, signedInExpiresAt: 7_000 }));
     expect(PiRuntime.exists).toBe(false);
+  });
+});
+
+describe("account state on a daemon's core chat two devices show", () => {
+  /** Device-a holds an Anthropic and an OpenAI key and an xAI sign-in, device-b nothing; device-a acts. */
+  function twoDevices() {
+    const host = createFakeRemoteHost();
+    Object.assign(platform, { remote: host.remote });
+    host.set("clientAuth", "device-a", { providers: {
+      anthropic: { type: "api_key", hasKey: true, flatFee: false },
+      openai: { type: "api_key", hasKey: true, flatFee: false },
+      xai: { type: "oauth", hasKey: false, flatFee: false, expires: 5_000 },
+    } });
+    host.set("clientAuth", "device-b", { providers: {} });
+    host.setActing("device-a");
+    const { posted, panels, provider } = harness();
+    const views = new Map<string, Posted[]>([["view-a", []], ["view-b", []]]);
+    const entry = panels.get("p1") as { host: Record<string, unknown> };
+    entry.host["views"] = () => [{ viewKey: "view-a", clientId: "device-a" }, { viewKey: "view-b", clientId: "device-b" }];
+    entry.host["viewHost"] = (viewKey: string) => ({ postMessage: async (m: Posted) => { views.get(viewKey)!.push(m); return true; } });
+    // a post to the panel reaches every view
+    entry.host["postMessage"] = async (m: Posted) => {
+      posted.push(m);
+      for (const shown of views.values()) shown.push(m);
+      return true;
+    };
+    return { host, posted, provider, view: (key: string) => views.get(key)! };
+  }
+
+  it("gives each device's views the key, sign-in and Claude status of that device's own account", async () => {
+    const { host, posted, view } = twoDevices();
+
+    host.set("clientAuth", "device-b", { providers: {} });
+
+    await vi.waitFor(() => expect(keyStatuses(view("view-b"))).toHaveLength(CUSTOM_PROVIDER_DEFS.length));
+    await vi.waitFor(() => expect(keyStatuses(view("view-a"))).toHaveLength(CUSTOM_PROVIDER_DEFS.length));
+    const xai = (key: string) => keyStatuses(view(key)).find((status) => status.provider === "xai");
+    expect([xai("view-a")?.signedIn, xai("view-b")?.signedIn]).toEqual([true, false]);
+    const claude = (key: string) => view(key).flatMap((m) => (m.type === "claudeAuthStatusChanged" ? [m.mode] : []));
+    expect([claude("view-a"), claude("view-b")]).toEqual([["apikey"], ["none"]]);
+    expect(posted.filter((m) => m.type === "providerAuthStatusChanged" || m.type === "claudeAuthStatusChanged")).toEqual([]);
+  });
+
+  it("gives each device's views the Claude billing its own sign-in chose, whatever subscription plugin the host's pi lists", async () => {
+    const { host, view } = twoDevices();
+    expect(PI_AGENT_DIR.startsWith(tmpRoot)).toBe(true);
+    fs.mkdirSync(PI_AGENT_DIR, { recursive: true });
+    fs.writeFileSync(path.join(PI_AGENT_DIR, "settings.json"), JSON.stringify({ packages: [SUBSCRIPTION_SOURCE] }));
+    host.set("clientAuth", "device-b", { providers: { anthropic: { type: "oauth", hasKey: false, flatFee: false, expires: 5_000 } } });
+    host.set("clientAuth", "device-a", { providers: { anthropic: { type: "oauth", hasKey: false, flatFee: false, expires: 5_000, allowance: true } } });
+
+    const claude = (key: string) => view(key).flatMap((m) => (m.type === "claudeAuthStatusChanged" ? [m.mode] : []));
+    await vi.waitFor(() => expect([claude("view-a").at(-1), claude("view-b").at(-1)]).toEqual(["allowance", "extra"]));
+    fs.rmSync(path.join(PI_AGENT_DIR, "settings.json"), { force: true });
+  });
+
+  it("gives each device's views the memory judge its own credentials choose, before pi starts", async () => {
+    const { view } = twoDevices();
+
+    PiRuntime.notifyMemoryJudgeChange();
+
+    await vi.waitFor(() => expect([judgeUpdates(view("view-a")), judgeUpdates(view("view-b"))].map((m) => m.length)).toEqual([1, 1]));
+    expect(judgeUpdates(view("view-a"))[0]?.memoryJudge).toEqual({ kind: "classifier", via: "openai" });
+    expect(judgeUpdates(view("view-b"))[0]).toEqual({
+      type: "memoryJudgeStatus",
+      memoryJudge: { kind: "unknown" },
+      classifierCredentials: { typesafe: "no-key", openrouter: "no-key", openai: "no-key" },
+    });
+  });
+
+  it("restates each device's own OpenAI status after one device's refused ChatGPT sign-out", async () => {
+    const { view, provider } = twoDevices();
+    const router = (provider as unknown as { messageRouter: { handleWebviewMessage: (message: unknown, panelId: string, view: undefined, viewKey: string) => Promise<void> } }).messageRouter;
+
+    await router.handleWebviewMessage({ type: "signOutChatGPT" }, "p1", undefined, "view-b");
+
+    const openai = (key: string) => view(key).flatMap((m) => (m.type === "openaiAuthStatusChanged" ? [m.status.apikey.configured] : []));
+    expect([openai("view-a"), openai("view-b")]).toEqual([[true], [false]]);
+  });
+
+  it("gives each device's views its own prefer-API-key choices, never the acting device's", async () => {
+    const { host, view, provider } = twoDevices();
+    const router = (provider as unknown as { messageRouter: { handleWebviewMessage: (message: unknown, panelId: string, view: undefined, viewKey: string) => Promise<void> } }).messageRouter;
+    // the acting device's own flags, which the state mirror carries
+    await platform.state.global.update("damocles.openai.preferApiKey", true);
+    await platform.state.global.update("damocles.xai.preferApiKey", true);
+    host.set("clientAuth", "device-a", { providers: {
+      openai: { type: "api_key", hasKey: true, flatFee: false, preferApiKey: true },
+      xai: { type: "none", hasKey: true, keySaved: true, flatFee: false, preferApiKey: true },
+    } });
+    host.set("clientAuth", "device-b", { providers: {
+      openai: { type: "api_key", hasKey: true, flatFee: false },
+      xai: { type: "none", hasKey: true, keySaved: true, flatFee: false },
+    } });
+    await router.handleWebviewMessage({ type: "signOutChatGPT" }, "p1", undefined, "view-b");
+
+    const xai = (key: string) => keyStatuses(view(key)).filter((status) => status.provider === "xai").at(-1)?.preferApiKey;
+    const openai = (key: string) => view(key).flatMap((m) => (m.type === "openaiAuthStatusChanged" ? [m.preferApiKey] : []));
+    await vi.waitFor(() => expect([xai("view-a"), xai("view-b")]).toEqual([true, false]));
+    expect([openai("view-a"), openai("view-b")]).toEqual([[true], [false]]);
+  });
+
+  it("reads each device's classifier credentials from its own account once pi holds the acting device's", () => {
+    const { host } = twoDevices();
+    const runtime = PiRuntime.get();
+    // pi's availability snapshot holds the acting device's credentials
+    (runtime as unknown as { _modelRuntime: unknown })._modelRuntime = { hasConfiguredAuth: (provider: string) => provider === "openai" };
+
+    const openai = (clientId: string) => asClient(host.remote, clientId, () => runtime.classifierCredentials().openai);
+
+    expect([openai("device-a"), openai("device-b")]).toEqual(["ok", "no-key"]);
   });
 });

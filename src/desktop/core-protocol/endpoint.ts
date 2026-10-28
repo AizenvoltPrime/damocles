@@ -1,4 +1,5 @@
 import type { Disposable } from '../../platform/disposable';
+import type { ActorContext } from './actor';
 import { MAX_ID_CHARS, type Call, type Contract, type Method, type Tables } from './messages';
 import { INVALID, type Parser } from './schema';
 
@@ -14,13 +15,13 @@ export class CoreProtocolError extends Error {
 }
 
 type Envelope =
-  | { readonly kind: 'request'; readonly id: number; readonly method: string; readonly params: unknown }
+  | { readonly kind: 'request'; readonly id: number; readonly method: string; readonly params: unknown; readonly actor?: string }
   | { readonly kind: 'response'; readonly id: number; readonly ok: true; readonly result: unknown }
   | { readonly kind: 'response'; readonly id: number; readonly ok: false; readonly error: string; readonly fault?: Fault }
   | { readonly kind: 'cancel'; readonly id: number }
-  | { readonly kind: 'event'; readonly name: string; readonly payload: unknown }
+  | { readonly kind: 'event'; readonly name: string; readonly payload: unknown; readonly actor?: string }
   | { readonly kind: 'mirror'; readonly topic: string; readonly version: number; readonly patch: unknown }
-  | { readonly kind: 'panel'; readonly panelId: string; readonly op: string; readonly payload: unknown };
+  | { readonly kind: 'panel'; readonly panelId: string; readonly op: string; readonly payload: unknown; readonly actor?: string };
 
 /** An error class the contract carries by name, with its own fields as data (errors.ts ERROR_CODEC). */
 export interface Fault {
@@ -42,16 +43,21 @@ const isSeq = (value: unknown): value is number => typeof value === 'number' && 
 // Names reach log lines (a violation names the message), so they hold no character that could forge one.
 const NAME = /^[A-Za-z0-9._-]+$/;
 const isName = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= MAX_NAME_CHARS && NAME.test(value);
+// a client id, as the handshake's hello admits it
+const isActor = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_CHARS && NAME.test(value);
 
 function parseEnvelope(raw: unknown): Envelope | undefined {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
   const value = raw as Record<string, unknown>;
   const own = (key: string): unknown => (Object.hasOwn(value, key) ? value[key] : undefined);
   const id = own('id');
+  const actor = own('actor');
+  if (actor !== undefined && !isActor(actor)) return undefined;
+  const actorField = actor === undefined ? {} : { actor };
   switch (own('kind')) {
     case 'request': {
       const method = own('method');
-      return isSeq(id) && isName(method) ? { kind: 'request', id, method, params: own('params') } : undefined;
+      return isSeq(id) && isName(method) ? { kind: 'request', id, method, params: own('params'), ...actorField } : undefined;
     }
     case 'response': {
       if (!isSeq(id)) return undefined;
@@ -68,7 +74,7 @@ function parseEnvelope(raw: unknown): Envelope | undefined {
       return isSeq(id) ? { kind: 'cancel', id } : undefined;
     case 'event': {
       const name = own('name');
-      return isName(name) ? { kind: 'event', name, payload: own('payload') } : undefined;
+      return isName(name) ? { kind: 'event', name, payload: own('payload'), ...actorField } : undefined;
     }
     case 'mirror': {
       const topic = own('topic');
@@ -79,7 +85,7 @@ function parseEnvelope(raw: unknown): Envelope | undefined {
       const panelId = own('panelId');
       const op = own('op');
       return typeof panelId === 'string' && panelId.length > 0 && panelId.length <= MAX_ID_CHARS && isName(op)
-        ? { kind: 'panel', panelId, op, payload: own('payload') }
+        ? { kind: 'panel', panelId, op, payload: own('payload'), ...actorField }
         : undefined;
     }
     default:
@@ -117,6 +123,9 @@ export interface EndpointOptions<Out extends Contract, In extends Contract> {
   // in process the violation is thrown; across processes the side that sees it ends the channel (core-process.ts, core-host/index.ts)
   readonly onViolation?: (error: CoreProtocolError) => void;
   readonly errors?: ErrorCodec;
+  // set: served requests, panel messages and event listeners run as the actor their envelope names, and requests, panel
+  // envelopes and events this side sends carry the current one; unset: an envelope's actor is ignored and none is sent
+  readonly actor?: ActorContext;
 }
 
 interface LooseTables {
@@ -157,7 +166,12 @@ function listen<L>(map: Map<string, Set<L>>, key: string, listener: L): Disposab
 }
 
 export function createEndpoint<Out extends Contract, In extends Contract>(options: EndpointOptions<Out, In>): Endpoint<Out, In> {
-  const { transport, log } = options;
+  const { transport, log, actor: actors } = options;
+  const asActor = <T>(actor: string | undefined, body: () => T): T => (actors ? actors.run(actor, body) : body());
+  const stamp = (): { actor?: string } => {
+    const actor = actors?.current();
+    return actor === undefined ? {} : { actor };
+  };
   const outgoing = options.outgoing as unknown as LooseTables;
   const incoming = options.incoming as unknown as LooseTables;
   const violation = options.onViolation ?? ((error: CoreProtocolError): void => { throw error; });
@@ -214,7 +228,7 @@ export function createEndpoint<Out extends Contract, In extends Contract>(option
     inflight.set(envelope.id, controller);
     let result: unknown;
     try {
-      result = handler(params.value, controller.signal);
+      result = asActor(envelope.actor, () => handler(params.value, controller.signal));
     } catch (err) {
       respond(envelope.id, failure(err));
       return;
@@ -281,7 +295,7 @@ export function createEndpoint<Out extends Contract, In extends Contract>(option
           fail(`event ${envelope.name}`);
           return;
         }
-        fireAll(eventListeners.get(envelope.name), (listener) => listener(payload.value), log, envelope.name);
+        asActor(envelope.actor, () => fireAll(eventListeners.get(envelope.name), (listener) => listener(payload.value), log, envelope.name));
         return;
       }
       case 'mirror': {
@@ -301,7 +315,7 @@ export function createEndpoint<Out extends Contract, In extends Contract>(option
           fail(`panel ${envelope.op}`);
           return;
         }
-        fireAll(panelListeners, (listener) => listener(envelope.panelId, { op: envelope.op, payload: payload.value }), log, 'panel');
+        asActor(envelope.actor, () => fireAll(panelListeners, (listener) => listener(envelope.panelId, { op: envelope.op, payload: payload.value }), log, 'panel'));
         return;
       }
     }
@@ -324,7 +338,7 @@ export function createEndpoint<Out extends Contract, In extends Contract>(option
           reject: (err) => { settle(); reject(err); },
         });
         try {
-          transport.post({ kind: 'request', id, method, params });
+          transport.post({ kind: 'request', id, method, params, ...stamp() });
         } catch (err) {
           pending.delete(id);
           reject(err instanceof Error ? err : new Error(String(err)));
@@ -338,7 +352,7 @@ export function createEndpoint<Out extends Contract, In extends Contract>(option
       handlers.set(method, handler as (params: unknown, signal: AbortSignal) => unknown);
     },
     emit: (name, payload) => {
-      if (closed === undefined) transport.post({ kind: 'event', name, payload });
+      if (closed === undefined) transport.post({ kind: 'event', name, payload, ...stamp() });
     },
     onEvent: (name, listener) => listen(eventListeners, name, listener as (payload: unknown) => void),
     publish: (topic, patch) => {
@@ -349,7 +363,7 @@ export function createEndpoint<Out extends Contract, In extends Contract>(option
     },
     onMirror: (topic, listener) => listen(mirrorListeners, topic, listener as (patch: unknown) => void),
     postPanel: (panelId, op, payload) => {
-      if (closed === undefined) transport.post({ kind: 'panel', panelId, op, payload });
+      if (closed === undefined) transport.post({ kind: 'panel', panelId, op, payload, ...stamp() });
     },
     onPanel: (listener) => {
       const entry = listener as (panelId: string, envelope: unknown) => void;

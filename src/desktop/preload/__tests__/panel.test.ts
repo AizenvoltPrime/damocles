@@ -56,11 +56,50 @@ describe('panel preload', () => {
     bridge.onHost((host) => heard.push(host.name));
     H.initAnswers.push(null);
     expect(bridge.getHost()).toBeUndefined();
-    H.initAnswers.push({ state: null, theme: { kind: 'dark', css: '', reducedMotion: false }, host: { hostId: 'h1', name: 'prod-1' } });
+    H.initAnswers.push({ state: null, theme: { kind: 'dark', css: '', reducedMotion: false }, host: { hostId: 'h1', name: 'prod-1', computer: 'laptop' } });
     expect(bridge.getState()).toBeNull();
     expect(heard).toEqual(['prod-1']);
-    expect(bridge.getHost()).toEqual({ hostId: 'h1', name: 'prod-1' });
-    expect([...H.handlers.keys()].sort()).toEqual([PANEL_CHANNELS.message, PANEL_CHANNELS.theme].sort());
+    expect(bridge.getHost()).toEqual({ hostId: 'h1', name: 'prod-1', computer: 'laptop' });
+    expect([...H.handlers.keys()].sort()).toEqual([PANEL_CHANNELS.message, PANEL_CHANNELS.theme, PANEL_CHANNELS.host, PANEL_CHANNELS.connection].sort());
+  });
+
+  it('takes a renamed host main pushes, telling the page, and reads the offline transcript flag from the init', async () => {
+    vi.resetModules();
+    await import('../panel');
+    const bridge = H.exposed! as NonNullable<typeof H.exposed> & { getOffline(): unknown };
+    const heard: string[] = [];
+    bridge.onHost((host) => heard.push(host.name));
+    H.initAnswers.push({ state: null, theme: { kind: 'dark', css: '', reducedMotion: false }, host: { hostId: 'h1', name: 'prod-1', computer: 'laptop' }, offline: { hostId: 'h1', hostName: 'prod-1' } });
+    expect(bridge.getOffline()).toEqual({ hostId: 'h1', hostName: 'prod-1' });
+    H.handlers.get(PANEL_CHANNELS.host)!({}, { hostId: 'h1', name: 'billing-prod', color: 'danger', computer: 'laptop' });
+    expect(heard).toEqual(['prod-1', 'billing-prod']);
+    expect(bridge.getHost()).toEqual({ hostId: 'h1', name: 'billing-prod', color: 'danger', computer: 'laptop' });
+  });
+
+  it('reads a remote chat\'s connection from the init, follows main\'s pushes and sends a chip\'s Cancel with only its action and id', async () => {
+    vi.resetModules();
+    await import('../panel');
+    const bridge = H.exposed! as NonNullable<typeof H.exposed> & { getConnection(): unknown; onConnection(listener: (connection: unknown) => void): () => void; queueAction(action: unknown): void };
+    const heard: unknown[] = [];
+    bridge.onConnection((connection) => heard.push(connection));
+    const away = { state: { phase: 'waiting', since: 1, retryAt: 2 }, queued: [{ id: 'q1', text: 'hi', imageCount: 0, status: 'queued' }] };
+    H.initAnswers.push({ state: null, theme: { kind: 'dark', css: '', reducedMotion: false }, connection: away });
+    expect(bridge.getConnection()).toEqual(away);
+    const back = { state: { phase: 'connected' }, queued: [] };
+    H.handlers.get(PANEL_CHANNELS.connection)!({}, back);
+    expect(heard).toEqual([away, back]);
+    expect(bridge.getConnection()).toEqual(back);
+    bridge.queueAction({ action: 'cancel', id: 'q1', extra: 'dropped' });
+    expect(H.sent).toEqual([[PANEL_CHANNELS.queueAction, { action: 'cancel', id: 'q1' }]]);
+  });
+
+  it("sends the banner's Reconnect or Sign in to main on its own channel", async () => {
+    vi.resetModules();
+    await import('../panel');
+    const bridge = H.exposed! as NonNullable<typeof H.exposed> & { hostAction(action: string): void };
+    bridge.hostAction('reconnect');
+    bridge.hostAction('signIn');
+    expect(H.sent).toEqual([[PANEL_CHANNELS.hostAction, 'reconnect'], [PANEL_CHANNELS.hostAction, 'signIn']]);
   });
 
   it('hands the page each host message, drops text that is not JSON and says so in the page console', async () => {

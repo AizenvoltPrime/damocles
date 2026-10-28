@@ -1,6 +1,8 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { WebContentsView, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent, type WebContents } from 'electron';
+import { MAX_CREDENTIAL_HOST_CHARS } from '../../shared/git-credential';
 import { HOST_THEME_STYLE_ID } from '../../shared/host-theme';
+import { isHostTone } from '../../shared/host-tones';
 import {
   MAX_OVERLAY_COORDINATE,
   MAX_COMMAND_ID_LENGTH,
@@ -14,6 +16,8 @@ import {
   MAX_OVERLAY_TEXT_LENGTH,
   MAX_RASTER_PNG_BYTES,
   MAX_REF_PICKER_REFS,
+  MAX_SSH_ALIAS_LENGTH,
+  MAX_SSH_CONFIG_ALIASES,
   OVERLAY_ACK_TIMEOUT_MS,
   OVERLAY_CHANNELS,
   OVERLAY_CLIPBOARD_ACTIONS,
@@ -41,7 +45,31 @@ import {
   parseInputRequest,
   parseValueSelection,
   MAX_WORKTREE_COMMIT_MESSAGE_CHARS,
+  CONNECT_STEPS,
+  SSH_FAILURE_CODES,
+  type ConnectFailure,
+  type ConnectStep,
+  type ConnectStepEvent,
+  type HostCardInfo,
+  type HostDevice,
+  type HostNotice,
+  type RemotePick,
+  type SshPrompt,
+  MAX_HOST_NAME_LENGTH,
+  MAX_REMOTE_PATH_LENGTH,
+  HOST_SWITCH_KEYS,
+  type RemoteHostEntry,
+  type RemoteHostFacts,
+  type RemoteHostSettings,
   MAX_WORKTREE_DIALOG_ITEMS,
+  CLOSE_REMOTE_STATUSES,
+  GIT_CREDENTIAL_CONSENT_CHOICES,
+  type GitCredentialConsent,
+  type GitCredentialConsentChoice,
+  MAX_DEVICE_NAME_LENGTH,
+  MAX_HOST_DEVICES,
+  type CloseRemoteChoice,
+  type CloseRemoteRow,
   type WorktreeDialog,
   type WorktreeDialogAnswer,
   type WorktreeDialogRequest,
@@ -51,10 +79,13 @@ import { isFullRefName, MAX_SCM_HISTORY_REFS } from '../preload/scm-channels';
 import { MAX_INPUT_VALUE_LENGTH } from '../../shared/input-validation';
 import type { PanelTheme } from '../preload/panel-channels';
 import { TERMINAL_COLORS, TERMINAL_CUSTOM_ICONS, TERMINAL_ICONS, type TerminalColor, type TerminalGlyph } from '../preload/terminal-channels';
-import { DEFAULT_GRID_LAYOUT, GRID_PANES, GRID_SLOTS, MAX_EDITOR_LINE, MAX_TAG_LENGTH, type GridPane, type GridSlot } from '../preload/shell-channels';
+import { DEFAULT_GRID_LAYOUT, GRID_PANES, GRID_SLOTS, MAX_EDITOR_LINE, MAX_TAG_LENGTH, PROJECT_CONNECTIONS, type GridPane, type GridSlot, type ProjectConnection, type ShellPlatform } from '../preload/shell-channels';
 import { isRelativeFilePath } from '../../shared/relative-path';
 import { isWorktreeId } from '../../shared/worktree-id';
 import { visibleText } from '../../shared/visible-text';
+import { PERMANENT_FAILURE_CODES, type HostLatency, type HostReconnect, type PermanentFailureCode } from '../../shared/host-connection';
+import { PERMISSION_MODES, type PermissionMode } from '../../shared/types/settings';
+import { PROVIDER_ID_PATTERN } from '../../shared/types/messages';
 import { validPng } from './notification-art';
 import { APP_ORIGIN, OVERLAY_PAGE_URL } from './protocol';
 import { loadAppPage, loggableUrl, mainFrameLoadFailed } from './security';
@@ -511,6 +542,341 @@ function isIndexBelow(value: unknown, length: number): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < length;
 }
 
+const CONNECT_ATTEMPT_STEPS: ReadonlySet<unknown> = new Set([...CONNECT_STEPS, 'connected', 'failed']);
+const CONNECT_FAILURE_CODES: ReadonlySet<unknown> = new Set([...SSH_FAILURE_CODES, 'handshakeFailed']);
+const SECRET_KINDS: ReadonlySet<unknown> = new Set(['password', 'passphrase', 'pin', 'otp', 'other']);
+const SHELL_PLATFORMS: ReadonlySet<unknown> = new Set(['win32', 'darwin', 'linux']);
+const MAX_NOTICE_PARAMS = 16;
+const MAX_LATENCY_HISTORY = 10;
+
+const isTime = (raw: unknown): raw is number => typeof raw === 'number' && Number.isFinite(raw) && raw >= 0;
+
+// Each item rebuilt by parse; undefined when the list is longer than max or any item fails.
+function parseList<T>(raw: unknown, max: number, parse: (item: unknown) => T | undefined): T[] | undefined {
+  if (!Array.isArray(raw) || raw.length > max) return undefined;
+  const parsed: T[] = [];
+  for (const item of raw as unknown[]) {
+    const value = parse(item);
+    if (value === undefined) return undefined;
+    parsed.push(value);
+  }
+  return parsed;
+}
+
+const parseTextList = (raw: unknown, maxItems: number, maxLength: number): string[] | undefined =>
+  parseList(raw, maxItems, (item) => (isNonEmptyText(item, maxLength) ? item : undefined));
+
+function parseParams(raw: unknown): Record<string, string | number> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const entries = Object.entries(raw);
+  if (entries.length > MAX_NOTICE_PARAMS) return undefined;
+  if (!entries.every(([, value]) => (typeof value === 'number' && Number.isFinite(value)) || isText(value, MAX_OVERLAY_TEXT_LENGTH))) return undefined;
+  return Object.fromEntries(entries) as Record<string, string | number>;
+}
+
+function parseNotice(raw: unknown): HostNotice | undefined {
+  if (!isRecord(raw) || Object.keys(raw).length !== 2) return undefined;
+  const code = field(raw, 'code');
+  const params = parseParams(field(raw, 'params'));
+  return isNonEmptyText(code, MAX_OVERLAY_ID_LENGTH) && params ? { code, params } : undefined;
+}
+
+function parseFailure(raw: unknown): ConnectFailure | undefined {
+  if (!isRecord(raw) || Object.keys(raw).length !== 2) return undefined;
+  const code = field(raw, 'code');
+  const params = parseParams(field(raw, 'params'));
+  return CONNECT_FAILURE_CODES.has(code) && params ? { code: code as ConnectFailure['code'], params } : undefined;
+}
+
+function parseReconnect(raw: unknown): HostReconnect | undefined {
+  if (!isRecord(raw)) return undefined;
+  const phase = field(raw, 'phase');
+  const since = field(raw, 'since');
+  if (!isTime(since)) return undefined;
+  if (phase === 'suspect' || phase === 'running' || phase === 'signIn') return { phase, since };
+  const retryAt = field(raw, 'retryAt');
+  if (phase === 'waiting') return isTime(retryAt) ? { phase, since, retryAt } : undefined;
+  const code = field(raw, 'code');
+  return phase === 'failed' && (PERMANENT_FAILURE_CODES as readonly unknown[]).includes(code) ? { phase, since, code: code as PermanentFailureCode } : undefined;
+}
+
+function parseLatency(raw: unknown): HostLatency | undefined {
+  if (!isRecord(raw)) return undefined;
+  const latencyMs = field(raw, 'latencyMs');
+  const slow = field(raw, 'slow');
+  const measurements = field(raw, 'measurements');
+  const history = parseList(field(raw, 'history'), MAX_LATENCY_HISTORY, (item) => (isTime(item) ? item : undefined));
+  if (!isTime(latencyMs) || typeof slow !== 'boolean' || !Number.isSafeInteger(measurements) || (measurements as number) <= 0 || !history) return undefined;
+  return { latencyMs, slow, history, measurements: measurements as number };
+}
+
+function parseDevice(raw: unknown): HostDevice | undefined {
+  if (!isRecord(raw) || Object.keys(raw).length !== 2) return undefined;
+  const deviceName = field(raw, 'deviceName');
+  const self = field(raw, 'self');
+  return isNonEmptyText(deviceName, MAX_DEVICE_NAME_LENGTH) && typeof self === 'boolean' ? { deviceName, self } : undefined;
+}
+
+// Every optional field is present only with a valid value; a present field that fails refuses the card.
+function parseHostCard(raw: unknown): HostCardInfo | undefined {
+  if (!isRecord(raw)) return undefined;
+  const hostId = field(raw, 'hostId');
+  const name = field(raw, 'name');
+  const color = field(raw, 'color');
+  const destinationLabel = field(raw, 'destinationLabel');
+  const os = field(raw, 'os');
+  const connection = field(raw, 'connection');
+  const signInNeeded = field(raw, 'signInNeeded');
+  const lastUsed = field(raw, 'lastUsed');
+  const recentFolders = parseTextList(field(raw, 'recentFolders'), MAX_OVERLAY_ITEMS, MAX_REMOTE_PATH_LENGTH);
+  const projectFolders = parseTextList(field(raw, 'projectFolders'), MAX_OVERLAY_ITEMS, MAX_REMOTE_PATH_LENGTH);
+  const notices = parseList(field(raw, 'notices'), MAX_OVERLAY_ITEMS, parseNotice);
+  const clockSkewMs = field(raw, 'clockSkewMs');
+  const installFolder = field(raw, 'installFolder');
+  const defaultPermissionMode = field(raw, 'defaultPermissionMode');
+  const flags = ['allowBypass', 'passwordless', 'keyInstalledByDamocles', 'lingerEnabledByDamocles'].map((key) => field(raw, key));
+  const failure = field(raw, 'failure') === undefined ? undefined : parseFailure(field(raw, 'failure'));
+  const reconnect = field(raw, 'reconnect') === undefined ? undefined : parseReconnect(field(raw, 'reconnect'));
+  const latency = field(raw, 'latency') === undefined ? undefined : parseLatency(field(raw, 'latency'));
+  const devices = field(raw, 'devices') === undefined ? undefined : parseList(field(raw, 'devices'), MAX_HOST_DEVICES, parseDevice);
+  if (!isNonEmptyText(hostId, MAX_OVERLAY_ID_LENGTH) || !isNonEmptyText(name, MAX_HOST_NAME_LENGTH * 2) || !isNonEmptyText(destinationLabel, MAX_OVERLAY_LABEL_LENGTH * 4)) return undefined;
+  if (!(PROJECT_CONNECTIONS as readonly unknown[]).includes(connection) || typeof signInNeeded !== 'boolean' || !recentFolders || !projectFolders || !notices) return undefined;
+  if ((color !== undefined && !isHostTone(color)) || (os !== undefined && !SHELL_PLATFORMS.has(os)) || (lastUsed !== undefined && !isTime(lastUsed))) return undefined;
+  if ((clockSkewMs !== undefined && !Number.isSafeInteger(clockSkewMs)) || (installFolder !== undefined && !isNonEmptyText(installFolder, MAX_REMOTE_PATH_LENGTH))) return undefined;
+  if (defaultPermissionMode !== undefined && !(PERMISSION_MODES as readonly unknown[]).includes(defaultPermissionMode)) return undefined;
+  if (!flags.every((flag) => typeof flag === 'boolean')) return undefined;
+  if ((field(raw, 'failure') !== undefined && !failure) || (field(raw, 'reconnect') !== undefined && !reconnect) || (field(raw, 'latency') !== undefined && !latency) || (field(raw, 'devices') !== undefined && !devices)) return undefined;
+  const [allowBypass, passwordless, keyInstalledByDamocles, lingerEnabledByDamocles] = flags as boolean[];
+  return {
+    hostId,
+    name,
+    ...(color !== undefined ? { color } : {}),
+    destinationLabel,
+    ...(os !== undefined ? { os: os as ShellPlatform } : {}),
+    connection: connection as ProjectConnection,
+    signInNeeded,
+    ...(lastUsed !== undefined ? { lastUsed } : {}),
+    recentFolders,
+    projectFolders,
+    notices,
+    ...(failure ? { failure } : {}),
+    ...(clockSkewMs !== undefined ? { clockSkewMs: clockSkewMs as number } : {}),
+    ...(installFolder !== undefined ? { installFolder } : {}),
+    ...(reconnect ? { reconnect } : {}),
+    ...(latency ? { latency } : {}),
+    ...(devices ? { devices } : {}),
+    ...(defaultPermissionMode !== undefined ? { defaultPermissionMode: defaultPermissionMode as PermissionMode } : {}),
+    allowBypass: allowBypass!,
+    passwordless: passwordless!,
+    keyInstalledByDamocles: keyInstalledByDamocles!,
+    lingerEnabledByDamocles: lingerEnabledByDamocles!,
+  };
+}
+
+function parsePrompt(raw: unknown): ConnectStepEvent['prompt'] | undefined {
+  if (!isRecord(raw) || !isNonEmptyText(field(raw, 'promptId'), MAX_OVERLAY_ID_LENGTH)) return undefined;
+  const promptId = field(raw, 'promptId') as string;
+  if (field(raw, 'kind') === 'hostKey') {
+    const host = field(raw, 'host');
+    const keyType = field(raw, 'keyType');
+    const fingerprint = field(raw, 'fingerprint');
+    if (!isNonEmptyText(host, MAX_OVERLAY_TEXT_LENGTH) || !isNonEmptyText(keyType, MAX_OVERLAY_TEXT_LENGTH) || !isNonEmptyText(fingerprint, MAX_OVERLAY_TEXT_LENGTH)) return undefined;
+    return { promptId, kind: 'hostKey', host, keyType, fingerprint };
+  }
+  const secretKind = field(raw, 'secretKind');
+  const text = field(raw, 'text');
+  const offerRemember = field(raw, 'offerRemember');
+  if (field(raw, 'kind') !== 'secret' || !SECRET_KINDS.has(secretKind) || !isText(text, MAX_OVERLAY_TEXT_LENGTH) || (offerRemember !== undefined && offerRemember !== true)) return undefined;
+  return { promptId, kind: 'secret', secretKind: secretKind as Extract<SshPrompt, { kind: 'secret' }>['secretKind'], text, ...(offerRemember ? { offerRemember } : {}) };
+}
+
+function parseStepEvent(raw: unknown): ConnectStepEvent | undefined {
+  if (!isRecord(raw)) return undefined;
+  const attemptId = field(raw, 'attemptId');
+  const hostId = field(raw, 'hostId');
+  const step = field(raw, 'step');
+  const visited = parseList(field(raw, 'visited'), CONNECT_STEPS.length, (item) => ((CONNECT_STEPS as readonly unknown[]).includes(item) ? item as ConnectStep : undefined));
+  const notices = parseList(field(raw, 'notices'), MAX_OVERLAY_ITEMS, parseNotice);
+  const progress = field(raw, 'progress');
+  const prompt = field(raw, 'prompt') === undefined ? undefined : parsePrompt(field(raw, 'prompt'));
+  const failure = field(raw, 'failure') === undefined ? undefined : parseFailure(field(raw, 'failure'));
+  if (!isNonEmptyText(attemptId, MAX_OVERLAY_ID_LENGTH) || !isNonEmptyText(hostId, MAX_OVERLAY_ID_LENGTH) || !CONNECT_ATTEMPT_STEPS.has(step) || !visited || !notices) return undefined;
+  if (progress !== undefined && !(isTime(progress) && progress <= 1)) return undefined;
+  if ((field(raw, 'prompt') !== undefined && !prompt) || (field(raw, 'failure') !== undefined && !failure)) return undefined;
+  return {
+    attemptId,
+    hostId,
+    step: step as ConnectStepEvent['step'],
+    visited,
+    ...(progress !== undefined ? { progress } : {}),
+    ...(prompt ? { prompt } : {}),
+    ...(failure ? { failure } : {}),
+    notices,
+  };
+}
+
+function parsePick(raw: unknown): RemotePick | undefined {
+  if (!isRecord(raw)) return undefined;
+  const mode = field(raw, 'mode');
+  const hostName = field(raw, 'hostName');
+  const roots = parseTextList(field(raw, 'roots'), MAX_OVERLAY_ITEMS, MAX_REMOTE_PATH_LENGTH);
+  const title = field(raw, 'title');
+  const buttonLabel = field(raw, 'buttonLabel');
+  if ((mode !== 'file' && mode !== 'folder') || !isNonEmptyText(hostName, MAX_HOST_NAME_LENGTH * 2) || !roots) return undefined;
+  if ((title !== undefined && !isNonEmptyText(title, MAX_OVERLAY_LABEL_LENGTH)) || (buttonLabel !== undefined && !isNonEmptyText(buttonLabel, MAX_OVERLAY_LABEL_LENGTH))) return undefined;
+  return { mode, hostName, roots, ...(title !== undefined ? { title } : {}), ...(buttonLabel !== undefined ? { buttonLabel } : {}) };
+}
+
+function parseHostSettings(raw: unknown): RemoteHostSettings | undefined {
+  if (!isRecord(raw)) return undefined;
+  const color = field(raw, 'color');
+  const defaultPermissionMode = field(raw, 'defaultPermissionMode');
+  const osOverride = field(raw, 'osOverride');
+  const installFolder = field(raw, 'installFolder');
+  const switches = HOST_SWITCH_KEYS.map((key) => field(raw, key));
+  if ((color !== undefined && !isHostTone(color)) || (defaultPermissionMode !== undefined && !(PERMISSION_MODES as readonly unknown[]).includes(defaultPermissionMode))) return undefined;
+  if ((osOverride !== undefined && !SHELL_PLATFORMS.has(osOverride)) || (installFolder !== undefined && !isNonEmptyText(installFolder, MAX_REMOTE_PATH_LENGTH))) return undefined;
+  if (!switches.every((value) => typeof value === 'boolean')) return undefined;
+  const [allowBypass, forwardAgent, rememberPassword, browserLocalNetwork, openLinksWithoutAsking] = switches as boolean[];
+  return {
+    ...(color !== undefined ? { color } : {}),
+    ...(defaultPermissionMode !== undefined ? { defaultPermissionMode: defaultPermissionMode as PermissionMode } : {}),
+    allowBypass: allowBypass!,
+    forwardAgent: forwardAgent!,
+    rememberPassword: rememberPassword!,
+    browserLocalNetwork: browserLocalNetwork!,
+    openLinksWithoutAsking: openLinksWithoutAsking!,
+    ...(osOverride !== undefined ? { osOverride: osOverride as ShellPlatform } : {}),
+    ...(installFolder !== undefined ? { installFolder } : {}),
+  };
+}
+
+function parseHostFacts(raw: unknown): RemoteHostFacts | undefined {
+  if (!isRecord(raw)) return undefined;
+  const flags = ['passwordless', 'keyInstalledByDamocles', 'lingerEnabledByDamocles'].map((key) => field(raw, key));
+  const alwaysCredentialHosts = parseTextList(field(raw, 'alwaysCredentialHosts'), MAX_OVERLAY_ITEMS, MAX_CREDENTIAL_HOST_CHARS);
+  if (!flags.every((flag) => typeof flag === 'boolean') || !alwaysCredentialHosts) return undefined;
+  const [passwordless, keyInstalledByDamocles, lingerEnabledByDamocles] = flags as boolean[];
+  return { passwordless: passwordless!, keyInstalledByDamocles: keyInstalledByDamocles!, lingerEnabledByDamocles: lingerEnabledByDamocles!, alwaysCredentialHosts };
+}
+
+function parseHostEntry(raw: unknown): RemoteHostEntry | undefined {
+  if (!isRecord(raw)) return undefined;
+  const hostId = field(raw, 'hostId');
+  const authorityKey = field(raw, 'authorityKey');
+  const name = field(raw, 'name');
+  const destinationLabel = field(raw, 'destinationLabel');
+  const os = field(raw, 'os');
+  const detectedOs = field(raw, 'detectedOs');
+  const connection = field(raw, 'connection');
+  const settings = parseHostSettings(field(raw, 'settings'));
+  const facts = parseHostFacts(field(raw, 'facts'));
+  if (!isNonEmptyText(hostId, MAX_OVERLAY_ID_LENGTH) || authorityKey !== `ssh+${hostId}` || !isNonEmptyText(name, MAX_HOST_NAME_LENGTH * 2) || !isNonEmptyText(destinationLabel, MAX_OVERLAY_LABEL_LENGTH * 4)) return undefined;
+  if ((os !== undefined && !SHELL_PLATFORMS.has(os)) || (detectedOs !== undefined && !SHELL_PLATFORMS.has(detectedOs))) return undefined;
+  if (!(PROJECT_CONNECTIONS as readonly unknown[]).includes(connection) || !settings || !facts) return undefined;
+  return {
+    hostId,
+    authorityKey,
+    name,
+    destinationLabel,
+    ...(os !== undefined ? { os: os as ShellPlatform } : {}),
+    ...(detectedOs !== undefined ? { detectedOs: detectedOs as ShellPlatform } : {}),
+    connection: connection as ProjectConnection,
+    settings,
+    facts,
+  };
+}
+
+/** The saved hosts main pushes to an open Connect dialog or Settings, rebuilt field by field; undefined past the bounds. */
+export const parseHostEntries = (raw: unknown): RemoteHostEntry[] | undefined => parseList(raw, MAX_OVERLAY_ITEMS, parseHostEntry);
+
+/** The host list main pushes to an open Connect dialog, rebuilt as its request's hosts are; undefined past the bounds. */
+export const parseConnectHosts = (raw: unknown): HostCardInfo[] | undefined => parseList(raw, MAX_OVERLAY_ITEMS, parseHostCard);
+
+/** An attempt's step main pushes to an open Connect dialog, rebuilt as its request's attempt is; undefined past the bounds. */
+export const parseConnectStep = (raw: unknown): ConnectStepEvent | undefined => parseStepEvent(raw);
+
+/**
+ * The Connect dialog's request as main builds it, checked against the overlay's bounds and rebuilt field by field; undefined
+ * when it exceeds them, which opens nothing. Only main opens it.
+ */
+export function parseConnectRequest(raw: unknown): Extract<OverlayRequest, { kind: 'connect' }> | undefined {
+  if (!isRecord(raw) || field(raw, 'kind') !== 'connect') return undefined;
+  const hostId = field(raw, 'hostId');
+  const card = field(raw, 'card');
+  const hosts = parseConnectHosts(field(raw, 'hosts'));
+  const sshConfigAliases = parseTextList(field(raw, 'sshConfigAliases'), MAX_SSH_CONFIG_ALIASES, MAX_SSH_ALIAS_LENGTH);
+  const attempt = field(raw, 'attempt') === undefined ? undefined : parseStepEvent(field(raw, 'attempt'));
+  const pick = field(raw, 'pick') === undefined ? undefined : parsePick(field(raw, 'pick'));
+  if (hostId !== undefined && !isNonEmptyText(hostId, MAX_OVERLAY_ID_LENGTH)) return undefined;
+  if (card !== undefined && ((card !== 'rename' && card !== 'show') || hostId === undefined)) return undefined;
+  if (!hosts || !sshConfigAliases) return undefined;
+  if ((field(raw, 'attempt') !== undefined && !attempt) || (field(raw, 'pick') !== undefined && !pick)) return undefined;
+  if (pick && (hostId === undefined || card !== undefined || attempt)) return undefined;
+  return {
+    kind: 'connect',
+    ...(hostId !== undefined ? { hostId } : {}),
+    ...(card !== undefined ? { card } : {}),
+    hosts,
+    sshConfigAliases,
+    ...(attempt ? { attempt } : {}),
+    ...(pick ? { pick } : {}),
+  };
+}
+
+// A token note's minutes: an OAuth access token lives hours, never a day.
+const MAX_TOKEN_MINUTES = 24 * 60;
+
+function isCloseRemoteRow(raw: unknown): raw is CloseRemoteRow {
+  if (!isRecord(raw)) return false;
+  const note = field(raw, 'tokenNote');
+  const linger = field(raw, 'lingerWarning');
+  return isNonEmptyText(field(raw, 'hostId'), MAX_OVERLAY_ID_LENGTH)
+    && isNonEmptyText(field(raw, 'panelId'), MAX_OVERLAY_ID_LENGTH)
+    && isText(field(raw, 'title'), MAX_OVERLAY_LABEL_LENGTH)
+    && isNonEmptyText(field(raw, 'projectLabel'), MAX_OVERLAY_LABEL_LENGTH)
+    && isNonEmptyText(field(raw, 'hostLabel'), MAX_HOST_NAME_LENGTH * 2)
+    && (CLOSE_REMOTE_STATUSES as readonly unknown[]).includes(field(raw, 'status'))
+    && (note === undefined || (isRecord(note) && Object.keys(note).length === 2 && typeof field(note, 'provider') === 'string' && PROVIDER_ID_PATTERN.test(field(note, 'provider') as string)
+      && isIndexBelow(field(note, 'minutesLeft'), MAX_TOKEN_MINUTES + 1)))
+    && (linger === undefined || linger === true);
+}
+
+/** The close dialog's rows as main builds them, within the overlay's bounds and with unique panel ids; undefined otherwise. */
+export function parseCloseRemoteRows(raw: unknown): readonly CloseRemoteRow[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_OVERLAY_ITEMS || !(raw as unknown[]).every(isCloseRemoteRow)) return undefined;
+  const rows = raw as CloseRemoteRow[];
+  return new Set(rows.map((row) => row.panelId)).size === rows.length ? rows : undefined;
+}
+
+/** The close dialog's request, or undefined when its rows exceed the overlay's bounds. Only main opens it. */
+export function parseCloseRemoteRequest(rows: unknown): Extract<OverlayRequest, { kind: 'closeRemote' }> | undefined {
+  const parsed = parseCloseRemoteRows(rows);
+  return parsed && { kind: 'closeRemote', rows: parsed };
+}
+
+export interface CloseRemoteResult {
+  readonly choice: CloseRemoteChoice;
+  readonly dontAskAgain: boolean;
+}
+
+/** The close dialog's answer as its asker acts on it: dismissed (Escape, the scrim, a withdrawn request) is Cancel. */
+export function closeRemoteResult(answer: OverlayAnswer): CloseRemoteResult {
+  return answer.kind === 'closeRemote' ? { choice: answer.choice, dontAskAgain: answer.dontAskAgain } : { choice: 'cancel', dontAskAgain: false };
+}
+
+/** The git consent request (main/remote/git-credential-client.ts) within the overlay's bounds; undefined otherwise. */
+export function parseGitCredentialConsentRequest(consent: GitCredentialConsent): Extract<OverlayRequest, { kind: 'gitCredentialConsent' }> | undefined {
+  const { hostName, hostColor, credentialHost, targetHelper } = consent;
+  if (!isNonEmptyText(hostName, MAX_OVERLAY_LABEL_LENGTH) || !isNonEmptyText(credentialHost, MAX_CREDENTIAL_HOST_CHARS) || (hostColor !== undefined && !isHostTone(hostColor))) return undefined;
+  return { kind: 'gitCredentialConsent', hostName, ...(hostColor !== undefined ? { hostColor } : {}), credentialHost, targetHelper };
+}
+
+/** The consent answer as its asker acts on it: dismissed (Escape, the scrim, a withdrawn request) is Deny. */
+export function gitCredentialConsentChoice(answer: OverlayAnswer): GitCredentialConsentChoice {
+  return answer.kind === 'gitCredentialConsent' ? answer.choice : 'deny';
+}
+
 /** A message dialog main asks (D41) within the overlay's bounds, or undefined, when main asks with the OS message box instead. */
 export function parseMessageRequest(raw: unknown): Extract<OverlayRequest, { kind: 'message' }> | undefined {
   if (!isRecord(raw) || field(raw, 'kind') !== 'message') return undefined;
@@ -666,6 +1032,22 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
     return (GRID_SLOTS as readonly unknown[]).includes(slot) ? { kind: 'dropZones', slot: slot as GridSlot } : undefined;
   }
   if (request.kind === 'newChatMenu') return parseNewChatMenuAnswer(raw);
+  // the Connect dialog answers only dismissed, taken above, and a picker its path
+  if (request.kind === 'connect') {
+    const picked = field(raw, 'path');
+    return request.pick && Object.keys(raw).length === 2 && isNonEmptyText(picked, MAX_REMOTE_PATH_LENGTH) ? { kind: 'connect', path: picked } : undefined;
+  }
+  if (request.kind === 'gitCredentialConsent') {
+    const choice = field(raw, 'choice');
+    return Object.keys(raw).length === 2 && (GIT_CREDENTIAL_CONSENT_CHOICES as readonly unknown[]).includes(choice) ? { kind: 'gitCredentialConsent', choice: choice as GitCredentialConsentChoice } : undefined;
+  }
+  if (request.kind === 'closeRemote') {
+    const choice = field(raw, 'choice');
+    const dontAskAgain = field(raw, 'dontAskAgain');
+    if (Object.keys(raw).length !== 3 || typeof dontAskAgain !== 'boolean') return undefined;
+    if (choice === 'cancel') return dontAskAgain ? undefined : { kind: 'closeRemote', choice, dontAskAgain };
+    return choice === 'keep' || choice === 'stop' ? { kind: 'closeRemote', choice, dontAskAgain } : undefined;
+  }
   if (request.kind === 'refPicker') {
     if (Object.keys(raw).length !== 2) return undefined;
     const choice = parseRefChoice(field(raw, 'choice'), new Set(request.refs.map((ref) => ref.id)));
@@ -834,7 +1216,7 @@ type PageState = 'none' | 'loading' | 'loaded';
 
 // Main's questions, which only main asks: they stack above whatever is open, and only their own answer closes them.
 function stacks(request: OverlayRequest): boolean {
-  return request.kind === 'message' || request.kind === 'worktreeDialog';
+  return request.kind === 'message' || request.kind === 'worktreeDialog' || request.kind === 'closeRemote' || request.kind === 'gitCredentialConsent';
 }
 
 interface PendingRaster {
@@ -874,6 +1256,8 @@ export class OverlayHost {
   private lateAnswered = false;
   // The first popup shown since the page loaded is logged with its times: a cold first render is the slowest.
   private coldShow = false;
+  // the last theme main pushed; a page that was loading drops the push and gets it again once it has loaded
+  private theme: PanelTheme | undefined;
   private readonly onResize = (): void => this.applyMode();
 
   constructor(deps: OverlayHostDeps) {
@@ -992,6 +1376,7 @@ export class OverlayHost {
       if (this.page !== 'loading') return;
       this.page = 'loaded';
       this.coldShow = true;
+      if (this.theme) this.send(OVERLAY_CHANNELS.theme, this.theme);
       this.lateRasters.clear();
       this.lateAnswered = false;
       this.deps.canRasterize();
@@ -1183,7 +1568,19 @@ export class OverlayHost {
     this.deps.window.contentView.addChildView(this.view);
   }
 
+  /** The open close dialog's rows after a change, every row whole; nothing while none is open or when they exceed its bounds. */
+  updateCloseRemote(rows: readonly CloseRemoteRow[]): void {
+    if (!this.isOpen('closeRemote')) return;
+    const parsed = parseCloseRemoteRows(rows);
+    if (!parsed) {
+      this.deps.log('[overlay] close dialog rows exceed the overlay bounds; the dialog keeps its rows');
+      return;
+    }
+    this.send(OVERLAY_CHANNELS.closeRemoteRows, parsed);
+  }
+
   sendTheme(theme: PanelTheme): void {
+    this.theme = theme;
     this.send(OVERLAY_CHANNELS.theme, theme);
   }
 

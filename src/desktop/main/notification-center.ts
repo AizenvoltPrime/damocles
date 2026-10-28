@@ -3,6 +3,7 @@ import type { UsageThresholdCrossing } from '../../core/pi-session/usage-thresho
 import type { ChatActivity, PendingPrompt, TurnOutcome } from '../../core/pi-session/session-state';
 import type { AttentionKind, ExtensionToWebviewMessage } from '../../shared/types/messages';
 import { OVERLAY_CHANNELS, type OverlayRequest, type OverlayToast } from '../preload/overlay-channels';
+import type { HostTone } from '../../shared/host-tones';
 import {
   chimeTone,
   KIND_LIFE_MS,
@@ -12,6 +13,7 @@ import {
   type NotificationBody,
   type NotificationCenterState,
   type NotificationChat,
+  type NotificationHost,
   type NotificationEntry,
   type NoticeSeverity,
 } from '../preload/notifications';
@@ -94,7 +96,8 @@ interface Entry {
   readonly at: number;
   read: boolean;
   seen: boolean;
-  readonly body: NotificationBody;
+  // its chat's host label follows a rename (relabelHost)
+  body: NotificationBody;
   readonly action: EntryAction;
 }
 
@@ -119,7 +122,7 @@ interface LiveToast {
   readonly id: string;
   readonly at: number;
   readonly lifeMs: number;
-  readonly body: NotificationBody;
+  body: NotificationBody;
   readonly action: EntryAction;
   // a core notice's caller, answered with an action label or undefined
   readonly answer: ((action: string | undefined) => void) | undefined;
@@ -140,7 +143,7 @@ function bounded(text: string | undefined): string | undefined {
 }
 
 function chatOf(ref: ChatRef): NotificationChat {
-  return { project: ref.project, title: ref.title, ...(ref.host !== undefined ? { host: ref.host } : {}) };
+  return { project: ref.project, title: ref.title, ...(ref.host !== undefined ? { host: ref.host } : {}), ...(ref.hostTone !== undefined ? { hostTone: ref.hostTone } : {}) };
 }
 
 /** The entry and action a pending prompt raises: a prompt a team agent raised is the team's, whatever it asks. */
@@ -154,7 +157,8 @@ export function promptEntry(prompt: PendingPrompt, chat: ChatRef): { readonly bo
       action: { kind: 'team', chat, teamId: owner.teamId },
     };
   }
-  const kind: AttentionKind = prompt.kind === 'input' ? 'question' : prompt.kind;
+  // the webview shows a Sign-in needed card as a question-like attention card
+  const kind: AttentionKind = prompt.kind === 'input' || prompt.kind === 'signIn' ? 'question' : prompt.kind;
   return { body: { kind, chat: chatOf(chat), ...(summary ? { summary } : {}) }, action: { kind: 'attention', chat, attention: kind } };
 }
 
@@ -329,9 +333,9 @@ export class NotificationCenter {
   }
 
   /** A core notification: always an entry and a toast, answered with one of its actions or undefined; host names a remote core's. */
-  notice(severity: NoticeSeverity, message: string, actions: readonly string[], host?: string): Promise<string | undefined> {
+  notice(severity: NoticeSeverity, message: string, actions: readonly string[], host?: NotificationHost, title?: string): Promise<string | undefined> {
     return new Promise((resolve) => {
-      this.raise({ kind: 'notice', severity, message, actions: [...actions], ...(host !== undefined ? { host } : {}) }, { kind: 'none' }, { answer: resolve });
+      this.raise({ kind: 'notice', severity, ...(title !== undefined ? { title } : {}), message, actions: [...actions], ...(host !== undefined ? { host: host.name, ...(host.tone !== undefined ? { hostTone: host.tone } : {}) } : {}) }, { kind: 'none' }, { answer: resolve });
     });
   }
 
@@ -415,6 +419,39 @@ export class NotificationCenter {
       entry.read = true;
       entry.seen = true;
       changed = true;
+    }
+    if (changed) this.deps.changed();
+  }
+
+  /**
+   * A host was renamed or recolored on this computer: every entry and showing toast about it or one of its chats takes its
+   * name and color now, a showing toast sent again under its id. Host names are unique, so the old name names that host alone.
+   */
+  relabelHost(from: string, to: NotificationHost): void {
+    const toneOf = (tone: HostTone | undefined): { hostTone?: HostTone } => (tone !== undefined ? { hostTone: tone } : {});
+    const relabel = (body: NotificationBody): NotificationBody => {
+      if (body.kind === 'notice') {
+        if (body.host !== from) return body;
+        const { hostTone: _tone, ...rest } = body;
+        return { ...rest, host: to.name, ...toneOf(to.tone) };
+      }
+      if (!('chat' in body) || body.chat?.host !== from) return body;
+      const { hostTone: _tone, ...chat } = body.chat;
+      return { ...body, chat: { ...chat, host: to.name, ...toneOf(to.tone) } } as NotificationBody;
+    };
+    let changed = false;
+    for (const entry of this.entries) {
+      const body = relabel(entry.body);
+      if (body === entry.body) continue;
+      entry.body = body;
+      changed = true;
+    }
+    const sink = this.deps.popups();
+    for (const live of this.toasts.values()) {
+      const body = relabel(live.body);
+      if (body === live.body) continue;
+      live.body = body;
+      sink?.show(this.snapshot(live));
     }
     if (changed) this.deps.changed();
   }

@@ -13,6 +13,7 @@ export const SETTINGS_SECTION_IDS = [
   'terminal',
   'files',
   'sourceControl',
+  'remoteHosts',
   'about',
 ] as const;
 
@@ -92,4 +93,6 @@ export interface SettingsTarget {
   readonly account?: SettingsAccountId;
   // a version of the desktop release index; only main sets it
   readonly release?: string;
+  // a saved host's id for the Remote hosts section; only main sets it, after checking the host store
+  readonly host?: string;
 }

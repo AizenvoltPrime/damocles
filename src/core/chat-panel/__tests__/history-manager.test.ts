@@ -103,11 +103,11 @@ describe('HistoryManager.loadSessionHistory', () => {
 /** A view joining a running chat (views.join) starts with an empty store, so its replay of pi's branch delivers the account state too. */
 describe('HistoryManager.replayLive', () => {
   it('delivers account state to the joining view after the replay', async () => {
-    const { manager, session, posted } = harness();
+    const { manager, host, session, posted } = harness();
     const viewPosts: ExtensionToWebviewMessage[] = [];
     const live = { sessionId: 's1', stored: true, branch: [], sessionManager: {}, snapshot: { seq: 0, messages: [], liveToolCallIds: new Set<string>() } };
 
-    await manager.replayLive({ reasons: undefined, isContextOverflow: undefined } as never, '/ws', session, (m) => viewPosts.push(m), live as never);
+    await manager.replayLive({ reasons: undefined, isContextOverflow: undefined } as never, '/ws', session, host, (m) => viewPosts.push(m), live as never);
 
     expect(viewPosts.map((m) => m.type)).toEqual(['sessionCleared', 'sessionStarted']);
     expect(posted).toEqual([{ type: 'accountInfo', data: { model: 'gpt-6.1-sol', dollarBilled: true } }]);
@@ -125,5 +125,63 @@ describe('HistoryManager reads the folder it is given', () => {
     expect(vi.mocked(store.loadPiSessionHistory).mock.calls.at(-1)?.slice(0, 2)).toEqual(['/work/beta', 's-b']);
     // The checkpoint ids come from the replay's own read of that folder's file.
     expect(rewindableIds).toEqual(['u1']);
+  });
+});
+
+/** A panel several views show (a daemon's clients): a replay to the whole panel and one to a view of it never post into that view at once. */
+describe('HistoryManager replays to a panel and its views', () => {
+  const blockingLoad = () => {
+    const signals: AbortSignal[] = [];
+    const releases: Array<() => void> = [];
+    const load = async (_cwd: string, sessionId: string, post: (m: ExtensionToWebviewMessage) => void, signal: AbortSignal): Promise<string[]> => {
+      signals.push(signal);
+      post({ type: 'sessionCleared', sessionId } as ExtensionToWebviewMessage);
+      await new Promise<void>((resolve) => {
+        releases.push(resolve);
+        signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      return [];
+    };
+    return { signals, releases, load };
+  };
+  const views = () => {
+    const panel = { onDispose: () => ({ dispose: () => undefined }) } as unknown as PanelHost;
+    const view = Object.assign(Object.create(panel) as PanelHost, { panelHost: panel });
+    return { panel, view };
+  };
+
+  it('aborts a view\'s replay when the whole panel replays, which reaches that view too', async () => {
+    const store = await import('../../pi-session/session-store');
+    const { signals, releases, load } = blockingLoad();
+    vi.mocked(store.loadPiSessionHistory).mockImplementation(load as never);
+    const { manager, session } = harness();
+    const { panel, view } = views();
+    const toView = manager.loadSessionHistory('/ws', 's1', view, session);
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    const toPanel = manager.loadSessionHistory('/ws', 's2', panel, session);
+    await vi.waitFor(() => expect(signals).toHaveLength(2));
+    expect(signals[0]!.aborted).toBe(true);
+    releases[1]!();
+    await Promise.all([toView, toPanel]);
+    vi.mocked(store.loadPiSessionHistory).mockReset();
+  });
+
+  it('starts a view\'s replay once the panel\'s replay in flight ended, and leaves that one running', async () => {
+    const store = await import('../../pi-session/session-store');
+    const { signals, releases, load } = blockingLoad();
+    vi.mocked(store.loadPiSessionHistory).mockImplementation(load as never);
+    const { manager, session } = harness();
+    const { panel, view } = views();
+    const toPanel = manager.loadSessionHistory('/ws', 's1', panel, session);
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    const toView = manager.loadSessionHistory('/ws', 's1', view, session);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(signals).toHaveLength(1);
+    expect(signals[0]!.aborted).toBe(false);
+    releases[0]!();
+    await vi.waitFor(() => expect(signals).toHaveLength(2));
+    releases[1]!();
+    await Promise.all([toPanel, toView]);
+    vi.mocked(store.loadPiSessionHistory).mockReset();
   });
 });

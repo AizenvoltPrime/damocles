@@ -163,6 +163,10 @@ function compare(previous, next, where, found, table) {
     if (text(previous.index) !== text(next.index)) found.breaking.push(`${where} changed its index signature`);
     return;
   }
+  if (isObject(previous) && 'array' in previous && isObject(next) && 'array' in next) {
+    compare(previous.array, next.array, `${where}[]`, found, false);
+    return;
+  }
   if (isObject(previous) && previous.variants && isObject(next) && next.variants === previous.variants) {
     for (const tag of Object.keys(previous.of)) {
       if (!(tag in next.of)) found.breaking.push(`${where}[${previous.variants}=${tag}] was removed`);

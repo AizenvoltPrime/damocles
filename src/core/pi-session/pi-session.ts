@@ -9,7 +9,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { ChatSession, ResumeOutcome, SendOutcome, SendTicket, SlashInvocation, UserBroadcast } from "../chat-session";
 import type { SessionOptions, ContentInput, McpScope, RewindOption } from "../session-types";
 import type { Disposable } from "../../platform/disposable";
-import type { ExtensionToWebviewMessage, PromptReturnReason } from "../../shared/types/messages";
+import type { ExtensionToWebviewMessage, PromptReturnReason, QueuedPart } from "../../shared/types/messages";
 import type { ModelInfo, PermissionMode, AutoCompactConfig, EffortLevel } from "../../shared/types/settings";
 import type { SlashCommandInfo } from "../../shared/types/commands";
 import type { McpRenamedToolRuleNotice, McpServerStatusInfo } from "../../shared/types/mcp";
@@ -67,6 +67,7 @@ import { trackRunLifecycle, type RunLifecycle } from "./run-lifecycle";
 import { pendingPromptDescriber, pendingPromptOwners, promptOwnerOf, type PromptOwners } from "./pending-prompts";
 import type { SubscriptionProvider, UsageMonitor } from "./usage-thresholds";
 import {
+  markCredentialSources,
   markLoopbackEndpoints,
   markNotInPlan,
   modelInPlan,
@@ -89,8 +90,10 @@ import { accountOfModel, accountOfProvider, failureCard, failureText } from "./p
 import { failedCallError } from "./nested-call-failures";
 import type { SettingsAccountId } from "../../shared/settings-sections";
 import type { OpenAIAuthStatus } from "./openai-auth";
-import { currentPin, runPinnedTurn } from "../client-snapshots";
-import { pinRunStarts } from "./credential-broker";
+import { agentSocketPath, asClient, clientHasCredential, credentialSourceOf, currentPin, runPinnedTurn, type SignInPrompts } from "../client-snapshots";
+import { installedCredentialRelay, spawnCredentialVariables } from "../scm/askpass/credential-relay";
+import { pinRunStarts, recordCredentialSources } from "./credential-broker";
+import { clientProviderEndpoints } from "./custom-providers";
 import { buildCustomTools } from "./tools";
 import { ShellCancelStore } from "./tools/shell-cancel-registry";
 import { processLauncher } from "../process-launcher";
@@ -323,6 +326,11 @@ function batchSend(inputs: readonly QueuedInput[]): { prompt: ContentInput; broa
     : inputs.flatMap((input): UserContentBlock[] => (typeof input.content === "string" ? [{ type: "text", text: input.content }] : input.content));
   const typed = inputs.map((input) => input.typed ?? input.text).join("\n\n");
   return { prompt, broadcast: typeof prompt === "string" ? { content: typed } : { content: typed, contentBlocks: prompt } };
+}
+
+/** What a queued message puts back in the composer: as typed, with its images. */
+function queuedPart(input: QueuedInput): QueuedPart {
+  return { messageId: input.id, content: typeof input.content === "string" ? [{ type: "text", text: input.typed ?? input.text }] : input.content };
 }
 
 /** A `sendMessage` prompt, from the start of its send until it settles (docs/invariants.md, "A send holds the session"). */
@@ -624,6 +632,8 @@ export class PiSession implements ChatSession {
   private afterSettleInputs: QueuedInput[] = [];
   /** The conversation `afterSettleInputs` were written for. */
   private afterSettleTarget: string | undefined;
+  /** The send `sendAfterSettle` made while it runs: what each of its messages puts back, should it go back. */
+  private afterSettleSend: { readonly correlationId: string; readonly parts: QueuedPart[] } | undefined;
   /** The batch whose re-steer `prompt()` holds; a Stop leaves it to pi's verdict instead of returning its chips. */
   private batchInPi: readonly QueuedInput[] | null = null;
   /** The batch a Stop left to pi's verdict: sent and stopped if pi opens a run with it, returned if pi queues or rejects it. */
@@ -1112,7 +1122,7 @@ export class PiSession implements ChatSession {
     this.registeredSessionId = sessionId;
     const gate: PanelGateContext = {
       permissionHandler: this.options.permissionHandler,
-      isPlanMode: () => this.options.permissionHandler.getPermissionMode() === "plan",
+      isPlanMode: () => this.options.permissionHandler.turnPermissionMode() === "plan",
       ...(this.options.memoryService ? { memoryService: this.options.memoryService } : {}),
       ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
       getSessionModel: () => this.modelValue,
@@ -1505,6 +1515,11 @@ export class PiSession implements ChatSession {
     return file === undefined || !existsSync(file);
   }
 
+  /** The queued messages a send of several combined, which each go back to the view that queued them. */
+  private partsOf(correlationId: string | undefined): { parts?: QueuedPart[] } {
+    return correlationId !== undefined && this.afterSettleSend?.correlationId === correlationId ? { parts: this.afterSettleSend.parts } : {};
+  }
+
   /** Give a send core refused back to the composer, with why; `correlationId` names the echo the transcript drops. */
   private returnPrompt(prompt: ContentInput, userBroadcast: UserBroadcast | undefined, reason: PromptReturnReason, refusal?: Omit<ModelRefusal, "reason">, correlationId?: string): void {
     const content: UserContentBlock[] = userBroadcast
@@ -1513,7 +1528,7 @@ export class PiSession implements ChatSession {
     const detail = refusal?.detail !== undefined ? { detail: refusal.detail } : {};
     const account = refusal?.account !== undefined ? { account: refusal.account } : {};
     const echo = correlationId !== undefined ? { correlationId } : {};
-    this.emit({ type: "promptReturned", content, reason, ...detail, ...account, ...echo });
+    this.emit({ type: "promptReturned", content, reason, ...detail, ...account, ...echo, ...this.partsOf(correlationId) });
   }
 
   /**
@@ -2006,6 +2021,7 @@ export class PiSession implements ChatSession {
         correlationId,
         promptContent: shown.content,
         ...(shown.contentBlocks ? { contentBlocks: shown.contentBlocks } : {}),
+        ...this.partsOf(correlationId),
       });
     }
   }
@@ -2152,8 +2168,15 @@ export class PiSession implements ChatSession {
     const inputs = this.afterSettleInputs.splice(0);
     const target = this.afterSettleTarget;
     const { prompt, broadcast } = batchSend(inputs);
-    for (const { id } of inputs) this.emit({ type: "queueCancelled", messageId: id });
-    void this.sendMessage(prompt, target, `corr-${randomUUID()}`, broadcast).catch((err) => log("[PiSession] sending messages queued while pi settled a run failed: %O", err));
+    const correlationId = `corr-${randomUUID()}`;
+    for (const { id } of inputs) this.emit({ type: "queueCancelled", messageId: id, sentAs: correlationId });
+    const send = { correlationId, parts: inputs.map(queuedPart) };
+    this.afterSettleSend = send;
+    void this.sendMessage(prompt, target, correlationId, broadcast)
+      .finally(() => {
+        if (this.afterSettleSend === send) this.afterSettleSend = undefined;
+      })
+      .catch((err) => log("[PiSession] sending messages queued while pi settled a run failed: %O", err));
   }
 
   /**
@@ -2974,7 +2997,11 @@ export class PiSession implements ChatSession {
     const sm = this.folder?.services.settingsManager;
     const commandPrefix = sm?.getShellCommandPrefix();
     const shellPath = sm?.getShellPath();
-    const env = this.worktree.shellEnvironment();
+    // a daemon's core: the git credential relay and, while the pinned client forwards its agent, that client's socket
+    const host = this.options.platform;
+    const credentials = spawnCredentialVariables(process.env, installedCredentialRelay(), host.remote ? { socket: agentSocketPath(host) } : undefined);
+    const worktreeEnv = this.worktree.shellEnvironment();
+    const env = worktreeEnv === undefined && Object.keys(credentials).length === 0 ? undefined : { ...credentials, ...worktreeEnv };
     return {
       ...(commandPrefix !== undefined ? { commandPrefix } : {}),
       ...(shellPath !== undefined ? { shellPath } : {}),
@@ -3429,7 +3456,8 @@ export class PiSession implements ChatSession {
     // With a credential, a sign-in cannot help: the catalog it unlocks lacks the model.
     if (resolution.authRequired && !(openaiAuth.chatgpt || openaiAuth.codex || openaiAuth.apiKey)) {
       if (epoch === this.openaiPickEpoch) this.pendingOpenAIPick = model;
-      this.emit({ type: "openaiAuthRequired", modelValue: model });
+      // openaiAuth is the picking device's, so only its views ask it to sign in
+      this.emitPerClient(() => [{ type: "openaiAuthRequired", modelValue: model }], this.options.platform.remote?.clients.actor());
       return;
     }
     const known = resolution.notInPlan || (!resolution.authRequired && (resolution.model || this.getModelInfo(model)?.piProvider));
@@ -3486,14 +3514,16 @@ export class PiSession implements ChatSession {
 
   /**
    * Publish the chat's model list with the marks of the models it cannot run. The marks read the stored sign-ins and,
-   * on a daemon's core, the acting client, so every account republish calls this too.
+   * on a daemon's core, the acting client, so every account republish calls this too. A daemon's core sends each
+   * device's view the list its own client sees.
    */
-  publishAvailableModels(): void {
+  publishAvailableModels(clientId?: string): void {
     if (this._disposed || !PiRuntime.unlessRetired()) return;
-    this.emit({ type: "availableModels", models: this.modelsForView() });
+    this.emitPerClient(() => [{ type: "availableModels", models: this.modelsForView() }], clientId);
   }
 
-  // marks a model outside the user's plan, and on a daemon's core a model whose provider endpoint is a loopback address the acting client does not share with it
+  // marks a model outside the user's plan, and on a daemon's core a model whose client-configured endpoint is a loopback
+  // address the acting client does not share with it, and a model that runs on the host's own credential
   private modelsForView(): ModelInfo[] {
     const registry = PiRuntime.exists ? PiRuntime.get().modelLookup : null;
     if (!registry) return this.supportedModelsCache;
@@ -3501,7 +3531,11 @@ export class PiSession implements ChatSession {
     const remote = this.options.platform.remote;
     if (!remote) return inPlan;
     const sharedLoopback = currentPin(remote).policy?.sharedLoopback === true;
-    const models = markLoopbackEndpoints(inPlan, registry, PiRuntime.get().getOpenAIAuthStatus(), this.preferOpenAIApiKey(), sharedLoopback);
+    const runtime = PiRuntime.get();
+    const openai = runtime.getOpenAIAuthStatus();
+    const preferApiKey = this.preferOpenAIApiKey();
+    const sourced = markCredentialSources(inPlan, registry, openai, preferApiKey, (provider) => clientHasCredential(remote, provider), (provider) => runtime.hostHasOwnAuth(provider));
+    const models = markLoopbackEndpoints(sourced, registry, openai, preferApiKey, sharedLoopback, clientProviderEndpoints());
     const unavailable = models.filter((model) => model.unavailable?.reason === "loopback-endpoint").map((model) => model.value);
     const named = unavailable.join(", ");
     if (named !== this.loopbackUnavailable) {
@@ -3513,13 +3547,21 @@ export class PiSession implements ChatSession {
 
   /** Runs a turn's pi call pinned to the acting client of a daemon's core (plan "Several clients"). */
   private pinned<T>(run: () => T): T {
-    return runPinnedTurn(this.options.platform.remote, this.options.panelId ?? "", run);
+    return runPinnedTurn(this.options.platform.remote, this.options.panelId ?? "", run, this.signInPrompts);
   }
 
-  /** Every pi session this panel builds: on a daemon's core, a run it starts outside every pin is pinned at its start. */
+  /** Where the token broker raises Sign-in needed for this chat's turns: this panel's `PermissionState`, published only by `publishSessionState`. */
+  private readonly signInPrompts: SignInPrompts = {
+    raise: (provider, actions) => this.options.permissionHandler.raiseSignIn(provider, actions),
+  };
+
+  /** Every pi session this panel builds: on a daemon's core, a run it starts outside every pin is pinned at its start and records whose credentials it bills. */
   private pinRunStarts(session: AgentSession): AgentSession {
     const remote = this.options.platform.remote;
-    if (remote) pinRunStarts(session, remote, this.options.panelId ?? "");
+    if (remote) {
+      pinRunStarts(session, remote, this.options.panelId ?? "", this.signInPrompts);
+      recordCredentialSources(session, remote);
+    }
     return session;
   }
 
@@ -4457,7 +4499,7 @@ export class PiSession implements ChatSession {
   }
 
   private isPlanMode(): boolean {
-    return this.options.permissionHandler.getPermissionMode() === "plan";
+    return this.options.permissionHandler.turnPermissionMode() === "plan";
   }
 
   /** The main agent's plan-mode statement, with the same guidance inputs as its system prompt (`agent-start.ts`). */
@@ -4549,7 +4591,7 @@ export class PiSession implements ChatSession {
       registry: this.agentRegistry!,
       ...this.trackedNestedSessions(folder),
       permissionHandler: this.options.permissionHandler,
-      isPlanMode: () => this.options.permissionHandler.getPermissionMode() === "plan",
+      isPlanMode: () => this.options.permissionHandler.turnPermissionMode() === "plan",
       ...this.checkpointBaselineField(),
       worktreeIsolation: () => this.worktreeIsolation(),
       shellCancelFor: (agentId) => this.shellCancel.forContext(this.noteDeliveryForSubagent(agentId)),
@@ -5426,7 +5468,7 @@ export class PiSession implements ChatSession {
     if (!session) return undefined;
 
     try {
-      const planMode = this.options.permissionHandler.getPermissionMode() === "plan";
+      const planMode = this.options.permissionHandler.turnPermissionMode() === "plan";
       const loader = this.resourceLoader();
       let contextFiles: BuildSystemPromptOptions["contextFiles"] = [];
       let skills: BuildSystemPromptOptions["skills"] = [];
@@ -5492,17 +5534,20 @@ export class PiSession implements ChatSession {
    * a main session, so it never carries the Damocles toolset or writes to disk.
    */
   async sendBtw(btwId: string, question: string, target?: string): Promise<void> {
+    // the aside runs on the asking device's credentials, and only that device's views hold it
+    const asker = this.options.platform.remote?.clients.actor();
+    const post = (message: ExtensionToWebviewMessage): void => this.emitPerClient(() => [message], asker);
     try {
       await this.ensureStarted();
     } catch (err) {
-      this.emit({ type: "btwError", btwId, message: t("pi failed to start: {0}", err instanceof Error ? err.message : String(err)) });
+      post({ type: "btwError", btwId, message: t("pi failed to start: {0}", err instanceof Error ? err.message : String(err)) });
       return;
     }
     const piRuntime = PiRuntime.get();
     const modelRuntime = piRuntime.modelLookup;
     const folder = this.folder;
     if (!modelRuntime || !folder || !this.runtime) {
-      this.emit({ type: "btwError", btwId, message: t("Start a conversation first") });
+      post({ type: "btwError", btwId, message: t("Start a conversation first") });
       return;
     }
     const openaiAuth = piRuntime.getOpenAIAuthStatus();
@@ -5511,14 +5556,14 @@ export class PiSession implements ChatSession {
       // A send's refusal text, and the account whose sign-in would let the model run.
       const unavailable = this.unavailableModel(this.modelValue, resolution, openaiAuth);
       const authFailure = unavailable.signIn ? { authFailure: { account: unavailable.signIn, reason: "missing" as const } } : {};
-      this.emit({ type: "btwError", btwId, message: unavailable.text, ...authFailure });
+      post({ type: "btwError", btwId, message: unavailable.text, ...authFailure });
       return;
     }
 
     const liveSession = this.runtime?.session;
     // The aside reads the conversation it was asked in, so it is not asked of another.
     if (liveSession && !this.sendsTo(liveSession, target)) {
-      this.emit({ type: "btwError", btwId, message: t("This chat no longer shows the conversation this question was asked in.") });
+      post({ type: "btwError", btwId, message: t("This chat no longer shows the conversation this question was asked in.") });
       return;
     }
     const contextBlock = liveSession ? buildBtwContextBlock(liveSession) : "";
@@ -5538,7 +5583,7 @@ export class PiSession implements ChatSession {
         store: { kind: "memory" },
       }));
     } catch (err) {
-      this.emit({ type: "btwError", btwId, message: err instanceof Error ? err.message : String(err) });
+      post({ type: "btwError", btwId, message: err instanceof Error ? err.message : String(err) });
       return;
     }
     this.btwSessions.set(btwId, { session, ac });
@@ -5556,13 +5601,14 @@ export class PiSession implements ChatSession {
     const unsub = session.subscribe((event) => {
       // The aside runs on an in-memory session, so the ledger is the only record of what it billed.
       if (event.type === "message_end" && event.message.role === "assistant") {
-        appendSubCallUsage(event.message, "btw", attribution);
+        const credentialSource = credentialSourceOf(this.options.platform.remote, event.message.provider);
+        appendSubCallUsage(event.message, "btw", credentialSource ? { ...attribution, credentialSource } : attribution);
         failedCall = event.message.stopReason === "error" ? failedCallError(event.message.errorMessage) : undefined;
       }
       if (event.type === "message_start" && event.message.role === "assistant") streamed = "";
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
         streamed += event.assistantMessageEvent.delta;
-        if (!ac.signal.aborted) this.emit({ type: "btwStreaming", btwId, text: streamed });
+        if (!ac.signal.aborted) post({ type: "btwStreaming", btwId, text: streamed });
       }
     });
 
@@ -5570,12 +5616,12 @@ export class PiSession implements ChatSession {
       await this.pinned(() => session.prompt(prompt));
       if (!ac.signal.aborted) {
         const finalText = (streamed.trim() || session.getLastAssistantText() || "").trim();
-        if (finalText) this.emit({ type: "btwComplete", btwId, text: finalText });
-        else if (failedCall !== undefined) this.emit(failure(failedCall));
-        else this.emit({ type: "btwError", btwId, message: t("No response received") });
+        if (finalText) post({ type: "btwComplete", btwId, text: finalText });
+        else if (failedCall !== undefined) post(failure(failedCall));
+        else post({ type: "btwError", btwId, message: t("No response received") });
       }
     } catch (err) {
-      if (!ac.signal.aborted) this.emit(failure(err instanceof Error ? err.message : String(err)));
+      if (!ac.signal.aborted) post(failure(err instanceof Error ? err.message : String(err)));
     } finally {
       unsub();
       this.btwSessions.delete(btwId);
@@ -5697,7 +5743,7 @@ export class PiSession implements ChatSession {
       },
       buildExtensionFactory: (agent, mcp, readOnly) => createSubagentExtensionFactory({
         permissionHandler: this.options.permissionHandler,
-        isPlanMode: () => this.options.permissionHandler.getPermissionMode() === "plan",
+        isPlanMode: () => this.options.permissionHandler.turnPermissionMode() === "plan",
         ...this.checkpointBaselineField(),
         shellCancel: this.shellCancel.forContext(this.noteDeliveryForTeamAgent(agent)),
         worktreeIsolation: () => this.worktreeIsolation(),
@@ -5969,11 +6015,30 @@ export class PiSession implements ChatSession {
    * every mutation of one calls this and nothing else republishes. Rebuilt on each call, never cached. A
    * caller can run late in shutdown, so a disposed session or a retired runtime publishes nothing.
    */
-  publishAccountInfo(): void {
+  /** The account state, then the model list, whose marks read the same sign-ins (`publishAvailableModels`). */
+  publishAccountInfo(clientId?: string): void {
+    if (this._disposed) return;
+    this.emitPerClient(() => this.accountMessages(), clientId);
+    this.publishAvailableModels(clientId);
+  }
+
+  /** On a daemon's core each device's view, or with `only` that device's views, gets the messages as its own client sees them, never another device's. */
+  private emitPerClient(build: () => ExtensionToWebviewMessage[], only?: string): void {
+    const remote = this.options.platform.remote;
+    const perView = remote ? this.options.onViewMessages : undefined;
+    if (remote && perView) {
+      perView((clientId) => (only !== undefined && clientId !== only ? [] : asClient(remote, clientId, build)));
+      return;
+    }
+    for (const message of build()) this.emit(message);
+  }
+
+  /** The account state as the pinned (else acting) client sees it. */
+  private accountMessages(): ExtensionToWebviewMessage[] {
     const runtime = this._disposed ? null : PiRuntime.unlessRetired();
-    if (!runtime) return;
+    if (!runtime) return [];
     const pickerProviders = runtime.pickerProviders();
-    this.emit({ type: "accountInfo", data: { ...buildAccountInfoFrom(this.accountBillingDeps(runtime)), ...(pickerProviders ? { pickerProviders } : {}) } });
+    return [{ type: "accountInfo", data: { ...buildAccountInfoFrom(this.accountBillingDeps(runtime)), ...(pickerProviders ? { pickerProviders } : {}) } }];
   }
 
   /** The usage monitor and the subscription the chat's model bills; none for an API key, a custom provider, a disposed session or a retired runtime. */

@@ -64,6 +64,15 @@ export function postApprovedUnasked(
   });
 }
 
+/** A turn waiting for its device's sign-in (the token broker's); never answered as a yes or no. */
+export interface PendingSignIn {
+  readonly request: Extract<ExtensionToWebviewMessage, { type: 'signInRequest' }>;
+  // "Continue with my sign-in" from the device that clicked
+  readonly continueWith: (clientId: string) => void;
+  // the chat closed: the wait fails
+  readonly cancel: () => void;
+}
+
 export class PermissionState {
   pendingApprovals: Map<string, PendingApproval> = new Map();
   pendingQuestions: Map<string, PendingQuestion> = new Map();
@@ -71,6 +80,7 @@ export class PermissionState {
   pendingPlanApprovals: Map<string, PendingPlanApproval> = new Map();
   pendingSkillApprovals: Map<string, PendingSkillApproval> = new Map();
   pendingElicitations: Map<string, PendingElicitation> = new Map();
+  pendingSignIns: Map<string, PendingSignIn> = new Map();
   /** The exact message each live prompt was posted with, in the order they were raised, so a webview
    *  reload can put the same dialogs back on screen without rebuilding a payload. */
   pendingPromptRequests: Map<string, ExtensionToWebviewMessage> = new Map();
@@ -100,6 +110,7 @@ export class PermissionState {
     if (this.pendingQuestions.has(id)) return 'question';
     if (this.pendingPlanApprovals.has(id)) return 'plan';
     if (this.pendingForms.has(id) || this.pendingElicitations.has(id)) return 'input';
+    if (this.pendingSignIns.has(id)) return 'signIn';
     return undefined;
   }
 
@@ -195,6 +206,20 @@ export class PermissionState {
     return elicitation;
   }
 
+  addPendingSignIn(requestId: string, signIn: PendingSignIn): void {
+    this.pendingSignIns.set(requestId, signIn);
+    this.pendingPromptRequests.set(requestId, signIn.request);
+    this.onPendingChanged?.();
+  }
+
+  removePendingSignIn(requestId: string): PendingSignIn | undefined {
+    const signIn = this.pendingSignIns.get(requestId);
+    this.pendingSignIns.delete(requestId);
+    this.pendingPromptRequests.delete(requestId);
+    this.onPendingChanged?.();
+    return signIn;
+  }
+
   clearAll(): void {
     // Teardown, not a user decision: the diagnostic keeps `userAnswered` absent, so the deny cannot be
     // mistaken for an unexplained "no" and end a turn that is already being torn down.
@@ -228,6 +253,10 @@ export class PermissionState {
       }
     }
     this.pendingElicitations.clear();
+
+    const signIns = [...this.pendingSignIns.values()];
+    this.pendingSignIns.clear();
+    for (const signIn of signIns) signIn.cancel();
     this.pendingPromptRequests.clear();
 
     this.autoApprovedSkills.clear();

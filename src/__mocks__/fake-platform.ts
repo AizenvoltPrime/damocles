@@ -358,7 +358,8 @@ function createSettingsStore(init: FakePlatformInit['settings']): SettingsStore 
   };
 }
 
-function createSecretsStore(values: Readonly<Record<string, string>> | undefined, isPersistent: boolean): FakeSecretsStore {
+/** An in-memory SecretsStore; tests never reach the OS keychain. */
+export function createFakeSecretsStore(values?: Readonly<Record<string, string>>, isPersistent = true): FakeSecretsStore {
   const entries = new Map(Object.entries(values ?? {}));
   const listeners = new Set<(key: string) => void>();
   const fire = (key: string): void => {
@@ -942,7 +943,7 @@ export function createFakePlatform(init: FakePlatformInit = {}): FakePlatform {
   return {
     capabilities: { ...VSCODE_HOST_CAPABILITIES, ...init.capabilities },
     settings: createSettingsStore(init.settings),
-    secrets: createSecretsStore(init.secrets, init.secretsPersistent ?? true),
+    secrets: createFakeSecretsStore(init.secrets, init.secretsPersistent ?? true),
     state,
     trust: createTrustService(init.trusted ?? true, workspaceFolders),
     workspaceFolders,

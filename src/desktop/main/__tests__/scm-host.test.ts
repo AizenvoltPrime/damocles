@@ -16,7 +16,7 @@ import type { AskInputRequest } from '../overlay';
 import type { EditorPane } from '../editor-pane';
 import type { DocumentService } from '../documents/document-service';
 import type { MessageQuestion } from '../message-dialog';
-import { ScmHost } from '../scm/scm-host';
+import { ScmHost, type ScmHostDeps } from '../scm/scm-host';
 import { visibleText } from '../../../shared/visible-text';
 
 const projectPath = path.resolve('/work/project');
@@ -112,6 +112,9 @@ interface SetupOptions {
   cherryPick?: 'ok' | 'conflict' | 'empty' | Error;
   // repo-1 published by a remote core, whose confinedEntry answers what the target chooses
   remote?: { readonly authority: string; readonly answers: (relative: string) => string };
+  // the host's offer to turn on agent forwarding, and the action a notice answers with
+  agentForwarding?: ScmHostDeps['agentForwarding'];
+  noticeChoice?: (actions: readonly string[]) => string | undefined;
 }
 
 function setup(overrides: SetupOptions = {}) {
@@ -123,7 +126,10 @@ function setup(overrides: SetupOptions = {}) {
     unsafe: [],
     parents: [],
   };
-  const repos = new Map([['repo-1', fakeRepo(projectPath, overrides.status, overrides.show, overrides.gone, overrides.remote?.authority, overrides.remote?.answers)], ['repo-2', fakeRepo(nestedRoot)]]);
+  const repos = new Map([
+    ['repo-1', Object.assign(fakeRepo(projectPath, overrides.status, overrides.show, overrides.gone, overrides.remote?.authority, overrides.remote?.answers), { repoId: 'repo-1' })],
+    ['repo-2', Object.assign(fakeRepo(nestedRoot), { repoId: 'repo-2' })],
+  ]);
   const coreListeners: Array<(event: ScmEvent) => void> = [];
   const checkouts = [...(overrides.checkouts ?? [])];
   const deletes = [...(overrides.deletes ?? [])];
@@ -226,6 +232,7 @@ function setup(overrides: SetupOptions = {}) {
   const editorPane = {
     onDidChangeActiveContext: () => ({ dispose: () => undefined }),
     activeContext: () => (overrides.activeFile !== undefined ? { filePath: overrides.activeFile, selection: undefined } : undefined),
+    activeLocation: () => (overrides.activeFile !== undefined ? { path: overrides.activeFile } : undefined),
     showDiff: vi.fn(async () => ({ close: () => undefined })),
     changesTabs: () => overrides.changesTabs ?? [],
     updateChanges: vi.fn(),
@@ -248,7 +255,7 @@ function setup(overrides: SetupOptions = {}) {
   } as unknown as EditorPane;
   const notify = (severity: string) => async (message: string, ...actions: string[]) => {
     notices.push({ severity, message, actions });
-    return undefined;
+    return overrides.noticeChoice?.(actions);
   };
   const revealed: string[] = [];
   const mentioned: unknown[] = [];
@@ -257,6 +264,7 @@ function setup(overrides: SetupOptions = {}) {
     // the target's project: /srv/app on a POSIX host
     remoteFileRef: (authority, targetPath) => (authority === 'ssh+h1' && targetPath.startsWith('/srv/app/') && !targetPath.includes('..') ? { projectKey: 'ssh+h1|/srv/app', relativePath: targetPath.slice('/srv/app/'.length) } : undefined),
     hostName: () => 'prod-1',
+    authorityOs: () => 'linux',
     documents: { get: () => undefined, all: () => [] } as unknown as DocumentService,
     settings: {
       get: (key: string) => {
@@ -275,6 +283,7 @@ function setup(overrides: SetupOptions = {}) {
     notify: { info: notify('info'), warn: notify('warn'), error: notify('error') },
     t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)])),
     showGitLog: () => undefined,
+    agentForwarding: overrides.agentForwarding ?? (() => undefined),
     copy: async (text) => void copied.push(text),
     reveal: async (absolute) => void revealed.push(absolute),
     openExternal: async () => undefined,
@@ -282,7 +291,7 @@ function setup(overrides: SetupOptions = {}) {
       folderRequests.push({ defaultPath, ...(title !== undefined ? { title } : {}), ...(buttonLabel !== undefined ? { buttonLabel } : {}) });
       return overrides.folder;
     },
-    addProject: async (folder) => void added.push(folder),
+    addProject: async (_authority, folder) => void added.push(folder),
     selectProject: async (projectKey) => void selectedProjects.push(projectKey),
     worktrees: {
       deleteChatWorktreeAt: async () => false,
@@ -456,6 +465,33 @@ describe('source control host', () => {
     expect(notices).toEqual([{ severity: 'error', message: 'error: Your local changes to the following files would be overwritten by merge:', actions: ['Show Git Output'] }]);
   });
 
+  it('offers to forward the SSH agent when a remote host\'s push is refused its public key, and only then', async () => {
+    const enable = vi.fn(async () => undefined);
+    const offered: string[] = [];
+    const remote = { authority: 'ssh+h1', answers: () => '' };
+    const { host, service, notices } = setup({
+      remote,
+      agentForwarding: (authority) => {
+        offered.push(authority);
+        return { hostName: 'prod-1', enable };
+      },
+      noticeChoice: (actions) => actions.find((action) => action.startsWith('Forward')),
+    });
+    const denied = new GitError('git push exited with 128', 128, '', 'git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.');
+    vi.mocked(service.push).mockRejectedValueOnce(denied);
+    expect(await host.run({ op: 'push', repoId: 'repo-1', to: false, force: false, followTags: false })).toEqual({ ok: false, reason: 'failed' });
+    expect(notices.at(-1)?.actions).toEqual(['Forward your SSH agent to prod-1', 'Show Git Output']);
+    await vi.waitFor(() => expect(enable).toHaveBeenCalledTimes(1));
+    expect(offered).toEqual(['ssh+h1']);
+    vi.mocked(service.push).mockRejectedValueOnce(new GitError('git push exited with 128', 128, '', 'fatal: Authentication failed'));
+    await host.run({ op: 'push', repoId: 'repo-1', to: false, force: false, followTags: false });
+    expect(notices.at(-1)?.actions).toEqual(['Show Git Output']);
+    const local = setup({ agentForwarding: () => ({ hostName: 'x', enable }) });
+    vi.mocked(local.service.push).mockRejectedValueOnce(denied);
+    await local.host.run({ op: 'push', repoId: 'repo-1', to: false, force: false, followTags: false });
+    expect(local.notices.at(-1)?.actions).toEqual(['Show Git Output']);
+  });
+
   it('picks a remote for Push to..., showing its URL without userinfo, and publishes with -u to the one remote', async () => {
     const remotes = [{ name: 'origin', pushUrl: 'https://user:token@example.com/a.git' }, { name: 'backup', pushUrl: 'https://example.com/b.git' }];
     // ids are indices, so a remote's name never travels as one
@@ -600,6 +636,30 @@ describe('source control host', () => {
     await expect(host.run({ op: 'undoLastCommit', repoId: 'repo-1', extra: 1 })).rejects.toThrow();
   });
 
+  it('tells the user when a Selected Ranges action has nothing to apply or its sides went stale, and refuses a malformed refusal', async () => {
+    const { host, notices } = setup();
+    expect(await host.run({ op: 'refuseRanges', repoId: 'repo-1', action: 'stage', reason: 'noChanges' })).toEqual({ ok: false, reason: 'failed' });
+    await host.run({ op: 'refuseRanges', repoId: 'repo-1', action: 'unstage', reason: 'noChanges' });
+    await host.run({ op: 'refuseRanges', repoId: 'repo-1', action: 'revert', reason: 'noChanges' });
+    await host.run({ op: 'refuseRanges', repoId: 'repo-1', action: 'unstage', reason: 'changed' });
+    await host.run({ op: 'refuseRanges', repoId: 'repo-1', action: 'stage', reason: 'noQuickDiff' });
+    await host.run({ op: 'refuseRanges', repoId: 'repo-1', action: 'stage', reason: 'changed' });
+    await host.run({ op: 'refuseRanges', repoId: 'repo-1', action: 'unstage', reason: 'outOfRange' });
+    await host.run({ op: 'refuseRanges', repoId: 'repo-1', action: 'revert', reason: 'outOfRange' });
+    expect(notices.map((notice) => `${notice.severity}: ${notice.message}`)).toEqual([
+      'warn: The selection holds no unstaged changes, so nothing was staged.',
+      'warn: The selection holds no staged changes, so nothing was unstaged.',
+      'warn: The selection holds no changes, so nothing was reverted.',
+      'warn: The staged version of this file changed since the changes were shown, so nothing was unstaged. Try again.',
+      'warn: Source control cannot show this file\'s changes line by line, so the selected ranges were not applied.',
+      'warn: The staged version of this file changed since the changes were shown, so nothing was staged. Try again.',
+      'warn: The file changed while the changes were unstaged, so nothing was unstaged. Try again.',
+      'warn: The file changed while the changes were reverted, so nothing was reverted. Try again.',
+    ]);
+    await expect(host.run({ op: 'refuseRanges', repoId: 'repo-1', action: 'commit', reason: 'noChanges' })).rejects.toThrow();
+    await expect(host.run({ op: 'refuseRanges', repoId: 'repo-1', action: 'stage', reason: 'noChanges', path: 'a.ts' })).rejects.toThrow();
+  });
+
   it('answers a commit input read whose repository closed meanwhile as empty, and rejects any other failure', async () => {
     const h = setup({ commitInput: () => Promise.reject(Object.assign(new Error('The repository was closed'), { name: 'GitQueueDisposedError' })) });
     const read = h.host.commitInput({ repoId: 'repo-1' });
@@ -663,7 +723,7 @@ describe('source control host', () => {
 
     const clean = setup({ activeFile: path.join(projectPath, 'src', 'clean.ts') });
     clean.host.activeFile('delete');
-    await vi.waitFor(() => expect(vi.mocked(clean.editorPane.closeActive)).toHaveBeenCalledWith({ cleanOnly: true }));
+    await vi.waitFor(() => expect(vi.mocked(clean.editorPane.closeActive)).toHaveBeenCalledWith({ path: path.join(projectPath, 'src', 'clean.ts') }, { cleanOnly: true }));
     expect(vi.mocked(clean.service.remove)).toHaveBeenCalledWith('repo-1', ['src/clean.ts']);
   });
 
@@ -698,7 +758,7 @@ describe('source control host', () => {
     expect(left).toEqual({ name: 'a.ts', content: 'index text' });
     expect(right).toEqual({ path: path.join(projectPath, 'src', 'a.ts') });
     // the index side refreshes after each status of the repository (ShellDiffGit)
-    expect(vi.mocked(editorPane.showDiff).mock.calls[0]![4]).toEqual({ focus: true, scm: { root: projectPath, repoId: 'repo-1', git: { path: 'src/a.ts', group: 'workingTree' } } });
+    expect(vi.mocked(editorPane.showDiff).mock.calls[0]![4]).toEqual({ focus: true, scm: { repoId: 'repo-1', git: { path: 'src/a.ts', group: 'workingTree' } } });
   });
 });
 
@@ -785,7 +845,7 @@ describe('source control host: sides, palette and pushes', () => {
     const { host, editorPane } = setup({ status: { ...status, groups: { ...status.groups, workingTree: [modified, removed, submodule], untracked: [untracked] } } });
     host.paletteRun({ op: 'openAllChanges' });
     await vi.waitFor(() => expect(vi.mocked(editorPane.openInBackground)).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(editorPane.openInBackground)).toHaveBeenCalledWith([path.join(projectPath, 'src', 'a.ts'), path.join(projectPath, 'new.ts')]);
+    expect(vi.mocked(editorPane.openInBackground)).toHaveBeenCalledWith([{ path: path.join(projectPath, 'src', 'a.ts') }, { path: path.join(projectPath, 'new.ts') }]);
   });
 
   it('runs the palette\'s editor commands on the selected repository and says when no repository is open', async () => {
@@ -793,10 +853,10 @@ describe('source control host: sides, palette and pushes', () => {
     host.paletteRun({ op: 'closeAllDiffEditors' });
     host.paletteRun({ op: 'closeAllUnmodifiedEditors' });
     await vi.waitFor(() => expect(vi.mocked(editorPane.closeUnmodified)).toHaveBeenCalled());
-    expect(vi.mocked(editorPane.closeScmDiffs)).toHaveBeenCalledWith(projectPath);
+    expect(vi.mocked(editorPane.closeScmDiffs)).toHaveBeenCalledWith('repo-1');
     const changed = vi.mocked(editorPane.closeUnmodified).mock.calls[0]![0];
-    expect(changed(path.join(projectPath, 'src', 'a.ts'))).toBe(true);
-    expect(changed(path.join(projectPath, 'src', 'clean.ts'))).toBe(false);
+    expect(changed({ path: path.join(projectPath, 'src', 'a.ts') })).toBe(true);
+    expect(changed({ path: path.join(projectPath, 'src', 'clean.ts') })).toBe(false);
 
     (service.view('p')!.repos as unknown[]).splice(0);
     host.paletteRun({ op: 'openGroupChanges', group: 'workingTree' });
@@ -2121,14 +2181,12 @@ describe('source control host: a remote repository', () => {
     await expect(host.runRequest({ op: 'openFile', repoId: 'repo-1', path: 'src/a.ts' })).resolves.not.toEqual({ ok: true });
   });
 
-  it('never shows a remote repository\'s path in the file manager, opens no diff of it and matches none of this computer\'s buffers', async () => {
+  it('never shows a remote repository\'s path in the file manager, merges none of this computer\'s buffers and saves none of them', async () => {
     const { host, editorPane, revealed, service } = setup({ ...remote('/srv/app/src/a.ts'), dirty: [path.join(projectPath, 'a.ts')] });
     await host.runRequest({ op: 'reveal', repoId: 'repo-1', path: 'src/a.ts' });
     expect(revealed).toEqual([]);
-    await expect(host.openChanges('repo-1', 'a.ts', 'workingTree')).rejects.toThrow('not available on prod-1 yet');
-    await expect(host.openAllChanges('repo-1')).rejects.toThrow('not available on prod-1 yet');
-    await expect(host.quickDiffBase({ repoId: 'repo-1', path: 'a.ts' })).rejects.toThrow('not available on prod-1 yet');
-    await expect(host.mergeInputs({ repoId: 'repo-1', path: 'a.ts' })).rejects.toThrow('not available on prod-1 yet');
+    // the repository's root is no file of the host's projects, so no buffer, this computer's included, is its Result
+    await expect(host.mergeInputs({ repoId: 'repo-1', path: 'a.ts' })).rejects.toThrow('prod-1 named a file outside its projects.');
     expect(editorPane.showDiff).not.toHaveBeenCalled();
     // a commit saves no local buffer under the target's root
     await host.commit({ repoId: 'repo-1', message: 'm', variant: PLAIN });
@@ -2146,12 +2204,3 @@ describe('source control host: a remote project', () => {
   });
 });
 
-describe('source control host: a remote repository\'s worktrees', () => {
-  it('creates and deletes no worktree of a remote repository, whose paths would land in this computer\'s records', async () => {
-    const { host, service } = setup({ remote: { authority: 'ssh+h1', answers: () => '/srv/app/a.ts' } });
-    expect(await host.runRequest({ op: 'createWorktree', repoId: 'repo-1' })).not.toEqual({ ok: true });
-    expect(await host.runRequest({ op: 'deleteWorktree', repoId: 'repo-1' })).not.toEqual({ ok: true });
-    expect(service.addWorktree).not.toHaveBeenCalled();
-    expect(service.removeWorktree).not.toHaveBeenCalled();
-  });
-});

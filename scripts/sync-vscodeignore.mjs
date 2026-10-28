@@ -632,7 +632,8 @@ function applyBlock(original, block) {
  * `.vscodeignore` rules that keep desktop-only files out of the VSIX: the Monaco editor
  * (vite.config.ts emits all of it under `dist/webview/assets/monaco-`), the desktop build output and
  * packaging config, the end-to-end suite and its output, typecheck-only stubs, the Windows icon file, the terminal's
- * shell-integration scripts, the askpass helper and its scripts, the daemon and the server packages, and logs.
+ * shell-integration scripts, the askpass helper and its scripts, the daemon, its git credential relay and the server
+ * packages, and logs.
  * Each must appear verbatim as a line of `.vscodeignore`; the syntax is limited to `*` and `**`.
  */
 export const DESKTOP_EXCLUDE_RULES = [
@@ -650,6 +651,7 @@ export const DESKTOP_EXCLUDE_RULES = [
   'dist/watch-worker.js',
   'dist/askpass-main.js',
   'dist/askpass/**',
+  'dist/git-credential/**',
   'dist/e2e*/**',
   'dist-desktop/**',
   'e2e/**',
@@ -657,10 +659,12 @@ export const DESKTOP_EXCLUDE_RULES = [
   'types/**',
   'electron-builder.yml',
   'playwright.desktop.config.ts',
+  'playwright.remote.config.ts',
   'vite.shell.config.ts',
   'resources/icon.ico',
   'resources/shell-integration/**',
   'resources/askpass/**',
+  'resources/git-credential/**',
 ];
 
 /** Why .vscodeignore could let a desktop-only file into the VSIX; empty when every exclusion holds. */

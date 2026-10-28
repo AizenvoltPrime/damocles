@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { app, BrowserWindow, clipboard, dialog, Menu, powerMonitor, screen, session, shell as electronShell, webContents, WebContentsView, type WebContents } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, Menu, net, powerMonitor, screen, session, shell as electronShell, webContents, WebContentsView, type WebContents } from 'electron';
 import { installLogSink, log, showLog } from '../../core/logger';
 import { processProfiler, StallMonitor } from '../local-services/stall-monitor';
 import { getRipgrepSearchOptions } from '../../core/chat-panel/ripgrep';
@@ -19,7 +19,8 @@ import { deleteRetiredSecrets } from '../../core/config/retired-secrets';
 import { providerKeyStored } from '../../core/pi-session/custom-providers';
 import { PROVIDER_SECRET_KEYS } from '../../core/pi-session/explore-providers';
 import { DAMOCLES_HOME_DIR } from '../../core/paths';
-import { folderKey } from '../../core/workspace-folders/folder-key';
+import { resolveSshExecutable, resolveSshKeygenExecutable } from '../../core/system-tools';
+import { folderKey, folderKeyOn } from '../../core/workspace-folders/folder-key';
 import { homeDirectory } from '../../core/workspace-folders/folder-registry';
 import type { Disposable } from '../../platform/disposable';
 import type { InputBoxOptions } from '../../platform/dialog-service';
@@ -29,7 +30,7 @@ import type { RelayView } from './core-services/host-services';
 import type { StoredSession } from '../../shared/types/session';
 import type { ChatAttachmentInput } from '../../shared/types/chat-attachment';
 import { MAX_OVERLAY_TAGS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRequest } from '../preload/overlay-channels';
-import type { NotificationProject } from '../preload/notifications';
+import type { NotificationHost, NotificationProject } from '../preload/notifications';
 import { canCheck, type UpdateSnapshot, type VersionInfo } from '../preload/updates';
 import {
   MAX_TAG_LENGTH,
@@ -40,6 +41,7 @@ import {
   type GridPane,
   type GridSlot,
   type ShellGridLayout,
+  hostAttention,
   type ChatMutationResult,
   type ChatStatus,
   type FileRef,
@@ -56,7 +58,7 @@ import {
   type ShellWindowState,
 } from '../preload/shell-channels';
 import type { QuickOpenMode, QuickOpenScope } from '../preload/overlay-channels';
-import type { ChatCommand, ChatReviewScope, SettingsFileScope } from '../../shared/types/messages';
+import type { ChatCommand, ChatReviewScope, ExtensionToWebviewMessage, SettingsFileScope } from '../../shared/types/messages';
 import { ChatReviewHost } from './chat-review-host';
 import { handleAboutChannels, runUpdateAction, type AboutDeps } from './about-channels';
 import { ActivationFocus, onWindowActivated, onWindowDeactivated } from './activation-focus';
@@ -66,13 +68,14 @@ import { CORE_READY_TIMEOUT_MS } from './core-process';
 import { restartDecision, RESTART_LIMIT } from '../local-services/restart-policy';
 import type { CoreClient } from './core-client';
 import { BrowserTabs } from './browser-tabs';
-import { chatsToUnload, ChatWorkQueue } from './chat-pool';
+import { ChatUnloads, chatsToUnload, ChatWorkQueue } from './chat-pool';
 import { chatProjectKey } from './chat-project';
 import { isActiveActivity } from '../../shared/chat-retention';
 import { storedTitle } from './chat-title';
+import { chatActions, refusesMirrored } from './chat-actions';
 import { parseUserDataDir } from './cli';
 import { CoreHost } from './core-host';
-import { QuitLifecycle, shutDown } from './shutdown';
+import { detachRemotes, QuitLifecycle, shutDown } from './shutdown';
 import {
   DEFAULT_FILES_EXCLUDE,
   DEFAULT_SEARCH_EXCLUDE,
@@ -83,9 +86,11 @@ import {
   isDesktopSettingValue,
   NOTIFICATION_SOUND_SETTING,
   NOTIFICATIONS_SETTING,
+  REMOTE_CLOSE_WITH_RUNNING_AGENTS_SETTING,
   REMOTE_TERMINAL_IDLE_DAYS_SETTING,
   UPDATE_CHECK_AUTOMATICALLY_SETTING,
   RESTORE_LAYOUT_SETTING,
+  PROJECTS_VIEW_SETTING,
   SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING,
   TERMINAL_DEFAULT_PROFILE_SETTING,
   TERMINAL_PROFILES_SETTING,
@@ -94,7 +99,8 @@ import {
 } from '../local-services/desktop-configuration';
 import { BackupStore } from './documents/backups';
 import type { Project } from '../local-services/confine';
-import { DocumentService } from './documents/document-service';
+import type { OpenFolder } from '../../platform/workspace-folders';
+import { DocumentService, type TextDocument } from './documents/document-service';
 import { EditorPane, editorSettings } from './editor-pane';
 import { FormatService } from './formatting/format-service';
 import { FileTree, type FilesTarget } from './files/file-tree';
@@ -106,7 +112,7 @@ import { windowsBuildNumber } from '../workspace/terminal/profiles';
 import { detectedProfile, profileFileKind, TerminalProfileCatalog, type LaunchProfile } from './terminal/user-profiles';
 import { TerminalService, terminalSettings } from './terminal/terminal-service';
 import { killQuestion } from './terminal/kill-confirmation';
-import { folderLinkAction, TerminalLinks } from './terminal/terminal-links';
+import { folderLinkAction, TerminalLinks, type LinkBase } from './terminal/terminal-links';
 import { pasteText, TerminalPasteGate } from './terminal/terminal-paste';
 import { askShellMenu, GestureGrant } from './clipboard-gestures';
 import { TERMINAL_LIST_DEFAULT_REM, type TerminalProfileReport, type TerminalAction, type TerminalAddToChat, type TerminalColor, type TerminalCustomIcon, type TerminalOpenLink } from '../preload/terminal-channels';
@@ -131,7 +137,7 @@ import { createAskpassBridge, type AskCredential } from './askpass-bridge';
 import { createMessageAsker, type AskMessage } from './message-dialog';
 import { DO_NOT_DISTURB_KEY, handleCenterChannels, NotificationCenter, runEntryAction, type ChatKey, type ChatRef, type EntryActionDeps, type StickyNotice } from './notification-center';
 import { NotifierHost } from './notifier';
-import { createInputAsker, createQuickPickAsker, OverlayHost, overlayHtml } from './overlay';
+import { closeRemoteResult, createInputAsker, createQuickPickAsker, gitCredentialConsentChoice, OverlayHost, overlayHtml, parseCloseRemoteRequest, parseGitCredentialConsentRequest } from './overlay';
 import { OverlaySettings, writeDesktopSetting, type SettingsAttachTarget, type SettingsScope, type SettingsScopes } from './overlay-settings';
 import { HiddenOpening } from './hidden-opening';
 import type { SettingsTarget } from '../../shared/settings-sections';
@@ -153,7 +159,7 @@ import { reportFailure, ShellHost, shellHtml, type ShellActions } from './shell'
 import { mergeLoginShellEnv, probeGit, type GitProbe } from '../local-services/shell-env';
 import { NO_SCM_MENU_STATE, ScmHost, type ScmWorktreeDeps } from './scm/scm-host';
 import type { ScmWorktreeChat } from '../preload/scm-channels';
-import { createLauncherPool, installProcessLauncher, lockThreadSpawns, processLauncher, type Launcher } from '../../core/process-launcher';
+import { createLauncherPool, installProcessLauncher, lockThreadSpawns, processLauncher, runProcess, type Launcher } from '../../core/process-launcher';
 import { allJsonConfigWritesSettled } from '../../core/config/json-config-write';
 import { createScmClient, type ScmClient } from './scm/scm-client';
 import { SUBCALL_USAGE_LEDGER_PATH } from '../../core/paths';
@@ -164,6 +170,9 @@ import { AppTray } from './tray';
 import { TrustStore } from './trust-store';
 import { loadAutoUpdater, shellPlatform, UpdateService } from './updater';
 import type { ChatWorktreeRecord, WorktreeRecord } from '../../core/worktrees/registry';
+import { openWorktreeConflicts } from './worktrees/worktree-conflicts';
+import { createSharedHomes } from './remote/shared-home';
+import { createWatchLimits, WATCH_LIMIT_COMMAND } from './remote/watch-limit';
 import { worktreeEnvironment } from '../../core/worktrees/environment';
 import { worktreeEngine, type WorktreeEngine } from './worktrees/engine';
 import { localRecord, remoteChatRecord, WorktreeRecords } from './worktrees/records';
@@ -176,7 +185,7 @@ import { RootSet, WorktreeRoots, type RootProject } from './worktrees/roots';
 import { closeWorktreeRoot, type CloseOutcome } from './worktrees/close-worktree';
 import { HeldPrompts } from './held-prompts';
 import { KeptPermissions } from './kept-permissions';
-import { removeProject, type WaitingChat } from './remove-project';
+import { releaseRemoteTerminals, removeProject, type WaitingChat } from './remove-project';
 import { ShownFolderState } from './worktrees/shown-folder';
 import { setupTaskKey, WorktreeController, type WorktreeControllerDeps } from './worktrees/worktree-controller';
 import type { NotificationService } from '../../platform/notification-service';
@@ -185,22 +194,74 @@ import type { WorktreeDialog } from '../preload/overlay-channels';
 import { remoteSetupShell, setupShell } from './worktrees/setup-terminal';
 import { chatRowWorktree } from './worktrees/chat-rows';
 import { UsageWarningStore } from './usage-warning-store';
-import { HostStore } from './remote/host-store';
-import { RemoteState, type RemoteTerminalRecord } from './remote/remote-state';
+import { HostStore, type SshHostRecord } from './remote/host-store';
+import { parseContent, RemoteState, type RemoteTerminalRecord } from './remote/remote-state';
 import { startLoopbackTransport } from './remote/loopback-transport';
-import type { RemoteConnection } from './remote/connection';
-import { MAX_LOG_READ_BYTES } from '../daemon/control-messages';
+import type { OtherProtocolDaemon, RemoteConnection } from './remote/connection';
+import { MAX_LOG_READ_BYTES, type ClientToControl } from '../daemon/control-messages';
 import { Authorities, type RemoteProject } from './remote/authorities';
+import { failureOf, RemoteConnections } from './remote/connections';
+import { Reconnector, type ConnectionGain, type LoopAttempt, type ReconnectEvent } from './remote/reconnect';
+import { LatencyMeter } from './remote/latency';
+import { RemoteHosts, sshDestination, sshProjectKey } from './remote/remote-hosts';
+import {
+  configuredAliases,
+  controlMasterPlan,
+  createMainAskpassServer,
+  createRememberedSecrets,
+  exitControlMaster,
+  keyFolder,
+  parseSshCommand,
+  runSsh,
+  runSshStage,
+  sshEnvironment,
+  sshVersion,
+  startSshTransport,
+  systemControlMasterDeps,
+  type ControlMasterDeps,
+  type ControlMasterPlan,
+  type RememberedOption,
+  type RememberedSecrets,
+  type SshDestination,
+} from './remote/ssh';
+import { validateInstallFolder } from './remote/bootstrap';
+import { readServerManifest } from './remote/server-manifest';
+import type { ServerManifest } from './remote/server-manifest-format';
+import { createArtifactCache, type ArtifactCache } from './remote/artifact-cache';
+import { RELEASES_URL } from './updater';
+import { PROMPT_CANCELLED, type AskpassServer } from '../../core/scm/askpass/askpass-server';
+import type { PanelConnection, PanelHostAction, PanelHostLabel, PanelQueueAction } from '../preload/panel-channels';
+import type { HostTone } from '../../shared/host-tones';
+import type { CloseRemoteRow, CloseRemoteStatus, CloseRowHost } from '../preload/overlay-channels';
+import type { Run } from '../daemon/control-messages';
+import type { ChatConnection, HostReconnect } from '../../shared/host-connection';
+import { registerConnectChannels } from './remote/connect-channels';
+import { gated, remoteEnabled } from './remote/remote-enabled';
+import { authoritiesToConnectAtLaunch } from './remote/launch-connect';
+import { SessionMirror } from './remote/session-mirror';
+import { OfflineTranscripts } from './remote/offline-transcripts';
+import { MAX_HELD_BYTES, MAX_HELD_PER_PANEL, OfflineQueue } from './remote/offline-queue';
+import { remoteE2eEnvironment } from './remote/remote-e2e-environment';
+import { visibleLines } from '../../shared/visible-text';
+import { adoptCompatibleDaemon, FollowedDaemons, followOtherProtocolDaemon, otherDeviceCount, shutDownNow, type SwitchListing } from './remote/app-update-flow';
+import { askRemoteRuns, closeRowId, listHostRuns, type CloseWithRunningAgents, type HostRuns } from './remote/close-remote';
+import { CloseRelease } from './close-release';
+import { announceFinishedAway, awayChats } from './remote/finished-away';
+import { keepRunningAtShutdown, startKeepRunningRefresh, type KeepRunningDeps, type KeepRunningHost } from './remote/keep-running-refresh';
+import { forwardsAgent, groupsOf, hostIdOfAuthority, hostOs, sshAuthorityKey } from './remote/host-store';
+import { openAsProject, openFolderAsProject, type OpenAsProjectDeps } from './open-as-project';
 import { RemoteCore, type RemoteHostedCore } from './remote/remote-core';
+import { clientGitCredential, createGitCredentialClient, type GitCredentialClient } from './remote/git-credential-client';
 import { remoteServices } from './remote/remote-services';
 import { chatOfSelectedProject, remoteSelection } from './remote/remote-selection';
 import type { RemoteChatRecord } from './remote/remote-state';
-import type { ShellEngine } from '../preload/shell-channels';
+import type { OpenAsProjectRequest, OpenAsProjectResult, ProjectsView, ShellEngine } from '../preload/shell-channels';
 import type { HostServicesDeps, HostTrust } from './core-services/host-services';
 import { ERROR_PAGE_STRINGS } from '../../shared/panel-html';
 import { createProjectTrust, createRemoteTrust, type RemoteTrustTarget } from './remote/remote-trust';
-import { authorityKeyOfProject, isInsideFolder, pathFor, projectKeyOf } from '../../shared/project-location';
-import { remoteFileRef } from './remote/remote-files';
+import { authorityKeyOfProject, pathFor, projectKeyOf, targetFolderKeyOf } from '../../shared/project-location';
+import { projectOfCwd, remoteFileRef, type RemoteFileRoot } from './remote/remote-files';
+import { visibleText } from '../../shared/visible-text';
 import { crossedAuthority, crossedByViewMessage, ownRemoteDrop } from './mention-authority';
 import { UserRelays } from './remote/user-relays';
 import { VoiceRelay } from './remote/voice-relay';
@@ -237,6 +298,28 @@ const CHAT_PANEL: PanelOptions = { kind: 'chat', title: 'Damocles', localResourc
 const E2E_HOOKS = !app.isPackaged && process.env['DAMOCLES_E2E_HOOKS'] === '1';
 // The loopback authority (a local folder through a daemon this app starts), in the unpackaged app only.
 const LOOPBACK = !app.isPackaged && (E2E_HOOKS || process.env['DAMOCLES_LOOPBACK'] === '1');
+// Remote hosts, their projects and every remote entry point: a development build, or a packaged one with DAMOCLES_REMOTE=1.
+const REMOTE = remoteEnabled(app, process.env);
+// The ssh config and release URL e2e runs point the transport at (dev builds with the e2e hooks only).
+const SSH_ENVIRONMENT = sshEnvironment({ packaged: app.isPackaged, env: process.env });
+const REMOTE_E2E = remoteE2eEnvironment({ packaged: app.isPackaged, env: process.env });
+// how often a busy daemon of another protocol is asked for its runs and its mirror: its frozen commands carry no events
+const OTHER_PROTOCOL_POLL_MS = 5000;
+// the window an OS shutdown or an update's quit gives the token pushes, inside the quit's own bound
+const UNATTENDED_PUSH_MS = 3000;
+// the daemon ends a connection at once on control.disconnect
+const DISCONNECT_FEATURE = 'control.disconnect';
+const LIST_OWN_RUNS_FEATURE = 'control.listOwnRuns';
+// each wait of a quit's detach from its daemons (a mirror sync, the disconnect), inside DISPOSE_TIMEOUT_MS
+const REMOTE_DETACH_WAIT_MS = 3000;
+const VERIFIED_ERASE_FEATURE = 'askpass.credential.verifiedErase';
+
+// A remote chat's status in the close dialog, from its activity.
+function closeStatusOf(activity: ChatActivity): CloseRemoteStatus {
+  if (activity.pendingKinds.includes('signIn')) return 'signIn';
+  if (activity.state === 'requires_action') return 'waiting';
+  return activity.state === 'running' || activity.background ? 'running' : 'idle';
+}
 // The client id every daemon names this install by, in userData's global state.
 const REMOTE_CLIENT_ID_KEY = 'damocles.remote.clientId';
 // The daemon's own log in its run folder's logs/ (daemon/token.ts runPaths) on its host, which logs.read serves by name.
@@ -245,6 +328,14 @@ const BROWSER_ENABLED_KEY = 'damocles.browser.enabled';
 // What a shell call answers once main has reported its failure to the user.
 const CHAT_CHANGE_FAILED: ChatMutationResult = { ok: false, reason: 'failed' };
 const OVERLAY_DISMISSED: OverlayAnswer = { kind: 'dismissed' };
+
+// What an install on a target needs from this app, read on the first connect.
+interface ServerInstall {
+  readonly manifest: ServerManifest;
+  readonly artifacts: ArtifactCache;
+  readonly releasesUrl: string;
+  readonly askpass: AskpassServer;
+}
 
 function runtimeProblem(): string | undefined {
   const major = Number(process.versions.node.split('.')[0]);
@@ -325,6 +416,8 @@ interface ChatCore {
   readonly client: CoreClient;
   // false once the core stopped serving (it ended, or its attach did)
   isReady(): boolean;
+  // a remote core: a view joins a panel its core holds (RemoteHostedCore.rejoin)
+  readonly rejoin?: RemoteHostedCore['rejoin'];
 }
 
 interface ChatCoreHost {
@@ -371,7 +464,78 @@ class DesktopApp {
   // read in start(), before anything lists a project
   private hostStore: HostStore | undefined;
   private remoteState: RemoteState | undefined;
+  // remote chat pages' sends held while their host is away, made with remoteState
+  private offlineQueue: OfflineQueue | undefined;
+  // the connections whose device list the host cards follow
+  private readonly devicesWatched = new WeakSet<RemoteConnection>();
+  // a busy daemon of another protocol per authority, which the update banner offers to switch from
+  private readonly otherProtocolHosts = new FollowedDaemons();
+  // the remote agents', terminals' and editors' questions of a close or quit; lifecycle.release shares one among every caller
+  private readonly closeRelease = new CloseRelease({
+    remote: REMOTE ? (unattended) => askRemoteRuns(this.closeRemoteDeps(), unattended) : undefined,
+    terminals: async () => {
+      const terminals = this.terminals;
+      return !terminals || terminals.confirmKill(terminals.quitIds());
+    },
+    editors: () => this.editorPane?.release() ?? Promise.resolve(true),
+  });
+  // a remote chat's status for the close dialog, while it is open
+  private readonly remoteStatusListeners = new Set<(authority: string, panelId: string, status: CloseRemoteStatus) => void>();
+  // each remote chat's latest activity by its stored session (authority\nsessionId), for chats this window has not loaded
+  private readonly sessionActivity = new Map<string, ChatActivity>();
+  // a host's attempt or notices changed, for the close dialog's logout warning
+  private readonly hostNoticeListeners = new Set<(hostId: string) => void>();
+  // by authority, the connection state each remote chat page last heard
+  private readonly sentChatConnection = new Map<string, string>();
   private authorities: Authorities | undefined;
+  private remoteConnections: RemoteConnections | undefined;
+  // when a dropped or failed authority with open views is attempted again, and its connection quality
+  private reconnector: Reconnector | undefined;
+  private latency: LatencyMeter | undefined;
+  // each SSH host's master connection plan, read with ssh -G at each attempt and each removal stage
+  private readonly controlPlans = new Map<string, ControlMasterPlan>();
+  // the e2e hooks hold a cut transport down until released
+  private readonly heldTransports = new Set<string>();
+  private remoteHosts: RemoteHosts | undefined;
+  // main's askpass server for ssh's prompts, made on the first connect
+  private sshAskpass: AskpassServer | undefined;
+  // remembered ssh answers: one per process, so a host's store never lands after its deletion
+  private sshRememberedSecrets: RememberedSecrets | undefined;
+  private gitCredentials: GitCredentialClient | undefined;
+  // each SSH host's session mirror, made the first time it is used
+  private readonly sessionMirrors = new Map<string, SessionMirror>();
+  // the read-only transcripts of remote chats whose host was not connected at launch
+  private readonly transcripts = new OfflineTranscripts<DesktopPanel>({
+    mirrored: async (authority, sessionId) => {
+      const hostId = hostIdOfAuthority(authority);
+      if (hostId === undefined) return undefined;
+      const mirror = this.sessionMirrorOf(hostId);
+      for (const project of this.remoteProjects().filter((candidate) => candidate.authorityKey === authority)) {
+        const file = await mirror.sessionFile(project.folderKey, sessionId);
+        if (file !== undefined) return { projectKey: project.key, file };
+      }
+      log(`[mirror ${hostId}] holds no copy of the saved chat ${sessionId}`);
+      return undefined;
+    },
+    connected: (authority) => this.authorities?.connection(authority) !== undefined,
+    create: (authority, sessionId, projectKey, panelToken) => {
+      const view = this.requireViews().create({ options: CHAT_PANEL, restore: { panelId: randomUUID(), state: { sessionId } }, authority, offline: { hostId: this.hostIdOf(authority), hostName: this.hostName(authority) }, ...(panelToken !== undefined ? { heldFor: panelToken } : {}) });
+      this.trackChat(view, projectKey);
+      return view;
+    },
+    load: (view, authority, file) => this.core.run('Open a mirrored transcript', (core) => core.client.openTranscript(view, this.hostIdOf(authority), file)),
+    selected: () => this.views?.selected(),
+    version: async (file) => {
+      const stat = await fs.promises.stat(file).catch((err: unknown) => {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+        throw err;
+      });
+      return stat === undefined ? undefined : `${stat.size}:${stat.mtimeMs}`;
+    },
+    reload: (view) => view.restart(),
+    chatViewFree: () => !this.views?.selected() || this.chatElsewhereSelected(),
+    select: (view) => this.showChat(view, { focus: 'whenReady' }),
+  });
   // each remote authority's core, made the first time the authority connects and kept across reconnects
   private readonly remoteCores = new Map<string, RemoteCore>();
   private readonly remoteSelection = remoteSelection({
@@ -385,6 +549,8 @@ class DesktopApp {
       this.connectAuthority(project.authorityKey);
       if (key === this.selectedProjectKey) return;
       this.selectedProjectKey = key;
+      const saved = this.remoteState?.selected();
+      this.remoteState?.select({ projectKey: key, ...(saved?.projectKey === key && saved.sessionId !== undefined ? { sessionId: saved.sessionId } : {}) }).catch(this.report('Saving the remote selection'));
       this.search?.stopAll();
       this.scm?.selectedProjectChanged();
       this.terminals?.publish();
@@ -426,7 +592,7 @@ class DesktopApp {
   };
   private readonly lifecycle = new QuitLifecycle({
     app,
-    release: () => this.releaseForClose(),
+    release: () => this.closeRelease.release(),
     dispose: () => this.disposeAll(),
     log: (line) => log(line),
   });
@@ -442,7 +608,7 @@ class DesktopApp {
   private readonly notifier: NotifierHost = new NotifierHost({
     platform: process.platform,
     preloadPath: path.join(__dirname, 'preload-overlay.js'),
-    state: () => ({ locale: this.requireLocalization().language, platform: shellPlatform(process.platform) }),
+    state: () => ({ locale: this.requireLocalization().language, platform: shellPlatform(process.platform), remoteEnabled: REMOTE }),
     // A popup's action brings the window forward before it runs.
     resolveToast: (id, action) => {
       if (action !== undefined) this.showWindow();
@@ -606,8 +772,6 @@ class DesktopApp {
   private readonly disposables: Disposable[] = [];
   // Settles once the window is gone and the requests its shell and overlay pages made were answered.
   private windowClosed: Promise<void> = Promise.resolve();
-  // The user agreed to kill the running terminals in the close or quit under way (releaseForClose).
-  private terminalsReleased = false;
   // The selected project; the selected chat belongs to it once one is selected.
   private selectedProjectKey: string | undefined;
   // ShellState.layoutRevision
@@ -642,7 +806,11 @@ class DesktopApp {
   });
   // Each project's stored sessions from its last catalog read, for titles outside a list request.
   private readonly catalogRows = new Map<string, readonly StoredSession[]>();
+  // by host id, what its chat pages were last sent: their banner's attention and update
+  private readonly sentHostAttention = new Map<string, string>();
   private readonly chatWork = new ChatWorkQueue();
+  // retention's unloads core has not answered: their chats are not shown meanwhile
+  private readonly unloads = new ChatUnloads<DesktopPanel>();
   // Worktree chats (slice 12a): core's registry as its worktrees mirror shows it, kept across a core restart.
   private readonly worktreeRecords = new WorktreeRecords(localRecord(path.join(DAMOCLES_HOME_DIR, 'worktrees')), (line) => log(line));
   // core's worktree git and registry work, on the running core
@@ -684,6 +852,32 @@ class DesktopApp {
   private terminalInputFocused = false;
   // A context-menu click or key in the shell page, which a shell menu with clipboard items takes.
   private readonly shellMenuGrant = new GestureGrant<true>();
+  // a host's watcher that ran out of inotify watches for a project: its notification and its card's notice
+  private readonly watchLimits = createWatchLimits({
+    projects: (authorityKey) => this.remoteProjects().filter((project) => project.authorityKey === authorityKey),
+    notify: (authorityKey, project) => {
+      const { t } = this.requireLocalization();
+      const message = t('{0} cannot watch every folder of {1} for changes: its inotify watch limit is used up. Damocles changes nothing; to raise the limit, run on {0}: {2}', this.hostName(authorityKey), project, WATCH_LIMIT_COMMAND);
+      this.notificationCenter.notice('warning', message, [], this.notificationHost(authorityKey)).catch(this.report('Showing the inotify watch limit'));
+    },
+    changed: (authorityKey) => {
+      const hostId = hostIdOfAuthority(authorityKey);
+      if (hostId !== undefined) this.remoteHosts?.hostChanged(hostId);
+    },
+    log: (line) => log(line),
+  });
+  // another machine running Damocles in a host's home: its notification and its card's notice
+  private readonly sharedHomes = createSharedHomes({
+    notify: (authorityKey, hosts) => this.notifySharedHome(authorityKey, hosts),
+    changed: (authorityKey) => {
+      const hostId = hostIdOfAuthority(authorityKey);
+      if (hostId !== undefined) this.remoteHosts?.hostChanged(hostId);
+    },
+    log: (line) => log(line),
+  });
+  // each authority's connection whose watch limit reports main hears
+  private readonly watchLimitConnections = new Map<string, { readonly connection: RemoteConnection; readonly subscription: Disposable }>();
+
   private readonly terminalPaste = new TerminalPasteGate({
     activeTerminal: () => this.terminals?.activeTerminal() ?? null,
     terminalFocused: () => this.focusedPart() === 'terminal',
@@ -773,6 +967,15 @@ class DesktopApp {
     installProcessLauncher(this.launcher);
     await mergeLoginShellEnv(processLauncher(), bootLog);
     await app.whenReady();
+    // macOS and Linux shut down: the quit is let finish, keeping the remote runs with no question
+    const shutdown = (event: Electron.Event): void => {
+      event.preventDefault();
+      this.quitUnattended('the system shuts down');
+    };
+    // Electron passes the event its documentation describes, which its typings leave out
+    const onShutdown = shutdown as () => void;
+    powerMonitor.on('shutdown', onShutdown);
+    this.disposables.push({ dispose: () => powerMonitor.removeListener('shutdown', onShutdown) });
     if (stalls) {
       const suspend = (): void => stalls.suspend();
       const resume = (): void => stalls.resume();
@@ -807,6 +1010,15 @@ class DesktopApp {
     });
 
     [this.hostStore, this.remoteState] = await Promise.all([HostStore.open(this.userDataDir, bootLog), RemoteState.open(this.userDataDir, bootLog)]);
+    const heldState = this.remoteState;
+    this.offlineQueue = new OfflineQueue({
+      stored: heldState.offlineQueue(),
+      save: (panelToken, panel) => heldState.setOfflineQueue(panelToken, panel),
+      canSave: () => heldState.unreadable() === undefined,
+      changed: (panelToken) => this.heldMessagesChanged(panelToken),
+      newId: () => randomUUID(),
+      report: this.report('Saving the held chat messages'),
+    });
     this.remoteTrust = createRemoteTrust({ store: this.hostStore, ask: this.ask, t: (message, ...args) => localization.t(message, ...args), log: bootLog });
     this.projectTrust = createProjectTrust({
       local: this.trust,
@@ -843,6 +1055,8 @@ class DesktopApp {
     this.userRelays = this.startUserRelays(this.platform, appPaths.resourceRoot);
     const worktrees = this.startWorktrees();
     this.authorities = this.startAuthorities(this.platform);
+    if (REMOTE) this.startRemoteHosts(this.hostStore);
+    this.startReconnects();
     this.workspaces = createWorkspaces(createLocalWorkspace({
       paths: this.platform.paths,
       watchers: this.platform.fileWatchers,
@@ -930,7 +1144,11 @@ class DesktopApp {
       log: bootLog,
       showLog: () => showLog(),
       load: loadAutoUpdater,
-      quit: () => this.lifecycle.quit(),
+      // the update's own quit keeps remote runs with no question (D3)
+      quit: () => {
+        this.closeRelease.keepRunsWithoutAsking();
+        return this.lifecycle.quit();
+      },
     });
     this.updates = updates;
     this.disposables.push(updates, updates.onDidChange((snapshot) => this.updateChanged(snapshot)));
@@ -960,6 +1178,8 @@ class DesktopApp {
           if (selected) this.selectionChanged(selected);
         }
         this.terminalLinks.clear();
+        // Open Chat in Project lists the projects in the sidebar order
+        this.installMenu();
         this.shellStateChanged();
         this.worktreesChanged();
       }),
@@ -990,7 +1210,7 @@ class DesktopApp {
           this.quickOpenIndex?.invalidate();
         }
         if (change.affects(SEARCH_EXCLUDE_SETTING)) this.quickOpenIndex?.invalidate();
-        if (change.affects('damocles.desktop.search') || change.affects('damocles.desktop.searchEditor') || change.affects('damocles.desktop.sidebar')) this.shellStateChanged();
+        if (change.affects('damocles.desktop.search') || change.affects('damocles.desktop.searchEditor') || change.affects('damocles.desktop.sidebar') || change.affects(PROJECTS_VIEW_SETTING)) this.shellStateChanged();
         if (change.affects('damocles.desktop.terminal')) this.terminals?.settingsChanged();
         if (change.affects(TERMINAL_PROFILES_SETTING)) this.terminalProfiles?.refresh().catch((err: unknown) => log(`[terminal] validating the user's profiles failed: ${errorText(err)}`));
       }),
@@ -1035,12 +1255,33 @@ class DesktopApp {
       this.windowLayout.clear();
       for (const chat of this.states.list()) this.states.delete(chat.panelId);
     }
-    // A remote project's tabs and terminals reopen through its daemon, so its connection is tried first; one that fails shows
-    // its project's red dot and leaves those tabs out.
+    // Only the hosts with restored tabs, terminals or chats, and the last selected project's, connect at launch, and none asks:
+    // an SSH host connects in the background and a prompt waits behind its sign-in banner, while its tabs show the offline
+    // placeholder until it connects. The loopback daemon, which never asks, is waited for, so its tabs reopen through it.
     const authorities = this.requireAuthorities();
-    await Promise.all([...new Set(this.remoteProjects().map((project) => project.authorityKey))].map((key) => authorities.connect(key).catch(this.report(`Connecting to ${key}`))));
+    const savedEditor = this.windowLayout.editor();
+    const backups = await this.backups.list();
+    const remoteState = this.requireRemoteState();
+    const savedRemoteSelection = remoteState.selected();
+    const launchSelection = savedRemoteSelection && this.remoteProject(savedRemoteSelection.projectKey) ? savedRemoteSelection : this.states.selected();
+    const launchAuthorities = authoritiesToConnectAtLaunch({
+      remoteProjectKeys: this.remoteProjects().map((project) => project.key),
+      editorAuthorities: [
+        ...savedEditor.tabs.flatMap((tab) => ('file' in tab ? [authorityKeyOfProject(tab.file.projectKey)] : [])),
+        ...backups.flatMap((backup) => (backup.target.kind === 'project' ? [authorityKeyOfProject(backup.target.projectKey)] : backup.target.kind === 'hostSettings' ? [backup.target.authority] : [])),
+      ],
+      terminalAuthorities: this.remoteProjects().map((project) => project.authorityKey).filter((key) => remoteState.terminals(key).length > 0),
+      chatAuthorities: this.remoteProjects().map((project) => project.authorityKey).filter((key) => remoteState.chats(key).length > 0),
+      selectedProjectKey: launchSelection?.projectKey,
+    });
+    for (const key of launchAuthorities) if (hostIdOfAuthority(key) !== undefined) this.connectAuthority(key);
+    await Promise.all(launchAuthorities.filter((key) => hostIdOfAuthority(key) === undefined).map((key) => authorities.connect(key).catch(this.report(`Connecting to ${key}`))));
     // Saved tabs come back with "Reopen where I left off"; a backup comes back either way, since it holds text the user never discarded.
-    await this.requireEditorPane().restore(this.windowLayout.editor(), await this.backups.list());
+    await this.requireEditorPane().restore(savedEditor, backups);
+    // a remote terminal whose host is not connected yet keeps its tab, reconnecting, until the host reattaches it
+    for (const key of new Set(this.remoteProjects().map((project) => project.authorityKey))) {
+      if (!authorities.connection(key)) this.requireTerminals().showReconnecting(remoteState.terminals(key));
+    }
     const launched = this.core.start();
     this.createWindow();
     this.tray = new AppTray(trayIcon(resourceRoot), {
@@ -1057,14 +1298,32 @@ class DesktopApp {
     }, localization);
     this.launchTabs = this.openTabsAtLaunch(launched);
     await this.launchTabs;
-    // a remote project's chats open once the window holds the local ones
+    // A saved selection on a remote project stays selected, its host connecting or offline; its saved chat shows once that
+    // core reopened it, or as its mirrored transcript while the host is away.
+    // read before the local tabs reopened, whose selection replaced it
+    const savedSelection = savedRemoteSelection;
+    const savedRemote = savedSelection === undefined ? undefined : this.remoteProject(savedSelection.projectKey);
+    if (savedSelection && savedRemote) {
+      if (savedSelection.sessionId !== undefined) this.lastChatByProject.set(savedRemote.key, savedSelection.sessionId);
+      await this.remoteSelection.select(savedRemote.key).catch(this.report('Selecting the saved remote project'));
+    }
+    // a remote project's chats open once the window holds the local ones; a host not connected shows their mirrored copies
     for (const authorityKey of authorities.connectedKeys()) this.connectRemoteCore(authorityKey);
+    for (const authorityKey of new Set(this.remoteProjects().map((project) => project.authorityKey))) {
+      if (!authorities.connection(authorityKey) && hostIdOfAuthority(authorityKey) !== undefined) {
+        this.transcripts.open(authorityKey, remoteState.chats(authorityKey), savedSelection?.sessionId).catch(this.report('Opening the mirrored transcripts'));
+      }
+    }
     // A quit past its last question tears down the core and the updater, and a version announced now would lose its notice.
     if (this.lifecycle.phase === 'disposing' || this.lifecycle.phase === 'done') return;
     await this.adoptOpenWorktrees().catch(this.report('Recording adopted worktrees'));
     this.requireWorktrees().scanAtStartup(this.desktopProjects().map((project) => project.fsPath)).catch(this.report('Scanning for leftover worktrees'));
 
     if (!git.available) void this.platform.notifications.warn(git.reason);
+    const hostsUnreadable = this.hostStore.unreadable();
+    if (hostsUnreadable !== undefined) void this.platform.notifications.warn(localization.t('Damocles can\'t read {0}, so remote hosts, projects and their order can\'t be changed until it is fixed and Damocles restarts: {1}', this.hostStore.filePath, hostsUnreadable));
+    const remoteStateUnreadable = remoteState.unreadable();
+    if (remoteStateUnreadable !== undefined) void this.platform.notifications.warn(localization.t('Damocles can\'t read {0}, so remote chats, terminals and messages typed while a host is away aren\'t kept until it is fixed and Damocles restarts: {1}', remoteState.filePath, remoteStateUnreadable));
     updates.start();
     announceInstalledVersion({
       version,
@@ -1403,6 +1662,7 @@ class DesktopApp {
   private createWindow(): void {
     this.states.unseal();
     this.windowLayout.unseal();
+    this.remoteState?.unseal();
     const placement = this.windowLayout.window();
     const restored = placement && clampToWorkAreas(placement.bounds, screen.getAllDisplays().map((display) => display.workArea));
     const bounds = restored ?? defaultWindowBounds(screen.getPrimaryDisplay().workArea);
@@ -1440,7 +1700,7 @@ class DesktopApp {
     const overlay = new OverlayHost({
       window,
       preloadPath: path.join(__dirname, 'preload-overlay.js'),
-      state: () => ({ locale: this.requireLocalization().language, platform: shellPlatform(process.platform) }),
+      state: () => ({ locale: this.requireLocalization().language, platform: shellPlatform(process.platform), remoteEnabled: REMOTE }),
       focusOutside: () => this.focusOn('chat'),
       // Activation is asynchronous on X11 and Electron focuses the window's own page as it activates, so the overlay takes
       // focus from the window's focus event.
@@ -1458,6 +1718,7 @@ class DesktopApp {
     });
     handleCenterChannels(overlay, this.notificationCenter);
     handleAboutChannels(overlay, this.aboutDeps());
+    if (REMOTE) registerConnectChannels(overlay, this.requireRemoteHosts());
     // the New menu's options and the Merge dialog's Generate answer for the request open in this overlay
     overlay.handleWhileOpen(OVERLAY_CHANNELS.worktreeOptions, () => overlay.isOpen('newChatMenu'), () => {
       const open = overlay.openRequestOf('newChatMenu');
@@ -1506,7 +1767,11 @@ class DesktopApp {
         preloadPath: path.join(__dirname, 'preload-panel.js'),
         resourceRoot,
         pageStrings: () => this.pageStrings(),
-        hostLabel: (authority) => ({ hostId: this.hostIdOf(authority), name: this.hostName(authority) }),
+        hostLabel: (authority) => this.panelHostLabel(authority),
+        onHostAction: (panel, action) => this.panelHostAction(panel, action),
+        connection: (panel) => this.panelConnection(panel),
+        onQueueAction: (panel, action) => this.heldMessageAction(panel, action),
+        takeCoreMessage: (panel, type, json) => this.takeHeldVerdict(panel, type, json),
         states: this.states,
         pages: browserTabs,
         log: (line) => log(line),
@@ -1533,6 +1798,7 @@ class DesktopApp {
       terminalProfiles: () => this.terminalProfileReport(),
       log: (line) => log(line),
       languageAtLaunch: this.languageSetting,
+      knownHost: (hostId) => this.hostStore?.host(hostId) !== undefined,
     });
     const shell: ShellHost = new ShellHost(window, this.shellActions(views, browserTabs, overlay, window), (line) => log(line), () => this.shellGaveUp(shell));
     const terminals = this.requireTerminals();
@@ -1557,7 +1823,7 @@ class DesktopApp {
     // Running terminals are asked about first (G22): that question changes nothing, so a cancel leaves the editors untouched.
     window.on('close', (event) => {
       const editor = this.editorPane;
-      if (!this.terminalsReleased || (editor && !editor.isReleased)) {
+      if (!this.closeRelease.terminalsAgreed || (editor && !editor.isReleased)) {
         event.preventDefault();
         this.lifecycle.release().then((close) => {
           if (close && !window.isDestroyed()) window.close();
@@ -1597,8 +1863,17 @@ class DesktopApp {
       this.tray?.relocalize();
       closed(Promise.all([shell.settled(), overlay.settled()]).then(() => undefined));
     });
-    window.on('show', () => this.tray?.relocalize());
-    window.on('hide', () => this.tray?.relocalize());
+    // latency pings run only while a shown window shows one of the host's projects
+    window.on('show', () => {
+      this.tray?.relocalize();
+      this.publishVisibleAuthorities();
+    });
+    window.on('hide', () => {
+      this.tray?.relocalize();
+      this.publishVisibleAuthorities();
+    });
+    window.on('minimize', () => this.publishVisibleAuthorities());
+    window.on('restore', () => this.publishVisibleAuthorities());
     onWindowActivated(window, () => {
       this.notificationCenter.windowFocused();
       this.flash('overlay', false);
@@ -1609,8 +1884,10 @@ class DesktopApp {
       else if (restore && !restore.isDestroyed() && this.windowView(restore)?.getVisible()) restore.focus();
     });
     onWindowDeactivated(window, () => this.activationFocus.deactivated());
+    // Windows ends the session: the remote runs are kept with no question
+    window.on('session-end', () => this.quitUnattended('the Windows session ends'));
     this.window = window;
-    this.terminalsReleased = false;
+    this.closeRelease.windowOpened();
     this.notificationCenter.windowOpened();
     this.taskbar.reapply();
     this.views = views;
@@ -1717,7 +1994,8 @@ class DesktopApp {
     const projectKey = this.projectOf(selected);
     const project = projectKey === undefined ? undefined : this.remoteProject(projectKey);
     const projectFile = project ? pathFor(project).join(project.fsPath, '.damocles', 'settings.json') : undefined;
-    return { host: { authority: selected.authority, name: this.hostName(selected.authority) }, ...(projectFile !== undefined ? { projectFile } : {}) };
+    const color = this.hostColor(selected.authority);
+    return { host: { authority: selected.authority, name: this.hostName(selected.authority), ...(color !== undefined ? { color } : {}) }, ...(projectFile !== undefined ? { projectFile } : {}) };
   }
 
   // Restore default layout: window-layout.json back to its defaults, applied to this window now.
@@ -1743,6 +2021,7 @@ class DesktopApp {
     this.heldPrompts.keep();
     this.states.seal();
     this.windowLayout.seal();
+    this.remoteState?.seal();
   }
 
   // Normal bounds, so a maximized window restores to the size it had before it was maximized.
@@ -1956,6 +2235,7 @@ class DesktopApp {
     const request = target ?? this.menuState().newChatInWorktree;
     if (!request) throw new Error(t('The selected chat does not work in a worktree.'));
     const authority = authorityKeyOfProject(request.projectKey);
+    if (this.refusesMirrored(authority)) return;
     await this.chatHost(authority).run('New Chat in This Worktree', async (core) => {
       const live = this.newChatInTarget(this.worktreeRegistry(authority)?.get(request.worktreeId));
       if (live?.projectKey !== request.projectKey) throw new Error(t('The worktree is no longer a worktree of this project.'));
@@ -2002,6 +2282,7 @@ class DesktopApp {
 
   // A worktree main lists for the project, never one another project or a renderer names by path.
   private async worktreeFinish(request: WorktreeFinishRequest): Promise<void> {
+    if (this.refusesMirrored(authorityKeyOfProject(request.projectKey))) return;
     const root = this.roots.resolve(rootKey({ projectKey: request.projectKey, worktreeId: request.worktreeId }));
     if (!root?.worktree) {
       void this.notifications.info(this.requireLocalization().t('This worktree no longer exists.'));
@@ -2185,10 +2466,23 @@ class DesktopApp {
   private showChat(panel: DesktopPanel, options: { readonly focus: ShowFocus }): void {
     const views = this.views;
     if (!views || panel.isDisposed) return;
+    const chatId = this.chatIdOf(panel);
+    const projectKey = this.projectOf(panel);
+    if (this.unloads.defer(panel, () => this.showAfterUnload(panel, chatId, projectKey, options))) return;
     views.show(panel.panelId, options);
     this.lastViewed.set(panel, ++this.viewCount);
     this.selectionChanged(panel);
     this.scheduleRetention();
+  }
+
+  // Core answered the unload a show waited for: the chat it kept shows, one it closed opens again from its session file.
+  private showAfterUnload(panel: DesktopPanel, chatId: string, projectKey: string | undefined, options: { readonly focus: ShowFocus }): void {
+    if (!panel.isDisposed) {
+      this.showChat(panel, options);
+      return;
+    }
+    if (!chatId.startsWith(NEW_CHAT_ID_PREFIX)) this.selectChat(chatId, panel.authority).catch(this.report('Selecting a chat core unloaded'));
+    else if (projectKey !== undefined) this.selectProject(projectKey).catch(this.report('Selecting the project of a chat core unloaded'));
   }
 
   // Records the selected chat's project, its place in the project memory and panels.json.
@@ -2205,8 +2499,9 @@ class DesktopApp {
     }
     this.lastChatByProject.set(projectKey, this.chatIdOf(panel));
     const sessionId = this.sessionIdOf(panel);
-    // panels.json names only local chats, which an older version reads
+    // panels.json names only local chats, which an older version reads; a remote selection is remote-state.json's
     if (panel.authority === 'local') this.states.select({ projectKey, panelId: panel.panelId, ...(sessionId !== undefined ? { sessionId } : {}) });
+    this.remoteState?.select(panel.authority === 'local' ? undefined : { projectKey, ...(sessionId !== undefined ? { sessionId } : {}) }).catch(this.report('Saving the remote selection'));
     const client = this.clientOf(panel);
     if (projectChanged && client && client.defaultTarget()?.key !== projectKey) {
       client.setDefaultFolder(projectKey).catch(this.report('Following the selected project'));
@@ -2221,7 +2516,41 @@ class DesktopApp {
 
   // authority: the core that named the chat, for a chat id that may not be loaded
   private selectChat(chatId: string, authority: string = this.chatAuthority(chatId)): Promise<SelectChatResult> {
+    // a loaded chat of a host with no connection is its transcript, which needs no core of that host
+    if (this.mirrorListed(authority)) return this.openMirroredChat(authority, chatId);
     return this.chatHost(authority).run('Select Chat', (core) => this.selectChatIn(core, chatId));
+  }
+
+  // A host connecting or offline: its projects' chats are the session mirror's, read-only.
+  private mirrorListed(authority: string): boolean {
+    return hostIdOfAuthority(authority) !== undefined && this.authorities?.connection(authority) === undefined;
+  }
+
+  // A chat of the offline chat list opens as its mirrored transcript; once the host connected meanwhile, its live chat opens.
+  private async openMirroredChat(authority: string, sessionId: string): Promise<SelectChatResult> {
+    const opened = await this.chatWork.run(sessionId, async (): Promise<SelectChatResult | undefined> => {
+      const view = this.loadedChat(sessionId) ?? (await this.transcripts.openChat(authority, sessionId));
+      if (!view) return undefined;
+      this.showChat(view, { focus: true });
+      return { ok: true };
+    });
+    if (opened) return opened;
+    // outside the chat's work queue, which the live selection takes itself
+    if (!this.mirrorListed(authority)) return this.chatHost(authority).run('Select Chat', (core) => this.selectChatIn(core, sessionId));
+    log(`[chats] the mirror of ${authority} holds no chat ${sessionId}`);
+    return this.missingChat();
+  }
+
+  // A remote project's chats while its host is connecting or offline: the session mirror's, read by this computer's core.
+  private async mirroredChats(projectKey: string, query: string, withNewChats: boolean): Promise<ShellChatList | undefined> {
+    const project = this.remoteProject(projectKey);
+    const hostId = project === undefined ? undefined : hostIdOfAuthority(project.authorityKey);
+    if (!project || hostId === undefined) return undefined;
+    const folder = this.sessionMirrorOf(hostId).projectFolder(project.folderKey);
+    const rows = await this.core.read('List Mirrored Chats', (core) => core.client.listMirroredSessions(hostId, folder, query));
+    // the title bar names a transcript by its row, until the host's own catalog lists the project
+    if (query === '' && this.mirrorListed(project.authorityKey)) this.catalogRows.set(projectKey, rows);
+    return this.chatList(projectKey, rows, withNewChats);
   }
 
   // The core a chat id names a chat of: a loaded chat's own, else the selected project's, whose list the shell shows.
@@ -2245,7 +2574,10 @@ class DesktopApp {
         return { ok: true };
       }
       const stored = await this.storedChat(core, chatId);
-      if (!stored) return this.missingChat();
+      if (!stored) {
+        log(`[chats] the chat lists of ${core.authority} hold no chat ${chatId}`);
+        return this.missingChat();
+      }
       // Another Damocles process holds the conversation: the selection stays where it is, and core offers a takeover.
       if (await core.client.leaseRefused(chatId, true)) return { ok: false, reason: 'leased' };
       const views = this.requireViews();
@@ -2253,6 +2585,17 @@ class DesktopApp {
       const host = views.create({ options: CHAT_PANEL, restore: { panelId: randomUUID(), state: { sessionId: chatId, workspaceFolderKey } }, ...(core.authority !== 'local' ? { authority: core.authority } : {}) });
       this.trackChat(host, stored.projectKey);
       this.showChat(host, { focus: true });
+      // a conversation another device has open on the host: this view joins its panel, which stays the one writer
+      if (core.rejoin) {
+        const rejoin = core.rejoin;
+        const joined = (async () => {
+          if (await rejoin(host, undefined, chatId)) return;
+          if (!host.isDisposed) await core.client.restoreRelayed(host.panelId);
+        })();
+        this.chatRestores.set(host, joined);
+        await joined;
+        return { ok: true };
+      }
       await this.restoreChat(core, host, stored.projectKey);
       return { ok: true };
     });
@@ -2310,6 +2653,7 @@ class DesktopApp {
   private listChats(projectKey: string): Promise<ShellChatList | undefined> {
     const authority = authorityKeyOfProject(projectKey);
     const unloaded = (): ShellChatList | undefined => (this.remoteProject(projectKey) ? this.chatList(projectKey, [], true) : undefined);
+    if (this.mirrorListed(authority)) return this.mirroredChats(projectKey, '', true);
     if (authority !== 'local' && !this.clientFor(authority)) return Promise.resolve(unloaded());
     const listed = this.chatHost(authority).read('List Chats', async (core) => (this.isKnownProject(projectKey, core) ? this.listChatsIn(core, projectKey) : undefined));
     return authority === 'local' ? listed : listed.catch((err: unknown) => this.whileRemoteGone(authority, err, unloaded));
@@ -2330,6 +2674,7 @@ class DesktopApp {
   private searchChats(projectKey: string, query: string): Promise<ShellChatList | undefined> {
     const authority = authorityKeyOfProject(projectKey);
     const unloaded = (): ShellChatList | undefined => (this.remoteProject(projectKey) ? this.chatList(projectKey, [], false) : undefined);
+    if (this.mirrorListed(authority)) return this.mirroredChats(projectKey, query, query.trim() === '');
     if (authority !== 'local' && !this.clientFor(authority)) return Promise.resolve(unloaded());
     const found = this.chatHost(authority).read('Search Chats', async (core) => {
       if (!this.isKnownProject(projectKey, core)) return undefined;
@@ -2341,6 +2686,7 @@ class DesktopApp {
 
   // Loaded chats the catalog does not list lead the list (last viewed first), then the stored sessions as the catalog orders them.
   private chatList(projectKey: string, rows: readonly StoredSession[], withNewChats: boolean): ShellChatList {
+    const mirrored = this.mirrorListed(authorityKeyOfProject(projectKey));
     const loaded = this.views?.chats().filter((chat) => this.projectOf(chat) === projectKey) ?? [];
     const bySession = new Map<string, DesktopPanel>();
     const listed = new Set(rows.map((row) => row.id));
@@ -2358,7 +2704,8 @@ class DesktopApp {
         timestamp: Date.now(),
         status: statusOf(this.activityOf(chat)),
         loaded: true,
-        ...this.rowWorktree(projectKey, chat, undefined),
+        ...this.rowWorktree(projectKey, chat, undefined, mirrored),
+        actions: chatActions(this.chatIdOf(chat), mirrored),
       }))
       : [];
     const tags = new Set<string>();
@@ -2373,16 +2720,19 @@ class DesktopApp {
         timestamp: row.timestamp,
         ...(tag !== undefined ? { tag } : {}),
         ...(row.model ? { model: { provider: row.model.provider, id: row.model.id } } : {}),
-        status: chat ? statusOf(this.activityOf(chat)) : 'idle',
+        // a chat another device runs on the host is shown by its core's activity, though this window has not loaded it
+        status: statusOf(chat ? this.activityOf(chat) : this.sessionActivity.get(`${authorityKeyOfProject(projectKey)}\n${row.id}`)),
         loaded: chat !== undefined,
-        ...this.rowWorktree(projectKey, chat, row),
+        ...this.rowWorktree(projectKey, chat, row, mirrored),
+        actions: chatActions(row.id, mirrored),
       });
     }
     return { projectKey, chats, tags: [...tags].sort((a, b) => a.localeCompare(b)).slice(0, MAX_OVERLAY_TAGS) };
   }
 
   // A Chats row's worktree badge and read-only state (AD12 Listing).
-  private rowWorktree(projectKey: string, chat: DesktopPanel | undefined, row: StoredSession | undefined): Pick<ShellChat, 'worktree' | 'readOnly'> {
+  // mirrored: the host has no connection, so the row offers no worktree work
+  private rowWorktree(projectKey: string, chat: DesktopPanel | undefined, row: StoredSession | undefined, mirrored: boolean): Pick<ShellChat, 'worktree' | 'readOnly'> {
     const authority = authorityKeyOfProject(projectKey);
     const registry = this.worktreeRegistry(authority) ?? this.remoteRecordsOf(authority);
     const event = chat ? this.worktreeEventOf(chat) : undefined;
@@ -2393,8 +2743,13 @@ class DesktopApp {
       },
       { registry, finish: (record) => this.finishStateOf(record), baseBranch: (record) => this.scm?.rootRepository(this.worktreeProjectKey(authority, record.projectPath))?.branch },
     );
-    const newChatIn = found.worktree?.status === 'live' ? this.newChatInTarget(found.worktree.worktreeId === undefined ? undefined : registry.get(found.worktree.worktreeId)) : undefined;
-    return { ...(found.worktree ? { worktree: { ...found.worktree, ...(newChatIn ? { newChatIn } : {}) } } : {}), readOnly: found.readOnly };
+    if (!found.worktree) return { readOnly: found.readOnly };
+    if (mirrored) {
+      const { finish: _finish, ...shown } = found.worktree;
+      return { worktree: shown, readOnly: found.readOnly };
+    }
+    const newChatIn = found.worktree.status === 'live' ? this.newChatInTarget(found.worktree.worktreeId === undefined ? undefined : registry.get(found.worktree.worktreeId)) : undefined;
+    return { worktree: { ...found.worktree, ...(newChatIn ? { newChatIn } : {}) }, readOnly: found.readOnly };
   }
 
   // Catalog results become the shell's; every refusal reaches the user as exactly one toast (core shows the lease one).
@@ -2414,21 +2769,42 @@ class DesktopApp {
     return { ok: false, reason: 'failed' };
   }
 
+  // The state chatList's row actions come from: a chat of a host with no connection is its read-only mirrored transcript.
+  private refusesMirrored(authority: string): boolean {
+    return refusesMirrored({
+      mirrored: (key) => this.mirrorListed(key),
+      hostName: (key) => this.hostName(key),
+      t: (message, ...args) => this.requireLocalization().t(message, ...args),
+      error: (message) => void this.notifications.error(message),
+    }, authority);
+  }
+
+  private mirroredChat(chatId: string): ChatMutationResult | undefined {
+    return this.refusesMirrored(this.chatAuthority(chatId)) ? { ok: false, reason: 'failed' } : undefined;
+  }
+
   private async renameChat(chatId: string, name: string): Promise<ChatMutationResult> {
+    const mirrored = this.mirroredChat(chatId);
+    if (mirrored) return mirrored;
     if (chatId.startsWith(NEW_CHAT_ID_PREFIX)) return this.loadedChat(chatId) ? this.unwrittenChat() : this.missingChat();
     return this.chatHost(this.chatAuthority(chatId)).run('Rename Chat', (core) => this.chatWork.run(chatId, async () => this.mutationResult(await core.client.renameSession(chatId, name), 'rename')));
   }
 
   private async tagChat(chatId: string, tag: string | null): Promise<ChatMutationResult> {
+    const mirrored = this.mirroredChat(chatId);
+    if (mirrored) return mirrored;
     if (chatId.startsWith(NEW_CHAT_ID_PREFIX)) return this.loadedChat(chatId) ? this.unwrittenChat() : this.missingChat();
     return this.chatHost(this.chatAuthority(chatId)).run('Tag Chat', (core) => this.chatWork.run(chatId, async () => this.mutationResult(await core.client.tagSession(chatId, tag), 'tag')));
   }
 
   // Core deletes lease first and detaches every holder; the detached chat then unloads like any other.
   private async deleteChat(chatId: string): Promise<ChatMutationResult> {
+    const mirrored = this.mirroredChat(chatId);
+    if (mirrored) return mirrored;
     if (chatId.startsWith(NEW_CHAT_ID_PREFIX)) {
       const chat = this.loadedChat(chatId);
       if (!chat) return this.missingChat();
+      this.forgetHeldMessages(chat);
       chat.close();
       return { ok: true };
     }
@@ -2441,6 +2817,7 @@ class DesktopApp {
       if (result.ok && holder && !holder.isDisposed) {
         const key = this.chatKeyOf(holder);
         if (key !== undefined) this.worktreeStates.delete(key);
+        this.forgetHeldMessages(holder);
         holder.close();
       }
       return { result, worktreeId };
@@ -2448,6 +2825,12 @@ class DesktopApp {
     // D33: deleting the last chat that uses a worktree asks whether to delete the worktree too
     if (deleted.result.ok && deleted.worktreeId !== undefined) this.worktreesOf(authority).afterChatDeleted(deleted.worktreeId).catch(this.report('Offering the worktree delete'));
     return deleted.result;
+  }
+
+  // A chat the user deletes takes its held messages with it; every other close keeps them for the chat's next page.
+  private forgetHeldMessages(chat: DesktopPanel): void {
+    const token = chat.heldToken;
+    if (!chat.offline && token !== undefined) this.offlineQueue?.forget(token);
   }
 
   // A chat left memory: by retention, Delete, or the window or core closing (which keep the saved selection).
@@ -2461,6 +2844,10 @@ class DesktopApp {
     const views = this.views;
     if (this.closingForWorktree.has(panel)) return;
     if (!views || views.retaining(panel) || this.lifecycle.phase !== 'running' || views.selected() !== undefined) return;
+    // the selected chat closed with its core (a restart, a halt) and reopens selected (reselectRemote, kept until its core
+    // reopened its chats); another chat closing meanwhile (a hidden local chat unloading) never moves the selection
+    const selectedAuthority = this.selectedProjectKey === undefined ? undefined : authorityKeyOfProject(this.selectedProjectKey);
+    if (selectedAuthority !== undefined && selectedAuthority !== panel.authority && (views.retainingAuthority(selectedAuthority) || this.reselectRemote.has(selectedAuthority))) return;
     const key = projectKey ?? this.client()?.defaultTarget()?.key;
     if (key !== undefined) this.selectProject(key).catch(this.report('Selecting a chat after a close'));
   }
@@ -2525,7 +2912,7 @@ class DesktopApp {
         if (chat.isDisposed || !this.chatsToUnload().includes(chat.panelId)) return;
         // core closes it only while it is still idle and, unloaded as empty, still empty
         log(`[chats] unloading chat ${chat.panelId}`);
-        if (!(await client.unload(chat.panelId, this.isEmpty(chat)))) log(`[chats] core kept chat ${chat.panelId} loaded`);
+        if (!(await this.unloads.unload(chat, () => client.unload(chat.panelId, this.isEmpty(chat))))) log(`[chats] core kept chat ${chat.panelId} loaded`);
       }).catch(this.report('Unloading a chat'));
     }
   }
@@ -2538,12 +2925,17 @@ class DesktopApp {
       // A chat whose session core is still setting up is neither idle nor empty yet.
       if (this.corePanelIdOf(chat) === undefined || this.openingInWorktree.has(chat)) return [];
       if (views.retaining(chat)) return [];
+      // an unload while the host is away would reach core only on its resume, after messages held meanwhile
+      if (chat.authority !== 'local' && !this.authorities?.connection(chat.authority)) return [];
       // held from the moment the settings start opening: a sign-in opens a remote chat's settings straight on the User tab
       const settingsHold = (chat === this.settingsLocalChat || this.settingsOpening.holds(chat)) && this.overlaySettings?.showing() === true;
+      const token = chat.heldToken;
+      const holdsMessages = token !== undefined && (this.offlineQueue?.queued(token).length ?? 0) > 0;
       return [{
         id: chat.panelId,
         selected: chat === selected || settingsHold,
         active: isActiveActivity(this.activityOf(chat)) || this.browserTabs?.holdsPages(chat) === true,
+        holdsMessages,
         restoring: this.isRestoring(chat),
         hasSession: this.sessionIdOf(chat) !== undefined,
         empty: this.isEmpty(chat),
@@ -2578,12 +2970,16 @@ class DesktopApp {
       const remote = this.remoteProject(key);
       const project = remote ?? this.projectByKey(key);
       const terminals = this.requireTerminals();
+      const idsIn = (projectKey: string): string[] => this.roots.all().filter((root) => root.root.projectKey === projectKey).flatMap((root) => terminals.idsIn(root.key));
+      // a remote project's terminals run on its host: the question offers to leave them running there
+      const hostTerminals = remote ? await this.askRemoteTerminals(remote) : undefined;
+      if (hostTerminals === 'cancel') return { ok: true };
       return await removeProject(key, {
         project: () => project,
         busy: (projectKey) => this.projectBusy(projectKey),
         waitingChats: (projectKey) => (remote ? [] : this.waitingChats(projectKey)),
         terminals: {
-          idsIn: (projectKey) => this.roots.all().filter((root) => root.root.projectKey === projectKey).flatMap((root) => terminals.idsIn(root.key)),
+          idsIn: (projectKey) => (remote ? [] : idsIn(projectKey)),
           setupTerminal: (worktreeId) => terminals.taskTerminal(setupTaskKey(worktreeId)),
           toConfirm: (ids) => terminals.toConfirm(ids),
           confirmKill: (ids) => terminals.confirmKill(ids),
@@ -2592,11 +2988,13 @@ class DesktopApp {
         discard: (chats) => this.discardWaitingChats(chats),
         remove: async () => {
           if (remote) {
+            this.releaseRemoteTerminals(remote, hostTerminals!);
             await this.hostStore?.removeProject(remote.authorityKey, remote.folderKey, remote.key);
             return;
           }
           this.unloadWorktreeChats(key);
           await this.projects.remove(project.fsPath);
+          await this.hostStore?.removeFromOrder(key);
         },
         t: (message, ...args) => this.requireLocalization().t(message, ...args),
       });
@@ -2604,6 +3002,40 @@ class DesktopApp {
       log(`[shell] removing a project failed: ${errorText(err)}`);
       return { ok: false, reason: errorMessage(err) };
     }
+  }
+
+  private releaseRemoteTerminals(project: RemoteProject, answer: { readonly end: boolean; readonly runs: readonly string[] }): void {
+    const terminals = this.requireTerminals();
+    const workspace = this.authorities?.connection(project.authorityKey)?.workspace;
+    releaseRemoteTerminals(answer, {
+      tabs: this.roots.all().filter((root) => root.root.projectKey === project.key).flatMap((root) => terminals.idsIn(root.key)),
+      endRun: workspace && ((runId) => workspace.emit('terminals.post', { request: { type: 'kill', id: runId } })),
+      kill: (id) => terminals.kill(id),
+      detach: (id) => terminals.detach(id),
+      log: (line) => log(line),
+    });
+  }
+
+  // Removing a remote project whose host runs terminals of it asks "End its N terminals on prod-1?" (Cancel focused): Keep
+  // running closes their tabs and leaves them on the host, End terminals ends them there. A host that is not connected keeps
+  // them, and nothing is asked.
+  private async askRemoteTerminals(project: RemoteProject): Promise<'cancel' | { readonly end: boolean; readonly runs: readonly string[] }> {
+    const control = this.authorities?.connection(project.authorityKey)?.control;
+    if (!control) return { end: false, runs: [] };
+    const { runs } = await control.request('listRuns', {});
+    const ids = runs.filter((run) => run.kind === 'terminal' && run.projectKey === project.folderKey).map((run) => run.id);
+    if (ids.length === 0) return { end: false, runs: [] };
+    const { t } = this.requireLocalization();
+    const host = this.hostName(project.authorityKey);
+    const answer = await this.ask({
+      severity: 'danger',
+      message: ids.length === 1 ? t('End its terminal on {0}?', host) : t('End its {0} terminals on {1}?', String(ids.length), host),
+      detail: t('Terminals left running keep running on {0} after {1} is removed. The host card lists them.', host, visibleText(project.name)),
+      actions: [t('Keep running'), t('End terminals')],
+      cancelLabel: t('Cancel'),
+    });
+    if (answer === undefined) return 'cancel';
+    return { end: answer === 1, runs: ids };
   }
 
   // D33's busy rule over the project's loaded chats, those working in its owned folders (worktrees) included. A halted
@@ -2694,6 +3126,42 @@ class DesktopApp {
       ),
       openAppMenu: (anchor) => popupApplicationMenu(window, anchor),
       toggleTheme: () => { this.toggleTheme().catch(this.shellFailure('Toggle Theme', 'Damocles could not change the theme: {0}')); },
+      renameHost: reportFailure(
+        (hostId: string, name: string) => this.remoteHostsOrRefuse().rename(hostId, name),
+        // null is the one report: the shell's rename field says the name was not saved
+        (err) => log(`[shell] Rename Host failed: ${errorText(err)}`),
+        null,
+      ),
+      renameHostOnCard: reportFailure((hostId: string) => this.remoteHostsOrRefuse().openConnect(hostId, 'rename'), this.shellFailure('Rename Host', 'Damocles could not open the Connect dialog: {0}')),
+      openConnect: reportFailure(async () => this.openConnect(undefined), this.shellFailure('Connect to Host', 'Damocles could not open the Connect dialog: {0}')),
+      openHostFolder: reportFailure(async (hostId: string) => this.openConnect(hostId), this.shellFailure('Open Folder on Host', 'Damocles could not open the Connect dialog: {0}')),
+      setProjectsView: reportFailure((view: ProjectsView) => this.requirePlatform().settings.update(PROJECTS_VIEW_SETTING, view, 'user'), this.shellFailure('Projects View', 'Damocles could not change the Projects section: {0}')),
+      setProjectGroupCollapsed: reportFailure(
+        (group: string, collapsed: boolean) => this.requireHostStore().setGroupCollapsed(group, collapsed, () => this.shownGroups()),
+        this.shellFailure('Collapse Project Group', 'Damocles could not change the Projects section: {0}'),
+      ),
+      reorderProjects: reportFailure(
+        (order: readonly string[]) => this.requireHostStore().setOrder(order, () => this.listedProjectKeys()),
+        // false is the one report: the shell's inline alert says the order was not saved
+        (err) => log(`[shell] Reorder Projects failed: ${errorText(err)}`),
+        false,
+      ),
+      reorderProjectGroups: reportFailure(
+        (groupOrder: readonly string[]) => this.requireHostStore().setGroupOrder(groupOrder, () => this.shownGroups()),
+        (err) => log(`[shell] Reorder Project Groups failed: ${errorText(err)}`),
+        false,
+      ),
+      openAsProject: reportFailure(
+        (request: OpenAsProjectRequest): Promise<OpenAsProjectResult | null> => openAsProject(this.projectOpening(), request),
+        this.shellFailure('Open as Project', 'Damocles could not open the folder as a project: {0}'),
+        null,
+      ),
+      reconnectHost: reportFailure(async (hostId: string) => this.reconnectHost(hostId), this.shellFailure('Reconnect', 'Damocles could not reconnect to the host: {0}')),
+      // the Connect dialog on the host's attempt, its waiting prompt included
+      signInHost: reportFailure(async (hostId: string) => this.openConnect(hostId), this.shellFailure('Connect to Host', 'Damocles could not open the Connect dialog: {0}')),
+      showHostLog: reportFailure((hostId: string) => this.remoteHostsOrRefuse().showLog(hostId), this.shellFailure('Show log', 'Damocles could not show the host\'s log: {0}')),
+      switchHostWhenIdle: reportFailure(async (hostId: string) => this.switchHostWhenIdle(hostId), this.shellFailure('Switch when they finish', 'Damocles could not switch the host to this version: {0}')),
+      switchHostNow: reportFailure(async (hostId: string) => this.switchHostNow(hostId), this.shellFailure('Switch now', 'Damocles could not switch the host to this version: {0}'), false),
       restartEngine: (authority) => this.restartEngine(authority ?? 'local'),
       toggleSidebar: () => this.toggleSidebar(),
       showSidebar: () => this.showSidebar(),
@@ -2784,6 +3252,8 @@ class DesktopApp {
         formatFailed: (failure) => this.requireFormatter().builtinFailed(failure.documentId, failure.reason, failure.timedOut, failure.message),
         selection: (documentId, range) => this.requireEditorPane().select(documentId, range),
         mention: (tabId) => this.requireEditorPane().mention(tabId),
+        uploadMergeInputs: (tabId) => this.requireEditorPane().uploadMergeInputs(tabId),
+        completeUploadMerge: (tabId) => this.requireEditorPane().completeUploadMerge(tabId),
         setFocusOverlay: (open) => views.setFocusOverlay(open),
         flushed: (requestId) => this.requireEditorPane().flushed(requestId),
       },
@@ -2845,7 +3315,8 @@ class DesktopApp {
           const terminals = this.requireTerminals();
           if (!terminals.has(request.id)) throw new Error('Unknown terminal');
           const base = terminals.linkBase(request.id);
-          return base ? this.terminalLinks.resolveAll(request.paths, base) : Promise.resolve(request.paths.map(() => null));
+          // a host that is away has no file to link, and its answer is never cached for when it is back
+          return base && this.linksReachable(base) ? this.terminalLinks.resolveAll(request.paths, base) : Promise.resolve(request.paths.map(() => null));
         },
         openLink: (request) => { this.openTerminalLink(request).catch(this.report('Open Link')); },
         rename: (id, name) => this.requireTerminals().rename(id, name),
@@ -2907,6 +3378,10 @@ class DesktopApp {
       log: report,
       pickSavePath: (defaultPath) => this.pickSavePath(defaultPath),
       backups: this.backups,
+      hostLabel: (authority) => ({ hostId: this.hostIdOf(authority), name: this.hostName(authority) }),
+      uploadsConflicted: (authority, conflicted) => this.uploadsConflicted(authority, conflicted),
+      warn: (message) => void this.notifications.warn(message),
+      reopen: (document) => this.requireEditorPane().showHeld(document),
       settings: {
         locate: (scope) => {
           const located = locateSettingsFile(platform, scope);
@@ -2980,10 +3455,11 @@ class DesktopApp {
       mention: (target) => this.mentionInSelectedChat(target),
       browser: () => this.browserTabs,
       warn: (message) => void this.notifications.warn(message),
+      hostName: (authority) => this.hostName(authority),
       searchEditorClosed: (documentId) => this.search?.searchEditorClosed(documentId),
       reviewClosed: (reviewId) => this.chatReviews.reviewClosed(reviewId),
-      gitOf: (absolutePath) => this.scm?.gitOf(absolutePath),
-      openChanges: (absolutePath) => this.requireScm().openChangesOf(absolutePath),
+      gitOf: (location) => this.scm?.gitOf(location),
+      openChanges: (location) => this.requireScm().openChangesOf(location),
     });
     // D29's errors and timeouts; Show Output opens it as a log tab (D36).
     const formatLog = this.logSinks.create('Format');
@@ -3058,6 +3534,7 @@ class DesktopApp {
       service: scmClient,
       remoteFileRef: (authority, targetPath) => remoteFileRef(this.remoteFileRoots(authority), targetPath),
       hostName: (authority) => this.hostName(authority),
+      authorityOs: (authority) => this.authorityOs(authority),
       settings: platform.settings,
       documents,
       projects: () => this.scmRoots(),
@@ -3071,13 +3548,24 @@ class DesktopApp {
         if (authority === 'local') this.openLogTab(path.join(this.logsDir, logFileName('Git')), false);
         else this.showRemoteLog(authority, logFileName('Git'), false).catch(this.report('Show Git Output'));
       },
+      // the host's OS and switch from this computer's host store; forwarding is offered for a POSIX host only
+      agentForwarding: (authority) => {
+        const hostId = hostIdOfAuthority(authority);
+        const record = hostId === undefined ? undefined : this.hostStore?.host(hostId);
+        const os = record && hostOs(record);
+        if (!record || os === undefined || os === 'win32' || record.settings.forwardAgent === true) return undefined;
+        return { hostName: record.name, enable: () => this.requireRemoteHosts().setSetting(record.id, { key: 'forwardAgent', value: true }) };
+      },
       copy: (text) => platform.clipboard.writeText(text),
       reveal: (absolutePath) => platform.shell.revealPath(absolutePath),
       openExternal: async (url) => {
         if (!(await platform.shell.openExternal(url))) throw new Error('The link could not be opened');
       },
       pickFolder: (defaultPath, title, buttonLabel) => platform.dialogs.pickFolder({ title: title ?? t('Open Repository'), defaultPath, ...(buttonLabel !== undefined ? { buttonLabel } : {}) }),
-      addProject: (folder) => this.addProjectAt(folder),
+      addProject: async (authority, folder) => {
+        if (authority === 'local') await this.addProjectAt(folder);
+        else await this.addRemoteProject(authority, folder);
+      },
       selectProject: (projectKey) => this.selectProject(projectKey),
       worktrees: this.scmWorktreeDeps(),
       gitFound: git.available,
@@ -3113,7 +3601,7 @@ class DesktopApp {
     this.disposables.push(scm, scmClient);
 
     this.palette = new CommandPalette({
-      commands: () => desktopCommands(this.projects.folders(), this.menuActions(), process.platform),
+      commands: () => desktopCommands(this.orderedLocalFolders(), this.menuActions(), process.platform),
       l10n: localization,
       english: createDesktopLocalizationService(resourceRoot, 'en', report),
       platform: process.platform,
@@ -3143,6 +3631,8 @@ class DesktopApp {
         // the paths core's recursive watch of folder reported created, starting it on the first call
         watchCoreProbe: (folder: string) => this.core.run('e2e', (core) => core.client.e2eWatchProbe(folder)),
         stopCoreWatchProbe: (folder: string) => this.core.run('e2e', (core) => core.client.e2eStopWatchProbe(folder)),
+        // this computer's core signs in to the stub OAuth account; remote chats get its tokens through the broker
+        stubOAuth: (account: string, expiresInMs: number, offline?: boolean) => this.core.run('e2e', (core) => core.client.e2eStubOAuth(account, expiresInMs, offline)),
         notifications: platform.notifications,
         secrets: platform.secrets,
         // requests of the active page's browser context whose URL matches pattern load from toHost instead; routed lists them
@@ -3180,14 +3670,114 @@ class DesktopApp {
           };
           return hold;
         },
+        // Saved SSH hosts: seeding without the Connect dialog, a host's live control channel (the teardown's shutdownNow),
+        // its attempt and its logs.
+        remote: {
+          // the no-dialog keep path an OS shutdown or an update's quit takes, then the quit
+          simulateShutdown: (kind: 'os' | 'quitAndInstall') => this.quitUnattended(kind === 'os' ? 'the e2e hooks shut the system down' : 'the e2e hooks install an update'),
+          hosts: () => this.requireHostStore().hosts().map((record) => ({
+            hostId: record.id,
+            name: record.name,
+            ...(record.destination.kind === 'alias' ? { alias: record.destination.alias } : { host: record.destination.host, ...(record.destination.user !== undefined ? { user: record.destination.user } : {}), ...(record.destination.port !== undefined ? { port: record.destination.port } : {}) }),
+            authorityKey: sshAuthorityKey(record.id),
+            connection: this.requireRemoteHosts().connectionOf(record.id),
+          })),
+          state: (hostId: string) => this.requireRemoteHosts().connectionOf(hostId),
+          connectStep: (hostId: string) => this.requireRemoteConnections().attempt(hostId),
+          // shutdownNow settles once the daemon ended this connection, so nothing the spec does next reaches a daemon stopping
+          control: async (hostId: string, command: keyof ClientToControl['requests'], params: object) => {
+            if (command === 'shutdownNow') return this.shutDownDaemon(sshAuthorityKey(hostId));
+            const connection = this.requireConnection(sshAuthorityKey(hostId));
+            return (connection.control as unknown as { request(name: string, params: object): Promise<unknown> }).request(command, params);
+          },
+          dropConnection: (hostId: string) => this.authorities?.connection(sshAuthorityKey(hostId))?.close('the e2e hooks dropped it'),
+          // the transport alone goes, as a network drop does; hold: every attempt's transport fails until releaseTransport
+          cutTransport: (hostId: string, options?: { readonly hold?: boolean }) => this.cutTransport(sshAuthorityKey(hostId), options?.hold === true),
+          releaseTransport: (hostId: string) => this.heldTransports.delete(sshAuthorityKey(hostId)),
+          reconnectPhase: (authorityKey: string) => this.reconnector?.phase(authorityKey),
+          reconnectNow: (authorityKey: string) => this.reconnector?.reconnectNow(authorityKey),
+          latency: (authorityKey: string) => this.latency?.latency(authorityKey),
+          // the picker a remote core's dialogs.pickFile or dialogs.pickFolder opens, answered as core would be
+          pick: (authorityKey: string, kind: 'file' | 'folder', options: { readonly title?: string; readonly defaultPath?: string; readonly buttonLabel?: string }) => {
+            const { dialogs } = this.remoteServicesOf(authorityKey).platform;
+            return kind === 'file' ? dialogs.pickFile(options) : dialogs.pickFolder(options);
+          },
+          addHost: async (target: { readonly alias: string; readonly name: string } | { readonly input: string; readonly name: string }) => {
+            const destination = 'alias' in target ? { kind: 'alias' as const, alias: target.alias } : (() => {
+              const parsed = parseSshCommand(target.input);
+              if (!parsed.ok) throw new Error(`refused: ${parsed.refused}`);
+              return parsed.destination;
+            })();
+            const added = await this.requireHostStore().addHost({ destination, name: target.name });
+            if (!added.ok) throw new Error(`name refused: ${added.check.ok ? '' : added.check.reason}`);
+            return added.host.id;
+          },
+          // connects with no prompt answered (a prompt fails the attempt), then adds the folder and selects it
+          openFolder: async (hostId: string, folder: string, trust: boolean) => {
+            const connections = this.requireRemoteConnections();
+            connections.connect(hostId, false);
+            const authority = sshAuthorityKey(hostId);
+            for (;;) {
+              const attempt = connections.attempt(hostId);
+              if (attempt?.prompt) {
+                connections.cancel(attempt.attemptId);
+                throw new Error(`connecting asked: ${attempt.prompt.kind}`);
+              }
+              if (attempt?.step === 'failed') throw new Error(`connecting failed: ${attempt.failure?.code ?? 'unknown'}`);
+              if (attempt?.step === 'connected' && this.authorities?.connection(authority)) break;
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+            if (trust) {
+              const folderKey = await this.requireConnection(authority).workspace.request('files.folderKey', { path: folder });
+              await this.requireHostStore().grantTrust(authority, folderKey);
+            }
+            return this.addRemoteProject(authority, folder);
+          },
+          setInstallFolder: (hostId: string, folder: string | null) => this.requireRemoteHosts().setInstallFolder(hostId, folder),
+          // a project file's bytes through its host's workspace over the wire, for the binary transparency checks
+          readBytes: async (projectKey: string, relativePath: string) => {
+            const project = this.remoteProject(projectKey);
+            if (!project) throw new Error(`${projectKey} is not a remote project`);
+            const files = this.remoteWorkspace(project.authorityKey).files;
+            const confined = await files.confineExisting(project, relativePath);
+            if (!confined.ok) throw new Error(`${relativePath} is ${confined.reason}`);
+            const read = await files.read(confined.path, 64 * 1024 * 1024);
+            if (read.kind !== 'bytes') throw new Error(`${relativePath} reads as ${read.kind}`);
+            return read.bytes.toString('base64');
+          },
+          writeBytes: async (projectKey: string, relativePath: string, base64: string) => {
+            const project = this.remoteProject(projectKey);
+            if (!project) throw new Error(`${projectKey} is not a remote project`);
+            const files = this.remoteWorkspace(project.authorityKey).files;
+            const confined = await files.confineMissing(project, relativePath);
+            if (!confined.ok) throw new Error(`${relativePath} is ${confined.reason}`);
+            await files.writeInPlace(project, { path: confined.path, projectKey, relativePath }, Buffer.from(base64, 'base64'));
+          },
+          logs: async (hostId: string) => {
+            const connection = this.authorities?.connection(sshAuthorityKey(hostId));
+            let daemon = '';
+            if (connection) {
+              const { logs } = await connection.control.request('logs.list', {});
+              const entry = logs.find((candidate) => candidate.name === DAEMON_LOG);
+              if (entry) {
+                const length = Math.min(entry.size, MAX_LOG_READ_BYTES);
+                daemon = Buffer.from((await connection.control.request('logs.read', { name: DAEMON_LOG, offset: entry.size - length, length })).bytes).toString('utf8');
+              }
+            }
+            return { daemon, bridgeStderr: this.requireRemoteConnections().stderrTail(hostId) };
+          },
+        },
         // The loopback daemon: open a folder through it without the native picker, and its frozen control commands.
         loopback: {
           openFolder: (folder: string) => this.addLoopbackProject(folder),
           state: () => this.authorities?.state('loopback') ?? 'offline',
           listRuns: () => this.loopbackControl().request('listRuns', {}),
-          // ends the connection as a network drop would; selecting a loopback project connects again
+          // ends the connection for good; selecting a loopback project connects again
           dropConnection: () => this.authorities?.connection('loopback')?.close('the e2e hooks dropped it'),
-          shutdownNow: () => this.loopbackControl().request('shutdownNow', {}),
+          // the transport alone goes, as a network drop does; hold: every attempt's transport fails until releaseTransport
+          cutTransport: (options?: { readonly hold?: boolean }) => this.cutTransport('loopback', options?.hold === true),
+          releaseTransport: () => this.heldTransports.delete('loopback'),
+          shutdownNow: () => this.shutDownDaemon('loopback'),
           coreState: () => this.loopbackControl().request('coreState', {}),
           // the generation the open settings modal's messages carry, which a spec sends a settings request with
           settingsGeneration: () => this.overlaySettings?.attachedGeneration(),
@@ -3332,33 +3922,45 @@ class DesktopApp {
     });
   }
 
-  // The remote projects this run shows: the loopback authority's while LOOPBACK holds.
+  // The remote projects this run shows: the loopback authority's while LOOPBACK holds, and each saved SSH host's while the
+  // remote gate is open.
   private remoteProjects(): RemoteProject[] {
-    if (!LOOPBACK || !this.hostStore) return [];
-    return this.hostStore.projects().filter((entry) => entry.authorityKey === 'loopback').map(({ authorityKey, project }) => ({
-      key: projectKeyOf({ kind: 'loopback' }, project.folderKey),
-      fsPath: project.path,
-      name: pathFor(project).basename(project.path) || project.path,
-      authorityKey,
-      folderKey: project.folderKey,
-      os: project.os,
-    }));
+    const store = this.hostStore;
+    if (!store) return [];
+    return store.projects().flatMap(({ authorityKey, project }): RemoteProject[] => {
+      const hostId = hostIdOfAuthority(authorityKey);
+      const authority = authorityKey === 'loopback' && LOOPBACK ? { kind: 'loopback' as const } : REMOTE && hostId !== undefined && store.host(hostId) ? { kind: 'ssh' as const, hostId } : undefined;
+      if (!authority) return [];
+      return [{
+        key: projectKeyOf(authority, project.folderKey),
+        fsPath: project.path,
+        name: pathFor(project).basename(project.path) || project.path,
+        authorityKey,
+        folderKey: project.folderKey,
+        os: project.os,
+      }];
+    });
   }
 
   private remoteProject(key: string): RemoteProject | undefined {
     return this.remoteProjects().find((project) => project.key === key);
   }
 
-  // Files, the editor, Search, Quick Open, the formatter and terminals: the local projects, then the remote ones.
+  // Files, the editor, Search, Quick Open, the formatter and terminals: every shown project, in the sidebar order.
   private workspaceProjects(): readonly Project[] {
-    return [...this.desktopProjects(), ...this.remoteProjects()];
+    const byKey = new Map([...this.desktopProjects(), ...this.remoteProjects()].map((project) => [project.key, project]));
+    return (this.hostStore?.order([...byKey.keys()]) ?? [...byKey.keys()]).map((key) => byKey.get(key)!);
   }
 
-  // The daemons this app reaches: only the loopback one, started over stdio through the launcher with a home in userData.
+  // The daemons this app reaches: the loopback one, started over stdio through the launcher with a home in userData, and each
+  // saved SSH host's through its ssh bridge.
   private startAuthorities(platform: DesktopPlatform): Authorities {
     const settings = platform.settings;
     return new Authorities({
       transport: async (authorityKey) => {
+        if (this.heldTransports.has(authorityKey)) throw new Error('the e2e hooks hold the transport down');
+        const hostId = hostIdOfAuthority(authorityKey);
+        if (REMOTE && hostId !== undefined) return this.requireRemoteConnections().transport(hostId);
         if (authorityKey !== 'loopback') throw new Error(`No transport reaches ${authorityKey}`);
         const serverPackage = process.env['DAMOCLES_LOOPBACK_PACKAGE'];
         return startLoopbackTransport({
@@ -3371,18 +3973,46 @@ class DesktopApp {
           log: (line) => log(line),
         });
       },
-      appVersion: platform.appInfo.version,
+      appVersion: REMOTE_E2E.appVersion ?? platform.appInfo.version,
       clientId: this.clientId(),
-      deviceName: os.hostname(),
+      deviceName: REMOTE_E2E.deviceName ?? os.hostname(),
+      ...(REMOTE_E2E.protocolVersion !== undefined ? { protocolVersion: REMOTE_E2E.protocolVersion } : {}),
+      otherProtocol: (authorityKey, daemon) => this.followOtherProtocol(authorityKey, daemon),
       terminalIdleDays: () => {
         const value = settings.get<unknown>(REMOTE_TERMINAL_IDLE_DAYS_SETTING);
         return (isDesktopSettingValue(REMOTE_TERMINAL_IDLE_DAYS_SETTING, value) ? value : DESKTOP_CONFIGURATION[REMOTE_TERMINAL_IDLE_DAYS_SETTING]!.default) as number;
       },
-      projectOfCwd: (authorityKey, cwd) => this.remoteProjects().find((project) => project.authorityKey === authorityKey && isInsideFolder(project, project.fsPath, cwd))?.folderKey,
+      projectOfCwd: (authorityKey, cwd) => projectOfCwd(this.remoteFileRoots(authorityKey), cwd),
       changed: (authorityKey) => this.authorityChanged(authorityKey),
+      attached: (authorityKey, connection) => {
+        const hostId = hostIdOfAuthority(authorityKey);
+        if (hostId !== undefined) this.hostConnected(hostId, connection);
+      },
       notConnected: (authorityKey) => this.notConnected(authorityKey),
       log: (line) => log(line),
     });
+  }
+
+  // A shutdown this client asked for is no outage: once the daemon ended the connection the authority is disconnected, as
+  // Disconnect Host leaves it, so nothing reconnects (and so starts a daemon again) until the user connects.
+  private async shutDownDaemon(authorityKey: string): Promise<void> {
+    await shutDownNow(this.requireConnection(authorityKey), (line) => log(line));
+    this.disconnectAuthority(authorityKey);
+  }
+
+  // Disconnect Host and what leaves an authority as it does: the reconnect loop stops, an attempt in flight ends and the
+  // connection closes, so nothing connects until the user does. Settles once the attempt it ended settled.
+  private disconnectAuthority(authorityKey: string): Promise<void> {
+    this.reconnector?.disconnected(authorityKey);
+    const hostId = hostIdOfAuthority(authorityKey);
+    const attemptEnded = hostId === undefined ? Promise.resolve() : (this.remoteConnections?.cancelHost(hostId) ?? Promise.resolve());
+    this.authorities?.disconnect(authorityKey);
+    return attemptEnded;
+  }
+
+  private cutTransport(authorityKey: string, hold: boolean): void {
+    if (hold) this.heldTransports.add(authorityKey);
+    this.requireAuthorities().cutTransport(authorityKey);
   }
 
   private notConnected(authorityKey: string): NotConnectedError {
@@ -3413,6 +4043,12 @@ class DesktopApp {
     const connection = this.authorities?.connection(authorityKey);
     if (!connection || !this.views || this.lifecycle.phase !== 'running') return;
     this.remoteCoreOf(authorityKey).connected(connection);
+    // the host card and the connect timeline name the other devices attached to the daemon
+    const hostId = hostIdOfAuthority(authorityKey);
+    if (hostId !== undefined && !this.devicesWatched.has(connection)) {
+      this.devicesWatched.add(connection);
+      connection.onDevices(() => this.remoteHosts?.hostChanged(hostId));
+    }
   }
 
   private remoteCoreOf(authority: string): RemoteCore {
@@ -3439,6 +4075,9 @@ class DesktopApp {
         this.shellStateChanged();
         this.refreshMenuState();
       },
+      keptChats: () => this.requireRemoteState().chats(authority).length,
+      reattached: (restarted) => this.reconnector?.attached({ authorityKey: authority, how: 'attached', ...(restarted ? { restarted } : {}) }),
+      coreEnded: () => this.offlineQueue?.connectionEnded(authority),
       drainTimeoutMs: CLOSE_TIMEOUT_MS,
       log: (line) => log(line),
     });
@@ -3459,9 +4098,14 @@ class DesktopApp {
         this.refreshScmRoots();
         this.shellStateChanged();
       }),
-      client.onActivity((panelId, activity) => this.onChatActivity(key(panelId), activity)),
+      client.onActivity((panelId, activity, sessionId) => {
+        this.onChatActivity(key(panelId), activity);
+        for (const listener of [...this.remoteStatusListeners]) listener(authority, panelId, closeStatusOf(activity));
+        if (sessionId !== undefined) this.hostSessionActivity(authority, sessionId, activity);
+      }),
       client.onChatChanges((panelId, totals, generation) => this.chatReviews.chatChanged(key(panelId), totals, generation)),
       client.onTurnSettled((panelId, outcome) => {
+        this.remoteSessionsChanged(authority);
         const panel = this.panelOfCore(key(panelId));
         if (panel) this.chatsChanged(this.projectOf(panel));
         this.notificationCenter.turnSettled(key(panelId), outcome);
@@ -3491,6 +4135,7 @@ class DesktopApp {
       {
         dispose: () => {
           this.forgetChatsOf(authority);
+          for (const sessionKey of [...this.sessionActivity.keys()]) if (sessionKey.startsWith(`${authority}\n`)) this.sessionActivity.delete(sessionKey);
           this.overlaySettings?.coreEnded(client);
         },
       },
@@ -3503,7 +4148,7 @@ class DesktopApp {
     const views = this.requireViews();
     for (const record of this.requireRemoteState().chats(core.authority)) {
       if (this.remoteChatViews(core.authority).some((view) => view.panelToken === record.panelToken)) continue;
-      const host = views.create({ options: CHAT_PANEL, restore: { panelId: randomUUID(), state: { sessionId: record.sessionId, panelToken: record.panelToken } }, authority: core.authority });
+      const host = views.create({ options: CHAT_PANEL, restore: { panelId: randomUUID(), state: { ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}), panelToken: record.panelToken } }, authority: core.authority });
       this.trackChat(host, this.defaultProjectKey(core));
       this.lastViewed.set(host, ++this.viewCount);
       if (this.reselectRemote.get(core.authority) === record.panelToken && !this.views?.selected()) this.showChat(host, { focus: 'whenReady' });
@@ -3513,7 +4158,7 @@ class DesktopApp {
           await core.client.restoreChat(host, undefined, permissions);
           return;
         }
-        if (await core.rejoin(host, record.panelToken)) return;
+        if (await core.rejoin(host, record.panelToken, record.sessionId)) return;
         if (!host.isDisposed) await core.client.restoreRelayed(host.panelId, permissions);
       })();
       this.chatRestores.set(host, restore);
@@ -3526,8 +4171,8 @@ class DesktopApp {
     await this.remoteSelection.coreOpened(core).catch(this.report('Opening the selected project\'s chat'));
   }
 
-  // remote-state.json's chats for the authority: each open chat with a conversation, under the epoch they are open in. A
-  // quit, disconnect or engine restart closes them with their records kept.
+  // remote-state.json's chats for the authority: each open chat with a conversation or held messages, under the epoch they are
+  // open in. A quit, disconnect or engine restart closes them with their records kept.
   private saveRemoteChats(authority: string): void {
     const views = this.views;
     const state = this.remoteState;
@@ -3536,7 +4181,10 @@ class DesktopApp {
     const records: RemoteChatRecord[] = this.remoteChatViews(authority).flatMap((view) => {
       const sessionId = this.sessionIdOf(view);
       const panelToken = view.panelToken;
-      return sessionId !== undefined && panelToken !== undefined ? [{ authority, sessionId, panelToken }] : [];
+      if (panelToken === undefined) return [];
+      if (sessionId !== undefined) return [{ authority, sessionId, panelToken }];
+      // a new chat that has no conversation yet reopens new, with the messages it holds
+      return (this.offlineQueue?.queued(panelToken).length ?? 0) > 0 ? [{ authority, panelToken }] : [];
     });
     const text = JSON.stringify([records, remote.epoch()]);
     if (this.savedRemoteChats.get(authority) === text) return;
@@ -3559,6 +4207,13 @@ class DesktopApp {
       homedir: homeDirectory(),
       userSettingKeys: () => contributed.keys.filter((key) => !contributed.machineKeys.has(key)),
       userValue: (key) => platform.settings.inspect(key).userValue,
+      hostPolicy: (authorityKey) => {
+        const hostId = hostIdOfAuthority(authorityKey);
+        const record = hostId === undefined ? undefined : this.hostStore?.host(hostId);
+        if (!record) return { allowBypass: false };
+        const { allowBypass, defaultPermissionMode } = record.settings;
+        return { allowBypass: allowBypass === true, ...(defaultPermissionMode !== undefined ? { defaultPermissionMode } : {}), agentForwarding: forwardsAgent(record) };
+      },
       log: (line) => log(line),
     });
     const refresh = (): void => {
@@ -3580,14 +4235,18 @@ class DesktopApp {
     return this.userRelays;
   }
 
-  // The roots a remote core's path may name on its host: its live chat worktrees (keyed by root key) before its projects.
-  private remoteFileRoots(authority: string): RemoteProject[] {
+  // The roots a remote core's path may name on its host: its live chat worktrees (keyed by root key) before its projects, each
+  // project also at the realpath its core resolved on the target.
+  private remoteFileRoots(authority: string): RemoteFileRoot[] {
     const projects = this.remoteProjects().filter((project) => project.authorityKey === authority);
     const worktrees = this.roots.all().flatMap((root): RemoteProject[] => {
       const project = root.worktree ? projects.find((candidate) => candidate.key === root.root.projectKey) : undefined;
       return project ? [{ ...project, key: root.key, fsPath: root.fsPath }] : [];
     });
-    return [...worktrees, ...projects];
+    return [...worktrees, ...projects.map((project) => {
+      const realPath = this.scmClient?.projectRealPath(project.key);
+      return realPath === undefined ? project : { ...project, realPath };
+    })];
   }
 
   // A remote core's diff: every target path resolves only through remoteFileRef inside that host's roots, and an approval diff
@@ -3654,6 +4313,7 @@ class DesktopApp {
       void this.requirePlatform().notifications.warn(this.crossAuthorityRefusal(panel.authority, from));
       return true;
     }
+    if (this.holdWhileAway(panel, message)) return true;
     const dropped = ownRemoteDrop(panel.authority, message);
     if (dropped) {
       this.chatHost(panel.authority).run('Mention a dropped file', async (core) => {
@@ -3694,11 +4354,13 @@ class DesktopApp {
       },
       showChatReview: (corePanelId, scope) => this.showChatReview(chatKey(authority, corePanelId), scope),
       openSettingsFile: (scope, key) => this.showRemoteSettingsFile(authority, scope, key),
+      pick: (mode, options) => this.remoteHostsOrRefuse().pick(authority, mode, options),
       ui: { ask: deps.ui.ask, askpass: deps.ui.askpass, worktrees: this.worktreesOf(authority).ui() },
       notices: this.hostNotices(authority),
       user: {
         credentials: (provider) => this.requireUserRelays().credentials(authority, provider),
         speak: (viewId, text) => this.voiceRelay.speak(authority, viewId, text),
+        gitCredential: (request, signal) => this.gitCredentialClient().handle(this.hostIdOf(authority), request, signal),
       },
       base: {
         divert: deps.divert,
@@ -3762,25 +4424,887 @@ class DesktopApp {
     return drawn;
   }
 
+  // An SSH host connects through its attempt, whose prompt waits behind the sign-in banner, since no user waits in the Connect
+  // dialog; its failure shows on the host, not as a toast.
   private connectAuthority(authorityKey: string): void {
+    const hostId = hostIdOfAuthority(authorityKey);
+    if (hostId !== undefined) {
+      if (REMOTE && this.hostStore?.host(hostId)) this.requireRemoteConnections().connect(hostId, false);
+      return;
+    }
     this.authorities?.connect(authorityKey).catch(this.report(`Connecting to ${authorityKey}`));
   }
 
-  // The status dot follows the state; a connection that came up reattaches its kept terminals. A connection that went away
-  // exited them, so its next one reattaches them again, and until then their records stay as saved.
+  private requireRemoteConnections(): RemoteConnections {
+    if (!this.remoteConnections) throw new Error('Remote connections used before startup finished');
+    return this.remoteConnections;
+  }
+
+  // Every remote entry point is behind the remote gate; a call past it is refused, never served.
+  private remoteHostsOrRefuse(): RemoteHosts {
+    return gated(REMOTE, () => this.requireRemoteHosts());
+  }
+
+  // Connect to Host..., a host's sign-in banner and every "open another folder on <host>": opens the Connect dialog, its
+  // outcome reported here.
+  private openConnect(hostId: string | undefined): void {
+    this.remoteHostsOrRefuse().openConnect(hostId).catch(this.shellFailure('Connect to Host', 'Damocles could not open the Connect dialog: {0}'));
+  }
+
+  // Remote: Open Folder on Host...: the host first, then its folder browser.
+  private async openFolderOnHost(): Promise<void> {
+    const hosts = this.remoteHostsOrRefuse().shellHosts();
+    const { t } = this.requireLocalization();
+    const ask = createQuickPickAsker({
+      overlay: () => this.overlay,
+      focused: () => webContents.getFocusedWebContents() ?? undefined,
+      unavailable: () => void this.notifications.error(t('The list could not be shown, so nothing was changed. Try again.')),
+      tooLarge: () => void this.notifications.error(t('The list has too many entries to show, so nothing was changed.')),
+      log: (line) => log(line),
+    });
+    const picked = await ask(t('Select the host to open a folder on'), hosts.map((host) => ({ id: host.hostId, label: host.name })));
+    if (picked) this.openConnect(picked.id);
+  }
+
+  // The banner's and the offline placeholder's Reconnect, and the failure's Retry: an attempt at once.
+  private reconnectHost(hostId: string): void {
+    this.remoteHostsOrRefuse();
+    if (!this.hostStore?.host(hostId)) throw new Error(`No saved host ${hostId}`);
+    const authority = sshAuthorityKey(hostId);
+    if (this.hasOpenViews(authority)) this.reconnector?.reconnectNow(authority);
+    else this.requireRemoteConnections().connect(hostId, false, { force: true });
+  }
+
+  // Disconnect Host: the selected project's host connection ends; its daemon and terminals keep running there.
+  private disconnectSelectedHost(): void {
+    const key = this.selectedProjectKey;
+    const project = key === undefined ? undefined : this.remoteProject(key);
+    if (!project) return;
+    this.disconnectAuthority(project.authorityKey);
+  }
+
+  // The reconnect loop and the latency measurer (docs/invariants.md "Remote daemon and wire"); a resume from sleep and the
+  // network coming back wake the loop.
+  private startReconnects(): void {
+    const authorities = this.requireAuthorities();
+    const hostOf = (authority: string): string | undefined => hostIdOfAuthority(authority);
+    this.reconnector = new Reconnector({
+      handedOff: (authority) => this.otherProtocolHosts.has(authority),
+      state: (authority) => authorities.state(authority),
+      usable: (authority) => authorities.connection(authority) !== undefined,
+      held: (authority) => authorities.heldConnection(authority),
+      hostExists: (authority) => {
+        const hostId = hostOf(authority);
+        return hostId === undefined ? authority === 'loopback' : this.hostStore?.host(hostId) !== undefined;
+      },
+      hasOpenViews: (authority) => this.hasOpenViews(authority),
+      attempt: (authority, signal, force) => this.reconnectAttempt(authority, signal, force),
+      staging: (authority) => {
+        const hostId = hostOf(authority);
+        return hostId !== undefined && (this.remoteConnections?.staging(hostId) ?? false);
+      },
+      watched: (authority) => {
+        const hostId = hostOf(authority);
+        return hostId !== undefined && (this.remoteConnections?.isWatched(hostId) ?? false);
+      },
+      failureOf: (err) => failureOf(err),
+      lastFailure: (authority) => {
+        const hostId = hostOf(authority);
+        return hostId === undefined ? undefined : this.remoteConnections?.failure(hostId);
+      },
+      signInNeeded: (authority) => {
+        const hostId = hostOf(authority);
+        return hostId !== undefined && (this.remoteConnections?.signInNeeded(hostId) ?? false);
+      },
+      endMaster: async (authority) => {
+        const hostId = hostOf(authority);
+        const host = hostId === undefined ? undefined : this.hostStore?.host(hostId);
+        const plan = hostId === undefined ? undefined : this.controlPlans.get(hostId);
+        if (!host || !plan) return;
+        await exitControlMaster(this.controlMasterDeps(), sshDestination(host.destination, (line) => log(line)), SSH_ENVIRONMENT.configFile, plan);
+      },
+      online: () => net.isOnline(),
+      log: (line) => log(line),
+    });
+    this.disposables.push(this.reconnector.onEvent((event) => this.reconnectEvent(event)));
+    this.latency = new LatencyMeter({
+      ping: async (authority) => {
+        await this.requireConnection(authority).control.request('ping', {});
+      },
+      changed: (authority) => {
+        const hostId = hostOf(authority);
+        if (hostId !== undefined) this.remoteHosts?.hostChanged(hostId);
+        this.shellStateChanged();
+      },
+      log: (line) => log(line),
+    });
+    const resumed = (): void => this.reconnector?.wake('the computer resumed from sleep');
+    powerMonitor.on('resume', resumed);
+    this.disposables.push({
+      dispose: () => {
+        powerMonitor.removeListener('resume', resumed);
+        this.reconnector?.dispose();
+        this.latency?.dispose();
+      },
+    });
+  }
+
+  // One unwatched attempt of the loop: an SSH host's through its attempt, whose prompt waits behind the sign-in banner, the
+  // loopback daemon's straight through Authorities.
+  private reconnectAttempt(authority: string, signal: AbortSignal, force: boolean): LoopAttempt {
+    const hostId = hostIdOfAuthority(authority);
+    if (hostId === undefined) return { joined: false, outcome: this.requireAuthorities().connect(authority) };
+    return this.requireRemoteConnections().loopAttempt(hostId, signal, force);
+  }
+
+  // A change only a new ssh session applies (agent forwarding): the connection ends, Damocles' master with it, and the host
+  // connects again; its daemon and runs keep going meanwhile.
+  private async reconnectFresh(hostId: string): Promise<void> {
+    const host = this.hostStore?.host(hostId);
+    if (!host) throw new Error(`No saved host ${hostId}`);
+    const authority = sshAuthorityKey(hostId);
+    // a loop attempt started before the cancelled one settled would join it and stop with its cancel
+    await this.disconnectAuthority(authority);
+    const plan = this.controlPlans.get(hostId);
+    if (plan) await exitControlMaster(this.controlMasterDeps(), sshDestination(host.destination, (line) => log(line)), SSH_ENVIRONMENT.configFile, plan);
+    this.reconnectHost(hostId);
+  }
+
+  // Forget host: this computer's update flow, Damocles' master connection, session mirror, browser profile and
+  // remote-state.json entries of the host.
+  private async forgetHostData(hostId: string): Promise<void> {
+    const authority = sshAuthorityKey(hostId);
+    // the shell's engines are read off remoteCores, and a forgotten host has no name to give its engine
+    const remote = this.remoteCores.get(authority);
+    this.remoteCores.delete(authority);
+    await remote?.dispose();
+    this.otherProtocolHosts.forget(authority);
+    this.sentChatConnection.delete(authority);
+    this.sentHostAttention.delete(hostId);
+    const plan = this.controlPlans.get(hostId);
+    this.controlPlans.delete(hostId);
+    const host = this.hostStore?.host(hostId);
+    if (plan && host) await exitControlMaster(this.controlMasterDeps(), sshDestination(host.destination, (line) => log(line)), SSH_ENVIRONMENT.configFile, plan);
+    // a sync under way could write into the folder after its removal
+    const mirror = this.sessionMirrors.get(hostId);
+    this.sessionMirrors.delete(hostId);
+    await mirror?.idle();
+    // a junction or link is removed as itself, never followed
+    const removeTree = async (folder: string): Promise<void> => {
+      const stat = await fs.promises.lstat(folder).catch((err: NodeJS.ErrnoException) => {
+        if (err.code === 'ENOENT') return undefined;
+        throw err;
+      });
+      if (!stat) return;
+      if (stat.isSymbolicLink()) await fs.promises.unlink(folder);
+      else await fs.promises.rm(folder, { recursive: true, force: true, maxRetries: 3 });
+    };
+    await removeTree(path.join(this.userDataDir, 'remote', hostId));
+    await removeTree(path.join(DAMOCLES_HOME_DIR, 'browser-profiles', authority));
+    this.offlineQueue?.forgetAuthority(authority);
+    await this.requireRemoteState().forgetAuthority(authority);
+  }
+
+  private controlMasterDeps(): ControlMasterDeps {
+    return systemControlMasterDeps(path.join(DAMOCLES_HOME_DIR, 'ssh', 'cm'), (line) => log(line));
+  }
+
+  private async controlPlan(hostId: string, destination: SshDestination): Promise<ControlMasterPlan> {
+    const plan = await controlMasterPlan(this.controlMasterDeps(), destination, SSH_ENVIRONMENT.configFile);
+    this.controlPlans.set(hostId, plan);
+    return plan;
+  }
+
+  // Damocles' masters would otherwise keep their authenticated connections for ControlPersist after the quit.
+  private async exitControlMasters(): Promise<void> {
+    await Promise.all([...this.controlPlans].map(async ([hostId, plan]) => {
+      const host = this.hostStore?.host(hostId);
+      if (host) await exitControlMaster(this.controlMasterDeps(), sshDestination(host.destination, (line) => log(line)), SSH_ENVIRONMENT.configFile, plan);
+    }));
+  }
+
+  // An authority's views the loop keeps reconnecting for: its editor tabs, terminals and chats, or the selected project.
+  private hasOpenViews(authority: string): boolean {
+    const of = (projectKey: string | undefined): boolean => projectKey !== undefined && authorityKeyOfProject(projectKey) === authority;
+    if (of(this.selectedProjectKey)) return true;
+    if (this.remoteChatViews(authority).length > 0) return true;
+    if (this.editorPane?.hasProjectTab(of)) return true;
+    return this.remoteProjects().some((project) => project.authorityKey === authority && (this.terminals?.idsIn(project.key).length ?? 0) > 0);
+  }
+
+  // Each phase of the loop: terminals stop taking input on a drop and go on on a resume; the shell and chat pages follow.
+  private reconnectEvent(event: ReconnectEvent): void {
+    const authority = event.kind === 'gain' ? event.gain.authorityKey : event.authorityKey;
+    if (event.kind === 'suspect' || event.kind === 'lost') {
+      this.terminals?.connectionLost(authority);
+      this.latency?.disconnected(authority);
+      this.offlineQueue?.hostLost(authority);
+    }
+    if (event.kind === 'permanent' && event.code === 'hostKeyChanged' && event.dropped) {
+      const hostId = hostIdOfAuthority(authority);
+      // the one failure that blocks: the security modal shows what changed and the command that removes the old key
+      if (hostId !== undefined) this.openConnect(hostId);
+    }
+    if (event.kind === 'gain') this.connectionGained(event.gain);
+    this.shellStateChanged();
+  }
+
+  // The authority is usable again: resumed on the same connection, or attached fresh with its chats rejoined or restored.
+  private connectionGained(gain: ConnectionGain): void {
+    const authority = gain.authorityKey;
+    const connection = this.authorities?.connection(authority);
+    if (!connection) return;
+    if (gain.how === 'resumed') this.terminals?.connectionResumed(authority);
+    if (gain.how === 'attached') this.announceAway(authority, connection);
+    if (connection.features.includes('control.ping')) this.latency?.connected(authority, connection);
+    this.documents?.hostConnected(authority);
+    // a fresh attach or a new core: what the earlier connection carried and core never answered may be lost
+    if (gain.how === 'resumed') this.offlineQueue?.hostResumed(authority);
+    else this.offlineQueue?.connectionEnded(authority);
+    this.flushHeldMessages(authority);
+    if (gain.restarted) this.hostRestarted(authority, gain.restarted);
+  }
+
+  /** The authorities whose project a visible, non-minimized window shows: only their latency is measured. */
+  private setVisibleRemoteAuthorities(authorities: readonly string[]): void {
+    this.latency?.setVisibleAuthorities(authorities);
+  }
+
+  private requireRemoteHosts(): RemoteHosts {
+    if (!this.remoteHosts) throw new Error('Remote hosts used before startup finished');
+    return this.remoteHosts;
+  }
+
+  // The saved SSH hosts: their attempts over ssh, and the Connect dialog's actions on them.
+  private startRemoteHosts(store: HostStore): void {
+    const install = this.serverInstall();
+    this.remoteConnections = new RemoteConnections({
+      host: (hostId) => store.host(hostId),
+      startSsh: async ({ host, signal, hooks, savePlatform, installFolderSettled }) => {
+        const { manifest, artifacts, releasesUrl, askpass } = await install();
+        const destination = sshDestination(host.destination, (line) => log(line));
+        const plan = await this.controlPlan(host.id, destination);
+        return startSshTransport({
+          destination,
+          ...(host.osOverride !== undefined ? { osOverride: host.osOverride } : {}),
+          ...(host.platform !== undefined ? { cachedPlatform: host.platform } : {}),
+          ...(host.settings.installFolder !== undefined ? { installFolder: host.settings.installFolder } : {}),
+          ...(host.previousInstallFolder !== undefined ? { previousInstallFolder: host.previousInstallFolder } : {}),
+          forwardAgent: forwardsAgent(host),
+          ...(host.identityFile !== undefined ? { identityFile: host.identityFile } : {}),
+          ...this.rememberedOption(host),
+          signal,
+          hooks,
+          savePlatform,
+          installFolderSettled,
+          askpass,
+          manifest,
+          releasesUrl,
+          artifacts,
+          ...(SSH_ENVIRONMENT.configFile !== undefined ? { sshConfigFile: SSH_ENVIRONMENT.configFile } : {}),
+          controlMaster: plan,
+          hostLabel: host.name,
+          log: (line) => log(`[ssh ${host.id}] ${line}`),
+        });
+      },
+      savePlatform: (hostId, platform) => store.savePlatform(hostId, platform),
+      installFolderSettled: (hostId) => store.installFolderSettled(hostId),
+      connect: (hostId) => this.requireAuthorities().connect(sshAuthorityKey(hostId)),
+      connection: (hostId) => {
+        const authority = sshAuthorityKey(hostId);
+        const held = this.authorities?.heldConnection(authority);
+        if (!held || held.lost()) return undefined;
+        return this.authorities?.connection(authority) ? 'usable' : 'suspect';
+      },
+      changed: (hostId) => {
+        this.remoteHosts?.hostChanged(hostId);
+        this.reconnector?.attemptChanged(sshAuthorityKey(hostId));
+        this.shellStateChanged();
+        for (const listener of [...this.hostNoticeListeners]) listener(hostId);
+      },
+      log: (line) => log(line),
+    });
+    this.remoteHosts = new RemoteHosts({
+      store,
+      connections: this.remoteConnections,
+      state: (authorityKey) => this.requireAuthorities().state(authorityKey),
+      connection: (authorityKey) => this.authorities?.connection(authorityKey),
+      workspace: (authorityKey) => this.authorities?.connectedWorkspace(authorityKey),
+      terminals: {
+        canOpen: (authorityKey, terminal) => this.terminals?.canOpen(authorityKey, terminal) === true,
+        open: (authorityKey, id) => this.openHostTerminal(authorityKey, id),
+      },
+      projects: (hostId) => this.remoteProjects().filter((project) => project.authorityKey === sshAuthorityKey(hostId)),
+      pickRoots: (authorityKey) => {
+        const projects = this.remoteProjects().filter((project) => project.authorityKey === authorityKey);
+        return [...projects, ...this.remoteFileRoots(authorityKey).filter((root) => !projects.some((project) => project.key === root.key))];
+      },
+      hostName: (authorityKey) => this.hostName(authorityKey),
+      update: (authorityKey) => this.otherProtocolHosts.get(authorityKey)?.update(),
+      parse: (input) => parseSshCommand(input),
+      // ssh reads ~/.ssh/config from the passwd entry's home, never HOME
+      sshConfigAliases: () => configuredAliases(SSH_ENVIRONMENT, process.platform, process.env, (line) => log(line)),
+      validInstallFolder: (folder) => validateInstallFolder(folder).ok,
+      addProject: (hostId, folder) => this.addRemoteProject(sshAuthorityKey(hostId), folder),
+      showLogs: (hostId) => this.showHostLogs(hostId),
+      writeClipboard: (text) => this.requirePlatform().clipboard.writeText(text),
+      overlay: () => {
+        const overlay = this.overlay;
+        return overlay && {
+          request: (request: OverlayRequest) => overlay.request(request, webContents.getFocusedWebContents() ?? undefined),
+          send: (channel: string, payload: unknown) => overlay.send(channel, payload),
+          isOpen: (kind: 'connect' | 'settings') => overlay.isOpen(kind),
+        };
+      },
+      renamed: (hostId, previousName) => this.hostRenamed(hostId, previousName),
+      policyChanged: (hostId) => this.userRelays?.policyChanged(sshAuthorityKey(hostId)),
+      reconnectFresh: (hostId) => this.reconnectFresh(hostId),
+      deleteRememberedSecrets: (hostId) => this.rememberedSecrets().deleteAllForHost(hostId),
+      forgetLocalData: (hostId) => this.forgetHostData(hostId),
+      disconnect: (hostId) => this.disconnectAuthority(sshAuthorityKey(hostId)),
+      openSettings: (hostId) => this.openSettings({ section: 'remoteHosts', host: hostId }),
+      keySetup: {
+        folder: keyFolder(DAMOCLES_HOME_DIR),
+        clientName: os.hostname(),
+        resolveKeygen: () => resolveSshKeygenExecutable(),
+        resolveSsh: () => resolveSshExecutable(),
+        run: (spec, options) => runProcess(spec, options),
+        sshQuery: runSsh,
+        askpass: async () => this.mainAskpass(),
+        sshVersion: (ssh) => sshVersion(ssh),
+        env: process.env,
+        log: (line) => log(line),
+      },
+      ...(SSH_ENVIRONMENT.configFile !== undefined ? { sshConfigFile: SSH_ENVIRONMENT.configFile } : {}),
+      runRemovalStage: (hostId, script) => this.requireRemoteConnections().withPrompts(hostId, async (prompt, signal) => {
+        const { askpass } = await install();
+        const host = store.host(hostId);
+        const targetOs = host && hostOs(host);
+        if (!host || targetOs === undefined) throw new Error(`No platform is known for the host ${hostId}`);
+        const destination = sshDestination(host.destination, (line) => log(line));
+        const plan = await this.controlPlan(hostId, destination);
+        return runSshStage({
+          hostLabel: host.name,
+          destination,
+          platform: { os: targetOs, ...(host.platform?.windowsShell !== undefined ? { windowsShell: host.platform.windowsShell } : {}) },
+          ...(host.identityFile !== undefined ? { identityFile: host.identityFile } : {}),
+          ...(SSH_ENVIRONMENT.configFile !== undefined ? { sshConfigFile: SSH_ENVIRONMENT.configFile } : {}),
+          controlMaster: plan,
+          ...this.rememberedOption(host),
+          askpass,
+          prompt,
+          signal,
+          log: (line) => log(`[ssh ${hostId}] ${line}`),
+        }, script);
+      }),
+      reconnect: (authorityKey) => this.reconnectPhaseOf(authorityKey),
+      latency: (authorityKey) => this.latency?.latency(authorityKey),
+      watchLimit: (authorityKey) => this.watchLimits.notice(authorityKey, this.authorities?.connection(authorityKey)),
+      sharedHome: (authorityKey) => this.sharedHomes.notice(authorityKey, this.authorities?.connection(authorityKey)),
+      log: (line) => log(line),
+    });
+    this.disposables.push(store.onDidChange(() => this.remoteHosts?.hostsChanged()));
+  }
+
+  // What an install needs, read once on the first connect: the server manifest, the artifact cache for the upload fallback
+  // and main's askpass server for ssh's prompts. A failed read is tried again at the next connect.
+  private serverInstall(): () => Promise<ServerInstall> {
+    let read: Promise<ServerInstall> | undefined;
+    return () => {
+      read ??= (async (): Promise<ServerInstall> => {
+        const platform = this.requirePlatform();
+        const found = await readServerManifest(__dirname, platform.appInfo.version, app.isPackaged);
+        if ('refused' in found) throw new Error(`No server package can be installed: ${found.detail}`);
+        const releasesUrl = SSH_ENVIRONMENT.releasesUrl ?? RELEASES_URL;
+        const artifacts = createArtifactCache({
+          cacheRoot: path.join(this.userDataDir, 'server-cache'),
+          manifest: found.manifest,
+          releasesUrl,
+          ...(app.isPackaged ? {} : { devDir: path.join(resourceRoot, 'dist', 'server-packages') }),
+          fetch: (url, init) => net.fetch(url, { signal: init.signal }),
+          log: (line) => log(line),
+        });
+        // the e2e hooks install and run another version, which a test placed on the target itself
+        const manifest = REMOTE_E2E.appVersion === undefined ? found.manifest : { ...found.manifest, version: REMOTE_E2E.appVersion };
+        return { manifest, artifacts, releasesUrl, askpass: this.mainAskpass() };
+      })();
+      read.catch(() => {
+        read = undefined;
+      });
+      return read;
+    };
+  }
+
+  // A target's git credential relay: consent in the overlay, then this computer's own `git credential fill`.
+  private gitCredentialClient(): GitCredentialClient {
+    this.gitCredentials ??= createGitCredentialClient({
+      host: (hostId) => {
+        const record = this.hostStore?.host(hostId);
+        return record && { name: record.name, ...(record.color !== undefined ? { color: record.color } : {}), alwaysCredentialHosts: record.alwaysCredentialHosts ?? [] };
+      },
+      verifiesErase: (hostId) => this.authorities?.connection(sshAuthorityKey(hostId))?.features.includes(VERIFIED_ERASE_FEATURE) === true,
+      addAlways: (hostId, credentialHost) => this.requireHostStore().addAlwaysCredentialHost(hostId, credentialHost),
+      revokeAlways: (hostId, credentialHost) => this.requireHostStore().revokeCredentialHost(hostId, credentialHost),
+      askConsent: async (consent, signal) => {
+        const request = parseGitCredentialConsentRequest(consent);
+        const overlay = this.overlay;
+        if (!request || !overlay) {
+          log(`[git-credential] the consent dialog cannot show (${request ? 'no overlay' : 'past its bounds'}); the credential is refused`);
+          return 'deny';
+        }
+        this.revealWindow();
+        return gitCredentialConsentChoice(await overlay.request(request, webContents.getFocusedWebContents() ?? undefined, undefined, undefined, signal));
+      },
+      gitCredential: clientGitCredential({
+        git: () => (this.gitProbe.available ? this.gitProbe.path : undefined),
+        run: async (spec, input, signal) => {
+          const { exit, stdout } = await runProcess({ file: spec.file, args: [...spec.args], cwd: spec.cwd, env: spec.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }, { input, ...(signal ? { signal } : {}) });
+          return { code: exit?.code ?? null, stdout: stdout.toString('utf8') };
+        },
+        askpassEnv: async () => {
+          const ask = this.askCredential;
+          if (!ask) throw new Error('The askpass bridge is not ready');
+          return this.mainAskpass().register('interactive', 'git credential', async (prompt, signal) => {
+            const answer = await ask(prompt, signal);
+            return answer.cancelled ? PROMPT_CANCELLED : answer.answer;
+          });
+        },
+      }),
+      notify: (message, action) => this.requirePlatform().notifications.warn(message, action),
+      t: (message, ...args) => this.requireLocalization().t(message, ...args),
+      log: (line) => log(line),
+    });
+    return this.gitCredentials;
+  }
+
+  private rememberedSecrets(): RememberedSecrets {
+    this.sshRememberedSecrets ??= createRememberedSecrets(this.requirePlatform().secrets);
+    return this.sshRememberedSecrets;
+  }
+
+  // the host's remembered answers for an ssh call, only while its Remember password setting is on
+  private rememberedOption(host: SshHostRecord): { readonly remembered?: RememberedOption } {
+    return host.settings.rememberPassword === true ? { remembered: { offer: true, secrets: this.rememberedSecrets().forHost(host.id) } } : {};
+  }
+
+  private mainAskpass(): AskpassServer {
+    this.sshAskpass ??= createMainAskpassServer({ paths: askpassPaths(createDesktopAppPaths(layout), process.execPath), log: (line) => log(line) });
+    return this.sshAskpass;
+  }
+
+  // A connected SSH host: its use is recorded and its session mirror catches up.
+  private hostConnected(hostId: string, connection: RemoteConnection): void {
+    this.hostStore?.touchHost(hostId).catch(this.report('Recording when a host was used'));
+    this.syncMirror(hostId, connection);
+    this.adoptDaemonVersion(hostId, connection).catch(this.report('Switching the host to this version'));
+  }
+
+  // A fresh connection's chats reopened: the chats left running at the last detach that ended meanwhile make one notice.
+  private announceAway(authority: string, connection: RemoteConnection): void {
+    announceFinishedAway({
+      recorded: (key) => this.requireRemoteState().away(key),
+      record: (key, chats) => this.requireRemoteState().setAway(key, chats, this.remoteCores.get(key)?.epoch() ?? null),
+      runs: async () => (await connection.control.request('listRuns', {})).runs,
+      coreRestarted: (key) => {
+        const ran = this.requireRemoteState().awayEpoch(key);
+        const now = this.remoteCores.get(key)?.epoch() ?? null;
+        return ran !== null && now !== null && now !== ran;
+      },
+      hostName: (key) => this.hostName(key),
+      t: (message, ...args) => this.requireLocalization().t(message, ...args),
+      notify: (message, actions, key) => this.notificationCenter.notice('info', message, actions, this.notificationHost(key)),
+      open: async (key, chat) => {
+        await this.selectChat(chat.sessionId, key);
+      },
+      log: (line) => log(line),
+    }, authority).catch(this.report('Telling which chats finished while away'));
+  }
+
+  // A daemon of the same protocol and another app version: replaced at once while it is idle and alone, else asked to exit
+  // once idle, after which the next connection starts this version (Compatibility).
+  private async adoptDaemonVersion(hostId: string, connection: RemoteConnection): Promise<void> {
+    const authority = sshAuthorityKey(hostId);
+    const appVersion = REMOTE_E2E.appVersion ?? this.requirePlatform().appInfo.version;
+    const outcome = await adoptCompatibleDaemon(appVersion, {
+      serverVersion: connection.serverVersion,
+      listRuns: async () => (await connection.control.request('listRuns', {})).runs,
+      otherDevices: () => otherDeviceCount(connection.devices()),
+      shutdownWhenIdle: () => connection.control.request('shutdownWhenIdle', {}),
+      shutdownNow: () => shutDownNow(connection, (line) => log(line)),
+    }, (line) => log(line));
+    if (outcome !== 'replaceNow') return;
+    // the old daemon is gone, so nothing is held for a resume: a fresh connection starts this version
+    this.authorities?.disconnect(authority);
+    this.connectAuthority(authority);
+  }
+
+  // A daemon of another protocol answered: it is stopped when it runs nothing, else its chats show read-only from the mirror
+  // and the banner offers the switch; once it is gone this version connects.
+  private followOtherProtocol(authority: string, daemon: OtherProtocolDaemon): void {
+    const hostId = hostIdOfAuthority(authority);
+    const changed = (): void => {
+      this.shellStateChanged();
+      this.publishHostAttention();
+    };
+    log(`[update] ${authority}: following the daemon of ${daemon.serverVersion} (protocol ${daemon.protocolVersion})`);
+    this.otherProtocolHosts.follow(authority, (ended) => followOtherProtocolDaemon({
+      daemon,
+      // the running chats read live from the mirror: saved chats it now holds open, and changed transcripts replay
+      syncMirror: async () => {
+        if (hostId === undefined) return;
+        const projects = this.remoteProjects().filter((project) => project.authorityKey === authority).map((project) => project.folderKey);
+        await this.sessionMirrorOf(hostId).schedule(() => projects);
+        const records = this.requireRemoteState().chats(authority);
+        const { opened, reloaded } = await this.transcripts.synced(authority, records, this.requireRemoteState().selected()?.sessionId);
+        // the Chats list of a host not connected lists the mirror's chats, which this sync may have brought
+        for (const project of this.remoteProjects()) if (project.authorityKey === authority) this.chatsChanged(project.key);
+        log(`[update] ${authority}: mirror synced ${projects.length} projects; ${records.length} saved chats, ${opened} transcripts opened, ${reloaded} reloaded`);
+      },
+      changed,
+      reconnect: () => {
+        ended();
+        changed();
+        // through the host's attempt, whose ssh its transport needs
+        this.connectAuthority(authority);
+      },
+      confirm: (listing) => this.confirmSwitchNow(authority, daemon.serverVersion, listing),
+      pollMs: OTHER_PROTOCOL_POLL_MS,
+      log: (line) => log(line),
+    }));
+    // the reconnect loop stops here: this flow connects once the old daemon is gone
+    this.reconnector?.stateChanged(authority);
+  }
+
+  // Switch now's confirmation: the agents that stop and the terminals that close.
+  private async confirmSwitchNow(authority: string, serverVersion: string, listing: SwitchListing): Promise<boolean> {
+    const { t } = this.requireLocalization();
+    const preview = [...listing.agents.map((title) => t('Agent: {0}', title === '' ? t('New conversation') : title)), ...listing.terminals.map((name) => t('Terminal: {0}', name))];
+    const answer = await this.ask({
+      severity: 'danger',
+      message: t('Switch {0} to Damocles {1} now?', this.hostName(authority), REMOTE_E2E.appVersion ?? this.requirePlatform().appInfo.version),
+      detail: t('These agents stop and these terminals close.'),
+      actions: [t('Switch now')],
+      cancelLabel: t('Cancel'),
+      ...(preview.length > 0 ? { preview: preview.map((line) => visibleLines(line)) } : {}),
+    });
+    log(`[update] Switch now on ${authority} (daemon ${serverVersion}): ${answer === 0 ? 'confirmed' : 'cancelled'}`);
+    return answer === 0;
+  }
+
+  private switchHostWhenIdle(hostId: string): Promise<void> {
+    const followed = this.otherProtocolHosts.get(sshAuthorityKey(hostId));
+    if (!followed) throw new Error('The host runs this version');
+    return followed.switchWhenIdle();
+  }
+
+  private switchHostNow(hostId: string): Promise<boolean> {
+    const followed = this.otherProtocolHosts.get(sshAuthorityKey(hostId));
+    if (!followed) throw new Error('The host runs this version');
+    return followed.switchNow();
+  }
+
+  // The host's projects' session mirrors catch up, the most recently used first: at each connect, when a project joins the
+  // host and when one of its chats settles a turn; requests that arrive while a sync runs coalesce into one more.
+  private syncMirror(hostId: string, connection: RemoteConnection): void {
+    const authority = sshAuthorityKey(hostId);
+    const ordered = (): string[] => {
+      const recent = this.hostStore?.host(hostId)?.recentFolders ?? [];
+      const rank = (fsPath: string): number => {
+        const at = recent.indexOf(fsPath);
+        return at < 0 ? recent.length : at;
+      };
+      return this.remoteProjects().filter((project) => project.authorityKey === authority).sort((a, b) => rank(a.fsPath) - rank(b.fsPath)).map((project) => project.folderKey);
+    };
+    this.sessionMirrorOf(hostId).schedule(ordered).then(() => {
+      if (this.authorities?.connection(authority) === connection) log(`[mirror ${hostId}] synced ${ordered().length} projects`);
+    }, this.report('Syncing the session mirror'));
+  }
+
+  // A remote chat settled a turn or a project joined its host: the host's mirror syncs while its connection is up.
+  private remoteSessionsChanged(authority: string): void {
+    const hostId = hostIdOfAuthority(authority);
+    const connection = this.authorities?.connection(authority);
+    if (hostId !== undefined && connection) this.syncMirror(hostId, connection);
+  }
+
+  // The host's session mirror; its syncs run over the host's live connection.
+  private sessionMirrorOf(hostId: string): SessionMirror {
+    const authority = sshAuthorityKey(hostId);
+    let mirror = this.sessionMirrors.get(hostId);
+    if (!mirror) {
+      mirror = new SessionMirror({
+        root: path.join(this.userDataDir, 'remote', hostId, 'mirror'),
+        channel: () => {
+          const channel = this.mirrorChannel(authority);
+          return { sync: (request) => channel.control.request('mirror.sync', request), receive: (stream, maxBytes, onChunk) => channel.receiveStream(stream, maxBytes, onChunk) };
+        },
+        log: (line) => log(`[mirror ${hostId}] ${line}`),
+      });
+      this.sessionMirrors.set(hostId, mirror);
+    }
+    return mirror;
+  }
+
+  // mirror.sync is frozen: a daemon of another protocol serves it as this version's does
+  private mirrorChannel(authority: string): Pick<OtherProtocolDaemon, 'control' | 'receiveStream'> {
+    const channel = this.authorities?.connection(authority) ?? this.otherProtocolHosts.get(authority)?.daemon;
+    if (!channel) throw this.notConnected(authority);
+    return channel;
+  }
+
+  private requireConnection(authorityKey: string): RemoteConnection {
+    const connection = this.authorities?.connection(authorityKey);
+    if (!connection) throw this.notConnected(authorityKey);
+    return connection;
+  }
+
+  // Show log for an SSH host: the bridge's last ssh output, and its daemon's log through logs.read while connected, read-only.
+  private async showHostLogs(hostId: string): Promise<void> {
+    const authority = sshAuthorityKey(hostId);
+    const { t } = this.requireLocalization();
+    const stderr = this.requireRemoteConnections().stderrTail(hostId);
+    this.requireEditorPane().openReadOnly(t('{0}: {1}', this.hostName(authority), t('ssh output')), stderr === '' ? t('ssh wrote nothing.') : stderr, 'ssh-output.log', false);
+    if (this.authorities?.connection(authority)) await this.showRemoteLog(authority, DAEMON_LOG, false);
+  }
+
+  // The label a remote chat page shows for its host, from this computer's host store; its banner says what the shell's would.
+  private panelHostLabel(authority: string): PanelHostLabel {
+    const color = this.hostColor(authority);
+    const hostId = hostIdOfAuthority(authority);
+    const host = hostId === undefined ? undefined : this.remoteHosts?.shellHosts().find((candidate) => candidate.hostId === hostId);
+    const attention = host === undefined ? undefined : hostAttention(host);
+    const update = this.otherProtocolHosts.get(authority)?.update();
+    return { hostId: this.hostIdOf(authority), name: this.hostName(authority), ...(color !== undefined ? { color } : {}), computer: os.hostname(), ...(attention !== undefined ? { attention } : {}), ...(update !== undefined ? { update } : {}) };
+  }
+
+  // Every chat page of a host whose banner state changed hears it; the shell's banner follows the same ShellState publish.
+  private publishHostAttention(): void {
+    const views = this.views;
+    if (!views || !this.remoteHosts) return;
+    for (const host of this.remoteHosts.shellHosts()) {
+      const attention = JSON.stringify([hostAttention(host) ?? null, this.otherProtocolHosts.get(host.authorityKey)?.update() ?? null]);
+      if (this.sentHostAttention.get(host.hostId) === attention) continue;
+      this.sentHostAttention.set(host.hostId, attention);
+      views.broadcastHost(host.authorityKey, this.panelHostLabel(host.authorityKey));
+    }
+  }
+
+  // A remote chat page's banner: Reconnect or Sign in, on that page's own host.
+  private panelHostAction(panel: DesktopPanel, action: PanelHostAction): void {
+    const hostId = hostIdOfAuthority(panel.authority);
+    if (hostId === undefined) {
+      log(`[views] a chat of ${panel.authority} asked for ${action}, but no saved host serves it`);
+      return;
+    }
+    if (action === 'signIn') {
+      this.openConnect(hostId);
+      return;
+    }
+    if (action === 'showLog') {
+      this.remoteHostsOrRefuse().showLog(hostId).catch(this.shellFailure('Show log', 'Damocles could not show the host\'s log: {0}'));
+      return;
+    }
+    if (action === 'editHost') {
+      this.remoteHostsOrRefuse().openConnect(hostId, 'rename').catch(this.shellFailure('Edit host', 'Damocles could not open the Connect dialog: {0}'));
+      return;
+    }
+    if (action === 'switchWhenIdle') {
+      this.switchHostWhenIdle(hostId).catch(this.shellFailure('Switch when they finish', 'Damocles could not switch the host to this version: {0}'));
+      return;
+    }
+    if (action === 'switchNow') {
+      this.switchHostNow(hostId).catch(this.shellFailure('Switch now', 'Damocles could not switch the host to this version: {0}'));
+      return;
+    }
+    void reportFailure(async () => this.reconnectHost(hostId), this.shellFailure('Reconnect', 'Damocles could not reconnect to the host: {0}'))();
+  }
+
+  // One reconnect's offline saves that met a changed target: each opens its merge editor, and one summary names them all.
+  private uploadsConflicted(authority: string, conflicted: readonly TextDocument[]): void {
+    const editorPane = this.requireEditorPane();
+    for (const document of conflicted) editorPane.showUploadMerge(document);
+    this.reportReconnectConflicts(authority, conflicted.map((document) => ({ projectKey: document.location!.projectKey!, relativePath: document.location!.relativePath! })));
+  }
+
+  // After a rename or recolor every place that shows the host follows at once: the shell, its chat pages, its notifications.
+  private hostRenamed(hostId: string, previousName: string): void {
+    const authority = sshAuthorityKey(hostId);
+    const label = this.panelHostLabel(authority);
+    // the name a notification shows still is the previous one; it takes the new name and color
+    this.notificationCenter.relabelHost(previousName, this.notificationHost(authority));
+    this.views?.broadcastHost(authority, label);
+    this.overlaySettings?.hostChanged(authority);
+    for (const listener of [...this.hostNoticeListeners]) listener(hostId);
+    this.remoteHosts?.hostsChanged();
+    this.shellStateChanged();
+  }
+
+  // The reconnect loop's phase for an authority; undefined while it is connected or no loop runs for it.
+  private reconnectPhaseOf(authority: string): HostReconnect | undefined {
+    return this.reconnector?.phase(authority);
+  }
+
+  // A remote chat page's host as its banner and held messages need it: connected, away with the loop's phase, or offline.
+  private chatConnectionState(authority: string): ChatConnection['state'] {
+    if (this.authorities?.connection(authority)) return { phase: 'connected' };
+    return this.reconnectPhaseOf(authority) ?? { phase: 'offline' };
+  }
+
+  private panelConnection(panel: DesktopPanel): PanelConnection | undefined {
+    if (panel.kind !== 'chat' || panel.authority === 'local') return undefined;
+    const token = panel.heldToken;
+    return { state: this.chatConnectionState(panel.authority), queued: token === undefined ? [] : (this.offlineQueue?.queued(token) ?? []) };
+  }
+
+  // A live remote chat page's send while its host is away waits in main (docs/invariants.md "Desktop host", offline chat queue).
+  private holdWhileAway(panel: DesktopPanel, message: unknown): boolean {
+    const token = panel.heldToken;
+    const queue = this.offlineQueue;
+    if (!queue || panel.authority === 'local' || panel.offline || token === undefined || this.authorities?.connection(panel.authority)) return false;
+    const outcome = queue.hold(panel.authority, token, message);
+    if (outcome === 'held' || outcome === 'ignored') return outcome === 'held';
+    // past the bounds the message goes back to the composer with why, as core gives back a send it refuses
+    const { t } = this.requireLocalization();
+    const detail = outcome === 'tooMany'
+      ? t('A chat holds at most {0} messages while {1} is away.', MAX_HELD_PER_PANEL, this.hostName(panel.authority))
+      : outcome === 'tooLarge'
+        ? t('Messages held while {0} is away can take at most {1} MB.', this.hostName(panel.authority), MAX_HELD_BYTES / (1024 * 1024))
+        : t('Damocles can\'t hold messages while {0} is away, because it can\'t read {1}.', this.hostName(panel.authority), this.requireRemoteState().filePath);
+    const content = parseContent((message as { content?: unknown }).content) ?? [];
+    log(`[views] panel ${panel.panelId}: a held message was refused (${outcome})`);
+    void panel.postMessage({ type: 'promptReturned', content: typeof content === 'string' ? [{ type: 'text', text: content }] : content, reason: 'heldPromptKept', detail } satisfies ExtensionToWebviewMessage);
+    return true;
+  }
+
+  // A chip's Cancel (a waiting message) or Discard (a not-sent one), on the page's own held messages only.
+  private heldMessageAction(panel: DesktopPanel, action: PanelQueueAction): void {
+    const token = panel.heldToken;
+    const removed = token !== undefined && this.offlineQueue?.remove(token, action.id, action.action === 'cancel' ? 'queued' : 'notSent') === true;
+    if (!removed) log(`[views] panel ${panel.panelId}: no held message ${action.id} to ${action.action}`);
+  }
+
+  // Core's verdict on a flushed held message: a conversationChanged return stays in main as a not-sent chip.
+  private takeHeldVerdict(panel: DesktopPanel, type: string, json: string): boolean {
+    if (type !== 'promptReturned' && type !== 'userMessage' && type !== 'messageQueued') return false;
+    const token = panel.heldToken;
+    const queue = this.offlineQueue;
+    if (token === undefined || !queue?.awaitsVerdict(token)) return false;
+    return queue.fromCoreText(token, json);
+  }
+
+  // Every page showing the token's held messages hears them: the live chat's and a mirrored transcript's.
+  private heldMessagesChanged(panelToken: string): void {
+    for (const view of this.views?.chats() ?? []) {
+      if (view.heldToken !== panelToken) continue;
+      const connection = this.panelConnection(view);
+      if (connection) view.sendConnection(connection);
+      // a new chat's held messages are what keeps it, saved and loaded
+      if (!view.offline) this.saveRemoteChats(view.authority);
+    }
+    this.scheduleRetention();
+  }
+
+  // Each remote chat page hears its host's phase when it changes; held messages follow heldMessagesChanged.
+  private publishChatConnections(): void {
+    const authorities = new Set((this.views?.chats() ?? []).flatMap((view) => (view.authority === 'local' ? [] : [view.authority])));
+    for (const authority of authorities) {
+      const text = JSON.stringify(this.chatConnectionState(authority));
+      if (this.sentChatConnection.get(authority) === text) continue;
+      this.sentChatConnection.set(authority, text);
+      for (const view of this.remoteChatViews(authority)) {
+        const connection = this.panelConnection(view);
+        if (connection) view.sendConnection(connection);
+      }
+    }
+  }
+
+  // The host is back and its chats rejoined: each live page's held messages send in order through its own relay, once that
+  // page's rejoin or restore settled.
+  private flushHeldMessages(authority: string): void {
+    const queue = this.offlineQueue;
+    if (!queue) return;
+    for (const token of queue.waiting(authority)) {
+      const view = this.remoteChatViews(authority).find((candidate) => !candidate.offline && candidate.panelToken === token);
+      if (!view) {
+        log(`[remote] held messages of a chat that is not open on ${authority} wait for it`);
+        continue;
+      }
+      (this.chatRestores.get(view) ?? Promise.resolve())
+        // a round trip on the core channel: the activity core emitted during the drop (replayed after a resume) is in by its answer
+        .then(() => this.chatHost(authority).run('Send the held chat messages', (core) => core.client.whenSetUp(view.panelId)))
+        .then(() => {
+          if (view.isDisposed || !this.authorities?.connection(authority)) return;
+          const state = this.activityOf(view)?.state;
+          queue.flush(token, state === 'running' || state === 'requires_action', (message) => view.deliver(message));
+        })
+        .catch(this.report('Sending the held chat messages'));
+    }
+  }
+
+  // A new core epoch after a drop: the chats reopened with their permissions; the user hears which side restarted.
+  private hostRestarted(authority: string, restarted: 'server' | 'engine'): void {
+    const { t } = this.requireLocalization();
+    const name = this.hostName(authority);
+    const message = restarted === 'server' ? t('{0}\'s Damocles server restarted', name) : t('{0}\'s Damocles engine restarted', name);
+    void this.notificationCenter.notice('info', message, [], this.notificationHost(authority));
+  }
+
+  /** Other machines run Damocles in the host's home; Show host opens its card. */
+  private notifySharedHome(authorityKey: string, hosts: readonly string[]): void {
+    const { t, language } = this.requireLocalization();
+    const list = (names: readonly string[]): string => new Intl.ListFormat(language, { type: 'conjunction' }).format(names);
+    const title = hosts.length === 1 ? t('{0} also runs Damocles in this home', hosts[0]!) : t('{0} also run Damocles in this home', list(hosts));
+    const message = t('Your home is shared, so chats and memories there are shared between {0}. Each machine keeps its own logs and server state.', list([this.hostName(authorityKey), ...hosts]));
+    const show = t('Show host');
+    this.notificationCenter.notice('warning', message, [show], this.notificationHost(authorityKey), title).then(async (answer) => {
+      const hostId = hostIdOfAuthority(authorityKey);
+      if (answer === show && hostId !== undefined) await this.remoteHostsOrRefuse().openConnect(hostId, 'show');
+    }).catch(this.report('Showing the machines sharing the home'));
+  }
+
+  /** Offline saves whose target changed meanwhile: one summary toast per upload pass; Review shows the first merge. */
+  private reportReconnectConflicts(authority: string, files: ReadonlyArray<{ readonly projectKey: string; readonly relativePath: string }>): void {
+    const first = files[0];
+    if (!first) return;
+    const { t } = this.requireLocalization();
+    const name = this.hostName(authority);
+    const fileName = this.hostPathFlavor(authority).basename(first.relativePath);
+    const message = files.length === 1
+      ? t('{0} changed on {1} while you were offline. Your save is kept in the merge editor.', fileName, name)
+      : t('{0} files changed on {1} while you were offline. Your saves are kept in the merge editor.', files.length, name);
+    const review = t('Review');
+    this.notificationCenter.notice('warning', message, [review], this.notificationHost(authority)).then((answer) => {
+      if (answer === review) this.requireEditorPane().focusUploadMerge(first);
+    }, this.report('Showing the offline save conflicts'));
+  }
+
+  // The status dot follows the state; a connection that came up reattaches its kept terminals. A connection that closed left
+  // them reconnecting, so its next one reattaches them, and until then their records stay as saved; one the daemon holds for
+  // a resume keeps them attached.
   private authorityChanged(authorityKey: string): void {
     const connection = this.authorities?.connection(authorityKey);
+    const hostId = hostIdOfAuthority(authorityKey);
+    if (hostId !== undefined) this.remoteHosts?.hostChanged(hostId);
     if (this.authorities?.state(authorityKey) === 'connected' && connection) {
+      for (const key of [...this.catalogRows.keys()]) if (authorityKeyOfProject(key) === authorityKey) this.catalogRows.delete(key);
+      const reselect = this.transcripts.hostConnected(authorityKey);
+      if (reselect !== undefined) this.reselectRemote.set(authorityKey, reselect);
       this.detectHostTerminals(authorityKey);
       this.reattachRemoteTerminals(authorityKey);
+      this.watchLimitsOf(authorityKey, connection);
+      this.sharedHomes.ask(authorityKey, connection);
       this.connectRemoteCore(authorityKey);
-    } else {
+    } else if (!this.authorities?.heldConnection(authorityKey)) {
+      this.offlineQueue?.connectionEnded(authorityKey);
       this.reattachedAuthorities.delete(authorityKey);
       this.savedRemoteTerminals.delete(authorityKey);
+      this.watchLimitConnections.get(authorityKey)?.subscription.dispose();
+      this.watchLimitConnections.delete(authorityKey);
     }
     this.fileTree?.connectionsChanged();
     this.documents?.connectionsChanged();
     this.refreshScmRoots();
+    this.reconnector?.stateChanged(authorityKey);
     this.shellStateChanged();
   }
 
@@ -3794,22 +5318,15 @@ class DesktopApp {
   }
 
   private async addLoopbackProject(folder: string): Promise<void> {
-    const authorities = this.requireAuthorities();
-    await authorities.connect('loopback');
-    const connection = authorities.connection('loopback');
-    if (!connection) throw this.notConnected('loopback');
-    const { os: targetOs } = connection.facts;
-    if (!(await this.remoteWorkspace('loopback').files.isDirectory(folder))) {
-      throw new Error(this.requireLocalization().t('The folder {0} does not exist on {1}.', folder, this.hostName('loopback')));
-    }
-    // the daemon computes the folder's key by its own OS's rules
-    const folderKey = await connection.workspace.request('files.folderKey', { path: folder });
-    const key = projectKeyOf({ kind: 'loopback' }, folderKey);
-    const listed = this.shellProjectKeys();
-    await this.requireHostStore().addProject('loopback', { path: folder, folderKey, os: targetOs }, key, listed);
-    const project = this.remoteProject(key);
-    if (project) await this.requestProjectTrust(project);
-    await this.selectProject(key);
+    await this.requireAuthorities().connect('loopback');
+    await this.addRemoteProject('loopback', folder);
+  }
+
+  // A folder of a connected authority joins the project list, asks the trust question as any new project does and is selected;
+  // a folder that is a project already is selected. Resolves the project's key.
+  private async addRemoteProject(authorityKey: string, folder: string): Promise<string> {
+    this.requireConnection(authorityKey);
+    return (await openFolderAsProject(this.projectOpening(), authorityKey, folder)).projectKey;
   }
 
   // Show log for the loopback host: the end of its daemon.log through control logs.read, as inert read-only text.
@@ -3845,8 +5362,58 @@ class DesktopApp {
 
   // The sidebar's project keys as shown now: projects.json's and remote-hosts.json's, in the stored order.
   private shellProjectKeys(): string[] {
-    const listed = [...this.projects.folders().map((folder) => folderKey(folder.fsPath)), ...this.remoteProjects().map((project) => project.key)];
+    const listed = this.listedProjectKeys();
     return this.hostStore?.order(listed) ?? listed;
+  }
+
+  // The project keys shown now, local ones first, in no particular order.
+  private listedProjectKeys(): string[] {
+    return [...this.projects.folders().map((folder) => folderKey(folder.fsPath)), ...this.remoteProjects().map((project) => project.key)];
+  }
+
+  // The grouped view's groups shown now: this computer's, and each authority with a shown project.
+  private shownGroups(): string[] {
+    return groupsOf(this.shellProjectKeys());
+  }
+
+  // A folder joins the project list on its authority, right after a project when one is named (Files' Open as project).
+  private projectOpening(): OpenAsProjectDeps {
+    const { t } = this.requireLocalization();
+    return {
+      resolve: (key) => {
+        const root = this.roots.resolve(key);
+        return root && { ...root, os: this.projectOs(root.root.projectKey) };
+      },
+      served: (authorityKey) => authorityKey === 'local' || (authorityKey === 'loopback' ? LOOPBACK : REMOTE),
+      isDirectory: (authorityKey, folder) => (authorityKey === 'local' ? this.requireWorkspaces().local : this.remoteWorkspace(authorityKey)).files.isDirectory(folder),
+      projectKeyOf: async (authorityKey, folder) => {
+        if (authorityKey === 'local') return folderKey(folder);
+        const connection = this.requireConnection(authorityKey);
+        // the daemon computes the folder's key by its own OS's rules
+        const targetKey = await connection.workspace.request('files.folderKey', { path: folder });
+        const hostId = hostIdOfAuthority(authorityKey);
+        return hostId === undefined ? projectKeyOf({ kind: 'loopback' }, targetKey) : sshProjectKey(hostId, targetKey);
+      },
+      isProject: (key) => this.workspaceProjects().some((project) => project.key === key),
+      add: async (authorityKey, folder, key, after) => {
+        if (authorityKey === 'local') {
+          // the order first, so the project shows in its place the moment projects.json lists it
+          if (after !== undefined) await this.requireHostStore().placeAfter(key, after, () => this.listedProjectKeys());
+          await this.projects.add(folder);
+          return;
+        }
+        const targetKey = targetFolderKeyOf(key)!;
+        const { os } = this.requireConnection(authorityKey).facts;
+        await this.requireHostStore().addProject(authorityKey, { path: folder, folderKey: targetKey, os }, key, () => this.listedProjectKeys(), after);
+        this.remoteSessionsChanged(authorityKey);
+      },
+      requestTrust: async (key) => {
+        const project = this.workspaceProjects().find((candidate) => candidate.key === key);
+        if (project) await this.requestProjectTrust(project);
+      },
+      select: (key) => this.selectProject(key),
+      notFolder: (authorityKey, folder) => new Error(authorityKey === 'local' ? t('The folder {0} does not exist.', folder) : t('The folder {0} does not exist on {1}.', folder, this.hostName(authorityKey))),
+    };
   }
 
   // Remote terminals into remote-state.json by authority, only for an authority whose kept terminals this window reattached,
@@ -3873,6 +5440,25 @@ class DesktopApp {
       this.reattachedAuthorities.add(authorityKey);
       await terminals.reattach(workspace.terminals, remoteState.terminals(authorityKey));
     }).catch(this.report('Reattaching the remote terminals'));
+  }
+
+  // A host's terminal another client may have started, in this window's terminal panel once the window's own terminals and
+  // the host's shells are back.
+  private async openHostTerminal(authorityKey: string, id: string): Promise<void> {
+    const workspace = this.authorities?.connectedWorkspace(authorityKey);
+    if (!workspace) throw new Error(`${this.hostName(authorityKey)} is not connected`);
+    await Promise.all([this.terminalsRestored, this.hostTerminalsDetected(authorityKey)]);
+    if (this.authorities?.connectedWorkspace(authorityKey) !== workspace) throw new Error(`${this.hostName(authorityKey)} is not connected`);
+    await this.requireTerminals().open(workspace.terminals, authorityKey, id);
+    this.showTerminalPane();
+  }
+
+  // A connection's watch limit reports, heard once per connection.
+  private watchLimitsOf(authorityKey: string, connection: RemoteConnection): void {
+    const heard = this.watchLimitConnections.get(authorityKey);
+    if (heard?.connection === connection) return;
+    heard?.subscription.dispose();
+    this.watchLimitConnections.set(authorityKey, { connection, subscription: this.watchLimits.watch(authorityKey, connection) });
   }
 
   // The shells and Windows build of a connected host, asked once per connection.
@@ -3904,6 +5490,8 @@ class DesktopApp {
   // The id this install gives the host (its secrets namespace remote/<hostId>/); the loopback authority has no host record.
   private hostIdOf(authorityKey: string): string {
     if (authorityKey === 'loopback') return 'loopback';
+    const hostId = hostIdOfAuthority(authorityKey);
+    if (hostId !== undefined && this.hostStore?.host(hostId)) return hostId;
     throw new Error(`No host is named ${authorityKey}`);
   }
 
@@ -3931,7 +5519,22 @@ class DesktopApp {
   private hostName(authorityKey: string): string {
     const { t } = this.requireLocalization();
     if (authorityKey === 'loopback') return t('Local daemon');
+    const hostId = hostIdOfAuthority(authorityKey);
+    const record = hostId === undefined ? undefined : this.hostStore?.host(hostId);
+    if (record) return record.name;
     throw new Error(`No host is named ${authorityKey}`);
+  }
+
+  // A remote host as notifications show it: this computer's name and safety color for it.
+  private notificationHost(authorityKey: string): NotificationHost {
+    const tone = this.hostColor(authorityKey);
+    return { name: this.hostName(authorityKey), ...(tone !== undefined ? { tone } : {}) };
+  }
+
+  // The host's safety color as this computer keeps it.
+  private hostColor(authorityKey: string): HostTone | undefined {
+    const hostId = hostIdOfAuthority(authorityKey);
+    return hostId === undefined ? undefined : this.hostStore?.host(hostId)?.color;
   }
 
   private remoteTrustTarget(project: RemoteProject): RemoteTrustTarget {
@@ -4043,9 +5646,7 @@ class DesktopApp {
       },
       projectRepositoryWhenReady: async (projectPath) => this.scm?.projectRepositoryWhenReady(keyOf(projectPath)),
       worktreeChats: (projectPath) => this.worktreeChats(keyOf(projectPath)),
-      openConflicts: (folder, files, applyBranch) => (local
-        ? this.openWorktreeConflicts(folder, files, applyBranch)
-        : this.hostNotices(authority).warn(t('Resolve the merge conflicts on {0}: {1}', this.hostName(authority), files.join(', '))).then(() => undefined)),
+      openConflicts: (folder, files, applyBranch) => this.openWorktreeConflicts(authority, folder, files, applyBranch),
       publish: (key) => this.withScmRoot(key, async (repoId) => {
         await this.requireScm().runRequest({ op: 'publish', repoId });
       }),
@@ -4061,14 +5662,18 @@ class DesktopApp {
 
   // What source control's worktree flows need of worktree chats (D58, B40, B45, rules 14 and 16).
   private scmWorktreeDeps(): ScmWorktreeDeps {
-    const liveChatAt = (worktreePath: string): ChatWorktreeRecord | undefined => this.worktreeRecords.records().find(
-      (record): record is ChatWorktreeRecord => record.kind === 'chat' && record.deletedAt === undefined && folderKey(record.worktreeRoot) === folderKey(worktreePath),
-    );
+    // a worktree path is native to its authority, so it is looked up only in that authority's registry, by its OS's rules
+    const liveChatAt = (authority: string, worktreePath: string): ChatWorktreeRecord | undefined => {
+      const os = this.authorityOs(authority);
+      return this.worktreeRegistry(authority)?.records().find(
+        (record): record is ChatWorktreeRecord => record.kind === 'chat' && record.deletedAt === undefined && folderKeyOn(os, record.worktreeRoot) === folderKeyOn(os, worktreePath),
+      );
+    };
     return {
-      deleteChatWorktreeAt: async (worktreePath) => {
-        const record = liveChatAt(worktreePath);
+      deleteChatWorktreeAt: async (authority, worktreePath) => {
+        const record = liveChatAt(authority, worktreePath);
         if (!record) return false;
-        await this.requireWorktrees().finish(record.id, 'delete');
+        await this.worktreesOf(authority).finish(record.id, 'delete');
         return true;
       },
       adopt: async (project, worktree, repositoryRoot, mainProject) => {
@@ -4086,11 +5691,11 @@ class DesktopApp {
       },
       markRemoved: (worktreePath) => this.worktreeEngine.markAdoptedRemoved(worktreePath),
       closeProject: (projectKey) => this.closeProjectForDelete(projectKey),
-      chatOf: (worktreePath) => {
-        const record = liveChatAt(worktreePath);
-        return record ? this.worktreeChatOf(record) : undefined;
+      chatOf: (authority, worktreePath) => {
+        const record = liveChatAt(authority, worktreePath);
+        return record ? this.worktreeChatOf(record, authority) : undefined;
       },
-      newChatTargetAt: (worktreePath) => this.newChatInTarget(liveChatAt(worktreePath)),
+      newChatTargetAt: (authority, worktreePath) => this.newChatInTarget(liveChatAt(authority, worktreePath)),
       selectChat: async (chatId) => {
         await this.selectChat(chatId);
       },
@@ -4109,7 +5714,7 @@ class DesktopApp {
   }
 
   // B45: the worktree's most recently viewed chat, loaded or listed; a worktree no chat uses yet names none.
-  private worktreeChatOf(record: ChatWorktreeRecord): ScmWorktreeChat | undefined {
+  private worktreeChatOf(record: ChatWorktreeRecord, authority: string): ScmWorktreeChat | undefined {
     const loaded = [...this.worktreeStates.values()]
       .filter((event) => event.worktreeId === record.id)
       .flatMap((event) => {
@@ -4118,7 +5723,7 @@ class DesktopApp {
       })
       .sort((a, b) => (this.lastViewed.get(b.panel) ?? 0) - (this.lastViewed.get(a.panel) ?? 0))[0];
     if (loaded) return { chatId: this.chatIdOf(loaded.panel), title: this.titleOf(loaded.panel), place: loaded.event.state.place };
-    const row = [...(this.catalogRows.get(folderKey(record.projectPath)) ?? [])]
+    const row = [...(this.catalogRows.get(this.worktreeProjectKey(authority, record.projectPath)) ?? [])]
       .filter((candidate) => candidate.worktree?.worktreeId === record.id)
       .sort((a, b) => b.timestamp - a.timestamp)[0];
     return row?.worktree ? { chatId: row.id, title: storedTitle(row), place: row.worktree.place } : undefined;
@@ -4141,9 +5746,20 @@ class DesktopApp {
   // Rule 14 for a worktree open as its own project: its chats unload and its terminals stop (asked first when one runs a
   // process) before `git worktree remove`; a running conversation refuses.
   private async closeProjectForDelete(projectKey: string): Promise<'closed' | 'cancelled' | { readonly reason: string }> {
-    const project = this.projectByKey(projectKey);
+    const remote = this.remoteProject(projectKey);
+    const project = remote ?? this.projectByKey(projectKey);
     const running = { reason: this.requireLocalization().t('A conversation is running in {0}. Stop it or wait for it to finish, then remove the project.', project.name) };
     if (await this.projectBusy(projectKey)) return running;
+    // a remote project closes as Remove Project closes it, its host's terminals asked about first
+    if (remote) {
+      const hostTerminals = await this.askRemoteTerminals(remote);
+      if (hostTerminals === 'cancel') return 'cancelled';
+      if (await this.projectBusy(projectKey)) return running;
+      this.releaseRemoteTerminals(remote, hostTerminals);
+      await this.hostStore?.removeProject(remote.authorityKey, remote.folderKey, remote.key);
+      await this.clientFor(remote.authorityKey)?.whenFolderReleased(remote.fsPath);
+      return 'closed';
+    }
     const terminals = this.requireTerminals();
     if (!(await terminals.confirmKill(terminals.idsIn(projectKey)))) return 'cancelled';
     // a turn may have started while the question was open
@@ -4154,6 +5770,7 @@ class DesktopApp {
       if (panel && !panel.isDisposed) panel.close();
     }
     await this.projects.remove(project.fsPath);
+    await this.hostStore?.removeFromOrder(projectKey);
     await this.client()?.whenFolderReleased(project.fsPath);
     return 'closed';
   }
@@ -4240,7 +5857,7 @@ class DesktopApp {
   // Main's notices about a remote host's work, with the host's name from this computer's host store beside them, never one a core sent.
   private hostNotices(authority: string): NotificationService {
     return createDesktopNotificationService({
-      notice: (severity, message, actions) => this.notificationCenter.notice(severity, message, actions, this.hostName(authority)),
+      notice: (severity, message, actions) => this.notificationCenter.notice(severity, message, actions, this.notificationHost(authority)),
       ask: (question, signal) => this.ask({ ...question, message: this.requireLocalization().t('{0}: {1}', this.hostName(authority), question.message) }, signal),
       t: (message) => this.requireLocalization().t(message),
       log: (line) => log(line),
@@ -4331,19 +5948,16 @@ class DesktopApp {
     }
   }
 
-  // Slice 12's merge editor on the first conflicted file of the repository holding folder; Apply's conflicts take the
-  // worktree branch's Incoming label.
-  private async openWorktreeConflicts(folder: string, files: readonly string[], applyBranch?: string): Promise<void> {
-    const live = this.worktreeRecords.liveChatRecordAt(folder);
-    const key = live ? this.worktreeRootKey(live) : folderKey(folder);
-    await this.withScmRoot(key, async (repoId) => {
-      const scm = this.requireScm();
-      if (applyBranch !== undefined) scm.deps.service.noteWorktreeConflicts(repoId, files, applyBranch);
-      await scm.deps.service.currentStatus(repoId);
-      const first = files[0];
-      if (first !== undefined) await scm.runRequest({ op: 'openMergeEditor', repoId, path: first });
-      return undefined;
-    });
+  private openWorktreeConflicts(authority: string, folder: string, files: readonly string[], applyBranch?: string): Promise<void> {
+    return openWorktreeConflicts({
+      liveChatRecordAt: (on, at) => this.worktreeRegistry(on)?.liveChatRecordAt(at),
+      worktreeRootKey: (record, on) => this.worktreeRootKey(record, on),
+      worktreeProjectKey: (on, at) => this.worktreeProjectKey(on, at),
+      withScmRoot: (key, work) => this.withScmRoot(key, work),
+      noteWorktreeConflicts: (repoId, conflicted, branch) => this.requireScm().deps.service.noteWorktreeConflicts(repoId, conflicted, branch),
+      currentStatus: (repoId) => this.requireScm().deps.service.currentStatus(repoId),
+      openMergeEditor: (repoId, path) => this.requireScm().runRequest({ op: 'openMergeEditor', repoId, path }),
+    }, authority, folder, files, applyBranch);
   }
 
   // Per worktree, the project's chats working in it and their latest activity, listed or loaded (the New menu's rows).
@@ -4482,10 +6096,16 @@ class DesktopApp {
     if (!created.ok) log(`[terminal] New Terminal refused: ${created.reason}`);
   }
 
+  // A terminal's links resolve through its project's workspace: this computer's, or a remote authority's while it is usable.
+  private linksReachable(base: LinkBase): boolean {
+    const authority = authorityKeyOfProject(base.project.key);
+    return authority === 'local' || this.authorities?.connectedWorkspace(authority) !== undefined;
+  }
+
   // A terminal link click: resolved again here, then a file opens in the editor (focused, a user's action) and a folder in Files.
   private async openTerminalLink(request: TerminalOpenLink): Promise<void> {
     const base = this.requireTerminals().linkBase(request.id);
-    if (!base) return;
+    if (!base || !this.linksReachable(base)) return;
     const link = await this.terminalLinks.resolveFresh(request.path, base);
     if (!link) return;
     if (link.kind === 'folder') {
@@ -4772,7 +6392,7 @@ class DesktopApp {
       project: this.notificationProject(projectKey),
       title: this.titleOf(panel),
       // the host store's name, never one a core sent
-      ...(panel.authority !== 'local' ? { host: this.hostName(panel.authority) } : {}),
+      ...(panel.authority !== 'local' ? (({ name, tone }) => ({ host: name, ...(tone !== undefined ? { hostTone: tone } : {}) }))(this.notificationHost(panel.authority)) : {}),
     };
   }
 
@@ -4805,6 +6425,20 @@ class DesktopApp {
     },
   };
 
+  // A remote project's badge: its host as this computer names it.
+  private shellAuthority(authorityKey: string): ShellProject['authority'] {
+    const color = this.hostColor(authorityKey);
+    const kind = authorityKey === 'loopback' ? 'loopback' : 'ssh';
+    return { key: authorityKey, kind, hostId: this.hostIdOf(authorityKey), name: this.hostName(authorityKey), ...(color !== undefined ? { color } : {}) };
+  }
+
+  // A remote authority's state; an SSH host's cancelled attempt leaves it offline, not failed.
+  private connectionOf(authorityKey: string): ShellProject['connection'] {
+    const hostId = hostIdOfAuthority(authorityKey);
+    if (hostId !== undefined && this.remoteHosts) return this.remoteHosts.connectionOf(hostId);
+    return this.authorities?.state(authorityKey) ?? 'offline';
+  }
+
   private shellState(views: PanelViews): Omit<ShellState, 'revision'> {
     const client = this.client();
     const defaultKey = client?.defaultTarget()?.key;
@@ -4828,9 +6462,10 @@ class DesktopApp {
         name: client?.resolve(key)?.label ?? folder.name,
         fsPath: folder.fsPath,
         trusted: this.trust.isTrusted(folder.fsPath),
-        authority: { kind: 'local', name: t('This computer') },
+        authority: { key: 'local', kind: 'local', name: t('This computer') },
         platform: shellPlatform(process.platform),
         connection: 'connected',
+        trash: true,
         ...(branch !== undefined ? { branch } : {}),
         ...(worktreeOf !== undefined ? { worktreeOf } : {}),
         running: counts.get(key)?.running ?? 0,
@@ -4844,9 +6479,10 @@ class DesktopApp {
         name: project.name,
         fsPath: project.fsPath,
         trusted: this.isProjectTrusted(project),
-        authority: { kind: 'loopback', hostId: this.hostIdOf(project.authorityKey), name: this.hostName(project.authorityKey) },
+        authority: this.shellAuthority(project.authorityKey),
         platform: project.os,
-        connection: this.authorities?.state(project.authorityKey) ?? 'offline',
+        connection: this.connectionOf(project.authorityKey),
+        trash: false,
         ...(branch !== undefined ? { branch } : {}),
         running: counts.get(project.key)?.running ?? 0,
         waiting: counts.get(project.key)?.waiting ?? 0,
@@ -4871,10 +6507,21 @@ class DesktopApp {
       notifications: this.notificationCenter.bell(),
       engineHalted: this.core.halted(),
       engines: this.engines(),
+      remoteEnabled: REMOTE,
+      hosts: REMOTE ? this.requireRemoteHosts().shellHosts() : [],
       search: shellSearchSettings(this.requirePlatform().settings),
       shownFolders: this.shownFolders.all(),
       sidebar: { alwaysShowHeaderActions: this.requirePlatform().settings.get<unknown>(SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING) === true },
+      projectsView: this.requirePlatform().settings.get<unknown>(PROJECTS_VIEW_SETTING) === 'grouped' ? 'grouped' : 'flat',
+      projectGroups: this.projectGroups(projects.map((project) => project.key)),
     };
+  }
+
+  // The grouped view's groups of the shown projects in the stored group order, and which of them are collapsed.
+  private projectGroups(shownKeys: readonly string[]): ShellState['projectGroups'] {
+    const groups = groupsOf(shownKeys);
+    const order = this.hostStore?.groups(groups) ?? groups;
+    return { order, collapsed: (this.hostStore?.collapsedGroups() ?? []).filter((group) => order.includes(group)) };
   }
 
   private titleOf(panel: DesktopPanel): string {
@@ -4888,6 +6535,18 @@ class DesktopApp {
   private shellStateChanged(): void {
     this.shell?.stateChanged();
     this.updateWindowTitle();
+    this.publishHostAttention();
+    this.publishChatConnections();
+    this.publishVisibleAuthorities();
+  }
+
+  // The remote authority of the project the window shows, while the window is shown and not minimized.
+  private publishVisibleAuthorities(): void {
+    const window = this.window;
+    const shown = window !== undefined && !window.isDestroyed() && window.isVisible() && !window.isMinimized();
+    const key = this.selectedProjectKey;
+    const authority = key === undefined ? 'local' : authorityKeyOfProject(key);
+    this.setVisibleRemoteAuthorities(shown && authority !== 'local' ? [authority] : []);
   }
 
   // undefined: every project's list. With no core (a reload or quit tore it down), or while a closing window or core closes
@@ -4968,6 +6627,8 @@ class DesktopApp {
       editorGit: this.editorPane?.activeGit() ?? null,
       selectedChatHasChanges: this.chatReviews.hasChanges(this.selectedChatKey()),
       ...this.selectedWorktreeMenuState(),
+      remoteHostConnected: this.selectedProjectKey !== undefined && this.remoteProject(this.selectedProjectKey) !== undefined && this.authorities?.connection(authorityKeyOfProject(this.selectedProjectKey)) !== undefined,
+      remoteHostSaved: REMOTE && (this.hostStore?.hosts().length ?? 0) > 0,
     };
   }
 
@@ -5075,7 +6736,13 @@ class DesktopApp {
   };
 
   private installMenu(): void {
-    installApplicationMenu(this.projects.folders(), this.menuActions(), this.requirePlatform().localization, this.menuState());
+    installApplicationMenu(this.orderedLocalFolders(), this.menuActions(), this.requirePlatform().localization, this.menuState());
+  }
+
+  // projects.json's folders in the sidebar order, which every list of projects shown to the user follows.
+  private orderedLocalFolders(): readonly OpenFolder[] {
+    const byKey = new Map(this.projects.folders().map((folder) => [folderKey(folder.fsPath), folder]));
+    return (this.hostStore?.order([...byKey.keys()]) ?? [...byKey.keys()]).map((key) => byKey.get(key)!);
   }
 
   private menuActions(): MenuActions {
@@ -5194,6 +6861,13 @@ class DesktopApp {
       showLog: () => showLog(),
       // the selected project's host
       restartEngine: () => this.restartEngine(authorityKeyOfProject(this.selectedProjectKey ?? '')),
+      ...(REMOTE ? {
+        remote: {
+          connectToHost: () => this.openConnect(undefined),
+          disconnectHost: () => this.disconnectSelectedHost(),
+          openFolderOnHost: () => { this.openFolderOnHost().catch(this.shellFailure('Open Folder on Host', 'Damocles could not open the Connect dialog: {0}')); },
+        },
+      } : {}),
       ...(LOOPBACK ? {
         loopback: {
           openFolder: () => { this.openFolderThroughLocalDaemon().catch(this.shellFailure('Open Folder Through Local Daemon', 'Damocles could not open the folder through the local daemon: {0}')); },
@@ -5206,20 +6880,140 @@ class DesktopApp {
     };
   }
 
-  // A close or quit asks about running terminals (G22), then releases the editors (AD5); true when it may go on. The
-  // terminals' answer holds until the editors cancel, so the window's own close event does not ask twice. Callers go
-  // through lifecycle.release, which shares one question among every close and quit.
-  private async releaseForClose(): Promise<boolean> {
-    const terminals = this.terminals;
-    if (!this.terminalsReleased) this.terminalsReleased = !terminals || (await terminals.confirmKill(terminals.quitIds()));
-    if (!this.terminalsReleased) return false;
-    let released = false;
-    try {
-      released = await (this.editorPane?.release() ?? Promise.resolve(true));
-    } finally {
-      if (!released) this.terminalsReleased = false;
-    }
-    return released;
+  // What the close's remote question reads and does: every usable connection's chat runs, the setting, the dialog, the
+  // keep-running refresh and push, each run's Stop path and the finished-while-away record.
+  private closeRemoteDeps(): Parameters<typeof askRemoteRuns>[0] {
+    const keepDeps: KeepRunningDeps = {
+      resolveCredential: (provider, force) => this.core.run('Refreshing a sign-in for Keep running', (core) => core.client.resolveCredential(provider, force)),
+      clientAuth: () => this.core.run('Sign-ins for Keep running', (core) => core.client.clientAuth()),
+      log: (line) => log(line),
+    };
+    return {
+      hostRuns: () => this.remoteHostRuns(),
+      setting: () => {
+        const value = this.platform?.settings.get<unknown>(REMOTE_CLOSE_WITH_RUNNING_AGENTS_SETTING);
+        return (isDesktopSettingValue(REMOTE_CLOSE_WITH_RUNNING_AGENTS_SETTING, value) ? value : 'ask') as CloseWithRunningAgents;
+      },
+      saveSetting: (choice) => writeDesktopSetting(this.requirePlatform().settings, REMOTE_CLOSE_WITH_RUNNING_AGENTS_SETTING, choice),
+      row: (host, run) => this.closeRemoteRow(host, run),
+      ask: async (rows, onRows) => {
+        const request = parseCloseRemoteRequest(rows);
+        const overlay = this.overlay;
+        // a dialog that cannot show keeps the runs, as an OS shutdown does
+        if (!request || !overlay) {
+          log(`[close] the remote question cannot show (${request ? 'no overlay' : `${rows.length} rows past its bounds`}); keeping the runs`);
+          return { choice: 'keep', dontAskAgain: false };
+        }
+        this.revealWindow();
+        onRows((next) => overlay.updateCloseRemote(next));
+        try {
+          return closeRemoteResult(await overlay.request(request, webContents.getFocusedWebContents() ?? undefined));
+        } catch (err) {
+          log(`[close] the remote question did not show (${err instanceof Error ? err.message : String(err)}); keeping the runs`);
+          return { choice: 'keep', dontAskAgain: false };
+        }
+      },
+      onStatus: (listener) => {
+        this.remoteStatusListeners.add(listener);
+        return { dispose: () => { this.remoteStatusListeners.delete(listener); } };
+      },
+      onHostChanged: (listener) => {
+        this.hostNoticeListeners.add(listener);
+        return { dispose: () => { this.hostNoticeListeners.delete(listener); } };
+      },
+      hostFields: (hostId) => this.closeRowHost(hostId),
+      startRefresh: (runs) => startKeepRunningRefresh(keepDeps, runs),
+      keepAtShutdown: (runs, hosts) => keepRunningAtShutdown(keepDeps, runs, hosts, UNATTENDED_PUSH_MS),
+      pushTo: (host): KeepRunningHost => ({
+        hostId: host.hostId,
+        push: (provider, credential, signal) => this.requireRemoteCore(host.authorityKey).client.pushCredential(provider, credential, signal),
+      }),
+      stop: (authority, panelId) => this.requireRemoteCore(authority).client.stopChat(panelId),
+      leftRunning: (hosts) => Promise.all(hosts.map((host) => this.requireRemoteState().setAway(host.authorityKey, awayChats(host.runs, (panelId) => {
+        const view = this.panelOfCore(chatKey(host.authorityKey, panelId));
+        return view === undefined ? undefined : this.sessionIdOf(view);
+      }), this.remoteCores.get(host.authorityKey)?.epoch() ?? null))).then(() => undefined),
+      log: (line) => log(line),
+    };
+  }
+
+  // Each usable connection's chat runs; a daemon that does not answer listRuns is left out, logged.
+  private remoteHostRuns(): Promise<HostRuns[]> {
+    const authorities = this.authorities;
+    if (!authorities) return Promise.resolve([]);
+    return listHostRuns(authorities.connectedKeys().flatMap((authorityKey) => {
+      const connection = authorities.connection(authorityKey);
+      if (!connection) return [];
+      return [{
+        hostId: this.hostIdOf(authorityKey),
+        authorityKey,
+        list: async () => {
+          // a daemon that cannot tell this device's runs apart answers the frozen listRuns, every device's runs
+          const own = connection.features.includes(LIST_OWN_RUNS_FEATURE);
+          if (!own) log(`[close] ${authorityKey} cannot tell this device's runs apart; asking about every run it lists`);
+          return (own ? await connection.control.request('listOwnRuns', {}) : await connection.control.request('listRuns', {})).runs;
+        },
+      }];
+    }), (line) => log(line));
+  }
+
+  // A close row's host part: its name, safety color and logout warning as this computer knows them now.
+  private closeRowHost(hostId: string): CloseRowHost {
+    const { name, tone } = this.notificationHost(hostId === 'loopback' ? 'loopback' : sshAuthorityKey(hostId));
+    const lingerWarning = this.remoteConnections?.notices(hostId).some((notice) => notice.code === 'noLinger') === true;
+    return { hostLabel: name, ...(tone !== undefined ? { hostTone: tone } : {}), ...(lingerWarning ? { lingerWarning: true as const } : {}) };
+  }
+
+  // A run's row: its chat's title, its project and host as this computer names them, its status from the chat's activity.
+  private closeRemoteRow(host: HostRuns, run: Run): CloseRemoteRow {
+    const project = this.remoteProjects().find((candidate) => candidate.authorityKey === host.authorityKey && candidate.folderKey === run.projectKey);
+    const activity = this.activity.get(chatKey(host.authorityKey, run.id));
+    const sessionId = this.clientFor(host.authorityKey)?.chat(run.id)?.sessionId;
+    const stored = sessionId === undefined || project === undefined ? undefined : this.catalogRows.get(project.key)?.find((session) => session.id === sessionId);
+    return {
+      hostId: host.hostId,
+      panelId: closeRowId(host.hostId, run.id),
+      // the title Chats shows; a chat run's own title names the core's panel, never the conversation
+      title: stored ? storedTitle(stored) : '',
+      projectLabel: project?.name ?? this.hostName(host.authorityKey),
+      ...this.closeRowHost(host.hostId),
+      status: activity === undefined ? (run.state === 'waiting' ? 'waiting' : 'running') : closeStatusOf(activity),
+    };
+  }
+
+  // A remote chat's activity by its session: its Chats row shows another device's run while this window has not loaded it.
+  private hostSessionActivity(authority: string, sessionId: string, activity: ChatActivity): void {
+    const sessionKey = `${authority}\n${sessionId}`;
+    const before = statusOf(this.sessionActivity.get(sessionKey));
+    if (statusOf(activity) === 'idle') this.sessionActivity.delete(sessionKey);
+    else this.sessionActivity.set(sessionKey, activity);
+    if (before === statusOf(activity)) return;
+    for (const project of this.remoteProjects()) if (project.authorityKey === authority) this.chatsChanged(project.key);
+  }
+
+  private requireRemoteCore(authority: string): RemoteHostedCore {
+    const core = this.remoteCores.get(authority)?.host.current();
+    if (!core) throw this.notConnected(authority);
+    return core;
+  }
+
+  // An OS shutdown or an update's quit: the remote runs are kept with no question, their tokens pushed within the window.
+  private quitUnattended(why: string): void {
+    log(`[close] ${why}: keeping the remote runs without asking`);
+    this.closeRelease.keepRunsWithoutAsking();
+    app.quit();
+  }
+
+  // The quit's graceful Disconnect from each daemon that lists it, after the views detached; the daemon then drops the
+  // connection at once instead of holding it for a resume.
+  private async disconnectRemotes(): Promise<void> {
+    const authorities = this.authorities;
+    if (!authorities) return;
+    await Promise.all(authorities.connectedKeys().map(async (authorityKey) => {
+      const connection = authorities.connection(authorityKey);
+      if (!connection?.features.includes(DISCONNECT_FEATURE)) return;
+      await connection.control.request('disconnect', {}).catch((err: unknown) => log(`[close] disconnecting from ${authorityKey} failed: ${err instanceof Error ? err.message : String(err)}`));
+    }));
   }
 
   // The extension's deactivate chain (session metadata index close, lease release, sentinels, stores), after the window closed.
@@ -5242,7 +7036,17 @@ class DesktopApp {
       // a remote host's terminals and its daemon outlive the app: the quit detaches from them
       disposeTerminals: async () => {
         await this.terminals?.dispose();
+        await detachRemotes({
+          mirrorsIdle: () => Promise.allSettled([...this.sessionMirrors.values()].map((mirror) => mirror.idle())),
+          disconnect: () => this.disconnectRemotes(),
+          waitMs: REMOTE_DETACH_WAIT_MS,
+          log: (line) => log(line),
+        });
+        this.otherProtocolHosts.dispose();
+        this.remoteConnections?.dispose();
         this.authorities?.dispose();
+        await this.sshAskpass?.dispose();
+        await this.exitControlMasters();
       },
       closeWatchers: async () => this.platform?.fileWatchers.close(),
       closeTimeoutMs: CLOSE_TIMEOUT_MS,

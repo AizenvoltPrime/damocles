@@ -1,0 +1,5 @@
+// Type-checks the remote end-to-end suite, which imports the desktop suite's support; Playwright runs it untyped.
+{
+  "extends": "../desktop/tsconfig.json",
+  "include": ["./**/*.ts", "../../playwright.remote.config.ts", "../../src/**/*.d.ts"]
+}

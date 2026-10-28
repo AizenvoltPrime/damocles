@@ -33,6 +33,8 @@ export interface SessionOptions {
   platform: PlatformWithWorktrees;
   permissionHandler: PermissionHandler;
   onMessage: (message: ExtensionToWebviewMessage) => void;
+  /** A daemon's core: posts to each view of the chat the messages built for that view's client (undefined: not known yet). */
+  onViewMessages?: (build: (clientId: string | undefined) => readonly ExtensionToWebviewMessage[]) => void;
   /**
    * `stored`: the session already has its file on disk (a resumed or forked one); a new one gets it with its first prompt.
    * `resumed`: a stored conversation a resume opened, which the router shows itself once its history is replayed.

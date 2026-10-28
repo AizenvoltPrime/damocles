@@ -25,7 +25,7 @@ function fakePi(): PiCodingAgentModule {
   } as unknown as PiCodingAgentModule;
 }
 
-const permissionHandler = { getPermissionMode: () => 'default' } as unknown as PermissionHandler;
+const permissionHandler = { getPermissionMode: () => 'default', turnPermissionMode: () => 'default' } as unknown as PermissionHandler;
 
 type ToolNameOpts = Omit<Parameters<typeof buildCustomTools>[0], 'getShellOptions' | 'shellCancel' | 'deliverUserNote' | 'shellJob'>;
 

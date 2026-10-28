@@ -69,7 +69,7 @@ export interface QuickDiffModel {
   readonly status: ShallowRef<QuickDiffStatus>;
   /** Reads the base again now, then diffs: after a stage or unstage this editor ran. */
   refresh(): Promise<void>;
-  /** The state for the model's current text, waiting for a diff of it when an edit is still pending. */
+  /** The state for the model's current text against the latest base, waiting for a pending base read or edit's diff. */
   current(): Promise<QuickDiffState | null>;
   dispose(): void;
 }
@@ -88,6 +88,8 @@ export function createQuickDiffModel(api: DamoclesScmApi, model: MonacoEditor.IT
   let editTimer: ReturnType<typeof setTimeout> | undefined;
   let baseTimer: ReturnType<typeof setTimeout> | undefined;
   let baseRead = 0;
+  // a base read has not landed: the base held may be an index before it, so nothing diffs or answers from it
+  let baseInFlight = false;
   let requested: { id: number; versionId: number } | undefined;
   let waiters: Array<() => void> = [];
   let disposed = false;
@@ -124,7 +126,7 @@ export function createQuickDiffModel(api: DamoclesScmApi, model: MonacoEditor.IT
   function diffNow(): void {
     clearTimeout(editTimer);
     editTimer = undefined;
-    if (disposed || base === null) return;
+    if (disposed || base === null || baseInFlight) return;
     if (worker === undefined || posted !== generation) {
       post({ kind: 'base', key, base: { indexText: base.indexText, headText: base.headText } });
       posted = generation;
@@ -138,9 +140,12 @@ export function createQuickDiffModel(api: DamoclesScmApi, model: MonacoEditor.IT
     clearTimeout(baseTimer);
     baseTimer = undefined;
     const read = ++baseRead;
+    baseInFlight = true;
+    requested = undefined;
     // a read main could not answer leaves the file without marks, as a refused one does
     const result = await api.quickDiffBase(target).catch(() => null);
     if (disposed || read !== baseRead) return;
+    baseInFlight = false;
     if (result === null || !result.ok) {
       base = null;
       requested = undefined;
@@ -173,8 +178,10 @@ export function createQuickDiffModel(api: DamoclesScmApi, model: MonacoEditor.IT
     status,
     refresh: readBase,
     async current() {
-      if (base === null) return null;
-      if (state.value?.versionId === model.getVersionId() && editTimer === undefined && requested === undefined) return state.value;
+      // the revision moved since the base was read: the action waits for the base read that follows it
+      if (baseTimer !== undefined) void readBase();
+      if (!baseInFlight && base === null) return null;
+      if (!baseInFlight && state.value?.versionId === model.getVersionId() && editTimer === undefined && requested === undefined) return state.value;
       await new Promise<void>((resolve) => {
         waiters.push(resolve);
         if (requested === undefined || requested.versionId !== model.getVersionId()) diffNow();

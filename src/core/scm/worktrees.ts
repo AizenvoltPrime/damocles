@@ -12,9 +12,12 @@ export function worktreeName(branchOrCommitish: string, branchPrefix: string): s
   return name.replace(/\//g, '-');
 }
 
-/** VS Code's default worktree path: `<root>.worktrees/<name>` beside the repository, or `<name>` beside a linked worktree. */
-export function defaultWorktreePath(root: string, name: string, linked: boolean): string {
-  return linked ? path.join(path.dirname(root), name) : path.join(path.dirname(root), `${path.basename(root)}.worktrees`, name);
+/**
+ * VS Code's default worktree path: `<root>.worktrees/<name>` beside the repository, or `<name>` beside a linked worktree, in
+ * the path rules of the host the repository is on.
+ */
+export function defaultWorktreePath(root: string, name: string, linked: boolean, flavor: path.PlatformPath = path): string {
+  return linked ? flavor.join(flavor.dirname(root), name) : flavor.join(flavor.dirname(root), `${flavor.basename(root)}.worktrees`, name);
 }
 
 /** `worktree add [-b <branch>] <path> <commit-ish>`; a new branch starts at commitish, an existing one is checked out there. */

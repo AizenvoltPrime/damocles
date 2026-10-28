@@ -1,7 +1,7 @@
 import type { editor as MonacoEditor, IDisposable } from 'monaco-editor/editor/editor.api';
 import { applyLineChanges, selectedLineChanges, type LineChange } from '@shared/scm/apply-line-changes';
 import type { Monaco } from '@/components/editor/useMonaco';
-import type { ScmQuickDiffBaseResult } from '../../preload/scm-channels';
+import type { ScmQuickDiffBaseResult, ScmRangeAction, ScmRangeRefusal } from '../../preload/scm-channels';
 import type { DamoclesShellApi, ShellDiffGit } from '../../preload/shell-channels';
 import type { EditorTargetCommand } from './editor-store';
 import { lineEdits } from './format-edits';
@@ -81,13 +81,20 @@ export function attachDiffGit(diff: MonacoEditor.IStandaloneDiffEditor, monaco: 
     return (await baseOf(indexText))?.indexOid ?? null;
   }
 
+  // main owns notices, so an action that cannot apply is told there
+  async function refuse(action: ScmRangeAction, reason: ScmRangeRefusal): Promise<void> {
+    await deps.api.scm.run({ op: 'refuseRanges', repoId: git.repoId, action, reason });
+  }
+
   async function stage(changes: readonly LineChange[]): Promise<void> {
     const models = diff.getModel();
-    if (!models || changes.length === 0) return;
+    if (!models) return;
+    if (changes.length === 0) return refuse('stage', 'noChanges');
     const version = models.modified.getVersionId();
     const oid = await indexOid(models.original.getValue());
+    if (oid === null) return refuse('stage', 'changed');
     // the ranges belong to the text they were taken from; a keystroke during the read makes them stale
-    if (oid === null || models.modified.getVersionId() !== version) return;
+    if (models.modified.getVersionId() !== version) return refuse('stage', 'outOfRange');
     deps.flush(deps.documentId);
     await deps.api.scm.run({ op: 'stageRanges', repoId: git.repoId, path: git.path, documentId: deps.documentId, ranges: changes, indexOid: oid });
   }
@@ -95,18 +102,19 @@ export function attachDiffGit(diff: MonacoEditor.IStandaloneDiffEditor, monaco: 
   // HEAD's side is a snapshot of HEAD at the change's source path, which core reads again and checks by headOid
   async function unstage(changes: readonly LineChange[]): Promise<void> {
     const models = diff.getModel();
-    if (!models || changes.length === 0) return;
+    if (!models) return;
+    if (changes.length === 0) return refuse('unstage', 'noChanges');
     const base = await baseOf(models.modified.getValue());
-    if (base === null || !sameLines(base.headText ?? '', models.original.getValue())) return;
+    if (base === null || !sameLines(base.headText ?? '', models.original.getValue())) return refuse('unstage', 'changed');
     await deps.api.scm.run({ op: 'unstageRanges', repoId: git.repoId, path: git.path, documentId: deps.documentId, ranges: changes, indexOid: base.indexOid, headOid: base.headOid });
   }
 
-  function revert(kept: readonly LineChange[]): void {
+  async function revert(kept: readonly LineChange[]): Promise<void> {
     const models = diff.getModel();
     if (!models || deps.readOnly()) return;
     const current = models.modified.getValue();
     const edits = lineEdits(current, applyLineChanges(models.original.getValue(), current, kept));
-    if (edits.length === 0) return;
+    if (edits.length === 0) return refuse('revert', 'noChanges');
     models.modified.pushStackElement();
     models.modified.pushEditOperations(modified.getSelections() ?? [], edits.map((edit) => ({ range: edit.range, text: edit.text })), () => null);
     models.modified.pushStackElement();
@@ -149,7 +157,7 @@ export function attachDiffGit(diff: MonacoEditor.IStandaloneDiffEditor, monaco: 
       const changes = lineChanges();
       const count = model.getLineCount();
       if (git.group === 'workingTree' && command === 'stageSelectedRanges') await guarded(() => stage(selectedLineChanges(changes, ranges, count)));
-      else if (git.group === 'workingTree' && command === 'revertSelectedRanges') revert(changesKeptByRevert(changes, ranges, count));
+      else if (git.group === 'workingTree' && command === 'revertSelectedRanges') await revert(changesKeptByRevert(changes, ranges, count));
       else if (git.group === 'index' && command === 'unstageSelectedRanges') await guarded(() => unstage(selectedLineChanges(changes, ranges, count)));
     },
     dispose() {

@@ -528,7 +528,7 @@ export class SearchHost {
 
   private messageOf(result: EditorRunResult): SearchEditorMessage | undefined {
     if (result.error !== undefined) return { kind: 'error', text: result.error };
-    if (result.bufferWarning === 'timedOut') return { kind: 'error', text: this.deps.t('The regular expression took too long on the open editors, so they were not searched.') };
+    if (result.bufferWarning === 'timedOut') return { kind: 'error', text: this.deps.t('Matching the open editors took too long, so they were not searched.') };
     if (result.bufferWarning === 'unsupportedRegex') return { kind: 'error', text: this.deps.t('The open editors were not searched: this regular expression works only in ripgrep.') };
     return undefined;
   }

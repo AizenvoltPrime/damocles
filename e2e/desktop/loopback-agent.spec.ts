@@ -12,7 +12,7 @@ import { cleanUp, daemonPid, endLeftoverDaemon, filesUnder, listRuns, LOCAL_DAEM
 import { chatRequests, type OpenAIStub, type StubReply } from './support/openai-stub';
 import { readyOverlay } from './support/overlay';
 import { openProjectChat, setReducedMotion, showShellTheme, THEMES } from './support/screenshots';
-import { holdToast, popupPage, popupToasts, recordToasts, setWindowFocused, shellPage, shellState } from './support/shell';
+import { holdToast, overlayPage, popupPage, popupToasts, recordToasts, setWindowFocused, shellPage, shellState } from './support/shell';
 import { awaitTurnEnd, chatInput, clickMenu, hostMessages, postFromWebview, recordHostMessages } from './support/ui';
 import { openTerminal } from './support/terminal';
 import { optIn, setupReview } from './support/worktree-chat';
@@ -220,7 +220,15 @@ test('a loopback turn keeps running across an app quit; the relaunched view rejo
     const running = (await listRuns(first.app)).runs.filter((run) => run.kind === 'chat');
     expect(running).toEqual([expect.objectContaining({ state: expect.stringMatching(/running/) })]);
 
-    // The quit detaches this computer; parts two and three stream into the daemon's core while no view shows them.
+    // The quit asks about the running turn first; Keep running detaches this computer, and parts two and three stream into the
+    // daemon's core while no view shows them.
+    const exited = new Promise<void>((resolve) => first.app.process().once('exit', () => resolve()));
+    await first.app.evaluate(({ app }) => {
+      setImmediate(() => app.quit());
+    });
+    const quitQuestion = (await overlayPage(first.app)).getByRole('alertdialog', { name: 'Quit Damocles?' });
+    await quitQuestion.getByRole('button', { name: 'Keep running' }).click();
+    await exited;
     await first.close();
     current = undefined;
     whileAway.open();

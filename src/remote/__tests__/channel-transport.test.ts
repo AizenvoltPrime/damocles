@@ -19,6 +19,7 @@ function fakeChannel(): MessageChannel & { readonly sent: Uint8Array[]; deliver(
     deliver: (bytes) => {
       for (const listener of [...listeners]) listener(bytes);
     },
+    drained: () => Promise.resolve(),
   };
 }
 

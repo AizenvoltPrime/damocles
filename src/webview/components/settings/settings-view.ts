@@ -29,7 +29,8 @@ export interface SettingsPage {
 
 const PAGE: InjectionKey<SettingsPage> = Symbol('settingsPage');
 
-export function provideSettingsPage(query: () => string, rows: ReadonlyMap<string, SettingsRowMeta>, listed: () => ((meta: SettingsRowMeta) => boolean) | undefined = () => undefined): SettingsPage {
+// rows is read on each lookup, since a host section may arrive after the page mounted.
+export function provideSettingsPage(query: () => string, rows: () => ReadonlyMap<string, SettingsRowMeta>, listed: () => ((meta: SettingsRowMeta) => boolean) | undefined = () => undefined): SettingsPage {
   let index = 0;
   // Runs before the rows' watchers and before the rows the new query mounts, which take their slots from zero.
   watch(query, () => (index = 0));
@@ -38,7 +39,7 @@ export function provideSettingsPage(query: () => string, rows: ReadonlyMap<strin
     get query() {
       return query();
     },
-    meta: (id) => rows.get(id),
+    meta: (id) => rows().get(id),
     listed: (meta) => listed()?.(meta) ?? true,
     nextIndex: () => index++,
     shown,

@@ -5,6 +5,7 @@ import type { SendOutcome } from "../../../chat-session";
 import type { MemoryScope } from "../../../../shared/types/memory";
 import { SLASH_INVOCATION_RE } from "../../../../shared/asset-names";
 import { createQueuedMessage } from "../../queue-manager";
+import { forgetSender, recordSender } from "../../send-senders";
 import { resumeStoredSession } from "./resume-session";
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
 import { t } from "../../../l10n";
@@ -52,7 +53,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
 
   /** Withheld project-scope asset: no turn is sent, since the agent never loaded it. */
   const refuseUntrusted = (ctx: HandlerContext): InterceptResult => {
-    postMessage(ctx.host, {
+    postMessage(ctx.reply, {
       type: "notification",
       message: t(
         "This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them.",
@@ -77,12 +78,12 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       // leave no chat bubble or session entry.
 
       if (command === "memories") {
-        postMessage(ctx.host, { type: "openMemoryPanel" });
+        postMessage(ctx.reply, { type: "openMemoryPanel" });
         return { kind: "handled" };
       }
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", message: "Memory system is not available" });
         return { kind: "handled" };
       }
 
@@ -100,7 +101,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
           content = arg.slice("project:".length).trim();
         }
         if (!content) {
-          postMessage(ctx.host, { type: "memoryError", message: `Nothing to remember — provide text after /remember${tier !== "session" ? ` ${tier}:` : ""}.` });
+          postMessage(ctx.reply, { type: "memoryError", message: `Nothing to remember — provide text after /remember${tier !== "session" ? ` ${tier}:` : ""}.` });
           return { kind: "handled" };
         }
 
@@ -112,15 +113,15 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
           workspace: identityFolder(ctx.folder.fsPath),
         });
 
-        if (memory) postMessage(ctx.host, { type: "memoryCreated", memory });
-        else postMessage(ctx.host, { type: "memoryError", message: "Failed to save memory." });
+        if (memory) postMessage(ctx.reply, { type: "memoryCreated", memory });
+        else postMessage(ctx.reply, { type: "memoryError", message: "Failed to save memory." });
         return { kind: "handled" };
       }
 
       if (command === "note" && arg) {
         const note = await deps.memoryService.addNote(arg);
-        if (note) postMessage(ctx.host, { type: "memoryCreated", memory: note });
-        else postMessage(ctx.host, { type: "memoryError", message: "Failed to save note." });
+        if (note) postMessage(ctx.reply, { type: "memoryCreated", memory: note });
+        else postMessage(ctx.reply, { type: "memoryError", message: "Failed to save note." });
         return { kind: "handled" };
       }
       return { kind: "handled" };
@@ -147,8 +148,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
           const result = resolveDirectCommand(skillName);
           if (result.kind === "notification") {
             const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-            postMessage(ctx.host, stampUserMessage(ctx, originalTextContent, { correlationId }));
-            postMessage(ctx.host, { type: "notification", message: result.content, notificationType: "info" });
+            postMessage(ctx.reply, stampUserMessage(ctx, originalTextContent, { correlationId }));
+            postMessage(ctx.reply, { type: "notification", message: result.content, notificationType: "info" });
             return { kind: "handled" };
           }
           transformedContent = result.content;
@@ -195,7 +196,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       if (intercept.kind === "handled") {
         // Handled locally with no turn, so the optimistically-armed spinner has no lifecycle event to clear it.
         // A turn already running owns the spinner: the composer's Compact now sends here mid-turn.
-        if (!ctx.session.turnRunning) postMessage(ctx.host, { type: "processing", isProcessing: false });
+        if (!ctx.session.turnRunning) postMessage(ctx.reply, { type: "processing", isProcessing: false });
         return;
       }
 
@@ -208,6 +209,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       }
 
       const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      recordSender(ctx.host, ctx.viewKey, correlationId);
       const contentBlocks = hasImageContent(msgContent) ? (msgContent as UserContentBlock[]) : undefined;
 
       if (originalTextContent.trim()) {
@@ -230,7 +232,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       if (slash?.kind === "command") {
         if (attaching) {
           const terminalOnly = sending.every((info) => info.kind === "terminal");
-          postMessage(ctx.host, {
+          postMessage(ctx.reply, {
             type: "notification",
             message: terminalOnly
               ? t("A command takes no terminal output, so the attached output stays in the composer for your next message.")
@@ -239,6 +241,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
           });
         }
         await ctx.session.sendMessage(baseContent, target, correlationId, broadcast);
+        // an extension command commits no prompt, so nothing names its send once pi ran it
+        forgetSender(ctx.host, correlationId);
         return;
       }
 
@@ -252,7 +256,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
         restored = true;
         const dropped = ctx.terminalAttachments.restore(attached);
         if (dropped === 0) return;
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: dropped === 1
             ? t("An attachment added while your message was being sent did not fit beside the ones it gave back, so it was removed.")
@@ -263,6 +267,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       // Claimed before the chips leave the composer, so a Stop, New chat or disposal during the read returns them.
       const ticket = ctx.session.beginSend(correlationId, broadcast, restoreAttached);
       if (!ticket) {
+        forgetSender(ctx.host, correlationId);
         if (preApprovedSkillName) ctx.permissionHandler.revokeSkillPreApproval(preApprovedSkillName);
         return;
       }
@@ -278,8 +283,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
         if (ticket.signal.aborted || "stopped" in built) return;
         if (!built.ok) {
           // A turn already running owns the spinner.
-          if (!ctx.session.turnRunning) postMessage(ctx.host, { type: "processing", isProcessing: false });
-          postMessage(ctx.host, {
+          if (!ctx.session.turnRunning) postMessage(ctx.reply, { type: "processing", isProcessing: false });
+          postMessage(ctx.reply, {
             type: "promptReturned",
             content: typeof msgContent === "string" ? [{ type: "text", text: msgContent }] : msgContent,
             reason: "mcpResourceUnavailable",
@@ -302,6 +307,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
         ticket.end();
         // The chips leave the composer only with a prompt pi took; a later drop of it returns them through the session.
         if (outcome !== "sent") {
+          forgetSender(ctx.host, correlationId);
           restoreAttached();
           if (preApprovedSkillName) ctx.permissionHandler.revokeSkillPreApproval(preApprovedSkillName);
         }
@@ -341,11 +347,14 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const contentToQueue: ContentInput = transformedContent ?? msgContent;
 
       const queuedMessage = createQueuedMessage(contentToQueue);
+      recordSender(ctx.host, ctx.viewKey, queuedMessage.id);
       const disposition = ctx.session.queueInput(contentToQueue, queuedMessage.id, textContent, target);
+      // only a queued message's chip is answered later (processed, put back or cancelled)
+      if (disposition !== "queued") forgetSender(ctx.host, queuedMessage.id);
 
       if (disposition === "otherConversation") {
         if (preApprovedSkillName) ctx.permissionHandler.revokeSkillPreApproval(preApprovedSkillName);
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "promptReturned",
           content: typeof msgContent === "string" ? [{ type: "text", text: msgContent }] : msgContent,
           reason: "conversationChanged",
@@ -363,7 +372,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
         if (preApprovedSkillName) {
           ctx.permissionHandler.revokeSkillPreApproval(preApprovedSkillName);
         }
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: t("Cannot send mid-stream message: no active streaming session"),
           notificationType: "error",
@@ -386,7 +395,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       // A false return is the ordinary race of a click landing after the call finished, never an error.
       // It still has to be reported, because the webview marked the card "Stopping..." on the way in and
       // nothing else will ever clear that flag.
-      postMessage(ctx.host, {
+      postMessage(ctx.reply, {
         type: "toolCancelRejected",
         toolUseId: msg.toolUseId,
         ...(msg.requestId !== undefined ? { requestId: msg.requestId } : {}),

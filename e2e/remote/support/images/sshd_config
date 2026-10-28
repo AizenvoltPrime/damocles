@@ -1,0 +1,8 @@
+# The fixtures' sshd: one ed25519 host key, public keys from /etc/ssh/authorized_keys/<user>, no passwords.
+Port 22
+HostKey /etc/ssh/ssh_host_ed25519_key
+AuthorizedKeysFile /etc/ssh/authorized_keys/%u
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+PermitRootLogin no
+PidFile /run/sshd.pid

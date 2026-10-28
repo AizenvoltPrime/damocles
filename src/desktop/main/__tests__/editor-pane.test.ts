@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { testWorkspaces } from './test-workspaces';
+import { NotConnectedError } from '../workspace/workspaces';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
 import type { ActiveEditorContext } from '../../../platform/editor-service';
@@ -38,6 +39,10 @@ let browser: BrowserTabSource | undefined;
 let warnings: string[];
 // the OS of the loopback host's paths
 let hostOs: NodeJS.Platform;
+// the loopback host's connection; down, its workspace throws NotConnectedError as main's does
+let loopbackUp: boolean;
+// each reconnect's offline saves that met a changed target
+let uploadConflicts: TextDocument[][];
 // runs while a question is up, before it is answered
 let whileAsking: (() => Promise<void>) | undefined;
 
@@ -68,13 +73,20 @@ beforeEach(() => {
   };
   const t = (message: string, ...args: Array<string | number>): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]));
   hostOs = process.platform;
+  loopbackUp = true;
+  uploadConflicts = [];
   documents = new DocumentService({
+    hostLabel: (authority) => ({ hostId: authority, name: authority }),
+    uploadsConflicted: (_authority, conflicted) => void uploadConflicts.push([...conflicted]),
+    warn: (message) => warnings.push(message),
+    reopen: (document) => pane.showHeld(document),
     authorityOs: (authority) => (authority === 'loopback' ? hostOs : process.platform),
     projects: () => roots,
     workspaces: testWorkspaces({
       watchers: platform.fileWatchers,
       remote: (authorityKey) => {
         if (authorityKey !== 'loopback') throw new Error(`${authorityKey} is not connected`);
+        if (!loopbackUp) throw new NotConnectedError(`${authorityKey} is not connected.`);
         return testWorkspaces({ watchers: platform.fileWatchers, damoclesHome: path.join(root, 'host', '.damocles') }).local;
       },
     }),
@@ -82,7 +94,7 @@ beforeEach(() => {
     t,
     log: () => undefined,
     pickSavePath: async () => undefined,
-    backups: { changed: () => undefined, writeNow: async () => undefined, remove: (id) => backupsRemoved.push(id) },
+    backups: { changed: () => undefined, writeNow: async () => true, remove: (id) => backupsRemoved.push(id) },
     settings: { locate: (scope) => (scope === 'user' ? path.join(root, 'settings.json') : undefined), save: async () => ({ ok: false, error: 'unused', conflict: false }) },
   });
   pane = new EditorPane({
@@ -118,9 +130,10 @@ beforeEach(() => {
     mention: async (target) => { events.push(`mention:${JSON.stringify(target)}`); },
     browser: () => browser,
     warn: (message) => warnings.push(message),
+    hostName: (authority) => authority,
     searchEditorClosed: (documentId) => events.push(`searchEditorClosed:${documentId}`),
     reviewClosed: (reviewId) => events.push(`reviewClosed:${reviewId}`),
-    openChanges: async () => undefined,
+    openChanges: async (location) => { events.push(`openChanges:${JSON.stringify(location)}`); },
     gitOf: () => undefined,
     worktreeBranch: () => undefined,
   });
@@ -529,23 +542,27 @@ describe('restoring a backup whose file cannot be reopened as it was', () => {
     fs.writeFileSync(path.join(root, 'elsewhere.ts'), 'outside');
     fs.symlinkSync(root, path.join(projectDir, 'out'), 'junction');
     write('blob.bin', Buffer.from([0, 1, 2, 3]).toString('latin1'));
+    // an image opens as its preview, so its backup is refused though its bytes are text
+    write('logo.svg', '<svg xmlns="http://www.w3.org/2000/svg"/>\n');
     const records = [
       backup('0', { kind: 'project', projectKey: 'removed-project', relativePath: 'a.ts' }, 'removed', 'a.ts'),
       backup('1', { kind: 'project', projectKey: project.key, relativePath: 'out/elsewhere.ts' }, 'outside text', 'elsewhere.ts'),
       backup('2', { kind: 'project', projectKey: project.key, relativePath: 'blob.bin' }, 'now text', 'blob.bin'),
       backup('3', { kind: 'settings', scope: 'project', path: path.join(projectDir, '.damocles', 'settings.json') }, '{ "a": 1 }', 'settings.json'),
+      backup('4', { kind: 'project', projectKey: project.key, relativePath: 'logo.svg' }, '<svg/>', 'logo.svg'),
     ];
     await pane.restore({ tabs: [{ kind: 'code', file: { projectKey: 'removed-project', relativePath: 'a.ts' }, backupId: records[0]!.backupId }], active: 0, recent: [] }, records);
     const tabs = pane.state().tabs;
     expect(tabs.map((tab) => [tab.kind, tab.title, tab.dirty])).toEqual([
-      ['untitled', 'a.ts', true], ['untitled', 'elsewhere.ts', true], ['untitled', 'blob.bin', true], ['untitled', 'settings.json', true],
+      ['untitled', 'a.ts', true], ['untitled', 'elsewhere.ts', true], ['untitled', 'blob.bin', true], ['untitled', 'settings.json', true], ['untitled', 'logo.svg', true],
     ]);
-    expect(tabs.map((tab) => textOf(tab.id).text)).toEqual(['removed', 'outside text', 'now text', '{ "a": 1 }']);
+    expect(tabs.map((tab) => textOf(tab.id).text)).toEqual(['removed', 'outside text', 'now text', '{ "a": 1 }', '<svg/>']);
     expect(tabs.map((tab) => textOf(tab.id).backupId)).toEqual(records.map((record) => record.backupId));
     expect(removedOf(records)).toEqual([]);
-    expect(warnings).toHaveLength(4);
-    for (const [index, name] of ['a.ts', 'elsewhere.ts', 'blob.bin', 'settings.json'].entries()) expect(warnings[index]).toContain(name);
-    // blob.bin opened only to be refused; no document is left behind without a tab.
+    expect(warnings).toHaveLength(5);
+    for (const [index, name] of ['a.ts', 'elsewhere.ts', 'blob.bin', 'settings.json', 'logo.svg'].entries()) expect(warnings[index]).toContain(name);
+    expect(warnings[4]).toBe('The unsaved changes to logo.svg are in an untitled editor: The editor cannot change it as it is on disk now.');
+    // blob.bin and logo.svg opened only to be refused; no document is left behind without a tab.
     expect(documents.all().filter((document) => !tabs.some((tab) => tab.documentId === document.id))).toEqual([]);
   });
 
@@ -620,7 +637,7 @@ describe('a host\'s own settings file', () => {
 });
 
 describe('a file of another host', () => {
-  it('copies its relative path in its host\'s separator, and refuses Reveal in File Explorer and Open Changes with a warning', async () => {
+  it('copies its relative path in its host\'s separator, refuses Reveal in File Explorer with a warning, and opens its changes by its project place', async () => {
     write('src/a.ts', 'x');
     // the other OS than this computer's, so the separator differs from node:path's
     hostOs = process.platform === 'win32' ? 'linux' : 'win32';
@@ -633,8 +650,21 @@ describe('a file of another host', () => {
     expect(events).toContain(`copy:${hostOs === 'win32' ? 'src\\a.ts' : 'src/a.ts'}`);
     await pane.tabAction('revealInExplorer', tab.id);
     await pane.tabAction('openChanges', tab.id);
-    expect(warnings).toEqual(['The file is not on this computer.', 'The file is not on this computer.']);
+    expect(warnings).toEqual(['The file is not on this computer.']);
+    // source control resolves the place on the file's own authority, never as one of this computer's paths
+    expect(events.find((event) => event.startsWith('openChanges:'))).toContain(`"projectKey":${JSON.stringify(remote.key)}`);
     expect(events.some((event) => event.startsWith('reveal:') && event.includes(projectDir))).toBe(false);
+  });
+
+  it('answers whether a file tab belongs to a project, as the tabs the shell gets name it', async () => {
+    write('src/a.ts', 'x');
+    expect(pane.hasProjectTab(() => true)).toBe(false);
+    const opened = await pane.openFromUser(project.key, 'src/a.ts', {});
+    if (!opened.ok) throw new Error(opened.reason);
+    pane.showTimeline({ repoId: 'repo', path: 'src/a.ts' }, 'a.ts (Timeline)', { focus: false });
+    expect(pane.hasProjectTab((key) => key === project.key)).toBe(true);
+    expect(pane.hasProjectTab((key) => key !== project.key)).toBe(false);
+    expect(pane.state().tabs.filter((tab) => tab.projectKey === project.key)).toHaveLength(1);
   });
 
   it('fails to read a file of a project that is not listed instead of showing it empty', async () => {
@@ -1011,23 +1041,23 @@ describe('source control tab actions', () => {
     if (!active.ok) throw new Error('not opened');
     await new Promise((resolve) => setImmediate(resolve));
     const pushed = states.length;
-    await pane.openInBackground([path.join(projectDir, 'b.ts'), path.join(projectDir, 'c.ts')]);
+    await pane.openInBackground([{ path: path.join(projectDir, 'b.ts') }, { file: { projectKey: project.key, relativePath: 'c.ts' } }]);
     await new Promise((resolve) => setImmediate(resolve));
     expect(states.length - pushed).toBe(1);
     expect(pane.state().tabs.map((tab) => tab.relativePath)).toEqual(['a.ts', 'b.ts', 'c.ts']);
     expect(pane.activeTabId()).toBe(active.tabId);
 
-    await pane.showDiff((name) => `${name} (Working Tree)`, path.join(projectDir, 'b.ts'), { name: 'b.ts', content: 'old' }, { path: path.join(projectDir, 'b.ts') }, { focus: false, scm: { root: projectDir, repoId: 'repo-1' } });
+    await pane.showDiff((name) => `${name} (Working Tree)`, path.join(projectDir, 'b.ts'), { name: 'b.ts', content: 'old' }, { path: path.join(projectDir, 'b.ts') }, { focus: false, scm: { repoId: 'repo-1' } });
     await pane.showDiff((name) => `${name} (Other)`, path.join(projectDir, 'c.ts'), { name: 'c.ts', content: 'old' }, { path: path.join(projectDir, 'c.ts') }, { focus: false });
-    await pane.closeScmDiffs(path.join(root, 'elsewhere'));
+    await pane.closeScmDiffs('repo-2');
     expect(pane.state().tabs.filter((tab) => tab.kind === 'diff')).toHaveLength(2);
-    await pane.closeScmDiffs(projectDir);
+    await pane.closeScmDiffs('repo-1');
     expect(pane.state().tabs.filter((tab) => tab.kind === 'diff').map((tab) => tab.title)).toEqual(['c.ts (Other)']);
 
     const c = pane.state().tabs.find((tab) => tab.relativePath === 'c.ts' && tab.kind === 'code')!;
     const cText = textOf(c.id);
     pane.edit(cText.id, { version: cText.version, seq: 1, text: 'unsaved', overReload: false });
-    await pane.closeUnmodified((file) => folderKey(file) === folderKey(path.join(projectDir, 'b.ts')));
+    await pane.closeUnmodified((location) => folderKey(location.path) === folderKey(path.join(projectDir, 'b.ts')));
     expect(pane.state().tabs.map((tab) => `${tab.kind} ${tab.relativePath}`).sort()).toEqual(['code b.ts', 'code c.ts', 'diff c.ts']);
     expect(asked).toEqual([]);
   });
@@ -1057,7 +1087,7 @@ describe('source control tab actions', () => {
     write('dirty.ts', 'disk');
     write('shown.ts', 'disk');
     write('other.ts', 'other');
-    const diff = (name: string, repoId: string) => pane.showDiff((file) => `${file} (Working Tree)`, path.join(projectDir, name), { name, content: 'old' }, { path: path.join(projectDir, name) }, { focus: false, scm: { root: projectDir, repoId } });
+    const diff = (name: string, repoId: string) => pane.showDiff((file) => `${file} (Working Tree)`, path.join(projectDir, name), { name, content: 'old' }, { path: path.join(projectDir, name) }, { focus: false, scm: { repoId } });
     const plain = await pane.openFromUser(project.key, 'other.ts');
     if (!plain.ok) throw new Error('not opened');
     await diff('clean.ts', 'repo-1');
@@ -1122,16 +1152,21 @@ describe('source control tab actions', () => {
     expect(pane.state().documents[placeholder.documentId!]).toEqual({ name: 'logo.png (Deleted)' });
   });
 
-  it('closes the active tab, leaving a dirty one open when asked for clean tabs only', async () => {
+  it('closes the active tab of the file named, leaving a dirty one open when asked for clean tabs only', async () => {
     write('a.ts', 'a');
     const opened = await pane.openFromUser(project.key, 'a.ts');
     if (!opened.ok) throw new Error('not opened');
     const document = textOf(opened.tabId);
     pane.edit(document.id, { version: document.version, seq: 1, text: 'edited', overReload: false });
-    await pane.closeActive({ cleanOnly: true });
+    const file = { projectKey: project.key, relativePath: 'a.ts' };
+    await pane.closeActive(file, { cleanOnly: true });
+    expect(pane.state().tabs).toHaveLength(1);
+    // another file, by its project place or by a path, leaves the active tab alone
+    await pane.closeActive({ projectKey: project.key, relativePath: 'b.ts' }, { cleanOnly: false });
+    await pane.closeActive({ path: path.join(projectDir, 'b.ts') }, { cleanOnly: false });
     expect(pane.state().tabs).toHaveLength(1);
     answers = [1];
-    await pane.closeActive({ cleanOnly: false });
+    await pane.closeActive(file, { cleanOnly: false });
     expect(pane.state().tabs).toHaveLength(0);
   });
 });
@@ -1195,5 +1230,166 @@ describe('hiding the pane with its last tab', () => {
     await settled();
     expect(pane.state().tabs).toHaveLength(1);
     expect(events).not.toContain('hidePane');
+  });
+});
+
+describe('offline saves of a remote file', () => {
+  async function remoteFile(text: string) {
+    write('src/a.ts', text);
+    const remote: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(projectDir)), fsPath: projectDir, name: 'proj' };
+    roots = [remote];
+    const opened = await pane.openFromUser(remote.key, 'src/a.ts', {});
+    if (!opened.ok) throw new Error(opened.reason);
+    return { remote, tabId: opened.tabId, document: textOf(opened.tabId) };
+  }
+
+  it('marks a tab saved while its host is away as a pending upload, not dirty, and keeps its backup across a quit', async () => {
+    const { tabId, document } = await remoteFile('base\n');
+    loopbackUp = false;
+    expect(await pane.save(document.id, document.version, 'offline\n', false)).toEqual({ ok: true });
+    const tab = pane.state().tabs.find((candidate) => candidate.id === tabId)!;
+    expect(tab).toMatchObject({ dirty: false, pendingUpload: true });
+    expect(await pane.release()).toBe(true);
+    expect(persisted?.tabs).toEqual([{ kind: 'code', file: { projectKey: roots[0]!.key, relativePath: 'src/a.ts' }, backupId: document.backupId }]);
+  });
+
+  it('opens a changed target\'s upload in the merge editor, reads its three inputs and completes it through the host', async () => {
+    const { remote, document } = await remoteFile('one\ntwo\n');
+    loopbackUp = false;
+    await pane.save(document.id, document.version, 'one\nmine\n', false);
+    write('src/a.ts', 'one\ntheirs\n');
+    loopbackUp = true;
+    documents.hostConnected('loopback');
+    await vi.waitFor(() => expect(uploadConflicts).toHaveLength(1));
+    pane.showUploadMerge(uploadConflicts[0]![0]!);
+    const merge = pane.state().tabs.find((candidate) => candidate.kind === 'merge')!;
+    expect(merge.merge).toEqual({ upload: true, path: 'src/a.ts', documentId: document.id });
+    expect(pane.uploadMergeInputs(merge.id)).toEqual({
+      ok: true,
+      base: 'one\ntwo\n',
+      current: 'one\ntheirs\n',
+      incoming: 'one\nmine\n',
+      labels: { current: { title: 'Current', detail: 'loopback' }, incoming: { title: 'Incoming', detail: 'Saved on this computer' }, base: { title: 'Base' } },
+      operation: 'merge',
+    });
+    pane.focusUploadMerge({ projectKey: remote.key, relativePath: 'src/a.ts' });
+    expect(pane.state().activeTabId).toBe(merge.id);
+    documents.edit(document.id, { version: document.version, seq: 1, text: 'one\nmerged\n', overReload: false });
+    await pane.completeUploadMerge(merge.id);
+    expect(fs.readFileSync(path.join(projectDir, 'src', 'a.ts'), 'utf8')).toBe('one\nmerged\n');
+    expect(document.uploadConflict).toBeUndefined();
+    expect(pane.state().tabs.some((candidate) => candidate.kind === 'merge')).toBe(false);
+  });
+
+  it('shows a tab-less pending upload again in a tab when its upload fails', async () => {
+    const { tabId, document } = await remoteFile('base\n');
+    loopbackUp = false;
+    await pane.save(document.id, document.version, 'offline\n', false);
+    await pane.tabAction('close', tabId);
+    expect(pane.state().tabs).toEqual([]);
+    // the target is no longer text, so the upload fails instead of merging
+    fs.writeFileSync(path.join(projectDir, 'src', 'a.ts'), Buffer.from([0x61, 0xc3, 0x28, 0x0a]));
+    loopbackUp = true;
+    documents.hostConnected('loopback');
+    await vi.waitFor(() => expect(pane.state().tabs).toHaveLength(1));
+    expect(pane.state().tabs[0]).toMatchObject({ kind: 'code', documentId: document.id, dirty: true });
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('serves upload inputs only to an upload merge tab', async () => {
+    const { tabId } = await remoteFile('base\n');
+    expect(() => pane.uploadMergeInputs(tabId)).toThrow('Not an upload merge tab');
+  });
+});
+
+describe('remote files while their host is away', () => {
+  let remote: Project;
+  const BACKUP_A = '0f8fad5b-d9cb-469f-a165-70867728950e';
+  const BACKUP_B = '1f8fad5b-d9cb-469f-a165-70867728950e';
+  const backupOf = (backupId: string, relativePath: string, text: string): BackupRecord =>
+    ({ backupId, name: path.posix.basename(relativePath), languageId: 'markdown', encoding: 'utf8', bom: false, eol: '\n', text, target: { kind: 'project', projectKey: remote.key, relativePath } });
+  const fileTab = (kind: 'code' | 'markdownPreview', relativePath: string, backupId?: string) =>
+    ({ kind, file: { projectKey: remote.key, relativePath }, ...(backupId !== undefined ? { backupId } : {}) }) as PersistedEditor['tabs'][number];
+  const connect = (): void => {
+    loopbackUp = true;
+    documents.connectionsChanged();
+  };
+
+  beforeEach(() => {
+    remote = { key: projectKeyOf({ kind: 'loopback' }, folderKey(projectDir)), fsPath: projectDir, name: 'proj' };
+    roots = [remote];
+    loopbackUp = false;
+  });
+
+  it('restores each tab of a remote file as one offline placeholder, which its tabs leave for the file once the host connects', async () => {
+    write('notes.md', '# on the host\n');
+    await pane.restore({ tabs: [fileTab('code', 'notes.md'), fileTab('markdownPreview', 'notes.md')], active: 1, recent: [] }, []);
+    const restored = pane.state().tabs;
+    expect(restored.map((tab) => tab.kind)).toEqual(['code', 'markdownPreview']);
+    const placeholderId = restored[0]!.documentId!;
+    expect(restored[1]!.documentId).toBe(placeholderId);
+    expect(documents.content(placeholderId)).toMatchObject({ kind: 'offline' });
+    connect();
+    // while the file opens its tabs still show the placeholder
+    expect(pane.state().tabs.map((tab) => tab.documentId)).toEqual([placeholderId, placeholderId]);
+    await vi.waitFor(() => expect(pane.state().tabs[0]!.documentId).not.toBe(placeholderId));
+    const tabs = pane.state().tabs;
+    expect(tabs.map((tab) => [tab.id, tab.kind])).toEqual(restored.map((tab) => [tab.id, tab.kind]));
+    expect(tabs[1]!.documentId).toBe(tabs[0]!.documentId);
+    expect(textOf(tabs[0]!.id).text).toBe('# on the host\n');
+    expect(documents.get(placeholderId)).toBeUndefined();
+  });
+
+  it('restores a second backup of a remote file as an untitled buffer, and a backup into the tabs of its file\'s placeholder', async () => {
+    write('notes.md', 'disk\n');
+    write('other.md', 'disk\n');
+    await pane.restore({
+      tabs: [fileTab('code', 'notes.md', BACKUP_A), fileTab('markdownPreview', 'notes.md', BACKUP_A), fileTab('code', 'other.md')],
+      active: 0,
+      recent: [],
+    }, [backupOf(BACKUP_A, 'notes.md', 'first\n'), backupOf(BACKUP_B, 'notes.md', 'second\n'), backupOf('2f8fad5b-d9cb-469f-a165-70867728950e', 'other.md', 'mine\n')]);
+    const tabs = pane.state().tabs;
+    expect(tabs.map((tab) => [tab.kind, tab.title, tab.dirty])).toEqual([
+      ['code', 'notes.md', true], ['markdownPreview', 'notes.md', true], ['code', 'other.md', true], ['untitled', 'notes.md', true],
+    ]);
+    expect(tabs[1]!.documentId).toBe(tabs[0]!.documentId);
+    expect(textOf(tabs[0]!.id).text).toBe('first\n');
+    expect(textOf(tabs[2]!.id).text).toBe('mine\n');
+    expect(textOf(tabs[3]!.id)).toMatchObject({ text: 'second\n', backupId: BACKUP_B });
+    expect(warnings).toEqual(['The unsaved changes to notes.md are in an untitled editor: Another backup of it was restored first.']);
+    // one document per file, so the connect opens each once
+    expect(documents.all().filter((document) => document.location?.projectKey === remote.key)).toHaveLength(2);
+    connect();
+    await vi.waitFor(() => expect(textOf(tabs[0]!.id).awaitingHost).toBeUndefined());
+    await vi.waitFor(() => expect(textOf(tabs[2]!.id).awaitingHost).toBeUndefined());
+    expect(documents.all().filter((document) => document.location?.projectKey === remote.key)).toHaveLength(2);
+    expect(textOf(tabs[0]!.id)).toMatchObject({ text: 'first\n', diskText: 'disk\n' });
+  });
+
+  it('releases the file a placeholder opens when its tab closed while the file was opening', async () => {
+    write('notes.md', 'disk\n');
+    await pane.restore({ tabs: [fileTab('code', 'notes.md')], active: 0, recent: [] }, []);
+    const [tab] = pane.state().tabs;
+    const placeholderId = tab!.documentId!;
+    const released = vi.spyOn(documents, 'release');
+    connect();
+    await pane.tabAction('close', tab!.id);
+    await vi.waitFor(() => expect(released.mock.calls.filter(([id]) => id !== placeholderId)).toHaveLength(1));
+    expect(pane.state().tabs).toEqual([]);
+    expect(documents.all()).toEqual([]);
+  });
+
+  it('keeps the file a placeholder opens for a user\'s open of it that joined the read after the placeholder\'s tab closed', async () => {
+    write('notes.md', 'disk\n');
+    await pane.restore({ tabs: [fileTab('code', 'notes.md')], active: 0, recent: [] }, []);
+    const [tab] = pane.state().tabs;
+    connect();
+    await pane.tabAction('close', tab!.id);
+    const opened = await pane.openFromUser(remote.key, 'notes.md');
+    expect(opened.ok).toBe(true);
+    const shown = pane.state().tabs;
+    expect(shown).toHaveLength(1);
+    expect(documents.get(shown[0]!.documentId!)).toMatchObject({ kind: 'text', text: 'disk\n' });
+    expect(documents.all().map((document) => document.id)).toEqual([shown[0]!.documentId]);
   });
 });

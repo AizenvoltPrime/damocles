@@ -1,5 +1,5 @@
 import { usageOfEntry, type AccountingEntry, type NormalizedUsage } from '../../shared/usage-accounting';
-import { DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_WORKTREE_ENTRY } from '../pi-session/session-store/constants';
+import { DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_CREDENTIAL_SOURCE_ENTRY, DAMOCLES_WORKTREE_ENTRY } from '../pi-session/session-store/constants';
 
 /**
  * Pure line parsers for pi session files and the sub-call ledger. The stats worker imports this module,
@@ -30,12 +30,14 @@ export type SessionLine =
   | { kind: 'model'; provider: string; model: string }
   /** A worktree entry: the session's spend belongs to this project (slice 12a rule 9). */
   | { kind: 'project'; projectPath: string }
+  /** A daemon's core run start: spend after it on a provider not listed here used the host's own credential. */
+  | { kind: 'credentialSource'; clientProviders: string[] }
   | UsageLine;
 
 export type LedgerLine =
   | { kind: 'skip' }
   | { kind: 'error' }
-  | (UsageLine & { purpose: string; cwd: string | null; sessionId: string | null });
+  | (UsageLine & { purpose: string; cwd: string | null; sessionId: string | null; credentialSource: 'host' | null });
 
 const SESSION_MARKERS = [
   '"usage":{',
@@ -44,6 +46,7 @@ const SESSION_MARKERS = [
   '"type":"model_change"',
   `"customType":"${DAMOCLES_AGENT_LAUNCH_ENTRY}"`,
   `"customType":"${DAMOCLES_WORKTREE_ENTRY}"`,
+  `"customType":"${DAMOCLES_CREDENTIAL_SOURCE_ENTRY}"`,
 ];
 
 const SKIP = { kind: 'skip' } as const;
@@ -126,6 +129,10 @@ export function parseSessionLine(line: string): SessionLine {
         const data = isRecord(entry['data']) ? entry['data'] : undefined;
         return data && nonEmptyString(data['projectPath']) ? { kind: 'project', projectPath: data['projectPath'] } : SKIP;
       }
+      if (entry['customType'] === DAMOCLES_CREDENTIAL_SOURCE_ENTRY) {
+        const providers = isRecord(entry['data']) ? entry['data']['clientProviders'] : undefined;
+        return Array.isArray(providers) && providers.every(nonEmptyString) ? { kind: 'credentialSource', clientProviders: providers } : ERROR;
+      }
       if (entry['customType'] !== DAMOCLES_AGENT_LAUNCH_ENTRY || !isRecord(entry['data'])) return SKIP;
       const data = entry['data'];
       const detail = data['kind'] === 'subagent' ? data['agentType'] : data['kind'] === 'team-member' ? data['role'] : undefined;
@@ -167,6 +174,7 @@ export function parseLedgerLine(line: string): LedgerLine {
     purpose: nonEmptyString(record['purpose']) ? record['purpose'] : 'unknown',
     cwd: nonEmptyString(record['cwd']) ? record['cwd'] : null,
     sessionId: nonEmptyString(record['sessionId']) ? record['sessionId'] : null,
+    credentialSource: record['credentialSource'] === 'host' ? 'host' : null,
   };
 }
 

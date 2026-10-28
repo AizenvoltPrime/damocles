@@ -48,6 +48,8 @@ export interface OpenAIAuthStatus {
   chatgptExpires?: number;
   codex: boolean;
   codexExpires?: number;
+  /** A daemon's core: the client holds no `openai` credential and the host's own environment configures one. */
+  hostKey?: boolean;
 }
 
 /** The auth.json part of `OpenAIAuthStatus`. `storedApiKey`: a plain-text `openai` api_key an older version wrote. */

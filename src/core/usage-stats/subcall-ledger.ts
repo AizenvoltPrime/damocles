@@ -20,6 +20,8 @@ export type SubCallPurpose =
 export interface SubCallAttribution {
   cwd?: string;
   sessionId?: string;
+  /** A daemon's core: the run's client holds no credential for the provider, so the host's own credential paid. */
+  credentialSource?: "host";
 }
 
 export interface SubCallRecord {
@@ -33,6 +35,7 @@ export interface SubCallRecord {
   stopReason: string;
   cwd: string | null;
   sessionId: string | null;
+  credentialSource?: "host";
   usage: AssistantMessage["usage"];
 }
 
@@ -59,6 +62,7 @@ export function appendSubCallUsage(
     stopReason: message.stopReason,
     cwd: attribution.cwd ?? null,
     sessionId: attribution.sessionId ?? null,
+    ...(attribution.credentialSource ? { credentialSource: attribution.credentialSource } : {}),
     usage: message.usage,
   };
   try {

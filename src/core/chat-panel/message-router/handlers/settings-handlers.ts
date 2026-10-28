@@ -67,10 +67,10 @@ function requireUserResources(ctx: HandlerContext): McpUserResourcePort {
 }
 
 /** The image settings and OpenRouter auth are process-wide, so every panel's section and Tools panel change together. */
-export function broadcastImageGenerationState({ getPanels, settingsManager, postMessage }: Pick<HandlerDependencies, "getPanels" | "settingsManager" | "postMessage">): void {
+export function broadcastImageGenerationState({ getPanels, settingsManager }: Pick<HandlerDependencies, "getPanels" | "settingsManager">): void {
   for (const [, instance] of getPanels()) {
     settingsManager.sendImageGenerationSettings(instance.host);
-    postMessage(instance.host, { type: "toolStatus", data: instance.session.getToolStatus() });
+    settingsManager.sendToolStatus(instance.session, instance.host);
   }
 }
 
@@ -79,7 +79,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
   // a forged or refused change shows as a calm inline message in the composer, never an error
   const refuseMode = (ctx: HandlerContext, mode: string, reason: "remote-host" | "unknown-mode"): void => {
     log("[SettingsHandlers] refused the permission change to %s: %s", mode, reason);
-    postMessage(ctx.host, { type: "permissionModeRefused", mode, reason });
+    postMessage(ctx.reply, { type: "permissionModeRefused", mode, reason });
   };
 
   /**
@@ -116,7 +116,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     await platform.settings.update(MCP_TOOL_EXPOSURE_SETTING, next, msg.scope);
     const above = resolveToolExposure(layers.slice(index + 1), msg.serverName, msg.toolName, msg.exposure);
     if (above.source !== "config" && above.exposure !== msg.exposure) {
-      postMessage(ctx.host, {
+      postMessage(ctx.reply, {
         type: "notification",
         notificationType: "info",
         message: t(
@@ -143,7 +143,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     await platform.settings.update(MCP_RESOURCE_EXPOSURE_SETTING, next, msg.scope);
     const above = resolveResourceExposure(layers.slice(index + 1), msg.serverName, msg.exposure);
     if (above.source !== "config" && above.exposure !== msg.exposure) {
-      postMessage(ctx.host, {
+      postMessage(ctx.reply, {
         type: "notification",
         notificationType: "info",
         message: t(
@@ -197,7 +197,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     try {
       await apply();
       await applyMcpConfigChange(ctx);
-      postMessage(ctx.host, { type: "mcpWriteResult", requestId, ok: true });
+      postMessage(ctx.reply, { type: "mcpWriteResult", requestId, ok: true });
     } catch (err) {
       // The server NAME only: `msg.config` may carry an `env` or `headers` map, and this channel is
       // written to disk.
@@ -205,7 +205,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       const error = err instanceof McpWriteError
         ? err.info
         : { code: "writeFailed" as const, params: { detail: err instanceof Error ? err.message : "Unknown error" } };
-      postMessage(ctx.host, { type: "mcpWriteResult", requestId, ok: false, error });
+      postMessage(ctx.reply, { type: "mcpWriteResult", requestId, ok: false, error });
       // The panel renders the reason inline against the still-open form, so no notification here — a
       // toast as well would say the same thing twice.
       await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
@@ -217,22 +217,22 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     // pushed after; its sections send no requests of their own.
     requestSettingsState: async (_msg, ctx) => {
       // First: the view's handlers read the capabilities (settingsFileAvailability is dropped without monaco).
-      postMessage(ctx.host, { type: "hostCapabilities", capabilities: platform.capabilities });
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
-      settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
-      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
+      postMessage(ctx.reply, { type: "hostCapabilities", capabilities: platform.capabilities });
+      await settingsManager.sendCurrentSettings(ctx.reply, ctx.permissionHandler, ctx.folder);
+      settingsManager.sendModelForPanel(ctx.reply, ctx.panelId);
+      settingsManager.sendThinkingForPanel(ctx.reply, ctx.panelId, ctx.folder);
       deps.postWorkspaceFolderState(ctx.panelId);
       // PiSession judges project scope by its working folder, which is the panel's folder.
-      postMessage(ctx.host, { type: "projectTrust", trusted: platform.trust.isTrusted(ctx.folder.fsPath) });
+      postMessage(ctx.reply, { type: "projectTrust", trusted: platform.trust.isTrusted(ctx.folder.fsPath) });
       // Before the awaits below: the voice folder's size walk alone can take many seconds.
-      postVoiceRuntimeStatus(deps, ctx.host);
+      postVoiceRuntimeStatus(deps, ctx.reply);
       ctx.session.publishAccountInfo();
       // The view mounts after main attached it, so host prompts redirected to it before then are posted again.
       if (ctx.view) deps.webviewPrompts.repost(ctx.panelId, ctx.view);
       deps.postSettingsFileAvailability?.(ctx);
-      deps.postClaudeAuthState?.(ctx.host);
-      deps.postProviderSignInState?.(ctx.host);
-      postMessage(ctx.host, await openaiAuthStatusMessage(platform));
+      deps.postClaudeAuthState?.(ctx.reply);
+      deps.postProviderSignInState?.(ctx.reply);
+      postMessage(ctx.reply, await openaiAuthStatusMessage(platform));
       // Read together, each bounded, so one secret store read cannot hold the rest of the reply; posted in order, the judge last.
       const [keyStatuses, judgeStatus] = await Promise.all([
         Promise.all(ACCOUNT_PROVIDER_IDS.map((provider) => providerAuthStatus(platform, provider))),
@@ -241,14 +241,14 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           return undefined;
         }),
       ]);
-      for (const status of keyStatuses) if (status) postMessage(ctx.host, status);
-      if (judgeStatus) postMessage(ctx.host, judgeStatus);
-      postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
-      settingsManager.sendImageGenerationSettings(ctx.host);
-      await settingsManager.sendVoiceConfig(ctx.host);
-      await settingsManager.sendAvailableModels(ctx.session, ctx.host);
-      await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
-      await postVoiceFilesSize(deps, ctx.host);
+      for (const status of keyStatuses) if (status) postMessage(ctx.reply, status);
+      if (judgeStatus) postMessage(ctx.reply, judgeStatus);
+      postMessage(ctx.reply, { type: "toolStatus", data: ctx.session.getToolStatus() });
+      settingsManager.sendImageGenerationSettings(ctx.reply);
+      await settingsManager.sendVoiceConfig(ctx.reply);
+      await settingsManager.sendAvailableModels(ctx.session, ctx.reply);
+      await settingsManager.sendMcpStatus(ctx.session, ctx.reply, ctx.folder.key);
+      await postVoiceFilesSize(deps, ctx.reply);
     },
 
     setPinnedHeaderHidden: async (msg, ctx) => {
@@ -257,7 +257,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         await settingsManager.handleSetPinnedHeaderHidden(msg.hidden);
       } catch (err) {
         log("[MessageRouter] Error setting pinned header visibility:", err);
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: t("Failed to save pinned header setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
@@ -278,7 +278,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         settingsManager.handleSetPanelEffort(ctx.panelId, msg.model, msg.effort);
       } catch (err) {
         log("[MessageRouter] Error setting panel effort:", err);
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: t("Failed to save effort setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
@@ -419,7 +419,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         settingsManager.handleSetModelPickerProvider(msg.provider, msg.shown));
       // Before the ack, which ends the switch's pending state, so it never shows the old value in between.
       if (saved) ctx.session.publishAccountInfo();
-      postMessage(ctx.host, { type: "setModelPickerProviderAck", provider: msg.provider, requestId: msg.requestId, ok: saved });
+      postMessage(ctx.reply, { type: "setModelPickerProviderAck", provider: msg.provider, requestId: msg.requestId, ok: saved });
     },
 
     setCacheWarming: async (msg, ctx) => {
@@ -469,7 +469,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       // a daemon's core never takes the default while its client's policy refuses YOLO; the row says why
       if (msg.enabled && !bypassAllowed(deps.platform)) {
         refuseMode(ctx, "dangerouslySkipPermissions", "remote-host");
-        postMessage(ctx.host, { type: "settingWriteResult", key: "damocles.dangerouslySkipPermissions", ok: false, error: t("YOLO is off for your turns on this host.") });
+        postMessage(ctx.reply, { type: "settingWriteResult", key: "damocles.dangerouslySkipPermissions", ok: false, error: t("YOLO is off for your turns on this host.") });
         await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
         return;
       }
@@ -495,7 +495,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
       } catch (err) {
         log("[MessageRouter] Error toggling MCP server:", err);
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: t("Failed to save MCP server setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
@@ -536,7 +536,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       const success = await ctx.session.reconnectMcpServerLive(msg.serverName);
       await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
       if (!success) {
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: t("Failed to reconnect MCP server"),
           notificationType: "error",
@@ -549,7 +549,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       const success = await ctx.session.reconnectMcpServerLive(msg.serverName);
       await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
       if (!success) {
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: t("Failed to authenticate MCP server"),
           notificationType: "error",
@@ -562,7 +562,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       try {
         const success = await ctx.session.reauthenticateMcpServerLive(msg.serverName);
         if (!success) {
-          postMessage(ctx.host, {
+          postMessage(ctx.reply, {
             type: "notification",
             message: t("Failed to re-authenticate MCP server"),
             notificationType: "error",
@@ -570,7 +570,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         }
       } catch (err) {
         log("[MessageRouter] Error re-authenticating MCP server:", err);
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: t("Failed to re-authenticate MCP server: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
@@ -586,7 +586,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         await ctx.session.signOutMcpServerLive(msg.serverName);
       } catch (err) {
         log("[MessageRouter] Error signing out of MCP server:", err);
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: t("Failed to sign out of MCP server: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
@@ -601,7 +601,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     },
 
     requestMcpStatus: async (_msg, ctx) => {
-      await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
+      await settingsManager.sendMcpStatus(ctx.session, ctx.reply, ctx.folder.key);
     },
 
     setMcpEnabled: async (msg, ctx) => {
@@ -626,7 +626,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         await settingsManager.serializeSettingWrite(() => writeToolExposure(msg, ctx));
       } catch (err) {
         log("[MessageRouter] Error setting MCP tool exposure:", err);
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: t("Failed to save MCP tool setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
@@ -643,7 +643,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         await settingsManager.serializeSettingWrite(() => writeResourceExposure(msg, ctx));
       } catch (err) {
         log("[MessageRouter] Error setting MCP resource exposure:", err);
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: t("Failed to save MCP resource setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
@@ -658,7 +658,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     requestMcpResources: async (msg, ctx) => {
       if (msg.type !== "requestMcpResources" || !isRequestId(msg.requestId)) return;
       const reply = (fields: Omit<Extract<ExtensionToWebviewMessage, { type: "mcpResources" }>, "type" | "requestId">) =>
-        postMessage(ctx.host, { type: "mcpResources", requestId: msg.requestId, ...fields });
+        postMessage(ctx.reply, { type: "mcpResources", requestId: msg.requestId, ...fields });
       const cursor = pageCursor(msg.cursor);
       if (!isName(msg.serverName) || cursor === null) {
         reply({ resources: [], error: t("This MCP request is not valid.") });
@@ -676,7 +676,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     requestMcpResourceTemplates: async (msg, ctx) => {
       if (msg.type !== "requestMcpResourceTemplates" || !isRequestId(msg.requestId)) return;
       const reply = (fields: Omit<Extract<ExtensionToWebviewMessage, { type: "mcpResourceTemplates" }>, "type" | "requestId">) =>
-        postMessage(ctx.host, { type: "mcpResourceTemplates", requestId: msg.requestId, ...fields });
+        postMessage(ctx.reply, { type: "mcpResourceTemplates", requestId: msg.requestId, ...fields });
       const cursor = pageCursor(msg.cursor);
       if (!isName(msg.serverName) || cursor === null) {
         reply({ templates: [], error: t("This MCP request is not valid.") });
@@ -694,7 +694,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     requestMcpResourceChildren: async (msg, ctx) => {
       if (msg.type !== "requestMcpResourceChildren" || !isRequestId(msg.requestId)) return;
       const reply = (fields: Omit<Extract<ExtensionToWebviewMessage, { type: "mcpResourceChildren" }>, "type" | "requestId">) =>
-        postMessage(ctx.host, { type: "mcpResourceChildren", requestId: msg.requestId, ...fields });
+        postMessage(ctx.reply, { type: "mcpResourceChildren", requestId: msg.requestId, ...fields });
       if (!isName(msg.serverName) || !isName(msg.uri)) {
         reply({ children: [], error: t("This MCP request is not valid.") });
         return;
@@ -711,7 +711,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     requestMcpResourceCompletion: async (msg, ctx) => {
       if (msg.type !== "requestMcpResourceCompletion" || !isRequestId(msg.requestId)) return;
-      const reply = (values: string[]) => postMessage(ctx.host, { type: "mcpResourceCompletion", requestId: msg.requestId, values });
+      const reply = (values: string[]) => postMessage(ctx.reply, { type: "mcpResourceCompletion", requestId: msg.requestId, values });
       const context = completionContext(msg.context);
       const value = msg.value === "" || isName(msg.value) ? msg.value : undefined;
       if (!isName(msg.serverName) || !isName(msg.template) || !isName(msg.argument) || value === undefined || !context) {
@@ -730,7 +730,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     /** Holds the resource by reference (D12); a deny rule that covers it refuses the attach (D13), and nothing is read now. */
     attachMcpResource: async (msg, ctx) => {
       if (msg.type !== "attachMcpResource" || !isRequestId(msg.requestId)) return;
-      const refuse = (refused: string) => postMessage(ctx.host, { type: "mcpResourceAttached", requestId: msg.requestId, refused });
+      const refuse = (refused: string) => postMessage(ctx.reply, { type: "mcpResourceAttached", requestId: msg.requestId, refused });
       if (!isName(msg.serverName) || !isName(msg.uri)) {
         refuse(t("This resource cannot be attached."));
         return;
@@ -766,11 +766,11 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         return;
       }
       ctx.terminalAttachments.add({ kind: "mcpResource", server: msg.serverName, uri: msg.uri, name, ...(mimeType !== undefined ? { mimeType } : {}), serverId });
-      postMessage(ctx.host, { type: "mcpResourceAttached", requestId: msg.requestId });
+      postMessage(ctx.reply, { type: "mcpResourceAttached", requestId: msg.requestId });
     },
 
     requestSupportedCommands: async (_msg, ctx) => {
-      await settingsManager.sendSupportedCommands(ctx.session, ctx.host);
+      await settingsManager.sendSupportedCommands(ctx.session, ctx.reply);
     },
 
     toggleTool: async (msg, ctx) => {
@@ -780,13 +780,13 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         ctx.session.refreshActiveTools();
       } catch (err) {
         log("[MessageRouter] Error toggling tool:", err);
-        postMessage(ctx.host, {
+        postMessage(ctx.reply, {
           type: "notification",
           message: t("Failed to save tool setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
       }
-      postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
+      settingsManager.sendToolStatus(ctx.session, ctx.host);
     },
 
     toggleToolGroup: async (msg, ctx) => {
@@ -797,11 +797,11 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         settingsManager.setToolGroupEnabled(group, msg.enabled));
       if (saved) ctx.session.refreshActiveTools();
       if (msg.group === "image") broadcastImageGenerationState(deps);
-      else postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
+      else settingsManager.sendToolStatus(ctx.session, ctx.host);
     },
 
     requestToolStatus: (_msg, ctx) => {
-      postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
+      postMessage(ctx.reply, { type: "toolStatus", data: ctx.session.getToolStatus() });
     },
 
     setImageGenerationEnabled: async (msg, ctx) => {
@@ -850,17 +850,17 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       if (!isKeyProviderId(provider)) throw new Error("Unknown key provider");
       if (typeof msg.preferApiKey !== "boolean") throw new Error("Malformed preference");
       if (platform.remote) {
-        postMessage(ctx.host, { type: "setProviderPreferApiKeyAck", provider, requestId, ok: false, error: remoteSignInRefusal() });
+        postMessage(ctx.reply, { type: "setProviderPreferApiKeyAck", provider, requestId, ok: false, error: remoteSignInRefusal() });
         return;
       }
       try {
         await setProviderPreferApiKey(provider, msg.preferApiKey);
-        postMessage(ctx.host, { type: "setProviderPreferApiKeyAck", provider, requestId, ok: true });
+        postMessage(ctx.reply, { type: "setProviderPreferApiKeyAck", provider, requestId, ok: true });
         // the toggle switches the credential pi sends, so the refusal the card names no longer applies
         for (const [, instance] of getPanels()) postMessage(instance.host, { type: "authFailureCleared", account: provider });
       } catch (err) {
         log("[SettingsHandlers] Failed to apply the %s API key preference:", provider, err);
-        postMessage(ctx.host, { type: "setProviderPreferApiKeyAck", provider, requestId, ok: false, error: t("Failed to apply the preference") });
+        postMessage(ctx.reply, { type: "setProviderPreferApiKeyAck", provider, requestId, ok: false, error: t("Failed to apply the preference") });
       }
     },
 

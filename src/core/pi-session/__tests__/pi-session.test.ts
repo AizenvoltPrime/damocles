@@ -478,6 +478,7 @@ import { folderKey } from '../../workspace-folders/folder-key';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { runPin, type ClientPin } from '../../client-snapshots';
 import { installPlatform } from '../../platform-host';
+import { installCredentialRelay } from '../../scm/askpass/credential-relay';
 
 /** The platform every session here reads through, also served by the host accessor; fresh per test. */
 let testPlatform: FakePlatform;
@@ -501,7 +502,7 @@ function makeOptions(messages: ExtensionToWebviewMessage[], extra?: Partial<Sess
     settingsFolder: undefined,
     projectScope: true,
     platform: testPlatform,
-    permissionHandler: { getPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [] } as unknown as SessionOptions['permissionHandler'],
+    permissionHandler: { getPermissionMode: () => 'default', turnPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [] } as unknown as SessionOptions['permissionHandler'],
     onMessage: (m) => messages.push(m),
     model: 'claude-opus-5-5',
     resolveThinking: () => ({ thinkingDisabled: false, effort: null }),
@@ -593,12 +594,57 @@ describe('a daemon\'s core pins every run a panel\'s pi session starts', () => {
 
   it('logs which models a loopback endpoint makes unavailable once per change, not on every model list read', async () => {
     const panel = new PiSession(makeOptions([], { platform: { ...testPlatform, remote: createFakeRemoteHost().remote }, panelId: 'panel-1' }));
-    await panel.initializeEarly();
     const lines: string[] = [];
     installLogSink({ appendLine: (line: string) => void lines.push(line), show: () => {}, dispose: () => {} });
+    await panel.initializeEarly();
     await panel.getSupportedModels();
     await panel.getSupportedModels();
     expect(lines.filter((line) => line.includes('remote model list'))).toHaveLength(1);
+    await panel.dispose();
+  });
+
+  it('posts the model list again with each account state, so which models run on the host follows the client sign-ins', async () => {
+    const posted = async (remote: boolean): Promise<string[]> => {
+      const messages: ExtensionToWebviewMessage[] = [];
+      const panel = new PiSession(makeOptions(messages, { platform: { ...testPlatform, ...(remote ? { remote: createFakeRemoteHost().remote } : {}) }, panelId: 'panel-1' }));
+      await panel.initializeEarly();
+      messages.length = 0;
+      panel.publishAccountInfo();
+      await panel.dispose();
+      return messages.map((message) => message.type);
+    };
+    expect(await posted(true)).toEqual(['accountInfo', 'availableModels']);
+    expect(await posted(false)).toEqual(['accountInfo', 'availableModels']);
+  });
+
+  it('builds each view\'s account state and models from its own device\'s sign-ins, and posts none to every view at once', async () => {
+    const host = createFakeRemoteHost();
+    host.set('clientAuth', 'client-a', { providers: { anthropic: { type: 'oauth', expires: Date.now() + 3_600_000, hasKey: false, flatFee: false, allowance: true } } });
+    host.set('clientAuth', 'client-b', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false } } });
+    const shared: ExtensionToWebviewMessage[] = [];
+    const readFor = new Map<string, Set<string>>();
+    const typesFor = new Map<string, string[]>();
+    const read = vi.spyOn(host.remote.clients, 'auth');
+    const panel = new PiSession(makeOptions(shared, {
+      platform: { ...testPlatform, remote: host.remote },
+      panelId: 'panel-1',
+      onViewMessages: (build) => {
+        for (const [view, clientId] of [['view-a', 'client-a'], ['view-b', 'client-b']] as const) {
+          read.mockClear();
+          typesFor.set(view, [...(typesFor.get(view) ?? []), ...build(clientId).map((m) => m.type)]);
+          readFor.set(view, new Set([...(readFor.get(view) ?? []), ...read.mock.calls.map(([id]) => id)]));
+        }
+      },
+    }));
+    await panel.initializeEarly();
+    host.setActing('client-a');
+    shared.length = 0;
+    readFor.clear();
+    typesFor.clear();
+    panel.publishAccountInfo();
+    expect(typesFor).toEqual(new Map([['view-a', ['accountInfo', 'availableModels']], ['view-b', ['accountInfo', 'availableModels']]]));
+    expect(readFor).toEqual(new Map([['view-a', new Set(['client-a'])], ['view-b', new Set(['client-b'])]]));
+    expect(shared.filter((m) => m.type === 'accountInfo' || m.type === 'availableModels')).toEqual([]);
     await panel.dispose();
   });
 });
@@ -2068,6 +2114,33 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       expect(messages.filter((m) => m.type === 'btwError')).toEqual([
         { type: 'btwError', btwId: 'b1', message: 'Sign in to Anthropic to use Opus 5.5', authFailure: { account: 'anthropic', reason: 'missing' } },
       ]);
+      await session.dispose();
+    });
+
+    it("on a daemon's core chat two devices show, gives the aside's answer and its refusal to the asking device's views alone", async () => {
+      const host = createFakeRemoteHost();
+      host.set('clientAuth', 'client-a', { providers: {} });
+      host.set('clientAuth', 'client-b', { providers: {} });
+      const toView = new Map<string, ExtensionToWebviewMessage[]>([['view-a', []], ['view-b', []]]);
+      const messages: ExtensionToWebviewMessage[] = [];
+      const session = new PiSession(makeOptions(messages, {
+        platform: { ...testPlatform, remote: host.remote },
+        onViewMessages: (build) => {
+          for (const [view, clientId] of [['view-a', 'client-a'], ['view-b', 'client-b']] as const) toView.get(view)!.push(...build(clientId));
+        },
+      }));
+      await session.initializeEarly();
+      vi.spyOn(cwdFolder()!, 'createSubagentSession').mockResolvedValue(asideSession(async () => { throw new Error('socket hang up'); }) as never);
+      vi.spyOn(cwdFolder()!, 'forgetSubagentSession').mockImplementation(() => undefined);
+      host.setActing('client-a');
+      host.setActor('client-b');
+
+      await session.sendBtw('b1', 'what is this?');
+      H.getServices().modelRuntime.hasConfiguredAuth = () => false;
+      await session.sendBtw('b2', 'and this?');
+
+      const asides = (shown: ExtensionToWebviewMessage[]) => shown.filter((m) => m.type.startsWith('btw')).map((m) => (m as { btwId: string }).btwId);
+      expect([asides(toView.get('view-a')!), asides(toView.get('view-b')!), asides(messages)]).toEqual([[], ['b1', 'b2'], []]);
       await session.dispose();
     });
   });
@@ -3896,6 +3969,7 @@ describe('PiSession unpersisted tool result images', () => {
     let mode = 'default';
     const options = makeOptions([]);
     (options.permissionHandler as unknown as { getPermissionMode: () => string }).getPermissionMode = () => mode;
+    (options.permissionHandler as unknown as { turnPermissionMode: () => string }).turnPermissionMode = () => mode;
     const session = new PiSession(options);
     await session.initializeEarly();
     const folder = cwdFolder()!;
@@ -7628,6 +7702,17 @@ describe('PiSession undelivered background results', () => {
     });
   }
 
+  /** Holds every stored session lookup until the returned call, so a resume switch stays pending. */
+  function deferredLookup(): () => void {
+    let resolveLookup!: () => void;
+    const looked = new Promise<void>((resolve) => { resolveLookup = resolve; });
+    vi.mocked(resolvePiSessionFile).mockImplementation(async (_cwd, id) => {
+      await looked;
+      return `/fake/agent/sessions/cwd/2026-01-01T00-00-00-000Z_${id}.jsonl`;
+    });
+    return resolveLookup;
+  }
+
   const sentOfType = (live: FakeSession, customType: string): ResultsCall[] => {
     const send = live.sendCustomMessage as ReturnType<typeof vi.fn>;
     return send.mock.calls
@@ -8009,15 +8094,6 @@ describe('PiSession undelivered background results', () => {
       runtime.switchSession = spy;
       return spy;
     }
-    function deferredLookup(): () => void {
-      let resolveLookup!: () => void;
-      const looked = new Promise<void>((resolve) => { resolveLookup = resolve; });
-      vi.mocked(resolvePiSessionFile).mockImplementation(async (_cwd, id) => {
-        await looked;
-        return `/fake/agent/sessions/cwd/2026-01-01T00-00-00-000Z_${id}.jsonl`;
-      });
-      return resolveLookup;
-    }
 
     it('not one whose lease was lost while the lookup ran, even once the detach dropped the loss', async () => {
       // Only A: the detach's fresh session must not take B's id from the stored list.
@@ -8130,6 +8206,98 @@ describe('PiSession undelivered background results', () => {
       expect(folder._panelRegistryReader().get('sess-B')).toBeUndefined();
       expect(PiRuntime.get('/fake/agent').getSessionMutator('sess-B')).toBeUndefined();
       expect(tornDown).toEqual(['sess-B']);
+    });
+  });
+
+  describe('whenConversationSettled, which a joining view waits on before its replay', () => {
+    // The session pi held when the wait settled, or 'waiting' while it has not.
+    function settledOn(session: PiSession): () => string {
+      let held = 'waiting';
+      void session.whenConversationSettled().then(() => { held = H.getLastSession()!.sessionId; });
+      return () => held;
+    }
+    const turns = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+    it('returns at once while no switch was asked for', async () => {
+      storedSessions([{ id: 'sess-A', branch: [] }]);
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      deferredLookup();
+
+      const held = settledOn(session);
+      await turns();
+
+      expect(held()).toBe('sess-A');
+      await session.dispose();
+    });
+
+    it('returns at once for a target asked for before the start, which the start itself opens', async () => {
+      storedSessions([{ id: 'sess-B', branch: [] }]);
+      const session = new PiSession(makeOptions([]));
+      session.setResumeSession('sess-B');
+      const resolveLookup = deferredLookup();
+
+      let settled = false;
+      void session.whenConversationSettled().then(() => { settled = true; });
+      await turns();
+
+      expect(settled).toBe(true);
+      resolveLookup();
+      await session.initializeEarly();
+      await session.dispose();
+    });
+
+    it('returns at once once the switch settled', async () => {
+      storedSessions([{ id: 'sess-A', branch: [] }, { id: 'sess-B', branch: [] }]);
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      session.setResumeSession('sess-B');
+      await session.whenReplaced();
+      deferredLookup();
+
+      const held = settledOn(session);
+      await turns();
+
+      expect(held()).toBe('sess-B');
+      await session.dispose();
+    });
+
+    it('waits through a pending switch and settles on the conversation pi switched to', async () => {
+      storedSessions([{ id: 'sess-A', branch: [] }, { id: 'sess-B', branch: [] }]);
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      const resolveLookup = deferredLookup();
+      session.setResumeSession('sess-B');
+
+      const held = settledOn(session);
+      await turns();
+      expect(held()).toBe('waiting');
+
+      resolveLookup();
+      await session.whenReplaced();
+      await turns();
+      expect(held()).toBe('sess-B');
+      await session.dispose();
+    });
+
+    it('waits again for a target that replaced the pending one, and settles only on that one', async () => {
+      // The superseded target is never switched to, so the second session pi makes is C's.
+      storedSessions([{ id: 'sess-A', branch: [] }, { id: 'sess-C', branch: [] }]);
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      const resolveLookup = deferredLookup();
+      session.setResumeSession('sess-B');
+      const held = settledOn(session);
+      await turns();
+      session.setResumeSession('sess-C');
+      await turns();
+      expect(held()).toBe('waiting');
+
+      resolveLookup();
+      await session.whenReplaced();
+      await turns();
+      expect(held()).toBe('sess-C');
+      await session.dispose();
     });
   });
 
@@ -10607,6 +10775,30 @@ describe('a model pick that asked for OpenAI sign-in', () => {
     return { session, live };
   }
 
+  it('on a daemon\'s core chat two devices show, asks only the picking device to sign in to OpenAI', async () => {
+    const host = createFakeRemoteHost();
+    host.set('clientAuth', 'client-a', { providers: {} });
+    host.set('clientAuth', 'client-b', { providers: {} });
+    const toView = new Map<string, ExtensionToWebviewMessage[]>([['view-a', []], ['view-b', []]]);
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages, {
+      platform: { ...testPlatform, remote: host.remote },
+      onViewMessages: (build) => {
+        for (const [view, clientId] of [['view-a', 'client-a'], ['view-b', 'client-b']] as const) toView.get(view)!.push(...build(clientId));
+      },
+    }));
+    await session.initializeEarly();
+    (H.getLastSession()! as unknown as { model?: { provider: string; id: string } }).model = OPUS;
+    host.setActing('client-a');
+    host.setActor('client-b');
+
+    await session.setModel('gpt-6.1-sol');
+
+    const asked = (shown: ExtensionToWebviewMessage[]) => shown.filter((m) => m.type === 'openaiAuthRequired');
+    expect([asked(toView.get('view-a')!), asked(toView.get('view-b')!), asked(messages)]).toEqual([[], [{ type: 'openaiAuthRequired', modelValue: 'gpt-6.1-sol' }], []]);
+    await session.dispose();
+  });
+
   /** What the sign-in leaves behind: an OpenAI credential, under which pi's catalog serves GPT-6.1 Sol. */
   function signedIn(catalogServesGpt = true): void {
     vi.spyOn(PiRuntime.get('/fake/agent'), 'getOpenAIAuthStatus').mockReturnValue({ apiKey: false, chatgpt: true, codex: false });
@@ -12549,6 +12741,29 @@ describe("PiSession's worktree isolation (D62)", () => {
       (settings.getShellPath as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
       vi.unstubAllEnvs();
     }
+    await session.dispose();
+  });
+});
+
+describe("PiSession's shell environment on a daemon's core", () => {
+  it('gives the agent\'s shells the credential relay\'s nonce and helper pair, never the askpass prompt capability', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const gate = (cwdFolder() as unknown as { _panelRegistry: Map<string, PanelGateContext> })._panelRegistry.get(live.sessionId as string)!;
+    const project = path.resolve('/projects/app');
+    vi.spyOn(session.worktree, 'isolation').mockReturnValue({ workingFolder: path.resolve('/worktrees/app/aaaaaaaa'), projectPath: project, repositoryRoot: project, otherWorktrees: [], homeDir: path.resolve('/home') });
+    const relay = { helper: '/srv/dist/git-credential/git-credential-relay.sh', node: '/srv/node', main: '/srv/dist/askpass-main.js', handle: '/tmp/a/askpass.sock', nonce: 'd'.repeat(64) };
+    installCredentialRelay(() => relay);
+    try {
+      const environment = gate.worktreeIsolation!()!.environment;
+      expect(environment).toMatchObject({ DAMOCLES_CREDENTIAL_NONCE: relay.nonce, DAMOCLES_ASKPASS_HANDLE: relay.handle, GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: `!'${relay.helper}'` });
+      expect(environment['DAMOCLES_ASKPASS_NONCE']).toBeUndefined();
+      expect(environment['GIT_ASKPASS']).toBeUndefined();
+    } finally {
+      installCredentialRelay(undefined);
+    }
+    expect(gate.worktreeIsolation!()!.environment['DAMOCLES_CREDENTIAL_NONCE']).toBeUndefined();
     await session.dispose();
   });
 });

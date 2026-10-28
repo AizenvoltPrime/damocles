@@ -175,6 +175,8 @@ export interface ModelInfo {
   /** Why the chat cannot run this model: a remote chat's provider endpoint is a loopback address of the client, or the
    *  provider's sign-in lists the models of the user's plan and this one is not among them. */
   unavailable?: { reason: "loopback-endpoint"; endpoint: string } | { reason: "not-in-plan"; provider: AccountProviderId };
+  /** A remote chat runs this model on the host's own credential (its environment, AWS profile or Google ADC), since the client holds none for its provider. */
+  credentialSource?: "host";
 }
 
 export interface AccountInfo {

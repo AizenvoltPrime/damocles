@@ -18,7 +18,9 @@ import { OPENAI_API_KEY_SECRET } from '../../../core/pi-session/openai-auth';
 import { PiRuntime } from '../../../core/pi-session/pi-runtime';
 import { KEY_PROVIDER_IDS } from '../../../shared/settings-sections';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../../shared/types/messages';
+import { runPinnedTurn } from '../../../core/client-snapshots';
 import { createCoreEndpoint, createLoopback, createMainEndpoint } from '../../core-protocol';
+import { createActorContext, processActor, type ActorContext } from '../../core-protocol/actor';
 import { CLIENT_STATE_KEYS } from '../../core-protocol/messages';
 import { DesktopSettingsStore } from '../../local-services/settings-store';
 import { createClientMirrors, createCoreRouter, type CoreRouter } from '../core-routes';
@@ -58,6 +60,7 @@ function attachedClient() {
   main.serve('secrets.keys', () => [...clientSecrets.keys()]);
   router.attach({
     id: 'connection-1',
+    clientId: 'client-1',
     hostId: 'h1',
     transport: loop.core,
     mirrors: {
@@ -65,6 +68,7 @@ function attachedClient() {
       clientAuth: { providers: {} }, clientUser: { settings: {}, permissionRules: [] }, clientPolicy: { voice: false, allowBypass: false },
     },
     close: vi.fn(),
+    drained: () => Promise.resolve(), lost: () => false, onLostChange: () => ({ dispose: () => undefined }),
   });
   return { core, state, asked, clientSecrets };
 }
@@ -112,6 +116,80 @@ describe('a daemon\'s core cannot write client files or change client credential
     const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
     await expect(broker.delete('anthropic')).rejects.toThrow(/User tab/);
     expect(host.remote.credentials).not.toHaveBeenCalled();
+  });
+});
+
+describe('a daemon routes credential and transcript requests so no client\'s files or credentials change', () => {
+  const MIRRORS = {
+    state: { global: {}, workspace: {} }, trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' },
+    clientAuth: { providers: {} }, clientUser: { settings: {}, permissionRules: [] }, clientPolicy: { voice: false, allowBypass: false },
+  } as const;
+
+  // the daemon's router between a core endpoint that reads the actor of what it serves and any number of clients
+  function daemon() {
+    const coreLoop = createLoopback();
+    const coreActors = createActorContext();
+    const core = createCoreEndpoint(coreLoop.core, quiet, undefined, coreActors);
+    const state = createDaemonState(path.join(dir, 'state'), quiet);
+    router = createCoreRouter({ core: createMainEndpoint(coreLoop.main, quiet, undefined, processActor), state, registry: createRunRegistry(), mirrors: createClientMirrors(), secrets: new Map(), e2eHooks: false, reload: vi.fn(), log: quiet });
+    const attach = (clientId: string, actors?: ActorContext) => {
+      const loop = createLoopback();
+      const main = createMainEndpoint(loop.main, quiet, (error) => { throw error; }, actors);
+      router!.attach({ id: `connection-${clientId}`, clientId, hostId: 'h1', transport: loop.core, mirrors: MIRRORS, close: vi.fn(), drained: () => Promise.resolve(), lost: () => false, onLostChange: () => ({ dispose: () => undefined }) });
+      return main;
+    };
+    return { core, coreActors, attach };
+  }
+
+  // main runs no credential manager for an erase but on the user's click (git-credential-relay.test.ts)
+  it('askpass.credential erase reaches only the client the request acts for, as it was sent, and its answer alone comes back', async () => {
+    const { core, coreActors, attach } = daemon();
+    const asked = { 'client-1': vi.fn(), 'client-2': vi.fn() };
+    for (const clientId of ['client-1', 'client-2'] as const) {
+      attach(clientId).serve('askpass.credential', (request) => {
+        asked[clientId](request);
+        return { kind: 'none' } as const;
+      });
+    }
+    const request = { op: 'erase', fields: { protocol: 'https', host: 'github.com', username: 'ada' }, targetHelper: false } as const;
+    await expect(coreActors.run('client-2', () => core.request('askpass.credential', request))).resolves.toEqual({ kind: 'none' });
+    expect(asked['client-2']).toHaveBeenCalledWith(request);
+    expect(asked['client-1']).not.toHaveBeenCalled();
+  });
+
+  it('user.credentials.push lands only in the pushing client\'s broker entry, whatever actor its envelope names', async () => {
+    const { core, coreActors, attach } = daemon();
+    attach('client-1');
+    const pusherActors = createActorContext();
+    const pusher = attach('client-2', pusherActors);
+    const host = createFakeRemoteHost(async () => ({ type: 'none' }));
+    const broker = new BrokeredCredentialStore({ remote: host.remote, credentialsChanged: vi.fn() });
+    const pushedBy: Array<string | undefined> = [];
+    core.serve('user.credentials.push', ({ provider, credential }) => {
+      pushedBy.push(coreActors.current());
+      broker.push(coreActors.current()!, provider, credential);
+    });
+    const credential = { type: 'oauth', access: 'pushed-by-2', refresh: '', expiresIn: 3_600_000 } as const;
+    // both devices are attached, as a pushing one always is
+    host.set('clientAuth', 'client-1', { providers: {} });
+    host.set('clientAuth', 'client-2', { providers: {} });
+    await pusherActors.run('client-1', () => pusher.request('user.credentials.push', { provider: 'anthropic', credential }));
+    expect(pushedBy).toEqual(['client-2']);
+    host.setActing('client-1');
+    await expect(runPinnedTurn(host.remote, 'panel-1', () => broker.read('anthropic'))).resolves.toBeUndefined();
+    host.setActing('client-2');
+    await expect(runPinnedTurn(host.remote, 'panel-2', () => broker.read('anthropic'))).resolves.toMatchObject({ access: 'pushed-by-2' });
+    broker.dispose();
+  });
+
+  it.each(['chats.openTranscript', 'chats.listMirrored'] as const)('%s from a client is refused before core', async (method) => {
+    const { core, attach } = daemon();
+    const main = attach('client-1');
+    const served = vi.fn();
+    core.serve(method, served as never);
+    const params = method === 'chats.openTranscript' ? { viewId: 'v1', hostId: 'h1', file: '/home/ada/.damocles/x.jsonl' } : { hostId: 'h1', folder: '/home/ada' };
+    await expect((main.request as (name: string, value: unknown) => Promise<unknown>)(method, params)).rejects.toThrow();
+    expect(served).not.toHaveBeenCalled();
   });
 });
 
@@ -178,8 +256,17 @@ describe('a daemon\'s core refuses every sign-in and key change before any pi ca
     const host = { postMessage: (message: ExtensionToWebviewMessage) => posted.push(message) };
     const session = { publishAccountInfo: () => undefined, publishAvailableModels: () => undefined, openaiSignInEnded: async () => undefined };
     const panels = new Map([['panel-1', { host, session } as unknown as HostInstance]]);
-    const deps = { platform, getPanels: () => panels, subscriptions: [], postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message) } as unknown as HandlerDependencies;
-    return { deps, ctx: { host, panelId: 'panel-1', folder: { fsPath: dir } } as unknown as HandlerContext };
+    const deps = {
+      platform,
+      getPanels: () => panels,
+      subscriptions: [],
+      postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message),
+      broadcastAccountState: async (_what: string, _row: string, read: () => Promise<ExtensionToWebviewMessage | undefined>) => {
+        const message = await read();
+        if (message) posted.push(message);
+      },
+    } as unknown as HandlerDependencies;
+    return { deps, ctx: { host, reply: host, panelId: 'panel-1', folder: { fsPath: dir } } as unknown as HandlerContext };
   }
 
   it.each<[string, WebviewToExtensionMessage, string]>([

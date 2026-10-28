@@ -325,6 +325,9 @@ export function createPtySessions(deps: PtySessionsDeps): PtySessions {
           killAll();
           await Promise.all(connecting.values());
           return;
+        // only a daemon's hub keeps views
+        case 'detach':
+          return;
         default: {
           const prior = waiting.get(request.id);
           if (prior) return queueBehind(request.id, prior.then(() => forward(request)));

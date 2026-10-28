@@ -246,3 +246,28 @@ describe('StatsBreakdown', () => {
     expect(section(wrapper, 'source').get('caption').text()).toBe('By source');
   });
 });
+
+describe('StatsBreakdown by credential', () => {
+  it('splits spend between your sign-ins and remote hosts\' own credentials once a host paid for any', () => {
+    const wrapper = mount(StatsBreakdown, {
+      props: { report: { ...report(), byCredential: [{ credential: 'signIn', ...agg(6, 600) }, { credential: 'host', ...agg(4, 400) }] }, metric: 'cost' },
+      global: { plugins: [i18n] },
+      attachTo: document.body,
+    });
+    expect(section(wrapper, 'credential').get('h3').text()).toBe('By credential');
+    expect(rowIds(wrapper, 'credential')).toEqual(['credential:signIn', 'credential:host']);
+    expect(row(wrapper, 'credential', 'credential:host').text()).toContain("Remote hosts' own credentials");
+    expect(row(wrapper, 'credential', 'credential:signIn').text()).toContain('Your sign-ins');
+    wrapper.unmount();
+  });
+
+  it('shows no credential section while every row is your sign-in', () => {
+    const wrapper = mount(StatsBreakdown, {
+      props: { report: { ...report(), byCredential: [{ credential: 'signIn', ...agg(10, 1_000) }] }, metric: 'cost' },
+      global: { plugins: [i18n] },
+      attachTo: document.body,
+    });
+    expect(wrapper.find('[data-breakdown="credential"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+});

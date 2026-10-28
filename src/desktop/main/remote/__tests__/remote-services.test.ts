@@ -19,6 +19,7 @@ function services() {
   const shown: unknown[] = [];
   const notices: unknown[] = [];
   const diffs: unknown[] = [];
+  const picks: unknown[] = [];
   const state: HostState = {
     global: { get: ((key: string) => (key === 'userLanguagePreference' ? 'el' : 'secret')) as HostState['global']['get'], update: vi.fn(async () => undefined) },
     workspace: { get: (() => undefined) as HostState['workspace']['get'], update: vi.fn(async () => undefined) },
@@ -58,6 +59,10 @@ function services() {
     openSettingsFile: async (scope, key) => {
       settingsFiles.push([scope, key]);
     },
+    pick: async (...args) => {
+      picks.push(args);
+      return args[0] === 'file' ? '/srv/app/plan.md' : undefined;
+    },
     ui: { ask: async () => 0, askpass: async () => ({ cancelled: true }), worktrees: hostExtras().ui.worktrees },
     notices: {
       info: async (message: string) => {
@@ -67,11 +72,11 @@ function services() {
       warn: async () => undefined,
       error: async () => undefined,
     },
-    user: { credentials: async () => ({ type: 'none' }), speak: async () => undefined },
+    user: { credentials: async () => ({ type: 'none' }), speak: async () => undefined, gitCredential: async () => ({ kind: 'none' }) },
     base: { terminalToggle: () => ({ shown: false, shortcut: '' }), createView: () => { throw new Error('no view'); }, git: { available: true }, e2eHooks: false, ...hostExtras(), log: (line) => logged.push(line) },
     t: (message, ...args) => args.reduce((text, arg, index) => text.replace(`{${index}}`, arg), message),
   });
-  return { deps, main, opened, shown, notices, diffs, logged, reviews, previews, settingsFiles };
+  return { deps, main, opened, shown, notices, diffs, logged, reviews, previews, settingsFiles, picks };
 }
 
 describe('a remote core\'s services', () => {
@@ -83,16 +88,22 @@ describe('a remote core\'s services', () => {
     await expect(deps.resolveProxy('https://example.com')).rejects.toThrow('not available');
   });
 
-  it('answers false for a folder or path of the target the OS file manager would show, and a picker says it is not available yet', async () => {
-    const { deps, main, notices } = services();
+  it('answers false for a folder or path of the target the OS file manager would show, and a picker opens the folder browser of the host, never a native dialog', async () => {
+    const { deps, main, notices, picks } = services();
     const openFolder = vi.spyOn(main.shell, 'openFolder');
     const revealPath = vi.spyOn(main.shell, 'revealPath');
     const pickFolder = vi.spyOn(main.dialogs, 'pickFolder');
     await expect(deps.platform.shell.openFolder('/srv/app')).resolves.toBe(false);
     await expect(deps.platform.shell.revealPath('/srv/app/a.ts')).resolves.toBeUndefined();
-    await expect(deps.platform.dialogs.pickFolder({ title: 'x' })).resolves.toBeUndefined();
-    await expect(deps.platform.dialogs.pickFile({ title: 'x' })).resolves.toBeUndefined();
-    expect(notices).toEqual(['Choosing a file or folder on Local daemon is not available yet.', 'Choosing a file or folder on Local daemon is not available yet.']);
+    const pickFile = vi.spyOn(main.dialogs, 'pickFile');
+    await expect(deps.platform.dialogs.pickFolder({ title: 'x', defaultPath: '/srv/app', buttonLabel: 'Use' })).resolves.toBeUndefined();
+    await expect(deps.platform.dialogs.pickFile({ title: 'y', defaultPath: '/srv/app', filters: { Markdown: ['md'] } })).resolves.toBe('/srv/app/plan.md');
+    expect(picks).toEqual([
+      ['folder', { title: 'x', defaultPath: '/srv/app', buttonLabel: 'Use' }],
+      ['file', { title: 'y', defaultPath: '/srv/app', extensions: ['md'] }],
+    ]);
+    expect(notices).toEqual([]);
+    expect(pickFile).not.toHaveBeenCalled();
     expect(openFolder).not.toHaveBeenCalled();
     expect(revealPath).not.toHaveBeenCalled();
     expect(pickFolder).not.toHaveBeenCalled();

@@ -214,12 +214,16 @@ export const MAIN_CORE_IMPORTS = [
   'pi-session/custom-providers',
   'pi-session/explore-providers',
   'pi-session/openai-auth',
+  // childEnv: git's environment without the repository-local variables
+  'pi-session/checkpoints/exec',
   'pi-session/usage-thresholds',
   'platform-host',
   'process-launcher',
   'quick-open/fuzzy-match',
   'resource-fs',
   'scm/artifacts',
+  // main's own askpass server for its ssh transports; core's serves git
+  'scm/askpass/askpass-server',
   'scm/branches',
   'scm/discovery',
   'scm/remotes',

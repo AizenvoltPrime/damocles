@@ -127,7 +127,7 @@ export class BackupStore implements Backups {
   private readonly log: Log;
   private readonly delayMs: number;
   private readonly timers = new Map<string, { timer: NodeJS.Timeout; document: TextDocument }>();
-  private readonly writes = new Map<string, Promise<void>>();
+  private readonly writes = new Map<string, Promise<boolean>>();
 
   constructor(userDataDir: string, log: Log, delayMs: number = BACKUP_DELAY_MS) {
     this.dir = path.join(userDataDir, BACKUP_DIR);
@@ -141,26 +141,28 @@ export class BackupStore implements Backups {
     if (pending) clearTimeout(pending.timer);
     if (now) {
       this.timers.delete(document.backupId);
-      this.write(document);
+      void this.write(document);
       return;
     }
     const timer = setTimeout(() => {
       this.timers.delete(document.backupId);
-      this.write(document);
+      void this.write(document);
     }, this.delayMs);
     this.timers.set(document.backupId, { timer, document });
   }
 
-  writeNow(document: TextDocument): Promise<void> {
-    this.changed(document, true);
-    return this.writes.get(document.backupId) ?? Promise.resolve();
+  writeNow(document: TextDocument): Promise<boolean> {
+    const pending = this.timers.get(document.backupId);
+    if (pending) clearTimeout(pending.timer);
+    this.timers.delete(document.backupId);
+    return this.write(document);
   }
 
   remove(backupId: string): void {
     const pending = this.timers.get(backupId);
     if (pending) clearTimeout(pending.timer);
     this.timers.delete(backupId);
-    this.chain(backupId, async () => {
+    void this.chain(backupId, async () => {
       await fs.rm(this.fileOf(backupId), { force: true });
     });
   }
@@ -170,7 +172,7 @@ export class BackupStore implements Backups {
     for (const [backupId, { timer, document }] of this.timers) {
       clearTimeout(timer);
       this.timers.delete(backupId);
-      this.write(document);
+      void this.write(document);
     }
     await settlePending(() => this.writes.values());
   }
@@ -206,9 +208,10 @@ export class BackupStore implements Backups {
     return records;
   }
 
-  private write(document: TextDocument): void {
+  // Resolves whether the backup landed; a document with no place to restore to has none.
+  private write(document: TextDocument): Promise<boolean> {
     const target = targetOf(document);
-    if (!target) return;
+    if (!target) return Promise.resolve(false);
     const record = {
       version: BACKUP_VERSION,
       backupId: document.backupId,
@@ -220,7 +223,7 @@ export class BackupStore implements Backups {
       text: savedText(document),
       target,
     };
-    this.chain(document.backupId, async () => {
+    return this.chain(document.backupId, async () => {
       await fs.mkdir(this.dir, { recursive: true });
       const temp = path.join(this.dir, `${document.backupId}.${randomBytes(6).toString('hex')}.tmp`);
       const handle = await fs.open(temp, 'wx', 0o600);
@@ -235,15 +238,17 @@ export class BackupStore implements Backups {
   }
 
   // One backup's writes and removal run in order, so a removal never lands before a write it follows.
-  private chain(backupId: string, step: () => Promise<void>): void {
-    const previous = this.writes.get(backupId) ?? Promise.resolve();
-    const next = previous.then(step).catch((err: unknown) => {
+  private chain(backupId: string, step: () => Promise<void>): Promise<boolean> {
+    const previous = this.writes.get(backupId) ?? Promise.resolve(true);
+    const next = previous.then(step).then(() => true, (err: unknown) => {
       this.log(`[backups] ${backupId}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
     });
     this.writes.set(backupId, next);
     void next.then(() => {
       if (this.writes.get(backupId) === next) this.writes.delete(backupId);
     });
+    return next;
   }
 
   private fileOf(backupId: string): string {

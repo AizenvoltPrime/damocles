@@ -5,10 +5,9 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { parseSettingsText, type SettingsObject } from '../../../core/config/settings-file';
 import type { Disposable } from '../../../platform/disposable';
+import { PROVIDER_ID_PATTERN } from '../../../shared/types/messages';
 import { MAX_BROKER_EXPIRES_IN_MS, planModelIdsOf, sentClientAuth, type BrokerAnswer, type ClientAuth, type ClientPolicy, type ClientUser, type HeldAuth, type HeldAuthEntry, type PermissionRuleLists, type UserRulesDir } from '../../../shared/remote-user';
 
-// pi's provider ids are short slugs (anthropic, openai-codex, github-copilot)
-const PROVIDER_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 // an access token or API key; pi's JWTs are a few KB
 export const MAX_SECRET_CHARS: number = 64 * 1024;
 // one non-secret extra string (an OAuth client id, an enterprise URL, a scope, a model id)
@@ -44,7 +43,7 @@ const boundedStrings = (value: unknown, what: string): readonly string[] => {
 
 /** A provider id the broker may ask for: one this computer's pi lists in its clientAuth snapshot. */
 export function checkProvider(provider: string, known: HeldAuth): void {
-  if (!PROVIDER_ID.test(provider) || !Object.hasOwn(known.providers, provider)) throw new Error(`${JSON.stringify(provider.slice(0, 64))} is not a provider this computer knows`);
+  if (!PROVIDER_ID_PATTERN.test(provider) || !Object.hasOwn(known.providers, provider)) throw new Error(`${JSON.stringify(provider.slice(0, 64))} is not a provider this computer knows`);
 }
 
 /**
@@ -85,11 +84,11 @@ export function brokerAnswerOf(raw: unknown): BrokerAnswer {
   }
 }
 
-/** The non-secret snapshot a daemon gets: per provider its type, OAuth expiry, whether pi holds a key, whether a key is saved, whether the applied key bills flat, whether an OAuth sign-in bills the allowance and the models it lists, nothing else. */
+/** The non-secret snapshot a daemon gets: per provider its type, OAuth expiry, whether pi holds a key, whether a key is saved, whether the applied key bills flat, whether an OAuth sign-in bills the allowance and the models it lists, whether the saved key is preferred over a sign-in, nothing else. */
 export function clientAuthOf(raw: HeldAuth): HeldAuth {
   const providers: Record<string, HeldAuthEntry> = {};
   for (const [provider, entry] of Object.entries(raw.providers)) {
-    if (!PROVIDER_ID.test(provider)) continue;
+    if (!PROVIDER_ID_PATTERN.test(provider)) continue;
     const plan = entry.type === 'oauth' ? planModelIdsOf(entry.availableModelIds) : undefined;
     providers[provider] = {
       type: entry.type,
@@ -99,6 +98,7 @@ export function clientAuthOf(raw: HeldAuth): HeldAuth {
       flatFee: entry.flatFee === true,
       ...(entry.type === 'oauth' && entry.allowance === true ? { allowance: true } : {}),
       ...(plan ? { availableModelIds: plan } : {}),
+      ...(entry.preferApiKey === true ? { preferApiKey: true } : {}),
     };
   }
   return { providers };
@@ -143,6 +143,8 @@ export interface UserRelaysDeps {
   // the contributed keys core reads from the user layer, and their values in this computer's user settings
   readonly userSettingKeys: () => readonly string[];
   readonly userValue: (key: string) => unknown;
+  // the authority's configured policy from this computer's host store: YOLO, the default mode and agent forwarding
+  readonly hostPolicy: (authorityKey: string) => Pick<ClientPolicy, 'allowBypass' | 'defaultPermissionMode' | 'agentForwarding'>;
   readonly log: (line: string) => void;
 }
 
@@ -157,8 +159,8 @@ export class UserRelays implements Disposable {
   // expiries on this computer's clock; each send turns them into the ms left
   private auth: HeldAuth = { providers: {} };
   private user: ClientUser = { settings: {}, permissionRules: [] };
-  private readonly attached = new Set<Publish>();
-  private readonly policy: ClientPolicy;
+  // each attach's publish, by the authority it attached
+  private readonly attached = new Map<Publish, { readonly authorityKey: string; readonly sharedLoopback: boolean; policy: string }>();
   private lastAuthRead = Number.NEGATIVE_INFINITY;
   // one refresh of each mirror at a time, so the last to publish read after every earlier one
   private authRefresh: Promise<void> = Promise.resolve();
@@ -166,15 +168,36 @@ export class UserRelays implements Disposable {
 
   constructor(deps: UserRelaysDeps) {
     this.deps = deps;
-    // no remote host allows YOLO
-    this.policy = { voice: deps.voice, allowBypass: false };
   }
 
-  /** The values an attach starts from; its publish hears every later change until disposed. sharedLoopback: ClientPolicy's. */
-  attach(publish: Publish, sharedLoopback: boolean): { readonly mirrors: ClientMirrorValues; readonly subscription: Disposable } {
-    this.attached.add(publish);
-    const clientPolicy = sharedLoopback ? { ...this.policy, sharedLoopback } : this.policy;
+  /** The values an attach of authorityKey starts from; its publish hears every later change until disposed. sharedLoopback: ClientPolicy's. */
+  attach(publish: Publish, authorityKey: string, sharedLoopback: boolean): { readonly mirrors: ClientMirrorValues; readonly subscription: Disposable } {
+    const clientPolicy = this.policyOf(authorityKey, sharedLoopback);
+    this.attached.set(publish, { authorityKey, sharedLoopback, policy: JSON.stringify(clientPolicy) });
     return { mirrors: { clientAuth: sentClientAuth(this.auth, Date.now()), clientUser: this.user, clientPolicy }, subscription: { dispose: () => this.attached.delete(publish) } };
+  }
+
+  /** The authority's host settings changed: each attach of it whose clientPolicy differs hears the new one. */
+  policyChanged(authorityKey: string): void {
+    for (const [publish, attach] of this.attached) {
+      if (attach.authorityKey !== authorityKey) continue;
+      const next = this.policyOf(authorityKey, attach.sharedLoopback);
+      const text = JSON.stringify(next);
+      if (text === attach.policy) continue;
+      attach.policy = text;
+      publish('clientPolicy', next);
+    }
+  }
+
+  private policyOf(authorityKey: string, sharedLoopback: boolean): ClientPolicy {
+    const { allowBypass, defaultPermissionMode, agentForwarding } = this.deps.hostPolicy(authorityKey);
+    return {
+      voice: this.deps.voice,
+      allowBypass,
+      ...(defaultPermissionMode !== undefined ? { defaultPermissionMode } : {}),
+      ...(agentForwarding === true ? { agentForwarding } : {}),
+      ...(sharedLoopback ? { sharedLoopback } : {}),
+    };
   }
 
   /** The local core's credentials changed (or it started): re-reads its snapshot and publishes it where it differs. */
@@ -197,7 +220,7 @@ export class UserRelays implements Disposable {
     if (JSON.stringify(next) === JSON.stringify(this.auth)) return;
     this.auth = next;
     const sent = sentClientAuth(next, Date.now());
-    for (const publish of this.attached) publish('clientAuth', sent);
+    for (const publish of this.attached.keys()) publish('clientAuth', sent);
   }
 
   private async refreshUser(): Promise<void> {
@@ -209,13 +232,15 @@ export class UserRelays implements Disposable {
     const next = clientUserOf(files.flat(), values);
     if (JSON.stringify(next) === JSON.stringify(this.user)) return;
     this.user = next;
-    for (const publish of this.attached) publish('clientUser', next);
+    for (const publish of this.attached.keys()) publish('clientUser', next);
   }
 
   /** A remote core's broker asks for a provider's credential: always this computer's, checked before it leaves. */
   async credentials(authority: string, provider: string): Promise<BrokerAnswer> {
+    // a read under way (the one each local core start makes) lands before an ask is judged against the snapshot
+    await this.authRefresh;
     // a provider signed in since the last snapshot is listed once it is re-read; an id that cannot be one never asks
-    if (PROVIDER_ID.test(provider) && !Object.hasOwn(this.auth.providers, provider) && Date.now() - this.lastAuthRead >= AUTH_REREAD_MS) await this.authChanged();
+    if (PROVIDER_ID_PATTERN.test(provider) && !Object.hasOwn(this.auth.providers, provider) && Date.now() - this.lastAuthRead >= AUTH_REREAD_MS) await this.authChanged();
     checkProvider(provider, this.auth);
     this.deps.log(`[remote] user.credentials ${provider} for ${authority}`);
     return brokerAnswerOf(await this.deps.resolveCredential(provider));

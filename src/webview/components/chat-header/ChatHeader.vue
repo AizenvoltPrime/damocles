@@ -16,6 +16,7 @@ import ChatChangesCounter from './ChatChangesCounter.vue';
 import HandOffMenu from './HandOffMenu.vue';
 import WorktreeHeaderChip from './WorktreeHeaderChip.vue';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { chatOffline } from '@/composables/useChatHost';
 import type { ChatPlace } from '@shared/types/messages';
 import { visibleText } from '@shared/visible-text';
 import { useSettingsStore } from '@/stores/useSettingsStore';
@@ -36,6 +37,8 @@ const { selectedSessionDisplayName, isAwaitingUserAction } = storeToRefs(useSess
 const { isProcessing, terminalShown, toggleTerminalShortcut, chatChanges, worktree } = storeToRefs(useUIStore());
 const { postMessage } = usePlatformBridge();
 const btwStore = useBtwStore();
+// A mirrored transcript's view answers nothing but ready, so its header keeps only the controls that work on the page itself.
+const transcript = chatOffline() !== undefined;
 
 // Chat Panel.dc.html folds the header by the panel's width: Memory consolidation below 45rem (720px at the default
 // font), the plan, memory, browser, MCP and tools controls and the desktop terminal toggle below 35rem (560px), all into the More menu.
@@ -207,7 +210,7 @@ const terminalTitle = computed(() => (toggleTerminalShortcut.value ? t('chatHead
       </Transition>
       <PromptNavigatorChip :show-shortcut="wide" />
       <ConsolidationIndicator
-        v-if="wide"
+        v-if="wide && !transcript"
         @click="run('consolidation')"
       />
       <button
@@ -229,7 +232,7 @@ const terminalTitle = computed(() => (toggleTerminalShortcut.value ? t('chatHead
           aria-hidden="true"
         />
       </button>
-      <template v-if="roomy">
+      <template v-if="roomy && !transcript">
         <span
           class="mx-1.5 h-4 w-px bg-(--d-border2)"
           aria-hidden="true"
@@ -285,58 +288,60 @@ const terminalTitle = computed(() => (toggleTerminalShortcut.value ? t('chatHead
           />
         </Transition>
       </template>
-      <Transition name="t-pop">
-        <HandOffMenu
-          v-if="handOff && fitsHandOff"
-          :state="handOff"
-          :project-branch="branch"
+      <template v-if="!transcript">
+        <Transition name="t-pop">
+          <HandOffMenu
+            v-if="handOff && fitsHandOff"
+            :state="handOff"
+            :project-branch="branch"
+            :wide="wide"
+            @move="moveChat"
+          />
+        </Transition>
+        <slot name="history" />
+        <!-- Pressed while the desktop window shows its terminal pane; the host toggles the pane and reports the new state. -->
+        <Toggle
+          v-if="hostCapabilities.windowLayout && roomy"
+          :model-value="terminalShown"
+          size="sm"
+          data-testid="chat-header-terminal"
+          class="d-press ms-1 h-7 min-w-7 gap-1.5 rounded-7 border border-(--d-border2) px-2 text-xs font-medium text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 data-[state=on]:border-(--d-accent) data-[state=on]:bg-(--d-accent-soft) data-[state=on]:text-(--d-accent-text) data-[state=on]:hover:bg-(--d-accent-soft) [&_svg]:size-3.5"
+          :title="terminalTitle"
+          :aria-label="t('chatHeader.terminal')"
+          @update:model-value="run('terminal')"
+        >
+          <SquareTerminal aria-hidden="true" />
+          <span v-if="wide">{{ t('chatHeader.terminal') }}</span>
+        </Toggle>
+        <HeaderMoreMenu
           :wide="wide"
-          @move="moveChat"
+          :roomy="roomy"
+          :mcp-connected="mcpConnected"
+          :tools-enabled="toolsEnabled"
+          :panels-disabled="isProcessing"
+          :has-aside="btwStore.hasAside"
+          :terminal="hostCapabilities.windowLayout"
+          :terminal-shortcut="toggleTerminalShortcut"
+          :changes="changes"
+          :hand-off="fitsHandOff ? null : handOff"
+          @action="run"
+          @hand-off="moveChat"
         />
-      </Transition>
-      <slot name="history" />
-      <!-- Pressed while the desktop window shows its terminal pane; the host toggles the pane and reports the new state. -->
-      <Toggle
-        v-if="hostCapabilities.windowLayout && roomy"
-        :model-value="terminalShown"
-        size="sm"
-        data-testid="chat-header-terminal"
-        class="d-press ms-1 h-7 min-w-7 gap-1.5 rounded-7 border border-(--d-border2) px-2 text-xs font-medium text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 data-[state=on]:border-(--d-accent) data-[state=on]:bg-(--d-accent-soft) data-[state=on]:text-(--d-accent-text) data-[state=on]:hover:bg-(--d-accent-soft) [&_svg]:size-3.5"
-        :title="terminalTitle"
-        :aria-label="t('chatHeader.terminal')"
-        @update:model-value="run('terminal')"
-      >
-        <SquareTerminal aria-hidden="true" />
-        <span v-if="wide">{{ t('chatHeader.terminal') }}</span>
-      </Toggle>
-      <HeaderMoreMenu
-        :wide="wide"
-        :roomy="roomy"
-        :mcp-connected="mcpConnected"
-        :tools-enabled="toolsEnabled"
-        :panels-disabled="isProcessing"
-        :has-aside="btwStore.hasAside"
-        :terminal="hostCapabilities.windowLayout"
-        :terminal-shortcut="toggleTerminalShortcut"
-        :changes="changes"
-        :hand-off="fitsHandOff ? null : handOff"
-        @action="run"
-        @hand-off="moveChat"
-      />
-      <button
-        v-if="hostCapabilities.settingsInPanel"
-        type="button"
-        class="d-tool-btn w-7.5 px-0 text-(--d-accent) hover:text-(--d-accent)"
-        :title="t('common.settings')"
-        :aria-label="t('common.settings')"
-        data-testid="chat-settings-button"
-        @click="run('settings')"
-      >
-        <Settings
-          class="size-3.75"
-          aria-hidden="true"
-        />
-      </button>
+        <button
+          v-if="hostCapabilities.settingsInPanel"
+          type="button"
+          class="d-tool-btn w-7.5 px-0 text-(--d-accent) hover:text-(--d-accent)"
+          :title="t('common.settings')"
+          :aria-label="t('common.settings')"
+          data-testid="chat-settings-button"
+          @click="run('settings')"
+        >
+          <Settings
+            class="size-3.75"
+            aria-hidden="true"
+          />
+        </button>
+      </template>
     </div>
   </header>
 </template>

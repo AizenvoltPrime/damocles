@@ -69,9 +69,14 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
+// a string literal whose text starts with git, as written in source; only a file holding one is parsed
+const GIT_LITERAL = /['"`]git(\.exe)?(['"`\s\\])/i;
+
 /** Calls of a spawn, exec, fork or run function whose first argument is the literal `git` (or a `git …` command line). */
 function bareGitSpawns(file: string): string[] {
-  const source = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+  const text = fs.readFileSync(file, 'utf8');
+  if (!GIT_LITERAL.test(text)) return [];
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const found: string[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) || ts.isNewExpression(node)) {

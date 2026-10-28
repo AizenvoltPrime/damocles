@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createFakePlatform, installFakePlatform } from '../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
+import { asClient } from '../../client-snapshots';
 import { installPlatform } from '../../platform-host';
 import { PiRuntime } from '../pi-runtime';
 import { MODEL_PICKER_SETTING, MODEL_VENDORS } from '../../../shared/model-vendor';
@@ -10,7 +11,11 @@ import type { HeldAuthEntry } from '../../../shared/remote-user';
 
 function runtimeWith(configured: string[]): PiRuntime {
   const runtime = PiRuntime.get();
-  (runtime as unknown as { _modelRuntime: unknown })._modelRuntime = { hasConfiguredAuth: (provider: string) => configured.includes(provider) };
+  (runtime as unknown as { _modelRuntime: unknown })._modelRuntime = {
+    hasConfiguredAuth: (provider: string) => configured.includes(provider),
+    // a daemon's core refreshes pi's availability snapshot when the acting client changes
+    refresh: () => Promise.resolve({ errors: new Map() }),
+  };
   return runtime;
 }
 
@@ -46,16 +51,32 @@ describe('PiRuntime.pickerProviders', () => {
     expect(runtimeWith(['openai']).pickerProviders()).toEqual(['openai']);
   });
 
-  it('on a daemon\'s core follows the acting client\'s auth, not pi\'s snapshot', () => {
+  it('on a daemon\'s core follows the pinned client\'s auth, and never lists another client\'s credential from pi\'s snapshot', () => {
     const host = createFakeRemoteHost();
     installPlatform({ ...createFakePlatform({ settings: { user: { [MODEL_PICKER_SETTING]: { xai: true } } } }), remote: host.remote });
     const entry = (type: HeldAuthEntry['type'], hasKey: boolean): HeldAuthEntry => ({ type, hasKey, flatFee: false });
     host.set('clientAuth', 'client-a', { providers: { anthropic: entry('oauth', false), deepseek: entry('none', true), stepfun: entry('none', false) } });
     host.set('clientAuth', 'client-b', { providers: { 'openai-codex': entry('oauth', false) } });
-    const runtime = runtimeWith([...MODEL_VENDORS]);
+    // pi's snapshot as its refresh outside every pin leaves it while client a acts: a's credentials, the target holding none
+    const runtime = runtimeWith(['anthropic', 'deepseek']);
+    host.setActing('client-a');
     expect(runtime.pickerProviders()).toEqual(['anthropic', 'deepseek', 'xai']);
-    host.setActing('client-b');
-    expect(runtime.pickerProviders()).toEqual(['openai', 'xai']);
+    // client b's view, read under b's pin while a still acts
+    expect(asClient(host.remote, 'client-b', () => runtime.pickerProviders())).toEqual(['openai', 'xai']);
+  });
+
+  it('on a daemon\'s core lists a vendor the target\'s own environment holds a credential for, which the client lacks', () => {
+    const host = createFakeRemoteHost();
+    installPlatform({ ...createFakePlatform(), remote: host.remote });
+    host.set('clientAuth', 'client-a', { providers: { anthropic: { type: 'oauth', hasKey: false, flatFee: false } } });
+    host.set('clientAuth', 'client-b', {
+      providers: { anthropic: { type: 'oauth', hasKey: false, flatFee: false } },
+    });
+    host.setActing('client-a');
+    // the snapshot counts client a's Claude sign-in and the target's OPENAI_API_KEY
+    const runtime = runtimeWith(['anthropic', 'openai']);
+    expect(runtime.pickerProviders()).toEqual(['anthropic', 'openai']);
+    expect(asClient(host.remote, 'client-b', () => runtime.pickerProviders())).toEqual(['anthropic', 'openai']);
   });
 });
 

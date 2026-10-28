@@ -266,6 +266,84 @@ describe('ShellHost', () => {
     expect(lines).toContain('[shell] ignoring a malformed focused part');
   });
 
+  it('takes the remote host channels only with an issued host id and a bounded name, and passes them through', async () => {
+    actions.renameHost = vi.fn(async () => ({ ok: true as const, name: 'prod' }));
+    actions.openConnect = vi.fn(async () => undefined);
+    actions.reconnectHost = vi.fn(async () => undefined);
+    actions.signInHost = vi.fn(async () => undefined);
+    host();
+    const call = (channel: string, ...args: unknown[]): Promise<unknown> => Promise.resolve().then(() => ipc.handlers.get(channel)!(own, ...args));
+    await expect(call(SHELL_CHANNELS.hostsRename, { hostId: 'h1', name: 'prod' })).resolves.toEqual({ ok: true, name: 'prod' });
+    for (const raw of [{ hostId: '../x', name: 'a' }, { hostId: 'h1' }, { hostId: 'h1', name: 'a'.repeat(1000) }, { hostId: 'h1', name: 3 }, { hostId: 'h1', name: 'a', more: 1 }]) {
+      await expect(call(SHELL_CHANNELS.hostsRename, raw)).rejects.toThrow('Malformed');
+    }
+    await call(SHELL_CHANNELS.connectOpen, {});
+    expect(vi.mocked(actions.openConnect).mock.calls).toEqual([[]]);
+    // a host's folders open only through hosts.openFolder, so connect.open names no host
+    await expect(call(SHELL_CHANNELS.connectOpen, { hostId: 'h1' })).rejects.toThrow('Malformed');
+    await expect(call(SHELL_CHANNELS.hostsReconnect, 'h1')).rejects.toThrow('Malformed');
+    await call(SHELL_CHANNELS.hostsReconnect, { hostId: 'h1' });
+    await call(SHELL_CHANNELS.hostsSignIn, { hostId: 'h1' });
+    expect(actions.reconnectHost).toHaveBeenCalledWith('h1');
+    expect(actions.signInHost).toHaveBeenCalledWith('h1');
+  });
+
+  it('opens a host\'s folders and its card\'s rename only for a well-formed host id', async () => {
+    actions.openHostFolder = vi.fn(async () => undefined);
+    actions.renameHostOnCard = vi.fn(async () => undefined);
+    host();
+    const call = (channel: string, ...args: unknown[]): Promise<unknown> => Promise.resolve().then(() => ipc.handlers.get(channel)!(own, ...args));
+    for (const channel of [SHELL_CHANNELS.hostsOpenFolder, SHELL_CHANNELS.hostsRenameOnCard]) {
+      await call(channel, { hostId: 'h1' });
+      for (const raw of ['h1', {}, { hostId: '' }, { hostId: '../x' }, { hostId: 'h1', folder: '/srv' }]) {
+        await expect(call(channel, raw)).rejects.toThrow('Malformed');
+      }
+    }
+    expect(vi.mocked(actions.openHostFolder).mock.calls).toEqual([['h1']]);
+    expect(vi.mocked(actions.renameHostOnCard).mock.calls).toEqual([['h1']]);
+  });
+
+  it('takes the Projects section calls only well-formed, and hands main copies of the lists', async () => {
+    actions.setProjectsView = vi.fn(async () => undefined);
+    actions.setProjectGroupCollapsed = vi.fn(async () => undefined);
+    actions.reorderProjects = vi.fn(async () => true);
+    actions.reorderProjectGroups = vi.fn(async () => false);
+    actions.openAsProject = vi.fn(async () => ({ projectKey: 'k', added: true }));
+    host();
+    const call = (channel: string, ...args: unknown[]): Promise<unknown> => Promise.resolve().then(() => ipc.handlers.get(channel)!(own, ...args));
+    await call(SHELL_CHANNELS.projectsSetView, { view: 'grouped' });
+    for (const raw of [{ view: 'tree' }, { view: 'flat', more: 1 }, 'flat', {}]) await expect(call(SHELL_CHANNELS.projectsSetView, raw)).rejects.toThrow('Malformed');
+    expect(vi.mocked(actions.setProjectsView).mock.calls).toEqual([['grouped']]);
+
+    await call(SHELL_CHANNELS.projectsSetGroupCollapsed, { group: 'ssh+h1', collapsed: true });
+    for (const raw of [{ group: 'local', collapsed: 'yes' }, { group: '', collapsed: true }, { group: 'x'.repeat(300), collapsed: true }, { group: 'local' }]) {
+      await expect(call(SHELL_CHANNELS.projectsSetGroupCollapsed, raw)).rejects.toThrow('Malformed');
+    }
+    expect(vi.mocked(actions.setProjectGroupCollapsed).mock.calls).toEqual([['ssh+h1', true]]);
+
+    const order = ['b', 'a'];
+    await expect(call(SHELL_CHANNELS.projectsReorder, { order })).resolves.toBe(true);
+    expect(vi.mocked(actions.reorderProjects).mock.calls[0]![0]).toEqual(order);
+    expect(vi.mocked(actions.reorderProjects).mock.calls[0]![0]).not.toBe(order);
+    await expect(call(SHELL_CHANNELS.projectsReorderGroups, { groupOrder: ['ssh+h1', 'local'] })).resolves.toBe(false);
+    for (const [channel, field] of [[SHELL_CHANNELS.projectsReorder, 'order'], [SHELL_CHANNELS.projectsReorderGroups, 'groupOrder']] as const) {
+      for (const list of ['a', [1], [''], ['a', null], Array.from({ length: 10_001 }, (_, i) => `k${i}`)]) {
+        await expect(call(channel, { [field]: list })).rejects.toThrow('Malformed');
+      }
+      await expect(call(channel, { [field]: [], more: 1 })).rejects.toThrow('Malformed');
+    }
+    expect(actions.reorderProjects).toHaveBeenCalledTimes(1);
+    expect(actions.reorderProjectGroups).toHaveBeenCalledTimes(1);
+
+    await expect(call(SHELL_CHANNELS.projectsOpenAsProject, { projectKey: 'p', relativePath: 'src/api' })).resolves.toEqual({ projectKey: 'k', added: true });
+    for (const relativePath of ['', '../x', 'src/../..', '/etc', 'C:/x', 'src\\api', 'a//b', 3]) {
+      await expect(call(SHELL_CHANNELS.projectsOpenAsProject, { projectKey: 'p', relativePath })).rejects.toThrow('Malformed');
+    }
+    await expect(call(SHELL_CHANNELS.projectsOpenAsProject, { projectKey: '', relativePath: 'src' })).rejects.toThrow('Malformed');
+    await expect(call(SHELL_CHANNELS.projectsOpenAsProject, { projectKey: 'p', relativePath: 'src', after: 'q' })).rejects.toThrow('Malformed');
+    expect(vi.mocked(actions.openAsProject).mock.calls).toEqual([[{ projectKey: 'p', relativePath: 'src/api' }]]);
+  });
+
   it('runs only a known update action from the page, and pushes the update state once the page has loaded', async () => {
     actions.update = vi.fn(() => ({ state: { kind: 'idle' as const }, lastCheckedAt: null, platform: 'win32' as const }));
     actions.runUpdateAction = vi.fn(async () => undefined);
@@ -337,7 +415,7 @@ describe('ShellHost', () => {
 
   // The page asks by the state it holds while main may already have changed the list and sent the next state.
   it('answers a chat list only for a project of the state the page names; one that left the list since answers null after the state without it', async () => {
-    const projects = (...keys: string[]): ShellState['projects'] => keys.map((key) => ({ key, name: key, fsPath: key, trusted: true, authority: { kind: 'local', name: 'This computer' }, platform: 'win32', connection: 'connected', running: 0, waiting: 0 }));
+    const projects = (...keys: string[]): ShellState['projects'] => keys.map((key) => ({ key, name: key, fsPath: key, trusted: true, authority: { key: 'local', kind: 'local', name: 'This computer' }, platform: 'win32', connection: 'connected', trash: true, running: 0, waiting: 0 }));
     let body: Pick<ShellState, 'projects' | 'selected'> = { projects: projects('a', 'b'), selected: { projectKey: 'a' } };
     const known = new Set(['a', 'b']);
     const listed = (key: string): ShellChatList | undefined => (known.has(key) ? { projectKey: key, chats: [], tags: [] } : undefined);

@@ -30,6 +30,7 @@ const DESKTOP_MAC: HostCapabilities = {
   windowLayout: true,
   chatReview: true,
   worktrees: true,
+  bypassPermissions: true,
 };
 
 function buildRegistry(): HandlerRegistry {
@@ -79,6 +80,7 @@ describe('host capabilities', () => {
       windowLayout: false,
       chatReview: false,
       worktrees: false,
+      bypassPermissions: true,
     });
   });
 

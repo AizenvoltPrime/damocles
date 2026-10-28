@@ -24,6 +24,10 @@
 @keyframes o-up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 @keyframes o-sweep{0%{transform:translateX(-100%)}100%{transform:translateX(250%)}}
 @keyframes o-grow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+/* o-grow's reverse: a banner collapses back into its top edge. */
+@keyframes o-shrink{from{opacity:1;transform:scaleY(1)}to{opacity:0;transform:scaleY(0)}}
+/* A line draws itself from its start; --len is at least the path's length, set with stroke-dasharray to the same value. */
+@keyframes d-draw{from{stroke-dashoffset:var(--len,120)}to{stroke-dashoffset:0}}
 @keyframes o-bar{from{transform:scaleX(0)}to{transform:scaleX(1)}}
 @keyframes d-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 @keyframes d-ring{0%{opacity:.4;transform:scale(1)}100%{opacity:0;transform:scale(var(--ring-scale,1.75))}}
@@ -57,6 +61,8 @@
 @keyframes d-scale-in{from{opacity:0;transform:scale(.8)}to{opacity:1;transform:none}}
 @keyframes d-scale-out{from{opacity:1;transform:none}to{opacity:0;transform:scale(.85)}}
 @keyframes d-icon-in{from{opacity:0;transform:scale(.4) rotate(-40deg)}to{opacity:1;transform:none}}
+/* A refused entry shakes its field sideways once. */
+@keyframes d-shake{0%,100%{transform:none}20%{transform:translateX(-.25rem)}40%{transform:translateX(.25rem)}60%{transform:translateX(-.1875rem)}80%{transform:translateX(.125rem)}}
 
 /* Terminal: a command reached by Ctrl+Up or Ctrl+Down lights up, holds, and fades. */
 @keyframes d-flash{0%{opacity:0}15%,55%{opacity:1}100%{opacity:0}}
@@ -100,6 +106,15 @@
 /* Vue <Transition name="t-…"> classes. Leave animations hold their last frame so nothing flashes before removal. */
 .t-fade-enter-active{animation:o-fade .2s var(--ease-out)}
 .t-fade-leave-active{animation:o-fade-out .14s ease-in both}
+/* A connection banner opens from its top edge and collapses back into it. */
+.t-banner-enter-active{transform-origin:top;animation:o-grow .16s var(--ease-out)}
+.t-banner-leave-active{transform-origin:top;animation:o-shrink .16s ease-in both}
+/* A host's latency sparkline draws itself (stroke-dasharray: var(--len)); replayed by re-keying the path. */
+.d-draw{stroke-dasharray:var(--len,120);animation:d-draw .7s var(--ease-out) both}
+/* A host that came back: a glow over its dot lights up and fades once. */
+.d-flash-once{animation:d-flash 1.5s var(--ease-out) both}
+/* A view waiting for its host dims, and fades back when it returns. */
+.d-dim-transition{transition:opacity .2s var(--ease-out)}
 .t-pop-enter-active{animation:d-pop .16s var(--ease-out)}
 .t-pop-leave-active{animation:d-pop-out .12s ease-in both}
 .t-pop-top-enter-active{animation:d-pop-top .16s var(--ease-out)}
@@ -233,6 +248,9 @@
 /* A busy icon turns in place; a live status dot breathes (the reference's d-spin .9s and d-pulse 1s). */
 .d-spinning{animation:d-spin .9s linear infinite}
 .d-pulsing{animation:d-pulse 1s ease-in-out infinite}
+
+/* Replayed by removing and re-adding the class on each refusal. */
+.d-shake{animation:d-shake .32s var(--ease-out)}
 
 /* A one-shot fade on mount. */
 .d-fade-in{animation:o-fade .2s var(--ease-out) both}

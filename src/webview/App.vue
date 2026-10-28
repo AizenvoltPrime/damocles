@@ -12,7 +12,12 @@ import ComposerStatusStrip from "./components/composer/ComposerStatusStrip.vue";
 import WorktreeComposerStatus from "./components/composer/WorktreeComposerStatus.vue";
 import WorktreePendingChip from "./components/composer/WorktreePendingChip.vue";
 import WorktreeDeletedCard from "./components/composer/WorktreeDeletedCard.vue";
-import { LoaderCircle, Users } from "lucide-vue-next";
+import MirroredChatCard from "./components/composer/MirroredChatCard.vue";
+import HeldMessageChips from "./components/composer/HeldMessageChips.vue";
+import ConnectionBanner from "./components/ConnectionBanner.vue";
+import { useConnectionStore } from "./stores/useConnectionStore";
+import { chatOffline, useChatHost } from "./composables/useChatHost";
+import { CloudOff, LoaderCircle, Users } from "lucide-vue-next";
 import { branchLeaf } from "@/utils/branch-leaf";
 import { windDownText } from "@/utils/windDownText";
 import ChatHeader from "./components/chat-header/ChatHeader.vue";
@@ -34,6 +39,7 @@ import McpRenamedRulesBanner from "./components/McpRenamedRulesBanner.vue";
 import RewindConfirmModal from "./components/RewindConfirmModal.vue";
 import PermissionPrompt from "./components/PermissionPrompt.vue";
 import ElicitationPrompt from "./components/ElicitationPrompt.vue";
+import SignInPrompt from "./components/SignInPrompt.vue";
 import { useJarvisLifecycle } from "./composables/useJarvisLifecycle";
 import { provideMessageListRef } from "./composables/useMessageListRef";
 
@@ -83,7 +89,6 @@ const EditorOverlayHost = defineAsyncComponent({
 });
 import PromptNavigator from "./components/PromptNavigator.vue";
 import { openSettings, useOpenSettings } from "@/composables/useOpenSettings";
-import { showYoloRefusal } from "@/composables/useYoloRefusal";
 import { usePlatformBridge } from "./composables/usePlatformBridge";
 import { remPx } from "./composables/useRemPx";
 import { useBtwAsk } from "./composables/useBtwAsk";
@@ -119,6 +124,8 @@ import { useCompassStore } from "./stores/useCompassStore";
 import { useBtwStore } from "./stores/useBtwStore";
 import { useVoiceJarvisStore } from "./stores/useVoiceJarvisStore";
 import { usePromptNavigatorStore } from "./stores/usePromptNavigatorStore";
+import { useElicitationStore } from "./stores/useElicitationStore";
+import { useExtensionUiStore } from "./stores/useExtensionUiStore";
 import type { PermissionMode } from "@shared/types/settings";
 import type { MemoryTier } from "@shared/types/memory";
 import type { ChatMessage, RewindOption, RewindHistoryItem, RestorePoint } from "@shared/types/session";
@@ -138,6 +145,9 @@ const { t } = useI18n();
 initLocaleMessaging(postMessage);
 
 const uiStore = useUIStore();
+const connectionStore = useConnectionStore();
+connectionStore.attach();
+const chatHost = useChatHost();
 const {
   isProcessing,
   showSettingsModal,
@@ -450,7 +460,8 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
 
   postMessage({ type: "sendMessage", content, sessionId: sessionStore.sendTargetSessionId, includeIdeContext, ...(terminalAttachmentIds.length > 0 ? { terminalAttachmentIds } : {}) });
   followTranscript();
-  uiStore.setProcessing(true);
+  // Main holds a send while the host is away; no turn starts until it reconnects.
+  if (!connectionStore.away) uiStore.setProcessing(true);
 }
 
 function handleWorktreeAction(action: WorktreeAction) {
@@ -470,8 +481,17 @@ watch(chatInputRef, (composer) => {
   uiStore.appendedPrompt = null;
   for (const text of appended) composer.appendPrompt(text);
 });
+// A remote chat main shows from its session mirror while its host is offline; no core answers it, so its composer is read-only.
+const offline = chatOffline();
+// A prompt waits for an answer the host cannot take while it is away.
+const elicitationStore = useElicitationStore();
+const extensionUiStore = useExtensionUiStore();
+const hasPendingPrompt = computed(() => Boolean(
+  currentPermission.value || pendingQuestion.value || pendingFormSchema.value || pendingSkillApproval.value
+  || permissionStore.pendingSignIns.length > 0 || elicitationStore.pendingElicitations.length > 0 || extensionUiStore.current,
+));
 // On desktop a resuming chat's composer waits for core to say where the chat works, so the wrong one never shows.
-const composerAwaitsPlace = computed(() => uiStore.placePending);
+const composerAwaitsPlace = computed(() => uiStore.placePending && offline === undefined);
 // The empty composer's height in rem, kept in the page state so a restored page's placeholder has it before any composer mounts.
 const composerHeight = ref(getState<{ composerHeight?: number }>()?.composerHeight ?? null);
 useResizeObserver(() => chatInputRef.value?.$el as HTMLElement | undefined, ([entry]) => {
@@ -509,11 +529,6 @@ function handleModeChange(mode: PermissionMode) {
 
 function handleToggleDangerouslySkipPermissions() {
   const newValue = !currentSettings.value.dangerouslySkipPermissions;
-  // a remote host's policy refuses YOLO; core refuses it too, so nothing is sent
-  if (newValue && settingsStore.hostCapabilities.bypassPermissions === false) {
-    showYoloRefusal();
-    return;
-  }
   postMessage({ type: "setDangerouslySkipPermissions", enabled: newValue });
   settingsStore.setDangerouslySkipPermissions(newValue);
 }
@@ -1048,6 +1063,7 @@ function handleSuggestion(prompt: string) {
         />
       </template>
     </ChatHeader>
+    <ConnectionBanner />
 
     <!-- The message area is the scroll-to-bottom button's positioning context. -->
     <div class="relative min-h-0 flex-1">
@@ -1141,67 +1157,91 @@ function handleSuggestion(prompt: string) {
           />
         </TransitionGroup>
 
-        <!-- Permission Prompt (queue - shows one at a time) -->
-        <Transition name="t-up">
-          <PermissionPrompt
-            v-if="currentPermission"
-            :visible="true"
-            :tool-use-id="currentPermission.toolUseId"
-            :tool-name="currentPermission.toolName"
-            :tool-input="currentPermission.toolInput"
-            :file-path="currentPermission.filePath"
-            :prompt="currentPermission.prompt"
-            :image-model="currentPermission.imageModel"
-            :patch="currentPermission.patch"
-            :patch-omitted="currentPermission.patchOmitted"
-            :command="currentPermission.command"
-            :owner="currentPermission.owner"
-            :agent-description="currentPermission.agentDescription"
-            :suggestions="currentPermission.suggestions"
-            :blocked-path="currentPermission.blockedPath"
-            :decision-reason="currentPermission.decisionReason"
-            :queue-position="1"
-            :queue-total="pendingPermissionCount"
-            @approve="(approved, options) => currentPermission && handlePermissionApproval(currentPermission.toolUseId, approved, options)"
-          />
+        <Transition name="t-tuck">
+          <p
+            v-if="connectionStore.awayShown && hasPendingPrompt && chatHost"
+            role="status"
+            class="flex items-center gap-1.5 px-1 text-11.5 text-(--d-warning-text)"
+            data-testid="prompts-away-hint"
+          >
+            <CloudOff
+              aria-hidden="true"
+              class="size-3 shrink-0"
+            />
+            <span class="min-w-0 text-pretty">{{ t('remote.queue.answerLater', { host: chatHost.name }) }}</span>
+          </p>
         </Transition>
+        <!-- An answer could not reach core while the host is away: the prompts stay readable but take no input. -->
+        <div
+          class="d-dim-transition flex flex-col gap-2 empty:hidden"
+          :class="{ 'opacity-(--d-opacity-disabled)': connectionStore.awayShown }"
+          :inert="connectionStore.away"
+          data-testid="chat-prompts"
+        >
+          <!-- Permission Prompt (queue - shows one at a time) -->
+          <Transition name="t-up">
+            <PermissionPrompt
+              v-if="currentPermission"
+              :visible="true"
+              :tool-use-id="currentPermission.toolUseId"
+              :tool-name="currentPermission.toolName"
+              :tool-input="currentPermission.toolInput"
+              :file-path="currentPermission.filePath"
+              :prompt="currentPermission.prompt"
+              :image-model="currentPermission.imageModel"
+              :patch="currentPermission.patch"
+              :patch-omitted="currentPermission.patchOmitted"
+              :command="currentPermission.command"
+              :owner="currentPermission.owner"
+              :agent-description="currentPermission.agentDescription"
+              :suggestions="currentPermission.suggestions"
+              :blocked-path="currentPermission.blockedPath"
+              :decision-reason="currentPermission.decisionReason"
+              :queue-position="1"
+              :queue-total="pendingPermissionCount"
+              @approve="(approved, options) => currentPermission && handlePermissionApproval(currentPermission.toolUseId, approved, options)"
+            />
+          </Transition>
 
-        <!-- Question Prompt for AskUserQuestion tool -->
-        <Transition name="t-up">
-          <QuestionPrompt
-            v-if="pendingQuestion"
-            :visible="true"
-            @submit="handleQuestionSubmit"
-            @cancel="handleQuestionCancel"
-          />
-        </Transition>
+          <!-- Question Prompt for AskUserQuestion tool -->
+          <Transition name="t-up">
+            <QuestionPrompt
+              v-if="pendingQuestion"
+              :visible="true"
+              @submit="handleQuestionSubmit"
+              @cancel="handleQuestionCancel"
+            />
+          </Transition>
 
-        <!-- Input Form Prompt for BrowserRequestInput tool -->
-        <Transition name="t-up">
-          <FormPrompt
-            v-if="pendingFormSchema"
-            :visible="true"
-            @submit="handleFormSubmit"
-            @cancel="handleFormCancel"
-          />
-        </Transition>
+          <!-- Input Form Prompt for BrowserRequestInput tool -->
+          <Transition name="t-up">
+            <FormPrompt
+              v-if="pendingFormSchema"
+              :visible="true"
+              @submit="handleFormSubmit"
+              @cancel="handleFormCancel"
+            />
+          </Transition>
 
-        <!-- Webview-bridged dialogs for pi-extension ctx.ui.* (US-026) -->
-        <ExtensionUiDialog />
+          <!-- Webview-bridged dialogs for pi-extension ctx.ui.* (US-026) -->
+          <ExtensionUiDialog />
 
-        <!-- Skill Approval Prompt for Skill tool -->
-        <Transition name="t-up">
-          <SkillApprovalPrompt
-            v-if="pendingSkillApproval"
-            :visible="true"
-            :skill-name="pendingSkillApproval.skillName"
-            :skill-description="pendingSkillApproval.skillDescription"
-            @approve="handleSkillApprove"
-          />
-        </Transition>
+          <!-- Skill Approval Prompt for Skill tool -->
+          <Transition name="t-up">
+            <SkillApprovalPrompt
+              v-if="pendingSkillApproval"
+              :visible="true"
+              :skill-name="pendingSkillApproval.skillName"
+              :skill-description="pendingSkillApproval.skillDescription"
+              @approve="handleSkillApprove"
+            />
+          </Transition>
 
-        <!-- Elicitation Prompt for MCP server input requests -->
-        <ElicitationPrompt />
+          <!-- Elicitation Prompt for MCP server input requests -->
+          <ElicitationPrompt />
+
+          <SignInPrompt />
+        </div>
 
         <PlanReadyBanner />
 
@@ -1227,6 +1267,8 @@ function handleSuggestion(prompt: string) {
           @action="handleWorktreeAction"
         />
 
+        <HeldMessageChips />
+
         <!-- The empty composer's height and still, so the dock never jumps and nothing flashes while the place is unknown. -->
         <div
           v-if="composerAwaitsPlace"
@@ -1241,8 +1283,12 @@ function handleSuggestion(prompt: string) {
           name="t-up"
           mode="out-in"
         >
+          <MirroredChatCard
+            v-if="offline"
+            :host-name="offline.hostName"
+          />
           <WorktreeDeletedCard
-            v-if="uiStore.worktree?.phase === 'deleted'"
+            v-else-if="uiStore.worktree?.phase === 'deleted'"
             @new-chat="postMessage({ type: 'worktreeAction', action: 'newChatInProject' })"
           />
           <ChatInput

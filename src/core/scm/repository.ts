@@ -279,6 +279,8 @@ export const PLAIN_COMMIT: CommitOptions = { all: false, amend: false, signoff: 
 export interface NetworkCall {
   readonly signal: AbortSignal;
   readonly askpassEnv?: Readonly<Record<string, string>>;
+  // the user started it (GitCall.relayCredentials)
+  readonly relayCredentials?: true;
   // LC_ALL=C, for a caller that tells a refusal from git's words
   readonly english?: true;
 }
@@ -1108,7 +1110,7 @@ export class Repository {
   }
 
   private networkCall(args: readonly string[], net: NetworkCall): GitCall {
-    return { ...this.call(args, 'mutation', net.english === true), signal: AbortSignal.any([net.signal, this.queue.signal]), ...(net.askpassEnv ? { askpassEnv: net.askpassEnv } : {}) };
+    return { ...this.call(args, 'mutation', net.english === true), signal: AbortSignal.any([net.signal, this.queue.signal]), ...(net.askpassEnv ? { askpassEnv: net.askpassEnv } : {}), ...(net.relayCredentials ? { relayCredentials: true as const } : {}) };
   }
 
   // A read or status is killed with its process tree when the queue is disposed; an index write never is.

@@ -119,7 +119,7 @@ async function serveChatList(app: ElectronApplication, projectKey: string, list:
 }
 
 const LISTED_AT = Date.UTC(2025, 0, 15, 12);
-const listedChat = (id: string, title: string, tag: string): ShellChat => ({ id, title, tag, timestamp: LISTED_AT, status: 'idle', loaded: false, readOnly: false });
+const listedChat = (id: string, title: string, tag: string): ShellChat => ({ id, title, tag, timestamp: LISTED_AT, status: 'idle', loaded: false, readOnly: false, actions: ['rename', 'tag', 'delete'] });
 const TAGGED_CHATS: readonly ShellChat[] = [
   listedChat('c1', 'Rate-limit the /login route', 'authentication'),
   listedChat('c2', 'Add a test for the 429 case', 'authentication'),

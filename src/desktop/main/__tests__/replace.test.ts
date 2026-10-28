@@ -24,6 +24,10 @@ beforeEach(() => {
   project = { key: folderKey(root), fsPath: root, name: 'proj' };
   notices = [];
   documents = new DocumentService({
+    hostLabel: (authority) => ({ hostId: authority, name: authority }),
+    uploadsConflicted: () => undefined,
+    warn: () => undefined,
+    reopen: () => undefined,
     authorityOs: () => process.platform,
     projects: () => [project],
     workspaces: testWorkspaces({ watchers: createFakePlatform().fileWatchers }),
@@ -31,7 +35,7 @@ beforeEach(() => {
     t: (message) => message,
     log: () => undefined,
     pickSavePath: async () => undefined,
-    backups: { changed: () => undefined, writeNow: async () => undefined, remove: () => undefined },
+    backups: { changed: () => undefined, writeNow: async () => true, remove: () => undefined },
     settings: { locate: () => undefined, save: async () => ({ ok: false, error: 'unused' }) as never },
   });
 });

@@ -69,6 +69,7 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
   const state = shallowRef<ShellEditorState | null>(null);
   const contents = shallowRef(new Map<string, ShellDocumentContent>());
   const loading = new Map<string, Promise<ShellDocumentContent>>();
+  const loadFailures = shallowRef<ReadonlySet<string>>(new Set());
   const buffers = new Map<string, TextBuffer>();
   const creating = new Map<string, Promise<MonacoEditor.ITextModel>>();
   // a tab the user opened, which its editor focuses once it shows; the counter repeats a request for the same tab
@@ -125,7 +126,18 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
     triggerRef(contents);
   }
 
-  /** The document's content, fetched once; later changes arrive as document-changed. */
+  function setLoadFailed(documentId: string, failed: boolean): void {
+    if (loadFailures.value.has(documentId) === failed) return;
+    const next = new Set(loadFailures.value);
+    if (failed) next.add(documentId);
+    else next.delete(documentId);
+    loadFailures.value = next;
+  }
+
+  /**
+   * The document's content, fetched once; later changes arrive as document-changed. A failed fetch is forgotten, so the next
+   * load asks main again, and the document reads as loadFailed until a load succeeds.
+   */
   function load(documentId: string): Promise<ShellDocumentContent> {
     const known = contents.value.get(documentId);
     if (known) return Promise.resolve(known);
@@ -133,12 +145,29 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
     if (!pending) {
       pending = api.getDocument(documentId).then((content) => {
         loading.delete(documentId);
+        setLoadFailed(documentId, false);
         setContent(content);
         return content;
+      }, (err: unknown) => {
+        loading.delete(documentId);
+        // The renderer and main boundary: main logged its handler's throw.
+        console.error(`[editor] loading ${documentId} failed`, err);
+        setLoadFailed(documentId, true);
+        throw err;
       });
       loading.set(documentId, pending);
     }
     return pending;
+  }
+
+  /** load for a view that shows the failure itself (loadFailed): undefined when main could not give the content. */
+  function loadShown(documentId: string): Promise<ShellDocumentContent | undefined> {
+    return load(documentId).then((content) => content, () => undefined);
+  }
+
+  /** Whether the document's last load failed, reactively. */
+  function loadFailed(documentId: string): boolean {
+    return loadFailures.value.has(documentId);
   }
 
   /** The text document's Monaco model, shared by every tab that shows it. */
@@ -151,6 +180,9 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
         creating.delete(documentId);
         if (content.kind !== 'text') throw new Error(`document ${documentId} is not text`);
         return createModel(module, content);
+      }, (err: unknown) => {
+        creating.delete(documentId);
+        throw err;
       });
       creating.set(documentId, pending);
     }
@@ -806,6 +838,8 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
     resolveConflict,
     monaco,
     load,
+    loadShown,
+    loadFailed,
     model,
     bufferModel,
     rememberViewState,

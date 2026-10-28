@@ -105,7 +105,10 @@ const destinations = [
                 scope="global"
               >
                 <template #host>
-                  <HostBadge :name="host.name" />
+                  <HostBadge
+                    :name="host.name"
+                    :tone="host.color"
+                  />
                 </template>
               </i18n-t>
               <span class="text-xs text-(--d-muted)">{{ t('permission.destination.onHostDesc', { host: host.name }) }}</span>

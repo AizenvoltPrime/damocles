@@ -9,7 +9,7 @@ import { isValidFileName } from '../preload/file-names';
 import type { FileEntry } from '../preload/shell-channels';
 import { MAX_EDITOR_TEXT_CHARS } from '../preload/shell-channels';
 import { MAX_TERMINAL_SCREEN_CHARS, TERMINAL_ICONS, type TerminalLinkKind } from '../preload/terminal-channels';
-import { isTerminalId, parseHostMessage, parseHostRequest, type HostMessage, type HostRequest } from '../pty-host/protocol';
+import { isTerminalId, parseHostMessage, parseHostRequest, parseTerminalView, type HostMessage, type HostRequest, type TerminalView } from '../pty-host/protocol';
 import type { BrowseResult, DeleteResult, EntryResult, WatchEvent } from './file-system';
 import type { FormatResolution } from './format/formatter';
 import type { HostOutcome, HostRoot } from './format/formatter-hosts';
@@ -49,6 +49,11 @@ export interface WireHostSettingsRead {
 // The pty host requests a client posts; killAll and shutdown never cross, a client detaches instead.
 export type TerminalPost = Exclude<HostRequest, { readonly type: 'killAll' | 'shutdown' }>;
 
+export interface WatchLimits {
+  readonly roots: readonly string[];
+  readonly limit: number | null;
+}
+
 export interface PtyHostEnd {
   readonly code: number;
   readonly reason: string | null;
@@ -80,6 +85,8 @@ export interface WorkspaceRequests {
   'files.browse': Call<{ readonly folder: string }, BrowseResult>;
   'files.watch': Call<{ readonly watchId: number; readonly base: string; readonly glob: string }, void>;
   'files.unwatch': Call<{ readonly watchId: number }, void>;
+  // the watched folders whose tree ran out of inotify watches, and fs.inotify.max_user_watches (null when unreadable)
+  'files.watchLimits': Call<object, WatchLimits>;
   'tree.list': Call<{ readonly project: Project; readonly relativeDir: string; readonly excludes: readonly string[] }, FolderListing>;
   'search.run': Call<{ readonly runId: number; readonly cwd: string; readonly args: readonly string[] }, void>;
   'search.kill': Call<{ readonly runId: number }, void>;
@@ -104,12 +111,14 @@ export interface WorkspaceRequests {
 export interface WorkspaceClientEvents {
   // projectKey: the native key of the spawn's project, for control.listRuns
   'terminals.post': { readonly request: TerminalPost; readonly projectKey?: string };
-  // this connection stops receiving every terminal; none is killed
+  // this connection stops receiving every terminal; none is killed (a post's detach leaves one terminal)
   'terminals.detach': Record<string, never>;
 }
 
 export interface WorkspaceHostEvents {
   'files.watchEvent': { readonly watchId: number } & WatchEvent;
+  // a watched folder's tree ran out of inotify watches: changes in some of its folders go unseen
+  'files.watchLimit': { readonly root: string; readonly limit: number | null };
   'search.event': { readonly runId: number; readonly event: RgEvent };
   'search.dropped': { readonly runId: number };
   'search.end': { readonly runId: number; readonly end: SearchRunEnd };
@@ -188,7 +197,8 @@ const hostOutcome: Parser<HostOutcome> = either(
 );
 const profile: Parser<TerminalProfile> = obj({ id: nonEmpty(MAX_KEY_CHARS), name: str(MAX_KEY_CHARS), file: filePath, args, icon: oneOf(TERMINAL_ICONS) });
 const injectionRequest: Parser<ShellInjectionRequest> = obj({ file: filePath, args, nonce: nonEmpty(256), env });
-const liveTerminal: Parser<LiveTerminal> = obj({ id: (raw: unknown) => (isTerminalId(raw) ? raw : INVALID), pid: int(0, 2 ** 32), cols: int(1, 100_000), rows: int(1, 100_000) });
+const terminalView: Parser<TerminalView> = (raw) => parseTerminalView(raw) ?? INVALID;
+const liveTerminal: Parser<LiveTerminal> = obj({ id: (raw: unknown) => (isTerminalId(raw) ? raw : INVALID), pid: int(0, 2 ** 32), cols: int(1, 100_000), rows: int(1, 100_000), view: opt(terminalView) });
 const terminalPost: Parser<TerminalPost> = (raw) => {
   const request = parseHostRequest(raw);
   return request === undefined || request.type === 'killAll' || request.type === 'shutdown' ? INVALID : request;
@@ -221,6 +231,7 @@ export const CLIENT_TO_WORKSPACE: Tables<ClientToWorkspace> = {
     'files.browse': method(obj({ folder: filePath }), browseResult),
     'files.watch': method(obj({ watchId: runId, base: filePath, glob: nonEmpty(MAX_PATH_CHARS) }), done),
     'files.unwatch': method(obj({ watchId: runId }), done),
+    'files.watchLimits': method(nothing, obj({ roots: arr(filePath, MAX_ITEMS), limit: either(int(0, 2 ** 32), nul) })),
     'tree.list': method(obj({ project, relativeDir: relative, excludes: globs }), folderListing),
     'search.run': method(obj({ runId, cwd: filePath, args }), done),
     'search.kill': method(obj({ runId }), done),
@@ -253,6 +264,7 @@ export const WORKSPACE_TO_CLIENT: Tables<WorkspaceToClient> = {
   requests: {},
   events: {
     'files.watchEvent': obj({ watchId: runId, kind: oneOf(['create', 'change', 'delete'] as const), path: filePath }),
+    'files.watchLimit': obj({ root: filePath, limit: either(int(0, 2 ** 32), nul) }),
     'search.event': obj({ runId, event: rgEvent }),
     'search.dropped': obj({ runId }),
     'search.end': obj({ runId, end: searchEnd }),

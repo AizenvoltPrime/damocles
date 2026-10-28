@@ -172,7 +172,7 @@ describe('git branch names show their hidden characters', () => {
 
   it('on the Projects list', () => {
     const projects = [{ ...STATE.projects[0]!, branch: BIDI }];
-    const wrapper = track(mount(ProjectsSection, { props: { api: fakeShellApi(), projects, selectedKey: 'p1', collapsed: false, bodySize: 150 }, global: { plugins: [shellI18n] }, attachTo: document.body }));
+    const wrapper = track(mount(ProjectsSection, { props: { api: fakeShellApi(), projects, selectedKey: 'p1', remoteEnabled: false, hosts: [], view: 'flat', groups: STATE.projectGroups, platform: 'win32', collapsed: false, bodySize: 150 }, global: { plugins: [shellI18n] }, attachTo: document.body }));
     expect(wrapper.get('[data-testid="project-branch"]').text()).toBe(SHOWN);
     expect(shownText(wrapper.element)).not.toContain(RAW);
   });

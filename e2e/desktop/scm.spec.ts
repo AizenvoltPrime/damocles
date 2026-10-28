@@ -2,12 +2,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { expect, test } from './support/fixtures';
-import { overlayPage, pressKeys, PRIMARY, recordedToasts, recordToasts, shellPage, shellState } from './support/shell';
+import { overlayPage, pressKeys, PRIMARY, recordedToasts, recordToasts, selectedProjectKey, shellPage, shellState } from './support/shell';
 import { menuItem, overlayMenu, readyOverlay } from './support/overlay';
 import { commitMessage, gitLog, ledgerPath, moreActions, openScmProject, scmSection } from './support/scm';
 import { openProjectChat, settled } from './support/screenshots';
 import { addProject, answerDialogs, answerOpenDialog, askedDialogs, TRUST_PROMPT } from './support/ui';
-import { diffEditor, editorTab, filesRow, quickPick } from './support/editor';
+import { codeEditor, diffEditor, editorShows, editorTab, filesRow, openInEditor, quickPick } from './support/editor';
 import { openSettingsModal, settingsRow, chooseSegment, closeSettingsModal } from './support/settings';
 import { git, initRepo } from './support/git';
 import { seedStubModel, writeUserSettings } from './support/hermetic';
@@ -498,4 +498,46 @@ test('a long change list scrolls with the commit box to its last row and stays t
     return worst;
   }, frames);
   expect(await worstGap(30)).toBeLessThan(1);
+});
+
+test('after Unstage Selected Ranges in the Staged Changes diff, Stage Selected Ranges on the code tab stages the hunk again, and a selection without changes is told so', async ({ foreground: _foreground, home, launch }) => {
+  const base = ['const a = 1;', 'const b = 2;', 'const c = 3;', 'const d = 4;', 'const e = 5;', 'const f = 6;', 'const g = 7;', 'const h = 8;', ''].join('\n');
+  await initRepo(home, home.project, { 'app.ts': base });
+  fs.writeFileSync(path.join(home.project, 'app.ts'), base.replace('const b = 2;', 'const b = 20;').replace('const g = 7;', 'const g = 70;'));
+  const { app } = await launch();
+  const shell = await openScmProject(app, home.project);
+  const cached = (): Promise<string> => git(home, home.project, 'diff', '--cached', '--unified=0');
+  const marks = (): Promise<string | null> => codeEditor(shell).getAttribute('data-quick-diff');
+  expect(await openInEditor(app, { projectKey: await selectedProjectKey(app), relativePath: 'app.ts' })).toMatchObject({ ok: true });
+  await editorShows(shell, 'const b = 20;');
+  await expect.poll(marks).toBe('2-2,7-7');
+
+  await inline(changeRow(shell, 'workingTree', 'app.ts'), 'scm-row-stage');
+  await expect(changeRow(shell, 'workingTree', 'app.ts')).toHaveCount(0);
+  await expect.poll(marks).toBe('2-2s,7-7s');
+
+  // Unstage Selected Ranges in the Staged Changes diff takes the first hunk out of the index.
+  await changeRow(shell, 'index', 'app.ts').click();
+  await expect(diffEditor(shell)).toHaveAttribute('data-monaco-ready', 'true');
+  await diffEditor(shell).locator('.editor.modified .view-line', { hasText: 'const b = 20;' }).click();
+  await pressKeys(app, '/shell/', 'K', [PRIMARY]);
+  await pressKeys(app, '/shell/', 'N', [PRIMARY]);
+  await expect.poll(cached).not.toContain('const b = 20;');
+
+  // Stage Selected Ranges on the code tab, pressed as soon as it shows the file, stages the hunk. Nothing here holds the index
+  // read, so the marks may already be drawn; quick-diff-model.test.ts covers an action that waits for the read.
+  expect(await openInEditor(app, { projectKey: await selectedProjectKey(app), relativePath: 'app.ts' })).toMatchObject({ ok: true });
+  await editorShows(shell, 'const b = 20;');
+  await codeEditor(shell).locator('.view-line', { hasText: 'const b = 20;' }).first().click();
+  await pressKeys(app, '/shell/', 'K', [PRIMARY]);
+  await pressKeys(app, '/shell/', 'S', [PRIMARY, 'alt']);
+  await expect.poll(cached).toContain('+const b = 20;');
+  await expect.poll(marks).toBe('2-2s,7-7s');
+
+  // A selection with no unstaged change in it stages nothing and says so.
+  await recordToasts(app);
+  await codeEditor(shell).locator('.view-line', { hasText: 'const a = 1;' }).first().click();
+  await pressKeys(app, '/shell/', 'K', [PRIMARY]);
+  await pressKeys(app, '/shell/', 'S', [PRIMARY, 'alt']);
+  await expect.poll(async () => (await recordedToasts(app)).map((toast) => toast.message)).toContain('The selection holds no unstaged changes, so nothing was staged.');
 });

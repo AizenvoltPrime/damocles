@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { formatClock } from '@/utils/clock';
 import { MAX_CHAT_NAME_LENGTH, type ShellChat } from '../../preload/shell-channels';
-import { chatGroupOf, hasSavedConversation, modelLabel } from '../chat-list';
+import { chatGroupOf, chatOffers, modelLabel } from '../chat-list';
 import { branchLeaf } from '@/utils/branch-leaf';
 import { visibleText } from '@shared/visible-text';
 
@@ -37,7 +37,6 @@ const { t, locale } = useI18n();
 const ROW_ACTION = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-accent) [&_svg]:size-3';
 
 const title = computed(() => props.chat.title || t('chats.newChat'));
-const saved = computed(() => hasSavedConversation(props.chat));
 const model = computed(() => (props.chat.model ? modelLabel(props.chat.model) : undefined));
 const when = computed(() => {
   const date = new Date(props.chat.timestamp);
@@ -262,7 +261,7 @@ function onRenameKeydown(event: KeyboardEvent): void {
       class="hidden shrink-0 animate-[d-fade_.12s] items-center gap-px group-hover/row:flex"
     >
       <Button
-        v-if="saved"
+        v-if="chatOffers(chat, 'rename')"
         type="button"
         variant="ghost"
         size="icon-sm"
@@ -275,7 +274,7 @@ function onRenameKeydown(event: KeyboardEvent): void {
         <Pencil class="size-3" />
       </Button>
       <Button
-        v-if="saved"
+        v-if="chatOffers(chat, 'tag')"
         type="button"
         variant="ghost"
         size="icon-sm"
@@ -288,6 +287,7 @@ function onRenameKeydown(event: KeyboardEvent): void {
         <Tag class="size-3" />
       </Button>
       <Button
+        v-if="chatOffers(chat, 'delete')"
         type="button"
         variant="ghost"
         size="icon-sm"

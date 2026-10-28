@@ -1,5 +1,5 @@
 import type { Platform } from "../../../platform/platform";
-import type { SettingsFolder, SettingsStore } from "../../../platform/settings-store";
+import type { SettingsChange, SettingsFolder, SettingsStore } from "../../../platform/settings-store";
 import { settingsFolderOf, type FolderTarget } from "../../workspace-folders/folder-registry";
 import type { ChatSession } from "../../chat-session";
 import type { PermissionHandler } from "../../permission-handler";
@@ -29,6 +29,7 @@ import type { VoiceProvider, VoiceConfig, VoiceMode, GpuPreference, TtsVoiceId }
 import type { TeamRole } from "../../pi-session/team-model-resolution";
 import { PiRuntime } from "../../pi-session/pi-runtime";
 import { serializeSettingWrite } from "../../settings-write-chain";
+import { forEachDevice } from "../device-hosts";
 import { IMAGE_ENABLED_SETTING, IMAGE_MODEL_SETTING, IMAGE_PROVIDER, isOfferedImageModel } from "../../pi-session/tools/image-tool-specs";
 
 export type { SettingsManagerConfig };
@@ -81,7 +82,7 @@ export class SettingsManager {
    * UI state — defaults section reasoning-effort capabilities track the
    * default model and would otherwise render against stale capabilities.
    */
-  onDefaultModelChanged(callback: () => void): void {
+  onDefaultModelChanged(callback: (change: SettingsChange) => void): void {
     this.modelManager.setOnDefaultModelChanged(callback);
   }
 
@@ -163,6 +164,10 @@ export class SettingsManager {
   }
 
   async sendMcpStatus(session: ChatSession, host: PanelHost, folderKey: string): Promise<void> {
+    await Promise.all(forEachDevice(this.platform.remote, host, (target) => this.postMcpStatus(session, target, folderKey)));
+  }
+
+  private async postMcpStatus(session: ChatSession, host: PanelHost, folderKey: string): Promise<void> {
     const sdkStatuses = await session.getMcpServerStatus();
     const mcpEntries = this.mcpManager.buildRuntimeStatus(folderKey, sdkStatuses);
     const mcpEnabled = this.platform.settings.get<boolean>("damocles.mcp.enabled", true);
@@ -247,6 +252,10 @@ export class SettingsManager {
 
   /** Posts nothing until pi's runtime is up: the model list and the OpenRouter check both come from it. */
   sendImageGenerationSettings(host: PanelHost): void {
+    forEachDevice(this.platform.remote, host, (target) => this.postImageGenerationSettings(target));
+  }
+
+  private postImageGenerationSettings(host: PanelHost): void {
     const runtime = PiRuntime.exists ? PiRuntime.get().modelRuntime : null;
     if (!runtime) return;
     this.postMessage(host, {
@@ -385,9 +394,13 @@ export class SettingsManager {
   }
 
   sendThinkingForPanel(host: PanelHost, panelId: string, folder: FolderTarget): void {
-    const activeModel = this.modelManager.getActiveModelForPanel(panelId);
-    const defaultModel = this.modelManager.getDefaultModel();
-    this.thinkingManager.sendThinkingForPanel(host, panelId, activeModel, defaultModel, this.platform.settings, settingsFolderOf(folder));
+    forEachDevice(this.platform.remote, host, (target) =>
+      this.thinkingManager.sendThinkingForPanel(target, panelId, this.modelManager.getActiveModelForPanel(panelId), this.modelManager.getDefaultModel(), this.platform.settings, settingsFolderOf(folder)));
+  }
+
+  /** The Tools panel's snapshot, which reads the tool switches and lists of the user layer. */
+  sendToolStatus(session: ChatSession, host: PanelHost): void {
+    forEachDevice(this.platform.remote, host, (target) => this.postMessage(target, { type: "toolStatus", data: session.getToolStatus() }));
   }
 
   async handleSetBudgetLimit(budgetUsd: number | null, folder: FolderTarget): Promise<SettingWrite> {

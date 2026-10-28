@@ -40,6 +40,8 @@ files:
   - l10n/**
   - resources/**
   - '!resources/askpass{,/**}'
+  # the git credential relay runs only on a target, from a server package
+  - '!resources/git-credential{,/**}'
   - python/**
   - '!python/**/.venv{,/**}'
   - '!python/**/__pycache__{,/**}'

@@ -21,7 +21,6 @@ import { UsageStatsService } from "../usage-stats";
 import { OPENAI_KEY_MOVED_MARKER_PATH, SESSION_META_CACHE_DIR, SUBCALL_USAGE_LEDGER_PATH, USAGE_INDEX_DB_PATH } from "../paths";
 import { showOpenAIKeyMovedNotice } from "../pi-session/openai-key-migration";
 import { PI_AGENT_DIR } from "../pi-session/agent-dir";
-import { readClaudeAuthFromDisk } from "../pi-session/subscription";
 import { OPENAI_API_KEY_SECRET, readPreferOpenAIApiKey } from "../pi-session/openai-auth";
 import { MEMORY_JUDGE_EFFORT_SETTING, MEMORY_JUDGE_SETTING } from "../../shared/memory-judge";
 import { PiRuntime } from "../pi-session/pi-runtime";
@@ -47,6 +46,9 @@ import { checkpointMaxFileSizeBytes } from "../pi-session/checkpoint-service";
 import { allJsonConfigWritesSettled } from "../config/json-config-write";
 import { installWorktreeProjectLookup } from "../worktrees/personal-config";
 import { openAppSettingsFor } from "./open-app-settings";
+import { openTranscriptView } from "./transcript-view";
+import { asClient } from "../client-snapshots";
+import { deviceHost, forEachDevice, hostForChange } from "./device-hosts";
 
 /**
  * Settles once every config file write core started (MCP, settings and permission files), one queued meanwhile included,
@@ -83,8 +85,8 @@ export class ChatPanelProvider {
 
   private readonly subscriptions: Disposable[];
   private readonly platform: PlatformWithWorktrees;
-  private memoryJudgeReads = 0;
-  private readonly providerStatusReads = new Map<AccountProviderId, number>();
+  // the newest read of each account row, per row and device ("" on a local core)
+  private readonly accountReads = new Map<string, number>();
 
   constructor(platform: PlatformWithWorktrees, hostDeps: ChatPanelHostDeps) {
     this.subscriptions = hostDeps.subscriptions;
@@ -94,8 +96,8 @@ export class ChatPanelProvider {
     const worktreeHost = platform.capabilities.worktrees ? platform.worktrees : undefined;
     if (worktreeHost) this.subscriptions.push(installWorktreeProjectLookup(worktreeHost.registry));
 
-    const postMessage = (host: PanelHost, message: unknown) => {
-      this.panelManager.postMessage(host, message as Parameters<typeof this.panelManager.postMessage>[1]);
+    const postMessage = (host: PanelHost, message: unknown, except?: readonly string[]) => {
+      this.panelManager.postMessage(host, message as Parameters<typeof this.panelManager.postMessage>[1], except);
     };
 
     // MCP reads every folder a chat works in: the projects and the working folders loaded worktree chats hold (D34, rule 8).
@@ -146,20 +148,31 @@ export class ChatPanelProvider {
       notifications: platform.notifications,
       memoryService: this.memoryService,
     });
-    const stopJudgeUpdates = PiRuntime.onMemoryJudgeChange(() => this.broadcastMemoryJudge());
+    const stopJudgeUpdates = PiRuntime.onMemoryJudgeChange((clientId) => this.broadcastMemoryJudge(clientId));
     this.subscriptions.push({ dispose: stopJudgeUpdates });
     // A sign-in or sign-out in another app or the pi CLI lands only in auth.json, which the account rows read themselves.
-    const stopAuthUpdates = PiRuntime.onAuthFileChange(() => {
-      this.panelManager.broadcast({ type: "claudeAuthStatusChanged", mode: readClaudeAuthFromDisk(PI_AGENT_DIR).mode });
-      this.accountInputsChanged();
-    });
+    const stopAuthUpdates = PiRuntime.onAuthFileChange(() => this.accountInputsChanged());
     this.subscriptions.push({ dispose: stopAuthUpdates });
     // Outside a run, a daemon's core reads the acting client's credentials and prefer flags, its auth.json in effect.
     const remote = platform.remote;
     if (remote) {
       this.subscriptions.push(remote.clients.onDidChange((change) => {
-        if (change.topic === "actingClient" || change.topic === "clientAuth") this.accountInputsChanged();
+        if (change.topic === "clientAuth") this.accountInputsChanged();
+        // with a runtime, an acting client change republishes once pi's snapshot holds that client's credentials
+        if (change.topic === "actingClient" && !PiRuntime.exists) this.accountInputsChanged();
+        // a host's Allow YOLO switch changed on that client: its views show or hide the YOLO control at once
+        if (change.topic === "clientPolicy" && change.clientId !== undefined) {
+          const clientId = change.clientId;
+          const capabilities = asClient(remote, clientId, () => platform.capabilities);
+          for (const [, instance] of this.panelManager.getPanels()) {
+            for (const view of instance.host.views?.() ?? []) {
+              if (view.clientId === clientId && instance.host.viewHost) postMessage(instance.host.viewHost(view.viewKey), { type: "hostCapabilities", capabilities });
+            }
+          }
+        }
       }));
+      const stopActing = PiRuntime.onActingClientRefreshed(() => this.accountInputsChanged());
+      this.subscriptions.push({ dispose: stopActing });
     }
     // Before pi starts, the judge and the Anthropic row read auth.json directly; the runtime shares this watch once it exists.
     this.subscriptions.push(PiRuntime.watchAuthFile());
@@ -175,15 +188,15 @@ export class ChatPanelProvider {
     // Image settings, Tools status and the key statuses' environment flag read the credentials pi holds, which only a finished sync reflects.
     const stopSyncUpdates = PiRuntime.onCustomProvidersSynced(({ accountChanged }) => {
       const getPanels = () => this.panelManager.getPanels();
-      broadcastImageGenerationState({ getPanels, settingsManager: this.settingsManager, postMessage });
+      broadcastImageGenerationState({ getPanels, settingsManager: this.settingsManager });
       for (const provider of ACCOUNT_PROVIDER_IDS) this.broadcastProviderAuthStatus(provider);
       // The runtime republishes only started sessions; a panel showing a conversation it has not started needs it too.
       if (accountChanged) republishAccountInfo(getPanels);
     });
     this.subscriptions.push({ dispose: stopSyncUpdates });
-    this.subscriptions.push(platform.settings.onDidChange(MODEL_PICKER_SETTING, () => republishAccountInfo(() => this.panelManager.getPanels())));
+    this.subscriptions.push(platform.settings.onDidChange(MODEL_PICKER_SETTING, (change) => republishAccountInfo(() => this.panelManager.getPanels(), change.clientId)));
     this.subscriptions.push(platform.settings.onDidChange("damocles.memory", (change) => {
-      if (change.affects(MEMORY_JUDGE_SETTING) || change.affects(MEMORY_JUDGE_EFFORT_SETTING)) this.broadcastMemoryJudge();
+      if (change.affects(MEMORY_JUDGE_SETTING) || change.affects(MEMORY_JUDGE_EFFORT_SETTING)) this.broadcastMemoryJudge(change.clientId);
     }));
     this.memoryService.setFallbackWorkspace(() => this.folderRegistry.defaultTarget().fsPath);
     this.memoryService.setWorkspaceRoots(this.folderRegistry.targets().map((t) => t.fsPath));
@@ -261,7 +274,7 @@ export class ChatPanelProvider {
     this.webviewPrompts = new WebviewPrompts(
       {
         target: (signal) => this.panelManager.promptTarget(signal),
-        attachedView: (panelId) => this.panelManager.attachedView(panelId),
+        attachedView: (panelId, clientId) => this.panelManager.attachedView(panelId, clientId),
       },
       (host, message) => this.panelManager.postMessage(host, message),
     );
@@ -288,6 +301,7 @@ export class ChatPanelProvider {
       restoreRetryChanged: (panelId) => this.panelManager.restoreRetryChanged(panelId),
       webviewPrompts: this.webviewPrompts,
       worktrees: () => this.panelManager.worktrees,
+      broadcastAccountState: (what, row, read) => this.broadcastAccountState(what, row, read),
     });
 
     this.panelManager = new PanelManager({
@@ -313,9 +327,9 @@ export class ChatPanelProvider {
         });
         return session;
       },
-      handleWebviewMessage: (message, panelId, view) =>
-        this.messageRouter.handleWebviewMessage(message, panelId, view),
-      joinView: (panelId, gate) => this.messageRouter.joinView(panelId, gate),
+      handleWebviewMessage: (message, panelId, view, viewKey) =>
+        this.messageRouter.handleWebviewMessage(message, panelId, view, viewKey),
+      joinView: (panelId, gate, host) => this.messageRouter.joinView(panelId, gate, host),
       sendCurrentSettings: (host, permissionHandler, folder) =>
         this.settingsManager.sendCurrentSettings(host, permissionHandler, folder),
       getStoredSessions: () => this.storageManager.getStoredSessions(),
@@ -328,7 +342,7 @@ export class ChatPanelProvider {
       onActivePanelChanged: () => this.refreshCompassViews(),
       sendFolderState: async (instance) => {
         await this.workspaceManager.sendCustomSlashCommands(instance.host, instance.folder);
-        this.panelManager.postMessage(instance.host, { type: "toolStatus", data: instance.session.getToolStatus() });
+        this.settingsManager.sendToolStatus(instance.session, instance.host);
         this.settingsManager.sendMcpConfig(instance.host, instance.folder.key);
         for (const msg of this.compassStatusMessages(instance.folder.key)) this.panelManager.postMessage(instance.host, msg);
         // The webview keeps the @-mention file list it already loaded until a new list replaces it.
@@ -425,10 +439,11 @@ export class ChatPanelProvider {
       }),
     );
 
-    this.settingsManager.onDefaultModelChanged(() => {
+    this.settingsManager.onDefaultModelChanged((change) => {
       for (const [panelId, instance] of this.panelManager.getPanels()) {
-        this.settingsManager.sendModelForPanel(instance.host, panelId);
-        this.settingsManager.sendThinkingForPanel(instance.host, panelId, instance.folder);
+        const target = hostForChange(instance.host, change);
+        this.settingsManager.sendModelForPanel(target, panelId);
+        this.settingsManager.sendThinkingForPanel(target, panelId, instance.folder);
       }
     });
     this.settingsManager.setupMcpWatcher();
@@ -530,31 +545,52 @@ export class ChatPanelProvider {
     return false;
   }
 
-  /** Reads overlap, so only the newest read is broadcast; an older one may have read state the newer one replaced. */
-  private broadcastMemoryJudge(): void {
-    const read = ++this.memoryJudgeReads;
-    memoryJudgeStatus(this.platform)
-      .then((msg) => {
-        if (read === this.memoryJudgeReads) this.panelManager.broadcast(msg);
-      })
-      .catch((err: unknown) => log("[ChatPanelProvider] reading the memory judge status failed: %s", err instanceof Error ? err.message : String(err)));
+  /** clientId: on a daemon's core, the one device whose views alone need it. */
+  private broadcastMemoryJudge(clientId?: string): void {
+    void this.broadcastAccountState("the memory judge status", "memoryJudge", () => memoryJudgeStatus(this.platform), clientId);
   }
 
   /** The runtime republishes only started sessions; a panel showing a conversation it has not started needs the account state too. */
   private accountInputsChanged(): void {
+    void this.broadcastAccountState("the Claude auth mode", undefined, async () => ({ type: "claudeAuthStatusChanged", mode: PiRuntime.claudeAuthStatus(this.platform.remote).mode }));
     for (const provider of ACCOUNT_PROVIDER_IDS) this.broadcastProviderAuthStatus(provider);
     republishAccountInfo(() => this.panelManager.getPanels());
   }
 
-  /** As `broadcastMemoryJudge`, only a provider's newest read is broadcast. */
   private broadcastProviderAuthStatus(provider: AccountProviderId): void {
-    const read = (this.providerStatusReads.get(provider) ?? 0) + 1;
-    this.providerStatusReads.set(provider, read);
-    providerAuthStatus(this.platform, provider)
-      .then((msg) => {
-        if (msg && read === this.providerStatusReads.get(provider)) this.panelManager.broadcast(msg);
-      })
-      .catch((err: unknown) => log("[ChatPanelProvider] reading the %s key status failed: %s", provider, err instanceof Error ? err.message : String(err)));
+    void this.broadcastAccountState(`the ${provider} key status`, `provider:${provider}`, () => providerAuthStatus(this.platform, provider));
+  }
+
+  /**
+   * Posts state read from the account to every panel; on a daemon's core each device's views get it read as that device's
+   * client (`forEachDevice`), and with `clientId` only that device's views do. Reads overlap, so with a `row` only a
+   * device's newest read of it posts; an older one may have read state the newer one replaced. Undefined from `read` posts nothing.
+   * Settles once every post was made or skipped; never rejects.
+   */
+  private broadcastAccountState(what: string, row: string | undefined, read: () => Promise<ExtensionToWebviewMessage | undefined>, clientId?: string): Promise<void> {
+    // one read number per device for this broadcast, which every panel that device shows shares
+    const reads = new Map<string, number>();
+    const newest = (device: string | undefined): (() => boolean) => {
+      if (row === undefined) return () => true;
+      const key = `${row}\n${device ?? ""}`;
+      const number = reads.get(key) ?? (this.accountReads.get(key) ?? 0) + 1;
+      this.accountReads.set(key, number);
+      reads.set(key, number);
+      return () => this.accountReads.get(key) === number;
+    };
+    const send = (isNewest: () => boolean, post: (message: ExtensionToWebviewMessage) => void): Promise<void> =>
+      read()
+        .then((message) => {
+          if (message && isNewest()) post(message);
+        })
+        .catch((err: unknown) => log("[ChatPanelProvider] reading %s failed: %s", what, err instanceof Error ? err.message : String(err)));
+    const remote = this.platform.remote;
+    if (!remote) return send(newest(undefined), (message) => this.panelManager.broadcast(message));
+    const sends = [...this.panelManager.getPanels().values()].flatMap((instance) => {
+      const host = clientId === undefined ? instance.host : deviceHost(instance.host, clientId);
+      return forEachDevice(remote, host, (target) => send(newest(target.clientId), (message) => this.panelManager.postMessage(target, message)));
+    });
+    return Promise.all(sends).then(() => undefined);
   }
 
   private postToFolderPanels(folderKey: string, message: ExtensionToWebviewMessage): void {
@@ -628,6 +664,16 @@ export class ChatPanelProvider {
   /** A new chat on `host` working in the live chat worktree `worktreeId` of project `projectKey`; rejects when refused. */
   startInWorktree(host: PanelHost, projectKey: string, worktreeId: string): Promise<string> {
     return this.panelManager.startInWorktree(host, projectKey, worktreeId);
+  }
+
+  /** A remote chat's session mirror copy on host, read-only: replayed on each ready, nothing written (transcript-view.ts). */
+  openTranscript(host: PanelHost, filePath: string, sessionId: string): void {
+    openTranscriptView(host, {
+      file: filePath,
+      capabilities: this.platform.capabilities,
+      locale: () => this.messageRouter.languagePreference(),
+      replay: (post, signal) => this.historyManager.replayTranscript(filePath, sessionId, post, signal),
+    });
   }
 
   async restoreBrowserPanel(host: PanelHost, url: string): Promise<void> {

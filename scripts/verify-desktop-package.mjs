@@ -327,9 +327,15 @@ export const SHELL_INTEGRATION_FILES = [
   'shellIntegration-login.zsh',
 ];
 
-// The askpass scripts git and ssh execute (src/core/scm/askpass/askpass-server.ts): every file in resources/askpass, which the
-// desktop build copies with 0755.
+// The askpass scripts git and ssh execute (src/core/scm/askpass/askpass-server.ts): every .sh file in resources/askpass, which
+// the desktop build copies with 0755.
 export const ASKPASS_SCRIPTS = ['askpass.sh', 'ssh-askpass.sh'];
+
+/** Windows ssh's SSH_ASKPASS (scripts/askpass-trampoline.mjs): a PE executable, since a .cmd would run through cmd.exe. */
+export function checkAskpassTrampoline(bytes) {
+  if (bytes === undefined || bytes.length === 0) return fail('askpass trampoline', 'dist/askpass/ssh-askpass.exe is missing');
+  return bytes[0] === 0x4d && bytes[1] === 0x5a ? pass('askpass trampoline', `ssh-askpass.exe (${bytes.length} bytes)`) : fail('askpass trampoline', 'ssh-askpass.exe is not a PE executable');
+}
 
 /**
  * Each askpass script exists, holds no CR (sh reads it as part of a line) and is exactly
@@ -428,7 +434,8 @@ export async function verifyPackage({ platform, arch, app, repoRoot, serverPacka
     (file) => (existsSync(join(askpass, file)) ? statSync(join(askpass, file)) : undefined),
     process.platform !== 'win32',
   ));
-  results.push(checkSameFiles('askpass script contents', join(repoRoot, 'resources', 'askpass'), askpass, () => true));
+  results.push(checkSameFiles('askpass script contents', join(repoRoot, 'resources', 'askpass'), askpass, (file) => file.endsWith('.sh')));
+  if (platform === 'win32') results.push(checkAskpassTrampoline(existsSync(join(askpass, 'ssh-askpass.exe')) ? readFileSync(join(askpass, 'ssh-askpass.exe')) : undefined));
 
   const sidecar = join(unpacked, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar');
   results.push(checkFile('python sidecar entry', join(sidecar, '__main__.py')));

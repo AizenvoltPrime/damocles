@@ -4,13 +4,17 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import type { ShellDocumentContent, ShellEditorState, ShellEditorTab } from '../../preload/shell-channels';
 import CodeEditor from '../editor/CodeEditor.vue';
 import DiffEditor from '../editor/DiffEditor.vue';
+import ImagePreview from '../editor/ImagePreview.vue';
 import MarkdownPreview from '../editor/MarkdownPreview.vue';
+import MergeEditor from '../editor/merge/MergeEditor.vue';
 import { createEditorStore, EDITOR_STORE, type EditorStore, type ShellMonacoModule } from '../editor/editor-store';
 import { createScmStore, SCM_STORE } from '../scm/scm-store';
 import { shellI18n } from '../i18n';
 import { EDITOR_STATE, fakeScmApi, fakeShellApi, STATE, type FakeShellApi } from './fakes';
 
 vi.mock('../editor/context-menu', () => ({ attachEditorContextMenu: () => ({ dispose: () => {} }) }));
+// the merge editor's Result works from its markers alone when its worker aligns nothing
+vi.mock('../editor/merge/merge-worker', () => ({ createMergeWorker: () => ({ align: async () => null, markers: async () => null, dispose: () => {} }) }));
 
 const disposable = { dispose: () => {} };
 
@@ -122,7 +126,8 @@ const monacoModule = {
     editor: {
       EndOfLineSequence: { LF: 0, CRLF: 1 },
       EditorOption: { lineHeight: 75 },
-      createModel: (text: string, _language: string, uri: { toString(): string }) => {
+      // the merge editor's input panes pass no URI
+      createModel: (text: string, _language: string, uri: { toString(): string } = { toString: () => `inmemory://${models.size}` }) => {
         const model = new FakeModel(text, uri);
         models.set(uri.toString(), model);
         return model;
@@ -228,6 +233,140 @@ describe('the markdown preview', () => {
     model.type('# Replaced');
     await vi.advanceTimersByTimeAsync(300);
     expect(heading(wrapper)).toBe('Replaced');
+  });
+});
+
+describe('a document main could not load', () => {
+  // main answers the first read with a failure and every later one with the content
+  async function failingOnce(shown: ShellEditorTab, content: ShellDocumentContent): Promise<{ api: FakeShellApi; store: EditorStore }> {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let failed = false;
+    const api = fakeShellApi([], {
+      getEditorState: vi.fn(async () => state([shown])),
+      getDocument: vi.fn(async () => {
+        if (failed) return content;
+        failed = true;
+        throw new Error('main could not read it');
+      }),
+    });
+    const store = createEditorStore(api, async () => monacoModule);
+    await store.start();
+    return { api, store };
+  }
+  const failure = (wrapper: VueWrapper): string | undefined => {
+    const notice = wrapper.find('[data-testid="editor-load-failed"]');
+    return notice.exists() ? `${notice.attributes('role')}: ${notice.text()}` : undefined;
+  };
+
+  it.each([
+    ['markdown preview', MarkdownPreview, tab('p', { kind: 'markdownPreview', title: 'notes.md', displayPath: '/srv/notes.md', documentId: 'doc-p' }), text('doc-p', '# Saved'), (wrapper: VueWrapper) => wrapper.find('h1').text() === 'Saved'],
+    ['image preview', ImagePreview, tab('i', { kind: 'image', title: 'logo.png', displayPath: '/srv/logo.png', documentId: 'doc-i' }), { kind: 'image', documentId: 'doc-i', dataUrl: 'data:image/png;base64,AAAA', bytes: 3 } as ShellDocumentContent, (wrapper: VueWrapper) => wrapper.find('img').exists()],
+  ])('says so in its %s, and the next one of it asks main again', async (_name, component, shown, content, rendered) => {
+    const { api, store } = await failingOnce(shown, content);
+    const first = mountWith(component, store, { api, tab: shown });
+    await flushPromises();
+    expect(failure(first)).toBe(`alert: Damocles could not open '${shown.displayPath.split('/').at(-1)}'.`);
+    const second = mountWith(component, store, { api, tab: shown });
+    await flushPromises();
+    expect(failure(second)).toBeUndefined();
+    expect(rendered(second)).toBe(true);
+    expect(api.getDocument).toHaveBeenCalledTimes(2);
+  });
+
+  it('says so in the code editor, which shows the text once a later show of the tab loads it', async () => {
+    const code = tab('a', { title: 'a.ts', displayPath: '/srv/a.ts' });
+    const { api, store } = await failingOnce(code, text('doc-a', 'const a = 1;'));
+    const wrapper = mountWith(CodeEditor, store, { api, tab: code, menuShortcuts: STATE.shortcuts.editorMenu });
+    await flushPromises();
+    expect(failure(wrapper)).toBe("alert: Damocles could not open 'a.ts'.");
+    expect(editors[0]!.model).toBeNull();
+    await wrapper.setProps({ tab: { ...code, id: 'a2' } });
+    await flushPromises();
+    expect(failure(wrapper)).toBeUndefined();
+    expect(editors[0]!.model?.getValue()).toBe('const a = 1;');
+  });
+
+  // main fails the first read of `failing` and answers every read after it from `documents`
+  async function failingFirst(shown: ShellEditorTab, failing: string, documents: Record<string, ShellDocumentContent>): Promise<{ api: FakeShellApi; store: EditorStore }> {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let failed = false;
+    const api = fakeShellApi([], {
+      getEditorState: vi.fn(async () => state([shown])),
+      getDocument: vi.fn(async (documentId: string) => {
+        if (documentId !== failing || failed) return documents[documentId]!;
+        failed = true;
+        throw new Error('main could not read it');
+      }),
+    });
+    const store = createEditorStore(api, async () => monacoModule);
+    await store.start();
+    return { api, store };
+  }
+  const remount = (wrapper: VueWrapper): void => {
+    wrapper.unmount();
+    mounted.splice(mounted.indexOf(wrapper), 1);
+  };
+
+  it('says so in a diff tab whose side could not load, which shows the diff once a later show of the tab loads it', async () => {
+    const diff = { ...diffTab(), title: 'a.ts (Working Tree)', displayPath: '/srv/a.ts' };
+    const { api, store } = await failingFirst(diff, 'doc-new', { 'doc-old': text('doc-old', 'a'), 'doc-new': text('doc-new', 'b') });
+    const first = mountWith(DiffEditor, store, { api, tab: diff, menuShortcuts: STATE.shortcuts.editorMenu });
+    await flushPromises();
+    expect(failure(first)).toBe("alert: Damocles could not open 'a.ts'.");
+    expect(diffEditors).toEqual([]);
+    remount(first);
+
+    const second = mountWith(DiffEditor, store, { api, tab: diff, menuShortcuts: STATE.shortcuts.editorMenu });
+    await flushPromises();
+    expect(failure(second)).toBeUndefined();
+    expect(diffEditors).toHaveLength(1);
+    expect(second.get('[data-testid="diff-editor"]').attributes('data-monaco-ready')).toBe('true');
+  });
+
+  it('says so in a diff tab whose one text side could not load beside a side main does not display', async () => {
+    const diff = { ...diffTab(), displayPath: '/srv/a.ts', diff: { ...diffTab().diff, sides: { original: { kind: 'notDisplayed' as const, reason: 'binary' as const, bytes: 4, openable: false }, modified: { kind: 'text' as const } } } };
+    const { api, store } = await failingFirst(diff, 'doc-new', { 'doc-new': text('doc-new', 'b') });
+    const first = mountWith(DiffEditor, store, { api, tab: diff, menuShortcuts: STATE.shortcuts.editorMenu });
+    await flushPromises();
+    expect(failure(first)).toBe("alert: Damocles could not open 'a.ts'.");
+    expect(editors).toEqual([]);
+    remount(first);
+
+    mountWith(DiffEditor, store, { api, tab: diff, menuShortcuts: STATE.shortcuts.editorMenu });
+    await flushPromises();
+    expect(editors[0]!.model?.getValue()).toBe('b');
+  });
+
+  it('says so in a merge tab whose Result could not load, which shows the merge once a later show of the tab loads it', async () => {
+    const merge = tab('m', { kind: 'merge', title: 'a.ts', displayPath: '/srv/a.ts', documentId: 'doc-m', merge: { upload: true, path: 'src/a.ts', documentId: 'doc-m' } }) as ShellEditorTab & { merge: NonNullable<ShellEditorTab['merge']> };
+    const { api, store } = await failingFirst(merge, 'doc-m', { 'doc-m': text('doc-m', 'resolved\n') });
+    const label = { title: 'side' };
+    vi.mocked(api.uploadMergeInputs).mockResolvedValue({ ok: true, base: 'a\n', current: 'b\n', incoming: 'c\n', labels: { current: label, incoming: label, base: label }, operation: 'merge' });
+    const first = mountWith(MergeEditor, store, { api, tab: merge });
+    await flushPromises();
+    expect(failure(first)).toBe("alert: Damocles could not open 'a.ts'.");
+    expect(first.find('[data-testid="merge-failure"]').exists()).toBe(false);
+    expect(first.find('[role="progressbar"]').exists()).toBe(false);
+    expect(editors).toEqual([]);
+    remount(first);
+
+    const second = mountWith(MergeEditor, store, { api, tab: merge });
+    await flushPromises();
+    expect(failure(second)).toBeUndefined();
+    expect(editors).toHaveLength(3);
+    expect(editors[2]!.options[0]).toMatchObject({ model: store.bufferModel('doc-m') });
+    expect(second.get('[data-testid="merge-status"]').text()).toBe('All conflicts resolved');
+  });
+
+  it('says the merge inputs could not be read, and stops its bar, when main throws on the request', async () => {
+    const merge = tab('m', { kind: 'merge', title: 'a.ts', displayPath: '/srv/a.ts', documentId: 'doc-m', merge: { upload: true, path: 'src/a.ts', documentId: 'doc-m' } }) as ShellEditorTab & { merge: NonNullable<ShellEditorTab['merge']> };
+    const { api, store } = await failingFirst(merge, 'none', { 'doc-m': text('doc-m', 'resolved\n') });
+    vi.mocked(api.uploadMergeInputs).mockRejectedValue(new Error('main threw'));
+    const wrapper = mountWith(MergeEditor, store, { api, tab: merge });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="merge-failure"]').text()).toBe("Couldn't read the versions to merge. See the Git output.");
+    expect(wrapper.find('[role="progressbar"]').exists()).toBe(false);
+    expect(editors).toEqual([]);
   });
 });
 

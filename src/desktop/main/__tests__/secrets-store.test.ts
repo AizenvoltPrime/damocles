@@ -15,6 +15,7 @@ import type { NotificationService } from '../../../platform/notification-service
 import { formatMessage } from '../../local-services/localization-service';
 import { SECRETS_FILE, createDesktopSecretsStore } from '../platform/secrets-store';
 import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
+import { createRememberedSecrets } from '../remote/ssh/remembered-secrets';
 
 let userData: string;
 const originalPlatform = process.platform;
@@ -114,6 +115,22 @@ describe('desktop secrets store', () => {
     expect(await unlocked.get('mcp.token')).toBe('fresh');
     expect(await unlocked.get('explore.key')).toBe('sk');
     expect(await unlocked.keys()).toEqual(expect.arrayContaining(['mcp.token', 'explore.key', 'other.key']));
+  });
+
+  it('lists the keys it cannot decrypt, so deleting a remembered host\'s answers by prefix removes them from disk', async () => {
+    setPlatform('linux');
+    const seed = createDesktopSecretsStore(userData, notifications, t, () => undefined);
+    await seed.store('damocles.remote.ssh.h1.abc.password', 'pw');
+    await seed.store('openai.apiKey', 'k');
+    safeStorage.decryptString.mockImplementation((buffer: Buffer) => {
+      if (buffer.toString() === 'enc:pw') throw new Error('keyring locked');
+      return buffer.toString().replace(/^enc:/, '');
+    });
+    const locked = createDesktopSecretsStore(userData, notifications, t, () => undefined);
+    expect([...(await locked.keys())].sort()).toEqual(['damocles.remote.ssh.h1.abc.password', 'openai.apiKey']);
+    await createRememberedSecrets(locked).deleteAllForHost('h1');
+    const entries = (JSON.parse(fs.readFileSync(path.join(userData, SECRETS_FILE), 'utf8')) as { entries: Record<string, string> }).entries;
+    expect(Object.keys(entries)).toEqual(['openai.apiKey']);
   });
 
   it('changes nothing in memory when the write fails', async () => {

@@ -29,13 +29,13 @@ export function createViewJoin(deps: HandlerDependencies): (ctx: HandlerContext,
     if (deps.platform.capabilities.windowLayout) gate.post({ type: "terminalShown", ...deps.platform.window.terminalToggle() });
     const pendingAttachments = ctx.terminalAttachments.displayInfo();
     if (pendingAttachments.length > 0) gate.post({ type: "terminalAttachmentsUpdate", attachments: pendingAttachments });
-    await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
-    settingsManager.sendMcpConfig(ctx.host, ctx.folder.key);
+    await settingsManager.sendCurrentSettings(ctx.reply, ctx.permissionHandler, ctx.folder);
+    settingsManager.sendMcpConfig(ctx.reply, ctx.folder.key);
     gate.post({ type: "toolStatus", data: ctx.session.getToolStatus() });
-    settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
-    settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
+    settingsManager.sendModelForPanel(ctx.reply, ctx.panelId);
+    settingsManager.sendThinkingForPanel(ctx.reply, ctx.panelId, ctx.folder);
     gate.post({ type: "languageChange", locale: getLanguagePreference() });
-    postVoiceRuntimeStatus(deps, ctx.host);
+    postVoiceRuntimeStatus(deps, ctx.reply);
     deps.postWorkspaceFolderState(ctx.panelId);
 
     await ctx.session.whenConversationSettled();
@@ -45,7 +45,7 @@ export function createViewJoin(deps: HandlerDependencies): (ctx: HandlerContext,
     const live = ctx.session.liveConversation();
     try {
       if (live) {
-        await historyManager.replayLive(context, ctx.folder.fsPath, ctx.session, gate.post, live);
+        await historyManager.replayLive(context, ctx.folder.fsPath, ctx.session, ctx.reply, gate.post, live);
       }
     } finally {
       gate.release(live?.snapshot.seq ?? ctx.session.eventSeq);
@@ -53,8 +53,8 @@ export function createViewJoin(deps: HandlerDependencies): (ctx: HandlerContext,
     // No runtime holds a conversation: the stored one replays from its file, as a restore that has not started does.
     const stored = live ? undefined : ctx.session.storedSessionId;
     if (stored) {
-      const rewindable = await historyManager.loadSessionHistory(ctx.folder.fsPath, stored, ctx.host, ctx.session);
-      deps.postMessage(ctx.host, { type: "sessionStarted", sessionId: stored, stored: rewindable !== null });
+      const rewindable = await historyManager.loadSessionHistory(ctx.folder.fsPath, stored, ctx.reply, ctx.session);
+      deps.postMessage(ctx.reply, { type: "sessionStarted", sessionId: stored, stored: rewindable !== null });
     }
     if (live) ctx.session.replayLiveAgents(live.sessionId);
     // The new page's dialog queue and stores are empty: its prompts, state and worktree state are posted again.
@@ -62,14 +62,14 @@ export function createViewJoin(deps: HandlerDependencies): (ctx: HandlerContext,
     deps.webviewPrompts.repost(ctx.panelId);
     try {
       const { sessions, hasMore, nextOffset } = await storageManager.getStoredSessions();
-      deps.postMessage(ctx.host, { type: "storedSessions", sessions, hasMore, nextOffset, isFirstPage: true });
+      deps.postMessage(ctx.reply, { type: "storedSessions", sessions, hasMore, nextOffset, isFirstPage: true });
       const { history, hasMore: moreHistory } = await storageManager.getPromptHistory(0);
-      deps.postMessage(ctx.host, { type: "promptHistory", history, hasMore: moreHistory });
+      deps.postMessage(ctx.reply, { type: "promptHistory", history, hasMore: moreHistory });
     } catch (err) {
       log("[SessionHandlers] posting the session list to a joining view failed: %O", err);
     }
-    await settingsManager.sendAvailableModels(ctx.session, ctx.host);
-    settingsManager.sendImageGenerationSettings(ctx.host);
+    await settingsManager.sendAvailableModels(ctx.session, ctx.reply);
+    settingsManager.sendImageGenerationSettings(ctx.reply);
   };
 }
 
@@ -120,11 +120,11 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         readyInstance.session.setPanelToken(panelToken);
       }
       // Before any state, so the webview hides a host's missing affordances before it renders any of them.
-      postMessage(ctx.host, { type: "hostCapabilities", capabilities: deps.platform.capabilities });
-      if (deps.platform.capabilities.windowLayout) postMessage(ctx.host, { type: "terminalShown", ...deps.platform.window.terminalToggle() });
+      postMessage(ctx.reply, { type: "hostCapabilities", capabilities: deps.platform.capabilities });
+      if (deps.platform.capabilities.windowLayout) postMessage(ctx.reply, { type: "terminalShown", ...deps.platform.window.terminalToggle() });
       // A restarted webview starts with no chips while core still holds the composer's pending attachments.
       const pendingAttachments = ctx.terminalAttachments.displayInfo();
-      if (pendingAttachments.length > 0) postMessage(ctx.host, { type: "terminalAttachmentsUpdate", attachments: pendingAttachments });
+      if (pendingAttachments.length > 0) postMessage(ctx.reply, { type: "terminalAttachmentsUpdate", attachments: pendingAttachments });
       const total = perfSpan("ready.total");
       const savedSessionId = msg.type === "ready" ? msg.savedSessionId : undefined;
       const savedFolderKey = msg.type === "ready" ? msg.savedWorkspaceFolderKey : undefined;
@@ -141,13 +141,13 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       try {
         // The webview renders the conversation with these, so they precede any replay.
         const settingsSpan = perfSpan("ready.settings");
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
-        settingsManager.sendMcpConfig(ctx.host, ctx.folder.key);
-        postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
-        settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
-        settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
-        postMessage(ctx.host, { type: "languageChange", locale: getLanguagePreference() });
-        postVoiceRuntimeStatus(deps, ctx.host);
+        await settingsManager.sendCurrentSettings(ctx.reply, ctx.permissionHandler, ctx.folder);
+        settingsManager.sendMcpConfig(ctx.reply, ctx.folder.key);
+        postMessage(ctx.reply, { type: "toolStatus", data: ctx.session.getToolStatus() });
+        settingsManager.sendModelForPanel(ctx.reply, ctx.panelId);
+        settingsManager.sendThinkingForPanel(ctx.reply, ctx.panelId, ctx.folder);
+        postMessage(ctx.reply, { type: "languageChange", locale: getLanguagePreference() });
+        postVoiceRuntimeStatus(deps, ctx.reply);
         settingsSpan.end();
         deps.postWorkspaceFolderState(ctx.panelId);
 
@@ -155,7 +155,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         const postSessionList = async (): Promise<void> => {
           try {
             const { sessions, hasMore, nextOffset } = await timed("ready.sessions", () => storageManager.getStoredSessions());
-            postMessage(ctx.host, { type: "storedSessions", sessions, hasMore, nextOffset, isFirstPage: true });
+            postMessage(ctx.reply, { type: "storedSessions", sessions, hasMore, nextOffset, isFirstPage: true });
           } catch (err) {
             log("[MessageRouter] Error fetching sessions:", err);
           }
@@ -163,7 +163,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         const postPromptHistory = async (): Promise<void> => {
           try {
             const { history, hasMore } = await timed("ready.promptHistory", () => storageManager.getPromptHistory(0));
-            postMessage(ctx.host, { type: "promptHistory", history, hasMore });
+            postMessage(ctx.reply, { type: "promptHistory", history, hasMore });
           } catch (err) {
             log("[MessageRouter] Error pre-loading prompt history:", err);
           }
@@ -280,16 +280,16 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         } else {
           // A status posted before `ready` never reached the webview; a switch posts its target folder's status itself.
           const compass = deps.compassRegistry?.get(ctx.folder.key);
-          if (compass?.isEnabled) postMessage(ctx.host, { type: "compassStatusUpdate", status: compass.getStatus() });
+          if (compass?.isEnabled) postMessage(ctx.reply, { type: "compassStatusUpdate", status: compass.getStatus() });
           route = (await resumeSaved(ctx)) ? "restore" : "fresh";
         }
         // The webview names its saved conversation from mount, so a restore that never replayed it (a lease or another
         // panel refused it, its open failed) drops that name before a send can carry it.
-        if (savedSessionId && !replayed) postMessage(ctx.host, { type: "sessionCleared" });
+        if (savedSessionId && !replayed) postMessage(ctx.reply, { type: "sessionCleared" });
         if (!switching) {
           // The webview persists only a stored conversation's id, so a reload of a panel whose conversation pi has not written yet sends none.
           const liveId = route === "fresh" ? ctx.session.currentSessionId : null;
-          if (liveId) signalStarted(ctx.host, { type: "sessionStarted", sessionId: liveId, stored: ctx.session.hasSessionFile() });
+          if (liveId) signalStarted(ctx.reply, { type: "sessionStarted", sessionId: liveId, stored: ctx.session.hasSessionFile() });
         }
         await postSessionList();
         // On a cold index the history waits for the worker to parse every file, so the session start does not wait for it.
@@ -309,9 +309,9 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       const current = deps.getPanels().get(ctx.panelId)?.session;
       if (current) {
         void current.initializeEarly().then(async () => {
-          await settingsManager.sendAvailableModels(current, ctx.host);
+          await settingsManager.sendAvailableModels(current, ctx.reply);
           // The image catalog and OpenRouter auth come from pi's runtime, which exists only from here on.
-          settingsManager.sendImageGenerationSettings(ctx.host);
+          settingsManager.sendImageGenerationSettings(ctx.reply);
         }).catch((err: unknown) => log("[SessionHandlers] posting the models after the session started failed: %O", err));
       }
     },
@@ -320,7 +320,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       if (msg.type !== "renameSession") return;
       const result = await sessionCatalog.rename(msg.sessionId, msg.newName);
       if (!result.ok) {
-        await reportFailure(ctx.host, result, (detail) => t("Failed to rename session: {0}", detail));
+        await reportFailure(ctx.reply, result, (detail) => t("Failed to rename session: {0}", detail));
         return;
       }
       postMessage(ctx.host, { type: "sessionRenamed", sessionId: msg.sessionId, newName: msg.newName.trim() });
@@ -331,7 +331,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       if (msg.type !== "tagSession") return;
       const result = await sessionCatalog.tag(msg.sessionId, msg.tag);
       if (!result.ok) {
-        await reportFailure(ctx.host, result, (detail) => t("Failed to tag session: {0}", detail));
+        await reportFailure(ctx.reply, result, (detail) => t("Failed to tag session: {0}", detail));
         return;
       }
       postMessage(ctx.host, { type: "sessionTagged", sessionId: msg.sessionId, tag: msg.tag === null ? null : msg.tag.trim() });
@@ -341,7 +341,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       if (msg.type !== "deleteSession") return;
       const result = await sessionCatalog.delete(msg.sessionId);
       if (!result.ok) {
-        await reportFailure(ctx.host, result, (detail) => t("Failed to delete session: {0}", detail));
+        await reportFailure(ctx.reply, result, (detail) => t("Failed to delete session: {0}", detail));
         return;
       }
       postMessage(ctx.host, { type: "sessionDeleted", sessionId: msg.sessionId });

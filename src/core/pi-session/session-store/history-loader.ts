@@ -24,6 +24,7 @@ import {
   type AgentInvocationData,
 } from '../agent-records';
 import { TOOL_AGENT } from '../../../shared/tool-names';
+import * as fs from 'fs';
 import * as path from 'path';
 import { piSessionDirOf, resolvePiSessionFile } from './reading';
 import { promptUserIdsOnBranch, rewindableUserIdsOnBranch } from './rewind';
@@ -389,7 +390,7 @@ function countToolUses(messages: readonly HistoryAgentMessage[]): number {
  * recorded before agent files existed) stays a bare tool card.
  */
 async function hydrateSubagentCards(
-  cwd: string,
+  sessionDir: string,
   sessionId: string,
   branch: readonly SessionEntry[],
   messages: ReplayMessage[],
@@ -403,7 +404,7 @@ async function hydrateSubagentCards(
 
   let files: Map<string, string>;
   try {
-    files = (await indexAgentFiles(subagentsDir(piSessionDirOf(cwd, sessionId), sessionId))).paths;
+    files = (await indexAgentFiles(subagentsDir(sessionDir, sessionId))).paths;
   } catch (err) {
     log('[session-store] indexing subagent files failed for %s: %O', sessionId, err);
     files = new Map();
@@ -462,6 +463,9 @@ async function hydrateSubagentCards(
   return invocations.size;
 }
 
+// a host whose posts never back up toward its page
+const unpaced = (): Promise<void> => Promise.resolve();
+
 /**
  * Replay a resumed pi session's transcript into a webview host using the existing replay contract
  * (`sessionCleared` → `userReplay`/`assistantReplay`/`errorReplay` → `tokenUsageUpdate` + `sessionUsage` + `done`).
@@ -479,6 +483,63 @@ export async function loadPiSessionHistory(
   signal?: AbortSignal,
   modelReasons?: ModelReasonsLookup | Promise<ModelReasonsLookup | undefined>,
   fileCheckpoints = true,
+  paced: () => Promise<void> = unpaced,
+): Promise<string[] | null> {
+  return replaySession(sessionId, post, signal, modelReasons, fileCheckpoints, paced, async (pi) => {
+    const resolveSpan = perfSpan('replay.resolve');
+    const filePath = await resolvePiSessionFile(cwd, sessionId);
+    resolveSpan.end();
+    if (!filePath) return t("This conversation's file could not be found. It may have been deleted.");
+    return { open: () => pi.SessionManager.open(filePath, path.dirname(filePath)), sessionDir: () => piSessionDirOf(cwd, sessionId) };
+  });
+}
+
+/** A session file's entries as text read for viewing only, for pi's in-memory session; a malformed line is skipped. */
+export function sessionFileEntries(text: string): unknown[] {
+  return text.split('\n').flatMap((line): unknown[] => {
+    if (line.trim() === '') return [];
+    try {
+      return [JSON.parse(line) as unknown];
+    } catch {
+      // pi skips a malformed line the same way; a mirror copy mid-append ends in a torn one
+      return [];
+    }
+  });
+}
+
+/**
+ * The replay of a session file read for viewing only, a session mirror's copy: pi's SessionManager.open repairs a torn last
+ * line and migrates an old file in place, so the entries are read here and handed to an in-memory session that never writes.
+ * Its subagent cards come from the agent files beside it. Resolves whether the file was read.
+ */
+export async function replaySessionFileReadOnly(filePath: string, sessionId: string, post: (m: ExtensionToWebviewMessage) => void, signal: AbortSignal, modelReasons?: ModelReasonsLookup | Promise<ModelReasonsLookup | undefined>): Promise<boolean> {
+  const ids = await replaySession(sessionId, post, signal, modelReasons, false, unpaced, async (pi) => {
+    let text: string;
+    try {
+      text = await fs.promises.readFile(filePath, 'utf8');
+    } catch (err) {
+      log('[session-store] reading the transcript %s failed: %O', filePath, err);
+      return t("This conversation's file could not be found. It may have been deleted.");
+    }
+    const entries = sessionFileEntries(text);
+    const sessionDir = path.dirname(filePath);
+    return { open: () => pi.SessionManager.inMemory(sessionDir, undefined, entries as Parameters<typeof pi.SessionManager.inMemory>[2]), sessionDir: () => sessionDir };
+  });
+  return ids !== null;
+}
+
+type PiLoaded = NonNullable<Awaited<ReturnType<typeof initPiLoader>>>;
+// What a replay reads: the session, opened once the loader is up, and the folder its agent files sit in; or why it cannot.
+type SessionSource = { readonly open: () => ReturnType<PiLoaded['SessionManager']['open']>; readonly sessionDir: () => string } | string;
+
+async function replaySession(
+  sessionId: string,
+  post: (m: ExtensionToWebviewMessage) => void,
+  signal: AbortSignal | undefined,
+  modelReasons: ModelReasonsLookup | Promise<ModelReasonsLookup | undefined> | undefined,
+  fileCheckpoints: boolean,
+  paced: () => Promise<void>,
+  source: (pi: PiLoaded) => Promise<SessionSource>,
 ): Promise<string[] | null> {
   // A superseding replay already aborted us — leave the panel to the newer load, don't blank it.
   if (signal?.aborted) return null;
@@ -504,11 +565,9 @@ export async function loadPiSessionHistory(
     fail(t('The pi runtime is unavailable, so this conversation could not be loaded.'));
     return null;
   }
-  const resolveSpan = perfSpan('replay.resolve');
-  const filePath = await resolvePiSessionFile(cwd, sessionId);
-  resolveSpan.end();
-  if (!filePath) {
-    fail(t("This conversation's file could not be found. It may have been deleted."));
+  const resolved = await source(pi);
+  if (typeof resolved === 'string') {
+    fail(resolved);
     return null;
   }
   const reasons = await modelReasons;
@@ -522,7 +581,7 @@ export async function loadPiSessionHistory(
   let checkpointUserIds: string[];
   try {
     const openSpan = perfSpan('replay.open');
-    const sm = pi.SessionManager.open(filePath, path.dirname(filePath));
+    const sm = resolved.open();
     openSpan.end();
     const reconstructSpan = perfSpan('replay.reconstruct');
     const leafId = sm.getLeafId();
@@ -544,13 +603,13 @@ export async function loadPiSessionHistory(
   if (signal?.aborted) return checkpointUserIds;
 
   const hydrateSpan = perfSpan('replay.hydrate');
-  const agents = await hydrateSubagentCards(cwd, sessionId, branch, messages);
+  const agents = await hydrateSubagentCards(resolved.sessionDir(), sessionId, branch, messages);
   hydrateSpan.end({ agents });
   if (signal?.aborted) return checkpointUserIds;
 
   const approxChars = perfDebugEnabled() ? approxStringLength(messages) : undefined;
   const postSpan = perfSpan('replay.post');
-  postReplayMessages(messages, post);
+  await postReplayMessages(messages, post, paced, signal);
   postSpan.end({ items: messages.length, approxChars });
   if (signal?.aborted) return checkpointUserIds;
 
@@ -560,8 +619,11 @@ export async function loadPiSessionHistory(
   return checkpointUserIds;
 }
 
-function postReplayMessages(messages: readonly ReplayMessage[], post: (m: ExtensionToWebviewMessage) => void): void {
+// A host whose posts back up toward its page (a remote client) gets each message once the ones before are within its window.
+async function postReplayMessages(messages: readonly ReplayMessage[], post: (m: ExtensionToWebviewMessage) => void, paced: () => Promise<void>, signal?: AbortSignal): Promise<void> {
   for (const msg of messages) {
+    await paced();
+    if (signal?.aborted) return;
     if (msg.kind === 'user') {
       post({
         type: 'userReplay',
@@ -650,13 +712,14 @@ export async function replayLiveBranch(
   post: (m: ExtensionToWebviewMessage) => void,
   fileCheckpoints: boolean,
   liveToolCallIds: ReadonlySet<string>,
+  paced: () => Promise<void> = unpaced,
 ): Promise<string[]> {
   const { messages, usage } = reconstructMessages(branch, context.reasons, context.isContextOverflow, liveToolCallIds);
   const sessionUsage = sessionUsageMessage(sm);
   const checkpointUserIds = fileCheckpoints ? rewindableUserIdsOnBranch(branch) : promptUserIdsOnBranch(branch);
   post({ type: 'sessionCleared', sessionId });
-  await hydrateSubagentCards(cwd, sessionId, branch, messages);
-  postReplayMessages(messages, post);
+  await hydrateSubagentCards(piSessionDirOf(cwd, sessionId), sessionId, branch, messages);
+  await postReplayMessages(messages, post, paced);
   postReplayTotals(usage, sessionUsage, checkpointUserIds, post);
   post({ type: 'done', data: { type: 'result', session_id: sessionId, is_done: true } });
   return checkpointUserIds;

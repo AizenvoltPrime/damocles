@@ -13,7 +13,7 @@ import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { excludeSettingGlobs } from '../../workspace/search/rg-args';
 import { MAX_RG_EVENT_BYTES, type RgProcess } from '../../workspace/search/search-runner';
 import type { WorkspaceFileSystem } from '../../workspace/file-system';
-import { findBufferMatches, LIVE_UPDATE_MS, relativeResultPath, SearchService, type BufferDocument, type EditorRunResult, type SearchServiceDeps, type SearchSettings } from '../search/search-service';
+import { findBufferMatches, GLOB_TIMEOUT_MS, LIVE_UPDATE_MS, relativeResultPath, SearchService, type BufferDocument, type EditorRunResult, type SearchServiceDeps, type SearchSettings } from '../search/search-service';
 import { NotConnectedError } from '../workspace/workspaces';
 import { testWorkspaces } from './test-workspaces';
 
@@ -236,12 +236,40 @@ describe('search service', () => {
     search.dispose();
   });
 
-  it('refuses a glob whose matching against the open buffers\' paths backtracks for too long, instead of freezing main', () => {
+  it('searches no open buffer when a glob backtracks for too long on their paths, instead of freezing main, and ripgrep still runs', async () => {
     const started = Date.now();
-    buffers = [{ documentId: 'd', target: { kind: 'file', relativePath: 'a'.repeat(40) }, text: '' }];
-    const result = service().start(1, query({ include: '*a*a*a*a*a*a*a*a*a*a*a*a*b' }), false);
-    expect(result).toEqual({ ok: false, error: 'invalidGlob', glob: '*a*a*a*a*a*a*a*a*a*a*a*a*b' });
+    buffers = [{ documentId: 'd', target: { kind: 'file', relativePath: 'a'.repeat(40) }, text: 'x' }];
+    const search = service();
+    expect(search.start(1, query({ include: '*a*a*a*a*a*a*a*a*a*a*a*a*b' }), true)).toEqual({ ok: true });
     expect(Date.now() - started).toBeLessThan(2000);
+    await settle();
+    expect(spawned).toHaveLength(1);
+    spawned[0]!.close(1);
+    await settle();
+    expect(batches).toEqual([]);
+    expect(dones).toEqual([{ searchId: 1, resultCount: 0, fileCount: 0, limitHit: false, bufferWarning: 'timedOut' }]);
+  });
+
+  // The bound is wall-clock time: main descheduled or paused under load runs past it with no glob at all.
+  it('still searches the disk when main stalls past the bound while it admits the open buffers', async () => {
+    buffers = [{ documentId: 'd', target: { kind: 'file', relativePath: 'notes.md' }, text: 'x' }];
+    const search = service({
+      buffers: () => {
+        const until = Date.now() + GLOB_TIMEOUT_MS + 100;
+        while (Date.now() < until);
+        return buffers;
+      },
+    });
+    expect(search.start(1, query({ pattern: 'needle' }), true)).toEqual({ ok: true });
+    await settle();
+    const rg = spawned[0]!;
+    rg.emitJson(begin('src/remote.ts'));
+    rg.emitJson(match('src/remote.ts', 1, { text: 'export const remote = "needle";\n' }, [[23, 29]]));
+    rg.emitJson(end('src/remote.ts'));
+    rg.close(0);
+    await settle();
+    expect(paths(batches)).toEqual(['src/remote.ts']);
+    expect(dones).toEqual([{ searchId: 1, resultCount: 1, fileCount: 1, limitHit: false, bufferWarning: 'timedOut' }]);
   });
 
   it('reports a regex parse error from ripgrep', async () => {

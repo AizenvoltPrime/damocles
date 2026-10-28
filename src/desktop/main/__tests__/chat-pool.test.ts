@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { holdsWorktreeSetup, isActiveActivity } from '../../../shared/chat-retention';
-import { ChatWorkQueue, chatsToUnload, RETAINED_IDLE_CHATS, type PooledChat } from '../chat-pool';
+import { ChatUnloads, ChatWorkQueue, chatsToUnload, RETAINED_IDLE_CHATS, type PooledChat } from '../chat-pool';
 
 function chat(id: string, lastViewed: number, overrides: Partial<PooledChat> = {}): PooledChat {
   return { id, selected: false, active: false, restoring: false, hasSession: true, empty: false, lastViewed, ...overrides };
@@ -19,6 +19,12 @@ describe('chatsToUnload', () => {
     ];
     expect(chatsToUnload(chats).sort()).toEqual(['pending', 'ready']);
     expect(['pending', 'creating', 'settingUp', 'setupFailed', 'createFailed', 'ready', 'none', 'deleted', undefined].filter((phase) => holdsWorktreeSetup(phase as never))).toEqual(['creating', 'settingUp', 'setupFailed', 'createFailed']);
+  });
+
+  // the unload closes the page; a page's held messages go only with a user's Delete
+  it('keeps a remote chat holding messages for its host, an empty new one included, outside the idle budget', () => {
+    const chats = [chat('held', 0, { holdsMessages: true }), chat('heldNew', 0, { empty: true, hasSession: false, holdsMessages: true }), ...[1, 2, 3, 4].map((n) => chat(`c${n}`, n))];
+    expect(chatsToUnload(chats)).toEqual(['c1']);
   });
 
   it('counts a chat in setup as active, so the idle budget still keeps three others', () => {
@@ -118,5 +124,44 @@ describe('ChatWorkQueue', () => {
     const next = queue.run('a', async () => 'ran');
     await expect(failed).rejects.toThrow('boom');
     await expect(next).resolves.toBe('ran');
+  });
+});
+
+// An unload asked just before a drop reaches core on the resume, so its answer, and the page's close, can come at any time.
+describe('ChatUnloads', () => {
+  const answerLater = () => {
+    let answer!: (closed: boolean) => void;
+    return { ask: () => new Promise<boolean>((resolve) => { answer = resolve; }), answer: (closed: boolean) => answer(closed) };
+  };
+
+  it('holds a show of a chat whose unload core has not answered, and runs it once core answered', async () => {
+    const unloads = new ChatUnloads<string>();
+    const core = answerLater();
+    const unloaded = unloads.unload('a', core.ask);
+    const shown: string[] = [];
+    expect(unloads.defer('a', () => shown.push('a after the answer'))).toBe(true);
+    expect(unloads.defer('b', () => shown.push('b'))).toBe(false);
+    // b shown since: a's show is dropped
+    expect(unloads.defer('a', () => shown.push('a again'))).toBe(true);
+    core.answer(true);
+    expect(await unloaded).toBe(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(shown).toEqual(['a again']);
+    // answered: a shows at once
+    expect(unloads.defer('a', () => shown.push('never'))).toBe(false);
+  });
+
+  it('drops a held show when another chat is shown before core answers, and settles on a failed unload too', async () => {
+    const unloads = new ChatUnloads<string>();
+    const shown: string[] = [];
+    let fail!: (err: Error) => void;
+    const unloaded = unloads.unload('a', () => new Promise<boolean>((_resolve, reject) => { fail = reject; }));
+    unloads.defer('a', () => shown.push('a'));
+    unloads.defer('c', () => shown.push('c'));
+    fail(new Error('the connection closed'));
+    await expect(unloaded).rejects.toThrow('the connection closed');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(shown).toEqual([]);
+    expect(unloads.defer('a', () => shown.push('a'))).toBe(false);
   });
 });

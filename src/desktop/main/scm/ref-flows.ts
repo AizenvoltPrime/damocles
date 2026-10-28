@@ -4,7 +4,7 @@
 import * as path from 'node:path';
 import type { ArtifactCommit, BranchArtifact, RemoteBranchArtifact, StashArtifact, TagArtifact, WorktreeArtifact } from '../../../core/scm/artifacts';
 import { sanitizeBranchName, type CheckoutTarget } from '../../../core/scm/branches';
-import { isInside, samePath } from '../../../core/scm/discovery';
+import { isInside } from '../../../core/scm/discovery';
 import { gitErrorText, redactUrls, RemoteCancelledError } from '../../../core/scm/errors';
 import { isRemoteName, type Remote } from '../../../core/scm/remotes';
 import type { ScmRepository } from './scm-client';
@@ -18,7 +18,7 @@ import { fitsQuickPick, MAX_QUICK_PICK_BYTES, MAX_QUICK_PICK_ITEMS, quickPickIte
 import { isWorktreePath, type ScmRunRequest, type ScmRunResult, type ScmStashChoice, type ScmStashTarget } from '../../preload/scm-channels';
 import type { Project } from '../../local-services/confine';
 import { parseRootKey } from '../../preload/folder-root';
-import type { ScmHostDeps, ScmQuickPickItem } from './scm-host';
+import type { PathRules, ScmHostDeps, ScmQuickPickItem } from './scm-host';
 
 export const OK: ScmRunResult = { ok: true };
 export const CANCELLED: ScmRunResult = { ok: false, reason: 'cancelled' };
@@ -54,8 +54,8 @@ export async function pickEntry<T>(quickPick: ScmHostDeps['quickPick'], placehol
 export interface RefFlowHost {
   readonly deps: ScmHostDeps;
   repo(repoId: string): ScmRepository;
-  // refuses an action that acts on this computer's records, buffers or folders by a remote repository's paths
-  localOnly(repoId: string): void;
+  // the path rules a repository of the authority follows
+  pathsOf(authority: string): PathRules;
   setting<T>(key: string, fallback: T): T;
   // the stash's View Stash tabs, now that it left the stash list
   closeStashTabs(repoId: string, hash: string): Promise<void>;
@@ -779,7 +779,6 @@ export class RefFlows {
 
   // VS Code's _createWorktree: a new branch or a ref to check out, then the folder, then `worktree add`.
   async createWorktree(repoId: string): Promise<ScmRunResult> {
-    this.host.localOnly(repoId);
     const t = this.t.bind(this);
     const CREATE = { kind: 'create' } as const;
     const rows = await this.refRows(repoId, ['branch', 'remote', 'tag']);
@@ -812,9 +811,10 @@ export class RefFlows {
       }
     }
     const repo = this.host.repo(repoId);
+    const { flavor, same } = this.host.pathsOf(repo.authority);
     const name = worktreeName(branch ?? label, this.host.setting(SCM_SETTING_KEYS.branchPrefix, ''));
     const remembered = await this.deps.service.worktreeFolder(repoId);
-    const suggested = remembered !== undefined ? path.join(remembered, name) : defaultWorktreePath(repo.root, name, !samePath(repo.info.gitDir, repo.info.commonDir));
+    const suggested = remembered !== undefined ? flavor.join(remembered, name) : defaultWorktreePath(repo.root, name, !same(repo.info.gitDir, repo.info.commonDir), flavor);
     const nameSelected = (value: string): readonly [number, number] => [value.length - name.length, value.length];
     // VS Code's getWorktreePath folder button: the OS folder picker, at the remembered folder or the repository's parent
     const pick = async (): Promise<{ readonly value: string; readonly valueSelection: readonly [number, number] } | undefined> => {
@@ -828,7 +828,8 @@ export class RefFlows {
       placeholder: t('Worktree path'),
       value: suggested,
       valueSelection: nameSelected(suggested),
-      browse: { tooltip: t('Select Worktree Destination'), pick },
+      // the OS folder picker browses this computer only
+      ...(repo.authority === 'local' ? { browse: { tooltip: t('Select Worktree Destination'), pick } } : {}),
     }))?.trim();
     if (!typed) return CANCELLED;
     const target = await this.worktreePath(repoId, typed);
@@ -838,22 +839,26 @@ export class RefFlows {
     const projectKey = owner ? parseRootKey(owner.projectKey)?.projectKey : undefined;
     // the branch the new worktree has checked out: the one it created, or the local branch it took
     const checkedOut = branch ?? (choice !== CREATE && (choice as RefRow).kind === 'branch' ? (choice as RefRow).row.name : undefined);
-    if (projectKey !== undefined) await this.deps.worktrees.adoptCreated(projectKey, repo.root, target, checkedOut);
+    // a remote host's registry keeps chat records only
+    if (projectKey !== undefined && repo.authority === 'local') await this.deps.worktrees.adoptCreated(projectKey, repo.root, target, checkedOut);
     return OK;
   }
 
-  // A typed worktree folder: absolute and local, as the validator takes a worktree row's path (no UNC share, which would send
-  // the user's credentials, and no root-relative path, which git resolves against its working folder's drive), with a taken
+  // A typed worktree folder: absolute on the repository's own host, in its path rules (no UNC share, which would send the
+  // user's credentials, and no root-relative path, which git resolves against its working folder's drive), with a taken
   // worktree path made unique with -1, -2..., as VS Code's createWorktree does.
   private async worktreePath(repoId: string, typed: string): Promise<string | undefined> {
-    if (!isWorktreePath(typed, this.deps.platform)) {
-      void this.deps.notify.warn(this.t('"{0}" is not an absolute folder path on this computer.', visibleText(typed)));
+    const { authority } = this.host.repo(repoId);
+    const { os, flavor, same } = this.host.pathsOf(authority);
+    if (!isWorktreePath(typed, os)) {
+      const shown = visibleText(typed);
+      void this.deps.notify.warn(authority === 'local' ? this.t('"{0}" is not an absolute folder path on this computer.', shown) : this.t('"{0}" is not an absolute folder path on {1}.', shown, this.deps.hostName(authority)));
       return undefined;
     }
-    const wanted = path.normalize(typed);
+    const wanted = flavor.normalize(typed);
     const taken = (await this.worktrees(repoId)).map((worktree) => worktree.path);
     let candidate = wanted;
-    for (let counter = 1; taken.some((existing) => samePath(existing, candidate)); counter++) candidate = `${wanted}-${counter}`;
+    for (let counter = 1; taken.some((existing) => same(existing, candidate)); counter++) candidate = `${wanted}-${counter}`;
     return candidate;
   }
 
@@ -867,12 +872,14 @@ export class RefFlows {
   // project the folder holds; then (slice 12a rule 14) that project and its chats close before `git worktree remove`, and a
   // dirty worktree asks again, then removes with --force. Its chats are then listed read-only under the main project.
   async deleteWorktree(repoId: string, worktreePath?: string): Promise<ScmRunResult> {
-    this.host.localOnly(repoId);
     const t = this.t.bind(this);
+    const { authority } = this.host.repo(repoId);
+    const local = authority === 'local';
+    const { same } = this.host.pathsOf(authority);
     const removable = (await this.worktrees(repoId)).filter((worktree) => !worktree.main && !worktree.current);
     let worktree: WorktreeArtifact | undefined;
     if (worktreePath !== undefined) {
-      worktree = removable.find((candidate) => samePath(candidate.path, worktreePath));
+      worktree = removable.find((candidate) => same(candidate.path, worktreePath));
       if (!worktree) {
         void this.deps.notify.warn(t('"{0}" is not a worktree that can be deleted.', visibleText(worktreePath)));
         return TOLD;
@@ -891,7 +898,7 @@ export class RefFlows {
       );
       if (!worktree) return CANCELLED;
     }
-    if (await this.deps.worktrees.deleteChatWorktreeAt(worktree.path)) return OK;
+    if (await this.deps.worktrees.deleteChatWorktreeAt(authority, worktree.path)) return OK;
     const project = this.host.worktreeProject(repoId, worktree.path);
     const main = (await this.worktrees(repoId)).find((candidate) => candidate.main);
     const mainProject = main ? this.host.worktreeProject(repoId, main.path) : undefined;
@@ -910,7 +917,8 @@ export class RefFlows {
     // rule 14's order: every question before the project closes, so a Cancel leaves it open
     const dirty = await this.deps.service.worktreeDirty(repoId, worktree.path);
     if (dirty && !(await this.confirmForceDelete(worktree.path))) return CANCELLED;
-    if (project) await this.deps.worktrees.adopt(project, worktree, main?.path ?? this.host.repo(repoId).root, mainProject);
+    // a remote host's registry keeps chat records only
+    if (project && local) await this.deps.worktrees.adopt(project, worktree, main?.path ?? this.host.repo(repoId).root, mainProject);
     if (project) {
       const closed = await this.deps.worktrees.closeProject(project.key);
       if (closed === 'cancelled') return CANCELLED;
@@ -939,7 +947,7 @@ export class RefFlows {
     } catch (err) {
       return failed(gitErrorText(err));
     }
-    await this.deps.worktrees.markRemoved(worktree.path);
+    if (local) await this.deps.worktrees.markRemoved(worktree.path);
     return OK;
   }
 

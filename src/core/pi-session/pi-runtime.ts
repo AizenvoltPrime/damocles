@@ -34,7 +34,7 @@ import { describeAuthError, describeCatalogError, isCredentialSyncError } from '
 import { piModelNetworkEnabled, savedCatalogCheckedAt } from './pi-model-catalog';
 import { isAbortError } from './web-access/util';
 import { CREDENTIAL_REFUSED, isPiCredentialError, runStructuredCompletion, UNREACHABLE, type CredentialRefused, type PiCompleteFn, type StructuredCompletionRequest, type StructuredCompletionResult } from './structured-completion';
-import { appendSubCallUsage, type SubCallPurpose } from '../usage-stats/subcall-ledger';
+import { appendSubCallUsage, type SubCallAttribution, type SubCallPurpose } from '../usage-stats/subcall-ledger';
 import { httpStatusOf, isInputRefusal } from './http-status';
 import {
   CLASSIFIER_MODELS,
@@ -76,11 +76,12 @@ import { planModelsOf, providerPreferApiKeyState, readPreferProviderApiKey, read
 import { FolderRuntime, type ExtensionLoadError } from './folder-runtime';
 import { MCP_RESOURCE_EXPOSURE_SETTING, MCP_TOOL_EXPOSURE_SETTING, renamedRuleNoticeKey, type McpRenamedToolRuleLocation } from '../../shared/types/mcp';
 import { folderKey } from '../workspace-folders/folder-key';
-import type { ExternalKeySource, KeyProviderId, SignInProviderId } from '../../shared/settings-sections';
+import { isKeyProviderId, type ExternalKeySource, type KeyProviderId, type SignInProviderId } from '../../shared/settings-sections';
 import { withSettingsPolicy } from './settings-policy';
 import { platform } from '../platform-host';
 import type { Platform } from '../../platform/platform';
 import type { Disposable } from '../../platform/disposable';
+import type { RemoteHost } from '../../platform/remote-host';
 import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
 import { IMAGE_SETTINGS_SECTION } from './tools/image-tool-specs';
 import { fetchSubscriptionUsage } from './subscription-usage';
@@ -88,7 +89,7 @@ import { UsageMonitor, type UsageThresholdCrossing } from './usage-thresholds';
 import { BrokeredCredentialStore, oauthAnswerOf } from './credential-broker';
 import { allowanceProvider, builtinAnthropicTransport, clientClaudeAuthStatus, loadAllowanceTransport, subscriptionPluginDir } from './allowance-transport';
 import { logAuthReadFailure, readAuthFile } from './auth-file';
-import { clientHasAuth, clientHasKey, outsidePins, runPinnedSubcall } from '../client-snapshots';
+import { clientHasAuth, clientHasCredential, clientHasKey, clientPrefersApiKey, credentialSourceOf, outsidePins, runPinnedSubcall } from '../client-snapshots';
 import { MODEL_PICKER_SETTING, MODEL_VENDORS, vendorPiProviders, type ModelVendor } from '../../shared/model-vendor';
 import { planModelIdsOf, type BrokerAnswer, type HeldAuth, type HeldAuthEntry } from '../../shared/remote-user';
 
@@ -119,12 +120,23 @@ function notifyClientAuthListeners(): void {
     }
   }
 }
-/** Module-level so subscribing never creates the singleton: activation must leave `PiRuntime.exists` false. */
-const memoryJudgeListeners = new Set<() => void>();
-function notifyMemoryJudgeListeners(): void {
-  for (const listener of [...memoryJudgeListeners]) {
+const actingClientListeners = new Set<() => void>();
+function notifyActingClientListeners(): void {
+  for (const listener of [...actingClientListeners]) {
     try {
       listener();
+    } catch (err) {
+      log('[PiRuntime] acting client listener failed: %O', err);
+    }
+  }
+}
+/** Module-level so subscribing never creates the singleton: activation must leave `PiRuntime.exists` false. */
+// clientId: on a daemon's core, the one device whose user layer changed an input
+const memoryJudgeListeners = new Set<(clientId?: string) => void>();
+function notifyMemoryJudgeListeners(clientId?: string): void {
+  for (const listener of [...memoryJudgeListeners]) {
+    try {
+      listener(clientId);
     } catch (err) {
       log('[PiRuntime] memory judge listener failed: %O', err);
     }
@@ -315,7 +327,6 @@ export interface LiveSessionMutator extends LiveSessionMetaSource {
    *  let go, which must abort the delete rather than orphan a live writer on a removed path. */
   detachFromDeletedSession(): Promise<void>;
   publishAccountInfo(): void;
-  publishAvailableModels(): void;
 }
 
 /**
@@ -399,6 +410,10 @@ export class PiRuntime {
   /** The one sync queued behind the running one, which every call made meanwhile shares; it reads with the newest call's resolver. */
   private _customProviderSyncFollowUp: { getSecret: SecretResolver; outcome: Promise<CustomProviderSyncOutcome> } | null = null;
   private _secretsListener: Disposable | null = null;
+  /** A daemon's core: a new acting client refreshes pi's availability snapshot. */
+  private _clientsListener: Disposable | null = null;
+  /** Bumped by each acting client change, so only the latest one's refresh republishes. */
+  private _actingChanges = 0;
   /** A daemon's core: the bundled subscription plugin did not load, so an allowance client's Claude requests bill extra usage. */
   private _allowanceUnavailable = false;
   /** Granting trust admits a folder's project layer, which needs a reload to reach its loader. */
@@ -411,8 +426,6 @@ export class PiRuntime {
   private _resourceExposureListener: Disposable | null = null;
   /** Logs the `damocles.tools.disabled` entries that can turn nothing off, at init and on each change. */
   private _disabledToolsListener: Disposable | null = null;
-  /** `damocles.memory.judge` and `.judgeEffort` pick the memory judge, which the judge status names. */
-  private _memoryJudgeSettingsListener: Disposable | null = null;
   /** `damocles.assetSourcePrecedence` orders every loader's `.claude` and `.codex` roots. */
   private _assetPrecedenceListener: Disposable | null = null;
   /** Set once a custom-provider sync has applied the stored keys, which `hasConfiguredAuth` reads. */
@@ -448,7 +461,8 @@ export class PiRuntime {
     }
     this._agentDir = agentDir;
     this._platform = platform();
-    this._classifierBreakers.onChange(notifyMemoryJudgeListeners);
+    this._classifierBreakers.onChange(() => notifyMemoryJudgeListeners());
+    this._clientsListener = this._platform.remote ? this._watchClients(this._platform.remote) : null;
   }
 
   /** Get (lazily creating) the process-wide PiRuntime singleton. */
@@ -545,6 +559,17 @@ export class PiRuntime {
     };
   }
 
+  /**
+   * A daemon's core: fires once pi's availability snapshot holds the acting client's credentials after the acting client
+   * changed, only for the latest change, which is when its account state is republished. Subscribing does not create the singleton.
+   */
+  static onActingClientRefreshed(listener: () => void): () => void {
+    actingClientListeners.add(listener);
+    return () => {
+      actingClientListeners.delete(listener);
+    };
+  }
+
   /** Fires whenever an input of `clientAuthSnapshot()` may have changed. Subscribing does not create the singleton. */
   static onClientAuthChange(listener: () => void): () => void {
     clientAuthListeners.add(listener);
@@ -561,8 +586,8 @@ export class PiRuntime {
     };
   }
 
-  /** Fires when an input of `describeMemoryJudge()` may have changed. Subscribing does not create the singleton. */
-  static onMemoryJudgeChange(listener: () => void): () => void {
+  /** Fires when a runtime input of `describeMemoryJudge()` may have changed; the judge settings' listener is the panels' own. Subscribing does not create the singleton. */
+  static onMemoryJudgeChange(listener: (clientId?: string) => void): () => void {
     memoryJudgeListeners.add(listener);
     return () => {
       memoryJudgeListeners.delete(listener);
@@ -581,9 +606,9 @@ export class PiRuntime {
   }
 
   /** For judge inputs that change outside the runtime: a Claude or OpenAI credential change republishes the account. */
-  static notifyMemoryJudgeChange(): void {
+  static notifyMemoryJudgeChange(clientId?: string): void {
     notifyClientAuthListeners();
-    notifyMemoryJudgeListeners();
+    notifyMemoryJudgeListeners(clientId);
   }
 
   /** Tear down and clear the singleton (extension deactivation and tests). */
@@ -912,11 +937,39 @@ export class PiRuntime {
     await this._resyncOpenAIAndRepublish('a clientAuth change', true);
   }
 
+  /** Outside a run, pi's availability snapshot reads the acting client's credentials, so a new acting client refreshes it and republishes the account state. */
+  private _watchClients(remote: RemoteHost): Disposable {
+    return remote.clients.onDidChange((change) => {
+      if (change.topic !== 'actingClient') return;
+      const generation = ++this._actingChanges;
+      // a refresh a newer acting change overtook holds the older client's snapshot, so it republishes nothing
+      const republish = (): void => {
+        if (generation !== this._actingChanges) return;
+        notifyClientAuthListeners();
+        notifyActingClientListeners();
+      };
+      const modelRuntime = this._modelRuntime;
+      if (!modelRuntime) {
+        republish();
+        return;
+      }
+      void outsidePins(() => modelRuntime.refresh({ allowNetwork: false })).then(
+        (refreshed) => {
+          for (const [provider, err] of refreshed.errors) log('[PiRuntime] acting client refresh: provider %s failed: %s', provider, describeAuthError(err));
+          republish();
+        },
+        (err: unknown) => {
+          log('[PiRuntime] acting client refresh failed: %s', describeAuthError(err));
+          republish();
+        },
+      );
+    });
+  }
+
   private _publishAccountInfoToSessions(): void {
     for (const session of new Set(this._sessionMutators.values())) {
       try {
         session.publishAccountInfo();
-        session.publishAvailableModels();
       } catch (err) {
         log('[PiRuntime] publishing a session\'s account state failed: %O', err);
       }
@@ -1041,10 +1094,6 @@ export class PiRuntime {
     });
     this.logInertDisabledToolEntries();
     this._disabledToolsListener = this._platform.settings.onDidChange(TOOLS_DISABLED_SETTING, () => this.logInertDisabledToolEntries());
-    // A section listener, because `damocles.memory.judgeEffort` is not under `damocles.memory.judge`.
-    this._memoryJudgeSettingsListener = this._platform.settings.onDidChange('damocles.memory', (change) => {
-      if (change.affects(MEMORY_JUDGE_SETTING) || change.affects(MEMORY_JUDGE_EFFORT_SETTING)) notifyMemoryJudgeListeners();
-    });
     this._assetPrecedenceListener = this._platform.settings.onDidChange(ASSET_SOURCE_PRECEDENCE_SETTING, () => this._scheduleFolderReloads());
     log('[PiRuntime] initialized (agentDir=%s)', this._agentDir);
   }
@@ -1170,8 +1219,8 @@ export class PiRuntime {
     if (this._disposed || !this._modelRuntime) return { wired: [], notWired: [], timedOut: false };
     // A changed credential can change a key kind's billing (`flatFeeKeyProviders`), and a failed sync may have changed one unreported.
     let republishAccount = true;
-    // `clientAuthSnapshot` sends it, and a key a sign-in outranks changes nothing else the snapshot carries
-    let keySavedChanged = false;
+    // `clientAuthSnapshot` sends the saved keys and prefer flags, and one a sign-in outranks changes nothing else it carries
+    let snapshotChanged = false;
     const modelRuntime = this._modelRuntime;
     // read directly, not through `this.flatFeeKeyProviders()`, whose prefer check would schedule a second sync
     const flatFeeBefore = flatFeeKeyProviders(modelRuntime, this._platform.remote);
@@ -1194,9 +1243,14 @@ export class PiRuntime {
         sweepMarkerPath: PROVIDER_KEY_SWEEP_MARKER_PATH,
         signingIn: this._signingIn,
       });
-      if (!aborted) for (const [provider, prefer] of preferRead) this._appliedProviderPrefer.set(provider, prefer);
+      if (!aborted) {
+        for (const [provider, prefer] of preferRead) {
+          if (this._appliedProviderPrefer.get(provider) !== prefer) snapshotChanged = true;
+          this._appliedProviderPrefer.set(provider, prefer);
+        }
+      }
       for (const [provider, saved] of keysSaved) {
-        if (this._providerKeySaved.get(provider) !== saved) keySavedChanged = true;
+        if (this._providerKeySaved.get(provider) !== saved) snapshotChanged = true;
         this._providerKeySaved.set(provider, saved);
       }
       // The first sync is the first time the picker providers are known, so panels that have not started hear them too.
@@ -1224,7 +1278,7 @@ export class PiRuntime {
       const accountChanged = republishAccount || flatFeeAfter.size !== flatFeeBefore.size || [...flatFeeAfter].some((p) => !flatFeeBefore.has(p));
       if (accountChanged) this._publishAccountInfoToSessions();
       else {
-        if (keySavedChanged) notifyClientAuthListeners();
+        if (snapshotChanged) notifyClientAuthListeners();
         notifyMemoryJudgeListeners();
       }
       // Isolated: a throw in this `finally` would replace the sync's result and skip the listeners after it.
@@ -1427,6 +1481,15 @@ export class PiRuntime {
   }
 
   /**
+   * The Claude auth mode without creating the runtime: a local core reads it from disk, a daemon's core from the pinned
+   * (else acting) client as `getClaudeAuthStatus` does, where no bundled plugin has failed to load before the runtime exists.
+   */
+  static claudeAuthStatus(remote: RemoteHost | undefined): ClaudeAuthStatus {
+    if (!remote) return readClaudeAuthFromDisk(PI_AGENT_DIR);
+    return PiRuntime._instance ? PiRuntime._instance.getClaudeAuthStatus() : clientClaudeAuthStatus(remote, true);
+  }
+
+  /**
    * OAuth access token for the Claude subscription usage endpoint. Gated on subscription mode so an
    * api_key credential is never returned as a bearer token. `getAuth` resolves the OAuth grant,
    * refreshing the token under a lock when needed.
@@ -1459,9 +1522,12 @@ export class PiRuntime {
 
   /**
    * The prefer-API-key toggle. It is global state, which another VS Code window can change with no event, so a read
-   * that differs from what the last runtime key sync applied re-applies it here and republishes.
+   * that differs from what the last runtime key sync applied re-applies it here and republishes. A daemon's core applies
+   * no key and reads the pinned (else acting) client's flag.
    */
   preferOpenAIApiKey(): boolean {
+    const remote = this._platform.remote;
+    if (remote) return clientPrefersApiKey(remote, OPENAI_API_PROVIDER);
     const prefer = readPreferOpenAIApiKey(this._platform.state);
     if (this._appliedPreferApiKey !== null && prefer !== this._appliedPreferApiKey && !this._preferResyncPending) {
       this._preferResyncPending = true;
@@ -1474,9 +1540,12 @@ export class PiRuntime {
 
   /**
    * A key provider's prefer-API-key flag, global state like the OpenAI one: a read that differs from what the last
-   * custom-provider sync applied (another window changed it) re-applies the keys, whose listeners republish.
+   * custom-provider sync applied (another window changed it) re-applies the keys, whose listeners republish. A daemon's
+   * core applies no key and reads the pinned (else acting) client's flag.
    */
   preferProviderApiKey(provider: KeyProviderId): boolean {
+    const remote = this._platform.remote;
+    if (remote) return clientPrefersApiKey(remote, provider);
     const prefer = readPreferProviderApiKey(this._platform.state, provider);
     // The sync skips a provider while it signs in, so a resync would not apply the flag; the sign-in's own final sync does.
     if ((this._signingIn as ReadonlySet<string>).has(provider)) return prefer;
@@ -1717,17 +1786,19 @@ export class PiRuntime {
 
   /**
    * This computer's core: the credential a daemon's token broker asked for (`user.resolveCredential`), resolved by this
-   * runtime, so an expiring OAuth token is refreshed under pi's lock first. A provider this computer has only from its
-   * environment answers none, and the target then uses its own.
+   * runtime, so an expiring OAuth token is refreshed under pi's lock first, and any OAuth token with `force` (Keep
+   * running). A provider this computer has only from its environment answers none, and the target then uses its own.
    */
-  async resolveCredentialForBroker(provider: string): Promise<BrokerAnswer> {
+  async resolveCredentialForBroker(provider: string, force = false): Promise<BrokerAnswer> {
     // a daemon's core holds only what its pinned client sent, and answers no other core
     if (this._platform.remote) throw new Error('A remote host\'s core resolves no credential for a broker');
     await this.init();
     const runtime = this._modelRuntime!;
     if (!runtime.getProvider(provider)) throw new Error(`pi knows no provider ${provider}`);
     if (!(await runtime.listCredentials()).some((credential) => credential.providerId === provider)) return { type: 'none' };
-    const resolved = await runtime.getAuth(provider);
+    const held = force ? readAuthFile(this._agentDir)?.[provider] as { type?: unknown; expires?: unknown } | undefined : undefined;
+    // asking for more validity than the stored token has makes pi refresh it under its lock
+    const resolved = await runtime.getAuth(provider, held?.type === 'oauth' && typeof held.expires === 'number' ? { minOAuthValidityMs: Math.max(held.expires - Date.now() + 1, 0) } : {});
     if (!resolved) return { type: 'none' };
     if (resolved.source === 'OAuth') {
       // pi's refresh persisted the credential before releasing its lock
@@ -1737,6 +1808,16 @@ export class PiRuntime {
     }
     const key = resolved.auth.apiKey;
     return key ? { type: 'api_key', key } : { type: 'none' };
+  }
+
+  /** A daemon's core: an access token the client `actor` pushed for itself, which only that client's turns read. */
+  async acceptPushedCredential(actor: string | undefined, provider: string, credential: BrokerAnswer & { readonly type: 'oauth' }): Promise<void> {
+    if (!this._platform.remote) throw new Error('Only a remote host\'s core takes a pushed credential');
+    if (actor === undefined) throw new Error('A pushed credential names no client');
+    if (credential.refresh !== '') throw new Error('A pushed credential carries a refresh token');
+    await this.init();
+    if (!this._modelRuntime!.getProvider(provider)) throw new Error(`pi knows no provider ${provider}`);
+    this._broker!.push(actor, provider, credential);
   }
 
   /** This computer's core: every provider pi knows with its credential type, expiry, whether a key is stored and bills flat, and whether Claude's sign-in bills the allowance; never a secret. */
@@ -1759,6 +1840,7 @@ export class PiRuntime {
       const type = stored?.type === 'oauth' ? 'oauth' : (listed.get(id) ?? 'none');
       const hasKey = listed.get(id) === 'api_key' || stored?.type === 'api_key' || (id === OPENAI_API_PROVIDER && this._openaiKeyPresent);
       const keySaved = this._providerKeySaved.get(id as KeyProviderId);
+      const preferApiKey = id === OPENAI_API_PROVIDER ? readPreferOpenAIApiKey(this._platform.state) : isKeyProviderId(id) && readPreferProviderApiKey(this._platform.state, id);
       providers[id] = {
         type,
         hasKey,
@@ -1767,6 +1849,7 @@ export class PiRuntime {
         ...(stored?.type === 'oauth' && typeof stored.expires === 'number' ? { expires: stored.expires } : {}),
         ...(id === 'anthropic' && type === 'oauth' && claudeAllowance ? { allowance: true } : {}),
         ...(plan ? { availableModelIds: plan } : {}),
+        ...(preferApiKey ? { preferApiKey: true } : {}),
       };
     }
     return { providers };
@@ -1774,12 +1857,32 @@ export class PiRuntime {
 
   /**
    * Current OpenAI auth state: the grants from auth.json and the key secret's cached presence. Not pi's
-   * `hasConfiguredAuth`, which also counts ambient `OPENAI_API_KEY` env vars and runtime overrides.
+   * `hasConfiguredAuth`, which also counts ambient `OPENAI_API_KEY` env vars and runtime overrides; only a daemon's core,
+   * whose client holds no `openai` credential, reads it as `hostKey`.
    */
   getOpenAIAuthStatus(): OpenAIAuthStatus {
     const remote = this._platform.remote;
     // a daemon's core reads the pinned (else acting) client's key, never the one its last sync saw
-    return openaiAuthStatus(readOpenAIAuthFromDisk(this._agentDir), remote ? clientHasKey(remote, OPENAI_API_PROVIDER) : this._openaiKeyPresent);
+    const status = openaiAuthStatus(readOpenAIAuthFromDisk(this._agentDir), remote ? clientHasKey(remote, OPENAI_API_PROVIDER) : this._openaiKeyPresent);
+    if (!remote || clientHasCredential(remote, OPENAI_API_PROVIDER) || !this.hostHasOwnAuth(OPENAI_API_PROVIDER)) return status;
+    return { ...status, hostKey: true };
+  }
+
+  /**
+   * Whether a daemon's core has a credential of its own for a provider, which only pi's snapshot knows. That snapshot also
+   * counts the acting client's credentials, so a provider the acting client holds reads as the client's, never the host's.
+   */
+  hostHasOwnAuth(provider: string): boolean {
+    const remote = this._platform.remote;
+    const registry = this._modelRuntime;
+    if (!remote || !registry) return false;
+    return registry.hasConfiguredAuth(provider) && !clientHasAuth(remote, provider, remote.clients.acting());
+  }
+
+  /** A sub-call's ledger attribution, with the host as payer when a daemon's core billed the host's own credential. */
+  private _billedTo(provider: string, attribution: SubCallAttribution = {}): SubCallAttribution {
+    const credentialSource = credentialSourceOf(this._platform.remote, provider);
+    return credentialSource ? { ...attribution, credentialSource } : attribution;
   }
 
   /** Whether `getOpenAIAuthStatus` reflects the key secret: false until init's first key sync has run. */
@@ -2219,7 +2322,7 @@ export class PiRuntime {
           log('[PiRuntime] sub-call %s on %s/%s at %s ended with %s in %dms', req.purpose, m.provider, m.id, reasoning ?? 'off', message.stopReason, elapsedMs);
         }
         // Billed whatever the stop reason; a throw carries no usage to record.
-        appendSubCallUsage(message, req.purpose, req.attribution);
+        appendSubCallUsage(message, req.purpose, this._billedTo(message.provider, req.attribution));
         return message;
       };
       // pi resolves the credential exactly as completeSimple did; only its error code is read, never its text.
@@ -2246,19 +2349,26 @@ export class PiRuntime {
   private _classifierCredential(provider: ClassifierProvider, openai: OpenAIAuthInputs): ClassifierCredential {
     const registry = this._modelRuntime;
     if (!registry) return 'no-key';
-    return classifierCredential(provider, (p) => registry.hasConfiguredAuth(p), openai);
+    return classifierCredential(provider, this._hasCredential(registry), openai);
   }
 
   /**
-   * The vendors the chat's model picker lists: each one the setting names, else each with a credential; undefined before
-   * the model runtime exists. A daemon's core reads the acting client's clientAuth, never pi's snapshot, which also counts
-   * the target's environment and changes only on a refresh.
+   * Whether a provider has a credential. On a daemon's core it is the pinned (else acting) client's, read from its
+   * clientAuth at once, or the target's own, which only pi's snapshot knows; that snapshot also counts the acting client's
+   * credentials (its status reads), so a provider that client holds counts only for its own views.
    */
+  private _hasCredential(registry: ModelRuntime): (provider: string) => boolean {
+    const remote = this._platform.remote;
+    return remote
+      ? (provider) => clientHasAuth(remote, provider) || this.hostHasOwnAuth(provider)
+      : (provider) => registry.hasConfiguredAuth(provider);
+  }
+
+  /** The vendors the chat's model picker lists: each one the setting names, else each with a credential (`_hasCredential`); undefined before the model runtime exists. */
   pickerProviders(): ModelVendor[] | undefined {
     const registry = this._modelRuntime;
     if (!registry) return undefined;
-    const remote = this._platform.remote;
-    const configured = remote ? (provider: string) => clientHasAuth(remote, provider) : (provider: string) => registry.hasConfiguredAuth(provider);
+    const configured = this._hasCredential(registry);
     const stored = this._platform.settings.get<unknown>(MODEL_PICKER_SETTING, {});
     const explicit = typeof stored === 'object' && stored !== null ? (stored as Record<string, unknown>) : {};
     return MODEL_VENDORS.filter((vendor) => {
@@ -2371,7 +2481,7 @@ export class PiRuntime {
       const signal = req.abortSignal ? AbortSignal.any([req.abortSignal, deadline]) : deadline;
       const result = await modelRuntime.classify(picked.model, { state: req.state, questions: req.questions }, { signal, timeoutMs: req.timeoutMs });
       if (result.usage) {
-        appendSubCallUsage({ provider: result.provider, model: result.model, stopReason: result.stopReason, usage: result.usage }, req.purpose);
+        appendSubCallUsage({ provider: result.provider, model: result.model, stopReason: result.stopReason, usage: result.usage }, req.purpose, this._billedTo(result.provider));
       }
       if (result.stopReason !== 'stop') {
         const rejection = isInputRefusal(result.errorMessage) ? null : credentialRejectionOf(httpStatusOf(result.errorMessage));
@@ -2454,6 +2564,8 @@ export class PiRuntime {
     this._classifierBreakers.dispose();
     this._secretsListener?.dispose();
     this._secretsListener = null;
+    this._clientsListener?.dispose();
+    this._clientsListener = null;
     this._trustListener?.dispose();
     this._trustListener = null;
     this._imageSettingsListener?.dispose();
@@ -2464,8 +2576,6 @@ export class PiRuntime {
     this._disabledToolsListener = null;
     this._resourceExposureListener?.dispose();
     this._resourceExposureListener = null;
-    this._memoryJudgeSettingsListener?.dispose();
-    this._memoryJudgeSettingsListener = null;
     this._assetPrecedenceListener?.dispose();
     this._assetPrecedenceListener = null;
     this._modelRuntime = null;

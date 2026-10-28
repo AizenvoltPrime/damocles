@@ -1,9 +1,10 @@
 // The daemon's persistent terminals over one self-acknowledging pty host: each terminal keeps a window per connection, a
 // connection past TERMINAL_HIGH_WATERMARK_CHARS stops getting live data until its acks bring it under
 // TERMINAL_LOW_WATERMARK_CHARS and it gets a fresh screen, so a slow client never throttles the pty or another client.
+// A terminal is the host's: any connection may attach a view (serialize) or kill it, and only its attached ones type into it.
 import * as path from 'node:path';
 import { TERMINAL_HIGH_WATERMARK_CHARS, TERMINAL_LOW_WATERMARK_CHARS } from '../preload/terminal-channels';
-import { parseHostMessage, type HostMessage } from '../pty-host/protocol';
+import { parseHostMessage, type HostMessage, type TerminalView } from '../pty-host/protocol';
 import type { PtyHostEnd, TerminalPost } from '../workspace/messages';
 import type { LiveTerminal } from '../workspace/terminal/terminal-backend';
 import type { PtyHostProcess } from '../workspace/host-starters';
@@ -37,6 +38,8 @@ interface Terminal {
   readonly windows: Map<HubClient, Window>;
   // who each serialize in flight answers, in the order the pty host answers them; undefined for one that detached
   readonly screens: Array<HubClient | undefined>;
+  // what its spawning client sent so another can show it
+  readonly view: TerminalView | undefined;
 }
 
 export interface TerminalHub {
@@ -154,12 +157,21 @@ export function createTerminalHub(deps: TerminalHubDeps): TerminalHub {
     ensureHost().postMessage({ type: 'scrollback', id, scrollback: largest });
   };
 
-  // The pty host reports no exit for a pty it killed, so every other viewer hears it here; a killed terminal has no exit code
-  // of its own and reports 1.
-  const end = (id: string, terminal: Terminal, killer: HubClient | undefined): void => {
+  // The pty host reports no exit for a pty it killed, so every viewer hears it here, the killer's other views included; a
+  // killed terminal has no exit code of its own and reports 1.
+  const end = (id: string, terminal: Terminal): void => {
     ensureHost().postMessage({ type: 'kill', id });
     forget(id);
-    for (const client of terminal.windows.keys()) if (client !== killer) client.message({ type: 'exit', id, exitCode: 1 });
+    for (const client of terminal.windows.keys()) client.message({ type: 'exit', id, exitCode: 1 });
+  };
+
+  const detachView = (id: string, terminal: Terminal, client: HubClient): void => {
+    if (!terminal.windows.delete(client)) return;
+    // its screens in flight still come back; they go to nobody
+    terminal.screens.forEach((asked, index) => {
+      if (asked === client) terminal.screens[index] = undefined;
+    });
+    attachedCount(id, terminal);
   };
 
   return {
@@ -170,7 +182,7 @@ export function createTerminalHub(deps: TerminalHubDeps): TerminalHub {
           client.message({ type: 'error', id: request.id, message: `terminal ${request.id} already exists on this host` });
           return;
         }
-        const created: Terminal = { pid: 0, cols: request.cols, rows: request.rows, scrollback: request.scrollback, windows: new Map([[client, window(request.scrollback)]]), screens: [] };
+        const created: Terminal = { pid: 0, cols: request.cols, rows: request.rows, scrollback: request.scrollback, windows: new Map([[client, window(request.scrollback)]]), screens: [], view: request.view };
         terminals.set(request.id, created);
         clients.add(client);
         deps.registry.addTerminal({ id: request.id, projectKey: projectKey ?? '', title: path.basename(request.file) });
@@ -192,6 +204,14 @@ export function createTerminalHub(deps: TerminalHubDeps): TerminalHub {
           attachedCount(request.id, terminal);
         }
         requestScreen(request.id, terminal, client, own);
+        return;
+      }
+      if (request.type === 'kill') {
+        end(request.id, terminal);
+        return;
+      }
+      if (request.type === 'detach') {
+        detachView(request.id, terminal, client);
         return;
       }
       const own = terminal.windows.get(client);
@@ -216,9 +236,6 @@ export function createTerminalHub(deps: TerminalHubDeps): TerminalHub {
           terminal.rows = request.rows;
           ensureHost().postMessage(request);
           return;
-        case 'kill':
-          end(request.id, terminal, client);
-          return;
         case 'scrollback':
           own.scrollback = request.scrollback;
           keepScrollback(request.id, terminal);
@@ -227,21 +244,14 @@ export function createTerminalHub(deps: TerminalHubDeps): TerminalHub {
           ensureHost().postMessage(request);
       }
     },
-    list: () => [...terminals].filter(([, terminal]) => terminal.pid > 0).map(([id, terminal]) => ({ id, pid: terminal.pid, cols: terminal.cols, rows: terminal.rows })),
+    list: () => [...terminals].filter(([, terminal]) => terminal.pid > 0).map(([id, terminal]) => ({ id, pid: terminal.pid, cols: terminal.cols, rows: terminal.rows, ...(terminal.view ? { view: terminal.view } : {}) })),
     detach: (client) => {
       clients.delete(client);
-      for (const [id, terminal] of terminals) {
-        if (!terminal.windows.delete(client)) continue;
-        // its screens in flight still come back; they go to nobody
-        terminal.screens.forEach((asked, index) => {
-          if (asked === client) terminal.screens[index] = undefined;
-        });
-        attachedCount(id, terminal);
-      }
+      for (const [id, terminal] of terminals) detachView(id, terminal, client);
     },
     kill: (id) => {
       const terminal = terminals.get(id);
-      if (terminal) end(id, terminal, undefined);
+      if (terminal) end(id, terminal);
     },
     shutdown: async () => {
       const running = host;

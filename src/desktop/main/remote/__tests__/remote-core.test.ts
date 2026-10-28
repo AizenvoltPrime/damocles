@@ -113,6 +113,12 @@ function fakeDaemon(epoch: string, phase: CoreState['phase'] = 'running') {
       connection = open();
       return connection;
     },
+    // a new connection while the one before has not closed yet; answers the one before
+    replace: (): RemoteConnection => {
+      const previous = connection;
+      connection = open();
+      return previous;
+    },
     attaches,
     cores,
     restores,
@@ -133,6 +139,8 @@ function fakeDaemon(epoch: string, phase: CoreState['phase'] = 'running') {
     restarting: () => report({ ...state, phase: 'restarting' }),
     // the restart budget ran out: no core runs until a restartCore
     halted: () => report({ ...state, phase: 'halted', pid: null }),
+    // what changed while main was away, which the next attachCore answers: a new core, of a restarted daemon when ppid moved
+    whileAway: (next: Pick<CoreState, 'epoch' | 'ppid'>) => { state = { ...state, ...next }; },
   };
 }
 
@@ -140,12 +148,14 @@ function relayView(host: FakePanelHost, panelId: string, pages: unknown[]): Rela
   return Object.assign(host, { panelId, postJson: () => undefined, showPage: (page: unknown) => pages.push(page), closeReason: 'detach' as const });
 }
 
-function remote(daemon: ReturnType<typeof fakeDaemon>, lastEpoch: string | null) {
+function remote(daemon: ReturnType<typeof fakeDaemon>, lastEpoch: string | null, reopenFails = false) {
   const main = createFakePlatform({ chatBrowserPane: true });
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-core-'));
   dirs.push(userData);
   const opened: Array<{ readonly rejoin: boolean; readonly kept: ReadonlyMap<string, ChatPermissions>; readonly core: RemoteHostedCore }> = [];
   const views: Array<{ viewId: string; panelToken: string }> = [];
+  const reattached: Array<'server' | 'engine' | undefined> = [];
+  let coresEnded = 0;
   // the chats being reopened settle only once released
   let reopening: Promise<void> | undefined;
   const holdReopens = (): (() => void) => {
@@ -176,18 +186,22 @@ function remote(daemon: ReturnType<typeof fakeDaemon>, lastEpoch: string | null)
     openTabs: async (attached, rejoin, kept) => {
       opened.push({ rejoin, kept, core: attached });
       await reopening;
+      if (reopenFails) throw new Error('the window is closing');
     },
     chatViews: () => views,
     retainTabStates: () => undefined,
     subscribe: () => [],
     sharedLoopback: true,
-    relays: new UserRelays({ resolveCredential: async () => ({ type: 'none' }), clientAuth: async () => ({ providers: {} }), voice: true, homedir: '/nonexistent', userSettingKeys: () => [], userValue: () => undefined, log: () => undefined }),
+    relays: new UserRelays({ resolveCredential: async () => ({ type: 'none' }), clientAuth: async () => ({ providers: {} }), voice: true, homedir: '/nonexistent', userSettingKeys: () => [], userValue: () => undefined, hostPolicy: () => ({ allowBypass: false }), log: () => undefined }),
     changed: () => undefined,
+    keptChats: () => 0,
+    reattached: (restarted) => reattached.push(restarted),
+    coreEnded: () => { coresEnded += 1; },
     drainTimeoutMs: 100,
     log: () => undefined,
   });
   cleanups.push(() => core.dispose());
-  return { core, opened, views, main, holdReopens };
+  return { core, opened, views, main, holdReopens, reattached, coresEnded: () => coresEnded };
 }
 
 const chat = (viewId: string): ChatEntry => ({ panelId: 'host-1', viewId, hasConversation: true, folder: target, permissions: PLAN });
@@ -228,6 +242,29 @@ describe('RemoteCore', () => {
     expect(core.epoch()).toBe(EPOCH_B);
     // the first generation's endpoint ended with its epoch
     expect(opened[0]!.core.hasEnded()).toBe(true);
+  });
+
+  // flushed held messages wait on the core that ended: with no gain on a live connection, only this tells main they are lost
+  it('reports the attached core ended when a new epoch, a restart or a halt replaces it on a live connection, and not on a drop', async () => {
+    const daemon = fakeDaemon(EPOCH_A);
+    const { core, coresEnded, reattached } = remote(daemon, null);
+    core.connected(daemon.connection);
+    await core.host.ready();
+    await tick();
+    expect(coresEnded()).toBe(0);
+    daemon.newEpoch(EPOCH_B);
+    await tick();
+    expect(coresEnded()).toBe(1);
+    await core.host.ready();
+    await tick();
+    // the reopening after a restart on a live connection is no gain
+    expect(reattached).toEqual([undefined]);
+    daemon.halted();
+    await tick();
+    expect(coresEnded()).toBe(2);
+    daemon.reconnect();
+    await tick();
+    expect(coresEnded()).toBe(2);
   });
 
   it('a restart the daemon reports first as restarting under the old epoch attaches again once the new epoch runs', async () => {
@@ -404,5 +441,49 @@ describe('RemoteCore', () => {
     expect(daemon.stateListeners()).toBe(1);
     await core.dispose();
     expect(daemon.stateListeners()).toBe(0);
+  });
+
+  it('reports each connection once its chats reopened, naming a new epoch after a drop as the server or the engine restarting', async () => {
+    const daemon = fakeDaemon(EPOCH_A);
+    const { core, opened, reattached } = remote(daemon, EPOCH_A);
+    core.connected(daemon.connection);
+    await vi.waitFor(() => expect(reattached).toEqual([undefined]));
+    // the same epoch rejoins
+    core.connected(daemon.reconnect());
+    await vi.waitFor(() => expect(reattached).toEqual([undefined, undefined]));
+    daemon.whileAway({ epoch: EPOCH_B, ppid: 51 });
+    core.connected(daemon.reconnect());
+    await vi.waitFor(() => expect(reattached).toEqual([undefined, undefined, 'server']));
+    daemon.whileAway({ epoch: EPOCH_A, ppid: 51 });
+    core.connected(daemon.reconnect());
+    await vi.waitFor(() => expect(reattached).toEqual([undefined, undefined, 'server', 'engine']));
+    expect(opened.map((entry) => entry.rejoin)).toEqual([true, true, false, false]);
+    // a core restart on a live connection reopens the chats and is no reconnection
+    daemon.newEpoch(EPOCH_B);
+    await vi.waitFor(() => expect(opened).toHaveLength(5));
+    await tick();
+    expect(reattached).toHaveLength(4);
+  });
+
+  it('reports a connection whose chats failed to reopen, so the gain still follows it', async () => {
+    const daemon = fakeDaemon(EPOCH_A);
+    const { core, opened, reattached } = remote(daemon, EPOCH_A, true);
+    core.connected(daemon.connection);
+    await vi.waitFor(() => expect(opened).toHaveLength(1));
+    await vi.waitFor(() => expect(reattached).toEqual([undefined]));
+  });
+
+  it('stops hearing the close of a connection a newer one replaced', async () => {
+    const daemon = fakeDaemon(EPOCH_A);
+    const { core } = remote(daemon, EPOCH_A);
+    core.connected(daemon.connection);
+    await core.host.ready();
+    const previous = daemon.replace();
+    core.connected(daemon.connection);
+    await core.host.ready();
+    await core.restart();
+    expect(core.isRestarting()).toBe(true);
+    previous.close('the old transport ended late');
+    expect(core.isRestarting()).toBe(true);
   });
 });

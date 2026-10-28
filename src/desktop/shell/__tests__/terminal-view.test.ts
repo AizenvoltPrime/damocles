@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { shallowRef } from 'vue';
 import type { IBufferRange, ILink, ILinkHandler, ILinkProvider } from '@xterm/xterm';
-import type { ShellPlatform } from '../../preload/shell-channels';
+import type { ShellHost, ShellPlatform } from '../../preload/shell-channels';
+import { OFFLINE_GRACE_MS } from '@shared/host-connection';
 import type { TerminalInfo, TerminalSettings, TerminalShellEvent } from '../../preload/terminal-channels';
 import TerminalFind from '../terminal/TerminalFind.vue';
 import TerminalView from '../terminal/TerminalView.vue';
+import { terminalStatusLabel } from '../terminal/terminal-menu';
 import { TERMINAL_STORE, type TerminalSink, type TerminalStore } from '../terminal/terminal-store';
 import { shellI18n } from '../i18n';
 import { TERMINAL_STATE, fakeShellApi, type FakeShellApi } from './fakes';
@@ -189,8 +191,10 @@ interface MountOptions {
   pathFlavor?: TerminalInfo['pathFlavor'];
   integrated?: boolean;
   restoring?: boolean;
+  status?: TerminalInfo['status'];
   // a screen waits in the store for this view
   screenWaits?: () => boolean;
+  host?: ShellHost;
 }
 
 async function mountView(options: MountOptions = {}): Promise<{ api: FakeShellApi; xterm: FakeXterm | undefined; sinks: TerminalSink[]; requestFocus: ReturnType<typeof vi.fn> }> {
@@ -212,13 +216,14 @@ async function mountView(options: MountOptions = {}): Promise<{ api: FakeShellAp
   wrapper = mount(TerminalView, {
     props: {
       api,
-      terminal: { ...info, integrated: options.integrated ?? true, restoring: options.restoring ?? false, windowsBuild: options.windowsBuild ?? null, pathFlavor: options.pathFlavor ?? 'posix' },
+      terminal: { ...info, status: options.status ?? info.status, integrated: options.integrated ?? true, restoring: options.restoring ?? false, windowsBuild: options.windowsBuild ?? null, pathFlavor: options.pathFlavor ?? 'posix' },
       shown: true,
       settings: { ...TERMINAL_STATE.settings, ...options.settings },
       passKeys: [],
       platform: options.platform ?? 'linux',
       splitShortcut: 'Ctrl+Shift+5',
       screenReader: options.screenReader ?? false,
+      ...(options.host ? { remoteHost: options.host } : {}),
     },
     global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: store } },
     attachTo: document.body,
@@ -230,6 +235,38 @@ async function mountView(options: MountOptions = {}): Promise<{ api: FakeShellAp
 const key = (code: string, init: KeyboardEventInit = {}): KeyboardEvent => new KeyboardEvent('keydown', { code, key: code, ...init });
 const shellEvents = (sink: TerminalSink, ...events: TerminalShellEvent[]): void => sink({ data: '', events: events.map((event) => ({ offset: 0, event })) });
 const RANGE: IBufferRange = { start: { x: 1, y: 1 }, end: { x: 10, y: 1 } };
+
+describe('a restored remote terminal whose host is not connected', () => {
+  it('says Reconnecting until main reattaches it, and its list row and tab read the same state', async () => {
+    await mountView({ status: 'reconnecting' });
+    const view = wrapper!.get('[data-testid="terminal-view"]');
+    expect(view.attributes('data-status')).toBe('reconnecting');
+    expect(wrapper!.get('[data-testid="terminal-reconnecting"]').text()).toBe('Reconnecting');
+    expect(terminalStatusLabel({ status: 'reconnecting', exitCode: null }, (key) => shellI18n.global.t(key))).toBe('Reconnecting');
+    await wrapper!.setProps({ terminal: { ...(wrapper!.props() as { terminal: TerminalInfo }).terminal, status: 'running' } });
+    await flushPromises();
+    expect(wrapper!.find('[data-testid="terminal-reconnecting"]').exists()).toBe(false);
+  });
+});
+
+describe('a remote terminal whose host dropped', () => {
+  const HOST: ShellHost = { hostId: 'h1', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'offline', signInNeeded: false };
+
+  it('takes no input at once, and shows Reconnecting and dims only once the drop outlasted the grace', async () => {
+    const { xterm } = await mountView({ status: 'reconnecting', host: { ...HOST, reconnect: { phase: 'waiting', since: Date.now(), retryAt: Date.now() + 5000 } } });
+    expect(xterm!.options.disableStdin).toBe(true);
+    expect(wrapper!.find('[data-testid="terminal-reconnecting"]').exists()).toBe(false);
+    expect(wrapper!.get('.terminal-host').classes()).not.toContain('opacity-(--d-opacity-disabled)');
+    await wrapper!.setProps({ remoteHost: { ...HOST, reconnect: { phase: 'running', since: Date.now() - OFFLINE_GRACE_MS } } });
+    await flushPromises();
+    expect(wrapper!.get('[data-testid="terminal-reconnecting"]').text()).toBe('Reconnecting');
+    expect(wrapper!.get('.terminal-host').classes()).toContain('opacity-(--d-opacity-disabled)');
+    await wrapper!.setProps({ terminal: { ...(wrapper!.props() as { terminal: TerminalInfo }).terminal, status: 'running' }, remoteHost: { ...HOST, connection: 'connected' } });
+    await flushPromises();
+    expect(xterm!.options.disableStdin).toBe(false);
+    expect(wrapper!.find('[data-testid="terminal-reconnecting"]').exists()).toBe(false);
+  });
+});
 
 describe('OSC 8 hyperlinks', () => {
   it('open only on Ctrl+click, through the same window.open web links use, and never ask with window.confirm', async () => {
