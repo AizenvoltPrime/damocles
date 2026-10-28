@@ -77,6 +77,37 @@ export function prebuildProblems(spec, paths) {
   return problems;
 }
 
+/** The program interpreter, the NEEDED libraries and each library's required versions in `readelf -l -d -V --wide` output. */
+export function dynamicLinkage(readelfOutput) {
+  const interpreter = /\[Requesting program interpreter: ([^\]]+)\]/.exec(readelfOutput)?.[1] ?? null;
+  const needed = [...readelfOutput.matchAll(/\(NEEDED\)\s+Shared library: \[([^\]]+)\]/g)].map((match) => match[1]);
+  const versionNeeds = [];
+  const section = readelfOutput.split(/^Version needs section .*$/m)[1] ?? '';
+  let library = null;
+  for (const line of section.split('\n').slice(1)) {
+    if (!line.trim()) break;
+    const file = /\bFile: (\S+)/.exec(line);
+    if (file) library = file[1];
+    const name = /\bName: (\S+)/.exec(line);
+    if (name && library) versionNeeds.push({ library, version: name[1] });
+  }
+  return { interpreter, needed, versionNeeds };
+}
+
+// Alpine's musl has the soname libc.musl-<arch>.so.1; upstream musl, which cross toolchains link, has libc.so.
+const MUSL_LIBC = /^(libc\.musl-[^/]+\.so\.1|libc\.so)$/;
+
+/** Why `linkage` (from dynamicLinkage) of the file at `path` would not load on musl, or links glibc. */
+export function muslLinkageProblems(path, { interpreter, needed, versionNeeds }) {
+  const problems = [];
+  // GCC's libgcc_s exports __register_frame_info under the version GLIBC_2.0 on aarch64 Linux, musl toolchains included.
+  const glibcVersion = versionNeeds.some(({ library, version }) => version.startsWith('GLIBC_') && library !== 'libgcc_s.so.1');
+  if (/\/ld-linux[^/]*$/.test(interpreter ?? '') || needed.includes('libc.so.6') || glibcVersion) problems.push(`${path} links against glibc`);
+  const musl = interpreter ? /\/ld-musl-[^/]+\.so\.1$/.test(interpreter) : needed.some((name) => MUSL_LIBC.test(name));
+  if (!musl) problems.push(`${path} shows no musl linkage`);
+  return problems;
+}
+
 function readelf(args, file) {
   const result = spawnSync('readelf', [...args, file], { encoding: 'utf8' });
   if (result.error || result.status !== 0) throw new Error(`readelf ${args.join(' ')} ${file} failed: ${result.error?.message ?? result.stderr}`);
@@ -101,9 +132,7 @@ function elfProblems(spec, entries) {
       const linked = entries.filter((entry) => entry.path === 'node/node' || /\/(pty|watcher)\.node$/.test(entry.path));
       for (const entry of linked) {
         const file = join(scratch, entry.path.replaceAll('/', '_'));
-        const text = readelf(['-l', '-d', '-V', '--wide'], file);
-        if (/GLIBC_\d/.test(text) || /libc\.so\.6/.test(text)) problems.push(`${entry.path} links against glibc`);
-        if (!/musl/.test(text)) problems.push(`${entry.path} shows no musl linkage`);
+        problems.push(...muslLinkageProblems(entry.path, dynamicLinkage(readelf(['-l', '-d', '-V', '--wide'], file))));
       }
     }
     return problems;

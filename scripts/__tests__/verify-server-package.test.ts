@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error -- plain .mjs script, no types
-import { credentialRelayProblems, selfTestCommand, selfTestPlan } from '../verify-server-package.mjs';
+import { credentialRelayProblems, dynamicLinkage, muslLinkageProblems, selfTestCommand, selfTestPlan } from '../verify-server-package.mjs';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -35,6 +35,50 @@ describe('selfTestCommand', () => {
     const [file, args, options] = selfTestCommand('win32', dir) as [string, string[], object];
     const run = spawnSync(file, args, options);
     expect({ status: run.status, stdout: String(run.stdout).trim() }).toEqual({ status: 0, stdout: 'ran self-test' });
+  });
+});
+
+// Excerpts of `readelf -l -d -V --wide` on the binaries each case names, in readelf's own line formats.
+function readelfOutput(interpreter: string | null, needed: string[], versionNeeds: Record<string, string[]>): string {
+  const lines = ['Program Headers:'];
+  if (interpreter) lines.push(`      [Requesting program interpreter: ${interpreter}]`);
+  lines.push('', "Dynamic section at offset 0x7c5d68 contains 33 entries:");
+  for (const name of needed) lines.push(` 0x0000000000000001 (NEEDED)             Shared library: [${name}]`);
+  lines.push('', "Version symbols section '.gnu.version' contains 3 entries:", '  000:   0 (*local*)       4 (GLIBC_2.0)     1 (*global*)', '');
+  lines.push(`Version needs section '.gnu.version_r' contains ${Object.keys(versionNeeds).length} entries:`, ' Addr: 0x00000000007e5e80  Offset: 0x003e5e80  Link: 6 (.dynstr)');
+  for (const [file, versions] of Object.entries(versionNeeds)) {
+    lines.push(`  000000: Version: 1  File: ${file}  Cnt: ${versions.length}`);
+    for (const version of versions) lines.push(`  0x0010:   Name: ${version}  Flags: none  Version: 2`);
+  }
+  return `${lines.join('\n')}\n\n`;
+}
+
+describe('the musl linkage of an Alpine package\'s natives', () => {
+  const problemsOf = (output: string) => muslLinkageProblems('node/node', dynamicLinkage(output));
+
+  it('passes Alpine\'s and upstream musl\'s sonames, and libgcc_s\'s GLIBC_2.0 version on aarch64', () => {
+    // unofficial-builds' node-v24.22.0-linux-x64-musl
+    expect(problemsOf(readelfOutput('/lib/ld-musl-x86_64.so.1', ['libstdc++.so.6', 'libgcc_s.so.1', 'libc.musl-x86_64.so.1'], { 'libgcc_s.so.1': ['GCC_3.4', 'GCC_3.0'] }))).toEqual([]);
+    // unofficial-builds' node-v24.22.0-linux-arm64-musl
+    const arm64Node = readelfOutput('/lib/ld-musl-aarch64.so.1', ['libgcc_s.so.1', 'libc.so'], { 'libgcc_s.so.1': ['GCC_3.3', 'GCC_4.2.0', 'GLIBC_2.0', 'GCC_3.0'] });
+    expect(dynamicLinkage(arm64Node)).toEqual({
+      interpreter: '/lib/ld-musl-aarch64.so.1',
+      needed: ['libgcc_s.so.1', 'libc.so'],
+      versionNeeds: ['GCC_3.3', 'GCC_4.2.0', 'GLIBC_2.0', 'GCC_3.0'].map((version) => ({ library: 'libgcc_s.so.1', version })),
+    });
+    expect(problemsOf(arm64Node)).toEqual([]);
+    // @parcel/watcher-linux-arm64-musl 2.6.0, and node-pty compiled in node:24-alpine on arm64
+    for (const libc of ['libc.so', 'libc.musl-aarch64.so.1']) {
+      expect(problemsOf(readelfOutput(null, ['libstdc++.so.6', 'libgcc_s.so.1', libc], { 'libgcc_s.so.1': ['GCC_3.0', 'GLIBC_2.0'], 'libstdc++.so.6': ['GLIBCXX_3.4.21'] }))).toEqual([]);
+    }
+  });
+
+  it('fails a glibc executable or library, and one that names no musl', () => {
+    // Ubuntu 24.04's /usr/bin/ls and libz.so.1
+    expect(problemsOf(readelfOutput('/lib64/ld-linux-x86-64.so.2', ['libselinux.so.1', 'libc.so.6'], { 'libc.so.6': ['GLIBC_2.28'] }))).toEqual(['node/node links against glibc', 'node/node shows no musl linkage']);
+    expect(problemsOf(readelfOutput(null, ['libc.so.6'], { 'libc.so.6': ['GLIBC_2.14'] }))).toEqual(['node/node links against glibc', 'node/node shows no musl linkage']);
+    expect(problemsOf(readelfOutput('/lib/ld-musl-x86_64.so.1', ['libm.so.6', 'libc.musl-x86_64.so.1'], { 'libm.so.6': ['GLIBC_2.29'] }))).toEqual(['node/node links against glibc']);
+    expect(problemsOf(readelfOutput(null, ['libstdc++.so.6'], {}))).toEqual(['node/node shows no musl linkage']);
   });
 });
 
