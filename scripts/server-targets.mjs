@@ -66,7 +66,7 @@ export const ALPINE_PREREQUISITES = ['libstdc++', 'libgcc'];
  */
 export const NODE_RELEASES = {
   '24.22.0': {
-    modules: '149',
+    modules: '150',
     napi: '10',
     alpineImage: 'node:24.22.0-alpine3.24@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f',
     archives: {

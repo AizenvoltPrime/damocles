@@ -18,7 +18,7 @@ const ROOT = join(__dirname, '..', '..');
 const targets = SERVER_TARGETS as Record<string, ServerSpec>;
 const releases = NODE_RELEASES as Record<string, { modules: string; napi: string; alpineImage: string; archives: Record<string, { url: string; sha256: string }> }>;
 const workflow = parse(readFileSync(join(ROOT, '.github', 'workflows', 'release.yml'), 'utf8')) as { jobs: Record<string, Job> };
-const PINNED: Versions = { node: '24.22.0', modules: '149', napi: '10', electron: '44.9.0' };
+const PINNED: Versions = { node: '24.22.0', modules: '150', napi: '10', electron: '45.0.0' };
 
 describe('the server Node is derived from Electron', () => {
   it('reads the versions of the executable it runs as Node', () => {
@@ -40,11 +40,11 @@ describe('the server Node is derived from Electron', () => {
 
   it('accepts the pinned release and fails an Electron whose Node has no pinned archives', () => {
     expect(nodeReleaseProblem(PINNED)).toBeUndefined();
-    expect(nodeReleaseProblem({ ...PINNED, node: '24.23.0', electron: '44.10.0' })).toMatch(/Electron 44\.10\.0 embeds Node 24\.23\.0, which has no pinned archives/);
+    expect(nodeReleaseProblem({ ...PINNED, node: '24.23.0', electron: '45.1.0' })).toMatch(/Electron 45\.1\.0 embeds Node 24\.23\.0, which has no pinned archives/);
   });
 
   it('fails when Electron reports another ABI than the pinned release', () => {
-    expect(nodeReleaseProblem({ ...PINNED, modules: '150' })).toMatch(/modules 150/);
+    expect(nodeReleaseProblem({ ...PINNED, modules: '151' })).toMatch(/modules 151/);
     expect(nodeReleaseProblem({ ...PINNED, napi: '11' })).toMatch(/napi 11/);
   });
 
