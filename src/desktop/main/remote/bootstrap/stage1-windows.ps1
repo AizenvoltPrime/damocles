@@ -242,7 +242,8 @@ function Initialize-DamoclesInstall([string]$install, [bool]$configured) {
       Send-DamoclesFail 'noexec' @{ folder = $install; reason = 'notWritable' }
     }
     $icacls = Join-Path $env:SystemRoot 'System32\icacls.exe'
-    if ((Invoke-DamoclesTool $icacls @($install, '/inheritance:r', '/grant:r', "*$(Get-DamoclesUserSid):(OI)(CI)F", '*S-1-5-18:(OI)(CI)F')) -ne 0) {
+    # /reset drops the explicit entries first: a folder whose parent hands nothing down holds the creating token's default DACL
+    if ((Invoke-DamoclesTool $icacls @($install, '/reset')) -ne 0 -or (Invoke-DamoclesTool $icacls @($install, '/inheritance:r', '/grant:r', "*$(Get-DamoclesUserSid):(OI)(CI)F", '*S-1-5-18:(OI)(CI)F')) -ne 0) {
       Send-DamoclesFail 'installFolderUnsafe' @{ folder = $install }
     }
   }

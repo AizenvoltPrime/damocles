@@ -103,12 +103,17 @@ async function userSid(): Promise<string> {
   return sid;
 }
 
-/** Drops inherited entries and grants only the user, by SID, inherited by every file made inside it (Windows). */
+/**
+ * Replaces the folder's ACL with one entry granting the user, by SID, inherited by every file made inside it (Windows).
+ * /reset drops the explicit entries first: a folder whose parent hands nothing down holds the creating token's default DACL.
+ */
 export async function restrictToUser(folder: string): Promise<void> {
   if (process.platform !== 'win32') return;
   const sid = await userSid();
-  const { exit } = await runProcess({ file: windowsSystemTool('icacls'), args: [folder, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`], windowsHide: true, stdio: ['ignore', 'ignore', 'ignore'] }, { timeoutMs: 30_000 });
-  if (exit?.code !== 0) throw new Error(`icacls could not restrict ${folder} to ${sid} (exit ${String(exit?.code ?? 'none')})`);
+  for (const args of [[folder, '/reset'], [folder, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`]]) {
+    const { exit } = await runProcess({ file: windowsSystemTool('icacls'), args, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore'] }, { timeoutMs: 30_000 });
+    if (exit?.code !== 0) throw new Error(`icacls ${args.slice(1).join(' ')} could not restrict ${folder} to ${sid} (exit ${String(exit?.code ?? 'none')})`);
+  }
 }
 
 export async function makeRunDir(paths: RunPaths): Promise<void> {

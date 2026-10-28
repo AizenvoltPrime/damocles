@@ -210,32 +210,38 @@ describe('the noexec check in a Linux container', async () => {
 describe('the install folder in a real PowerShell', { timeout: 120_000 }, async () => {
   const shell = await powerShell();
   const ps = async (body: string, home: string, input?: string) => runPowerShell(shell!, withWindowsDefinitions(`$env:USERPROFILE = '${home}'\n${body}`), input);
+  // drive letters, icacls and GetFinalPathNameByHandle, which pwsh off Windows lacks
   const windowsOnly = shell === undefined || process.platform !== 'win32';
 
-  it.skipIf(shell === undefined)('is <folder>\\<user> with ~ as the home, and ~\\.damocles\\server without a setting', async () => {
+  it.skipIf(windowsOnly)('is <folder>\\<user> with ~ as the home, and ~\\.damocles\\server without a setting', async () => {
     const home = scratchDir('home-');
     const { stdout } = await ps("[Console]::Out.Write((@((Get-DamoclesInstallDir '~\\tools' 'dev'), (Get-DamoclesInstallDir 'D:\\it''s $x' 'dev'), (Get-DamoclesInstallDir '' 'dev')) -join '|'))", home);
     expect(stdout.toString('utf8').split('|')).toEqual([path.join(home, 'tools', 'dev'), "D:\\it's $x\\dev", path.join(home, '.damocles', 'server')]);
   });
 
-  it.skipIf(shell === undefined)('stops with lowSpace naming the folder', async () => {
+  it.skipIf(windowsOnly)('stops with lowSpace naming the folder', async () => {
     const home = scratchDir('home-');
     const messages = stageMessages(await ps(`$NEEDED_MB = 999999999; Initialize-DamoclesInstall '${path.join(home, 'install')}' $true`, home));
     expect(messages[0]).toMatchObject({ kind: 'fail', code: 'lowSpace', params: { folder: path.join(home, 'install'), neededMb: 999999999 } });
   });
 
+  // What is made under a home that hands nothing down holds the creating token's default DACL as explicit entries (SYSTEM,
+  // and Administrators under an elevated token), which /inheritance:r keeps.
   it.skipIf(windowsOnly)('creates a missing <install> granting only the user and SYSTEM, inheriting nothing', async () => {
-    const home = scratchDir('home-');
-    const install = path.join(home, 'tools', 'dev');
-    const script = [
-      `Initialize-DamoclesInstall '${install}' $true`,
-      `$acl = New-Object Security.AccessControl.DirectorySecurity('${install}', [Security.AccessControl.AccessControlSections]::Access)`,
-      "$sids = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value + ':' + $_.IsInherited }) | Sort-Object -Unique",
-      '[Console]::Out.Write("$($acl.AreAccessRulesProtected)|$($sids -join \',\')|$(Get-DamoclesUserSid)")',
-    ].join('\n');
-    const [isProtected, sids, user] = (await ps(script, home)).stdout.toString('utf8').split('|');
-    expect(isProtected).toBe('True');
-    expect(sids!.split(',').sort()).toEqual([`${user}:False`, 'S-1-5-18:False'].sort());
+    for (const handsDown of [true, false]) {
+      const home = scratchDir('home-');
+      const install = path.join(home, 'tools', 'dev');
+      const script = [
+        ...(handsDown ? [] : [`[void](Invoke-DamoclesTool (Join-Path $env:SystemRoot 'System32\\icacls.exe') @('${home}', '/inheritance:r', '/grant:r', "*$(Get-DamoclesUserSid):F"))`]),
+        `Initialize-DamoclesInstall '${install}' $true`,
+        `$acl = New-Object Security.AccessControl.DirectorySecurity('${install}', [Security.AccessControl.AccessControlSections]::Access)`,
+        "$sids = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value + ':' + $_.IsInherited }) | Sort-Object -Unique",
+        '[Console]::Out.Write("$($acl.AreAccessRulesProtected)|$($sids -join \',\')|$(Get-DamoclesUserSid)")',
+      ].join('\n');
+      const [isProtected, sids, user] = (await ps(script, home)).stdout.toString('utf8').split('|');
+      expect(isProtected).toBe('True');
+      expect(sids!.split(',').sort()).toEqual([`${user}:False`, 'S-1-5-18:False'].sort());
+    }
   });
 
   it.skipIf(windowsOnly)('refuses an existing <install> another user may change, and takes a private one', async () => {
@@ -255,14 +261,14 @@ describe('the install folder in a real PowerShell', { timeout: 120_000 }, async 
     expect(stageMessages(await ps(`Initialize-DamoclesInstall '${install}' $false; Send-DamoclesLine '{"kind":"settled"}'`, home))).toEqual([{ kind: 'settled' }]);
   });
 
-  it.skipIf(shell === undefined)('removes Damocles\' own entries from the previous <install> and never the folder itself', async () => {
+  it.skipIf(windowsOnly)('removes Damocles\' own entries from the previous <install> and never the folder itself', async () => {
     const home = scratchDir('home-');
     const previous = previousInstall('win32-x64');
     expect(stageMessages(await ps(`Clear-DamoclesPrevious '${previous}' '${path.join(home, 'current')}'`, home))).toEqual([{ kind: 'settled' }]);
     expect(readdirSync(previous).sort()).toEqual([...leftAlone('win32-x64'), '.exec-test-zzz'].sort());
   });
 
-  it.skipIf(shell === undefined)('takes a previous folder spelled with forward slashes or a trailing separator as the current one', async () => {
+  it.skipIf(windowsOnly)('takes a previous folder spelled with forward slashes or a trailing separator as the current one', async () => {
     const home = scratchDir('home-');
     const current = path.join(home, 'current');
     versionFolder(current, '3.7.0-win32-x64');
@@ -272,7 +278,7 @@ describe('the install folder in a real PowerShell', { timeout: 120_000 }, async 
     }
   });
 
-  it.skipIf(shell === undefined)('keeps a version another machine\'s live pid file names and defers settled, but not one this machine\'s names', async () => {
+  it.skipIf(windowsOnly)('keeps a version another machine\'s live pid file names and defers settled, but not one this machine\'s names', async () => {
     const home = scratchDir('home-');
     const previous = previousInstall('win32-x64');
     const other = path.join(home, '.damocles', 'server', 'run-fedcba9876543210');
@@ -288,7 +294,7 @@ describe('the install folder in a real PowerShell', { timeout: 120_000 }, async 
     expect(readdirSync(previous).sort()).toEqual([...leftAlone('win32-x64'), '.exec-test-zzz', '3.6.0-win32-x64'].sort());
   });
 
-  it.skipIf(shell === undefined)('leaves the previous <install> alone and defers settled while a live stage holds its lock', async () => {
+  it.skipIf(windowsOnly)('leaves the previous <install> alone and defers settled while a live stage holds its lock', async () => {
     const home = scratchDir('home-');
     const previous = previousInstall('win32-x64');
     const output = await ps([
