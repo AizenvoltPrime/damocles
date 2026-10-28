@@ -24,7 +24,12 @@ test('Connect to Host lists the ssh config hosts, shows every step with the down
   const overlay = await openConnect(app);
   await expect(hostCard(overlay, 'prod-1')).toBeVisible();
   await recordTimeline(overlay);
+  // the stage reports the download's progress once a second, so a download held halfway shows it however fast the link is
+  const held = mirror.holdDownloads();
   await hostCard(overlay, 'prod-1').click();
+  await held.reached;
+  await expect(timeline(overlay, 'prod-1')).toHaveAttribute('aria-valuetext', /^Installing, ([1-9]|[1-9]\d)%$/, { timeout: 60_000 });
+  held.release();
   const browser = await browseTo(overlay, 'prod-1', '/srv/app');
   await browser.getByRole('button', { name: 'Open', exact: true }).click();
   // The trust question stacks over the Connect dialog and takes the keyboard and a real pointer press there; a press that
