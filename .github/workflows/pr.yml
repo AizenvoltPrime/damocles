@@ -2,6 +2,7 @@ name: Pull request checks
 
 on:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -39,7 +40,7 @@ jobs:
       # The contracts against the base branch's committed snapshot, so a regenerated snapshot cannot hide a breaking change.
       - name: Protocol compatibility with the base branch
         env:
-          BASE_REF: ${{ github.base_ref }}
+          BASE_REF: ${{ github.base_ref || 'main' }}
         run: |
           git rev-parse --verify --quiet "origin/$BASE_REF^{commit}" > /dev/null
           snapshot="origin/$BASE_REF:src/remote/protocol-snapshot.json"
