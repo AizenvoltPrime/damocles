@@ -10,7 +10,7 @@ import { killDaemonIn, pidIn } from '../desktop/support/loopback';
 import { localRunPaths } from '../../src/desktop/daemon/token';
 import { overlayPage, shellPage, shellState } from '../desktop/support/shell';
 import { openTerminal, runInTerminal, waitForOutputLine } from '../desktop/support/terminal';
-import { addHost, control, DARWIN_TARGET_TAG, dropConnection, expect, openRemoteFolder, readRemoteBytes, remoteProjectKey, test as remoteTest, WINDOWS_TARGET_TAG, writeRemoteBytes } from './support/remote';
+import { addHost, control, cutTransport, DARWIN_TARGET_TAG, dropConnection, expect, openRemoteFolder, readRemoteBytes, releaseTransport, remoteProjectKey, test as remoteTest, WINDOWS_TARGET_TAG, writeRemoteBytes } from './support/remote';
 import { runnerTargetEnv } from './support/runner-target';
 
 // cmd or powershell: the DefaultShell remote-e2e-nightly.yml gave Win32-OpenSSH
@@ -80,9 +80,12 @@ for (const [tag, platform] of [[WINDOWS_TARGET_TAG, 'win32'], [DARWIN_TARGET_TAG
       const { app } = await launch({ env: await runnerTargetEnv(home) });
       const { hostId, key } = await connectTarget(app, folder);
       const pid = (await targetDaemonPid())!;
+      // held, or the reconnect loop may be back within one poll (about 0.5 s through the ssh master) and the end goes unseen
+      await cutTransport(app, hostId, { hold: true });
       await dropConnection(app, hostId);
       await expect.poll(async () => (await shellState(app)).projects.find((project) => project.key === key)?.connection).not.toBe('connected');
       expect(isAlive(pid)).toBe(true);
+      await releaseTransport(app, hostId);
       await openRemoteFolder(app, hostId, folder);
       await remoteProjectKey(app, { authorityKey: `ssh+${hostId}` }, folder);
       expect(await targetDaemonPid()).toBe(pid);

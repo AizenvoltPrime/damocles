@@ -42,6 +42,8 @@ interface RemoteHooks {
   state(hostId: string): string;
   control(hostId: string, command: string, params: Record<string, unknown>): Promise<unknown>;
   dropConnection(hostId: string): void;
+  cutTransport(hostId: string, options: { hold: boolean }): void;
+  releaseTransport(hostId: string): void;
   exitControlMaster(hostId: string): Promise<void>;
   addHost(target: { alias: string; name: string } | { input: string; name: string }): Promise<string>;
   openFolder(hostId: string, folder: string, trust: boolean): Promise<string>;
@@ -76,6 +78,9 @@ export const remoteHosts = (app: ElectronApplication): Promise<RemoteHost[]> => 
 export const hostState = (app: ElectronApplication, hostId: string): Promise<string> => remote(app, 'state', hostId);
 export const control = (app: ElectronApplication, hostId: string, command: string, params: Record<string, unknown> = {}): Promise<unknown> => remote(app, 'control', hostId, command, params);
 export const dropConnection = (app: ElectronApplication, hostId: string): Promise<void> => remote(app, 'dropConnection', hostId);
+/** Ends the host's transport as a network drop does; with hold, every attempt's transport fails until releaseTransport. */
+export const cutTransport = (app: ElectronApplication, hostId: string, options: { hold: boolean }): Promise<void> => remote(app, 'cutTransport', hostId, options);
+export const releaseTransport = (app: ElectronApplication, hostId: string): Promise<void> => remote(app, 'releaseTransport', hostId);
 /** `ssh -O exit` on Damocles' master connection to the host; nothing on a Windows client, which uses none. */
 export const exitControlMaster = (app: ElectronApplication, hostId: string): Promise<void> => remote(app, 'exitControlMaster', hostId);
 /** Saves a host record through main, as the Connect dialog's new-host form does, without connecting. */

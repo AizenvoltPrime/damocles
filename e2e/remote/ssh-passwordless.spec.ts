@@ -65,8 +65,9 @@ test('against a password-only sshd, Set up passwordless login generates the key 
 });
 
 const POWERSHELL = path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-// SIDs, as the grants name them: the group names are localized
-const ACL_SCRIPT = "$a = Get-Acl -LiteralPath (Join-Path $env:ProgramData 'ssh\\administrators_authorized_keys'); 'protected=' + $a.AreAccessRulesProtected; $a.Access | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value + ' ' + $_.FileSystemRights + ' ' + $_.AccessControlType }";
+// SIDs, as the grants name them: the group names are localized. .NET's FileSecurity, not Get-Acl, whose module Windows
+// PowerShell cannot load under the PSModulePath PowerShell 7 hands down.
+const ACL_SCRIPT = "$a = New-Object Security.AccessControl.FileSecurity((Join-Path $env:ProgramData 'ssh\\administrators_authorized_keys'), [Security.AccessControl.AccessControlSections]::Access); 'protected=' + $a.AreAccessRulesProtected; $a.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value + ' ' + $_.FileSystemRights + ' ' + $_.AccessControlType }";
 
 // The nightly workflow's sshd on the runner, whose account is an administrator; the runner and its ProgramData are discarded.
 test('on a Windows admin target, Set up passwordless login appends the key to administrators_authorized_keys, readable by Administrators and SYSTEM alone', { tag: WINDOWS_TARGET_TAG }, async ({ home, launch }) => {
