@@ -1,11 +1,15 @@
 import * as fs from 'node:fs';
+import * as net from 'node:net';
+import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SHELL_ENV_TIMEOUT_MS } from '../../local-services/shell-env';
 import type { HostStarters } from '../../workspace/host-starters';
 import { connectToDaemon, daemonAnswers } from '../attach';
 import { removeStaleSocket } from '../endpoint-server';
-import { acquireDaemonLock, LOCK_STALE_MS } from '../singleton';
-import { createSocketFolder, localRunPaths, makeRunDir, socketFolderBase, socketPath, writePidFile } from '../token';
+import { DAEMON_START_MS, LOCK_STALE_MS, TAKEOVER_STALE_MS } from '../lock-timing';
+import { acquireDaemonLock } from '../singleton';
+import { createSocketFolder, localRunPaths, makeRunDir, pipeName, socketFolderBase, socketPath, tokenPath, writePidFile, writeToken } from '../token';
 import { startInProcessDaemon, type InProcessDaemon } from './in-process-daemon';
 import { connectClient } from './test-client';
 
@@ -17,12 +21,18 @@ const NO_HOSTS: HostStarters = {
 const running: InProcessDaemon[] = [];
 // a holder whose endpoint never answers
 const NO_ANSWER = async (): Promise<boolean> => false;
+// above Linux's pid_max and no Windows process id: kill(pid, 0) answers ESRCH
+const GONE_PID = 2_000_000_000;
 
 afterEach(async () => {
   await Promise.all(running.splice(0).map((daemon) => daemon.shutdown()));
 });
 
 describe('the daemon singleton', () => {
+  it('gives a start past the lock longer than the login shell\'s environment may take', () => {
+    expect(DAEMON_START_MS).toBeGreaterThan(SHELL_ENV_TIMEOUT_MS);
+  });
+
   it('holds one lock per user and host', async () => {
     const paths = await localRunPaths();
     await makeRunDir(paths);
@@ -79,6 +89,77 @@ describe('the daemon singleton', () => {
     expect(probes).toBe(2);
     if (lock.held) await lock.release();
   }, 15_000);
+
+  it('takes the lock of a holder gone from this host at once, without waiting or probing, and names itself its owner', async () => {
+    const paths = await localRunPaths();
+    await makeRunDir(paths);
+    // a crashed daemon's lock, refreshed just now
+    fs.mkdirSync(paths.lockFile);
+    fs.writeFileSync(paths.lockOwnerFile, `${os.hostname()} ${GONE_PID}\n`);
+    const probes = vi.fn(NO_ANSWER);
+    const lock = await acquireDaemonLock(paths, () => undefined, probes, 0);
+    expect(lock.held).toBe(true);
+    expect(probes).not.toHaveBeenCalled();
+    expect(fs.readFileSync(paths.lockOwnerFile, 'utf8')).toBe(`${os.hostname()} ${process.pid}\n`);
+    if (lock.held) await lock.release();
+    expect([fs.existsSync(paths.lockFile), fs.existsSync(paths.lockOwnerFile)]).toEqual([false, false]);
+  });
+
+  it('leaves a fresh lock whose owner it cannot judge gone: a live process, or another host\'s', async () => {
+    const paths = await localRunPaths();
+    await makeRunDir(paths);
+    fs.mkdirSync(paths.lockFile);
+    try {
+      for (const owner of [`${os.hostname()} ${process.pid}\n`, `another-host ${GONE_PID}\n`, 'unreadable']) {
+        fs.writeFileSync(paths.lockOwnerFile, owner);
+        expect((await acquireDaemonLock(paths, () => undefined, NO_ANSWER, 0)).held).toBe(false);
+      }
+    } finally {
+      fs.rmSync(paths.lockFile, { recursive: true, force: true });
+      fs.rmSync(paths.lockOwnerFile, { force: true });
+    }
+  });
+
+  it('takes the lock past a takeover lock that a start which died inside it left', async () => {
+    const paths = await localRunPaths();
+    await makeRunDir(paths);
+    fs.mkdirSync(paths.lockTakeover);
+    const old = new Date(Date.now() - TAKEOVER_STALE_MS - 1000);
+    fs.utimesSync(paths.lockTakeover, old, old);
+    const lock = await acquireDaemonLock(paths, () => undefined, NO_ANSWER, 0);
+    expect(lock.held).toBe(true);
+    if (lock.held) await lock.release();
+  });
+
+  it('connects to no endpoint a gone daemon\'s pid file names, and tries each other record once', async () => {
+    const paths = await localRunPaths();
+    await makeRunDir(paths);
+    const folder = process.platform === 'win32' ? null : await createSocketFolder(await socketFolderBase());
+    const endpoint = folder === null ? pipeName() : socketPath(folder);
+    let connections = 0;
+    // an endpoint that ends every connection at once, as a stand-in squatting on a dead daemon's name might
+    const standIn = net.createServer((socket) => {
+      connections += 1;
+      socket.destroy();
+    });
+    await new Promise<void>((resolve) => standIn.listen(endpoint, resolve));
+    try {
+      const record = { version: '1', hostname: os.hostname(), endpoint, socketFolder: folder, updatedAt: Date.now() };
+      await writeToken(tokenPath(paths, record));
+      const start = vi.fn(async () => undefined);
+      await writePidFile(paths.pidFile, { ...record, pid: GONE_PID });
+      await expect(connectToDaemon({ paths, start, deadlineMs: 1000, log: () => undefined })).rejects.toThrow(/has ended/);
+      expect([connections, start.mock.calls.length]).toEqual([0, 1]);
+      expect(await daemonAnswers(paths)).toBe(false);
+      expect(connections).toBe(0);
+
+      await writePidFile(paths.pidFile, { ...record, pid: process.pid });
+      await expect(connectToDaemon({ paths, start, deadlineMs: 1000, log: () => undefined })).rejects.toThrow(/did not answer/);
+      expect(connections).toBe(1);
+    } finally {
+      await new Promise<void>((resolve) => standIn.close(() => resolve()));
+    }
+  });
 
   it('ends two bridges that start at once with one daemon', async () => {
     const refused: string[] = [];

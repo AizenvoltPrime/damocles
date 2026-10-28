@@ -7,10 +7,10 @@ import { createLauncherPool, installProcessLauncher, lockThreadSpawns } from '..
 import { authenticateBridge, HANDSHAKE_MAX_BYTES } from '../../remote/handshake';
 import { createPersistentProtocol } from '../../remote/persistent-protocol';
 import { streamSocket } from '../../remote/stream-transport';
+import { ATTACH_DEADLINE_MS } from './lock-timing';
 import { startDaemonDetached } from './process-starts';
-import { checkSocketFolder, isOwnEndpoint, localRunPaths, readPidFile, readToken, tokenPath, type PidRecord, type RunPaths } from './token';
+import { checkSocketFolder, goneFromThisHost, isOwnEndpoint, localRunPaths, readPidFile, readToken, tokenPath, type PidRecord, type RunPaths } from './token';
 
-export const ATTACH_DEADLINE_MS = 30_000;
 const RETRY_MS = 200;
 // the bridge could not reach or start a daemon
 export const EXIT_NO_DAEMON = 2;
@@ -60,23 +60,35 @@ async function tryDaemon(paths: RunPaths, record: PidRecord, agentSock?: string)
   return { socket, rest: protocol.detach() };
 }
 
+// A pid file naming a process of this host that has ended is a crashed daemon's: nothing connects to its endpoint, which
+// another process may hold now.
+const recordGone = (record: PidRecord): boolean => goneFromThisHost(record.hostname, record.pid);
+
 /** Whether the daemon the pid file names answers and proves the token now; the probe's connection ends before its hello. */
 export async function daemonAnswers(paths: RunPaths): Promise<boolean> {
   const record = await readPidFile(paths.pidFile);
-  if (!record) return false;
+  if (!record || recordGone(record)) return false;
   const connection = await tryDaemon(paths, record).catch(() => undefined);
   connection?.socket.destroy();
   return connection !== undefined;
 }
 
-/** Connects to the running daemon, starting one when none answers, within the deadline; two bridges at once end with one daemon. */
+/**
+ * Connects to the running daemon, starting one when none answers, within the deadline; two bridges at once end with one
+ * daemon. Each pid record is tried once: a daemon writes its record once its endpoint listens, so one that failed stays failed,
+ * and the bridge waits for the record of the daemon it started.
+ */
 export async function connectToDaemon(options: ConnectOptions): Promise<DaemonConnection> {
   const deadline = Date.now() + (options.deadlineMs ?? ATTACH_DEADLINE_MS);
   let started = false;
   let last = 'no daemon is running';
+  let tried: PidRecord | undefined;
   for (;;) {
     const record = await readPidFile(options.paths.pidFile);
-    if (record) {
+    if (record && recordGone(record)) {
+      last = `the daemon ${record.pid} the pid file names has ended`;
+    } else if (record && (record.pid !== tried?.pid || record.endpoint !== tried.endpoint)) {
+      tried = record;
       try {
         return await tryDaemon(options.paths, record, options.agentSock);
       } catch (err) {

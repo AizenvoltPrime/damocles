@@ -23,6 +23,10 @@ export interface RunPaths {
   readonly serverDir: string;
   readonly runDir: string;
   readonly lockFile: string;
+  // beside the lock, since proper-lockfile removes the lock folder with rmdir: `<hostname> <pid>` of its holder
+  readonly lockOwnerFile: string;
+  // held while a start takes the lock or replaces a gone holder's, so no start reads a lock before its owner file is written
+  readonly lockTakeover: string;
   readonly pidFile: string;
   readonly logsDir: string;
   // zsh's ZDOTDIR for the daemon's integrated shells
@@ -48,10 +52,26 @@ export function runPaths(home: string, runKey: string): RunPaths {
     serverDir,
     runDir,
     lockFile: path.join(runDir, 'daemon.lock'),
+    lockOwnerFile: path.join(runDir, 'daemon.lock.owner'),
+    lockTakeover: path.join(runDir, 'daemon.lock.takeover'),
     pidFile: path.join(runDir, PID_FILE),
     logsDir: path.join(runDir, 'logs'),
     zshDotDir: path.join(runDir, 'shell-integration', 'zsh'),
   };
+}
+
+/**
+ * Whether `hostname` and `pid` name a process of this host that has ended, as PostgreSQL judges postmaster.pid. Another
+ * host's process cannot be judged, and EPERM counts as running: on Windows an elevated daemon refuses a non-elevated probe.
+ */
+export function goneFromThisHost(hostname: string | undefined, pid: number): boolean {
+  if (hostname !== os.hostname()) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ESRCH';
+  }
 }
 
 /** This machine's run folder in home: the bridge, the daemon and the e2e support all find it here. */

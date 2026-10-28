@@ -1,10 +1,11 @@
 import { chmodSync, existsSync, mkdirSync, realpathSync, readdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { RunOutput } from '../../../../core/process-launcher';
 import { buildPosixRemoval, buildWindowsRemoval, removalOutcome, removeServer, REMOVAL_FEATURE, type RemovalParameters } from '../remove-server';
 import { powerShell, runPowerShell, runSh, scratchDir, shellPath } from '../bootstrap/__tests__/shells';
-import { LOCK_STALE_MS } from '../../../daemon/singleton';
+import { LOCK_STALE_MS } from '../../../daemon/lock-timing';
 
 const RUN_KEY = '0123456789abcdef';
 // a pid no process holds: above Linux's PID_MAX_LIMIT (2^22), and not a multiple of 4, as every Windows process id is
@@ -260,6 +261,19 @@ describe('the POSIX removal stage in a real sh', { timeout: 120_000 }, () => {
     expect(existsSync(runDir)).toBe(false);
   });
 
+  it('stops while a fresh daemon lock\'s owner runs, and takes the lock at once when its owner is gone from this host', async () => {
+    const { home, server } = targetHome();
+    const runDir = path.join(server, `run-${RUN_KEY}`);
+    mkdirSync(path.join(runDir, 'daemon.lock'));
+    const owner = shellPath(path.join(runDir, 'daemon.lock.owner'));
+    const live = await run(home, { runKey: RUN_KEY, disableLinger: false }, `${ID_DEV}\nsleep 30 & holder=$!; trap 'kill "$holder"' EXIT; printf '%s %s\\n' "$(uname -n)" "$holder" > '${owner}'`);
+    expect(lines(live)).toEqual([{ kind: 'fail', code: 'daemonRunning', params: {} }]);
+    expect(readdirSync(runDir).sort()).toEqual(['daemon.lock', 'daemon.lock.owner', 'logs']);
+    const gone = await run(home, { runKey: RUN_KEY, disableLinger: false }, `${ID_DEV}\nprintf '%s %s\\n' "$(uname -n)" ${DEAD_PID} > '${owner}'`);
+    expect(lines(gone).at(-1)).toEqual({ kind: 'removed' });
+    expect(existsSync(runDir)).toBe(false);
+  });
+
   it('refuses a run key that is not 16 hex digits, and an empty user name', async () => {
     const { home, server } = targetHome();
     for (const key of ['0123456789abcde', '0123456789abcdef0']) {
@@ -409,6 +423,21 @@ describe('the Windows removal stage in a real PowerShell', { timeout: 120_000 },
     minutesAgo(path.join(runDir, 'daemon.lock'), 1);
     const stale = await run(home, path.join(home, 'ProgramData'), { runKey: RUN_KEY, disableLinger: false });
     expect(lines(stale).at(-1)).toEqual({ kind: 'removed' });
+    expect(existsSync(runDir)).toBe(false);
+  });
+
+  it.skipIf(shell === undefined)('stops while a fresh daemon lock\'s owner runs, and takes the lock at once when its owner is gone from this host', async () => {
+    const { home, server } = targetHome();
+    const runDir = path.join(server, `run-${RUN_KEY}`);
+    const lock = path.join(runDir, 'daemon.lock');
+    mkdirSync(lock);
+    writeFileSync(`${lock}.owner`, `${os.hostname()} ${process.pid}\n`);
+    const live = await run(home, path.join(home, 'ProgramData'), { runKey: RUN_KEY, disableLinger: false });
+    expect(lines(live)).toEqual([{ kind: 'fail', code: 'daemonRunning', params: {} }]);
+    expect(readdirSync(runDir).sort()).toEqual(['daemon.lock', 'daemon.lock.owner', 'logs']);
+    writeFileSync(`${lock}.owner`, `${os.hostname()} ${DEAD_PID}\n`);
+    const gone = await run(home, path.join(home, 'ProgramData'), { runKey: RUN_KEY, disableLinger: false });
+    expect(lines(gone).at(-1)).toEqual({ kind: 'removed' });
     expect(existsSync(runDir)).toBe(false);
   });
 

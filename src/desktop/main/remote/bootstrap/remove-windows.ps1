@@ -12,8 +12,10 @@ $D_KEY_FILE = ''
 
 # a pid file the daemon touched within this long names a live version, as stage 1 reads it
 $LIVE_PID_FILE_MIN = 1500
-# singleton.ts LOCK_STALE_MS: the daemon refreshes its lock's mtime every 5 s, and a lock older than this has no holder
+# lock-timing.ts LOCK_STALE_MS: the daemon refreshes its lock's mtime every 5 s, and a lock older than this has no holder
 $DAEMON_LOCK_STALE_S = 20
+# lock-timing.ts TAKEOVER_STALE_MS: a takeover lock older than this was left by a start that died inside it
+$DAEMON_TAKEOVER_STALE_S = 10
 $LOCK_STALE_OTHER_HOST_MIN = 30
 $STAGING_STALE_MIN = 1440
 # an exec test older than this belongs to a stage that died before deleting it
@@ -101,14 +103,51 @@ function New-DamoclesDirectory([string]$path) {
   }
 }
 
-# Takes the daemon's mkdir lock $lock, as proper-lockfile does, so no daemon starts while its run folder goes; $false while a
-# daemon holds it, which refreshes it within DAEMON_LOCK_STALE_S.
-function Enter-DamoclesDaemonLock([string]$lock) {
-  if (New-DamoclesDirectory $lock) { return $true }
+# Takes the daemon lock's takeover lock $takeover as singleton.ts does, waiting while a start holds it; $false when it stays held.
+function Enter-DamoclesDaemonTakeover([string]$takeover) {
+  $waited = 0
+  while (-not (New-DamoclesDirectory $takeover)) {
+    $item = Get-Item -LiteralPath $takeover -Force -ErrorAction SilentlyContinue
+    if ($null -ne $item -and $item.LastWriteTime -lt (Get-Date).AddSeconds(-$DAEMON_TAKEOVER_STALE_S)) {
+      Remove-Item -LiteralPath $takeover -Recurse -Force -ErrorAction SilentlyContinue
+    } elseif ($waited -ge $DAEMON_TAKEOVER_STALE_S) {
+      return $false
+    } else {
+      Start-Sleep -Seconds 1
+      $waited++
+    }
+  }
+  return $true
+}
+
+# Whether the daemon lock $lock has no holder: unchanged for DAEMON_LOCK_STALE_S, or its owner file names a process of this
+# host that has ended (token.ts goneFromThisHost).
+function Test-DamoclesDaemonLockFree([string]$lock) {
   $item = Get-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
-  if ($null -eq $item -or $item.LastWriteTime -ge (Get-Date).AddSeconds(-$DAEMON_LOCK_STALE_S)) { return $false }
-  Remove-Item -LiteralPath $lock -Recurse -Force
-  return New-DamoclesDirectory $lock
+  if ($null -ne $item -and $item.LastWriteTime -lt (Get-Date).AddSeconds(-$DAEMON_LOCK_STALE_S)) { return $true }
+  $owner = ''
+  try { $owner = [IO.File]::ReadAllText("$lock.owner") } catch { $owner = '' }
+  if ($owner -notmatch '^(\S+) (\d+)\n$') { return $false }
+  return $Matches[1] -eq [Net.Dns]::GetHostName() -and $null -eq (Get-Process -Id ([int]$Matches[2]) -ErrorAction SilentlyContinue)
+}
+
+# Takes the daemon's mkdir lock $lock as singleton.ts does, under its takeover lock and with this stage as its owner, so no
+# daemon starts while its run folder goes; $false while a daemon holds it.
+function Enter-DamoclesDaemonLock([string]$lock) {
+  if (-not (Enter-DamoclesDaemonTakeover "$lock.takeover")) { return $false }
+  $taken = New-DamoclesDirectory $lock
+  if (-not $taken -and (Test-DamoclesDaemonLockFree $lock)) {
+    Remove-Item -LiteralPath $lock -Recurse -Force
+    $taken = New-DamoclesDirectory $lock
+  }
+  if ($taken) { [IO.File]::WriteAllText("$lock.owner", "$([Net.Dns]::GetHostName()) $PID`n") }
+  Remove-Item -LiteralPath "$lock.takeover" -Force
+  return $taken
+}
+
+function Exit-DamoclesDaemonLock([string]$lock) {
+  Remove-Item -LiteralPath "$lock.owner" -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $lock -Force
 }
 
 # The daemon's lock this stage holds, touched as the daemon touches its own, so a starting daemon never takes it as stale.
@@ -116,16 +155,18 @@ function Update-DamoclesDaemonLock([string]$lock) {
   [IO.Directory]::SetLastWriteTime($lock, [DateTime]::Now)
 }
 
-# Deletes the run folder whose daemon lock this stage holds: every entry but the lock, the lock touched after each, then the
-# lock, then the folder.
+# Deletes the run folder whose daemon lock this stage holds: every entry but the lock, its owner file and a start's takeover
+# lock, the lock touched after each, then the lock, then the folder, which a start's takeover lock keeps.
 function Remove-DamoclesRunDir([string]$runDir) {
   $lock = Join-Path $runDir 'daemon.lock'
   foreach ($entry in @(Get-ChildItem -LiteralPath $runDir -Force)) {
-    if ($entry.Name -ne 'daemon.lock') {
+    if (@('daemon.lock', 'daemon.lock.owner', 'daemon.lock.takeover') -notcontains $entry.Name) {
       Remove-DamoclesEntry $entry.FullName
       Update-DamoclesDaemonLock $lock
     }
   }
+  Remove-DamoclesEntry "$lock.owner"
+  Update-DamoclesDaemonLock $lock
   Remove-DamoclesEntry $lock
   if (@(Get-ChildItem -LiteralPath $runDir -Force).Count -eq 0) { Remove-DamoclesEntry $runDir }
 }
@@ -238,7 +279,7 @@ if (Test-Path -LiteralPath $runDir -PathType Container) {
   $daemonLock = Join-Path $runDir 'daemon.lock'
   if (-not (Enter-DamoclesDaemonLock $daemonLock)) { Send-DamoclesFail 'daemonRunning' }
   if (Test-DamoclesOwnDaemonRuns $runDir) {
-    Remove-Item -LiteralPath $daemonLock -Force
+    Exit-DamoclesDaemonLock $daemonLock
     Send-DamoclesFail 'daemonRunning'
   }
 }

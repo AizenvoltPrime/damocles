@@ -1,4 +1,6 @@
 // Stage 1's text for one connect: the script with its parameter block replaced by quoted literals only.
+import { ATTACH_DEADLINE_MS } from '../../../daemon/lock-timing';
+import { AUTH_TIMEOUT_MS } from '../../../../remote/handshake';
 import { releaseAssetUrl } from '../artifact-cache';
 import type { ServerManifest, ServerTarget } from '../server-manifest-format';
 import { psQuote, shellQuote } from './quote';
@@ -83,6 +85,9 @@ export function buildWindowsStage1(params: StageParameters, template: string = W
     `$D_PREVIOUS_KIND = ${psQuote(previousKind)}`,
     `$D_PREVIOUS_FOLDER = ${psQuote(previous)}`,
     ...WINDOWS_TARGETS.map((target) => `$D_${target.replace('-', '_').toUpperCase()} = ${psQuote(packageField(params, target))}`),
+    // stage 1 is the Windows bridge, so it waits as attach.ts does
+    `$D_ATTACH_DEADLINE_MS = ${ATTACH_DEADLINE_MS}`,
+    `$D_AUTH_TIMEOUT_MS = ${AUTH_TIMEOUT_MS}`,
   ];
   return withParameters(template, lines.join('\n'));
 }

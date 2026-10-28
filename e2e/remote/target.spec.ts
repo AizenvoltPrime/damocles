@@ -4,9 +4,6 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ElectronApplication } from '@playwright/test';
-import { decode } from '../../src/remote/codec';
-import { HEADER_BYTES, MESSAGE_TYPE } from '../../src/remote/persistent-protocol';
-import { NONCE_BYTES } from '../../src/remote/handshake';
 import { isAlive, run, windowsProcessTree } from '../desktop/support/app';
 import { openInEditor, editorShows, quickOpen, quickPick } from '../desktop/support/editor';
 import { killDaemonIn, pidIn } from '../desktop/support/loopback';
@@ -141,7 +138,7 @@ test.describe('win32 target', { tag: WINDOWS_TARGET_TAG }, () => {
     await shutdownTarget(app, hostId);
   });
 
-  test('a stand-in pipe under a stopped daemon\'s name receives only the bridge\'s nonce, and the bridge starts a new daemon', async ({ home, launch }) => {
+  test('a stand-in pipe under a crashed daemon\'s name receives nothing, and the bridge starts a new daemon', async ({ home, launch }) => {
     const folder = path.join(home.root, 'target-project');
     fs.mkdirSync(folder, { recursive: true });
     const { app } = await launch({ env: await runnerTargetEnv(home) });
@@ -153,9 +150,10 @@ test.describe('win32 target', { tag: WINDOWS_TARGET_TAG }, () => {
     await run('taskkill', ['/F', '/T', '/PID', String(old)]);
     await expect.poll(() => tree.filter(isAlive), { timeout: 30_000 }).toEqual([]);
     await expect.poll(async () => (await shellState(app)).projects.find((project) => project.key === key)?.connection).not.toBe('connected');
-    const received: Buffer[] = [];
-    const standIn = net.createServer((socket) => {
-      socket.on('data', (chunk) => received.push(chunk));
+    // the pid file names a process that has ended, so neither the bridge nor the new daemon's lock wait connects to its pipe
+    let connections = 0;
+    const standIn = net.createServer(() => {
+      connections += 1;
     });
     await new Promise<void>((resolve) => standIn.listen(record.endpoint, resolve));
     try {
@@ -167,17 +165,7 @@ test.describe('win32 target', { tag: WINDOWS_TARGET_TAG }, () => {
     } finally {
       await new Promise<void>((resolve) => standIn.close(() => resolve()));
     }
-    // exactly one control frame, whose body is the bridge's first handshake message and nothing else
-    const bytes = Buffer.concat(received);
-    expect(bytes.length).toBeGreaterThan(HEADER_BYTES);
-    expect(bytes.readUInt8(0)).toBe(MESSAGE_TYPE.control);
-    expect(bytes.readUInt32BE(1)).toBe(0);
-    expect(bytes.readUInt32BE(5)).toBe(0);
-    expect(bytes.length).toBe(HEADER_BYTES + bytes.readUInt32BE(9));
-    const body = decode(bytes.subarray(HEADER_BYTES), { maxBytes: 1024 }) as { v?: unknown; nonce?: unknown };
-    expect(Object.keys(body).sort()).toEqual(['nonce', 'v']);
-    expect(body.v).toBe(1);
-    expect(body.nonce instanceof Uint8Array && body.nonce.length).toBe(NONCE_BYTES);
+    expect(connections).toBe(0);
     await shutdownTarget(app, hostId);
   });
 });

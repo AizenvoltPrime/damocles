@@ -9,6 +9,8 @@ $D_PREVIOUS_KIND = 'none'
 $D_PREVIOUS_FOLDER = ''
 $D_WIN32_X64 = ''
 $D_WIN32_ARM64 = ''
+$D_ATTACH_DEADLINE_MS = 0
+$D_AUTH_TIMEOUT_MS = 0
 # END PARAMETERS
 
 $NEEDED_BUILD = 17763
@@ -19,8 +21,6 @@ $LIVE_PID_FILE_MIN = 1500
 $LOCK_WAIT_S = 600
 # the count curl --retry gets in stage1-posix.sh
 $DOWNLOAD_RETRIES = 3
-$ATTACH_DEADLINE_MS = 30000
-$AUTH_TIMEOUT_MS = 10000
 $HANDSHAKE_MAX_BYTES = 65536
 $PIPE_PATTERN = '^\\\\\.\\pipe\\(damocles-server-[0-9a-f]{32})$'
 $RUN_FOLDER_LABEL = 'damocles-server-run-folder'
@@ -642,7 +642,7 @@ function Invoke-DamoclesHandshake([IO.Pipes.NamedPipeClientStream]$pipe, [byte[]
   $hello = New-DamoclesControlFrame (New-DamoclesCodecObject @('v', 1, 'nonce', $bridgeNonce))
   $pipe.Write($hello, 0, $hello.Length)
   $pipe.Flush()
-  $deadline = (Get-Date).AddMilliseconds($AUTH_TIMEOUT_MS)
+  $deadline = (Get-Date).AddMilliseconds($D_AUTH_TIMEOUT_MS)
   $header = Read-DamoclesExact $pipe 13 $deadline
   if ($null -eq $header -or $header[0] -ne 2) { return $false }
   $length = ([int64]$header[9] -shl 24) -bor ([int64]$header[10] -shl 16) -bor ([int64]$header[11] -shl 8) -bor [int64]$header[12]
@@ -658,10 +658,15 @@ function Invoke-DamoclesHandshake([IO.Pipes.NamedPipeClientStream]$pipe, [byte[]
   return $true
 }
 
-# The daemon the pid file names, authenticated, or $null.
-function Connect-DamoclesDaemon([string]$runDir) {
-  $record = Read-DamoclesPidRecord (Join-Path $runDir 'daemon.pid')
-  if ($null -eq $record -or $null -ne $record.socketFolder -or -not ($record.endpoint -is [string]) -or $record.endpoint -notmatch $PIPE_PATTERN) { return $null }
+# Whether the pid record names a process of this host that has ended (token.ts goneFromThisHost): a crashed daemon's, whose
+# pipe another process may hold now.
+function Test-DamoclesRecordGone($record) {
+  return ($record.hostname -eq [Net.Dns]::GetHostName()) -and ($record.pid -is [int] -or $record.pid -is [int64]) -and -not (Test-DamoclesPidAlive ([int]$record.pid))
+}
+
+# The daemon pid record $record names, authenticated, or $null.
+function Connect-DamoclesDaemon([string]$runDir, $record) {
+  if ($null -ne $record.socketFolder -or -not ($record.endpoint -is [string]) -or $record.endpoint -notmatch $PIPE_PATTERN) { return $null }
   $pipeName = $Matches[1]
   $pipe = New-Object IO.Pipes.NamedPipeClientStream('.', $pipeName, [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::Asynchronous)
   try {
@@ -696,15 +701,21 @@ function Start-DamoclesDaemon([string]$versionDir) {
   [void][Diagnostics.Process]::Start($info)
 }
 
-# The bridge: the authenticated daemon pipe, started first when none answers, then bytes copied both ways on the raw streams.
+# The bridge: the authenticated daemon pipe, started first when none answers, then bytes copied both ways on stage 0's
+# streams. As attach.ts connectToDaemon does, each pid record is tried once and a crashed daemon's never.
 function Start-DamoclesBridge([string]$versionDir) {
   $runDir = Join-Path $env:USERPROFILE ".damocles\server\run-$(Get-DamoclesRunKey)"
-  $deadline = (Get-Date).AddMilliseconds($ATTACH_DEADLINE_MS)
+  $deadline = (Get-Date).AddMilliseconds($D_ATTACH_DEADLINE_MS)
   $started = $false
+  $tried = $null
   $pipe = $null
   while ($null -eq $pipe) {
-    $pipe = Connect-DamoclesDaemon $runDir
-    if ($null -ne $pipe) { break }
+    $record = Read-DamoclesPidRecord (Join-Path $runDir 'daemon.pid')
+    if ($null -ne $record -and -not (Test-DamoclesRecordGone $record) -and "$($record.pid) $($record.endpoint)" -ne $tried) {
+      $tried = "$($record.pid) $($record.endpoint)"
+      $pipe = Connect-DamoclesDaemon $runDir $record
+      if ($null -ne $pipe) { break }
+    }
     if (-not $started) {
       $started = $true
       Start-DamoclesDaemon $versionDir

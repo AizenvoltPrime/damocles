@@ -3,7 +3,7 @@ import type { AttachedClient, Run } from '../../daemon/control-messages';
 import type { HostUpdate } from '../../preload/shell-channels';
 import type { OtherProtocolDaemon, RemoteConnection } from './connection';
 
-// the daemon's own shutdown bound (singleton.ts SHUTDOWN_MAX_MS); it ends its connections first, so the end comes well within
+// the daemon's own shutdown bound (lock-timing.ts SHUTDOWN_MAX_MS); it ends its connections first, so the end comes well within
 export const DAEMON_END_WAIT_MS = 10_000;
 
 /** control.shutdownNow, settling once the daemon ended the connection or it dropped, at most waitMs after the answer. */

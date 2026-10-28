@@ -13,7 +13,7 @@ export type StartupLog = (line: string) => void;
 export type GitProbe = { readonly available: true; readonly path: string; readonly version: GitVersion } | { readonly available: false; readonly reason: string };
 
 // A login shell that sources a slow profile (nvm, conda) can take seconds; VS Code allows 10.
-const SHELL_ENV_TIMEOUT_MS = 10_000;
+export const SHELL_ENV_TIMEOUT_MS = 10_000;
 const GIT_PROBE_TIMEOUT_MS = 5_000;
 // An environment dump is tens of KB; a profile that prints megabytes is broken, not a bigger environment.
 const MAX_STDOUT_BYTES = 4 * 1024 * 1024;

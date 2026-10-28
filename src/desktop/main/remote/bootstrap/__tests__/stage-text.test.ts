@@ -8,7 +8,8 @@ import WINDOWS_TEMPLATE from '../stage1-windows.ps1';
 import { buildPosixStage1, buildWindowsStage1, validateInstallFolder } from '../stage1';
 import REMOVE_POSIX from '../remove-posix.sh';
 import REMOVE_WINDOWS from '../remove-windows.ps1';
-import { LOCK_STALE_MS } from '../../../../daemon/singleton';
+import { ATTACH_DEADLINE_MS, LOCK_STALE_MS, TAKEOVER_STALE_MS } from '../../../../daemon/lock-timing';
+import { AUTH_TIMEOUT_MS } from '../../../../../remote/handshake';
 import { posixShell, powerShell, runWithBytes } from './shells';
 
 const sha = (text: string): string => createHash('sha256').update(text).digest('hex');
@@ -115,6 +116,8 @@ describe('stage 1 text', () => {
       "$D_PREVIOUS_FOLDER = 'C:\\it''s'",
       `$D_WIN32_X64 = 'damocles-server-3.7.0-win32-x64.zip ${sha('win')} 73875504 ${RELEASES}/download/v3.7.0/damocles-server-3.7.0-win32-x64.zip'`,
       "$D_WIN32_ARM64 = ''",
+      `$D_ATTACH_DEADLINE_MS = ${ATTACH_DEADLINE_MS}`,
+      `$D_AUTH_TIMEOUT_MS = ${AUTH_TIMEOUT_MS}`,
     ].join('\n');
     expect(text).toBe(WINDOWS_TEMPLATE.replace(/# BEGIN PARAMETERS\r?\n[\s\S]*?# END PARAMETERS/, `# BEGIN PARAMETERS\n${block}\n# END PARAMETERS`));
   });
@@ -137,9 +140,11 @@ describe('the stage scripts\' shared rules', () => {
     expect(body(WINDOWS_TEMPLATE, 'function Get-DamoclesDirVersion', '\n}\n')).toBe(body(REMOVE_WINDOWS, 'function Get-DamoclesDirVersion', '\n}\n'));
   });
 
-  it('take a daemon lock as stale only once the daemon would', () => {
+  it('take a daemon lock or its takeover lock as stale only once the daemon would', () => {
     expect(REMOVE_POSIX).toContain(`\nDAEMON_LOCK_STALE_S=${LOCK_STALE_MS / 1000}\n`);
     expect(REMOVE_WINDOWS).toContain(`\n$DAEMON_LOCK_STALE_S = ${LOCK_STALE_MS / 1000}\n`);
+    expect(REMOVE_POSIX).toContain(`\nDAEMON_TAKEOVER_STALE_S=${TAKEOVER_STALE_MS / 1000}\n`);
+    expect(REMOVE_WINDOWS).toContain(`\n$DAEMON_TAKEOVER_STALE_S = ${TAKEOVER_STALE_MS / 1000}\n`);
   });
 });
 

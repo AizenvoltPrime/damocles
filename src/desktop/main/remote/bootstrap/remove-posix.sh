@@ -14,8 +14,10 @@ D_DISABLE_LINGER='0'
 
 # a pid file the daemon touched within this long names a live version (it touches it every 24 hours), as stage 1 reads it
 LIVE_PID_FILE_MIN=1500
-# singleton.ts LOCK_STALE_MS: the daemon refreshes its lock's mtime every 5 s, and a lock older than this has no holder
+# lock-timing.ts LOCK_STALE_MS: the daemon refreshes its lock's mtime every 5 s, and a lock older than this has no holder
 DAEMON_LOCK_STALE_S=20
+# lock-timing.ts TAKEOVER_STALE_MS: a takeover lock older than this was left by a start that died inside it
+DAEMON_TAKEOVER_STALE_S=10
 LOCK_STALE_OTHER_HOST_MIN=30
 STAGING_STALE_MIN=1440
 EXEC_TEST_STALE_MIN=1
@@ -103,13 +105,49 @@ seconds_since_change() {
   if [ -n "$changed" ]; then printf '%s' $(($(date +%s) - changed)); fi
 }
 
-# Takes the daemon's mkdir lock $1, as proper-lockfile does, so no daemon starts while its run folder goes; 1 while a daemon
-# holds it, which refreshes it within DAEMON_LOCK_STALE_S, or when its age cannot be read.
-hold_daemon_lock() {
-  if mkdir "$1" 2>/dev/null; then return 0; fi
+# Takes the daemon lock's takeover lock $1 as singleton.ts does, waiting while a start holds it; 1 when it stays held.
+enter_daemon_takeover() {
+  waited=0
+  while ! mkdir "$1" 2>/dev/null; do
+    age=$(seconds_since_change "$1")
+    if [ -n "$age" ] && [ "$age" -gt "$DAEMON_TAKEOVER_STALE_S" ]; then
+      rm -rf "$1"
+    elif [ "$waited" -ge "$DAEMON_TAKEOVER_STALE_S" ]; then
+      return 1
+    else
+      sleep 1
+      waited=$((waited + 1))
+    fi
+  done
+}
+
+# Whether the daemon lock $1 has no holder: unchanged for DAEMON_LOCK_STALE_S, or its owner file names a process of this host
+# that has ended (token.ts goneFromThisHost).
+daemon_lock_free() {
   age=$(seconds_since_change "$1")
-  if [ -z "$age" ] || [ "$age" -le "$DAEMON_LOCK_STALE_S" ]; then return 1; fi
-  rm -rf "$1" && mkdir "$1" 2>/dev/null
+  if [ -n "$age" ] && [ "$age" -gt "$DAEMON_LOCK_STALE_S" ]; then return 0; fi
+  owner=$(cat "$1.owner" 2>/dev/null)
+  owner_pid=${owner##* }
+  case "$owner_pid" in '' | *[!0-9]*) return 1 ;; esac
+  [ "${owner% *}" = "$(uname -n)" ] && ! kill -0 "$owner_pid" 2>/dev/null
+}
+
+# Takes the daemon's mkdir lock $1 as singleton.ts does, under its takeover lock and with this stage as its owner, so no
+# daemon starts while its run folder goes; 1 while a daemon holds it.
+hold_daemon_lock() {
+  enter_daemon_takeover "$1.takeover" || return 1
+  if mkdir "$1" 2>/dev/null || { daemon_lock_free "$1" && rm -rf "$1" && mkdir "$1" 2>/dev/null; }; then
+    printf '%s %s\n' "$(uname -n)" "$$" > "$1.owner"
+    rmdir "$1.takeover"
+    return 0
+  fi
+  rmdir "$1.takeover"
+  return 1
+}
+
+release_daemon_lock() {
+  rm -f "$1.owner"
+  rmdir "$1"
 }
 
 # The daemon's lock $1 this stage holds, touched as the daemon touches its own, so a starting daemon never takes it as stale.
@@ -143,17 +181,23 @@ remove_socket_folders() {
   fi
 }
 
-# Deletes the run folder $1, whose daemon lock this stage holds: every entry but the lock, the lock touched after each, then
-# the lock, then the folder.
+# Deletes the run folder $1, whose daemon lock this stage holds: every entry but the lock, its owner file and a start's
+# takeover lock, the lock touched after each, then the lock, then the folder, which a start's takeover lock keeps.
 remove_run_dir() {
   for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
     if [ ! -e "$entry" ] && [ ! -L "$entry" ]; then continue; fi
-    if [ "$entry" != "$1/daemon.lock" ]; then
-      delete_entry "$entry"
-      refresh_daemon_lock "$1/daemon.lock"
-    fi
+    case "$entry" in
+      "$1/daemon.lock" | "$1/daemon.lock.owner" | "$1/daemon.lock.takeover") ;;
+      *)
+        delete_entry "$entry"
+        refresh_daemon_lock "$1/daemon.lock"
+        ;;
+    esac
   done
-  rmdir "$1/daemon.lock" "$1"
+  rm -f "$1/daemon.lock.owner"
+  refresh_daemon_lock "$1/daemon.lock"
+  rmdir "$1/daemon.lock"
+  rmdir "$1"
 }
 
 # install.lock as stage 1 takes it: a mkdir lock whose owner file names `<host> <pid>`, stale when that pid is gone on this
@@ -275,7 +319,7 @@ if [ -d "$run_dir" ]; then
     fail daemonRunning
   fi
   if own_daemon_runs "$run_dir"; then
-    rmdir "$run_dir/daemon.lock"
+    release_daemon_lock "$run_dir/daemon.lock"
     fail daemonRunning
   fi
 fi
