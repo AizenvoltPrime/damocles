@@ -1907,7 +1907,7 @@ class DesktopApp {
     const overlay = this.overlay;
     const settings = this.overlaySettings;
     if (!overlay || !settings) return;
-    overlay.whenLoaded().then(() => settings.show(target)).catch(this.report('Settings'));
+    overlay.whenLoaded().then(() => settings.show(target)).finally(() => this.remoteHosts?.dropUnshownRuns()).catch(this.report('Settings'));
   }
 
   private requireUpdates(): UpdateService {

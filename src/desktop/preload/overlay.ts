@@ -18,7 +18,7 @@ import {
   type RemovalInfo,
   type RemoveServerResult,
   type PasswordlessResult,
-  type PasswordlessStepEvent,
+  type HostOperations,
   type InputBrowseResult,
   type OverlayPrefs,
   type OverlayPrefWrite,
@@ -159,10 +159,11 @@ const api: DamoclesOverlayApi = {
   removalInfo: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsRemovalInfo, { hostId }) as Promise<PopupAnswer<RemovalInfo>>,
   removeServer: (hostId, options) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsRemoveServer, { hostId, options: { removeKey: options.removeKey, disableLinger: options.disableLinger } }) as Promise<PopupAnswer<RemoveServerResult>>,
   retryRemoval: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsRetryRemoval, { hostId }) as Promise<PopupAnswer<RemoveServerResult>>,
+  getHostOperations: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsOperations, { hostId }) as Promise<PopupAnswer<HostOperations>>,
   forgetHost: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsForget, { hostId }) as Promise<PopupAnswer<void>>,
   openHostSettings: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsOpenSettings, { hostId }) as Promise<PopupAnswer<void>>,
   onHostEntries: (listener) => subscribe<readonly RemoteHostEntry[]>(OVERLAY_CHANNELS.hostsEntries, listener),
-  onPasswordlessStep: (listener) => subscribe<PasswordlessStepEvent>(OVERLAY_CHANNELS.hostsPasswordlessStep, listener),
+  onHostOperations: (listener) => subscribe<HostOperations>(OVERLAY_CHANNELS.hostsOperationsChanged, listener),
 };
 
 contextBridge.exposeInMainWorld('damoclesOverlay', api);

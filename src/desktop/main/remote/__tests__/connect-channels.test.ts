@@ -29,6 +29,7 @@ function setup(open = true) {
     removalInfo: vi.fn(async () => ({ runs: [], offerRemoveKey: false, offerDisableLinger: false })),
     removeServer: vi.fn(async () => ({ ok: true, notices: [] })),
     retryRemoval: vi.fn(async () => ({ ok: true, notices: [] })),
+    operations: vi.fn(() => ({ hostId: 'h', revision: 1 })),
     forget: vi.fn(async () => undefined),
     openSettings: vi.fn(),
   };
@@ -100,6 +101,10 @@ describe('the Remote hosts channels', () => {
     await expect(call(OVERLAY_CHANNELS.hostsRetryRemoval, { hostId: 'h', options: {} })).rejects.toThrow('Malformed');
     await call(OVERLAY_CHANNELS.hostsRetryRemoval, { hostId: 'h' });
     expect(actions.retryRemoval).toHaveBeenCalledWith('h');
+    await expect(call(OVERLAY_CHANNELS.hostsOperations, { hostId: 'h', revision: 1 })).rejects.toThrow('Malformed');
+    await expect(call(OVERLAY_CHANNELS.hostsOperations, { hostId: '' })).rejects.toThrow('Malformed');
+    expect(await call(OVERLAY_CHANNELS.hostsOperations, { hostId: 'h' })).toEqual({ ok: true, value: { hostId: 'h', revision: 1 } });
+    expect(actions.operations).toHaveBeenCalledWith('h');
   });
 
   it('answers the saved hosts rebuilt field by field, as their pushes are, and rejects a list past the overlay bounds', async () => {

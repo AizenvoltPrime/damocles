@@ -1,43 +1,29 @@
 <script setup lang="ts">
-import { computed, onScopeDispose, ref, shallowRef, watch } from 'vue';
+import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Check, CircleX, KeyRound, LoaderCircle } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
-import type { DamoclesOverlayApi, PasswordlessResult, PasswordlessStep } from '../../../preload/overlay-channels';
+import type { DamoclesOverlayApi, PasswordlessRun, PasswordlessStep } from '../../../preload/overlay-channels';
 import type { ShellPlatform } from '../../../preload/shell-channels';
 import { answerOf } from '../popup-answer';
 
-type StepState = 'pending' | 'running' | 'done' | 'failed';
-
 // Set up passwordless login: main generates a key for Damocles, installs it on the host and signs in with it; each step
-// shows inline as main reports it, finishing with a check.
-const props = defineProps<{ api: DamoclesOverlayApi; hostId: string; hostName: string; os?: ShellPlatform | undefined }>();
-const emit = defineEmits<{ started: []; running: [running: boolean] }>();
+// shows inline from main's run, finishing with a check.
+const props = defineProps<{ api: DamoclesOverlayApi; hostId: string; hostName: string; os?: ShellPlatform | undefined; run?: PasswordlessRun | undefined }>();
 const { t } = useI18n();
 
 const STEPS: readonly PasswordlessStep[] = ['generate', 'install', 'verify'];
-const states = ref<Record<PasswordlessStep, StepState> | undefined>();
-const result = shallowRef<PasswordlessResult | undefined>();
+const states = computed(() => props.run?.steps);
+const result = computed(() => props.run?.result);
 // the call itself failed, before main answered
 const callFailed = ref(false);
-const running = computed(() => states.value !== undefined && result.value === undefined && !callFailed.value);
-watch(running, (now) => emit('running', now));
-
-onScopeDispose(props.api.onPasswordlessStep((event) => {
-  if (event.hostId !== props.hostId || !states.value) return;
-  states.value = { ...states.value, [event.step]: event.state };
-}));
+const running = computed(() => props.run !== undefined && result.value === undefined && props.run.failed !== true);
 
 async function start(): Promise<void> {
-  emit('started');
-  states.value = { generate: 'pending', install: 'pending', verify: 'pending' };
-  result.value = undefined;
   callFailed.value = false;
   try {
-    const answer = await answerOf(props.api.setUpPasswordless(props.hostId));
-    if (!answer) return;
-    result.value = answer;
-    if (!answer.ok) states.value = { ...states.value, [answer.step]: 'failed' };
+    // main answers when its run ends, which its snapshots show
+    await answerOf(props.api.setUpPasswordless(props.hostId));
   } catch {
     callFailed.value = true;
   }
@@ -48,7 +34,7 @@ const stepLabel = (step: PasswordlessStep): string => (step === 'install'
   : t(`remote.passwordless.step.${step}`));
 
 const failure = computed(() => {
-  if (callFailed.value) return t('remote.passwordless.callFailed', { name: props.hostName });
+  if (callFailed.value || props.run?.failed) return t('remote.passwordless.callFailed', { name: props.hostName });
   const current = result.value;
   return current && !current.ok ? t(`remote.passwordless.failure.${current.code}`, { name: props.hostName, ...current.params }) : undefined;
 });

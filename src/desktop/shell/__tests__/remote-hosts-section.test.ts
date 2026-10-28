@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia, type Pinia } from 'pinia';
 import { installPlatformBridge } from '@/composables/usePlatformBridge';
-import { STAGE_FAILED_CODES, type PasswordlessResult, type PopupAnswer, type RemoteHostEntry, type RemoveServerResult } from '../../preload/overlay-channels';
+import { STAGE_FAILED_CODES, type PasswordlessResult, type PasswordlessRun, type PopupAnswer, type RemoteHostEntry, type RemoveServerResult } from '../../preload/overlay-channels';
 import OverlayApp from '../overlay/OverlayApp.vue';
 import { createOverlaySettingsBridge } from '../overlay/settings/overlay-bridge';
 import { addSettingsMessages } from '../overlay/settings/settings-messages';
@@ -53,6 +53,16 @@ const $ = <E extends Element = HTMLElement>(selector: string): E | null => docum
 const block = (): HTMLElement => $('[data-testid="remote-host"]')!;
 const switchNamed = (name: string): HTMLElement | undefined => [...block().querySelectorAll<HTMLElement>('[role="switch"]')].find((element) => element.getAttribute('aria-label') === name);
 const buttonNamed = (name: string, root: ParentNode = document): HTMLElement | undefined => [...root.querySelectorAll<HTMLElement>('button')].find((element) => element.textContent?.trim() === name);
+const stepStates = (): (string | undefined)[] => [...document.querySelectorAll<HTMLElement>('[data-testid="passwordless-step"]')].map((step) => step.dataset.state);
+// main publishes a run's end before its call answers
+const removalEnds = (result: RemoveServerResult): PopupAnswer<RemoveServerResult> => {
+  api.pushHostOperations({ hostId: 'h1', removal: { result } });
+  return opened(result);
+};
+const setupEnds = (passwordless: PasswordlessRun & { readonly result: PasswordlessResult }): PopupAnswer<PasswordlessResult> => {
+  api.pushHostOperations({ hostId: 'h1', passwordless });
+  return opened(passwordless.result);
+};
 
 beforeEach(() => {
   pinia = createPinia();
@@ -61,6 +71,7 @@ beforeEach(() => {
   vi.stubGlobal('ResizeObserver', FakeResizeObserver);
   document.documentElement.setAttribute('data-reduced-motion', '');
   api.remoteHosts.list = [PROD, WIN];
+  api.hostOperations.clear();
   vi.mocked(api.setHostSetting).mockReset().mockResolvedValue(opened(undefined));
   vi.mocked(api.revokeCredentialHost).mockClear();
   vi.mocked(api.renameHost).mockClear();
@@ -210,7 +221,7 @@ describe('Settings, Remote hosts', () => {
 
   it('removes the server after listing what runs, with a box only for each change Damocles made', async () => {
     vi.mocked(api.removalInfo).mockResolvedValueOnce(opened({ runs: [{ kind: 'chat', id: 'c1', title: 'Fix login', state: 'running' }, { kind: 'terminal', id: 't1', title: 'npm run dev', state: 'background' }], offerRemoveKey: true, offerDisableLinger: false }));
-    vi.mocked(api.removeServer).mockResolvedValueOnce(opened({ ok: true, notices: [{ code: 'versionKept', params: { version: '3.7.0', machine: 'LAPTOP' } }] }));
+    vi.mocked(api.removeServer).mockImplementationOnce(async () => removalEnds({ ok: true, notices: [{ code: 'versionKept', params: { version: '3.7.0', machine: 'LAPTOP' } }] }));
     await openRemoteHosts();
     buttonNamed('Remove Damocles server...')!.click();
     await flushPromises();
@@ -249,7 +260,7 @@ describe('Settings, Remote hosts', () => {
       [{ code: 'killed' }, 'Removing the files on prod-1 was stopped before it finished.'],
     ] as const;
     for (const [params, text] of failures) {
-      vi.mocked(api.removeServer).mockResolvedValueOnce(opened({ ok: false, code: 'stageFailed', params }));
+      vi.mocked(api.removeServer).mockImplementationOnce(async () => removalEnds({ ok: false, code: 'stageFailed', params }));
       const wrapper = await openRemoteHosts();
       buttonNamed('Remove Damocles server...')!.click();
       await flushPromises();
@@ -274,9 +285,9 @@ describe('Settings, Remote hosts', () => {
   });
 
   it('offers Try again after daemonRunning, which runs the removal again without a connection', async () => {
-    vi.mocked(api.removeServer).mockResolvedValueOnce(opened({ ok: false, code: 'daemonRunning', params: {} }));
+    vi.mocked(api.removeServer).mockImplementationOnce(async () => removalEnds({ ok: false, code: 'daemonRunning', params: {} }));
     vi.mocked(api.retryRemoval).mockClear();
-    vi.mocked(api.retryRemoval).mockResolvedValueOnce(opened({ ok: true, notices: [] }));
+    vi.mocked(api.retryRemoval).mockImplementationOnce(async () => removalEnds({ ok: true, notices: [] }));
     await openRemoteHosts();
     buttonNamed('Remove Damocles server...')!.click();
     await flushPromises();
@@ -299,7 +310,7 @@ describe('Settings, Remote hosts', () => {
     await flushPromises();
     buttonNamed('Remove server', $('[data-testid="remove-server-dialog"]')!)!.click();
     await flushPromises();
-    api.connectStep({ attemptId: 'a9', hostId: 'h1', step: 'authenticating', visited: ['connecting', 'authenticating'], notices: [], prompt: { promptId: 'p9', kind: 'secret', secretKind: 'password', text: "deploy@prod-1's password:" } });
+    api.pushHostOperations({ hostId: 'h1', removal: { prompt: { attemptId: 'a9', promptId: 'p9', kind: 'secret', secretKind: 'password', text: "deploy@prod-1's password:" } } });
     await flushPromises();
     const field = block().querySelector<HTMLInputElement>('[data-testid="secret-prompt"] input[aria-label="Password"]')!;
     expect(document.activeElement).toBe(field);
@@ -308,7 +319,7 @@ describe('Settings, Remote hosts', () => {
     await flushPromises();
     expect(api.answerConnect).toHaveBeenCalledWith('a9', 'p9', 'hunter2', false);
     expect(block().querySelector('[data-testid="secret-prompt"]')).toBeNull();
-    finish(opened({ ok: true, notices: [] }));
+    finish(removalEnds({ ok: true, notices: [] }));
     await flushPromises();
   });
 
@@ -321,13 +332,13 @@ describe('Settings, Remote hosts', () => {
     await flushPromises();
     buttonNamed('Remove server', $('[data-testid="remove-server-dialog"]')!)!.click();
     await flushPromises();
-    api.connectStep({ attemptId: 'a9', hostId: 'h1', step: 'authenticating', visited: ['connecting', 'authenticating'], notices: [], prompt: { promptId: 'p9', kind: 'secret', secretKind: 'password', text: "deploy@prod-1's password:" } });
+    api.pushHostOperations({ hostId: 'h1', removal: { prompt: { attemptId: 'a9', promptId: 'p9', kind: 'secret', secretKind: 'password', text: "deploy@prod-1's password:" } } });
     await flushPromises();
     block().querySelector<HTMLElement>('[data-testid="secret-prompt"] [data-testid="secret-cancel"]')!.click();
     await flushPromises();
     expect(api.answerConnect).toHaveBeenCalledWith('a9', 'p9', null, false);
     expect(block().querySelector('[data-testid="secret-prompt"]')).toBeNull();
-    finish(opened({ ok: false, code: 'stageFailed', params: { code: 'exit', exitCode: '255' } }));
+    finish(removalEnds({ ok: false, code: 'stageFailed', params: { code: 'exit', exitCode: '255' } }));
     await flushPromises();
   });
 
@@ -358,36 +369,77 @@ describe('Settings, Remote hosts', () => {
 
   it('sets up passwordless login in three steps, each ending with a check', async () => {
     let finish!: (answer: PopupAnswer<PasswordlessResult>) => void;
-    vi.mocked(api.setUpPasswordless).mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    vi.mocked(api.setUpPasswordless).mockImplementationOnce(() => {
+      api.pushHostOperations({ hostId: 'h1', passwordless: { steps: { generate: 'pending', install: 'pending', verify: 'pending' } } });
+      return new Promise((resolve) => (finish = resolve));
+    });
     await openRemoteHosts();
     buttonNamed('Set up passwordless login')!.click();
     await flushPromises();
-    const state = (): (string | undefined)[] => [...document.querySelectorAll<HTMLElement>('[data-testid="passwordless-step"]')].map((step) => step.dataset.state);
-    expect(state()).toEqual(['pending', 'pending', 'pending']);
-    for (const step of ['generate', 'install', 'verify'] as const) {
-      api.passwordlessStep({ hostId: 'h1', step, state: 'running' });
-      api.passwordlessStep({ hostId: 'h1', step, state: 'done' });
-    }
-    api.passwordlessStep({ hostId: 'h2', step: 'generate', state: 'failed' });
+    expect(stepStates()).toEqual(['pending', 'pending', 'pending']);
+    expect(buttonNamed('Set up passwordless login')).toBeUndefined();
+    api.pushHostOperations({ hostId: 'h1', passwordless: { steps: { generate: 'done', install: 'done', verify: 'done' } } });
+    api.pushHostOperations({ hostId: 'h2', passwordless: { steps: { generate: 'failed', install: 'pending', verify: 'pending' } } });
     await flushPromises();
-    expect(state()).toEqual(['done', 'done', 'done']);
+    expect(stepStates()).toEqual(['done', 'done', 'done']);
     expect(document.querySelectorAll('[data-testid="passwordless-step"] svg.animate-\\[d-icon-in_\\.3s_var\\(--ease-spring\\)\\]')).toHaveLength(3);
     expect(document.querySelector('[data-testid="passwordless-step"][data-step="install"]')!.textContent).toContain('Add it to ~/.ssh/authorized_keys on prod-1');
     // main records the key and pushes the host before it answers; the finished steps stay
     api.hostEntries([{ ...PROD, facts: { ...PROD.facts, passwordless: true } }, WIN]);
-    finish(opened({ ok: true }));
+    finish(setupEnds({ steps: { generate: 'done', install: 'done', verify: 'done' }, result: { ok: true } }));
     await flushPromises();
-    expect(state()).toEqual(['done', 'done', 'done']);
+    expect(stepStates()).toEqual(['done', 'done', 'done']);
     expect($('[data-testid="passwordless-done"]')!.textContent).toContain('Passwordless login works on prod-1.');
     expect(buttonNamed('Set up passwordless login')).toBeUndefined();
   });
 
   it('marks the step a passwordless setup failed at and names the file from main\'s code', async () => {
-    vi.mocked(api.setUpPasswordless).mockResolvedValueOnce(opened({ ok: false, step: 'install', code: 'ownership', params: { path: '/home/deploy/.ssh' } }));
+    vi.mocked(api.setUpPasswordless).mockImplementationOnce(async () => setupEnds({ steps: { generate: 'done', install: 'failed', verify: 'pending' }, result: { ok: false, step: 'install', code: 'ownership', params: { path: '/home/deploy/.ssh' } } }));
     await openRemoteHosts();
     buttonNamed('Set up passwordless login')!.click();
     await flushPromises();
     expect(document.querySelector<HTMLElement>('[data-testid="passwordless-step"][data-step="install"]')!.dataset.state).toBe('failed');
     expect($('[data-testid="passwordless-failure"]')!.textContent).toContain('/home/deploy/.ssh on prod-1 belongs to another user');
+  });
+
+  it('shows the steps of a setup main runs when the page opens mid-run, with no second start offered', async () => {
+    api.pushHostOperations({ hostId: 'h1', passwordless: { steps: { generate: 'done', install: 'running', verify: 'pending' } } });
+    await openRemoteHosts();
+    expect(api.getHostOperations).toHaveBeenCalledWith('h1');
+    expect(stepStates()).toEqual(['done', 'running', 'pending']);
+    expect(buttonNamed('Set up passwordless login')).toBeUndefined();
+  });
+
+  it('keeps a setup\'s steps across a reattach that remounts the page, and takes only a newer snapshot', async () => {
+    await openRemoteHosts();
+    api.pushHostOperations({ hostId: 'h1', passwordless: { steps: { generate: 'done', install: 'running', verify: 'pending' } } });
+    await flushPromises();
+    // a remote core attaching mid-setup remounts the section, which reads main's snapshot again
+    api.settingsAttached(2);
+    await flushPromises();
+    expect(vi.mocked(api.getHostOperations).mock.calls.filter(([hostId]) => hostId === 'h1').length).toBeGreaterThanOrEqual(2);
+    expect(stepStates()).toEqual(['done', 'running', 'pending']);
+    api.pushHostOperations({ hostId: 'h1', passwordless: { steps: { generate: 'done', install: 'done', verify: 'done' }, result: { ok: true } } });
+    api.pushHostOperations({ hostId: 'h1', revision: 1, passwordless: { steps: { generate: 'running', install: 'pending', verify: 'pending' } } });
+    await flushPromises();
+    expect(stepStates()).toEqual(['done', 'done', 'done']);
+    api.settingsAttached(3);
+    await flushPromises();
+    expect(stepStates()).toEqual(['done', 'done', 'done']);
+    expect($('[data-testid="passwordless-done"]')!.textContent).toContain('Passwordless login works on prod-1.');
+  });
+
+  it('shows a removal main runs, and its result once it ended, on a page opened after it started', async () => {
+    api.pushHostOperations({ hostId: 'h1', removal: {} });
+    const wrapper = await openRemoteHosts();
+    expect($('[data-testid="remove-server-progress"]')!.textContent).toContain('prod-1');
+    expect(buttonNamed('Remove Damocles server...')!.hasAttribute('disabled')).toBe(true);
+    mounted.splice(mounted.indexOf(wrapper), 1);
+    wrapper.unmount();
+    api.pushHostOperations({ hostId: 'h1', removal: { result: { ok: false, code: 'daemonRunning', params: {} } } });
+    await openRemoteHosts();
+    expect($('[data-testid="remove-server-progress"]')).toBeNull();
+    expect($('[data-testid="remove-server-result"]')!.textContent).toContain('Damocles was still running on prod-1, so nothing was removed.');
+    expect($('[data-testid="remove-server-retry"]')).not.toBeNull();
   });
 });

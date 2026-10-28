@@ -13,6 +13,7 @@ import {
   type HostCardInfo,
   type HostDevice,
   type HostNotice,
+  type HostOperations,
   type HostParseResult,
   type HostRun,
   type InstallFolderResult,
@@ -21,12 +22,15 @@ import {
   type OverlayAnswer,
   type OverlayRequest,
   type PasswordlessResult,
-  type PasswordlessStepEvent,
+  type PasswordlessRun,
+  type PasswordlessStep,
+  type PasswordlessStepState,
   type RemoteBrowseResult,
   type RemoteHostEntry,
   type RemovalInfo,
   type RemoveServerOptions,
   type RemoveServerResult,
+  type ServerRemovalRun,
   type HostSettingChange,
 } from '../../preload/overlay-channels';
 import type { InstallKeyResult } from '../../daemon/control-messages';
@@ -142,6 +146,12 @@ interface Located {
   readonly relativePath: string;
 }
 
+// A host's run of one operation: the state its snapshot shows, and the call a second start joins while it runs.
+interface OperationRun<S, T> {
+  state: S;
+  running: Promise<T> | undefined;
+}
+
 // The picker open in the Connect dialog: the id its browse calls name, its authority, mode, roots and first folder.
 interface OpenPick {
   readonly hostId: string;
@@ -172,6 +182,11 @@ export class RemoteHosts implements ConnectActions {
   private picking: OpenPick | undefined;
   // per host, the removal stage that refused with daemonRunning, which Try again runs again with its run key
   private readonly pendingRemovals = new Map<string, { readonly script: string; readonly key: boolean; readonly disableLinger: boolean }>();
+  // per host, its latest passwordless setup and server removal, kept once ended until no Connect dialog or Settings shows
+  private readonly setups = new Map<string, OperationRun<PasswordlessRun, PasswordlessResult>>();
+  private readonly removals = new Map<string, OperationRun<Omit<ServerRemovalRun, 'prompt'>, RemoveServerResult>>();
+  // the last HostOperations revision built
+  private revision = 0;
 
   constructor(deps: RemoteHostsDeps) {
     this.deps = deps;
@@ -249,11 +264,14 @@ export class RemoteHosts implements ConnectActions {
       // a dialog opened meanwhile replaced this one and keeps watching what it shows
       for (const watched of watching) if (!this.watching?.has(watched) || this.watching === watching) this.deps.connections.watch(watched, false);
       if (this.watching === watching) this.watching = undefined;
+      this.dropUnshownRuns();
     }
   }
 
   /** A host's attempt or state changed: the open dialog hears it, then its host list. */
   hostChanged(hostId: string): void {
+    // the removal stage's ssh asks its questions as the host's attempt
+    if (this.removals.get(hostId)?.running) this.operationsChanged(hostId);
     const overlay = this.deps.overlay();
     if (!overlay?.isOpen('connect')) return;
     const attempt = this.deps.connections.attempt(hostId);
@@ -337,16 +355,23 @@ export class RemoteHosts implements ConnectActions {
     await this.deps.store.revokeCredentialHost(hostId, credentialHost);
   }
 
-  /** Set up passwordless login: generate, install, verify, each step pushed to the open overlay. */
+  /** Set up passwordless login: generate, install, verify. A call while the host's setup runs joins it. */
   async setUpPasswordless(hostId: string): Promise<PasswordlessResult> {
     const record = this.record(hostId);
-    const progress = (event: PasswordlessStepEvent): void => {
-      const overlay = this.deps.overlay();
-      if (overlay?.isOpen('connect') || overlay?.isOpen('settings')) overlay.send(OVERLAY_CHANNELS.hostsPasswordlessStep, event);
-    };
+    const pending: PasswordlessStepState = 'pending';
+    return this.operate(
+      this.setups,
+      hostId,
+      { steps: { generate: pending, install: pending, verify: pending } },
+      (update, run) => this.runPasswordless(hostId, record, (step, state) => update({ ...run.state, steps: { ...run.state.steps, [step]: state } })),
+      (state, result) => ({ steps: result.ok ? state.steps : { ...state.steps, [result.step]: 'failed' }, result }),
+    );
+  }
+
+  private async runPasswordless(hostId: string, record: SshHostRecord, progress: (step: PasswordlessStep, state: PasswordlessStepState) => void): Promise<PasswordlessResult> {
     const connection = this.deps.connection(sshAuthorityKey(hostId));
     if (!connection) {
-      progress({ hostId, step: 'install', state: 'failed', failure: { code: 'notConnected', params: {} } });
+      progress('install', 'failed');
       return { ok: false, step: 'install', code: 'notConnected', params: {} };
     }
     const outcome = await setUpPasswordless(this.deps.keySetup, {
@@ -365,7 +390,7 @@ export class RemoteHosts implements ConnectActions {
         }
       },
       recordInstalled: (installed) => this.deps.store.recordInstalledKey(hostId, installed),
-      progress: (step, state, failure) => progress({ hostId, step, state, ...(failure ? { failure } : {}) }),
+      progress,
     });
     if (outcome.identityFile !== undefined) await this.deps.store.recordPasswordless(hostId, outcome.identityFile);
     this.deps.log(`[remote] ${hostId}: passwordless login ${outcome.result.ok ? 'set up' : `failed at ${outcome.result.step}: ${outcome.result.code}`}`);
@@ -391,10 +416,14 @@ export class RemoteHosts implements ConnectActions {
 
   /**
    * Remove Damocles server: the daemon shuts down for it and the host goes offline, then the removal stage runs over ssh; the
-   * key and linger are undone only when asked and only when Damocles made them.
+   * key and linger are undone only when asked and only when Damocles made them. A call while the host's removal runs joins it.
    */
   async removeServer(hostId: string, options: RemoveServerOptions): Promise<RemoveServerResult> {
     const record = this.record(hostId);
+    return this.operate(this.removals, hostId, {}, () => this.runRemoval(hostId, record, options), (_state, result) => ({ result }));
+  }
+
+  private async runRemoval(hostId: string, record: SshHostRecord, options: RemoveServerOptions): Promise<RemoveServerResult> {
     const authority = sshAuthorityKey(hostId);
     const connection = this.deps.connection(authority);
     const key = options.removeKey && record.installedKeyEntry !== undefined && record.installedKeyFile !== undefined ? { entry: record.installedKeyEntry, file: record.installedKeyFile } : undefined;
@@ -440,15 +469,90 @@ export class RemoteHosts implements ConnectActions {
 
   /**
    * Try again after daemonRunning: the same removal stage over a fresh ssh, which reaches the target without attaching or
-   * starting a daemon; the stage decides by the daemon's lock again.
+   * starting a daemon; the stage decides by the daemon's lock again. A call while the host's removal runs joins it.
    */
   async retryRemoval(hostId: string): Promise<RemoveServerResult> {
     this.record(hostId);
+    const joined = this.removals.get(hostId)?.running;
+    if (joined) return joined;
     const pending = this.pendingRemovals.get(hostId);
     if (!pending) throw new Error('No removal of this host waits to be tried again');
     this.pendingRemovals.delete(hostId);
-    const result = await runRemovalStage({ runStage: (stage) => this.deps.runRemovalStage(hostId, stage), log: this.deps.log }, pending.script);
-    return this.removalEnded(hostId, pending, result);
+    return this.operate(this.removals, hostId, {}, async () => {
+      const result = await runRemovalStage({ runStage: (stage) => this.deps.runRemovalStage(hostId, stage), log: this.deps.log }, pending.script);
+      return this.removalEnded(hostId, pending, result);
+    }, (_state, result) => ({ result }));
+  }
+
+  /** The host's setup and removal as the overlay shows them. */
+  operations(hostId: string): HostOperations {
+    this.record(hostId);
+    return this.snapshotOf(hostId);
+  }
+
+  /** A Connect dialog or Settings closed: once neither shows, every run that ended goes, and a running one stays for the next. */
+  dropUnshownRuns(): void {
+    if (this.showsHosts()) return;
+    for (const runs of [this.setups, this.removals]) for (const [hostId, run] of runs) if (!run.running) runs.delete(hostId);
+  }
+
+  // Starts the host's run, or joins the one running. Each change reaches the open overlay as the host's whole snapshot, the
+  // run's end before its call answers.
+  private operate<S extends { readonly failed?: true }, T>(
+    runs: Map<string, OperationRun<S, T>>,
+    hostId: string,
+    initial: S,
+    body: (update: (state: S) => void, run: OperationRun<S, T>) => Promise<T>,
+    ended: (state: S, result: T) => S,
+  ): Promise<T> {
+    const joined = runs.get(hostId)?.running;
+    if (joined) return joined;
+    const run: OperationRun<S, T> = { state: initial, running: undefined };
+    runs.set(hostId, run);
+    // a run Forget host dropped shows nowhere
+    const update = (state: S): void => {
+      run.state = state;
+      if (runs.get(hostId) === run) this.operationsChanged(hostId);
+    };
+    const settle = (state: S): void => {
+      run.running = undefined;
+      update(state);
+      this.dropUnshownRuns();
+    };
+    this.operationsChanged(hostId);
+    const running = body(update, run);
+    run.running = running;
+    void running.then((result) => settle(ended(run.state, result)), () => settle({ ...run.state, failed: true }));
+    return running;
+  }
+
+  private showsHosts(): boolean {
+    const overlay = this.deps.overlay();
+    return overlay?.isOpen('connect') === true || overlay?.isOpen('settings') === true;
+  }
+
+  private operationsChanged(hostId: string): void {
+    if (this.showsHosts()) this.deps.overlay()?.send(OVERLAY_CHANNELS.hostsOperationsChanged, this.snapshotOf(hostId));
+  }
+
+  private snapshotOf(hostId: string): HostOperations {
+    const passwordless = this.setups.get(hostId)?.state;
+    const removal = this.removals.get(hostId);
+    const prompt = removal?.running ? this.removalPrompt(hostId) : undefined;
+    this.revision += 1;
+    return {
+      hostId,
+      revision: this.revision,
+      ...(passwordless ? { passwordless } : {}),
+      ...(removal ? { removal: { ...removal.state, ...(prompt ? { prompt } : {}) } } : {}),
+    };
+  }
+
+  // The secret the running removal stage's ssh waits on, which the host's attempt holds, within the overlay's bounds.
+  private removalPrompt(hostId: string): ServerRemovalRun['prompt'] {
+    const attempt = this.deps.connections.attempt(hostId);
+    const step = attempt && parseConnectStep(attempt);
+    return step?.prompt?.kind === 'secret' ? { attemptId: step.attemptId, ...step.prompt } : undefined;
   }
 
   // Damocles' master connection ends whatever the outcome, so no session stays signed in with a key the removal took away.
@@ -471,6 +575,8 @@ export class RemoteHosts implements ConnectActions {
   async forget(hostId: string): Promise<void> {
     this.record(hostId);
     this.pendingRemovals.delete(hostId);
+    this.setups.delete(hostId);
+    this.removals.delete(hostId);
     this.deps.disconnect(hostId);
     this.deps.connections.forget(hostId);
     await this.deps.deleteRememberedSecrets(hostId);
@@ -572,6 +678,7 @@ export class RemoteHosts implements ConnectActions {
       return answer.kind === 'connect' ? await this.picked(pick, answer.path) : undefined;
     } finally {
       if (this.picking === pick) this.picking = undefined;
+      this.dropUnshownRuns();
     }
   }
 

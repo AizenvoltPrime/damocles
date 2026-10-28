@@ -118,14 +118,17 @@ export const OVERLAY_CHANNELS = {
   hostsSetSetting: 'damocles:overlay:hosts:set-setting',
   // { hostId, credentialHost }
   hostsRevokeCredential: 'damocles:overlay:hosts:revoke-credential',
-  // { hostId } -> PasswordlessResult; its steps follow on hostsPasswordlessStep
+  // { hostId } -> PasswordlessResult; a call while the host's setup runs joins it; progress follows on hostsOperationsChanged
   hostsSetUpPasswordless: 'damocles:overlay:hosts:set-up-passwordless',
   // { hostId } -> RemovalInfo of a connected host
   hostsRemovalInfo: 'damocles:overlay:hosts:removal-info',
-  // { hostId, options: RemoveServerOptions } -> RemoveServerResult
+  // { hostId, options: RemoveServerOptions } -> RemoveServerResult; this and hostsRetryRemoval join the host's removal while
+  // one runs, and its progress follows on hostsOperationsChanged
   hostsRemoveServer: 'damocles:overlay:hosts:remove-server',
   // { hostId } -> RemoveServerResult: the removal stage that refused with daemonRunning, run again over ssh alone
   hostsRetryRemoval: 'damocles:overlay:hosts:retry-removal',
+  // { hostId } -> HostOperations, the host's setup and removal as main holds them now
+  hostsOperations: 'damocles:overlay:hosts:operations',
   // { hostId }: forgets the host and everything this computer keeps of it
   hostsForget: 'damocles:overlay:hosts:forget',
   // { hostId }: ends the connect request and opens Settings > Remote hosts at the host; answers while a connect request is open
@@ -167,8 +170,8 @@ export const OVERLAY_CHANNELS = {
   connectStep: 'damocles:overlay:connect:step',
   // main -> renderer, readonly RemoteHostEntry[] after any host change while a connect or settings request is open
   hostsEntries: 'damocles:overlay:hosts:entries',
-  // main -> renderer, PasswordlessStepEvent
-  hostsPasswordlessStep: 'damocles:overlay:hosts:passwordless-step',
+  // main -> renderer, HostOperations after each change of the host's setup or removal, while a connect or settings request is open
+  hostsOperationsChanged: 'damocles:overlay:hosts:operations-changed',
   // main → renderer, readonly HostCardInfo[] after a host changed (renamed, connected, dropped) while a connect request is open
   connectHosts: 'damocles:overlay:connect:hosts',
   // main → renderer, readonly CloseRemoteRow[], every row whole, after a status or token note changed while a closeRemote
@@ -473,14 +476,14 @@ export interface PasswordlessFailure {
   readonly code: PasswordlessFailureCode;
   readonly params: Readonly<Record<string, string>>;
 }
-// A step of Set up passwordless login, pushed while it runs.
-export interface PasswordlessStepEvent {
-  readonly hostId: string;
-  readonly step: PasswordlessStep;
-  readonly state: 'running' | 'done' | 'failed';
-  readonly failure?: PasswordlessFailure;
-}
 export type PasswordlessResult = { readonly ok: true } | ({ readonly ok: false; readonly step: PasswordlessStep } & PasswordlessFailure);
+export type PasswordlessStepState = 'pending' | 'running' | 'done' | 'failed';
+// Set up passwordless login as main runs it: running until it has a result, or failed (main's call threw).
+export interface PasswordlessRun {
+  readonly steps: Readonly<Record<PasswordlessStep, PasswordlessStepState>>;
+  readonly result?: PasswordlessResult;
+  readonly failed?: true;
+}
 
 // A running chat or terminal Remove Damocles server would end, from the daemon's listRuns.
 export interface RemovalRun {
@@ -510,6 +513,21 @@ export type RemoveServerNoticeCode = 'versionKept' | 'serverFolderKept' | 'keyNo
 export type RemoveServerResult =
   | { readonly ok: true; readonly notices: ReadonlyArray<{ readonly code: RemoveServerNoticeCode; readonly params: Readonly<Record<string, string>> }> }
   | { readonly ok: false; readonly code: RemoveServerFailureCode; readonly params: Readonly<Record<string, string>> };
+// Remove Damocles server or its Try again as main runs it: running until it has a result, or failed (main's call threw).
+// prompt: the secret the removal stage's ssh waits on, answered through connectAnswer with attemptId and promptId.
+export interface ServerRemovalRun {
+  readonly result?: RemoveServerResult;
+  readonly failed?: true;
+  readonly prompt?: { readonly attemptId: string; readonly promptId: string } & Extract<SshPrompt, { readonly kind: 'secret' }>;
+}
+// A host's setup and removal, always whole. Main keeps a finished run while a Connect dialog or Settings shows, and drops it
+// once neither does. revision grows with every snapshot main builds, so a view keeps the highest it heard.
+export interface HostOperations {
+  readonly hostId: string;
+  readonly revision: number;
+  readonly passwordless?: PasswordlessRun;
+  readonly removal?: ServerRemovalRun;
+}
 
 // Characters of a "+ New host" input, a remote path and an ssh prompt answer the Connect channels accept.
 export const MAX_HOST_INPUT_LENGTH = 2000;
@@ -1380,11 +1398,12 @@ export interface DamoclesOverlayApi {
   removalInfo(hostId: string): Promise<PopupAnswer<RemovalInfo>>;
   removeServer(hostId: string, options: RemoveServerOptions): Promise<PopupAnswer<RemoveServerResult>>;
   retryRemoval(hostId: string): Promise<PopupAnswer<RemoveServerResult>>;
+  getHostOperations(hostId: string): Promise<PopupAnswer<HostOperations>>;
   forgetHost(hostId: string): Promise<PopupAnswer<void>>;
   // answers closed unless a connect request is open
   openHostSettings(hostId: string): Promise<PopupAnswer<void>>;
   // returns the unsubscribe
   onHostEntries(listener: (hosts: readonly RemoteHostEntry[]) => void): () => void;
-  onPasswordlessStep(listener: (event: PasswordlessStepEvent) => void): () => void;
+  onHostOperations(listener: (operations: HostOperations) => void): () => void;
   onCloseRemoteRows(listener: (rows: readonly CloseRemoteRow[]) => void): () => void;
 }

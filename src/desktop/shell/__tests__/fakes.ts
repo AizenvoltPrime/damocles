@@ -1,6 +1,6 @@
 import { vi } from 'vitest';
 import { DEFAULT_GRID_LAYOUT, SIDEBAR_SECTIONS, type DamoclesShellApi, type DropZonesPointer, type EditorCommand, type EditorDocumentChange, type EditorFlushRequest, type EditorReveal, type FileRef, type FilesChanged, type SearchCommandMessage, type SearchDone, type SearchEditorHighlights, type SearchFileUpdate, type SearchFocus, type SearchResultsBatch, type ShellSearchSettings, type ChatsContinueWorktree, type ChatsWorktreeOptions, type ShellChat, type ShellChatList, type ShownFolder, type ShellEditorState, type ShellFocusPart, type ShellState } from '../../preload/shell-channels';
-import type { CloseRemoteRow, ConnectStepEvent, LingerResult, DamoclesOverlayApi, PasswordlessStepEvent, RemoteHostEntry, HostCardInfo, InputBrowseResult, OverlayAnswer, PaletteCommand, OverlayPrefs, OverlayRasterRequest, OverlayRequest, OverlaySettingsScope, OverlaySettingsScopes, OverlayState, OverlayToast, PopupAnswer, QuickOpenQuery, QuickOpenResponse, RemoveServerResult } from '../../preload/overlay-channels';
+import type { CloseRemoteRow, ConnectStepEvent, LingerResult, DamoclesOverlayApi, HostOperations, RemoteHostEntry, HostCardInfo, InputBrowseResult, OverlayAnswer, PaletteCommand, OverlayPrefs, OverlayRasterRequest, OverlayRequest, OverlaySettingsScope, OverlaySettingsScopes, OverlayState, OverlayToast, PopupAnswer, QuickOpenQuery, QuickOpenResponse, RemoveServerResult } from '../../preload/overlay-channels';
 import type { ChimeTone, NotificationCenterState } from '../../preload/notifications';
 import type { DamoclesTerminalApi, TerminalData, TerminalProfileReport, TerminalRunAction, TerminalScreen, TerminalState } from '../../preload/terminal-channels';
 import type { ReleaseIndex, UpdateSnapshot, VersionInfo } from '../../preload/updates';
@@ -470,7 +470,9 @@ export type FakeOverlayApi = DamoclesOverlayApi & {
   // main's pushes while a connect or settings request is open: what listRemoteHosts answers, and the hosts after a change
   remoteHosts: { list: readonly RemoteHostEntry[] };
   hostEntries: (hosts: readonly RemoteHostEntry[]) => void;
-  passwordlessStep: (event: PasswordlessStepEvent) => void;
+  // main's host operation snapshots: what getHostOperations answers per host, and pushing one (the next revision unless named)
+  hostOperations: Map<string, HostOperations>;
+  pushHostOperations: (operations: Omit<HostOperations, 'revision'> & { readonly revision?: number }) => void;
   // main's push after the attached scope tab's host was renamed or recolored
   settingsScopeHost: (host: OverlaySettingsScopes['host']) => void;
   // main's live rows while a closeRemote request is open
@@ -508,7 +510,9 @@ export function fakeOverlayApi(): FakeOverlayApi {
   const connectHosts = emitter<readonly HostCardInfo[]>();
   const closeRemoteRows = emitter<readonly CloseRemoteRow[]>();
   const hostEntries = emitter<readonly RemoteHostEntry[]>();
-  const passwordlessStep = emitter<PasswordlessStepEvent>();
+  const operationsChanged = emitter<HostOperations>();
+  const hostOperations = new Map<string, HostOperations>();
+  let operationsRevision = 0;
   const settingsScopeHost = emitter<OverlaySettingsScopes['host']>();
   const remoteHosts: { list: readonly RemoteHostEntry[] } = { list: [] };
   const worktree: FakeOverlayApi['worktree'] = { options: opened({ available: false, reason: 'notGit' }), continue: opened([]), message: opened(null) };
@@ -589,15 +593,23 @@ export function fakeOverlayApi(): FakeOverlayApi {
     removalInfo: vi.fn(async () => opened({ runs: [], offerRemoveKey: false, offerDisableLinger: false })),
     removeServer: vi.fn(async (): Promise<PopupAnswer<RemoveServerResult>> => opened({ ok: true as const, notices: [] })),
     retryRemoval: vi.fn(async (): Promise<PopupAnswer<RemoveServerResult>> => opened({ ok: true as const, notices: [] })),
+    getHostOperations: vi.fn(async (hostId: string) => opened(hostOperations.get(hostId) ?? { hostId, revision: 0 })),
     forgetHost: vi.fn(async () => opened(undefined)),
     openHostSettings: vi.fn(async () => opened(undefined)),
     onHostEntries: vi.fn(hostEntries.listen),
-    onPasswordlessStep: vi.fn(passwordlessStep.listen),
+    onHostOperations: vi.fn(operationsChanged.listen),
     onSettingsScopeHost: vi.fn(settingsScopeHost.listen),
     settingsScopeHost: settingsScopeHost.emit,
     remoteHosts,
     hostEntries: hostEntries.emit,
-    passwordlessStep: passwordlessStep.emit,
+    hostOperations,
+    pushHostOperations: (operations) => {
+      operationsRevision = Math.max(operationsRevision + 1, operations.revision ?? 0);
+      const snapshot: HostOperations = { ...operations, revision: operations.revision ?? operationsRevision };
+      // a late, older snapshot reaches the page, but main's current one stays the newest
+      if (snapshot.revision > (hostOperations.get(snapshot.hostId)?.revision ?? -1)) hostOperations.set(snapshot.hostId, snapshot);
+      operationsChanged.emit(snapshot);
+    },
     connectStep: connectStep.emit,
     connectHosts: connectHosts.emit,
     closeRemoteRows: closeRemoteRows.emit,

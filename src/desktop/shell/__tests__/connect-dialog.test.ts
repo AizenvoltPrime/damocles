@@ -902,6 +902,11 @@ describe('connect dialog', () => {
     expect(dialog().closest('[inert]')).toBeNull();
     expect(api.answer).not.toHaveBeenCalled();
     removal = await open();
+    // main publishes the removal's end before it answers
+    vi.mocked(api.removeServer).mockImplementationOnce(async () => {
+      api.pushHostOperations({ hostId: 'h1', removal: { result: { ok: true, notices: [] } } });
+      return opened({ ok: true, notices: [] });
+    });
     await pressPointer(removal.querySelector<HTMLElement>('[data-testid="remove-server-confirm"]')!);
     expect(api.removeServer).toHaveBeenCalledWith('h1', { removeKey: false, disableLinger: false });
     await vi.waitFor(() => expect(dialog().querySelector('[data-testid="remove-server-result"]')?.textContent).toContain('prod'));
@@ -912,7 +917,10 @@ describe('connect dialog', () => {
 
   it('keeps the dialog open on a click beside it while a removal runs in the card, and closes on one once it is done', async () => {
     let finish!: (answer: PopupAnswer<RemoveServerResult>) => void;
-    vi.mocked(api.removeServer).mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    vi.mocked(api.removeServer).mockImplementationOnce(() => {
+      api.pushHostOperations({ hostId: 'h1', removal: {} });
+      return new Promise((resolve) => (finish = resolve));
+    });
     await openConnect({ hosts: [{ ...PROD, connection: 'connected' }] });
     await openCardOf();
     await pressPointer(dialog().querySelector<HTMLElement>('[data-testid="remove-server"]')!);
@@ -929,6 +937,7 @@ describe('connect dialog', () => {
     // a dismissed dialog leaves inert, and answers once its exit ends
     expect(dialog().closest('[inert]')).toBeNull();
     expect(api.answer).not.toHaveBeenCalled();
+    api.pushHostOperations({ hostId: 'h1', removal: { result: { ok: true, notices: [] } } });
     finish(opened({ ok: true, notices: [] }));
     await flushPromises();
     await pressPointer(beside);
@@ -937,17 +946,34 @@ describe('connect dialog', () => {
 
   it('keeps the dialog open on a click beside it while a passwordless setup runs in the card', async () => {
     let finish!: (answer: PopupAnswer<PasswordlessResult>) => void;
-    vi.mocked(api.setUpPasswordless).mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    const steps = { generate: 'running', install: 'pending', verify: 'pending' } as const;
+    vi.mocked(api.setUpPasswordless).mockImplementationOnce(() => {
+      api.pushHostOperations({ hostId: 'h1', passwordless: { steps } });
+      return new Promise((resolve) => (finish = resolve));
+    });
     await openConnect({ hosts: [{ ...PROD, connection: 'connected' }] });
     await openCardOf();
     await pressPointer(dialog().querySelector<HTMLElement>('[data-testid="passwordless-start"]')!);
     const beside = document.body.appendChild(document.createElement('div'));
     await pressPointer(beside);
     expect(dialog().closest('[inert]')).toBeNull();
+    expect(api.answer).not.toHaveBeenCalled();
+    api.pushHostOperations({ hostId: 'h1', passwordless: { steps: { generate: 'done', install: 'done', verify: 'done' }, result: { ok: true } } });
     finish(opened({ ok: true }));
     await flushPromises();
     await pressPointer(beside);
     await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('c1', { kind: 'dismissed' }));
+  });
+
+  it('shows a setup main runs on a card opened after it started, and keeps the dialog open on a click beside it', async () => {
+    api.pushHostOperations({ hostId: 'h1', passwordless: { steps: { generate: 'done', install: 'running', verify: 'pending' } } });
+    await openConnect({ hosts: [{ ...PROD, connection: 'connected' }] });
+    await openCardOf();
+    await vi.waitFor(() => expect([...dialog().querySelectorAll<HTMLElement>('[data-testid="passwordless-step"]')].map((step) => step.dataset.state)).toEqual(['done', 'running', 'pending']));
+    expect(dialog().querySelector('[data-testid="passwordless-start"]')).toBeNull();
+    const beside = document.body.appendChild(document.createElement('div'));
+    await pressPointer(beside);
+    expect(api.answer).not.toHaveBeenCalled();
   });
 
   it('opens the folder browser of a connected host from its card', async () => {

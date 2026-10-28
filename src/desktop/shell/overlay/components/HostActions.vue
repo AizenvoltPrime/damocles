@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onScopeDispose, ref, shallowRef, watch } from 'vue';
+import { computed, ref, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { LoaderCircle, X } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
-import type { ConnectStepEvent, DamoclesOverlayApi, PopupAnswer, RemovalInfo, RemoveServerOptions, RemoveServerResult } from '../../../preload/overlay-channels';
+import type { DamoclesOverlayApi, PopupAnswer, RemovalInfo, RemoveServerOptions, RemoveServerResult } from '../../../preload/overlay-channels';
 import type { ProjectConnection, ShellPlatform } from '../../../preload/shell-channels';
+import { useHostOperations } from '../host-operations';
 import { answerOf, ran } from '../popup-answer';
 import ForgetHostDialog from './ForgetHostDialog.vue';
 import PasswordlessSetup from './PasswordlessSetup.vue';
@@ -13,7 +14,8 @@ import SecretPrompt from './SecretPrompt.vue';
 
 // A saved host's actions, the same on its card and in Settings, Remote hosts: Set up passwordless login, Remove Damocles server
 // and Forget host, which offers the removal first while the host is reachable. Its confirmations are reka alert dialogs, so
-// opened over the Connect dialog they take the pointer and focus as nested layers.
+// opened over the Connect dialog they take the pointer and focus as nested layers. Main owns both operations' runs, so a view
+// mounted mid-run, or again after one ended, shows the same steps and results.
 const props = defineProps<{
   api: DamoclesOverlayApi;
   hostId: string;
@@ -27,48 +29,50 @@ const emit = defineEmits<{ busy: [busy: boolean] }>();
 const { t } = useI18n();
 
 const connected = computed(() => props.connection === 'connected');
-// A started setup stays until the card or page closes, so its finished steps show after main reports the key.
-const setupStarted = ref(false);
+const operations = useHostOperations(props.api, () => props.hostId);
+// A setup main holds stays shown, so its finished steps show after main reports the key.
+const setup = computed(() => operations.value?.passwordless);
+const setupRunning = computed(() => setup.value !== undefined && setup.value.result === undefined && setup.value.failed !== true);
+const removalRun = computed(() => operations.value?.removal);
+const removing = computed(() => removalRun.value !== undefined && removalRun.value.result === undefined && removalRun.value.failed !== true);
+const removed = computed(() => removalRun.value?.result);
+watch(() => removing.value || setupRunning.value, (busy) => emit('busy', busy));
+
 // the removal dialog's facts while it is open
 const removal = shallowRef<RemovalInfo | undefined>();
 const forgetting = ref(false);
-const removing = ref(false);
-const removed = shallowRef<RemoveServerResult | undefined>();
 // a call that failed before main answered: which one
-const failed = ref<'removalInfo' | 'remove' | 'forget' | undefined>();
+const failedCall = ref<'removalInfo' | 'remove' | 'forget' | undefined>();
+const failed = computed(() => failedCall.value ?? (removalRun.value?.failed ? 'remove' : undefined));
 // a removal asked from Forget host forgets the host once it succeeded
 let forgetAfterRemoval = false;
-// The removal stage's own ssh may ask for a secret; main reports it as the host's connect step.
-const asking = shallowRef<ConnectStepEvent | undefined>();
-const askedSecret = computed(() => (asking.value?.prompt?.kind === 'secret' ? { attemptId: asking.value.attemptId, ...asking.value.prompt } : undefined));
-onScopeDispose(props.api.onConnectStep((event) => {
-  if (event.hostId === props.hostId && removing.value) asking.value = event;
-}));
-
-const setupRunning = ref(false);
-watch(() => removing.value || setupRunning.value, (busy) => emit('busy', busy));
+// The removal stage's own ssh may ask for a secret; main holds it in the removal's run. An answered one hides at once.
+const answered = ref<string | undefined>();
+const askedSecret = computed(() => {
+  const prompt = removalRun.value?.prompt;
+  return prompt && prompt.promptId !== answered.value ? prompt : undefined;
+});
 
 // null: Cancel, which ssh takes as no answer
 async function answerSecret(answer: string | null, remember: boolean): Promise<void> {
   const asked = askedSecret.value;
   if (!asked) return;
-  asking.value = undefined;
+  answered.value = asked.promptId;
   try {
     await ran(props.api.answerConnect(asked.attemptId, asked.promptId, answer, remember));
   } catch {
-    failed.value = 'remove';
+    failedCall.value = 'remove';
   }
 }
 
 async function askRemoval(thenForget: boolean): Promise<void> {
-  failed.value = undefined;
-  removed.value = undefined;
+  failedCall.value = undefined;
   forgetAfterRemoval = thenForget;
   try {
     const info = await answerOf(props.api.removalInfo(props.hostId));
     if (info) removal.value = info;
   } catch {
-    failed.value = 'removalInfo';
+    failedCall.value = 'removalInfo';
   }
 }
 
@@ -80,23 +84,17 @@ async function remove(options: RemoveServerOptions | null): Promise<void> {
 
 // Try again after daemonRunning: main runs the same removal stage over ssh, with no connection to the host needed.
 async function retryRemoval(): Promise<void> {
-  failed.value = undefined;
-  removed.value = undefined;
+  failedCall.value = undefined;
   await runRemoval(() => props.api.retryRemoval(props.hostId));
 }
 
 async function runRemoval(call: () => Promise<PopupAnswer<RemoveServerResult>>): Promise<void> {
-  removing.value = true;
+  const thenForget = forgetAfterRemoval;
   try {
     const result = await answerOf(call());
-    if (!result) return;
-    removed.value = result;
-    if (result.ok && forgetAfterRemoval) await forget();
+    if (result?.ok && thenForget) await forget();
   } catch {
-    failed.value = 'remove';
-  } finally {
-    removing.value = false;
-    asking.value = undefined;
+    failedCall.value = 'remove';
   }
 }
 
@@ -104,7 +102,7 @@ async function forget(): Promise<void> {
   try {
     await ran(props.api.forgetHost(props.hostId));
   } catch {
-    failed.value = 'forget';
+    failedCall.value = 'forget';
   }
 }
 
@@ -129,13 +127,12 @@ const removedText = computed(() => {
 <template>
   <div class="flex flex-col gap-2">
     <PasswordlessSetup
-      v-if="setupStarted || (!passwordless && connected)"
+      v-if="setup || (!passwordless && connected)"
       :api="api"
       :host-id="hostId"
       :host-name="hostName"
       :os="os"
-      @started="setupStarted = true"
-      @running="setupRunning = $event"
+      :run="setup"
     />
     <div class="flex flex-wrap items-center gap-2">
       <Button

@@ -8,7 +8,8 @@ vi.mock('electron', () => ({}));
 import { HostStore } from '../host-store';
 import { failureOf, RemoteConnections } from '../connections';
 import { permanentFailureOf } from '../reconnect';
-import type { ConnectFailure } from '../../../preload/overlay-channels';
+import { OVERLAY_CHANNELS, type ConnectFailure, type HostOperations, type OverlayRequest } from '../../../preload/overlay-channels';
+import type { InstallKeyResult } from '../../../daemon/control-messages';
 import { macPrivacyFolder, RemoteHosts, sshDestination, type RemoteHostsDeps } from '../remote-hosts';
 import { parseSshCommand } from '../ssh';
 import type { RemoteConnection } from '../connection';
@@ -75,6 +76,61 @@ async function setup(overrides: Partial<RemoteHostsDeps> = {}, connect: () => Pr
   });
   return { store, connections, hosts, writeClipboard, renamed };
 }
+
+// The open overlay: which pages show, and the host operation snapshots main sent it.
+function fakeOverlay(...shown: Array<'connect' | 'settings'>) {
+  const open = new Set<string>(shown);
+  const snapshots: HostOperations[] = [];
+  const overlay = {
+    request: async (_request: OverlayRequest) => ({ kind: 'dismissed' as const }),
+    send: (channel: string, payload: unknown) => {
+      if (channel === OVERLAY_CHANNELS.hostsOperationsChanged) snapshots.push(payload as HostOperations);
+    },
+    isOpen: (kind: string) => open.has(kind),
+  };
+  return { open, snapshots, overlay };
+}
+
+// A key setup that generates the key on its first ssh-keygen run and passes every ssh call.
+function keySetupOf(folder: string): RemoteHostsDeps['keySetup'] {
+  const run = vi.fn(async (spec: { readonly file: string; readonly args: readonly string[] }) => {
+    if (spec.args.includes('-t')) {
+      const file = spec.args[spec.args.indexOf('-f') + 1]!;
+      fs.writeFileSync(file, 'private');
+      fs.writeFileSync(`${file}.pub`, `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${'A'.repeat(43)} damocles@laptop\n`);
+    }
+    return { exit: { code: 0, signal: null }, stdout: Buffer.from(`256 SHA256:${'b'.repeat(43)} damocles@laptop (ED25519)\n`), stderr: Buffer.alloc(0) };
+  });
+  return {
+    folder,
+    clientName: 'laptop',
+    resolveKeygen: async () => '/usr/bin/ssh-keygen',
+    resolveSsh: async () => '/usr/bin/ssh',
+    run: run as unknown as RemoteHostsDeps['keySetup']['run'],
+    sshQuery: async () => ({ code: 0, stdout: 'preferredauthentications publickey\n', stderr: '' }),
+    askpass: async () => ({ register: async () => ({ env: {}, dispose: () => undefined }) }) as never,
+    sshVersion: async () => [9, 6] as const,
+    env: {},
+    log: () => undefined,
+  };
+}
+
+// A connected host's daemon that shuts down for a removal, ending its connection as it does.
+function removableConnection(): RemoteConnection {
+  let ended: () => void = () => undefined;
+  return {
+    features: ['control.shutdownForRemoval'],
+    control: { request: vi.fn(async () => {
+      setTimeout(() => ended(), 0);
+      return { runKey: '0123456789abcdef' };
+    }) },
+    onClose: (listener: () => void) => { ended = listener; return { dispose: () => undefined }; },
+    onLost: () => ({ dispose: () => undefined }),
+    devices: () => [],
+  } as unknown as RemoteConnection;
+}
+
+const keygenRuns = (keySetup: RemoteHostsDeps['keySetup']): number => vi.mocked(keySetup.run).mock.calls.filter(([spec]) => spec.args.includes('-t')).length;
 
 describe('RemoteHosts', () => {
   it('saves an ssh config alias only when the config lists it, and re-parses "+ New host" input in main', async () => {
@@ -372,6 +428,138 @@ describe('RemoteHosts', () => {
     // every try ends Damocles' master, a refused one too
     expect(exitControlMaster).toHaveBeenCalledTimes(3);
     await expect(hosts.retryRemoval(id)).rejects.toThrow('No removal of this host waits to be tried again');
+  });
+
+  it('publishes a passwordless setup whole at each step, answers it mid-run, and joins a second start to it', async () => {
+    const { overlay, snapshots } = fakeOverlay('settings');
+    let installed!: (result: InstallKeyResult) => void;
+    const request = vi.fn(() => new Promise<InstallKeyResult>((resolve) => (installed = resolve)));
+    const connection = { features: ['ssh.installAuthorizedKey'], control: { request }, onClose: () => ({ dispose: () => undefined }) } as unknown as RemoteConnection;
+    const keySetup = keySetupOf(path.join(userData, 'ssh'));
+    const { hosts, store } = await setup({ overlay: () => overlay, connection: () => connection, keySetup });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    const id = added.host.id;
+    expect(hosts.operations(id)).toEqual({ hostId: id, revision: expect.any(Number) });
+    const first = hosts.setUpPasswordless(id);
+    await vi.waitFor(() => expect(request).toHaveBeenCalled());
+    const second = hosts.setUpPasswordless(id);
+    // a view that mounts now reads the run as main holds it
+    expect(hosts.operations(id)).toMatchObject({ hostId: id, passwordless: { steps: { generate: 'done', install: 'running', verify: 'pending' } } });
+    expect(hosts.operations(id).passwordless).not.toHaveProperty('result');
+    installed({ result: 'installed', path: '/home/dev/.ssh/authorized_keys' });
+    expect(await first).toEqual({ ok: true });
+    expect(await second).toEqual({ ok: true });
+    expect(keygenRuns(keySetup)).toBe(1);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(snapshots.map((snapshot) => snapshot.passwordless?.steps)).toEqual([
+      { generate: 'pending', install: 'pending', verify: 'pending' },
+      { generate: 'running', install: 'pending', verify: 'pending' },
+      { generate: 'done', install: 'pending', verify: 'pending' },
+      { generate: 'done', install: 'running', verify: 'pending' },
+      { generate: 'done', install: 'done', verify: 'pending' },
+      { generate: 'done', install: 'done', verify: 'running' },
+      { generate: 'done', install: 'done', verify: 'done' },
+      { generate: 'done', install: 'done', verify: 'done' },
+    ]);
+    expect(snapshots.at(-1)).toMatchObject({ hostId: id, passwordless: { result: { ok: true } } });
+    const revisions = snapshots.map((snapshot) => snapshot.revision);
+    expect(revisions).toEqual([...revisions].sort((a, b) => a - b));
+    expect(new Set(revisions).size).toBe(revisions.length);
+  });
+
+  it('keeps an ended run while a Connect dialog or Settings shows, and drops it once neither does, never a running one', async () => {
+    const { overlay, open } = fakeOverlay('settings', 'connect');
+    overlay.request = async () => {
+      open.delete('connect');
+      return { kind: 'dismissed' };
+    };
+    let finish!: (result: { readonly code: number | null; readonly lines: readonly string[] }) => void;
+    const runRemovalStage = vi.fn(() => new Promise<{ readonly code: number | null; readonly lines: readonly string[] }>((resolve) => (finish = resolve)));
+    const connection = removableConnection();
+    const { hosts, store } = await setup({ overlay: () => overlay, runRemovalStage, connection: () => connection });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    const id = added.host.id;
+    await store.savePlatform(id, { os: 'linux' });
+    // no ssh on this computer: the setup fails at once
+    expect(await hosts.setUpPasswordless(id)).toEqual({ ok: false, step: 'generate', code: 'configUnreadable', params: {} });
+    const removal = hosts.removeServer(id, { removeKey: false, disableLinger: false });
+    await vi.waitFor(() => expect(runRemovalStage).toHaveBeenCalled());
+    // the Connect dialog closes while Settings still shows the host
+    await hosts.openConnect(id, 'show');
+    expect(hosts.operations(id)).toMatchObject({ passwordless: { steps: { generate: 'failed' }, result: { code: 'configUnreadable' } }, removal: {} });
+    open.clear();
+    hosts.dropUnshownRuns();
+    expect(hosts.operations(id)).not.toHaveProperty('passwordless');
+    expect(hosts.operations(id)).toHaveProperty('removal', {});
+    // a run that ends while no page shows goes as it ends
+    finish({ code: 0, lines: ['{"kind":"removed"}'] });
+    expect(await removal).toEqual({ ok: true, notices: [] });
+    expect(hosts.operations(id)).not.toHaveProperty('removal');
+  });
+
+  it('runs one removal per host, which a second Remove or Try again joins, with the stage\'s secret in its snapshot', async () => {
+    const { overlay, snapshots, open } = fakeOverlay('settings');
+    let finish!: (result: { readonly code: number | null; readonly lines: readonly string[] }) => void;
+    const runRemovalStage = vi.fn(() => new Promise<{ readonly code: number | null; readonly lines: readonly string[] }>((resolve) => (finish = resolve)));
+    const connection = removableConnection();
+    const { hosts, store, connections } = await setup({ overlay: () => overlay, runRemovalStage, connection: () => connection });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    const id = added.host.id;
+    await store.savePlatform(id, { os: 'linux' });
+    const first = hosts.removeServer(id, { removeKey: false, disableLinger: false });
+    await vi.waitFor(() => expect(runRemovalStage).toHaveBeenCalled());
+    const second = hosts.removeServer(id, { removeKey: true, disableLinger: true });
+    const retry = hosts.retryRemoval(id);
+    expect(hosts.operations(id).removal).toEqual({});
+    const prompt = { promptId: 'p9', kind: 'secret', secretKind: 'password', text: "deploy@prod-1's password:" } as const;
+    const attempt = vi.spyOn(connections, 'attempt').mockReturnValue({ attemptId: 'a9', hostId: id, step: 'authenticating', visited: ['authenticating'], notices: [], prompt });
+    hosts.hostChanged(id);
+    expect(snapshots.at(-1)).toMatchObject({ hostId: id, removal: { prompt: { attemptId: 'a9', ...prompt } } });
+    expect(hosts.operations(id).removal).toEqual({ prompt: { attemptId: 'a9', ...prompt } });
+    attempt.mockReturnValue(undefined);
+    hosts.hostChanged(id);
+    expect(snapshots.at(-1)!.removal).toEqual({});
+    finish({ code: 1, lines: ['{"kind":"fail","code":"daemonRunning","params":{}}'] });
+    const result = { ok: false, code: 'daemonRunning', params: {} };
+    expect(await first).toEqual(result);
+    expect(await second).toEqual(result);
+    expect(await retry).toEqual(result);
+    expect(runRemovalStage).toHaveBeenCalledTimes(1);
+    // the ended run stays while Settings shows it, a remount's read included
+    hosts.dropUnshownRuns();
+    expect(hosts.operations(id).removal).toEqual({ result });
+    expect(snapshots.at(-1)!.removal).toEqual({ result });
+    // Try again is a new run, which replaces the ended one
+    const again = hosts.retryRemoval(id);
+    expect(hosts.operations(id).removal).toEqual({});
+    finish({ code: 0, lines: ['{"kind":"removed"}'] });
+    expect(await again).toEqual({ ok: true, notices: [] });
+    expect(runRemovalStage).toHaveBeenCalledTimes(2);
+    open.clear();
+    hosts.dropUnshownRuns();
+    expect(hosts.operations(id)).not.toHaveProperty('removal');
+  });
+
+  it('marks a run whose call threw as failed, and forgets a forgotten host\'s runs', async () => {
+    const { overlay } = fakeOverlay('settings');
+    const connection = {
+      features: ['control.shutdownForRemoval'],
+      control: { request: vi.fn(async () => { throw new Error('the request timed out'); }) },
+      onClose: () => ({ dispose: () => undefined }),
+      onLost: () => ({ dispose: () => undefined }),
+    } as unknown as RemoteConnection;
+    const { hosts, store } = await setup({ overlay: () => overlay, connection: () => connection });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    const id = added.host.id;
+    await store.savePlatform(id, { os: 'linux' });
+    await expect(hosts.removeServer(id, { removeKey: false, disableLinger: false })).rejects.toThrow('timed out');
+    expect(hosts.operations(id).removal).toEqual({ failed: true });
+    await hosts.forget(id);
+    expect(() => hosts.operations(id)).toThrow('No saved host');
   });
 
   it('tells an install whose connection closed (notConnected) from one the daemon answered with an error (installFailed)', async () => {

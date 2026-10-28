@@ -7,6 +7,7 @@ import {
   type ConnectStartResult,
   type ConnectTarget,
   type HostParseResult,
+  type HostOperations,
   type HostRun,
   type InstallFolderResult,
   type LingerResult,
@@ -49,6 +50,7 @@ export interface ConnectActions {
   removalInfo(hostId: string): Promise<RemovalInfo>;
   removeServer(hostId: string, options: RemoveServerOptions): Promise<RemoveServerResult>;
   retryRemoval(hostId: string): Promise<RemoveServerResult>;
+  operations(hostId: string): HostOperations;
   forget(hostId: string): Promise<void>;
   openSettings(hostId: string): void;
 }
@@ -148,6 +150,7 @@ export function registerConnectChannels(overlay: ConnectOverlay, actions: Connec
     return actions.removeServer(call['hostId'], { removeKey: options['removeKey'], disableLinger: options['disableLinger'] });
   });
   onHosts(OVERLAY_CHANNELS.hostsRetryRemoval, (raw) => actions.retryRemoval(hostCall(raw, 'hosts.retryRemoval')));
+  onHosts(OVERLAY_CHANNELS.hostsOperations, (raw) => actions.operations(hostCall(raw, 'hosts.operations')));
   onHosts(OVERLAY_CHANNELS.hostsForget, (raw) => actions.forget(hostCall(raw, 'hosts.forget')));
   on(OVERLAY_CHANNELS.hostsOpenSettings, (raw) => actions.openSettings(hostCall(raw, 'hosts.openSettings')));
   onHosts(OVERLAY_CHANNELS.hostsCheckName, (raw) => {
