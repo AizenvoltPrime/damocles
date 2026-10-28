@@ -89,18 +89,24 @@ export function createPtyScreen(options: PtyScreenOptions): PtyScreen {
     return { data, cols, rows, marks: kept, sequences };
   };
 
-  // a disposed xterm never calls a write's callback
+  // xterm still parses a write queued before its dispose and calls the write's callback
+  let disposed = false;
+  const afterParse = (data: string, callback: () => void): void => {
+    xterm.write(data, () => {
+      if (!disposed) callback();
+    });
+  };
   const waiting = new Set<(err: unknown) => void>();
   return {
-    write: (data, parsed) => xterm.write(data, parsed),
+    write: (data, parsed) => (parsed ? afterParse(data, parsed) : xterm.write(data)),
     resize: (cols, rows) => xterm.resize(cols, rows),
-    clear: () => xterm.write('', () => xterm.clear()),
+    clear: () => afterParse('', () => xterm.clear()),
     setScrollback: (scrollback) => {
       xterm.options.scrollback = scrollback;
     },
     serialize: () => new Promise((resolve, reject) => {
       waiting.add(reject);
-      xterm.write('', () => {
+      afterParse('', () => {
         waiting.delete(reject);
         // a throw would escape into xterm's write loop and end the process
         try {
@@ -112,6 +118,7 @@ export function createPtyScreen(options: PtyScreenOptions): PtyScreen {
     }),
     blank,
     dispose: () => {
+      disposed = true;
       for (const reject of waiting) reject(new Error('the screen was disposed'));
       waiting.clear();
       xterm.dispose();

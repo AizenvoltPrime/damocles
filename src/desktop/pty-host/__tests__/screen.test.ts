@@ -129,6 +129,25 @@ describe('the pty screen', () => {
     await expect(serialized).rejects.toThrow('disposed');
   });
 
+  it('runs no callback of a write queued before a dispose, which xterm still parses', async () => {
+    const serialize = vi.spyOn(SerializeAddon.prototype, 'serialize');
+    try {
+      const screen = createPtyScreen({ cols: 20, rows: 4, scrollback: 10 });
+      const parsed = vi.fn();
+      screen.write('x', parsed);
+      screen.clear();
+      const serialized = screen.serialize();
+      screen.dispose();
+      await expect(serialized).rejects.toThrow('disposed');
+      // xterm's write loop runs on the timer its first write queued, before this one
+      await new Promise((resolve) => setTimeout(resolve));
+      expect(parsed).not.toHaveBeenCalled();
+      expect(serialize).not.toHaveBeenCalled();
+    } finally {
+      serialize.mockRestore();
+    }
+  });
+
   it('rejects a serialize whose serializer throws, leaving nothing uncaught in xterm\'s write loop', async () => {
     const thrown = vi.spyOn(SerializeAddon.prototype, 'serialize').mockImplementation(() => {
       throw new RangeError('Invalid string length');
