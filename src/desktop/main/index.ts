@@ -3691,6 +3691,8 @@ class DesktopApp {
             return (connection.control as unknown as { request(name: string, params: object): Promise<unknown> }).request(command, params);
           },
           dropConnection: (hostId: string) => this.authorities?.connection(sshAuthorityKey(hostId))?.close('the e2e hooks dropped it'),
+          // Damocles' master connection, which macOS and Linux keep for ControlPersist after its daemon and sessions ended
+          exitControlMaster: (hostId: string) => this.exitHostControlMaster(hostId),
           // the transport alone goes, as a network drop does; hold: every attempt's transport fails until releaseTransport
           cutTransport: (hostId: string, options?: { readonly hold?: boolean }) => this.cutTransport(sshAuthorityKey(hostId), options?.hold === true),
           releaseTransport: (hostId: string) => this.heldTransports.delete(sshAuthorityKey(hostId)),
@@ -4565,9 +4567,14 @@ class DesktopApp {
     const authority = sshAuthorityKey(hostId);
     // a loop attempt started before the cancelled one settled would join it and stop with its cancel
     await this.disconnectAuthority(authority);
-    const plan = this.controlPlans.get(hostId);
-    if (plan) await exitControlMaster(this.controlMasterDeps(), sshDestination(host.destination, (line) => log(line)), SSH_ENVIRONMENT.configFile, plan);
+    await this.exitHostControlMaster(hostId);
     this.reconnectHost(hostId);
+  }
+
+  private async exitHostControlMaster(hostId: string): Promise<void> {
+    const plan = this.controlPlans.get(hostId);
+    const host = this.hostStore?.host(hostId);
+    if (plan && host) await exitControlMaster(this.controlMasterDeps(), sshDestination(host.destination, (line) => log(line)), SSH_ENVIRONMENT.configFile, plan);
   }
 
   // Forget host: this computer's update flow, Damocles' master connection, session mirror, browser profile and

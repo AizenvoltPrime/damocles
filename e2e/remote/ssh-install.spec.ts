@@ -7,7 +7,7 @@ import { createHermeticHome } from '../desktop/support/hermetic';
 import { answerDialogs } from '../desktop/support/ui';
 import { expectNoAxeViolations } from '../desktop/support/axe';
 import { failureAlert, folderBrowser, hostCard, openConnect, stepRow, timeline } from './support/connect-ui';
-import { daemonPids, shutdownHostDaemon } from './support/daemon-teardown';
+import { daemonPids, expectNoAccountProcesses, shutdownHostDaemon } from './support/daemon-teardown';
 import { addHost, control, expect, hostLogs, hostNamed, lastConnectStep, openRemoteFolder, remoteEnv, remoteProjectKey, setInstallFolder, SSH_TAG, test } from './support/remote';
 import { ALPINE_TARGET, installedVersion, LINUX_TARGET, serverPackage } from './support/release-mirror';
 import { startSshAgentStub } from './support/ssh-agent-stub';
@@ -90,7 +90,7 @@ test('a tampered package fails at Installing, where the hash check runs, and not
   // no version folder and no staging folder: the download was refused before anything was unpacked
   expect((await entries(fixture, DEFAULT_INSTALL)).filter((name) => name === installedVersion(LINUX_TARGET) || name.startsWith('.staging-'))).toEqual([]);
   // nothing of Damocles runs: the failed attempt left no daemon, bridge or shell
-  await expect.poll(() => fixture.userProcesses(), { timeout: 30_000 }).toEqual([]);
+  await expectNoAccountProcesses(app, host.hostId, fixture);
 });
 
 test('two clients connecting at the same time install once and share one daemon', { tag: SSH_TAG }, async ({ launch, mirror, ssh, sshd }) => {
@@ -158,7 +158,7 @@ test('on CentOS 7 the probe stops with the glibc message and installs nothing', 
   await expectNoAxeViolations(overlay, '[role="dialog"]');
   expect(mirror.downloads).toEqual([]);
   expect((await entries(fixture, DEFAULT_INSTALL)).filter((name) => !name.startsWith('run-'))).toEqual([]);
-  await expect.poll(() => fixture.userProcesses(), { timeout: 30_000 }).toEqual([]);
+  await expectNoAccountProcesses(app, (await hostNamed(app, 'prod-1')).hostId, fixture);
 });
 
 test('with the home mounted noexec the probe stops and offers Choose install folder; /opt/damocles then installs and connects', { tag: SSH_TAG }, async ({ foreground: _foreground, launch, mirror, ssh, sshd }) => {

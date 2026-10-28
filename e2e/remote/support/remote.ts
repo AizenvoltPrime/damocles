@@ -42,6 +42,7 @@ interface RemoteHooks {
   state(hostId: string): string;
   control(hostId: string, command: string, params: Record<string, unknown>): Promise<unknown>;
   dropConnection(hostId: string): void;
+  exitControlMaster(hostId: string): Promise<void>;
   addHost(target: { alias: string; name: string } | { input: string; name: string }): Promise<string>;
   openFolder(hostId: string, folder: string, trust: boolean): Promise<string>;
   setInstallFolder(hostId: string, folder: string | null): Promise<unknown>;
@@ -75,6 +76,8 @@ export const remoteHosts = (app: ElectronApplication): Promise<RemoteHost[]> => 
 export const hostState = (app: ElectronApplication, hostId: string): Promise<string> => remote(app, 'state', hostId);
 export const control = (app: ElectronApplication, hostId: string, command: string, params: Record<string, unknown> = {}): Promise<unknown> => remote(app, 'control', hostId, command, params);
 export const dropConnection = (app: ElectronApplication, hostId: string): Promise<void> => remote(app, 'dropConnection', hostId);
+/** `ssh -O exit` on Damocles' master connection to the host; nothing on a Windows client, which uses none. */
+export const exitControlMaster = (app: ElectronApplication, hostId: string): Promise<void> => remote(app, 'exitControlMaster', hostId);
 /** Saves a host record through main, as the Connect dialog's new-host form does, without connecting. */
 export const addHost = (app: ElectronApplication, target: { alias: string; name: string } | { input: string; name: string }): Promise<string> => remote(app, 'addHost', target);
 /** Connects the host with no prompt to answer and adds `folder` as its project, selected; resolves with its key. */
