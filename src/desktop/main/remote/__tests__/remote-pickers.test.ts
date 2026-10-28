@@ -112,6 +112,7 @@ async function setup(renderer: Renderer, roots: () => readonly Project[] = () =>
     openSettings: () => undefined,
     keySetup: { folder: '/nonexistent', clientName: 'laptop', resolveKeygen: async () => undefined, resolveSsh: async () => undefined, run: async () => { throw new Error('no process starts here'); }, sshQuery: async () => { throw new Error('no process starts here'); }, askpass: async () => { throw new Error('no askpass here'); }, sshVersion: async () => undefined, env: {}, log: () => undefined },
     runRemovalStage: async () => { throw new Error('no removal here'); },
+    exitControlMaster: async () => undefined,
   });
   return { hosts, requests, logged, addProject };
 }

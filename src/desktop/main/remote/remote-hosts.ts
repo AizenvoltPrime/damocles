@@ -101,6 +101,8 @@ export interface RemoteHostsDeps {
   readonly sshConfigFile?: string;
   // the removal stage over ssh, with its prompts shown as the host's attempt
   readonly runRemovalStage: (hostId: string, script: string) => Promise<{ readonly code: number | null; readonly lines: readonly string[] }>;
+  // ssh -O exit on Damocles' master connection to the host, ending every session on it; nothing when it uses none
+  readonly exitControlMaster: (hostId: string) => Promise<void>;
   readonly log: (line: string) => void;
 }
 
@@ -449,8 +451,10 @@ export class RemoteHosts implements ConnectActions {
     return this.removalEnded(hostId, pending, result);
   }
 
+  // Damocles' master connection ends whatever the outcome, so no session stays signed in with a key the removal took away.
   // The host store forgets what the stage undid; a stage that refused with daemonRunning stays ready to be tried again.
   private async removalEnded(hostId: string, removal: { readonly script: string | undefined; readonly key: boolean; readonly disableLinger: boolean }, result: RemoveServerResult): Promise<RemoveServerResult> {
+    await this.deps.exitControlMaster(hostId);
     if (!result.ok && result.code === 'daemonRunning' && removal.script !== undefined) this.pendingRemovals.set(hostId, { ...removal, script: removal.script });
     if (result.ok) {
       if (removal.key) await this.deps.store.clearInstalledKey(hostId);

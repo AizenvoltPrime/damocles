@@ -4769,6 +4769,7 @@ class DesktopApp {
       deleteRememberedSecrets: (hostId) => this.rememberedSecrets().deleteAllForHost(hostId),
       forgetLocalData: (hostId) => this.forgetHostData(hostId),
       disconnect: (hostId) => this.disconnectAuthority(sshAuthorityKey(hostId)),
+      exitControlMaster: (hostId) => this.exitHostControlMaster(hostId),
       openSettings: (hostId) => this.openSettings({ section: 'remoteHosts', host: hostId }),
       keySetup: {
         folder: keyFolder(DAMOCLES_HOME_DIR),

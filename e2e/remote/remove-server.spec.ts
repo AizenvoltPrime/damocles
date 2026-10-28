@@ -7,7 +7,7 @@ import { openTerminal, runInTerminal } from '../desktop/support/terminal';
 import { writeUserSettings } from '../desktop/support/hermetic';
 import { connectDialog, hostCard, openConnect, openInBrowser } from './support/connect-ui';
 import { fakeLoginctl, lingering, loginctlCalls, newPassword, userAuthorizedKeys, usePasswords } from './support/credentials';
-import { expectNoAccountProcesses, serverProcesses } from './support/daemon-teardown';
+import { serverProcesses } from './support/daemon-teardown';
 import { connectAnswering, openRemoteHostSettings, removeServerDialog, storedHost } from './support/host-settings-ui';
 import { addHost, expect, hostNamed, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
 import { TARGET_HOME, type SshdFixture } from './support/sshd';
@@ -61,10 +61,11 @@ async function cancelFromCard(overlay: Page, card: Locator, action: string, ques
 }
 
 /** Confirms the removal and waits for its outcome, then for the account to have no process left. */
-async function remove(app: ElectronApplication, hostId: string, overlay: Page, dialog: Locator, fixture: SshdFixture): Promise<void> {
+async function remove(overlay: Page, dialog: Locator, fixture: SshdFixture): Promise<void> {
   await dialog.getByRole('button', { name: 'Remove server', exact: true }).click();
   await expect(overlay.getByTestId('remove-server-result')).toHaveRole('status', { timeout: 120_000 });
-  await expectNoAccountProcesses(app, hostId, fixture);
+  // the removal ends Damocles' master connection too
+  await expect.poll(() => fixture.userProcesses(), { timeout: 30_000 }).toEqual([]);
   await closeSettingsModal(overlay);
 }
 
@@ -134,7 +135,7 @@ test('Remove Damocles server lists the running terminal, leaves no ~/.damocles/s
   await fromCardDialog.getByRole('checkbox', { name: REMOVE_KEY, exact: true }).uncheck();
   await fromCardDialog.getByRole('button', { name: 'Remove server', exact: true }).click();
   await expect(removing.card.getByTestId('remove-server-result')).toHaveRole('status', { timeout: 120_000 });
-  await expectNoAccountProcesses(app, host.hostId, fixture);
+  await expect.poll(() => fixture.userProcesses(), { timeout: 30_000 }).toEqual([]);
   await expect(removing.card).toBeVisible();
   await removing.overlay.keyboard.press('Escape');
   await expect(removing.overlay.getByTestId('connect-dialog')).toHaveCount(0);
@@ -150,7 +151,7 @@ test('Remove Damocles server lists the running terminal, leaves no ~/.damocles/s
   removal = await openRemoval(app, host.hostId);
   await removal.dialog.getByRole('checkbox', { name: DISABLE_LINGER, exact: true }).check();
   await expect(removal.dialog.getByRole('checkbox', { name: REMOVE_KEY, exact: true })).toBeChecked();
-  await remove(app, host.hostId, removal.overlay, removal.dialog, fixture);
+  await remove(removal.overlay, removal.dialog, fixture);
   expect(await serverFolder(fixture)).toBe(false);
   expect(await serverProcesses(fixture)).toEqual([]);
   expect(await userAuthorizedKeys(fixture)).toEqual([other]);

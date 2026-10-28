@@ -70,6 +70,7 @@ async function setup(overrides: Partial<RemoteHostsDeps> = {}, connect: () => Pr
     openSettings: vi.fn(),
     keySetup: { folder: path.join(userData, 'ssh'), clientName: 'laptop', resolveKeygen: async () => undefined, resolveSsh: async () => undefined, run: vi.fn(), sshQuery: vi.fn(), askpass: vi.fn(), sshVersion: vi.fn(), env: {}, log: () => undefined },
     runRemovalStage: vi.fn(async () => ({ code: 0, lines: ['{"kind":"removed"}'] })),
+    exitControlMaster: vi.fn(async () => undefined),
     ...overrides,
   });
   return { store, connections, hosts, writeClipboard, renamed };
@@ -305,7 +306,8 @@ describe('RemoteHosts', () => {
       onClose: (listener: () => void) => { ended = listener; return { dispose: () => undefined }; },
       onLost: () => ({ dispose: () => undefined }),
     } as unknown as RemoteConnection;
-    const { hosts, store } = await setup({ connection: () => connection, runRemovalStage, disconnect });
+    const exitControlMaster = vi.fn(async (_hostId: string) => undefined);
+    const { hosts, store } = await setup({ connection: () => connection, runRemovalStage, disconnect, exitControlMaster });
     const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
     if (!added.ok) throw new Error('setup');
     const id = added.host.id;
@@ -318,6 +320,9 @@ describe('RemoteHosts', () => {
     expect(runRemovalStage.mock.calls[0]![1]).toContain("D_KEY=''");
     expect(runRemovalStage.mock.calls[0]![1]).toContain("D_DISABLE_LINGER='0'");
     expect(disconnect).toHaveBeenCalledWith(id);
+    // Damocles' master connection ends once the stage ran, the key box checked or not
+    expect(exitControlMaster.mock.calls).toEqual([[id]]);
+    expect(exitControlMaster.mock.invocationCallOrder[0]).toBeGreaterThan(runRemovalStage.mock.invocationCallOrder[0]!);
     expect(store.host(id)?.installedKeyFingerprint).toBeDefined();
     await hosts.removeServer(id, { removeKey: true, disableLinger: false });
     expect(runRemovalStage.mock.calls[1]![1]).toContain(`D_KEY='${entry}'\nD_KEY_FILE='/home/dev/.ssh/authorized_keys'`);
@@ -345,7 +350,8 @@ describe('RemoteHosts', () => {
       onClose: (listener: () => void) => { ended = () => { connected = false; listener(); }; return { dispose: () => undefined }; },
       onLost: () => ({ dispose: () => undefined }),
     } as unknown as RemoteConnection;
-    const { hosts, store } = await setup({ connection: () => (connected ? connection : undefined), runRemovalStage });
+    const exitControlMaster = vi.fn(async (_hostId: string) => undefined);
+    const { hosts, store } = await setup({ connection: () => (connected ? connection : undefined), runRemovalStage, exitControlMaster });
     await expect(hosts.retryRemoval('missing')).rejects.toThrow();
     const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
     if (!added.ok) throw new Error('setup');
@@ -363,6 +369,8 @@ describe('RemoteHosts', () => {
     expect(new Set(stages).size).toBe(1);
     expect(stages[0]).toContain("D_RUN_KEY='0123456789abcdef'");
     expect(store.host(id)?.installedKeyFingerprint).toBeUndefined();
+    // every try ends Damocles' master, a refused one too
+    expect(exitControlMaster).toHaveBeenCalledTimes(3);
     await expect(hosts.retryRemoval(id)).rejects.toThrow('No removal of this host waits to be tried again');
   });
 
