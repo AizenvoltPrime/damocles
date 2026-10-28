@@ -167,14 +167,17 @@ describe('probeGit', () => {
   });
 
   it('never takes a git from a relative PATH entry, which would resolve against the working folder', async () => {
-    const planted = path.join(dir, 'planted');
-    fs.mkdirSync(planted);
-    fs.writeFileSync(path.join(planted, gitName), 'not git');
-    const relative = path.relative(process.cwd(), planted);
-    expect(path.isAbsolute(relative)).toBe(false);
+    fs.mkdirSync(path.join(dir, 'planted'));
+    fs.writeFileSync(path.join(dir, 'planted', gitName), 'not git');
     const gitDir = realGitDir();
-    process.env['PATH'] = [relative, gitDir].join(path.delimiter);
-    expect(await probeGit(log, (message) => message)).toMatchObject({ available: true, path: path.join(gitDir, gitName) });
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try {
+      process.env['PATH'] = ['planted', gitDir].join(path.delimiter);
+      expect(await probeGit(log, (message) => message)).toMatchObject({ available: true, path: path.join(gitDir, gitName) });
+    } finally {
+      process.chdir(cwd);
+    }
   });
 
   it('settles at its deadline though git hangs and a process it started keeps the output open', async () => {

@@ -203,7 +203,7 @@ describe('the pull request workflow', () => {
 
   it('checks the contracts against the base branch\'s committed snapshot, the base ref passed through the environment', () => {
     const against = steps.find((step) => step.run?.includes('protocol-compat.mjs --against'));
-    expect(against?.env?.['BASE_REF']).toBe('${{ github.base_ref }}');
+    expect(against?.env?.['BASE_REF']).toBe('${{ github.base_ref || github.event.repository.default_branch }}');
     expect(against?.run).not.toContain('${{');
     expect(against?.run).toContain('snapshot="origin/$BASE_REF:src/remote/protocol-snapshot.json"');
     expect(against?.run).toContain('git show "$snapshot"');
