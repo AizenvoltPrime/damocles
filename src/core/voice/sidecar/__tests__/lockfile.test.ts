@@ -1,9 +1,22 @@
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { windowsSystemTool } from "../../../system-tools";
 import { acquireSidecarLock } from "../lockfile";
 import type { LockContents } from "../lockfile";
+
+const restrict = vi.hoisted(() => ({ fail: false }));
+vi.mock("../../../owner-only-acl", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../owner-only-acl")>();
+  return {
+    restrictToUser: async (folder: string) => {
+      if (restrict.fail) throw new Error("icacls could not restrict the folder");
+      await actual.restrictToUser(folder);
+    },
+  };
+});
 
 function makeContents(overrides: Partial<LockContents> = {}): LockContents {
   return {
@@ -34,6 +47,30 @@ describe("acquireSidecarLock", () => {
       await result.commit(makeContents());
       await result.release();
     }
+  });
+
+  it("gives the lock up and writes no token when its folder cannot be made the user's alone", async () => {
+    restrict.fail = true;
+    try {
+      const lockDir = join(tmp, "sidecar.lock");
+      await expect(acquireSidecarLock(lockDir)).rejects.toThrow("icacls could not restrict the folder");
+      await expect(stat(lockDir)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      restrict.fail = false;
+    }
+  });
+
+  it.runIf(process.platform === "win32")("keeps the token file to the user alone", async () => {
+    const lockDir = join(tmp, "sidecar.lock");
+    const result = await acquireSidecarLock(lockDir);
+    if (result.kind !== "owned") throw new Error("the first acquisition should own the lock");
+    await result.commit(makeContents());
+    const file = join(lockDir, "data.json");
+    // icacls prints the path before the first entry and a summary line last
+    const entries = execFileSync(windowsSystemTool("icacls"), [file], { encoding: "utf8" }).replace(file, "").split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[^ ]+\\?[^:]*:\(/.test(line));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.toLowerCase().startsWith(`${process.env["USERDOMAIN"]}\\${userInfo().username}:`.toLowerCase())).toBe(true);
+    await result.release();
   });
 
   it("second acquisition attaches to a committed live owner", async () => {

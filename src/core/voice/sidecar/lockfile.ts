@@ -1,10 +1,8 @@
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { userInfo } from "node:os";
 import { join } from "node:path";
 import { log } from "../../logger";
-import { runProcess } from "../../process-launcher";
-import { windowsSystemTool } from "../../system-tools";
+import { restrictToUser } from "../../owner-only-acl";
 
 export type LockContents = {
   pid: number;
@@ -50,7 +48,7 @@ export async function acquireSidecarLock(lockDir: string): Promise<AcquireResult
   const owner = randomUUID();
   while (true) {
     try {
-      await fs.mkdir(lockDir, { recursive: false });
+      await fs.mkdir(lockDir, { recursive: false, mode: 0o700 });
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
 
@@ -82,6 +80,13 @@ export async function acquireSidecarLock(lockDir: string): Promise<AcquireResult
       continue;
     }
 
+    // the token is written only into a folder already the user's alone; a lock that cannot be made so is given up
+    try {
+      await restrictToUser(lockDir);
+    } catch (err) {
+      await removeLockDir(lockDir);
+      throw err;
+    }
     const stopFresh = keepFresh(lockDir);
     await writeAtomic(dataPath, {
       pid: process.pid,
@@ -166,27 +171,9 @@ function stripState(file: LockFileOnDisk): LockContents {
 
 async function writeAtomic(dataPath: string, payload: LockFileOnDisk): Promise<void> {
   const tmp = `${dataPath}.tmp.${process.pid}`;
+  // Windows ignores the mode; the file inherits the lock folder's user-only ACL instead
   await fs.writeFile(tmp, JSON.stringify(payload), { mode: 0o600 });
-  // POSIX honors the 0o600 mode passed to writeFile. Windows ignores
-  // it — file inherits the user's home-dir ACL, which on a default
-  // install permits the local Authenticated Users / Users groups. Run
-  // icacls to (a) drop inheritance and (b) grant only the current user.
-  // This matches the security posture of POSIX 0o600: protects
-  // against cross-user processes, not same-user ones (same as
-  // chmod 600 on Linux — a same-uid process can always read).
-  await applyOwnerOnlyAcl(tmp);
   await fs.rename(tmp, dataPath);
-}
-
-async function applyOwnerOnlyAcl(filePath: string): Promise<void> {
-  if (process.platform !== "win32") return;
-  const username = userInfo().username;
-  if (username.length === 0) return;
-  await runProcess({
-    file: windowsSystemTool("icacls"),
-    args: [filePath, "/inheritance:r", "/grant:r", `${username}:F`],
-    stdio: ["ignore", "ignore", "ignore"],
-  }).catch(() => undefined);
 }
 
 async function isProcessAlive(pid: number): Promise<boolean> {
