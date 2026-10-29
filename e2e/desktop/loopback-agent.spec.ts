@@ -831,10 +831,12 @@ test('a loopback chat\'s sign-in opens the settings overlay on the User tab, ser
     // Picking a GPT model with no OpenAI sign-in is refused, and its sign-in opens settings on the User tab at the OpenAI account.
     const pick = async (model: string): Promise<void> => {
       await tab.getByTestId('composer-model').click();
-      const options = tab.getByTestId('composer-model-menu').locator('[data-testid="composer-model-option"]');
+      const menu = tab.getByTestId('composer-model-menu');
+      const options = menu.locator('[data-testid="composer-model-option"]');
       // the picker lists every model until the chat's account state arrives, the GitHub Copilot copies included
       await expect(options.filter({ hasText: 'Gemini 4 Argon' })).toHaveCount(0);
       await options.filter({ hasText: model }).click();
+      await expect(menu).toBeHidden();
     };
     await pick('GPT-6 Astra');
     await expect.poll(async () => (await hostMessages(tab, 'openaiAuthRequired')).length, { timeout: 30_000 }).toBeGreaterThan(0);
@@ -860,6 +862,8 @@ test('a loopback chat\'s sign-in opens the settings overlay on the User tab, ser
     await expect(overlay.getByTestId('settings-modal')).toHaveCount(0);
     await pick('DeepSeek V4 Pro');
     await expect.poll(async () => (await hostMessages(tab, 'modelUpdate')).at(-1)?.['activeModel']).toBe('deepseek-v4-pro');
+    // the closed menu focuses its trigger after it unmounts, and an Enter sent before then reopens the menu instead of sending
+    await expect.poll(() => tab.evaluate(() => document.activeElement?.getAttribute('data-testid'))).toBe('composer-model');
     await sendPrompt(tab, 'Signed in now');
     await expect(tab.getByText('Echo: Signed in now', { exact: true })).toBeVisible({ timeout: 60_000 });
     await awaitTurnEnd(tab);

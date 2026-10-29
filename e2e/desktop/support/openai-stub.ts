@@ -165,6 +165,9 @@ export function chatRequests(stub: OpenAIStub): RecordedRequest[] {
   return stub.requests.filter((r) => r.method === 'POST' && r.url.endsWith('/chat/completions'));
 }
 
+/** A sub-call (the title, memory extraction) offers only its output tool, as the stub's routing assumes. */
+export const isSubCall = (request: RecordedRequest): boolean => (request.body as { tools?: unknown[] }).tools?.length === 1;
+
 /** The last request that carried a tool result back to the model; title generation and other sub-calls carry none. */
 export function lastToolResultRequest(stub: OpenAIStub): string {
   const bodies = chatRequests(stub).map((r) => JSON.stringify(r.body)).filter((body) => body.includes('"role":"tool"'));

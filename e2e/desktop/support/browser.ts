@@ -115,6 +115,12 @@ export function viewOf(views: readonly ViewInfo[], urlPart: string): ViewInfo | 
   return views.find((view) => view.url.includes(urlPart));
 }
 
+/** The page tab's view as a Playwright page; Playwright lists a view only once its first navigation commits, which can trail the tab's load. */
+export async function pageViewOf(app: ElectronApplication, pageId: string): Promise<Page> {
+  const isView = (page: Page): boolean => page.url().includes(`/panel/${pageId}/`);
+  return app.windows().find(isView) ?? app.waitForEvent('window', { predicate: isView });
+}
+
 /** Resolves once every visible page view shows a screencast frame and has painted twice since. */
 export async function pageFramesShown(app: ElectronApplication): Promise<void> {
   await expect.poll(() => app.evaluate(async ({ BrowserWindow, WebContentsView }) => {

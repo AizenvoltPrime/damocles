@@ -4,7 +4,7 @@ import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { expect, test } from './support/fixtures';
 import { git } from './support/git';
 import type { HermeticHome } from './support/hermetic';
-import { chatRequests } from './support/openai-stub';
+import { chatRequests, isSubCall } from './support/openai-stub';
 import { readyOverlay } from './support/overlay';
 import { openProjectChat } from './support/screenshots';
 import { chatInput } from './support/ui';
@@ -91,7 +91,7 @@ test('Move to a worktree moves the chat\'s two files, leaves the user\'s third, 
     // the agent's request (not a background sub-call such as memory extraction) carries the working-folder note's own words,
     // which the system prompt's "Primary working directory" never says
     const note = JSON.stringify(`This chat now works in ${record.workingFolder}. Read and edit files there from now on.`).slice(1, -1);
-    const turns = chatRequests(stub).slice(before).map((request) => JSON.stringify(request.body)).filter((body) => body.includes('Raise a again'));
+    const turns = chatRequests(stub).slice(before).filter((request) => !isSubCall(request)).map((request) => JSON.stringify(request.body)).filter((body) => body.includes('Raise a again'));
     expect(turns.length).toBeGreaterThan(0);
     expect(turns.every((body) => body.includes(note))).toBe(true);
     // the note rides with the next prompt and starts no turn of its own

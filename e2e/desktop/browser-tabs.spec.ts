@@ -5,7 +5,7 @@ import type { DesktopApp, LaunchOptions } from './support/app';
 import { activeChat, chatById, chatIdOf, expect, nextChat, panelIdOf, selectChatPage, test } from './support/fixtures';
 import { seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
-import { activePageTab, browserTabs, chromeEnv, openPage, PAGE_TIMEOUT, startSite, systemChrome, typeIntoFocused, viewOf, windowViews, type Site } from './support/browser';
+import { activePageTab, browserTabs, chromeEnv, openPage, PAGE_TIMEOUT, pageViewOf, startSite, systemChrome, typeIntoFocused, viewOf, windowViews, type Site } from './support/browser';
 import { editorTab, toggleTerminal } from './support/editor';
 import { chooseMenuItem } from './support/overlay';
 import { settled } from './support/screenshots';
@@ -281,7 +281,7 @@ test('a page tab shown again resumes its live screencast, and the header\'s open
   await openSitePage(app, tab, '/ticking');
   const page = (await activePageTab(app))!;
   const shell = await shellPage(app);
-  const pageView = app.windows().find((candidate) => candidate.url().includes(`/panel/${page.id}/`))!;
+  const pageView = await pageViewOf(app, page.id);
   await pageView.evaluate(() => {
     const w = window as unknown as { __e2eFrames: number };
     w.__e2eFrames = 0;
@@ -363,7 +363,7 @@ test('no page reaches the shell bridge, and browser channels from a page or chat
   const chatId = panelIdOf(tab);
   await openSitePage(app, tab, '/isolated');
   const pageId = (await activePageTab(app))!.id;
-  const pageView = app.windows().find((p) => p.url().includes(`/panel/${pageId}/`))!;
+  const pageView = await pageViewOf(app, pageId);
 
   const bridges = (page: Page) => page.evaluate(() => ({ shell: typeof window.damoclesShell, panel: typeof window.damoclesBridge }));
   expect(await bridges(pageView)).toEqual({ shell: 'undefined', panel: 'object' });
