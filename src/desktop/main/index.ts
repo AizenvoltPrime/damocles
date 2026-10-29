@@ -3825,6 +3825,8 @@ class DesktopApp {
           },
         },
         reloadCore: () => this.core.reload(),
+        // the folder chats open in when none is named, as main's mirror of core's folder targets holds it now
+        defaultProjectKey: () => this.client()?.defaultTarget()?.key,
         // this computer's core records a remote chat's voice: a stand-in recorder with a fixed transcript, and its starts
         voice: {
           fake: (transcript: string) => this.core.run('E2E voice', (core) => core.client.e2eFakeVoice(transcript)),

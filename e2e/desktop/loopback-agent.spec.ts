@@ -630,19 +630,25 @@ test('on a loopback chat voice records in this computer\'s core and fills the re
     const { key: remoteKey, tab } = await newLoopbackChat(app, folder);
 
     // Voice: the recorder process is a child of this computer's core, never of the daemon's tree; the transcript fills the composer.
-    const { pid: localCore } = await app.evaluate((_electron) => (globalThis as unknown as VoiceHooks).__damoclesE2e.voice.fake('Transcribed on this computer'));
-    expect(localCore).toBe(await corePid(app));
+    // macOS desktop has no voice (desktopHostCapabilities), so a remote chat there offers no mic either.
     const mic = tab.getByTestId('composer-voice');
-    await expect(mic).toBeEnabled();
-    await mic.click();
-    let recorderPid: number | null = null;
-    await expect.poll(async () => (recorderPid = (await app!.evaluate(() => (globalThis as unknown as VoiceHooks).__damoclesE2e.voice.recorder())).recorderPid)).not.toBeNull();
-    expect(await processTree(localCore)).toContain(recorderPid);
-    expect(await processTree(await daemonPid(home))).not.toContain(recorderPid);
-    await mic.click();
-    await expect(chatInput(tab)).toHaveValue(/Transcribed on this computer/);
-    await shootThemes(app, tab, 'voice-transcript-in-remote-composer');
-    await chatInput(tab).fill('');
+    if (process.platform === 'darwin') {
+      await expect(chatInput(tab)).toBeVisible();
+      await expect(mic).toHaveCount(0);
+    } else {
+      const { pid: localCore } = await app.evaluate((_electron) => (globalThis as unknown as VoiceHooks).__damoclesE2e.voice.fake('Transcribed on this computer'));
+      expect(localCore).toBe(await corePid(app));
+      await expect(mic).toBeEnabled();
+      await mic.click();
+      let recorderPid: number | null = null;
+      await expect.poll(async () => (recorderPid = (await app!.evaluate(() => (globalThis as unknown as VoiceHooks).__damoclesE2e.voice.recorder())).recorderPid)).not.toBeNull();
+      expect(await processTree(localCore)).toContain(recorderPid);
+      expect(await processTree(await daemonPid(home))).not.toContain(recorderPid);
+      await mic.click();
+      await expect(chatInput(tab)).toHaveValue(/Transcribed on this computer/);
+      await shootThemes(app, tab, 'voice-transcript-in-remote-composer');
+      await chatInput(tab).fill('');
+    }
 
     // Browser tools: off the ToolSearch menu of the remote chat; loading one answers with the user-scope reason.
     stub.replies.push(

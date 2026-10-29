@@ -81,7 +81,7 @@ test('projects: the sidebar adds, trusts, selects and removes projects, shows th
   }
 });
 
-type LaunchHold = typeof globalThis & { __damoclesE2e?: { launchRestore?: { readonly reached: boolean; release(): void } } };
+type LaunchHold = typeof globalThis & { __damoclesE2e?: { launchRestore?: { readonly reached: boolean; release(): void }; defaultProjectKey(): string | undefined } };
 
 test('a project added while core still sets the home chat up takes that chat at once, as core will, and its chat list loads', async ({ home, launch }) => {
   // The launch's chat restore waits on the hold, so core has not registered the home chat when the project is added.
@@ -107,6 +107,11 @@ test('a project added while core still sets the home chat up takes that chat at 
   await clickMenu(app, 'damocles.addProject');
   const question = confirmDialog(overlay);
   await expect(question).toBeVisible();
+  // main's state names the home folder until core's folder targets, which it mirrors, take the added project
+  await expect.poll(() => app.evaluate((_electron, before) => {
+    const key = (globalThis as LaunchHold).__damoclesE2e!.defaultProjectKey();
+    return key !== undefined && key !== before;
+  }, homeKey)).toBe(true);
   await debug.send('Debugger.resume');
   expect(await crossed).toBeNull();
   await debug.detach();

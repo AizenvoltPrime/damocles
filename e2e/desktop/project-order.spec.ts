@@ -36,12 +36,22 @@ async function shownNames(shell: Page): Promise<string[]> {
   return (await shownProjectOrder(shell)).map((key) => byKey.get(key) ?? key);
 }
 
+// The default open Files, Source control and Graph leave Projects two rows on a 1024x768 screen (macOS runners); a drag
+// between the first and last row needs all three painted.
+function seedSidebarWithRoomForProjects(home: HermeticHome): void {
+  fs.writeFileSync(path.join(home.userData, 'window-layout.json'), JSON.stringify({
+    version: 2,
+    sidebar: { sidebarVisible: true, sidebarWidth: 264, sections: { projects: { collapsed: false, size: 180 }, chats: { collapsed: false }, files: { collapsed: true, size: 230 }, scm: { collapsed: true, size: 300 }, graph: { collapsed: true, size: 190 } }, grid: DEFAULT_GRID_LAYOUT },
+  }));
+}
+
 async function readyProjects(shell: Page): Promise<void> {
   await expect(projectsList(shell).locator('[role="option"][data-project-key]')).toHaveCount(NAMES.length);
 }
 
 test('flat view: a dragged project keeps its place after a relaunch, and main wrote the order before the list moved', async ({ foreground: _foreground, home, launch }) => {
   seedProjects(home);
+  seedSidebarWithRoomForProjects(home);
   const first = await launch();
   const shell = await readyShell(first.app);
   await readyProjects(shell);
