@@ -85,7 +85,8 @@ test('a conflicted file of an SSH repository opens in the three-pane merge edito
   await expect(merge(shell)).toHaveAttribute('data-conflicts-left', '0');
   await merge(shell).getByTestId('merge-complete').click();
   await expect(merge(shell)).toHaveCount(0);
-  await expect.poll(() => targetGit(fixture, 'diff', '--name-only', '--diff-filter=U')).toBe('');
+  // a plain working-tree diff takes index.lock when a file matches a stage, which fails the app's git add meanwhile
+  await expect.poll(() => targetGit(fixture, '-c', 'diff.autoRefreshIndex=false', 'diff', '--name-only', '--diff-filter=U')).toBe('');
   expect(await targetGit(fixture, 'show', ':a.txt')).toBe(['line 1', 'feature 2', 'line 3', 'line 4', 'line 5', 'line 6', 'line 7', 'main 8', 'line 9'].join('\n'));
   await expect(row(shell, 'index', 'a.txt')).toBeVisible();
   await shutdownHostDaemon(app, hostId, fixture);

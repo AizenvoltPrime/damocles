@@ -163,6 +163,8 @@ test('in amend mode the palette and View › Source Control title the commit com
   await commitMessage(shell).fill('First change');
   await commitMessage(shell).press('ControlOrMeta+Enter');
   await expect.poll(() => subject(home)).toBe('First change');
+  // the commit's reply empties the box after main and the shell leave amend mode for it, which a toggle before then would undo
+  await expect(commitMessage(shell)).toHaveValue('');
   expect(await menuLabel('damocles.git.commit')).toBe('Commit');
 
   await commitMenu(app, shell, 'toggleAmend');

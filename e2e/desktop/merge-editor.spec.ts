@@ -55,7 +55,8 @@ async function moreAction(app: ElectronApplication, shell: Page, itemId: string)
   await expect(overlayMenu(overlay)).toHaveCount(0);
 }
 
-const unmerged = (home: HermeticHome): Promise<string> => git(home, home.project, 'diff', '--name-only', '--diff-filter=U');
+// A plain working-tree diff takes index.lock when a file matches a stage, which fails the app's git add meanwhile.
+const unmerged = (home: HermeticHome): Promise<string> => git(home, home.project, '-c', 'diff.autoRefreshIndex=false', 'diff', '--name-only', '--diff-filter=U');
 
 test('the merge editor names the branches, resolves every region, asks before completing with a conflict left, rebuilds with Compute Conflicts With Git (Diff3), and Complete Merge stages the file', async ({ foreground: _foreground, home, launch }) => {
   await conflicted(home, 'merge');
