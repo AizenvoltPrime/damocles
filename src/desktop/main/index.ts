@@ -2094,8 +2094,10 @@ class DesktopApp {
     const persisted = this.states.list();
     const selection = this.states.selected();
     const savedProject = selection && this.isKnownProject(selection.projectKey, core) ? selection.projectKey : undefined;
+    // a remote project selected before this core was ready keeps the selection; its own core opens its chat (coreOpened)
+    const selectedElsewhere = this.remoteSelected();
     if (persisted.length === 0) {
-      await this.newChatIn(core, this.restoreAtLaunch ? savedProject : undefined, { focus: 'whenReady' });
+      if (!selectedElsewhere) await this.newChatIn(core, this.restoreAtLaunch ? savedProject : undefined, { focus: 'whenReady' });
       return;
     }
     const restored = persisted.map((saved) => {
@@ -2111,7 +2113,7 @@ class DesktopApp {
       ?? restored.find(({ host }) => selection?.sessionId !== undefined && host.savedSessionId === selection.sessionId)
       ?? restored.find(({ host }) => this.projectOf(host) === savedProject)
       ?? restored[0];
-    if (selected) this.showChat(selected.host, { focus: 'whenReady' });
+    if (selected && !selectedElsewhere) this.showChat(selected.host, { focus: 'whenReady' });
     const ordered = selected ? [selected, ...restored.filter((entry) => entry !== selected)] : restored;
     // One at a time, each chat's restore recorded before any starts, so a request for a chat still queued waits for it too.
     let previous: Promise<void> = Promise.resolve();
