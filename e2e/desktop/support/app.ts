@@ -36,10 +36,14 @@ export function run(command: string, args: string[], timeoutMs = RUN_TIMEOUT_MS)
   });
 }
 
+// Each line "pid parentPid creationMs". [wmisearcher] rather than Get-CimInstance: finding a cmdlet makes Windows PowerShell
+// analyse the module path, which outlasts the run's timeout on a runner whose module analysis cache is cold.
+const PROCESS_TABLE = 'foreach ($p in ([wmisearcher]"SELECT ProcessId, ParentProcessId, CreationDate FROM Win32_Process").Get()) { $at = 0; if ($p.CreationDate) { $at = [long]([Management.ManagementDateTimeConverter]::ToDateTime($p.CreationDate).ToFileTime() / 10000) }; "$($p.ProcessId) $($p.ParentProcessId) $at" }';
+
 /** `root` and every process below it, from Windows' process table. */
 export async function windowsProcessTree(root: number): Promise<number[]> {
-  const table = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $(if ($_.CreationDate) { [long]($_.CreationDate.ToFileTimeUtc() / 10000) } else { 0 })" }']);
-  if (table.code !== 0) throw new Error(`Get-CimInstance Win32_Process exited with code ${table.code}: ${table.stderr.trim()}`);
+  const table = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', PROCESS_TABLE]);
+  if (table.code !== 0) throw new Error(`Reading Win32_Process exited with code ${table.code}: ${table.stderr.trim()}`);
   const children = new Map<number, number[]>();
   const created = new Map<number, number>();
   for (const line of table.stdout.split(/\r?\n/)) {

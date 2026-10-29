@@ -76,7 +76,7 @@ export async function daemonPid(home: HermeticHome): Promise<number> {
 /** A live process's command line, from Windows' process table or ps; undefined once it is gone or unreadable. */
 async function commandLineOf(pid: number): Promise<string | undefined> {
   const read = process.platform === 'win32'
-    ? await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`])
+    ? await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', `foreach ($p in ([wmisearcher]'SELECT CommandLine FROM Win32_Process WHERE ProcessId=${pid}').Get()) { $p.CommandLine }`])
     : await run('ps', ['-o', 'args=', '-p', String(pid)]);
   const line = read.stdout.trim();
   return line === '' ? undefined : line;

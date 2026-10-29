@@ -122,15 +122,23 @@ function windowsArgument(arg: string): string {
   return `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
 }
 
-// The data arrives as JSON on stdin; no path or environment value is ever part of the script.
+// The data arrives on stdin as three base64 UTF-8 lines: the command line, the folder, and the environment's NUL-joined
+// entries; no path or environment value is ever part of the script. The script calls no cmdlet: finding one makes Windows
+// PowerShell analyse the module path, which takes minutes on a profile whose module analysis cache is cold or stale.
 const WMI_CREATE = [
   '$ErrorActionPreference = "Stop"',
-  '[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)',
-  '$request = [Console]::In.ReadToEnd() | ConvertFrom-Json',
-  '$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = [string[]]$request.environment; ShowWindow = [uint16]0 }',
-  '$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = [string]$request.commandLine; CurrentDirectory = [string]$request.cwd; ProcessStartupInformation = $startup }',
+  '$utf8 = [Text.UTF8Encoding]::new($false)',
+  '$fields = [Console]::In.ReadToEnd().Split([char]10)',
+  '$commandLine = $utf8.GetString([Convert]::FromBase64String($fields[0]))',
+  '$cwd = $utf8.GetString([Convert]::FromBase64String($fields[1]))',
+  '$startup = ([wmiclass]"Win32_ProcessStartup").CreateInstance()',
+  '$startup.EnvironmentVariables = $utf8.GetString([Convert]::FromBase64String($fields[2])).Split([char]0, [StringSplitOptions]::RemoveEmptyEntries)',
+  '$startup.ShowWindow = [uint16]0',
+  '$result = ([wmiclass]"Win32_Process").Create($commandLine, $cwd, $startup)',
   '[Console]::Out.Write("$($result.ReturnValue) $($result.ProcessId)")',
 ].join('; ');
+
+const base64 = (text: string): string => Buffer.from(text, 'utf8').toString('base64');
 
 /**
  * Starts the daemon outside the caller's session: detached (setsid) on POSIX; through WMI on Windows, whose
@@ -148,11 +156,11 @@ export function startDaemonDetached(file: string, args: readonly string[], env: 
       });
     });
   }
-  const request = JSON.stringify({
-    commandLine: [file, ...args].map(windowsArgument).join(' '),
+  const request = [
+    [file, ...args].map(windowsArgument).join(' '),
     cwd,
-    environment: Object.entries(env).map(([key, value]) => `${key}=${value}`),
-  });
+    Object.entries(env).map(([key, value]) => `${key}=${value}`).join('\0'),
+  ].map(base64).join('\n');
   const shell = withSpawnLock(() => spawn(windowsPowerShell(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', WMI_CREATE], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }));
   return new Promise((resolve, reject) => {
     let stdout = '';
