@@ -843,6 +843,8 @@ class DesktopApp {
   private readonly pinnedScmRoots = new Set<string>();
   // chats a worktree delete unloads, whose close selects no other chat
   private readonly closingForWorktree = new WeakSet<DesktopPanel>();
+  // local projects a Remove Project is removing: a chat it closes selects nothing until the removal settles the selection
+  private readonly removingProjects = new Set<string>();
   // new chats that show once core holds their worktree opt-in
   private readonly openingInWorktree = new WeakSet<DesktopPanel>();
   private retentionScheduled = false;
@@ -2842,7 +2844,7 @@ class DesktopApp {
       this.voiceRelay.viewClosed(panel.panelId);
     }
     const views = this.views;
-    if (this.closingForWorktree.has(panel)) return;
+    if (this.closingForWorktree.has(panel) || (projectKey !== undefined && this.removingProjects.has(projectKey))) return;
     if (!views || views.retaining(panel) || this.lifecycle.phase !== 'running' || views.selected() !== undefined) return;
     // the selected chat closed with its core (a restart, a halt) and reopens selected (reselectRemote, kept until its core
     // reopened its chats); another chat closing meanwhile (a hidden local chat unloading) never moves the selection
@@ -2974,6 +2976,7 @@ class DesktopApp {
       // a remote project's terminals run on its host: the question offers to leave them running there
       const hostTerminals = remote ? await this.askRemoteTerminals(remote) : undefined;
       if (hostTerminals === 'cancel') return { ok: true };
+      if (!remote) this.removingProjects.add(key);
       return await removeProject(key, {
         project: () => project,
         busy: (projectKey) => this.projectBusy(projectKey),
@@ -2994,9 +2997,13 @@ class DesktopApp {
           }
           this.unloadWorktreeChats(key);
           await this.projects.remove(project.fsPath);
+          // before the list change's shell state goes out (setImmediate), which would name a project main no longer lists
+          if (this.selectedProjectKey === key && !this.views?.selected()) this.selectedProjectKey = undefined;
           await this.hostStore?.removeFromOrder(key);
         },
         t: (message, ...args) => this.requireLocalization().t(message, ...args),
+      }).finally(() => {
+        if (!remote) this.selectAfterRemoval(key, project.fsPath);
       });
     } catch (err) {
       log(`[shell] removing a project failed: ${errorText(err)}`);
@@ -3068,6 +3075,21 @@ class DesktopApp {
       if (panel && !panel.isDisposed) panel.close();
       return client.whenWorktreeDiscarded(chat.corePanelId);
     }));
+  }
+
+  // With no chat selected after a Remove Project, a project that stayed (a refusal, a failure) is selected again, and after a
+  // removal a chat in core's default folder, once core let the project go: until then its default target may still name it.
+  private selectAfterRemoval(key: string, fsPath: string): void {
+    this.removingProjects.delete(key);
+    if (!this.views || this.views.selected()) return;
+    if (this.projects.has(fsPath)) {
+      this.selectProject(key).catch(this.report('Selecting a chat after a refused removal'));
+      return;
+    }
+    this.core.run('Select Project', async (core) => {
+      await core.client.whenFolderReleased(fsPath);
+      if (!this.views?.selected()) await this.selectProjectIn(core, this.defaultProjectKey(core));
+    }).catch(this.report('Selecting a chat after a project removal'));
   }
 
   // AD12 Projects: a removed project's worktree chats unload and keep their worktrees, which re-adding lists again.
