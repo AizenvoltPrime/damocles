@@ -5,7 +5,7 @@ import { activeChat, expect, nextChat, selectChatPage, test } from './support/fi
 import { overlayPage, pressKeys, PRIMARY, shellPage } from './support/shell';
 import { editorTab, quickPick } from './support/editor';
 import { seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
-import { chatRequests, startOpenAIStub, type OpenAIStub, type StubReply } from './support/openai-stub';
+import { agentRequests, startOpenAIStub, type OpenAIStub, type StubReply } from './support/openai-stub';
 import { addProject, chatInput, clickMenu } from './support/ui';
 import { hideEditorPane } from './support/screenshots';
 import { setContentSize } from './support/settings';
@@ -155,14 +155,14 @@ test('a review sent while the chat runs is queued, reaches the chat once the tur
     await review(shell).locator('[data-testid="changes-line"][data-type="addition"]').first().getByTestId('review-line-number').click();
     await review(shell).getByTestId('review-comment-input').fill('Why two?');
     await review(shell).getByTestId('review-comment-input').press('Enter');
-    const before = chatRequests(stub).length;
+    const before = agentRequests(stub).length;
     await review(shell).getByTestId('review-send').click();
     await expect(review(shell).getByTestId('review-bar')).toHaveCount(0);
-    expect(chatRequests(stub).length).toBe(before);
+    expect(agentRequests(stub).length).toBe(before);
 
     release();
     await expect(tab.getByText('Review received')).toBeVisible();
-    const sent = JSON.stringify(chatRequests(stub).slice(before).map((request) => request.body));
+    const sent = JSON.stringify(agentRequests(stub).slice(before).map((request) => request.body));
     expect(sent).toContain('one.ts:1');
     expect(sent).toContain('Why two?');
   });
@@ -219,11 +219,11 @@ test('two comments sent with Ctrl+Enter reach the chat as one message with both 
     await shell.keyboard.press('Escape');
     await expect(review(shell).getByTestId('review-comment-input')).toHaveCount(0);
 
-    const before = chatRequests(stub).length;
+    const before = agentRequests(stub).length;
     await shell.keyboard.press(`${process.platform === 'darwin' ? 'Meta' : 'Control'}+Enter`);
     await expect(review(shell).getByTestId('review-bar')).toHaveCount(0);
     await expect(tab.getByText('Thanks for the review')).toBeVisible();
-    const sent = JSON.stringify(chatRequests(stub).slice(before).map((request) => request.body));
+    const sent = JSON.stringify(agentRequests(stub).slice(before).map((request) => request.body));
     expect(sent).toContain('two.ts:1');
     expect(sent).toMatch(/one\.ts:1 \(removed\)/);
     expect(sent).toContain('Why two?');

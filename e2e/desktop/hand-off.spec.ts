@@ -4,7 +4,7 @@ import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { expect, test } from './support/fixtures';
 import { git } from './support/git';
 import type { HermeticHome } from './support/hermetic';
-import { chatRequests, isSubCall } from './support/openai-stub';
+import { agentRequests } from './support/openai-stub';
 import { readyOverlay } from './support/overlay';
 import { openProjectChat } from './support/screenshots';
 import { chatInput } from './support/ui';
@@ -85,17 +85,17 @@ test('Move to a worktree moves the chat\'s two files, leaves the user\'s third, 
     await expect(tab.getByTestId('chat-header-worktree')).toContainText(record.branch!);
 
     // The conversation continues in the worktree: the model hears the new folder, and its next Edit lands there.
-    const before = chatRequests(stub).length;
+    const before = agentRequests(stub).length;
     stub.replies.push(edit(path.join(record.workingFolder, 'a.ts'), 'a = 2', 'a = 4'), { chunks: ['Raised a again'] });
     await send(tab, 'Raise a again', 'Raised a again');
     // the agent's request (not a background sub-call such as memory extraction) carries the working-folder note's own words,
     // which the system prompt's "Primary working directory" never says
     const note = JSON.stringify(`This chat now works in ${record.workingFolder}. Read and edit files there from now on.`).slice(1, -1);
-    const turns = chatRequests(stub).slice(before).filter((request) => !isSubCall(request)).map((request) => JSON.stringify(request.body)).filter((body) => body.includes('Raise a again'));
+    const turns = agentRequests(stub).slice(before).map((request) => JSON.stringify(request.body)).filter((body) => body.includes('Raise a again'));
     expect(turns.length).toBeGreaterThan(0);
     expect(turns.every((body) => body.includes(note))).toBe(true);
     // the note rides with the next prompt and starts no turn of its own
-    expect(chatRequests(stub).slice(0, before).map((request) => JSON.stringify(request.body)).some((body) => body.includes(note))).toBe(false);
+    expect(agentRequests(stub).slice(0, before).map((request) => JSON.stringify(request.body)).some((body) => body.includes(note))).toBe(false);
     expect(read(record.workingFolder, 'a.ts')).toBe('export const a = 4;\n');
     expect(read(repo.project, 'a.ts')).toBe('export const a = 1;\n');
 

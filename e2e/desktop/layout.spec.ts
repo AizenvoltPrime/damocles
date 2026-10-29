@@ -489,6 +489,8 @@ test('keyboard focus on the New split button shows a whole focus ring on New and
     return true;
   });
   await shell.getByTestId('sidebar-chats').locator('h2 button').focus();
+  // header focus reveals the title actions with a slide from the end edge (d-actions-in); the ring is measured where it lands
+  await settled(shell);
   await shell.keyboard.press('Tab');
   await shell.keyboard.press('Tab');
   await expect(shell.getByTestId('new-chat')).toBeFocused();
