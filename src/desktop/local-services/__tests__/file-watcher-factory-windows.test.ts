@@ -183,6 +183,17 @@ describe.runIf(process.platform === 'win32')('DesktopFileWatcherFactory on Windo
     expect(events).not.toContain('create present.txt');
   });
 
+  it('reports a file created and deleted within one coalescing window as deleted', async () => {
+    const watcher = factory.watch(dir, '**');
+    await live(watcher);
+    const events = record(watcher);
+    fs.writeFileSync(path.join(dir, 'brief.txt'), 'x');
+    fs.rmSync(path.join(dir, 'brief.txt'));
+    await vi.waitFor(() => expect(events).toContain('delete brief.txt'), WAIT);
+    await quiet();
+    expect(events).toEqual(['delete brief.txt']);
+  });
+
   it('reports an atomic replace as a change, never a create', async () => {
     const file = path.join(dir, 'settings.json');
     fs.writeFileSync(file, '{}');

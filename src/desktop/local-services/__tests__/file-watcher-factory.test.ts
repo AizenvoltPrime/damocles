@@ -462,6 +462,19 @@ describe('startInotifyTree', { timeout: 20_000 }, () => {
     }
   });
 
+  it('reports a file created and deleted within one coalescing window as deleted', async () => {
+    const events: string[] = [];
+    const tree = startInotifyTree(dir, (type, fsPath) => events.push(`${type} ${path.relative(dir, fsPath)}`), () => undefined, (line) => lines.push(line), () => undefined);
+    try {
+      await tree.ready;
+      fs.writeFileSync(path.join(dir, 'brief.txt'), 'x');
+      fs.rmSync(path.join(dir, 'brief.txt'));
+      await vi.waitFor(() => expect(events).toEqual(['delete brief.txt']), WAIT);
+    } finally {
+      tree.dispose();
+    }
+  });
+
   it('settles ready when disposed during its startup listings', async () => {
     let open!: () => void;
     H.held = { path: dir, opened: new Promise<void>((resolve) => (open = resolve)), entered: false };

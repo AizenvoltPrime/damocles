@@ -376,6 +376,8 @@ export function startInotifyTree(root: string, emit: RawListener, lost: () => vo
     const stat = lstatNow(full, log);
     if (!known) {
       if (stat) add(node, dir, name, treeEntry(stat), true);
+      // created and deleted within one window: in no listing here, but a listing made meanwhile may show it
+      else emit('delete', full);
       return;
     }
     if (!stat || stat.isDirectory() !== known.isDir || (known.isDir && stat.ino !== known.ino)) {

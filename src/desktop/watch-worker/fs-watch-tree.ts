@@ -222,6 +222,11 @@ function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost:
     const children = childrenOf(parentRel);
     if (!children) return;
     const stat = onDisk && !onDisk.has(name) ? undefined : lstatNow(path.join(real, rel), log);
+    // created and deleted within one window: in no snapshot, but a listing made meanwhile may show it
+    if (!stat && !children.has(name)) {
+      emit('delete', callerPath(rel));
+      return;
+    }
     const added = settle(children, parentRel, name, stat, true);
     // A directory created in place reports its contents through events, one moved in only through this listing.
     if (added?.children) scans.push({ rel, children: added.children, report: true });
