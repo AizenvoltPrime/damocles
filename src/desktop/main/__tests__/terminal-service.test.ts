@@ -1016,6 +1016,7 @@ function fakeConnection(live: readonly LiveTerminal[] = []): FakeConnection {
       return { dispose: () => closeListeners.delete(listener) };
     },
     notConnected: () => new NotConnectedError('Local daemon is not connected.'),
+    watchReady: false,
     log: () => undefined,
   });
   const connection: FakeConnection = {

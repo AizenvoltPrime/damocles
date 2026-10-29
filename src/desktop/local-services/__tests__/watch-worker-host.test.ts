@@ -6,7 +6,7 @@ import { MessageChannel, Worker, type MessagePort } from 'node:worker_threads';
 import { build } from 'esbuild';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FsWatchTreeHost, RawListener } from '../../watch-worker/fs-watch-tree';
-import type { WatchRequest } from '../../watch-worker/protocol';
+import { parseWatchReply, type WatchRequest } from '../../watch-worker/protocol';
 import { createWorkerTreeHost, MAX_WORKER_RESTARTS, type WatchWorker } from '../watch-worker-host';
 
 // Runs the built worker; with a gate, every fs.promises.readdir posts 'entered' on it and waits for its first message.
@@ -71,6 +71,16 @@ async function live(recorded: Recorded, base = dir): Promise<string[]> {
   return seen;
 }
 
+// Whether ready has settled once the microtasks and I/O callbacks already due have run.
+async function settledSoon(ready: Promise<void>): Promise<boolean> {
+  let settled = false;
+  void ready.then(() => {
+    settled = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  return settled;
+}
+
 // Every message a worker posts to main, in arrival order.
 function rawReplies(worker: Worker): unknown[] {
   const replies: unknown[] = [];
@@ -132,6 +142,28 @@ describe.runIf(process.platform === 'win32')('the Windows tree on the watch work
     await quiet();
     expect(recorded.events).toEqual(['create sub', 'create sub/a.txt', 'change sub/a.txt', 'delete sub/a.txt', 'create sub/b.txt', 'delete sub/b.txt']);
     expect(workers).toHaveLength(1);
+  });
+
+  it('settles ready once the worker\'s first scan is done, and reports a file created right after', async () => {
+    fs.writeFileSync(path.join(dir, 'present.txt'), 'x');
+    holdListings = true;
+    const recorded = recorder();
+    const watch = host.start(dir, false, recorded.emit, () => undefined);
+    const replies = rawReplies(workers[0]!);
+    await once(gate!, 'message');
+    let ready = false;
+    void watch.ready.then(() => {
+      ready = true;
+    });
+    await sleep(100);
+    expect(ready).toBe(false);
+    gate!.postMessage('open');
+    await watch.ready;
+    expect(replies).toContainEqual({ kind: 'ready', id: 0 });
+
+    fs.writeFileSync(path.join(dir, 'fresh.txt'), 'x');
+    await vi.waitFor(() => expect(recorded.events).toContain('create fresh.txt'), WAIT);
+    expect(recorded.events).not.toContain('create present.txt');
   });
 
   it('sends a disposed watch nothing more, while another watch on the same worker goes on', async () => {
@@ -294,6 +326,36 @@ describe('the watch worker host', () => {
     fs.rmSync(existing, { recursive: true, force: true });
   });
 
+  it('settles ready on the worker\'s ready reply for that watch, and a pending one on a restarted worker\'s', async () => {
+    const first = tree.start(existing, false, () => undefined, () => undefined);
+    const second = tree.start(existing, false, () => undefined, () => undefined);
+    fakes[0]!.reply({ kind: 'ready', id: 1 });
+    expect(await settledSoon(first.ready)).toBe(false);
+    expect(await settledSoon(second.ready)).toBe(true);
+
+    fakes[0]!.fire('error', new Error('boom'));
+    expect(fakes[1]!.posted).toContainEqual({ kind: 'watch', id: 0, dir: existing, report: false });
+    expect(await settledSoon(first.ready)).toBe(false);
+    fakes[1]!.reply({ kind: 'ready', id: 0 });
+    expect(await settledSoon(first.ready)).toBe(true);
+  });
+
+  it('settles ready when the watch is disposed, failed or lost, and when the host closes', async () => {
+    const disposed = tree.start(existing, false, () => undefined, () => undefined);
+    const failed = tree.start(existing, false, () => undefined, () => undefined);
+    const lost = tree.start(existing, false, () => undefined, () => undefined);
+    const open = tree.start(existing, false, () => undefined, () => undefined);
+    disposed.dispose();
+    fakes[0]!.reply({ kind: 'failed', id: 1, message: 'EPERM: operation not permitted' });
+    fakes[0]!.reply({ kind: 'lost', id: 2 });
+    expect(await settledSoon(disposed.ready)).toBe(true);
+    expect(await settledSoon(failed.ready)).toBe(true);
+    expect(await settledSoon(lost.ready)).toBe(true);
+    expect(await settledSoon(open.ready)).toBe(false);
+    await tree.close();
+    expect(await settledSoon(open.ready)).toBe(true);
+  });
+
   it('logs a failed watch whose directory exists and does not report it lost', () => {
     const lost = vi.fn();
     const emit = vi.fn();
@@ -387,7 +449,7 @@ describe('the watch worker host', () => {
       return fake;
     };
     const dies = createWorkerTreeHost(dying, (line) => logged.push(line));
-    dies.start(existing, false, () => undefined, lost);
+    const pending = dies.start(existing, false, () => undefined, lost);
 
     await vi.waitFor(() => expect(logged.some((line) => line.includes('not watched until Damocles restarts'))).toBe(true), WAIT);
     await sleep(100);
@@ -395,8 +457,17 @@ describe('the watch worker host', () => {
     expect(logged.filter((line) => line.includes('not watched until Damocles restarts'))).toHaveLength(1);
     expect(logged.filter((line) => line.includes('re-established'))).toHaveLength(MAX_WORKER_RESTARTS);
     expect(lost).not.toHaveBeenCalled();
-    dies.start(existing, false, () => undefined, lost);
+    expect(await settledSoon(pending.ready)).toBe(true);
+    expect(await settledSoon(dies.start(existing, false, () => undefined, lost).ready)).toBe(true);
     expect(spawned).toBe(MAX_WORKER_RESTARTS + 1);
     await dies.close();
+  });
+});
+
+describe('parseWatchReply', () => {
+  it('reads a ready reply only with a watch id', () => {
+    expect(parseWatchReply({ kind: 'ready', id: 3 })).toEqual({ kind: 'ready', id: 3 });
+    expect(parseWatchReply({ kind: 'ready' })).toBeUndefined();
+    expect(parseWatchReply({ kind: 'ready', id: -1 })).toBeUndefined();
   });
 });

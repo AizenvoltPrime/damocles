@@ -6,6 +6,8 @@ const H = vi.hoisted(() => ({
   hiddenOnce: new Set<string>(),
   unlistable: new Set<string>(),
   openWatches: new Set<object>(),
+  // An fs.promises.readdir of this path, compared by realpath, waits for opened; entered is set once it began.
+  held: undefined as { readonly path: string; readonly opened: Promise<void>; entered: boolean } | undefined,
 }));
 
 // Pass-through, except for the paths a test marks (one existsSync that answers false, a replay listing that fails); fs.watch handles are counted.
@@ -23,6 +25,17 @@ vi.mock('node:fs', async (importOriginal) => {
       }
       return actual.readdirSync(p, options as never);
     }) as typeof actual.readdirSync,
+    promises: {
+      ...actual.promises,
+      readdir: (async (...args: unknown[]) => {
+        const held = H.held;
+        if (held && actual.realpathSync.native(String(args[0])) === actual.realpathSync.native(held.path)) {
+          held.entered = true;
+          await held.opened;
+        }
+        return actual.promises.readdir(...(args as [string]));
+      }) as typeof actual.promises.readdir,
+    },
     watch: ((...args: Parameters<typeof actual.watch>) => {
       const watcher = actual.watch(...args);
       H.openWatches.add(watcher);
@@ -40,7 +53,7 @@ import * as fs from 'node:fs';
 import type { OpenFolder, WorkspaceFolders } from '../../../platform/workspace-folders';
 import type { FileWatcher } from '../../../platform/file-watcher';
 import { createInProcessTreeHost, SHALLOW_COALESCE_MS } from '../../watch-worker/fs-watch-tree';
-import { DesktopFileWatcherFactory, isShallowGlob, watchRoot } from '../file-watcher-factory';
+import { DesktopFileWatcherFactory, isShallowGlob, startInotifyTree, watchRoot } from '../file-watcher-factory';
 
 let dir: string;
 let factory: DesktopFileWatcherFactory;
@@ -57,7 +70,18 @@ beforeEach(() => {
   H.hiddenOnce.clear();
   H.unlistable.clear();
   H.openWatches.clear();
+  H.held = undefined;
 });
+
+// Whether ready has settled once the microtasks and I/O callbacks already due have run.
+async function settledSoon(ready: Promise<void>): Promise<boolean> {
+  let settled = false;
+  void ready.then(() => {
+    settled = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  return settled;
+}
 
 afterEach(async () => {
   await factory.close();
@@ -335,6 +359,29 @@ describe('DesktopFileWatcherFactory', { timeout: 20_000 }, () => {
     watcher.dispose();
   });
 
+  it('settles ready at once for a shallow watch, one waiting for a missing root, one that could not start and one disposed', async () => {
+    const shallow = factory.watch(dir, 'a.json');
+    const waiting = factory.watch(path.join(dir, 'missing', 'deeper'), 'a.json');
+    const file = path.join(dir, 'plain');
+    fs.writeFileSync(file, 'not a directory');
+    const failed = factory.watch(file, 'a.json');
+    expect(await settledSoon(shallow.ready)).toBe(true);
+    expect(await settledSoon(waiting.ready)).toBe(true);
+    expect(await settledSoon(failed.ready)).toBe(true);
+    for (const watcher of [shallow, waiting, failed]) watcher.dispose();
+
+    const held = path.join(dir, 'held');
+    fs.mkdirSync(held);
+    let open!: () => void;
+    H.held = { path: held, opened: new Promise((resolve) => (open = resolve)), entered: false };
+    const recursive = factory.watch(held, '**');
+    // only Windows and Linux list the root before their watch is ready; macOS waits on @parcel/watcher's subscribe
+    if (process.platform !== 'darwin') expect(await settledSoon(recursive.ready)).toBe(false);
+    recursive.dispose();
+    expect(await settledSoon(recursive.ready)).toBe(true);
+    open();
+  });
+
   it('shares one native watch per root and closes it with the last watcher', () => {
     const first = factory.watch(dir, 'a.json');
     const second = factory.watch(dir, 'b.json');
@@ -388,5 +435,40 @@ describe('DesktopFileWatcherFactory', { timeout: 20_000 }, () => {
     watcher.dispose();
     expect(listeners.size).toBe(0);
     await workspaceFactory.close();
+  });
+});
+
+// One non-recursive fs.watch per directory, which every platform has, so it runs everywhere.
+describe('startInotifyTree', { timeout: 20_000 }, () => {
+  it('settles ready only once the startup listings of the root and every directory under it are done, then reports a later file', async () => {
+    const deep = path.join(dir, 'a', 'b');
+    fs.mkdirSync(deep, { recursive: true });
+    fs.writeFileSync(path.join(deep, 'old.txt'), 'x');
+    let open!: () => void;
+    const held = { path: deep, opened: new Promise<void>((resolve) => (open = resolve)), entered: false };
+    H.held = held;
+    const events: string[] = [];
+    const tree = startInotifyTree(dir, (type, fsPath) => events.push(`${type} ${path.relative(dir, fsPath).split(path.sep).join('/')}`), () => undefined, (line) => lines.push(line), () => undefined);
+    try {
+      await vi.waitFor(() => expect(held.entered).toBe(true), WAIT);
+      expect(await settledSoon(tree.ready)).toBe(false);
+      open();
+      await tree.ready;
+      fs.writeFileSync(path.join(deep, 'new.txt'), 'x');
+      await vi.waitFor(() => expect(events).toContain('create a/b/new.txt'), WAIT);
+      expect(events.filter((event) => event.includes('old.txt'))).toEqual([]);
+    } finally {
+      tree.dispose();
+    }
+  });
+
+  it('settles ready when disposed during its startup listings', async () => {
+    let open!: () => void;
+    H.held = { path: dir, opened: new Promise<void>((resolve) => (open = resolve)), entered: false };
+    const tree = startInotifyTree(dir, () => undefined, () => undefined, (line) => lines.push(line), () => undefined);
+    expect(await settledSoon(tree.ready)).toBe(false);
+    tree.dispose();
+    expect(await settledSoon(tree.ready)).toBe(true);
+    open();
   });
 });

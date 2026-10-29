@@ -40,7 +40,11 @@ const watch = (id: number, dir: string, report: boolean): void => {
     post({ kind: 'lost', id });
   };
   try {
-    watches.set(id, host.start(dir, report, emit, lost));
+    const started = host.start(dir, report, emit, lost);
+    watches.set(id, started);
+    void started.ready.then(() => {
+      if (watches.get(id) === started) post({ kind: 'ready', id });
+    });
   } catch (err) {
     post({ kind: 'failed', id, message: errorText(err) });
   }

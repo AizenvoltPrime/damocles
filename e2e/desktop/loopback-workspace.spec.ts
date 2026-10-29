@@ -230,7 +230,7 @@ test('a loopback terminal running a date loop survives an app quit and relaunch,
 
     // Files watches the project, and an editor holds one of its files, before the connection drops.
     await again.evaluate((projectKey) => window.damoclesShell!.selectProject(projectKey), key);
-    await untilWatchLive(again, folder);
+    await untilWatchLive(again, home, folder);
     const kept = write(folder, 'kept.md', 'before the drop\n');
     expect(await openInEditor(second.app, { projectKey: key, relativePath: 'kept.md' })).toMatchObject({ ok: true });
     const keptId = (await activeTab(second.app))!.documentId!;
@@ -261,7 +261,7 @@ test('a loopback terminal running a date loop survives an app quit and relaunch,
     const back = await reattached(second.app, key, id!);
     await expect(activeTerminal(back)).toHaveAttribute('data-status', 'running');
     expect(await again.evaluate(() => (window as unknown as { __e2eTerminalStatuses: string[] }).__e2eTerminalStatuses)).not.toContain('exited');
-    await untilWatchLive(back, folder);
+    await untilWatchLive(back, home, folder);
     await expect.poll(keptText, { timeout: 30_000 }).toBe('changed while away\n');
     const before = ticks(await terminalText(back)).at(-1) ?? 0;
     await expect.poll(async () => ticks(await terminalText(back)).at(-1) ?? 0, { timeout: 30_000 }).toBeGreaterThan(before + 1);

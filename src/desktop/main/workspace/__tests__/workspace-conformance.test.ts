@@ -23,7 +23,7 @@ import { NONCE_ENV } from '../../../workspace/terminal/shell-integration-injecti
 import { createTreeListing } from '../../../workspace/tree-listing';
 import { REPO_ROOT, startInProcessDaemon } from '../../../daemon/__tests__/in-process-daemon';
 import { connect } from '../../remote/connection';
-import { createRemoteWorkspace } from '../remote-workspace';
+import { createRemoteWorkspace, WATCH_READY_FEATURE } from '../remote-workspace';
 import { NotConnectedError } from '../workspaces';
 
 // No pty host or formatter host starts in this suite; the terminal and format members it runs need none.
@@ -79,6 +79,7 @@ async function remoteAdapter(): Promise<Adapter> {
     projectOfCwd: () => undefined,
     onClose: (listener) => connection.onClose(listener),
     notConnected: () => new NotConnectedError('Local daemon is not connected.'),
+    watchReady: connection.features.includes(WATCH_READY_FEATURE),
     log: () => undefined,
   });
   return {
@@ -255,6 +256,20 @@ describe.each(ADAPTERS)('ProjectWorkspace conformance: %s', (_name, start) => {
     }, { timeout: 15_000, interval: 300 }).toBe(true);
     witness.dispose();
     expect(events.slice(seen)).toEqual([]);
+  });
+
+  it('reports a file created and deleted right after the watch is ready', async () => {
+    const events: WatchEvent[] = [];
+    const watch = workspace.files.watch(project.fsPath, '**', (event) => events.push(event));
+    try {
+      await watch.ready;
+      fs.writeFileSync(file('fresh.txt'), 'x');
+      await expect.poll(() => events.some((event) => event.kind === 'create' && event.path === file('fresh.txt')), { timeout: 15_000 }).toBe(true);
+      fs.rmSync(file('fresh.txt'));
+      await expect.poll(() => events.some((event) => event.kind === 'delete' && event.path === file('fresh.txt')), { timeout: 15_000 }).toBe(true);
+    } finally {
+      watch.dispose();
+    }
   });
 
   it('runs ripgrep for search and the Quick Open listing in the project', async () => {

@@ -261,12 +261,18 @@ export class FileTree implements Disposable {
     known?.watcher.dispose();
     const state: Watched = known ?? { workspace, watcher: { dispose: () => undefined }, pending: new Set(), timer: undefined };
     state.workspace = workspace;
-    state.watcher = workspace.files.watch(project.fsPath, '**', (event) => {
+    const watcher = workspace.files.watch(project.fsPath, '**', (event) => {
       if (event.kind !== 'change') this.record(project, state, event.path);
     });
+    state.watcher = watcher;
     this.watched.set(project.key, state);
-    // what changed while the host was away was never reported
-    if (known) this.refetch(project.key);
+    this.deps.log(`[files] watching ${project.fsPath}`);
+    // what changed before the watch was ready, while the host was away included, was never reported
+    void watcher.ready.then(() => {
+      if (this.watched.get(project.key) !== state || state.watcher !== watcher) return;
+      this.deps.log(`[files] the watch of ${project.fsPath} is live`);
+      this.refetch(project.key);
+    });
     return true;
   }
 

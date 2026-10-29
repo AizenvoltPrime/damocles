@@ -1,6 +1,9 @@
 import type { Disposable } from './disposable';
 
 export interface FileWatcher extends Disposable {
+  // Settles, never rejects, once every change made after it is reported; a watch that cannot start, waits for a missing root,
+  // failed or was disposed settles too.
+  readonly ready: Promise<void>;
   onDidCreate(cb: (fsPath: string) => void): Disposable;
   onDidChange(cb: (fsPath: string) => void): Disposable;
   onDidDelete(cb: (fsPath: string) => void): Disposable;

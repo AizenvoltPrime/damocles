@@ -90,9 +90,12 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
       endpoint.serve('files.isDirectory', ({ target }) => files.isDirectory(target));
       endpoint.serve('files.mtimes', ({ folder, relativePaths }) => files.mtimes(folder, relativePaths));
       endpoint.serve('files.browse', ({ folder }) => files.browse(folder));
-      endpoint.serve('files.watch', ({ watchId, base, glob }) => {
+      // answered once the watch reports every later change (files.watchReady)
+      endpoint.serve('files.watch', async ({ watchId, base, glob }) => {
         fresh(watches, watchId, 'watch');
-        watches.set(watchId, files.watch(base, glob, (event) => endpoint.emit('files.watchEvent', { watchId, ...event })));
+        const watch = files.watch(base, glob, (event) => endpoint.emit('files.watchEvent', { watchId, ...event }));
+        watches.set(watchId, watch);
+        await watch.ready;
       });
       endpoint.serve('files.unwatch', ({ watchId }) => {
         watches.get(watchId)?.dispose();

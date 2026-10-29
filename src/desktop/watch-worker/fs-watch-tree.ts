@@ -10,6 +10,8 @@ export type RawListener = (type: RawEventType, fsPath: string) => void;
 export type Log = (line: string) => void;
 // Records watcher work still running (a @parcel/watcher subscribe or unsubscribe, a Windows tree scan) and hands the same promise back.
 export type TrackWork = <T>(work: Promise<T>) => Promise<T>;
+// ready: FileWatcher.ready's contract (src/platform/file-watcher.ts).
+export type StartedWatch = Disposable & { readonly ready: Promise<void> };
 
 // VS Code's files.watcherExclude defaults: churn no Damocles watcher cares about.
 export const RECURSIVE_IGNORE: string[] = ['**/node_modules/**', '**/.git/objects/**', '**/.git/subtree-cache/**', '**/.hg/store/**'];
@@ -79,7 +81,8 @@ function sameFile(entry: FsEntry, stat: fs.BigIntStats): boolean {
 }
 
 // One fs.watch(real, { recursive: true }) per root; docs/invariants.md "The Windows tree settles every event against a snapshot".
-function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost: () => void, log: Log, track: TrackWork): Disposable {
+// ready settles once the first scan pass is done, so the snapshot every later event is diffed against is complete.
+function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost: () => void, log: Log, track: TrackWork): StartedWatch {
   // Events are relative to the real path (long names, links resolved) and reported under dir, the caller's form.
   const real = fs.realpathSync.native(dir);
   const root = new Map<string, FsEntry>();
@@ -93,6 +96,10 @@ function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost:
   let overflows = 0;
   let notedAt = -Infinity;
   let stopped = false;
+  let markReady = (): void => undefined;
+  const ready = new Promise<void>((resolve) => {
+    markReady = resolve;
+  });
 
   const callerPath = (rel: string): string => path.join(dir, rel);
 
@@ -170,6 +177,7 @@ function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost:
       }
     } finally {
       scanning = false;
+      markReady();
     }
     flush();
   };
@@ -247,6 +255,7 @@ function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost:
 
   const stop = (): void => {
     stopped = true;
+    markReady();
     clearTimeout(timer);
     clearTimeout(reopenTimer);
     timer = undefined;
@@ -324,13 +333,13 @@ function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost:
   open();
   scans.push({ rel: '', children: root, report });
   startScans();
-  return { dispose: stop };
+  return { dispose: stop, ready };
 }
 
 /** Where the Windows recursive watches run: this thread's event loop; main uses the watch worker's (watch-worker-host.ts). */
 export interface FsWatchTreeHost {
   // report: the first scan reports what the root holds as created. lost: the root is gone, and its files were reported deleted.
-  start(dir: string, report: boolean, emit: RawListener, lost: () => void): Disposable;
+  start(dir: string, report: boolean, emit: RawListener, lost: () => void): StartedWatch;
   // Settles once no scan of a watch it started is running; the caller has disposed every watch first.
   close(): Promise<void>;
 }

@@ -8,8 +8,8 @@ import { WorkspaceFolderRegistry, type FolderChange } from '../folder-registry';
 
 const inert = { dispose: () => undefined };
 const watchers: FileWatcherFactory = {
-  watch: () => ({ onDidCreate: () => inert, onDidChange: () => inert, onDidDelete: () => inert, dispose: () => undefined }),
-  watchWorkspace: () => ({ onDidCreate: () => inert, onDidChange: () => inert, onDidDelete: () => inert, dispose: () => undefined }),
+  watch: () => ({ ready: Promise.resolve(), onDidCreate: () => inert, onDidChange: () => inert, onDidDelete: () => inert, dispose: () => undefined }),
+  watchWorkspace: () => ({ ready: Promise.resolve(), onDidCreate: () => inert, onDidChange: () => inert, onDidDelete: () => inert, dispose: () => undefined }),
   onDidRenameFiles: () => inert,
 };
 const memento: Memento = { get: (_key: string, fallback?: unknown) => fallback, update: async () => undefined } as Memento;

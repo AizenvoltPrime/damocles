@@ -24,6 +24,7 @@ const workspaceOver = (answers: Record<string, unknown>, sent: Array<[string, un
   projectOfCwd: () => undefined,
   onClose: () => ({ dispose: () => undefined }),
   notConnected,
+  watchReady: false,
   log: () => undefined,
 });
 
@@ -67,6 +68,7 @@ describe('remote workspace client', () => {
         return { dispose: () => undefined };
       },
       notConnected,
+      watchReady: false,
       log: () => undefined,
     });
     const host = workspace.terminals.startHost();
@@ -98,6 +100,7 @@ describe('remote workspace client', () => {
         return { dispose: () => undefined };
       },
       notConnected,
+      watchReady: false,
       log: () => undefined,
     });
     const ends: unknown[] = [];
@@ -137,6 +140,7 @@ describe('remote workspace client', () => {
         return { dispose: () => undefined };
       },
       notConnected,
+      watchReady: false,
       log: () => undefined,
     });
     const pending = workspace.files.writeInPlace(project, { path: '/srv/app/a.ts', projectKey: project.key, relativePath: 'a.ts' }, Buffer.from('x'));
@@ -144,6 +148,33 @@ describe('remote workspace client', () => {
     await expect(pending).rejects.toBeInstanceOf(NotConnectedError);
     await expect(pending).rejects.toThrow('Local daemon is not connected.');
     await expect(workspace.files.realpath('/srv/app')).rejects.toBeInstanceOf(NotConnectedError);
+  });
+
+  it('settles a watch\'s ready when the daemon answers files.watch, failed answers included, only with files.watchReady', async () => {
+    const answers: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
+    const endpoint = {
+      ...fakeEndpoint({}, []),
+      request: (method: string) => (method === 'files.watch' ? new Promise<void>((resolve, reject) => answers.push({ resolve, reject })) : Promise.resolve()),
+    } as unknown as Endpoint<ClientToWorkspace, WorkspaceToClient>;
+    const over = (watchReady: boolean) => createRemoteWorkspace({ endpoint, authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady, log: () => undefined });
+    const settled = (ready: Promise<void>): { done: boolean } => {
+      const state = { done: false };
+      void ready.then(() => {
+        state.done = true;
+      });
+      return state;
+    };
+    const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+    const answered = settled(over(true).files.watch('/srv/app', '**', () => undefined).ready);
+    const failed = settled(over(true).files.watch('/srv/app', '**', () => undefined).ready);
+    const older = settled(over(false).files.watch('/srv/app', '**', () => undefined).ready);
+    await flush();
+    expect([answered.done, failed.done, older.done]).toEqual([false, false, true]);
+    answers[0]!.resolve();
+    answers[1]!.reject(new Error('EACCES'));
+    await flush();
+    expect([answered.done, failed.done]).toEqual([true, true]);
   });
 
   it('turns an entry\'s decimal identity back into bigints', async () => {

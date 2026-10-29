@@ -19,6 +19,8 @@ interface Watch {
   readonly dir: string;
   readonly emit: RawListener;
   readonly lost: () => void;
+  // settles the watch's ready; a restarted worker's ready reply settles one still pending
+  readonly ready: () => void;
 }
 
 interface Running {
@@ -52,6 +54,7 @@ export function createWorkerTreeHost(startWorker: () => WatchWorker, log: Log): 
     stopWorker(run);
     if (failures > MAX_WORKER_RESTARTS) {
       log(`[watcher] the watch worker failed ${failures} times; Windows folders are not watched until Damocles restarts`);
+      for (const watch of watches.values()) watch.ready();
       watches.clear();
       return;
     }
@@ -91,6 +94,8 @@ export function createWorkerTreeHost(startWorker: () => WatchWorker, log: Log): 
       }
       return;
     }
+    watch.ready();
+    if (reply.kind === 'ready') return;
     watches.delete(reply.id);
     if (reply.kind === 'failed') {
       log(`[watcher] could not watch ${watch.dir}: ${reply.message}`);
@@ -119,13 +124,19 @@ export function createWorkerTreeHost(startWorker: () => WatchWorker, log: Log): 
 
   return {
     start: (dir, report, emit, lost) => {
-      if (closed || failures > MAX_WORKER_RESTARTS) return { dispose: () => undefined };
+      if (closed || failures > MAX_WORKER_RESTARTS) return { dispose: () => undefined, ready: Promise.resolve() };
       const run = (running ??= spawn());
       const id = nextId++;
-      watches.set(id, { dir, emit, lost });
+      let markReady = (): void => undefined;
+      const ready = new Promise<void>((resolve) => {
+        markReady = resolve;
+      });
+      watches.set(id, { dir, emit, lost, ready: markReady });
       run.worker.postMessage({ kind: 'watch', id, dir, report });
       return {
+        ready,
         dispose: () => {
+          markReady();
           if (watches.delete(id)) running?.worker.postMessage({ kind: 'unwatch', id });
         },
       };
@@ -133,6 +144,7 @@ export function createWorkerTreeHost(startWorker: () => WatchWorker, log: Log): 
     // The worker stops its watches and answers once its scans settle; only then is it terminated, and this settles on its exit.
     close: async () => {
       closed = true;
+      for (const watch of watches.values()) watch.ready();
       watches.clear();
       running?.worker.postMessage({ kind: 'close' });
       await settlePending(() => exits);

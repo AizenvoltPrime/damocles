@@ -11,6 +11,7 @@ import { compareEntries, FileTree, type FileTreeDeps } from '../files/file-tree'
 import { testRemote, testWorkspaces } from './test-workspaces';
 import { projectKeyOf } from '../../../shared/project-location';
 import type { FileSystemDeps } from '../../workspace/file-system';
+import type { FileWatcherFactory } from '../../../platform/file-watcher';
 import { fileNameProblem, isValidFileName } from '../../preload/file-names';
 import type { MessageQuestion } from '../message-dialog';
 
@@ -92,6 +93,36 @@ function touch(relativePath: string): void {
 }
 
 
+// The project's watch refetches every listing once it is ready; drained so a test sees only what follows.
+async function untilWatchReady(): Promise<void> {
+  await vi.waitFor(() => expect(changed).toContainEqual({ projectKey: project.key, relativeDirs: [] }));
+  changed.length = 0;
+}
+
+// The fake watchers, each of whose ready settles only when the test opens its gate, in creation order.
+function gatedWatchers(): { readonly watchers: FileWatcherFactory; readonly gates: Array<() => void> } {
+  const gates: Array<() => void> = [];
+  const fakes = platform.fileWatchers;
+  return {
+    gates,
+    watchers: {
+      watch: (base, glob) => {
+        const inner = fakes.watch(base, glob);
+        let open = (): void => undefined;
+        const ready = new Promise<void>((resolve) => {
+          open = resolve;
+        });
+        gates.push(open);
+        return { ready, onDidCreate: (cb) => inner.onDidCreate(cb), onDidChange: (cb) => inner.onDidChange(cb), onDidDelete: (cb) => inner.onDidDelete(cb), dispose: () => inner.dispose() };
+      },
+      watchWorkspace: (glob) => fakes.watchWorkspace(glob),
+      onDidRenameFiles: (cb) => fakes.onDidRenameFiles(cb),
+    },
+  };
+}
+
+const LIVE = `[files] the watch of`;
+
 // FileTree over the test's watchers, with the trash and permanent delete its workspace's files use.
 function fileTree(deps: Omit<FileTreeDeps, 'workspaces'> & { readonly trash: FileSystemDeps['trash']; readonly remove: NonNullable<FileSystemDeps['remove']> }): FileTree {
   const { trash, remove, ...rest } = deps;
@@ -136,7 +167,7 @@ describe('listing', () => {
     expect(asked).toEqual([[project.key, 'src', ['a.ts:file', 'b.log:file', 'out:dir']]]);
     fail = true;
     expect(await tree.list(project.key, 'src')).toEqual({ ok: true, entries: [{ name: 'out', kind: 'dir' }, { name: 'a.ts', kind: 'file' }, { name: 'b.log', kind: 'file' }] });
-    expect(lines).toEqual(['[files] the ignored-file query failed: git refused']);
+    expect(lines.filter((line) => line.includes('failed'))).toEqual(['[files] the ignored-file query failed: git refused']);
   });
 
   it('shows a pattern turned off, and hides a new one, on the next listing', async () => {
@@ -387,6 +418,7 @@ describe('delete, reveal and copy', () => {
 describe('watching', () => {
   it('reports the parent folders of created and deleted entries once per burst, skipping excluded ones', async () => {
     await tree.list(project.key, '');
+    await untilWatchReady();
     let structural = 0;
     tree.onDidChangeStructure(() => structural++);
     const watcher = platform.fileWatchers.watcher(projectDir, '**');
@@ -443,13 +475,16 @@ describe('watching', () => {
     try {
       expect((await remoteTree.list(away.key, '')).ok).toBe(true);
       await vi.waitFor(() => expect(liveWatchers()).toBe(1));
+      await vi.waitFor(() => expect(remoteChanged).toEqual([{ projectKey: away.key, relativeDirs: [] }]));
       remote.disconnect('network');
       remoteTree.connectionsChanged();
       expect(remoteTree.watch(away)).toBe(false);
       remote = testRemote({ watchers: platform.fileWatchers });
       const before = platform.fileWatchers.watchers.length;
+      remoteChanged.length = 0;
+      structural = 0;
       remoteTree.connectionsChanged();
-      expect(remoteChanged).toEqual([{ projectKey: away.key, relativeDirs: [] }]);
+      await vi.waitFor(() => expect(remoteChanged).toEqual([{ projectKey: away.key, relativeDirs: [] }]));
       expect(structural).toBe(1);
       await vi.waitFor(() => expect(platform.fileWatchers.watchers.length).toBe(before + 1));
       platform.fileWatchers.watcher(projectDir, '**').fireCreate(path.join(projectDir, 'src', 'new.ts'));
@@ -460,8 +495,76 @@ describe('watching', () => {
     }
   });
 
+  it('refetches every listing and logs once the watch is ready, never before', async () => {
+    const { watchers, gates } = gatedWatchers();
+    const lines: string[] = [];
+    const gated = new FileTree({
+      projects: () => [project], exclude: () => ({}), workspaces: testWorkspaces({ watchers }),
+      ask: async () => undefined, t: (message) => message, log: (line) => lines.push(line), reveal: async () => undefined, copy: async () => undefined,
+      changed: (change) => changed.push(change), ignored: async () => new Set(), target: () => ({ os: process.platform }),
+    });
+    let structural = 0;
+    gated.onDidChangeStructure(() => structural++);
+    try {
+      expect((await gated.list(project.key, '')).ok).toBe(true);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(changed).toEqual([]);
+      expect(lines.filter((line) => line.startsWith(LIVE))).toEqual([]);
+      gates[0]!();
+      await vi.waitFor(() => expect(changed).toEqual([{ projectKey: project.key, relativeDirs: [] }]));
+      expect(structural).toBe(1);
+      expect(lines).toContain(`[files] the watch of ${projectDir} is live`);
+    } finally {
+      gated.dispose();
+    }
+  });
+
+  it('neither refetches nor logs for a watch that was disposed or replaced before it was ready', async () => {
+    const { watchers, gates } = gatedWatchers();
+    const lines: string[] = [];
+    const gated = new FileTree({
+      projects: () => [project], exclude: () => ({}), workspaces: testWorkspaces({ watchers }),
+      ask: async () => undefined, t: (message) => message, log: (line) => lines.push(line), reveal: async () => undefined, copy: async () => undefined,
+      changed: (change) => changed.push(change), ignored: async () => new Set(), target: () => ({ os: process.platform }),
+    });
+    expect((await gated.list(project.key, '')).ok).toBe(true);
+    gated.dispose();
+    gates[0]!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(changed).toEqual([]);
+    expect(lines.filter((line) => line.startsWith(LIVE))).toEqual([]);
+
+    let remote = testRemote({ watchers });
+    const away: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(projectDir)), fsPath: projectDir, name: 'proj' };
+    const remoteTree = new FileTree({
+      projects: () => [away], exclude: () => ({}), workspaces: testWorkspaces({ watchers, remote: () => remote.workspace() }),
+      ask: async () => undefined, t: (message) => message, log: (line) => lines.push(line), reveal: async () => undefined, copy: async () => undefined,
+      changed: (change) => changed.push(change), ignored: async () => new Set(), target: () => ({ os: process.platform, host: 'Local daemon' }),
+    });
+    try {
+      expect((await remoteTree.list(away.key, '')).ok).toBe(true);
+      await vi.waitFor(() => expect(gates).toHaveLength(2));
+      // the daemon answers the first watch only after the connection that carried it ended, and a later watch replaced it
+      remote.disconnect('network');
+      remote = testRemote({ watchers });
+      remoteTree.connectionsChanged();
+      await vi.waitFor(() => expect(gates).toHaveLength(3));
+      gates[1]!();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(changed).toEqual([]);
+      expect(lines.filter((line) => line.startsWith(LIVE))).toEqual([]);
+      gates[2]!();
+      await vi.waitFor(() => expect(changed).toEqual([{ projectKey: away.key, relativeDirs: [] }]));
+      expect(lines.filter((line) => line.startsWith(LIVE))).toEqual([`[files] the watch of ${projectDir} is live`]);
+    } finally {
+      remoteTree.dispose();
+      remote.disconnect('the test ended');
+    }
+  });
+
   it('asks every watched project to refetch when files.exclude changes', async () => {
     await tree.list(project.key, '');
+    await untilWatchReady();
     tree.excludeChanged();
     expect(changed).toEqual([{ projectKey: project.key, relativeDirs: [] }]);
   });

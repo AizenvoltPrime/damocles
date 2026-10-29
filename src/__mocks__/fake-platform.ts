@@ -477,6 +477,7 @@ function createFakeWatcher(base: string | null, glob: string, folders: Workspace
     get disposed() {
       return disposed;
     },
+    ready: Promise.resolve(),
     onDidCreate: (cb) => create.add(cb),
     onDidChange: (cb) => change.add(cb),
     onDidDelete: (cb) => del.add(cb),

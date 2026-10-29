@@ -108,6 +108,7 @@ export function testRemote(options: TestWorkspaceOptions & { readonly authorityK
       return { dispose: () => closeListeners.delete(listener) };
     },
     notConnected: () => new NotConnectedError(`${authorityKey} is not connected.`),
+    watchReady: true,
     log,
   });
   return {

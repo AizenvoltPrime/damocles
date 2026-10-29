@@ -120,7 +120,7 @@ export class MapMemento implements Memento {
   }
 }
 
-const inertWatcher: FileWatcher = { onDidCreate: () => ({ dispose: () => undefined }), onDidChange: () => ({ dispose: () => undefined }), onDidDelete: () => ({ dispose: () => undefined }), dispose: () => undefined };
+const inertWatcher: FileWatcher = { ready: Promise.resolve(), onDidCreate: () => ({ dispose: () => undefined }), onDidChange: () => ({ dispose: () => undefined }), onDidDelete: () => ({ dispose: () => undefined }), dispose: () => undefined };
 export const watchers: FileWatcherFactory = { watch: () => inertWatcher, watchWorkspace: () => inertWatcher, onDidRenameFiles: () => ({ dispose: () => undefined }) };
 
 export interface Harness {

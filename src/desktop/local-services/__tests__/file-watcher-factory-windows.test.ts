@@ -162,6 +162,27 @@ describe.runIf(process.platform === 'win32')('DesktopFileWatcherFactory on Windo
     expect(events).toEqual(['delete a.txt', 'create b.txt', 'delete b.txt']);
   });
 
+  it('settles ready, for every listener of the root, only once the first scan is done, and reports a file created right after', async () => {
+    fs.writeFileSync(path.join(dir, 'present.txt'), 'x');
+    let release!: () => void;
+    H.gate = new Promise((resolve) => (release = resolve));
+    const watcher = factory.watch(dir, '**');
+    const joined = factory.watch(dir, '**/*.txt');
+    const events = record(watcher);
+    let ready = 0;
+    for (const each of [watcher, joined]) void each.ready.then(() => ready++);
+    await quiet();
+    expect(ready).toBe(0);
+    release();
+    await Promise.all([watcher.ready, joined.ready]);
+
+    fs.writeFileSync(path.join(dir, 'fresh.txt'), 'x');
+    await vi.waitFor(() => expect(events).toContain('create fresh.txt'), WAIT);
+    fs.rmSync(path.join(dir, 'fresh.txt'));
+    await vi.waitFor(() => expect(events).toContain('delete fresh.txt'), WAIT);
+    expect(events).not.toContain('create present.txt');
+  });
+
   it('reports an atomic replace as a change, never a create', async () => {
     const file = path.join(dir, 'settings.json');
     fs.writeFileSync(file, '{}');

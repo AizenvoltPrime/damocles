@@ -68,7 +68,8 @@
   "panels.viewDetached",
   "panels.binaryAudience",
   "chat.queuedPartsReturn",
-  "control.listOwnRuns"
+  "control.listOwnRuns",
+  "files.watchReady"
  ],
  "contracts": {
   "CoreRequests": {

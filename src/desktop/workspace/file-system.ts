@@ -80,7 +80,8 @@ export interface WorkspaceFileSystem {
   // each '/'-separated relative path's mtime under folder, joined on this host; undefined when it cannot be read for any reason
   mtimes(folder: string, relativePaths: readonly string[]): Promise<ReadonlyArray<number | undefined>>;
   browse(folder: string): Promise<BrowseResult>;
-  watch(base: string, glob: string, listener: (event: WatchEvent) => void): Disposable;
+  // ready: FileWatcher.ready's contract (src/platform/file-watcher.ts)
+  watch(base: string, glob: string, listener: (event: WatchEvent) => void): Disposable & { readonly ready: Promise<void> };
 }
 
 export interface FileSystemDeps {

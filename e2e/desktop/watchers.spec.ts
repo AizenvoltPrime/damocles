@@ -131,7 +131,7 @@ test('watchers: an .asar archive in an open project is a file, the app holds no 
   await openProjectChat(app, home.project);
   const shell = await shellPage(app);
   await expect(filesRow(shell, 'present.txt')).toBeVisible({ timeout: 30_000 });
-  await untilWatchLive(shell, home.project);
+  await untilWatchLive(shell, home, home.project);
 
   const archive = path.join(home.project, 'app.asar');
   writeAsar(archive, ARCHIVE);
@@ -140,7 +140,7 @@ test('watchers: an .asar archive in an open project is a file, the app holds no 
   // A later file reported proves the watch handled the archive's creation: core's watch of this root, then main's Files watcher.
   // Neither proves work a listener defers past the event, such as source control's debounced refresh.
   await untilCoreWatchLive(app, home.project);
-  await untilWatchLive(shell, home.project);
+  await untilWatchLive(shell, home, home.project);
   expect(await appHolders(app, [archive])).toEqual([]);
   fs.rmSync(archive);
   await expect(filesRow(shell, 'app.asar')).toHaveCount(0);

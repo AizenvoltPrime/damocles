@@ -19,6 +19,7 @@ import {
   type Log,
   type RawEventType,
   type RawListener,
+  type StartedWatch,
   type TrackWork,
 } from '../watch-worker/fs-watch-tree';
 import { Emitter } from './emitter';
@@ -69,14 +70,15 @@ function nearestExistingAncestor(dir: string): string | undefined {
 }
 
 // start(appeared, lost) runs while dir exists; lost() hands the directory back to waiting, so a deleted root resumes once recreated.
-// Until then a non-recursive watch on its nearest existing ancestor waits for it.
+// Until then a non-recursive watch on its nearest existing ancestor waits for it. ready is the first start's, settled at once
+// when dir was missing or that start threw.
 function watchWhileExists(
   dir: string,
-  start: (appeared: boolean, lost: () => void) => Disposable,
+  start: (appeared: boolean, lost: () => void) => StartedWatch,
   log: Log,
-): Disposable {
+): StartedWatch {
   let disposed = false;
-  let started: Disposable | undefined;
+  let started: StartedWatch | undefined;
   let waiting: { ancestor: string; watcher: fs.FSWatcher } | undefined;
   const stopWaiting = (): void => {
     waiting?.watcher.close();
@@ -121,9 +123,17 @@ function watchWhileExists(
     }
   };
   check(false);
+  let markReady = (): void => undefined;
+  const ready = new Promise<void>((resolve) => {
+    markReady = resolve;
+  });
+  if (started) void started.ready.then(markReady);
+  else markReady();
   return {
+    ready,
     dispose: () => {
       disposed = true;
+      markReady();
       stopWaiting();
       started?.dispose();
       started = undefined;
@@ -152,7 +162,8 @@ function replayExisting(dir: string, recursive: boolean, emit: RawListener, log:
   walk(dir);
 }
 
-function startShallow(dir: string, emit: RawListener, lost: () => void, log: Log): Disposable {
+// ready at once: the watch and the baseline listing are both made before this returns.
+function startShallow(dir: string, emit: RawListener, lost: () => void, log: Log): StartedWatch {
   const present = new Set(fs.readdirSync(dir));
   const pending = new Set<string>();
   let timer: NodeJS.Timeout | undefined;
@@ -195,6 +206,7 @@ function startShallow(dir: string, emit: RawListener, lost: () => void, log: Log
     if (!fs.existsSync(dir)) gone();
   });
   return {
+    ready: Promise.resolve(),
     dispose: () => {
       clearTimeout(timer);
       watcher.close();
@@ -204,7 +216,7 @@ function startShallow(dir: string, emit: RawListener, lost: () => void, log: Log
 
 // The OS watch covers the whole tree, but a directory moved in arrives as one create with nothing for what it holds, so it is listed.
 // Every subscribe and unsubscribe goes through track, so the factory's close() can wait for it.
-function startParcel(dir: string, emit: RawListener, lost: () => void, log: Log, track: TrackWork): Disposable {
+function startParcel(dir: string, emit: RawListener, lost: () => void, log: Log, track: TrackWork): StartedWatch {
   // FSEvents reports real paths, so a root under a symlink (/var is /private/var on macOS) is watched at its real path and events map back to dir.
   const real = fs.realpathSync.native(dir);
   const toCaller = (eventPath: string): string => (real === dir ? eventPath : path.join(dir, path.relative(real, eventPath)));
@@ -235,6 +247,7 @@ function startParcel(dir: string, emit: RawListener, lost: () => void, log: Log,
     return undefined;
   });
   return {
+    ready: subscribed.then(() => undefined),
     dispose: () => {
       if (disposed) return;
       disposed = true;
@@ -263,8 +276,15 @@ function treeEntry(stat: fs.BigIntStats): TreeEntry {
 // One non-recursive inotify watch per directory. A directory is watched before it is listed, as inotify(7) prescribes for a subtree,
 // so nothing created in between is missed. Events are diffed against the entries already reported, so each one names a real change.
 // limitReached: a directory got no watch because fs.inotify.max_user_watches is used up (ENOSPC), so its changes go unseen.
-export function startInotifyTree(root: string, emit: RawListener, lost: () => void, log: Log, limitReached: () => void, watch: typeof fs.watch = fs.watch): Disposable {
+// ready settles once every startup listing is done, those of the subdirectories they found included.
+export function startInotifyTree(root: string, emit: RawListener, lost: () => void, log: Log, limitReached: () => void, watch: typeof fs.watch = fs.watch): StartedWatch {
   const dirs = new Map<string, TreeDir>();
+  // A listing starts its subdirectories' listings before it settles, so the count reaches 0 only once the startup scan is done.
+  let startupListings = 0;
+  let markReady = (): void => undefined;
+  const ready = new Promise<void>((resolve) => {
+    markReady = resolve;
+  });
   // Per directory: the names with raw events since the last flush, and whether any of them was a content change.
   const pending = new Map<string, Map<string, boolean>>();
   let timer: NodeJS.Timeout | undefined;
@@ -338,7 +358,15 @@ export function startInotifyTree(root: string, emit: RawListener, lost: () => vo
     });
     const node: TreeDir = { watcher, entries: new Map() };
     dirs.set(dir, node);
-    void list(node, dir, report);
+    if (report) {
+      void list(node, dir, report);
+      return;
+    }
+    startupListings++;
+    const listed = (): void => {
+      if (--startupListings === 0) markReady();
+    };
+    list(node, dir, report).then(listed, listed);
   };
 
   const reconcile = (node: TreeDir, dir: string, name: string, sawChange: boolean): void => {
@@ -398,13 +426,16 @@ export function startInotifyTree(root: string, emit: RawListener, lost: () => vo
     pending.clear();
     unwatch(root);
     stopped = true;
+    markReady();
     lost();
   };
 
   watchDir(root, false);
   return {
+    ready,
     dispose: () => {
       stopped = true;
+      markReady();
       clearTimeout(timer);
       timer = undefined;
       pending.clear();
@@ -416,20 +447,31 @@ export function startInotifyTree(root: string, emit: RawListener, lost: () => vo
 
 interface RootEntry {
   readonly listeners: Set<RawListener>;
-  readonly source: Disposable;
+  readonly source: StartedWatch;
 }
 
 class EventFan implements FileWatcher {
+  readonly ready: Promise<void>;
+  private readonly markReady: () => void;
   private readonly create: Emitter<[string]>;
   private readonly change: Emitter<[string]>;
   private readonly remove: Emitter<[string]>;
   private readonly release: () => void;
 
   constructor(log: Log, release: () => void) {
+    let markReady = (): void => undefined;
+    this.ready = new Promise<void>((resolve) => {
+      markReady = resolve;
+    });
+    this.markReady = markReady;
     this.create = new Emitter('watcher', log);
     this.change = new Emitter('watcher', log);
     this.remove = new Emitter('watcher', log);
     this.release = release;
+  }
+
+  readyWhen(ready: Promise<void>): void {
+    void ready.then(this.markReady);
   }
 
   deliver(type: RawEventType, fsPath: string): void {
@@ -451,6 +493,7 @@ class EventFan implements FileWatcher {
   }
 
   dispose(): void {
+    this.markReady();
     this.release();
     this.create.clear();
     this.change.clear();
@@ -511,9 +554,12 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
         if (isStrictlyInside(relative) && matches(toGlobPath(relative))) fan.deliver(type, fsPath);
       };
       const { root: watched, recursive } = watchRoot(root, glob);
-      release = this.subscribe(watched, recursive, listener);
+      const subscription = this.subscribe(watched, recursive, listener);
+      release = subscription.release;
+      fan.readyWhen(subscription.ready);
     } catch (err) {
       this.log(`[watcher] could not watch ${glob} under ${base}: ${errorText(err)}`);
+      fan.readyWhen(Promise.resolve());
     }
     return fan;
   }
@@ -545,6 +591,7 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
       perFolder.clear();
     });
     sync();
+    fan.readyWhen(Promise.all([...perFolder.values()].map((watcher) => watcher.ready)).then(() => undefined));
     return fan;
   }
 
@@ -566,8 +613,8 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
     await Promise.all([settlePending(() => this.work), this.windowsTree.close()]);
   }
 
-  private subscribe(root: string, recursive: boolean, listener: RawListener): () => void {
-    if (this.closed) return () => undefined;
+  private subscribe(root: string, recursive: boolean, listener: RawListener): { readonly release: () => void; readonly ready: Promise<void> } {
+    if (this.closed) return { release: () => undefined, ready: Promise.resolve() };
     const key = `${recursive ? 'r' : 's'}:${folderKey(root)}`;
     let entry = this.roots.get(key);
     if (!entry) {
@@ -579,7 +626,7 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
       const source = watchWhileExists(root, (appeared, lost) => {
         // Its first scan reports what a root that appeared holds, and the events after it are diffed against that scan.
         if (recursive && USE_FS_WATCH_TREE) return windowsTree.start(root, appeared, emit, lost);
-        let started: Disposable;
+        let started: StartedWatch;
         if (!recursive) started = startShallow(root, emit, lost, log);
         else started = USE_INOTIFY_TREE ? startInotifyTree(root, emit, lost, log, () => this.reachedLimit(root)) : startParcel(root, emit, lost, log, track);
         let live = true;
@@ -588,6 +635,7 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
           if (live) replayExisting(root, recursive, emit, log, (fsPath) => recursive && ignoredUnder(root, fsPath));
         });
         return {
+          ready: started.ready,
           dispose: () => {
             live = false;
             started.dispose();
@@ -599,13 +647,14 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
     }
     const current = entry;
     current.listeners.add(listener);
-    return () => {
+    const release = (): void => {
       current.listeners.delete(listener);
       if (current.listeners.size > 0 || this.roots.get(key) !== current) return;
       current.source.dispose();
       this.roots.delete(key);
       if (recursive) this.limited.delete(root);
     };
+    return { release, ready: current.source.ready };
   }
 
   private reachedLimit(root: string): void {

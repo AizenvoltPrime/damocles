@@ -27,7 +27,7 @@ afterAll(() => {
   fs.rmSync(sandbox, { recursive: true, force: true });
 });
 
-const inert: FileWatcher = { onDidCreate: () => ({ dispose: () => undefined }), onDidChange: () => ({ dispose: () => undefined }), onDidDelete: () => ({ dispose: () => undefined }), dispose: () => undefined };
+const inert: FileWatcher = { ready: Promise.resolve(), onDidCreate: () => ({ dispose: () => undefined }), onDidChange: () => ({ dispose: () => undefined }), onDidDelete: () => ({ dispose: () => undefined }), dispose: () => undefined };
 
 const inertWatchers = { watch: () => inert, watchWorkspace: () => inert, onDidRenameFiles: () => ({ dispose: () => undefined }) };
 const noSettings = { get: () => undefined, inspect: () => ({}), update: async () => undefined, onDidChange: () => ({ dispose: () => undefined }), scopeFile: () => undefined } as never;

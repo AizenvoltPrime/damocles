@@ -248,14 +248,14 @@ test('Delete of a worktree whose folder holds an .asar the app watched removes i
     const shell = await shellPage(app);
     await expect(filesChip(shell)).toHaveAttribute('data-shown', 'worktree');
     await expect(filesRow(shell, 'a.ts')).toBeVisible();
-    await untilWatchLive(shell, record!.workingFolder);
+    await untilWatchLive(shell, home, record!.workingFolder);
     const archive = path.join(record!.workingFolder, 'app.asar');
     writeAsar(archive, ARCHIVE);
     await expect(filesRow(shell, 'app.asar')).toBeVisible();
     // A later file reported proves the watch handled the archive's creation: core's watch of this root, then main's Files watcher.
     // Neither proves work a listener defers past the event, such as source control's debounced refresh.
     await untilCoreWatchLive(app, record!.workingFolder);
-    await untilWatchLive(shell, record!.workingFolder);
+    await untilWatchLive(shell, home, record!.workingFolder);
     expect(await appHolders(app, [archive])).toEqual([]);
 
     await recordToasts(app);

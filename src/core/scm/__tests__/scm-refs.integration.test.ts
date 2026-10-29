@@ -77,9 +77,9 @@ function snapshotWatchers(): FileWatcherFactory & { around(action: () => void): 
         entry.listeners.add(cb);
         return { dispose: () => entry.listeners.delete(cb) };
       };
-      return { onDidCreate: on, onDidChange: on, onDidDelete: on, dispose: () => void watched.splice(watched.indexOf(entry), 1) };
+      return { ready: Promise.resolve(), onDidCreate: on, onDidChange: on, onDidDelete: on, dispose: () => void watched.splice(watched.indexOf(entry), 1) };
     },
-    watchWorkspace: () => ({ onDidCreate: () => ({ dispose: () => undefined }), onDidChange: () => ({ dispose: () => undefined }), onDidDelete: () => ({ dispose: () => undefined }), dispose: () => undefined }),
+    watchWorkspace: () => ({ ready: Promise.resolve(), onDidCreate: () => ({ dispose: () => undefined }), onDidChange: () => ({ dispose: () => undefined }), onDidDelete: () => ({ dispose: () => undefined }), dispose: () => undefined }),
     onDidRenameFiles: () => ({ dispose: () => undefined }),
     around: (action) => {
       const before = watched.map((entry) => snapshot(entry.base));

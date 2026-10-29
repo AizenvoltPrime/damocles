@@ -19,8 +19,8 @@ import { formatIdeContextBlock } from '../../../shared/ide-context';
 
 const inert = { dispose: () => undefined };
 const watchers: FileWatcherFactory = {
-  watch: () => ({ onDidCreate: () => inert, onDidChange: () => inert, onDidDelete: () => inert, dispose: () => undefined }),
-  watchWorkspace: () => ({ onDidCreate: () => inert, onDidChange: () => inert, onDidDelete: () => inert, dispose: () => undefined }),
+  watch: () => ({ ready: Promise.resolve(), onDidCreate: () => inert, onDidChange: () => inert, onDidDelete: () => inert, dispose: () => undefined }),
+  watchWorkspace: () => ({ ready: Promise.resolve(), onDidCreate: () => inert, onDidChange: () => inert, onDidDelete: () => inert, dispose: () => undefined }),
   onDidRenameFiles: () => inert,
 };
 

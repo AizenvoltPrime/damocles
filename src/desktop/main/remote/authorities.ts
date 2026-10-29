@@ -2,7 +2,7 @@ import type { Duplex } from 'node:stream';
 import type { Project } from '../../local-services/confine';
 import type { ProjectConnection, ShellPlatform } from '../../preload/shell-channels';
 import type { ProjectWorkspace } from '../../workspace/project-workspace';
-import { createRemoteWorkspace } from '../workspace/remote-workspace';
+import { createRemoteWorkspace, WATCH_READY_FEATURE } from '../workspace/remote-workspace';
 import type { NotConnectedError } from '../workspace/workspaces';
 import { connect, type OtherProtocolDaemon, type RemoteConnection } from './connection';
 
@@ -203,6 +203,7 @@ export class Authorities {
       projectOfCwd: (cwd) => this.deps.projectOfCwd(entry.authorityKey, cwd),
       onClose: (listener) => connection.onClose(listener),
       notConnected: () => this.deps.notConnected(entry.authorityKey),
+      watchReady: connection.features.includes(WATCH_READY_FEATURE),
       log,
     });
     entry.connected = { connection, workspace };

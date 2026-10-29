@@ -11,11 +11,13 @@ export type WatchEvent = readonly [RawEventType, string];
 
 /**
  * worker → main. events: everything one watch emitted in one turn of the worker's loop, in order. lost: the watch's root is
- * gone, after its deletes. failed: the watch could not start.
+ * gone, after its deletes. failed: the watch could not start. ready: the watch reports every change made from now on, after the
+ * events it emitted before.
  */
 export type WatchReply =
   | { readonly kind: 'events'; readonly id: number; readonly events: readonly WatchEvent[] }
   | { readonly kind: 'lost'; readonly id: number }
+  | { readonly kind: 'ready'; readonly id: number }
   | { readonly kind: 'failed'; readonly id: number; readonly message: string }
   | { readonly kind: 'log'; readonly line: string }
   | { readonly kind: 'closed' };
@@ -48,7 +50,7 @@ export function parseWatchReply(raw: unknown): WatchReply | undefined {
   }
   const id = own(value, 'id');
   if (!isId(id)) return undefined;
-  if (kind === 'lost') return { kind, id };
+  if (kind === 'lost' || kind === 'ready') return { kind, id };
   if (kind === 'failed') {
     const message = own(value, 'message');
     return typeof message === 'string' ? { kind, id, message } : undefined;

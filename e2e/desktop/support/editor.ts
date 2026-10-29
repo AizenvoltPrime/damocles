@@ -2,6 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { expect, type ElectronApplication, type Locator, type Page } from '@playwright/test';
 import type { EditorOpenRequest, EditorOpenResult, ShellEditorState, ShellEditorTab } from '../../../src/desktop/preload/shell-channels';
+import { mainLog } from './app';
+import type { HermeticHome } from './hermetic';
 import { overlayPage, PRIMARY, pressKeys, SHELL_URL, shellPage } from './shell';
 import { clickMenu } from './ui';
 
@@ -16,11 +18,30 @@ export const quickPick = (overlay: Page): Locator => overlay.getByTestId('quick-
 
 let watchProbeRuns = 0;
 
+// What a launch's quit logs last; the main log after it is the running launch's.
+const WILL_QUIT = '[shutdown] will-quit';
+
+// Whether the running launch logged the Files watch of `folder` live after it last started one, by the folder's path as given
+// or its realpath, in any case on Windows.
+function filesWatchLogged(home: HermeticHome, folder: string): boolean {
+  const log = mainLog(home);
+  const fold = (text: string): string => (process.platform === 'win32' ? text.toLowerCase() : text);
+  const forms = [folder, fs.realpathSync.native(folder)].map(fold);
+  const names = (line: string, before: string, after: string): boolean => forms.some((form) => fold(line).endsWith(`${fold(before)}${form}${fold(after)}`));
+  const lines = log.slice(log.lastIndexOf(WILL_QUIT) + 1).split(/\r?\n/).map((line) => line.trimEnd());
+  let started = -1;
+  lines.forEach((line, index) => {
+    if (names(line, '[files] watching ', '')) started = index;
+  });
+  return started >= 0 && lines.slice(started + 1).some((line) => names(line, '[files] the watch of ', ' is live'));
+}
+
 /**
- * Writes a fresh file in `folder`, the root of a Files tree, until Files lists one, then deletes them: a watcher that
- * reported a later file has handled every change before it. A watcher's first scan records what it lists without reporting it.
+ * Waits for main to log that the Files watch of `folder`, the root of a Files tree, is live, so it reports every change from
+ * then on; then writes a fresh file there until Files lists one and deletes them, so the watch has reached the shell too.
  */
-export async function untilWatchLive(shell: Page, folder: string): Promise<void> {
+export async function untilWatchLive(shell: Page, home: HermeticHome, folder: string): Promise<void> {
+  await expect.poll(() => filesWatchLogged(home, folder), { timeout: 60_000 }).toBe(true);
   const prefix = `watch-probe-${process.pid}-${++watchProbeRuns}-`;
   const probes = shell.locator(`[data-testid="files-row"][data-tree-path^="${prefix}"]`);
   const written: string[] = [];

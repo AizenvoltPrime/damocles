@@ -13,6 +13,9 @@ import type { FileListingSink } from '../../workspace/quick-open-listing';
 import type { ProjectFileLocation } from '../../workspace/search/types';
 import type { NotConnectedError } from './workspaces';
 
+// the daemon answers files.watch only once the watch is ready
+export const WATCH_READY_FEATURE = 'files.watchReady';
+
 export interface RemoteWorkspaceDeps {
   // the workspace channel's endpoint, whose results and events its tables parse before they arrive here
   readonly endpoint: Endpoint<ClientToWorkspace, WorkspaceToClient>;
@@ -23,6 +26,8 @@ export interface RemoteWorkspaceDeps {
   readonly onClose: (listener: (reason: string) => void) => Disposable;
   // what a request fails with once the connection closed, its localized message naming the host
   readonly notConnected: () => NotConnectedError;
+  // the daemon's welcome lists WATCH_READY_FEATURE; without it a watch's ready settles at once
+  readonly watchReady: boolean;
   readonly log: (line: string) => void;
 }
 
@@ -128,11 +133,12 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
       watch: (base, glob, listener) => {
         const watchId = nextId++;
         watches.set(watchId, listener);
-        call('files.watch', { watchId, base, glob }).catch((err: unknown) => {
+        const watched = call('files.watch', { watchId, base, glob }).catch((err: unknown) => {
           watches.delete(watchId);
           report(`watching ${base}`)(err);
         });
         return {
+          ready: deps.watchReady ? watched : Promise.resolve(),
           dispose: () => {
             if (!watches.delete(watchId)) return;
             call('files.unwatch', { watchId }).catch(report(`unwatching ${base}`));

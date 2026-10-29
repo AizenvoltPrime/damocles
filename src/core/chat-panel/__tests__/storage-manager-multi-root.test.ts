@@ -712,7 +712,7 @@ describe("StorageManager: a worktree chat's row (AD12 Listing)", () => {
 
 describe('re-listing after a worktree registry change', () => {
   const inertWatchers = {
-    watch: () => ({ onDidCreate: () => ({ dispose: () => undefined }), onDidChange: () => ({ dispose: () => undefined }), onDidDelete: () => ({ dispose: () => undefined }), dispose: () => undefined }),
+    watch: () => ({ ready: Promise.resolve(), onDidCreate: () => ({ dispose: () => undefined }), onDidChange: () => ({ dispose: () => undefined }), onDidDelete: () => ({ dispose: () => undefined }), dispose: () => undefined }),
     watchWorkspace: () => { throw new Error('unused'); },
     onDidRenameFiles: () => ({ dispose: () => undefined }),
   };

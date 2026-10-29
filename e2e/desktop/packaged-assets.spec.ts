@@ -297,7 +297,7 @@ test('the watch worker loads from the build and a file created under the project
   const desktop = await launch();
   const shell = await shellPage(desktop.app);
   await expect(filesRow(shell, 'present.txt')).toBeVisible({ timeout: 30_000 });
-  await untilWatchLive(shell, home.project);
+  await untilWatchLive(shell, home, home.project);
   await desktop.close();
   for (const log of [logBeforeQuit(home), coreQuitLog(home)]) expect(log).not.toContain('[watcher] the watch worker');
 });

@@ -20,6 +20,8 @@ function listenerSet(): { add(cb: Listener): Disposable; fire(fsPath: string): v
 
 function wrap(watcher: vscode.FileSystemWatcher): FileWatcher {
   return {
+    // VS Code reports no watch start.
+    ready: Promise.resolve(),
     onDidCreate: (cb): Disposable => watcher.onDidCreate((uri) => cb(uri.fsPath)),
     onDidChange: (cb): Disposable => watcher.onDidChange((uri) => cb(uri.fsPath)),
     onDidDelete: (cb): Disposable => watcher.onDidDelete((uri) => cb(uri.fsPath)),
@@ -52,6 +54,8 @@ function watchWorkspace(glob: string): FileWatcher {
   const folderSubscription = vscode.workspace.onDidChangeWorkspaceFolders(sync);
   sync();
   return {
+    // VS Code reports no watch start.
+    ready: Promise.resolve(),
     onDidCreate: (cb) => create.add(cb),
     onDidChange: (cb) => change.add(cb),
     onDidDelete: (cb) => remove.add(cb),
