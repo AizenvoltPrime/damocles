@@ -3161,7 +3161,8 @@ describe('PiSession runtime registration with two panels on one session id', () 
     const file = path.join(dir, 'new.jsonl');
     const messages: ExtensionToWebviewMessage[] = [];
     const announced: Array<[string | null, boolean]> = [];
-    const session = new PiSession(makeOptions(messages, { onSessionIdChange: (id, stored) => void announced.push([id, stored]) }));
+    const onSessionPersisted = vi.fn();
+    const session = new PiSession(makeOptions(messages, { onSessionIdChange: (id, stored) => void announced.push([id, stored]), onSessionPersisted }));
     try {
       await session.initializeEarly();
       const live = H.getLastSession()!;
@@ -3172,6 +3173,7 @@ describe('PiSession runtime registration with two panels on one session id', () 
 
       await session.sendMessage('no reply', undefined, 'c1', { content: 'no reply' });
       expect(storedPosts()).toEqual([]);
+      expect(onSessionPersisted).not.toHaveBeenCalled();
 
       (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async () => { fs.writeFileSync(file, '{}\n'); });
       await session.sendMessage('first reply', undefined, 'c2', { content: 'first reply' });
@@ -3179,6 +3181,7 @@ describe('PiSession runtime registration with two panels on one session id', () 
 
       expect(session.hasSessionFile()).toBe(true);
       expect(storedPosts()).toEqual([{ type: 'sessionStarted', sessionId: live.sessionId, stored: true }]);
+      expect(onSessionPersisted.mock.calls).toEqual([[live.sessionId]]);
     } finally {
       await session.dispose();
       fs.rmSync(dir, { recursive: true, force: true });

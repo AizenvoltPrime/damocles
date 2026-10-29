@@ -3688,6 +3688,8 @@ export class PiSession implements ChatSession {
     this.announcedStoredId = sessionId;
     this.emit({ type: "sessionStarted", sessionId, stored: true });
     this.publishSessionState();
+    // the list hears of its writer's new file here, since a session-dir watch can miss it
+    this.options.onSessionPersisted?.(sessionId);
   }
 
   get storedSessionId(): string | null {

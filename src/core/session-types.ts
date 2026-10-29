@@ -40,6 +40,7 @@ export interface SessionOptions {
    * `resumed`: a stored conversation a resume opened, which the router shows itself once its history is replayed.
    */
   onSessionIdChange?: (sessionId: string | null, stored: boolean, resumed: boolean) => void;
+  /** The conversation's file first exists, or a listed field of it changed: the host re-reads its list row. */
   onSessionPersisted?: (sessionId: string) => void;
   onAssistantTextFinal?: (text: string) => void;
   mcpScope?: McpScope;
