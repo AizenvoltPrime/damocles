@@ -367,6 +367,22 @@ describe.skipIf(!HAS_GIT)('worktree chats against real git', { timeout: 120_000 
     expect(fs.existsSync(path.dirname(record.worktreeRoot))).toBe(false);
   });
 
+  // Source control reads the open project meanwhile; on Windows a git opening a config being replaced fails.
+  it('deletes a discarded worktree\'s moved branch and its reflog without rewriting the project\'s git config', async () => {
+    const { project, registry, run } = setup('discard-config');
+    const record = await create(project, registry, run);
+    write(path.join(record.worktreeRoot, 'moved.txt'), 'x\n');
+    commitAll(record.worktreeRoot, 'moved');
+    const config = path.join(project, '.git', 'config');
+    const before = { stat: fs.statSync(config), text: fs.readFileSync(config, 'utf8') };
+    await discardChatWorktree(run, registry, record);
+    expect(git(['branch', '--list', record.branch], project).trim()).toBe('');
+    expect(fs.existsSync(path.join(project, '.git', 'logs', 'refs', 'heads', ...record.branch.split('/')))).toBe(false);
+    const after = fs.statSync(config);
+    expect([after.ino, after.mtimeMs]).toEqual([before.stat.ino, before.stat.mtimeMs]);
+    expect(fs.readFileSync(config, 'utf8')).toBe(before.text);
+  });
+
   it('reports an unregistered folder and a git record without its folder, and deletes nothing', async () => {
     const { project, registry, run } = setup('leftovers');
     const record = await create(project, registry, run);

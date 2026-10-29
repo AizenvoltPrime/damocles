@@ -362,9 +362,14 @@ export async function discardChatWorktree(runner: GitRunner, registry: WorktreeR
   if (removed.exitCode !== 0) throw new Error(`Could not remove the worktree ${record.worktreeRoot}: ${removed.stderr.trim() || `git worktree remove exited with ${removed.exitCode}`}`);
   await registry.remove(record.id);
   await registry.removeEmptyProjectFolder(record.projectPath).catch((err: unknown) => log(`[worktrees] Could not remove the empty folder of ${record.worktreeRoot}: ${gitMessage(err)}`));
-  await git.run(record.projectPath, ['branch', '-D', ...git.eoo(), revision(record.branch)], { kind: 'mutation' }).catch((err: unknown) => {
-    throw new Error(`The worktree ${record.worktreeRoot} was removed, but its branch ${record.branch} was not deleted: ${gitMessage(err)}`);
-  });
+  // Not `branch -D`, which rewrites the project's .git/config even when the branch has no section there, and on Windows a git
+  // reading the config meanwhile (source control's reads of the open project) fails. `-b` from a commit writes no section.
+  const ref = `refs/heads/${revision(record.branch)}`;
+  await git.text(record.projectPath, ['rev-parse', '--verify', '--quiet', ...git.eoo(), ref])
+    .then((tip) => git.run(record.projectPath, ['update-ref', '-d', ref, revision(tip)], { kind: 'mutation' }))
+    .catch((err: unknown) => {
+      throw new Error(`The worktree ${record.worktreeRoot} was removed, but its branch ${record.branch} was not deleted: ${gitMessage(err)}`);
+    });
 }
 
 /** D63: tracked changes through `git diff HEAD --binary` applied in the worktree, and untracked files that are not ignored. */
