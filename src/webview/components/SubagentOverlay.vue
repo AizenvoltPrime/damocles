@@ -10,6 +10,7 @@ import { Bot, CircleAlert, ClipboardList, Compass, Database, FileText, Gauge, Lo
 import ToolCallCard from './ToolCallCard.vue';
 import TranscriptNotice from './TranscriptNotice.vue';
 import ErrorMessageText from './ErrorMessageText.vue';
+import { errorRowText } from '@/composables/useLocalizedText';
 import ThinkingIndicator from './ThinkingIndicator.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
@@ -351,7 +352,7 @@ function userMessageText(message: ChatMessage): string {
           >
             <ErrorMessageText
               class="text-12.5 wrap-break-word whitespace-pre-wrap text-(--d-text)"
-              :text="message.content"
+              :text="errorRowText(message)"
             />
           </TranscriptNotice>
           <template v-else-if="message.contentBlocks?.length">

@@ -10,6 +10,8 @@ import { remoteFileRef } from '../remote/remote-files';
 import type { RemoteProject } from '../remote/authorities';
 import type { ScmServiceClient } from '../scm/scm-client';
 import { ScmHost } from '../scm/scm-host';
+import { englishText, type LocalizedText } from '../../../shared/localized-text';
+import { createDesktopLocalizationService } from '../../local-services/localization-service';
 
 // Every source control action on a remote repository names its files only through remoteFileRef, inside that host's projects
 // and live chat worktrees; nothing resolves against this computer's files or matches its editors by path.
@@ -57,7 +59,7 @@ const OTHER_HOST_DOC = textDocument('other', { path: '/srv/app/src/a.ts', projec
 // root: the repository root the remote core reports, which main never trusts to lie inside the host's roots
 // realPath: APP's realpath on the target as its core published it, when the project was registered through a link
 // os: the host's; a Windows host's projects are WIN_ROOTS
-function setup(root: string, opts: { worktrees?: Artifacts['rows']; picks?: string[]; inputs?: Array<string | undefined>; answers?: Array<number | undefined>; realPath?: string; os?: 'win32' } = {}) {
+function setup(root: string, opts: { worktrees?: Artifacts['rows']; picks?: string[]; inputs?: Array<string | undefined>; answers?: Array<number | undefined>; realPath?: string; os?: 'win32'; render?: (text: LocalizedText) => string } = {}) {
   const flavor = opts.os === 'win32' ? path.win32 : path.posix;
   const hostRoots = opts.os === 'win32' ? WIN_ROOTS : ROOTS;
   const appPath = hostRoots.find((project) => project.key === APP)!.fsPath;
@@ -106,7 +108,15 @@ function setup(root: string, opts: { worktrees?: Artifacts['rows']; picks?: stri
     removeWorktree: vi.fn(async () => 'ok'),
     worktreeDirty: vi.fn(async () => false),
     completeMerge: vi.fn(async () => undefined),
-    mergeInputs: vi.fn(async () => ({ ok: true, base: 'b', current: 'c', incoming: 'i', labels: {}, operation: 'merge' })),
+    // a stash apply's labels, as core's mergeLabels names them
+    mergeInputs: vi.fn(async () => ({
+      ok: true,
+      base: 'b',
+      current: 'c',
+      incoming: 'i',
+      labels: { current: { title: { message: 'Current' }, marker: 'main', description: 'abc1234', detail: 'main' }, incoming: { title: { message: 'Stashed Changes' }, marker: 'Stashed Changes' }, base: { title: { message: 'Base' }, marker: 'Base' } },
+      operation: 'stash',
+    })),
     mergeFile: vi.fn(async () => ({ ok: true, text: 'merged' })),
     move: vi.fn(async () => undefined),
     remove: vi.fn(async () => undefined),
@@ -143,6 +153,7 @@ function setup(root: string, opts: { worktrees?: Artifacts['rows']; picks?: stri
   const added: Array<[string, string]> = [];
   const worktreeCalls: unknown[][] = [];
   const host = new ScmHost({
+    render: opts.render ?? englishText,
     service,
     // index.ts's wiring: the authority's own roots, resolved by remote-files.ts
     remoteFileRef: (authority, targetPath) => {
@@ -430,6 +441,18 @@ describe('remote source control: the merge editor and file moves', () => {
     expect(vi.mocked(h.service.mergeInputs).mock.calls[0]!.slice(1)).toEqual(['src/a.ts', { encoding: 'utf8', bom: false }, 'remote buffer\n']);
     expect(await h.host.mergeFile({ repoId: 'repo-r', path: 'src/a.ts', diff3: true })).toEqual({ ok: true, text: 'merged' });
     expect(vi.mocked(h.service.mergeFile).mock.calls[0]!.slice(1)).toEqual(['src/a.ts', { encoding: 'utf8', bom: false }, true, 'remote buffer\n']);
+  });
+
+  it('gives the shell each merge input\'s title in main\'s language, and its marker name as core named it', async () => {
+    const el = createDesktopLocalizationService(process.cwd(), 'el', () => undefined);
+    const h = setup('/srv/app', { render: el.render });
+    const inputs = await h.host.mergeInputs({ repoId: 'repo-r', path: 'src/a.ts' });
+    if (!inputs.ok) throw new Error(`no inputs: ${inputs.reason}`);
+    expect(inputs.labels).toEqual({
+      current: { title: 'Τρέχουσα', marker: 'main', description: 'abc1234', detail: 'main' },
+      incoming: { title: 'Αλλαγές στο stash', marker: 'Stashed Changes' },
+      base: { title: 'Βάση', marker: 'Base' },
+    });
   });
 
   it('completes a remote merge by saving the host\'s document, staging on the target and closing that Result\'s merge tab', async () => {

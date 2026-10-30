@@ -3,11 +3,14 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import { createRequire } from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { devElectronDist } from '../dev-electron-binary.mjs';
 import { createHelpers } from './helpers.mjs';
+import { smokeEnv } from './hermetic.mjs';
 import { smokeDir, smokePort, TOKEN_HEADER, tokenFile } from './paths.mjs';
+import { createSmokeSession, killTree } from './session.mjs';
 
 const require = createRequire(import.meta.url);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -22,28 +25,28 @@ fs.mkdirSync(dir, { recursive: true });
 const token = randomBytes(32);
 fs.writeFileSync(tokenFile(dir), token.toString('hex'), { mode: 0o600 });
 
-let app;
 const output = [];
-const helpers = createHelpers(() => {
-  if (!app) throw new Error('The app is not running; post --launch first.');
-  return app;
-}, dir);
 
-async function launch() {
-  if (app) return { ok: true, alreadyRunning: true };
-  // A shell spawned from an editor's extension host inherits ELECTRON_RUN_AS_NODE=1, which would start the binary as plain Node.
-  const env = { ...process.env };
-  delete env.ELECTRON_RUN_AS_NODE;
-  app = await _electron.launch({
-    args: [path.join(repoRoot, 'dist', 'desktop', 'main.js'), '--user-data-dir', path.join(dir, 'userData')],
-    cwd: repoRoot,
-    env,
+async function launchApp(home) {
+  // The allowlisted environment leaves out ELECTRON_RUN_AS_NODE, which would start the binary as plain Node.
+  const electron = await _electron.launch({
+    args: [path.join(repoRoot, 'dist', 'desktop', 'main.js'), '--user-data-dir', home.userData],
+    cwd: home.root,
+    env: smokeEnv(home),
   });
-  app.process().stdout?.on('data', (d) => output.push(String(d)));
-  app.process().stderr?.on('data', (d) => output.push(String(d)));
-  app.on('close', () => { app = undefined; });
-  return { ok: true };
+  const proc = electron.process();
+  proc.stdout?.on('data', (d) => output.push(String(d)));
+  proc.stderr?.on('data', (d) => output.push(String(d)));
+  const exited = proc.exitCode !== null || proc.signalCode !== null ? Promise.resolve() : new Promise((resolve) => proc.once('exit', resolve));
+  return { electron, exited, close: () => electron.close(), kill: () => killTree(proc, exited) };
 }
+
+const session = createSmokeSession({ dir, realHome: os.homedir(), realLocalAppData: process.env.LOCALAPPDATA, launchApp });
+const helpers = createHelpers(() => {
+  const app = session.current()?.electron;
+  if (!app) throw new Error('The app is not running; post --launch or --relaunch first.');
+  return app;
+}, dir, session.home);
 
 function authorized(req) {
   const sent = Buffer.from(String(req.headers[TOKEN_HEADER] ?? ''), 'hex');
@@ -63,14 +66,15 @@ const server = http.createServer((req, res) => {
     }
     try {
       let result;
-      if (req.url === '/launch') result = await launch();
+      if (req.url === '/launch') {
+        result = await session.launch();
+        for (const notice of result.notices ?? []) console.warn(notice);
+      } else if (req.url === '/relaunch') result = await session.relaunch();
       else if (req.url === '/log') result = output.splice(0).join('').slice(-8000);
       else if (req.url === '/quit') {
-        await app?.close();
-        res.end('"closed"');
         server.close();
         fs.rmSync(tokenFile(dir), { force: true });
-        return;
+        result = await session.quit();
       } else if (req.url === '/run') result = await new AsyncFunction('h', body)(helpers);
       else {
         res.statusCode = 404;

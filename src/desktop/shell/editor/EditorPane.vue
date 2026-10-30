@@ -221,6 +221,7 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
         :tab="tab"
         :project-name="projectName"
         :place="place"
+        :diff-stats="store.diffStats.value.get(tab.id)"
       >
         <!-- A status chip, which no shadcn part draws; the store sets formatting only past FORMATTING_INDICATOR_DELAY_MS. -->
         <span

@@ -10,8 +10,13 @@ import { useExpandedTool } from '@/composables/useExpandedTool';
 import { useUIStore } from '@/stores/useUIStore';
 import { useDiffStore } from '@/stores/useDiffStore';
 import { useSubagentStore } from '@/stores/useSubagentStore';
-import { i18n } from '@/i18n';
+import { applyLocale, i18n } from '@/i18n';
 import { at, defined } from '@/__tests__/helpers';
+import { useTeamStore } from '@/stores/useTeamStore';
+import { createStreamingHandlers } from '@/composables/message-handler/handlers/streaming-handlers';
+import { createSubagentHandlers } from '@/composables/message-handler/handlers/subagent-handlers';
+import type { HandlerContext } from '@/composables/message-handler/types';
+import { inGreek } from '../../../__mocks__/greek-locale';
 
 /**
  * The seam between the subagent transcript and the tool and diff overlays: both card sites must hand the
@@ -230,6 +235,29 @@ describe('a failed model call in the subagent overlay', () => {
     const notice = wrapper.get('[data-testid="agent-error"]');
     expect(notice.text()).toContain(i18n.global.t('common.error'));
     expect(notice.text()).toContain('529 overloaded_error');
+  });
+
+  it("renders core's text of a live and of a reloaded error in the language the view switches to", async () => {
+    const coreText = { message: 'Could not open file: {0}', args: ['subagent.jsonl'] };
+    const store = useSubagentStore();
+    store.registerAgentTool('live', { subagent_type: 'Explore', description: 'find' });
+    store.registerAgentTool('reloaded', { subagent_type: 'Explore', description: 'find' });
+    const ctx = { stores: { subagentStore: store, teamStore: useTeamStore() } } as unknown as HandlerContext;
+    createStreamingHandlers().error!({ type: 'error', message: coreText, parentToolUseId: 'live' }, ctx);
+    createSubagentHandlers().subagentMessagesUpdate!({ type: 'subagentMessagesUpdate', agentToolId: 'reloaded', messages: [{ role: 'error', contentBlocks: [{ type: 'text', text: 'Could not open file: subagent.jsonl' }], error: coreText }] }, ctx);
+    const overlays = ['live', 'reloaded'].map((id) => mount(SubagentOverlay, {
+      props: { subagent: store.subagents[id]! },
+      global: { plugins: [i18n], stubs: { OverlayShell: PassThroughStub, LiveOutputPane: true, MarkdownRenderer: true, ThinkingIndicator: true, LoadingSpinner: true } },
+    }));
+    for (const overlay of overlays) expect(overlay.get('[data-testid="agent-error"]').text()).toContain('Could not open file: subagent.jsonl');
+
+    try {
+      await applyLocale('el');
+      await nextTick();
+      for (const overlay of overlays) expect(overlay.get('[data-testid="agent-error"]').text()).toContain(inGreek(coreText));
+    } finally {
+      await applyLocale('en');
+    }
   });
 
   it('names the retry on the working line while pi waits to re-send the call', () => {

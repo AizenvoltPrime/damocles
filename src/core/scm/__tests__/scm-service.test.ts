@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { FileWatcher } from '../../../platform/file-watcher';
 import type { GitCall, GitCloner, GitRunner } from '../git-runner';
 import { ScmService, type ScmQuestion } from '../scm-service';
+import { englishText, LocalizedError } from '../../../shared/localized-text';
 
 const sessionJobs = vi.hoisted(() => ({ created: [] as Array<{ id: number; disposed: number; dispose: () => void }> }));
 
@@ -68,13 +69,31 @@ function unsafeDeep(trusted: (folder: string) => boolean, onAsk: (question: ScmQ
     ask: async (question) => (onAsk(question), 0),
     notify: async () => undefined,
     trash: async () => undefined,
-    t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)])),
     log: () => undefined,
   });
   return { service, project, deep, owner, calls };
 }
 
 describe('scm service', () => {
+  it('refuses git work without git in the words a view renders', async () => {
+    const service = new ScmService({
+      runner: undefined,
+      trust: { isTrusted: () => true, onDidGrantTrust: () => ({ dispose: () => undefined }), requestTrust: async () => true },
+      watchers: inertWatchers,
+      settings: noSettings,
+      globalState: { get: (_key: string, fallback?: unknown) => fallback, update: async () => undefined } as never,
+      ask: async () => undefined,
+      notify: async () => undefined,
+      trash: async () => undefined,
+      log: () => undefined,
+    });
+    service.setProjects([{ key: 'p', path: inner }]);
+    const refusal = await service.init('p').catch((err: unknown) => err);
+    expect(refusal).toBeInstanceOf(LocalizedError);
+    expect((refusal as LocalizedError).text).toEqual({ message: 'Git was not found' });
+    service.dispose();
+  });
+
   it('hands its one session job to every git call and closes it on dispose', async () => {
     const before = sessionJobs.created.length;
     const { service, project, deep, owner, calls } = unsafeDeep(() => true);
@@ -115,8 +134,8 @@ describe('scm service', () => {
     for (let i = 0; i < 100 && service.view('p')!.state === 'loading'; i++) await new Promise((resolve) => setTimeout(resolve, 10));
     expect(await service.openFolder('p', deep)).toBe('unsafe');
     expect(await service.trustUnsafe('p', owner)).toBe(true);
-    expect(questions[0]!.detail).toContain('evil\\u{202E}txt');
-    expect(questions[0]!.detail).not.toContain('\u202E');
+    expect(englishText(questions[0]!.detail!)).toContain('evil\\u{202E}txt');
+    expect(englishText(questions[0]!.detail!)).not.toContain('\u202E');
     service.dispose();
   });
 
@@ -162,9 +181,8 @@ describe('scm service', () => {
       settings: { get: () => undefined, inspect: () => ({}), update: async () => undefined, onDidChange: () => ({ dispose: () => undefined }), scopeFile: () => undefined } as never,
       globalState: { get: (key: string, fallback?: unknown) => (values.has(key) ? values.get(key) : fallback), update: async (key: string, value: unknown) => void values.set(key, value) } as never,
       ask: async (question) => (questions.push(question), undefined),
-      notify: async (message) => (notices.push(message), undefined),
+      notify: async (message) => (notices.push(englishText(message)), undefined),
       trash: async () => undefined,
-      t: (message) => message,
       log: () => undefined,
     });
     service.setProjects([{ key: 'p', path: inner }]);

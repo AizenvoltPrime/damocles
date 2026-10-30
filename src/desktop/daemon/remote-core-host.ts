@@ -182,13 +182,17 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
         state: { global: deps.state.snapshot('global'), workspace: deps.state.snapshot('workspace') },
         trust: { keys: [...mirrors.trust] },
         folders: { folders: mirrors.folders },
-        editor: mirrors.editor,
-        terminal: mirrors.terminal,
-        language: mirrors.language,
+        // a daemon's core reads each client's from clientEditor, clientTerminal and clientLanguage
+        editor: {},
+        terminal: { shown: false, shortcut: '' },
+        language: { language: 'en' },
         clientAuth: Object.fromEntries(mirrors.clientAuth),
         clientUser: Object.fromEntries(mirrors.clientUser),
         clientPolicy: Object.fromEntries(mirrors.clientPolicy),
         actingClient: mirrors.actingClient,
+        clientEditor: Object.fromEntries(mirrors.clientEditor),
+        clientTerminal: Object.fromEntries(mirrors.clientTerminal),
+        clientLanguage: Object.fromEntries(mirrors.clientLanguage),
       },
     };
   };
@@ -333,6 +337,9 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
           mirrors.clientAuth.set(clientId, payload.mirrors.clientAuth);
           mirrors.clientUser.set(clientId, payload.mirrors.clientUser);
           mirrors.clientPolicy.set(clientId, payload.mirrors.clientPolicy);
+          mirrors.clientEditor.set(clientId, payload.mirrors.editor);
+          mirrors.clientTerminal.set(clientId, payload.mirrors.terminal);
+          mirrors.clientLanguage.set(clientId, payload.mirrors.language);
           if (!first) {
             mirrors.actingClient = { clientId };
             first = payload;
@@ -350,6 +357,9 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
           mirrors.clientAuth.delete(clientId);
           mirrors.clientUser.delete(clientId);
           mirrors.clientPolicy.delete(clientId);
+          mirrors.clientEditor.delete(clientId);
+          mirrors.clientTerminal.delete(clientId);
+          mirrors.clientLanguage.delete(clientId);
           if (mirrors.actingClient.clientId === clientId) mirrors.actingClient = {};
         },
       };

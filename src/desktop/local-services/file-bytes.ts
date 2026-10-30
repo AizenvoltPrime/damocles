@@ -8,6 +8,9 @@ export type FileBytes =
   | { readonly kind: 'bytes'; readonly bytes: Buffer; readonly mtimeMs: number; readonly dev: number; readonly ino: number }
   | { readonly kind: 'missing' }
   | { readonly kind: 'tooLarge'; readonly bytes: number }
+  // a folder, a FIFO or a device, which no read opens
+  | { readonly kind: 'notAFile'; readonly folder: boolean }
+  // error: the system's own words for the failure
   | { readonly kind: 'unreadable'; readonly error: string; readonly code?: string };
 
 function errnoCode(err: unknown): string | undefined {
@@ -20,8 +23,8 @@ function unreadable(err: unknown): FileBytes {
   return { kind: 'unreadable', error: err instanceof Error ? err.message : String(err), ...(code !== undefined ? { code } : {}) };
 }
 
-function notAFile(filePath: string, stat: { isDirectory(): boolean }): FileBytes {
-  return { kind: 'unreadable', error: `${filePath} is not a file`, ...(stat.isDirectory() ? { code: 'EISDIR' } : {}) };
+function notAFile(stat: { isDirectory(): boolean }): FileBytes {
+  return { kind: 'notAFile', folder: stat.isDirectory() };
 }
 
 /** A regular file's bytes up to the document limit; a file over it is refused from its size before any content is read. */
@@ -29,7 +32,7 @@ export async function readFileBytes(filePath: string, limitBytes: number = EDITO
   try {
     // Stat before open: opening a FIFO blocks a libuv thread until a writer appears.
     const stat = await fs.stat(filePath);
-    if (!stat.isFile()) return notAFile(filePath, stat);
+    if (!stat.isFile()) return notAFile(stat);
     if (stat.size > limitBytes) return { kind: 'tooLarge', bytes: stat.size };
   } catch (err) {
     return errnoCode(err) === 'ENOENT' ? { kind: 'missing' } : unreadable(err);
@@ -43,7 +46,7 @@ export async function readFileBytes(filePath: string, limitBytes: number = EDITO
   try {
     // The path may have been replaced or grown since the stat; the read stops one byte past the limit.
     const stat = await handle.stat();
-    if (!stat.isFile()) return notAFile(filePath, stat);
+    if (!stat.isFile()) return notAFile(stat);
     if (stat.size > limitBytes) return { kind: 'tooLarge', bytes: stat.size };
     const chunks: Buffer[] = [];
     let total = 0;

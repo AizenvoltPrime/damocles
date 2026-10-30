@@ -256,6 +256,8 @@ export interface SyncCustomProvidersDeps {
   preferApiKey: (provider: KeyProviderId) => boolean;
   /** Written once the one-time sweep of legacy plain-text keys in auth.json has run. */
   sweepMarkerPath: string;
+  /** Runs the sweep's logout as this process's own auth.json change (`PiRuntime.ownAuthFileChange`), which the sync's caller publishes once it committed. */
+  ownAuthFileChange: (providers: readonly string[], op: () => Promise<void>) => Promise<void>;
   /** Providers whose sign-in is running; pi serializes each provider's credential operations, so one would stall behind that sign-in. */
   signingIn?: ReadonlySet<AccountProviderId>;
 }
@@ -363,9 +365,10 @@ async function pendingLegacySweep(markerPath: string): Promise<LegacySweep | und
 }
 
 /**
- * Logs out the plain-text key an older version stored for `def`; true when it logged out. The provider settles unless
- * auth.json could not be read. pi has no compare-and-delete, so the credential is read again right before the logout;
- * a sign-in that lands between this read and the logout is still lost, a window only the first start after the upgrade has.
+ * Logs out the plain-text key an older version stored for `def`; true when it logged out, a CredentialSynchronizationError after
+ * pi committed the logout included. The provider settles unless auth.json could not be read. pi has no compare-and-delete, so the
+ * credential is read again right before the logout; a sign-in that lands between this read and the logout is still lost, a window
+ * only the first start after the upgrade has.
  */
 async function sweepLegacyKey(deps: SyncCustomProvidersDeps, def: KeyedProviderDef, authOptions: AuthOperationOptions, sweep: LegacySweep): Promise<boolean> {
   const now = readProviderSignIns(deps.agentDir);
@@ -375,7 +378,15 @@ async function sweepLegacyKey(deps: SyncCustomProvidersDeps, def: KeyedProviderD
     return false;
   }
   deps.beforeCredentialChange?.(def.provider);
-  await deps.modelRuntime.logout(def.provider, authOptions);
+  await deps.ownAuthFileChange([def.provider], async () => {
+    try {
+      await deps.modelRuntime.logout(def.provider, authOptions);
+    } catch (err) {
+      // pi commits the logout before the snapshot sync this error wraps (model-runtime.js:404-437).
+      if (!isCredentialSyncError(err)) throw err;
+      log('[custom-providers] the plain-text %s key is removed, but pi could not resynchronize its model snapshot: %s', def.provider, describeAuthError(err));
+    }
+  });
   sweep.settled.add(def.provider);
   log('[custom-providers] removed the plain-text %s key an older version stored in auth.json', def.provider);
   return true;
@@ -525,13 +536,7 @@ export async function syncCustomProviders(deps: SyncCustomProvidersDeps): Promis
       try {
         if (await sweepLegacyKey(deps, def, authOptions, sweep)) markChanged(def.provider);
       } catch (err) {
-        // pi commits the logout before the snapshot sync this error wraps (model-runtime.js:404-437).
-        if (isCredentialSyncError(err)) {
-          sweep.settled.add(def.provider);
-          markChanged(def.provider);
-        } else {
-          log('[custom-providers] could not remove the plain-text %s key; the sweep tries again at the next sync: %s', def.provider, describeAuthError(err));
-        }
+        log('[custom-providers] could not remove the plain-text %s key; the sweep tries again at the next sync: %s', def.provider, describeAuthError(err));
         if (deps.signal?.aborted) {
           cutShortAt = i;
           break;

@@ -9,7 +9,7 @@ import { useCompassStore } from '@/stores/useCompassStore';
 import { useBackgroundTaskStore } from '@/stores/useBackgroundTaskStore';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { useSessionStore } from '@/stores/useSessionStore';
-import { i18n } from '@/i18n';
+import { i18n, applyLocale } from '@/i18n';
 
 /**
  * The strip shows the conversation's cumulative totals, which the extension computes from pi's session
@@ -65,6 +65,7 @@ afterEach(() => {
   while (mounted.length) mounted.pop()?.unmount();
   vi.restoreAllMocks();
   document.body.innerHTML = '';
+  return applyLocale('en');
 });
 
 describe('ComposerStatusStrip', () => {
@@ -79,6 +80,13 @@ describe('ComposerStatusStrip', () => {
 
   it('keeps the context meter on the last-request snapshot', () => {
     expect(mountStrip(stats()).get('[data-testid="composer-context"]').text()).toBe('3.1K / 200.0K · 2%');
+  });
+
+  it('writes the context meter and token counts with the decimal separator of the UI locale', async () => {
+    await applyLocale('el');
+    const strip = mountStrip(stats());
+    expect(strip.get('[data-testid="composer-context"]').text()).toBe('3,1K / 200,0K · 2%');
+    expect(strip.text()).toContain('10,0K');
   });
 
   it('breaks the prompt tokens down in the tooltip', () => {

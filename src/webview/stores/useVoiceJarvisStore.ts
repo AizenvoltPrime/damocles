@@ -1,7 +1,7 @@
 import type { Ref, ComputedRef } from "vue";
 import { ref, computed } from "vue";
 import { defineStore } from "pinia";
-import { i18n } from "@/i18n";
+import type { LocalizedText } from "@shared/localized-text";
 
 export type SidecarLifecycleState =
   | "stopped"
@@ -54,7 +54,7 @@ export interface ModelDownloadEntry {
   bytesReceived: number;
   bytesTotal: number;
   status: ModelDownloadStatus;
-  message?: string;
+  message?: LocalizedText;
   licenseUrl?: string;
   licenseName?: string;
   displayName?: string;
@@ -65,7 +65,7 @@ export interface ModelDownloadProgress {
   bytesReceived: number;
   bytesTotal: number;
   status: ModelDownloadStatus;
-  message?: string;
+  message?: LocalizedText;
   licenseUrl?: string;
   licenseName?: string;
   displayName?: string;
@@ -77,7 +77,7 @@ export interface VoiceJarvisStoreShape {
   device: Ref<SidecarDevice | null>;
   vramMbFree: Ref<number | null>;
   modelsLoaded: Ref<string[]>;
-  sidecarStatusMessage: Ref<string | null>;
+  sidecarStatusMessage: Ref<LocalizedText | null>;
   wakeDetectedAt: Ref<number | null>;
   lastWakeConfidence: Ref<number | null>;
   lastWakeAbortReason: Ref<WakeAbortReason | null>;
@@ -90,7 +90,8 @@ export interface VoiceJarvisStoreShape {
   pendingUpgrades: Ref<ModelUpgradeInfo[]>;
   lastTurnLostReason: Ref<TurnLostReason | null>;
   muted: Ref<boolean>;
-  errorMessage: Ref<string | null>;
+  /** Core's reason the voice process failed; null when it gave none. */
+  errorMessage: Ref<LocalizedText | null>;
   voiceFilesBytes: Ref<number>;
   state: ComputedRef<VoiceJarvisIndicatorState>;
   isMuted: ComputedRef<boolean>;
@@ -105,7 +106,7 @@ export interface VoiceJarvisStoreShape {
     device?: SidecarDevice,
     vramMbFree?: number,
     modelsLoaded?: string[],
-    message?: string,
+    message?: LocalizedText,
   ) => void;
   setWakeDetected: (confidence: number) => void;
   setWakeAborted: (reason: WakeAbortReason) => void;
@@ -127,7 +128,7 @@ export interface VoiceJarvisStoreShape {
   clearPendingUpgrades: () => void;
   setTurnLost: (reason: TurnLostReason) => void;
   setMuted: (muted: boolean) => void;
-  setError: (message: string | null) => void;
+  setError: (message: LocalizedText | null) => void;
   setVoiceFilesBytes: (bytes: number) => void;
   $reset: () => void;
 }
@@ -138,7 +139,7 @@ export const useVoiceJarvisStore = defineStore("voice-jarvis", (): VoiceJarvisSt
   const device = ref<SidecarDevice | null>(null);
   const vramMbFree = ref<number | null>(null);
   const modelsLoaded = ref<string[]>([]);
-  const sidecarStatusMessage = ref<string | null>(null);
+  const sidecarStatusMessage = ref<LocalizedText | null>(null);
 
   const wakeDetectedAt = ref<number | null>(null);
   const lastWakeConfidence = ref<number | null>(null);
@@ -153,7 +154,7 @@ export const useVoiceJarvisStore = defineStore("voice-jarvis", (): VoiceJarvisSt
   const pendingUpgrades = ref<ModelUpgradeInfo[]>([]);
   const lastTurnLostReason = ref<TurnLostReason | null>(null);
   const muted = ref<boolean>(false);
-  const errorMessage = ref<string | null>(null);
+  const errorMessage = ref<LocalizedText | null>(null);
   const voiceFilesBytes = ref<number>(0);
 
   const isMuted = computed<boolean>(() => muted.value);
@@ -185,18 +186,14 @@ export const useVoiceJarvisStore = defineStore("voice-jarvis", (): VoiceJarvisSt
     nextDevice?: SidecarDevice,
     nextVramMbFree?: number,
     nextModelsLoaded?: string[],
-    message?: string,
+    message?: LocalizedText,
   ): void {
     sidecarState.value = nextState;
     device.value = nextDevice ?? null;
     vramMbFree.value = nextVramMbFree ?? null;
     modelsLoaded.value = nextModelsLoaded ?? [];
     sidecarStatusMessage.value = message ?? null;
-    if (nextState === "error") {
-      errorMessage.value = message ?? i18n.global.t("voiceToast.sidecarError");
-    } else {
-      errorMessage.value = null;
-    }
+    errorMessage.value = nextState === "error" ? message ?? null : null;
   }
 
   function setWakeDetected(confidence: number): void {
@@ -303,7 +300,7 @@ export const useVoiceJarvisStore = defineStore("voice-jarvis", (): VoiceJarvisSt
     muted.value = next;
   }
 
-  function setError(msg: string | null): void {
+  function setError(msg: LocalizedText | null): void {
     errorMessage.value = msg;
     if (msg !== null) sidecarState.value = "error";
   }

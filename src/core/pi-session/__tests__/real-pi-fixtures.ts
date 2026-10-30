@@ -129,13 +129,15 @@ export function wire(
 
 export interface RealPi {
   session: AgentSession;
+  /** The session's working folder, a fresh temporary one per boot. */
+  cwd: string;
   /** The context of every model call, in order. */
   contexts: string[][];
 }
 
 /** Boots real pi sessions on a seated PiRuntime and removes what they leave behind; await `dispose` from `afterEach`. */
 export function realPiSessions(): {
-  boot: (tool: ToolDefinition, responses: FauxResponseStep[], extend?: (pi: ExtensionAPI) => void) => Promise<RealPi>;
+  boot: (tool: ToolDefinition, responses: FauxResponseStep[], extend?: (pi: ExtensionAPI) => void, sessionManager?: (cwd: string) => SessionManager) => Promise<RealPi>;
   dispose: () => Promise<void>;
 } {
   const made: string[] = [];
@@ -148,7 +150,8 @@ export function realPiSessions(): {
     return dir;
   };
 
-  const boot = async (tool: ToolDefinition, responses: FauxResponseStep[], extend?: (pi: ExtensionAPI) => void): Promise<RealPi> => {
+  // `sessionManager` defaults to an in-memory one; a file-backed one lets a later boot resume the file on another cwd.
+  const boot = async (tool: ToolDefinition, responses: FauxResponseStep[], extend?: (pi: ExtensionAPI) => void, sessionManager?: (cwd: string) => SessionManager): Promise<RealPi> => {
     const cwd = tempDir('dam-note-cwd-');
     const agentDir = tempDir('dam-note-agent-');
     const contexts: string[][] = [];
@@ -185,13 +188,13 @@ export function realPiSessions(): {
       modelRuntime,
       settingsManager,
       resourceLoader,
-      sessionManager: SessionManager.inMemory(cwd),
+      sessionManager: sessionManager?.(cwd) ?? SessionManager.inMemory(cwd),
       tools: ['PowerShell'],
       customTools: [tool],
     } as never);
     sessions.push(session);
     session.setActiveToolsByName(['PowerShell']);
-    return { session, contexts };
+    return { session, cwd, contexts };
   };
 
   const dispose = async (): Promise<void> => {

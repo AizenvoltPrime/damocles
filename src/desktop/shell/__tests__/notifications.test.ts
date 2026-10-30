@@ -615,7 +615,7 @@ describe('notification center', () => {
     expect(actions.map((action) => action.text())).toEqual(['Restart']);
     expect(actions[0]!.classes()).toEqual(expect.arrayContaining(['bg-(--d-danger)/16', 'text-(--d-danger-text)']));
     await actions[0]!.trigger('click');
-    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('c1', { kind: 'notifications', action: 'answer', entryId: 'n2', label: 'Restart' }));
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('c1', { kind: 'notifications', action: 'answer', entryId: 'n2', index: 0 }));
   });
 
   it('virtualizes a log past 200 entries', async () => {

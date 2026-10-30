@@ -8,7 +8,6 @@ import type { CanUseToolContext } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { DiffManager } from '../diff-manager';
 import { FILE_PATCH_MAX_BYTES } from '../../pi-session/tools/file-patch';
-import { platform as hostPlatform } from '../../platform-host';
 
 function handlerFor(panelId: string): { handler: PermissionHandler; platform: FakePlatform } {
   const platform = createFakePlatform();
@@ -97,13 +96,11 @@ describe('proposal diff content and title', () => {
     expect(diff?.proposedContent).toBe("const escaped = s.replace(/[.*]/g, '\\$&');\r\nconst pid = $$ + $` + $';\r\n");
   });
 
-  it('localizes the diff title', async () => {
+  it('names the diff title by text the host renders, with the file\'s name', async () => {
     const platform = createFakePlatform();
-    vi.spyOn(hostPlatform().localization, 't').mockImplementation((message: string, ...args) => `[el] ${message.replace('{0}', String(args[0]))}`);
     await new DiffManager(platform.editor, 'host-1').showDiffView('t1', '/tmp/a.ts', 'a', 'b');
-    expect(platform.editor.diffs[0]?.request.title('a.ts')).toBe('[el] a.ts (Current ↔ Proposed)');
+    expect(platform.editor.diffs[0]?.request.title('a.ts')).toEqual({ message: '{0} (Current ↔ Proposed)', args: ['a.ts'] });
     expect(platform.editor.diffs[0]?.request.filePath).toBe('/tmp/a.ts');
-    vi.restoreAllMocks();
   });
 });
 

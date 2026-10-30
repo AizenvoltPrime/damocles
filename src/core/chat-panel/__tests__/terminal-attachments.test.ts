@@ -134,6 +134,7 @@ function harness(options: { ideContext?: boolean } = {}) {
     workspaceManager: { findSkill: async () => undefined, findCommand: async () => undefined },
     markUserTypedDuringTurn: vi.fn(),
     worktrees: () => ({ interceptSend: () => false }),
+    platform: {},
   } as unknown as HandlerDependencies;
   const terminalAttachments = new TerminalAttachmentManager((attachments) => sent.push({ type: 'terminalAttachmentsUpdate', attachments }));
   const ideContext = options.ideContext ?? true;
@@ -254,7 +255,7 @@ describe('sendMessage with terminal attachments', () => {
     expect(h.sendMessage.mock.calls[0]![3]).toEqual({ content: '/todos' });
     expect(h.terminalAttachments.displayInfo()).toEqual(pending);
     expect(h.sent.slice(published).filter((message) => message.type === 'terminalAttachmentsUpdate')).toEqual([]);
-    expect(h.sent).toContainEqual({ type: 'notification', notificationType: 'info', message: 'A command takes no terminal output, so the attached output stays in the composer for your next message.' });
+    expect(h.sent).toContainEqual({ type: 'notification', notificationType: 'info', message: { message: 'A command takes no terminal output, so the attached output stays in the composer for your next message.' } });
   });
 
   it('runs an extension command without the IDE block and without a notice when nothing is attached', async () => {
@@ -299,7 +300,7 @@ describe('sendMessage with terminal attachments', () => {
     h.terminalAttachments.add(COMMIT);
     const [terminal] = h.terminalAttachments.displayInfo();
     await h.send({ content: '/todos', terminalAttachmentIds: [terminal!.id] });
-    expect(h.sent).toContainEqual({ type: 'notification', notificationType: 'info', message: 'A command takes no terminal output, so the attached output stays in the composer for your next message.' });
+    expect(h.sent).toContainEqual({ type: 'notification', notificationType: 'info', message: { message: 'A command takes no terminal output, so the attached output stays in the composer for your next message.' } });
   });
 
   it('says a command takes no attachments when a commit waits, and keeps it pending', async () => {
@@ -309,7 +310,7 @@ describe('sendMessage with terminal attachments', () => {
     const pending = h.terminalAttachments.displayInfo();
     await h.send({ content: '/todos', terminalAttachmentIds: pending.map((info) => info.id) });
     expect(h.terminalAttachments.displayInfo()).toEqual(pending);
-    expect(h.sent).toContainEqual({ type: 'notification', notificationType: 'info', message: 'A command takes no attachments, so they stay in the composer for your next message.' });
+    expect(h.sent).toContainEqual({ type: 'notification', notificationType: 'info', message: { message: 'A command takes no attachments, so they stay in the composer for your next message.' } });
   });
 
   it('removes one pending attachment on the composer\'s request', () => {
@@ -339,7 +340,12 @@ describe('PanelManager.addTerminalAttachment', () => {
     expect(h.manager.addTerminalAttachment(panelId, input('b'))).toBe(false);
     expect(pending.displayInfo()).toEqual(before);
     expect(h.platform.notifications.calls).toEqual([
-      { level: 'warn', message: 'Not added to the chat: its attached terminal output would pass 128,000 characters. Send or remove an attachment first.', actions: [] },
+      {
+        level: 'warn',
+        message: 'Not added to the chat: its attached terminal output would pass 128,000 characters. Send or remove an attachment first.',
+        text: { message: 'Not added to the chat: its attached terminal output would pass {0} characters. Send or remove an attachment first.', args: [{ number: 128_000 }] },
+        actions: [],
+      },
     ]);
   });
 
@@ -353,7 +359,12 @@ describe('PanelManager.addTerminalAttachment', () => {
     expect(h.manager.addTerminalAttachment(panelId, { ...COMMIT, text: `${COMMIT.text}x` })).toBe(false);
     expect(pending.displayInfo()).toHaveLength(2);
     expect(h.platform.notifications.calls).toEqual([
-      { level: 'warn', message: 'Not added to the chat: with this commit its attachments would pass 128,000 characters. Send or remove an attachment first.', actions: [] },
+      {
+        level: 'warn',
+        message: 'Not added to the chat: with this commit its attachments would pass 128,000 characters. Send or remove an attachment first.',
+        text: { message: 'Not added to the chat: with this commit its attachments would pass {0} characters. Send or remove an attachment first.', args: [{ number: 128_000 }] },
+        actions: [],
+      },
     ]);
   });
 });

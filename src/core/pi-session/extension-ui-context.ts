@@ -2,6 +2,7 @@ import type { ExtensionUIContext, Theme } from '@earendil-works/pi-coding-agent'
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { ElicitationUI } from './mcp/elicitation-handler';
 import { oneLine } from './untrusted-text';
+import { verbatim } from '../l10n';
 
 /** RPC mode degrades all TUI-only surfaces; theme rendering is not used by webview-bridged dialogs. */
 const EMPTY_THEME = {} as Theme;
@@ -266,7 +267,7 @@ export class WebviewExtensionUIContext implements ExtensionUIContext {
   }
 
   notify(message: string, type?: 'info' | 'warning' | 'error'): void {
-    this.emit({ type: 'notification', message, notificationType: type ?? 'info' });
+    this.emit({ type: 'notification', message: verbatim(message), notificationType: type ?? 'info' });
   }
 
   // ---- degraded RPC no-ops (mirror pi's noOpUIContext) --------------------

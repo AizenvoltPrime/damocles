@@ -1,14 +1,15 @@
 import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
 import type { UserContentBlock } from "../../../../shared/types/content";
 import type { ContentInput } from "../../../session-types";
-import type { SendOutcome } from "../../../chat-session";
+import type { QueueRefusal, SendOutcome } from "../../../chat-session";
 import type { MemoryScope } from "../../../../shared/types/memory";
 import { SLASH_INVOCATION_RE } from "../../../../shared/asset-names";
 import { createQueuedMessage } from "../../queue-manager";
 import { forgetSender, recordSender } from "../../send-senders";
 import { resumeStoredSession } from "./resume-session";
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
-import { t } from "../../../l10n";
+import { l } from "../../../l10n";
+import type { LocalizedText } from "../../../../shared/localized-text";
 import { settingsFolderOf } from "../../../workspace-folders/folder-registry";
 import { identityFolder } from "../../../worktrees/personal-config";
 import { MAX_PENDING_TERMINAL_ATTACHMENTS, type TakenAttachment } from "../../terminal-attachment-manager";
@@ -48,14 +49,34 @@ const COMPACT_SLASH_RE = /^\/compact(?:\s+(.*))?$/;
 /** Builtins expanded to a canonical prompt before handing the turn to the agent. */
 const DIRECT_COMMANDS: ReadonlySet<string> = new Set(["init"]);
 
+type QueueRefusedReason = "queueRunEnded" | "queueBudgetStopped" | "queueNoRuntime";
+
+/** The reason a refused queued message comes back with, so its note names why core refused it. */
+const QUEUE_REFUSED_REASONS: Readonly<Record<QueueRefusal, QueueRefusedReason>> = {
+  runEnded: "queueRunEnded",
+  budgetStopped: "queueBudgetStopped",
+  noRuntime: "queueNoRuntime",
+};
+
 export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, storageManager, settingsManager, workspaceManager, markUserTypedDuringTurn } = deps;
+
+  /** A send core refused before it started goes back to the sender's composer; a turn already running owns the spinner. */
+  const returnRefusedSend = (ctx: HandlerContext, content: string | UserContentBlock[], reason: "sendInProgress" | QueueRefusedReason, correlationId?: string): void => {
+    if (!ctx.session.turnRunning) postMessage(ctx.reply, { type: "processing", isProcessing: false });
+    postMessage(ctx.reply, {
+      type: "promptReturned",
+      content: typeof content === "string" ? [{ type: "text", text: content }] : content,
+      reason,
+      ...(correlationId !== undefined ? { correlationId } : {}),
+    });
+  };
 
   /** Withheld project-scope asset: no turn is sent, since the agent never loaded it. */
   const refuseUntrusted = (ctx: HandlerContext): InterceptResult => {
     postMessage(ctx.reply, {
       type: "notification",
-      message: t(
+      message: l(
         "This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them.",
       ),
       notificationType: "warning",
@@ -83,7 +104,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       }
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.reply, { type: "memoryError", message: "Memory system is not available" });
+        postMessage(ctx.reply, { type: "memoryError", message: l("Memory system is not available") });
         return { kind: "handled" };
       }
 
@@ -101,7 +122,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
           content = arg.slice("project:".length).trim();
         }
         if (!content) {
-          postMessage(ctx.reply, { type: "memoryError", message: `Nothing to remember — provide text after /remember${tier !== "session" ? ` ${tier}:` : ""}.` });
+          postMessage(ctx.reply, { type: "memoryError", message: tier === "session" ? l("Nothing to remember: provide text after /remember.") : l("Nothing to remember: provide text after /remember {0}:.", tier) });
           return { kind: "handled" };
         }
 
@@ -114,14 +135,14 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
         });
 
         if (memory) postMessage(ctx.reply, { type: "memoryCreated", memory });
-        else postMessage(ctx.reply, { type: "memoryError", message: "Failed to save memory." });
+        else postMessage(ctx.reply, { type: "memoryError", message: l("Failed to save memory.") });
         return { kind: "handled" };
       }
 
       if (command === "note" && arg) {
         const note = await deps.memoryService.addNote(arg);
         if (note) postMessage(ctx.reply, { type: "memoryCreated", memory: note });
-        else postMessage(ctx.reply, { type: "memoryError", message: "Failed to save note." });
+        else postMessage(ctx.reply, { type: "memoryError", message: l("Failed to save note.") });
         return { kind: "handled" };
       }
       return { kind: "handled" };
@@ -211,43 +232,20 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       recordSender(ctx.host, ctx.viewKey, correlationId);
       const contentBlocks = hasImageContent(msgContent) ? (msgContent as UserContentBlock[]) : undefined;
-
-      if (originalTextContent.trim()) {
-        storageManager.broadcastPromptHistoryEntry(originalTextContent.trim());
-      }
-
       const baseContent = transformedContent ?? msgContent;
       const ids = msg.terminalAttachmentIds;
       const validIds = Array.isArray(ids) && ids.length <= MAX_PENDING_TERMINAL_ATTACHMENTS && ids.every((id) => typeof id === "string");
       const sending = validIds ? ctx.terminalAttachments.displayInfo().filter((info) => ids.includes(info.id)) : [];
       const attaching = validIds && sending.length > 0;
-      const withIde = msg.includeIdeContext === true && ctx.ideContextManager.getDisplayInfo() !== null;
+      // the sending device's editor, on a daemon's core whose devices each have their own
+      const sender = deps.platform.remote?.clients.actor();
+      const withIde = msg.includeIdeContext === true && ctx.ideContextManager.getDisplayInfo(sender) !== null;
       // pi acts on a slash invocation only at the start of the prompt text, so one that blocks will lead is resolved first.
       const baseText = extractTextFromContent(baseContent);
       const slash = transformedContent === null && (attaching || withIde) && baseText.startsWith("/")
         ? await ctx.session.resolveSlashInvocation(baseText)
         : null;
       const broadcast = { content: originalTextContent, ...(contentBlocks !== undefined ? { contentBlocks } : {}) };
-
-      if (slash?.kind === "command") {
-        if (attaching) {
-          const terminalOnly = sending.every((info) => info.kind === "terminal");
-          postMessage(ctx.reply, {
-            type: "notification",
-            message: terminalOnly
-              ? t("A command takes no terminal output, so the attached output stays in the composer for your next message.")
-              : t("A command takes no attachments, so they stay in the composer for your next message."),
-            notificationType: "info",
-          });
-        }
-        await ctx.session.sendMessage(baseContent, target, correlationId, broadcast);
-        // an extension command commits no prompt, so nothing names its send once pi ran it
-        forgetSender(ctx.host, correlationId);
-        return;
-      }
-
-      const typedContent = slash?.kind === "expanded" ? withText(baseContent, slash.text) : baseContent;
-      const withIdeContext = withIde ? ctx.ideContextManager.buildContentBlocks(typedContent) : typedContent;
       let attached: readonly TakenAttachment[] = [];
       let restored = false;
       // Once: a Stop returns the chips through the session, and every exit below that did not send them returns them too.
@@ -259,8 +257,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
         postMessage(ctx.reply, {
           type: "notification",
           message: dropped === 1
-            ? t("An attachment added while your message was being sent did not fit beside the ones it gave back, so it was removed.")
-            : t("{0} attachments added while your message was being sent did not fit beside the ones it gave back, so they were removed.", dropped),
+            ? l("An attachment added while your message was being sent did not fit beside the ones it gave back, so it was removed.")
+            : l("{0} attachments added while your message was being sent did not fit beside the ones it gave back, so they were removed.", dropped),
           notificationType: "warning",
         });
       };
@@ -269,8 +267,36 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       if (!ticket) {
         forgetSender(ctx.host, correlationId);
         if (preApprovedSkillName) ctx.permissionHandler.revokeSkillPreApproval(preApprovedSkillName);
+        // A turn, a send or a compaction started meanwhile; the chips were never taken.
+        returnRefusedSend(ctx, msgContent, "sendInProgress", correlationId);
         return;
       }
+      // Recorded only for a send the session took, so a refused one, which goes back to its composer, is in no view's history.
+      if (originalTextContent.trim()) storageManager.broadcastPromptHistoryEntry(originalTextContent.trim());
+
+      if (slash?.kind === "command") {
+        if (attaching) {
+          const terminalOnly = sending.every((info) => info.kind === "terminal");
+          postMessage(ctx.reply, {
+            type: "notification",
+            message: terminalOnly
+              ? l("A command takes no terminal output, so the attached output stays in the composer for your next message.")
+              : l("A command takes no attachments, so they stay in the composer for your next message."),
+            notificationType: "info",
+          });
+        }
+        try {
+          await ctx.session.sendMessage(baseContent, target, correlationId, broadcast, undefined, ticket);
+        } finally {
+          ticket.end();
+          // an extension command commits no prompt, so nothing names its send once pi ran it
+          forgetSender(ctx.host, correlationId);
+        }
+        return;
+      }
+
+      const typedContent = slash?.kind === "expanded" ? withText(baseContent, slash.text) : baseContent;
+      const withIdeContext = withIde ? ctx.ideContextManager.buildContentBlocks(typedContent, sender) : typedContent;
       attached = attaching ? ctx.terminalAttachments.take(ids) : [];
       let outcome: SendOutcome = "unsent";
       try {
@@ -372,11 +398,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
         if (preApprovedSkillName) {
           ctx.permissionHandler.revokeSkillPreApproval(preApprovedSkillName);
         }
-        postMessage(ctx.reply, {
-          type: "notification",
-          message: t("Cannot send mid-stream message: no active streaming session"),
-          notificationType: "error",
-        });
+        returnRefusedSend(ctx, msgContent, QUEUE_REFUSED_REASONS[disposition]);
       }
     },
 
@@ -416,7 +438,7 @@ function withText(content: ContentInput, text: string): ContentInput {
 
 type DirectCommandResult =
   | { kind: "prompt"; content: string }
-  | { kind: "notification"; content: string };
+  | { kind: "notification"; content: LocalizedText };
 
 const INIT_PROMPT = `Analyze this codebase and create or update a \`CLAUDE.md\` file at the repository root with the guidance an AI coding agent needs to be productive here.
 
@@ -430,5 +452,5 @@ If a \`CLAUDE.md\` already exists, read it first and update it surgically — pr
 
 function resolveDirectCommand(commandName: string): DirectCommandResult {
   if (commandName === "init") return { kind: "prompt", content: INIT_PROMPT };
-  return { kind: "notification", content: `Unknown command: ${commandName}` };
+  return { kind: "notification", content: l("Unknown command: {0}", commandName) };
 }

@@ -23,6 +23,7 @@ import CloseRemoteDialog from './components/CloseRemoteDialog.vue';
 import GitConsentDialog from './components/GitConsentDialog.vue';
 import { commandsModel, quickOpenItemId, quickOpenModel, type QuickPickModel } from './quick-pick';
 import OverlaySettings from './settings/OverlaySettings.vue';
+import { applySettingsLocale } from './settings/settings-messages';
 import type { OverlaySettingsBridge } from './settings/overlay-bridge';
 
 const props = defineProps<{ api: DamoclesOverlayApi; settingsBridge: OverlaySettingsBridge }>();
@@ -31,8 +32,12 @@ const { t, locale } = useI18n();
 // QuickInput's path check follows main's platform; win32's rules, the strictest, until main's state arrives
 const platform = ref<ShellPlatform>('win32');
 
+// Mounted before main's state arrives: main sends requests from did-finish-load and this page acknowledges them from its
+// mount, so no load may hold the mount; the settings' catalogs load as the state names a language.
+// Settings messages are not held across that load: their handlers store core's text for reactive rendering, and this page mounts no vue-sonner Toaster.
 function applyState(state: OverlayState): void {
   applyShellLocale(state.locale);
+  void applySettingsLocale(state.locale);
   platform.value = state.platform;
 }
 

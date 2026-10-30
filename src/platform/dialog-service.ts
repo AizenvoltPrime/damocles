@@ -1,5 +1,7 @@
+import type { LocalizedText } from '../shared/localized-text';
+
 export interface PickFileOptions {
-  readonly title?: string;
+  readonly title?: LocalizedText;
   // absolute path the dialog opens at
   readonly defaultPath?: string;
   // label to allowed extensions without the dot, e.g. { Markdown: ['md'] }
@@ -27,11 +29,11 @@ export interface QuickPickOptions {
 }
 
 export interface PickFolderOptions {
-  readonly title?: string;
+  readonly title?: LocalizedText;
   // absolute path the dialog opens at
   readonly defaultPath?: string;
   // the confirm button's label, VS Code's openLabel
-  readonly buttonLabel?: string;
+  readonly buttonLabel?: LocalizedText;
 }
 
 export interface DialogService {

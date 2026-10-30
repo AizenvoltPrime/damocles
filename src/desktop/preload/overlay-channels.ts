@@ -6,7 +6,7 @@ import type { ChatsContinueWorktree, ChatsWorktreeOptions, DropZonesPointer, Gri
 import type { SettingsAccountId, SettingsSectionId, SettingsTarget } from '../../shared/settings-sections';
 import type { DesktopLanguageSetting } from '../local-services/desktop-configuration';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../shared/types/messages';
-import type { ChimeTone, NotificationBody, NotificationCenterState } from './notifications';
+import type { ChimeTone, NotificationBody, NotificationCenterState, ToastAnswer } from './notifications';
 import type { ReleaseIndex, ReleaseNotes, UpdateSnapshot, VersionInfo } from './updates';
 import type { ScmLetter } from './scm-channels';
 import type { HostLatency, HostReconnect } from '../../shared/host-connection';
@@ -1102,7 +1102,7 @@ export type OverlayAnswer =
   | { readonly kind: 'message'; readonly action: number | null }
   | { readonly kind: 'notifications'; readonly action: 'open'; readonly entryId: string }
   // one of the actions of an entry awaiting its answer; main refuses any other
-  | { readonly kind: 'notifications'; readonly action: 'answer'; readonly entryId: string; readonly label: string }
+  | { readonly kind: 'notifications'; readonly action: 'answer'; readonly entryId: string; readonly index: number }
   // null: Escape; mention: the query had the @ prefix
   | { readonly kind: 'quickOpen'; readonly pick: QuickOpenPick | null }
   // a PaletteCommand id; main runs it only when it is listed and enabled for the captured focus context
@@ -1294,7 +1294,7 @@ export interface DamoclesOverlayApi {
   // main timed the toast out, or it was answered or withdrawn in main
   onToastDismiss(listener: (id: string) => void): () => void;
   // undefined action = dismissed
-  resolveToast(id: string, action?: string): void;
+  resolveToast(id: string, action?: ToastAnswer): void;
   reportToastArea(area: OverlayToastArea): void;
   // the pointer moved onto a toast or the "N more" pill (true) or off them (false)
   reportToastPointer(over: boolean): void;

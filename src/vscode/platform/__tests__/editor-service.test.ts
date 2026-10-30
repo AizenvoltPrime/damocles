@@ -186,7 +186,7 @@ describe('documents', () => {
 
 describe('showDiff, proposal', () => {
   const proposal = {
-    title: (name: string) => `${name} (Current ↔ Proposed)`,
+    title: (name: string) => ({ message: '{0} (Current ↔ Proposed)', args: [name] }),
     filePath: '/ws/a.ts',
     left: { name: 'd1-original-a.ts', content: 'old' },
     right: { name: 'd1-proposed-a.ts', content: 'new' },
@@ -253,7 +253,7 @@ describe('showDiff, proposal', () => {
 
 describe('showDiff, checkpoint', () => {
   const checkpoint = (name: string) => ({
-    title: (fileName: string) => `${fileName} (At checkpoint ↔ Current)`,
+    title: (fileName: string) => ({ message: '{0} (At checkpoint ↔ Current)', args: [fileName] }),
     filePath: '/ws/a.ts',
     left: { name, content: `before ${name}` },
     right: { path: '/ws/a.ts' },
@@ -292,7 +292,7 @@ describe('showDiff, checkpoint', () => {
   });
 
   it('never drops proposal text when reconciling checkpoint tabs', async () => {
-    await service.showDiff({ title: () => 't', filePath: '/ws/a.ts', left: { name: 'p-original-a.ts', content: 'old' }, right: { name: 'p-proposed-a.ts', content: 'new' }, purpose: 'proposal' });
+    await service.showDiff({ title: () => ({ message: 't' }), filePath: '/ws/a.ts', left: { name: 'p-original-a.ts', content: 'old' }, right: { name: 'p-proposed-a.ts', content: 'new' }, purpose: 'proposal' });
 
     await service.showDiff(checkpoint('c1-a.ts'));
 

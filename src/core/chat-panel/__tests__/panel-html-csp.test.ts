@@ -24,6 +24,13 @@ describe('chat panel CSP worker-src', () => {
     );
   });
 
+  it("starts the page in the language the host's device views render in", () => {
+    harness = createHarness([folderEntry('/ws')], { languagePreference: (clientId) => (clientId === 'device-2' ? 'el' : 'en') });
+    const host = Object.assign(makeFakeHost(), { clientId: 'device-2' });
+
+    expect(harness.manager.getHtmlContent(host)).toContain('<html lang="el">');
+  });
+
   it('leaves worker-src out when the host supplies none', () => {
     harness = createHarness([folderEntry('/ws')]);
 

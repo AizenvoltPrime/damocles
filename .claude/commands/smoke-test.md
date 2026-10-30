@@ -37,14 +37,14 @@ Run in parallel, from Git Bash:
   - `.mcp.json` pointing at a small stdio MCP server script that offers tools, resources and a resource template.
   - `.damocles/commands/<name>.md` for prompt-template checks.
 - Start the controller hidden with its output redirected to `%TEMP%`, then `node scripts/smoke-desktop/post.mjs --launch`. Step files go in `%TEMP%\smoke-steps\`, never the repo.
-- The app uses the user's real home: their sign-in, user settings, global hooks and `~/.damocles` sessions. Never change their settings files. Restore any setting a step toggles, and never resume or touch their real sessions (for example the ones `/stats` lists).
+- The app runs on a hermetic home under `<SMOKE_DIR>/run/` (README "Hermetic home"): a copy of the user's settings, models, subscription plugin and sign-in (OAuth without its refresh token), and none of their sessions, worktrees, memory, global hooks or MCP servers. Toggling settings is safe, since every `--launch` starts again from the user's own (a `--relaunch` keeps the run's copy). If `--launch` returns a notice that a sign-in expires soon and the checks need that provider, tell the user what it says and stop: refreshing it takes a message in their own app.
 
 ## 4. Test
 
 - Pick a cheap model for ordinary turns (Sonnet 5.5, Low) with `prepare`, and Ask before edits with YOLO off. Turn YOLO on only where a permission prompt would block the check, such as subagents and teams. Keep team briefs tiny; team roles use the user's configured models.
 - Keep each step under 55 seconds. Start long work in one step and poll it from short later steps. Read the result of each step before writing the next, and adjust the prompt rather than the assertion when the model acts differently.
-- Collect evidence every time: `h.shot` then read the PNG (if the long path fails, read it through the short `C:\Users\ASTEFA~1\...` form), `h.tail`, the hook log, the session `.jsonl` under `~/.damocles/pi/agent/sessions/`, and `<SMOKE_DIR>/userData/logs/Damocles.log`.
-- Exercise the edges as well as the golden path: Stop at each stage (while a hook runs, while pi settles, while a tool runs, on a subagent, on a team), a message sent or queued during each window, and a quit plus relaunch of the app (chats, model, context meter and loaded tools must come back).
+- Collect evidence every time: `h.shot` then read the PNG (if the long path fails, read it through the short `C:\Users\ASTEFA~1\...` form), `h.tail`, the hook log, the session `.jsonl` under `h.home()`'s `.damocles/pi/agent/sessions/`, and `<SMOKE_DIR>/run/ud/logs/Damocles.log` (after `--quit` or the next `--launch`, `<SMOKE_DIR>/logs/`, which also keeps a crashed run's logs). The hermetic home and its sessions are gone after `--quit` and replaced by each `--launch`, so read them before.
+- Exercise the edges as well as the golden path: Stop at each stage (while a hook runs, while pi settles, while a tool runs, on a subagent, on a team), a message sent or queued during each window, and a quit plus relaunch of the app with `post.mjs --relaunch`, which quits the app and starts it again on the same home (chats, model, context meter and loaded tools must come back). Its answer must say `"closed": "quit"`; `"killed"` means a quit dialog held the app past 20 seconds and it was killed, so the check did not test a clean quit: close the dialog's cause and repeat it. Never use `--launch` for this check, since it starts from a new home.
 - When something looks wrong, find the cause before reporting it. Read the session file and code, and check whether released `v3.7.0` (`git show v3.7.0:<file>`, and the pi version it pinned) already behaved that way. Report a defect as caused by the staged changes only with that evidence.
 
 Known runner quirks:
@@ -57,7 +57,7 @@ Known runner quirks:
 
 ## 5. Clean up and report
 
-- `post.mjs --quit`. Delete the scratch project and step files after checking them for links (`find -type l`). Keep `%TEMP%\damocles-smoke\shots` and tell the user where it is. Name the session folder the scratch project left under `~/.damocles/pi/agent/sessions/` so they can delete it; do not delete it yourself.
+- `post.mjs --quit`, which deletes the hermetic home with its copied sign-in (killing the app if it does not quit) and keeps `shots/` and `logs/`. Delete the scratch project and step files after checking them for links (`find -type l`). Keep `%TEMP%\damocles-smoke\shots` and tell the user where it is.
 - Never stage, unstage or commit. If you edit a tracked file (for example to fix a nit the staged-diff check found), name it and tell the user to re-stage it.
 - Report:
   - the staged-diff check results;

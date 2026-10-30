@@ -18,7 +18,7 @@ function store(): UsageWarningStore {
 }
 
 function crossing(overrides: Partial<UsageThresholdCrossing> = {}): UsageThresholdCrossing {
-  return { provider: 'anthropic', windowId: 'five_hour', windowLabel: 'Session (5hr)', threshold: 80, utilization: 82, resetsAt: NOW + 2 * HOUR, ...overrides };
+  return { provider: 'anthropic', windowId: 'five_hour', windowLabel: { message: 'Session (5hr)' }, threshold: 80, utilization: 82, resetsAt: NOW + 2 * HOUR, ...overrides };
 }
 
 function onDisk(): unknown {
@@ -65,7 +65,7 @@ describe('UsageWarningStore (D54)', () => {
   it('drops every record whose reset has passed, from memory at once and from the file at the next write', async () => {
     const recorder = store();
     await recorder.record(crossing());
-    await recorder.record(crossing({ windowId: 'seven_day', windowLabel: 'Weekly', resetsAt: NOW + 100 * HOUR }));
+    await recorder.record(crossing({ windowId: 'seven_day', windowLabel: { message: 'Weekly' }, resetsAt: NOW + 100 * HOUR }));
     now = NOW + 3 * HOUR;
     const restarted = store();
     expect(restarted.shown(crossing())).toBe(false);

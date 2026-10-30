@@ -29,6 +29,7 @@ import type { HostInstance } from '../../../chat-panel/types';
 import type { FolderTarget } from '../../../workspace-folders/folder-registry';
 import type { WebviewToExtensionMessage } from '../../../../shared/types/messages';
 import { TerminalAttachmentManager } from '../../../chat-panel/terminal-attachment-manager';
+import { IdeContextManager } from '../../../chat-panel/ide-context-manager';
 
 let workDir: string;
 let childBundle: string;
@@ -331,6 +332,8 @@ function panelSession() {
     initializeEarly: async () => undefined,
     onWebviewReady: () => undefined,
     getToolStatus: () => ({}),
+    // no runtime: the conversation is a stored target
+    holdsLiveConversation: () => false,
     seedCheckpoints: () => undefined,
   };
 }
@@ -377,7 +380,8 @@ function restoringPanel(platform: FakePlatform) {
     getLanguagePreference: () => 'en',
     webviewPrompts: { repost: () => undefined },
   } as unknown as HandlerDependencies;
-  const ctx = { host, session, panelId: 'host-1', permissionHandler: {}, terminalAttachments: new TerminalAttachmentManager(() => {}), folder: FOLDER } as unknown as HandlerContext;
+  const ideContextManager = new IdeContextManager(createFakePlatform().editor, () => undefined);
+  const ctx = { host, reply: host, session, panelId: 'host-1', permissionHandler: {}, ideContextManager, terminalAttachments: new TerminalAttachmentManager(() => {}), folder: FOLDER } as unknown as HandlerContext;
   const ready = (savedSessionId: string, panelToken: string): Promise<void> =>
     Promise.resolve(createSessionHandlers(deps).ready!({ type: 'ready', savedSessionId, panelToken } as WebviewToExtensionMessage, ctx));
   return { session, ready, loaded };

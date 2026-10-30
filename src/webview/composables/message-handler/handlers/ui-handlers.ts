@@ -1,28 +1,30 @@
 import { nextTick } from "vue";
 import { toast } from "vue-sonner";
-import { applyLocale, i18n } from "@/i18n";
+import { applyLocale, i18n, localeReady } from "@/i18n";
 import { useUsageStatsStore } from "@/stores/useUsageStatsStore";
 import { useBindPlanStore } from "@/stores/useBindPlanStore";
 import type { PermissionMode } from "@shared/types/settings";
 import { MODEL_VENDOR_NAMES } from "@shared/model-vendor";
 import type { HandlerRegistry } from "../types";
 import { nestedTranscript } from "./nested-transcript";
+import { renderText } from "@/composables/useLocalizedText";
 
 export function createUIHandlers(): Partial<HandlerRegistry> {
   return {
     notification: (msg) => {
+      const text = renderText(msg.message);
       switch (msg.notificationType) {
         case "success":
-          toast.success(msg.message);
+          toast.success(text);
           break;
         case "error":
-          toast.error(msg.message);
+          toast.error(text);
           break;
         case "warning":
-          toast.warning(msg.message);
+          toast.warning(text);
           break;
         default:
-          toast.info(msg.message);
+          toast.info(text);
       }
     },
 
@@ -64,7 +66,9 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
     },
 
     languageChange: (msg) => {
-      applyLocale(msg.locale);
+      const ready = localeReady(msg.locale);
+      const shown = applyLocale(msg.locale);
+      return ready ? undefined : { holdUntil: shown };
     },
 
     showPlanContent: (msg, ctx) => {
@@ -106,7 +110,7 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
       const title = msg.account
         ? i18n.global.t("toast.promptReturned.providerSignIn", { provider: MODEL_VENDOR_NAMES[msg.account] })
         : i18n.global.t(`toast.promptReturned.${msg.reason}`);
-      if (msg.detail) toast.info(title, { description: msg.detail });
+      if (msg.detail) toast.info(title, { description: renderText(msg.detail) });
       else toast.info(title);
     },
 
@@ -120,8 +124,6 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
     },
 
     sessionStart: () => {},
-
-    sessionEnd: () => {},
 
     contextUsage: (msg, ctx) => {
       ctx.stores.contextUsageStore.handleDataLoaded(msg.data, msg.reason);
@@ -174,10 +176,6 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
       if (msg.permissionMode) {
         settingsStore.setPermissionMode(msg.permissionMode as PermissionMode);
       }
-    },
-
-    filesPersisted: (_msg, ctx) => {
-      ctx.stores.uiStore.setLastCheckpointTime(Date.now());
     },
 
     hookLifecycle: (msg, ctx) => {

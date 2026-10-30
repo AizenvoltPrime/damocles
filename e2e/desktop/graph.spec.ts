@@ -397,7 +397,7 @@ test('expanding a commit shows its message, stat and files; a file opens its dif
   await expect(graph(shell).locator('[data-testid="graph-detail"][data-path="b.ts"]').getByTestId('graph-file-status')).toHaveText('A');
   await graph(shell).locator('[data-testid="graph-detail"][data-path="a.ts"]').click();
   await expect.poll(async () => (await activeTab(app))?.kind).toBe('diff');
-  await expect.poll(async () => (await activeTab(app))?.diff?.added).toBe(1);
+  await expect(shell.getByTestId('editor-diff-stats')).toHaveText('+1−2');
 
   // Open Changes on the meta row opens the whole commit
   await detail(shell, 'meta').getByTestId('graph-open-changes').click();

@@ -31,7 +31,7 @@ export interface Fault {
 
 /** Turns a thrown error into a fault the other side rebuilds, and back; a name outside it is a protocol violation. */
 export interface ErrorCodec {
-  encode(err: unknown): Fault | undefined;
+  encode(err: unknown, log: (line: string) => void): Fault | undefined;
   // undefined: the fault's name or data is not one the contract knows
   decode(fault: Fault, message: string): Error | undefined;
 }
@@ -196,7 +196,7 @@ export function createEndpoint<Out extends Contract, In extends Contract>(option
   };
 
   const failure = (err: unknown): { ok: false; error: string; fault?: Fault } => {
-    const fault = options.errors?.encode(err);
+    const fault = options.errors?.encode(err, log);
     return { ok: false, error: errorText(err), ...(fault ? { fault } : {}) };
   };
 

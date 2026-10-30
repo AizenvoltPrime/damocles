@@ -10,7 +10,7 @@ import { VSCODE_HOST_CAPABILITIES, type EditorDocument, type ExtensionToWebviewM
 const text = (content: string): EditorDocument => ({ name: 'a.ts', path: '/w/a.ts', body: { kind: 'text', content, languageId: 'typescript' } });
 
 const MESSAGES: ExtensionToWebviewMessage[] = [
-  { type: 'editorShowDiff', viewId: 'v1', title: 'a.ts', purpose: 'proposal', approvalId: 'tool-1', original: text('a'), modified: text('b') },
+  { type: 'editorShowDiff', viewId: 'v1', title: { message: 'a.ts' }, purpose: 'proposal', approvalId: 'tool-1', original: text('a'), modified: text('b') },
   { type: 'editorCloseView', viewId: 'v1' },
   { type: 'settingsFileAvailability', files: { user: { available: true }, project: { available: false, reason: 'untrusted' }, local: { available: false, reason: 'untrusted' } } },
 ];

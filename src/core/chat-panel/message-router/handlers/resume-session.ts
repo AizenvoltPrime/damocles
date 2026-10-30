@@ -2,11 +2,17 @@ import type { HandlerDependencies } from "../types";
 import { announceHeldElsewhere, announceLeaseRefusal, claimStoredSession, findStoredSessionHolder, leaseRefusalFor } from "../../session-ownership";
 import { resolvePiSessionFile } from "../../../pi-session/session-store";
 import { log } from "../../../logger";
-import { t } from "../../../l10n";
+import { l } from "../../../l10n";
 
 /** Resume stored session `sessionId` in panel `panelId`, moving the panel to the session's folder first. */
 export async function resumeStoredSession(deps: HandlerDependencies, panelId: string, sessionId: string): Promise<void> {
   const { platform, postMessage, storageManager } = deps;
+  // The panel already shows this conversation, a running turn included, which its file does not hold.
+  const own = deps.getPanels().get(panelId);
+  if (own?.session.holdsLiveConversation(sessionId)) {
+    own.host.reveal();
+    return;
+  }
   const openElsewhere = findStoredSessionHolder(deps.getPanels(), { panelId }, sessionId);
   if (openElsewhere) {
     announceHeldElsewhere(platform.notifications);
@@ -28,7 +34,7 @@ export async function resumeStoredSession(deps: HandlerDependencies, panelId: st
   if (!listed) return;
   // The switch disposes the panel's conversation, so a file already gone is refused here; the open inside it guards the race.
   if ((await resolvePiSessionFile(listed.fsPath, sessionId)) === null) {
-    void platform.notifications.error(t("This conversation could not be opened: {0}", t("its file was not found")));
+    void platform.notifications.error(l("This conversation could not be opened: {0}", l("its file was not found")));
     return;
   }
   // A worktree chat resumes in its working folder, from its latest entry rather than the folder that listed it (AD12).

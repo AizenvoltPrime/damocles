@@ -8,7 +8,7 @@ const chat = (panelId: string, title: string): AwayChat => ({ panelId, sessionId
 // the localization's own substitution, so a test reads the text the user does
 const t = (message: string, ...args: Array<string | number>): string => message.replace(/\{(\d+)\}/g, (_whole, index: string) => String(args[Number(index)]));
 
-function deps(recorded: readonly AwayChat[], runs: readonly Run[], answer: (actions: readonly string[]) => string | undefined = () => undefined, coreRestarted = false) {
+function deps(recorded: readonly AwayChat[], runs: readonly Run[], answer: (actions: readonly string[]) => number | undefined = () => undefined, coreRestarted = false) {
   const stored = new Map<string, readonly AwayChat[]>([['ssh+h1', recorded]]);
   const notices: Array<{ message: string; actions: readonly string[] }> = [];
   const opened: AwayChat[] = [];
@@ -46,11 +46,18 @@ describe('finished while away', () => {
   });
 
   it('tells about every chat that finished in one notification, each chat an action, and keeps the ones still running', async () => {
-    const { value, stored, notices, opened } = deps([chat('host-1', 'Fix the parser'), chat('host-2', 'Write docs'), chat('host-3', 'Still going')], [run('host-3', 'Still going')], (actions) => actions[1]);
+    const { value, stored, notices, opened } = deps([chat('host-1', 'Fix the parser'), chat('host-2', 'Write docs'), chat('host-3', 'Still going')], [run('host-3', 'Still going')], () => 1);
     await announceFinishedAway(value, 'ssh+h1');
     expect(notices).toEqual([{ message: '2 chats on prod-1 finished while you were away', actions: ['Fix the parser', 'Write docs'] }]);
     expect(opened).toEqual([chat('host-2', 'Write docs')]);
     expect(stored.get('ssh+h1')).toEqual([chat('host-3', 'Still going')]);
+  });
+
+  it('opens the chosen chat by its action\'s index, also among chats of one title', async () => {
+    const { value, notices, opened } = deps([chat('host-1', 'Fix tests'), chat('host-2', 'Fix tests')], [], () => 1);
+    await announceFinishedAway(value, 'ssh+h1');
+    expect(notices[0]!.actions).toEqual(['Fix tests', 'Fix tests (2)']);
+    expect(opened).toEqual([chat('host-2', 'Fix tests')]);
   });
 
   it('says one chat in the singular, names an untitled chat, and tells nothing twice', async () => {

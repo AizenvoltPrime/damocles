@@ -30,8 +30,10 @@ import ModelEffortPopover from "./composer/ModelEffortPopover.vue";
 import HostBadge from "./HostBadge.vue";
 import { useChatHost } from "@/composables/useChatHost";
 import { useYoloRefusal } from "@/composables/useYoloRefusal";
+import { useLocalizedText } from "@/composables/useLocalizedText";
 
 const { t } = useI18n();
+const { rt } = useLocalizedText();
 const uiStore = useUIStore();
 const settingsStore = useSettingsStore();
 const streamingStore = useStreamingStore();
@@ -196,7 +198,7 @@ const voiceTooltip = computed(() => {
   if (isWakeMode.value) {
     if (jarvisState.value === "off") return t("chatInput.voice.wake.off");
     if (jarvisState.value === "loading") return t("chatInput.voice.wake.loading");
-    if (jarvisState.value === "error") return jarvisErrorMessage.value ?? t("chatInput.voice.wake.error");
+    if (jarvisState.value === "error") return jarvisErrorMessage.value ? rt(jarvisErrorMessage.value) : t("voiceToast.sidecarError");
     if (jarvisMuted.value || jarvisState.value === "muted") return t("chatInput.voice.wake.unmute");
     if (jarvisState.value === "recording") return t("chatInput.voice.wake.recording");
     if (jarvisState.value === "cpu-fallback") {
@@ -437,7 +439,7 @@ function handleSend() {
   // A rejected steer returns before addEntry and the clear below, so the draft stays in the box.
   const steer = parseSteerCommand(content);
   if (steer.kind === "usage" || steer.kind === "elements") {
-    streamingStore.addErrorMessage(t(steer.kind === "usage" ? "steerCommand.usage" : "steerCommand.noElements"));
+    streamingStore.addViewErrorMessage(t(steer.kind === "usage" ? "steerCommand.usage" : "steerCommand.noElements"));
     return;
   }
   addEntry(text);

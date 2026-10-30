@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { piMessagesToHistoryAgentMessages } from '../message-mapper';
-import { useGreekLocale } from '../../../../__mocks__/greek-locale';
+import { inGreek } from '../../../../__mocks__/greek-locale';
 
 describe('piMessagesToHistoryAgentMessages', () => {
   it("carries a tool result's recorded execution time onto its tool_use block, and none when pi recorded none", () => {
@@ -129,29 +129,29 @@ describe('piMessagesToHistoryAgentMessages: a failed model call', () => {
     ]);
     expect(out).toEqual([
       { role: 'assistant', contentBlocks: [{ type: 'text', text: 'Now I will' }] },
-      { role: 'error', contentBlocks: [{ type: 'text', text: '529 overloaded_error' }] },
+      { role: 'error', contentBlocks: [{ type: 'text', text: '529 overloaded_error' }], error: { message: '{0}', args: ['529 overloaded_error'] } },
     ]);
   });
 
   it('maps the error of a failed call that streamed nothing, and names an unknown one as the live card does', () => {
     const out = piMessagesToHistoryAgentMessages([{ role: 'assistant', content: [], stopReason: 'error' }]);
-    expect(out).toEqual([{ role: 'error', contentBlocks: [{ type: 'text', text: 'Unknown error' }] }]);
+    expect(out).toEqual([{ role: 'error', contentBlocks: [{ type: 'text', text: 'Unknown error' }], error: { message: 'Unknown error' } }]);
   });
 
   it("replays a call that had no credential as the live card did, naming the provider and model in Damocles' words", () => {
     const out = piMessagesToHistoryAgentMessages([
       { role: 'assistant', content: [], provider: 'cerebras', model: 'gpt-oss-120b', stopReason: 'error', errorMessage: 'Provider is not configured: cerebras' },
     ]);
-    expect(out).toEqual([{ role: 'error', contentBlocks: [{ type: 'text', text: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.' }] }]);
+    expect(out).toEqual([{ role: 'error', contentBlocks: [{ type: 'text', text: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.' }], error: { message: 'No credential is set up for {0}, so {1} could not run. Pick a model from a provider you are signed in to.', args: ['cerebras', 'gpt-oss-120b'] } }]);
   });
 
-  // The transcript is the user's, so it is in the UI language, and a row's provider gets the row's text, never an account card.
-  it("replays a row's missing credential in the UI language", () => {
-    useGreekLocale();
+  // The transcript is the user's, so each view renders it in its own language, and a row's provider gets the row's text, never an account card.
+  it("replays a row's missing credential as text each view renders", () => {
     const out = piMessagesToHistoryAgentMessages([
       { role: 'assistant', content: [], provider: 'anthropic', model: 'claude-sonnet-5-5', stopReason: 'error', errorMessage: 'Provider is not configured: anthropic' },
     ]);
-    expect(out).toEqual([{ role: 'error', contentBlocks: [{ type: 'text', text: 'Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το Anthropic, οπότε το Sonnet 5.5 δεν μπόρεσε να εκτελεστεί. Συνδεθείτε ή προσθέστε ένα κλειδί API στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.' }] }]);
+    expect(out).toEqual([{ role: 'error', contentBlocks: [{ type: 'text', text: 'No Anthropic credential is saved, so Sonnet 5.5 could not run. Sign in or add an API key in Settings › Models & accounts.' }], error: expect.anything() }]);
+    expect(inGreek(out[0]!.error!)).toBe('Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το Anthropic, οπότε το Sonnet 5.5 δεν μπόρεσε να εκτελεστεί. Συνδεθείτε ή προσθέστε ένα κλειδί API στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.');
   });
 
   it('maps no error for an aborted call', () => {
@@ -241,7 +241,7 @@ describe('piMessagesToHistoryAgentMessages: a Stop\'s wind-down error', () => {
     expect(piMessagesToHistoryAgentMessages([batch, killed, windDown]).map((m) => m.role)).toEqual(['assistant', 'error']);
     const failure = { role: 'assistant', content: [], stopReason: 'error', errorMessage: '529 overloaded_error' };
     expect(piMessagesToHistoryAgentMessages([failure, windDown], new Set(), new Set([windDown]))).toEqual([
-      { role: 'error', contentBlocks: [{ type: 'text', text: '529 overloaded_error' }] },
+      { role: 'error', contentBlocks: [{ type: 'text', text: '529 overloaded_error' }], error: { message: '{0}', args: ['529 overloaded_error'] } },
     ]);
   });
 });

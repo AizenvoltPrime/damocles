@@ -52,7 +52,7 @@ export function createTeamHandlers(): Partial<HandlerRegistry> {
       useTeamStore().handleAgentToolProgress(msg.agentId, msg.toolUseId, msg.output, msg.outputTruncated);
     },
     teamAgentDataLoaded: (msg) => {
-      useTeamStore().handleAgentDataLoaded(msg.agentId, msg.messages);
+      useTeamStore().handleAgentDataLoaded(msg.agentId, msg.messages, msg.streaming);
     },
   };
 }

@@ -1,6 +1,8 @@
 import { access, constants as fsConstants } from "node:fs/promises";
 import { runProcess } from "../../process-launcher";
 import { posixTool } from "../../system-tools";
+import { l, withDetail } from "../../l10n";
+import { LocalizedError, type LocalizedText } from "../../../shared/localized-text";
 
 /**
  * sounddevice (the wake-word microphone driver) is a thin Python wrapper around
@@ -17,9 +19,9 @@ import { posixTool } from "../../system-tools";
  * before any download, and fails with per-distro install commands on missing.
  */
 
-export class MissingSystemLibraryError extends Error {
-  constructor(message: string) {
-    super(message);
+export class MissingSystemLibraryError extends LocalizedError {
+  constructor(text: LocalizedText) {
+    super(text);
     this.name = "MissingSystemLibraryError";
   }
 }
@@ -46,20 +48,23 @@ const MACOS_LIBPORTAUDIO_KNOWN_PATHS: readonly string[] = [
   "/opt/local/lib/libportaudio.2.dylib",
 ];
 
-export function getPortAudioInstallInstructions(platform: NodeJS.Platform): string {
+export function getPortAudioInstallInstructions(platform: NodeJS.Platform): LocalizedText {
   if (platform === "darwin") {
-    return (
-      "Voice runtime needs PortAudio for microphone input (sounddevice's macOS wheel " +
-      "does not bundle it). Install via Homebrew:\n" +
-      "  brew install portaudio"
+    return withDetail(
+      l("The voice runtime needs PortAudio for microphone input, which the sounddevice package for macOS does not include."),
+      l("Install PortAudio with Homebrew:\n{0}", "  brew install portaudio"),
     );
   }
-  return (
-    "Voice runtime needs PortAudio for microphone input (sounddevice's Linux wheel " +
-    "does not bundle it). Install your distro's PortAudio runtime:\n" +
-    "  Debian / Ubuntu / WSL:  sudo apt update && sudo apt install libportaudio2\n" +
-    "  Fedora / RHEL:          sudo dnf install portaudio\n" +
-    "  Arch:                   sudo pacman -S --needed portaudio"
+  return withDetail(
+    l("The voice runtime needs PortAudio for microphone input, which the sounddevice package for Linux does not include."),
+    l(
+      "Install your distribution's PortAudio package:\n{0}",
+      [
+        "  Debian / Ubuntu / WSL:  sudo apt update && sudo apt install libportaudio2",
+        "  Fedora / RHEL:          sudo dnf install portaudio",
+        "  Arch:                   sudo pacman -S --needed portaudio",
+      ].join("\n"),
+    ),
   );
 }
 

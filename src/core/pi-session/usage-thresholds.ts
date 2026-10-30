@@ -2,7 +2,8 @@ import type { ClaudeAccountProfile, ProviderUsage, SubscriptionUsageData, UsageW
 import { describeAuthError } from './describe-error';
 import { oneLine } from './untrusted-text';
 import { log } from '../logger';
-import { t } from '../l10n';
+import { english, l, verbatim } from '../l10n';
+import type { LocalizedText } from '../../shared/localized-text';
 
 /** The process refreshes subscription usage at most this often after settled turns. */
 export const USAGE_REFRESH_INTERVAL_MS: number = 10 * 60_000;
@@ -20,6 +21,7 @@ const RESET_RESOLUTION_MS = 60_000;
 const WINDOW_LABEL_MAX_CHARS = 60;
 // A weekly window scoped to one model: `seven_day_<model>` (`subscription-usage.ts`).
 const SCOPED_WEEKLY_PREFIX = 'seven_day_';
+const SCOPED_WEEKLY_LABEL = 'Weekly {0}';
 
 export type SubscriptionProvider = 'anthropic' | 'openai';
 
@@ -29,7 +31,7 @@ export interface UsageThresholdCrossing {
   /** The window's bar id, stable across refreshes and launches, e.g. "five_hour" or "codex_secondary". */
   readonly windowId: string;
   /** The window's label as Subscription usage shows it, e.g. "Session (5hr)" or "Weekly". */
-  readonly windowLabel: string;
+  readonly windowLabel: LocalizedText;
   readonly threshold: Threshold;
   /** 0-100. */
   readonly utilization: number;
@@ -44,7 +46,7 @@ export interface FullUsageWindow {
   /** As `UsageThresholdCrossing.windowId`. */
   readonly windowId: string;
   /** As `UsageThresholdCrossing.windowLabel`. */
-  readonly windowLabel: string;
+  readonly windowLabel: LocalizedText;
   /** Epoch ms. */
   readonly resetsAt?: number;
 }
@@ -89,28 +91,28 @@ function capitalize(word: string): string {
   return word ? word.charAt(0).toUpperCase() + word.slice(1) : word;
 }
 
-/** A window's label as Subscription usage shows it (`SubscriptionUsageOverlay.vue`), flattened and capped; empty when nothing printable is left. */
-export function usageWindowLabel(bar: UsageWindowBar): string {
-  return oneLine(windowLabelText(bar), WINDOW_LABEL_MAX_CHARS) ?? '';
-}
-
-function windowLabelText(bar: UsageWindowBar): string {
+/** A window's label as Subscription usage shows it (`SubscriptionUsageOverlay.vue`), its provider text flattened and capped; empty when nothing printable is left. */
+export function usageWindowLabel(bar: UsageWindowBar): LocalizedText {
   const seconds = bar.windowSeconds;
   if (typeof seconds === 'number') {
-    if (seconds <= 6 * 3600) return t('Session (5hr)');
-    return seconds <= 8 * 86400 ? t('Weekly') : t('Monthly');
+    if (seconds <= 6 * 3600) return l('Session (5hr)');
+    return seconds <= 8 * 86400 ? l('Weekly') : l('Monthly');
   }
   switch (bar.id) {
     case 'five_hour':
     case 'codex_primary':
-      return t('Session (5hr)');
+      return l('Session (5hr)');
     case 'seven_day':
-      return t('Weekly (7 day)');
+      return l('Weekly (7 day)');
     case 'codex_secondary':
-      return t('Weekly');
+      return l('Weekly');
   }
-  if (bar.id.startsWith(SCOPED_WEEKLY_PREFIX)) return t('Weekly {0}', capitalize(bar.id.slice(SCOPED_WEEKLY_PREFIX.length)));
-  return bar.id.split('_').map(capitalize).join(' ');
+  if (bar.id.startsWith(SCOPED_WEEKLY_PREFIX)) {
+    // the model name is capped so the English label stays within WINDOW_LABEL_MAX_CHARS
+    const model = oneLine(capitalize(bar.id.slice(SCOPED_WEEKLY_PREFIX.length)), WINDOW_LABEL_MAX_CHARS - english(SCOPED_WEEKLY_LABEL, '').length);
+    return model === undefined ? l('Weekly') : l(SCOPED_WEEKLY_LABEL, model);
+  }
+  return verbatim(oneLine(bar.id.split('_').map(capitalize).join(' '), WINDOW_LABEL_MAX_CHARS) ?? '');
 }
 
 function words(text: string): string[] {

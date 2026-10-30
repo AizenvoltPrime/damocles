@@ -8,6 +8,7 @@ import LoadingSpinner from './LoadingSpinner.vue';
 import OverlayShell from './OverlayShell.vue';
 import { useContextUsageStore } from '@/stores/useContextUsageStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { formatTokenCount } from '@/composables/useTeamFormatting';
 
 const { t, te, locale } = useI18n();
 const store = useContextUsageStore();
@@ -40,9 +41,14 @@ defineEmits<{
 }>();
 
 function formatTokens(num: number): string {
-  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-  if (num >= 1000) return `${(num / 1000).toFixed(1)}k`;
-  return String(num);
+  return formatTokenCount(num, locale.value);
+}
+
+const shareFormat = computed(() => new Intl.NumberFormat(locale.value, { style: 'percent', minimumFractionDigits: 1, maximumFractionDigits: 1 }));
+
+function formatShare(tokens: number): string {
+  const max = store.data?.maxTokens ?? 0;
+  return shareFormat.value.format(max > 0 ? tokens / max : 0);
 }
 
 // The stacked bar is a picture of CONSUMED context, so its segments must sum to the headline total.
@@ -330,7 +336,7 @@ function toggleSection(key: string): void {
               >{{ t('context.deferred') }}</span>
               <span class="w-12 flex-none text-right font-mono tabular-nums">{{ formatTokens(cat.tokens) }}</span>
               <span class="w-11 flex-none text-right font-mono text-(--d-faint) tabular-nums">
-                {{ store.data!.maxTokens > 0 ? ((cat.tokens / store.data!.maxTokens) * 100).toFixed(1) : '0.0' }}%
+                {{ formatShare(cat.tokens) }}
               </span>
             </div>
           </div>

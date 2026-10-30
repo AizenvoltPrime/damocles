@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { SubagentStreamBridge } from '../subagent-stream-bridge';
-import { useGreekLocale } from '../../../../__mocks__/greek-locale';
+import { inGreek } from '../../../../__mocks__/greek-locale';
 import type { ExtensionToWebviewMessage } from '../../../../shared/types/messages';
 import type { AgentUsageTotals } from '../../../../shared/usage-accounting';
 
@@ -12,21 +12,29 @@ interface FakeSession {
   messages: readonly unknown[];
   /** What pi's session file sums to. A test adds entries pi writes with no event. */
   totals: Totals;
-  sessionManager: { getEntries: () => unknown[]; getBranch: () => unknown[] };
-  /** The session's branch: each message pi persisted at its `message_end`, and what a test appends. */
+  sessionManager: { getEntries: () => unknown[]; getBranch: () => unknown[]; getSessionFile: () => string | undefined };
+  /**
+   * The session's branch: the launch entry `AgentManager` appends as the session opens, each message pi persisted at its
+   * `message_end`, each entry an `entry_appended` reports, and what a test stores.
+   */
   branch: unknown[];
 }
 
-function makeFakeSession(initial: Partial<Totals> = {}): FakeSession {
+const LAUNCH_ENTRY = { type: 'custom', id: 'launch', customType: 'damocles-agent-launch', data: { agentId: 'agent-1', kind: 'subagent', agentType: 'Explore', description: 'dig', prompt: 'task', background: false } };
+
+function makeFakeSession(initial: Partial<Totals> = {}, stored: readonly unknown[] = [LAUNCH_ENTRY]): FakeSession {
   let cb: (e: unknown) => void = () => {};
   const totals: Totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, ...initial };
-  const branch: unknown[] = [];
+  const branch: unknown[] = [...stored];
   return {
     subscribe: (fn) => {
       cb = fn;
       return () => {};
     },
     emit: (e) => {
+      // pi appends an entry before it reports it (`agent-session.js:865-868`)
+      const { type: emitted, entry } = e as { type: string; entry?: unknown };
+      if (emitted === 'entry_appended') branch.push(entry);
       cb(e);
       // pi persists a message after its listeners ran, as `agent-session.js` `_handleAgentEvent` does.
       const { type, message } = e as { type: string; message?: { role: string; usage?: Omit<Totals, 'cost'> & { cost: { total: number } } } };
@@ -43,9 +51,14 @@ function makeFakeSession(initial: Partial<Totals> = {}): FakeSession {
     messages: [],
     totals,
     // One `usage` entry carrying the running totals sums to what pi's file would.
-    sessionManager: { getEntries: () => [{ type: 'usage', usage: { ...totals, cost: { total: totals.cost } } }], getBranch: () => branch },
+    sessionManager: { getEntries: () => [{ type: 'usage', usage: { ...totals, cost: { total: totals.cost } } }], getBranch: () => branch, getSessionFile: () => undefined },
     branch,
   };
+}
+
+/** Messages pi stored without an event the test plays, such as a tool result it writes once its batch ended. */
+function store(session: FakeSession, ...messages: unknown[]): void {
+  for (const message of messages) session.branch.push({ type: 'message', id: `e${session.branch.length}`, message });
 }
 
 /**
@@ -55,7 +68,6 @@ function makeFakeSession(initial: Partial<Totals> = {}): FakeSession {
 function recordWindDown(session: FakeSession, message: unknown): void {
   const persisted = session.branch.find((e) => (e as { message?: unknown }).message === message) as { id: string };
   const entry = { type: 'custom', id: `st-${persisted.id}`, customType: 'damocles-turn-stopped', data: { toolCallIds: [], entryIds: [persisted.id] } };
-  session.branch.push(entry);
   session.emit({ type: 'entry_appended', entry });
 }
 
@@ -214,16 +226,15 @@ describe('SubagentStreamBridge streaming', () => {
     const bridge = makeBridge(sent);
     const call = { role: 'assistant', content: [{ type: 'toolCall', id: 'gated', name: 'bash', arguments: { command: 'rm -rf build' } }], stopReason: 'toolUse' };
     const result = { role: 'toolResult', toolCallId: 'gated', content: [{ type: 'text', text: 'Operation aborted' }], details: {}, isError: true };
-    const messages: unknown[] = [];
-    const session = { ...makeFakeSession(), messages };
+    const session = makeFakeSession();
     bridge.attach(session as never);
-    messages.push(call);
+    store(session, call);
 
     session.emit({ type: 'tool_execution_start', toolCallId: 'gated', toolName: 'bash', args: { command: 'rm -rf build' } });
     sent.length = 0;
     session.emit({ type: 'entry_appended', entry: { type: 'custom', id: 's1', parentId: null, timestamp: '', customType: 'damocles-turn-stopped', data: { toolCallIds: ['gated'], entryIds: [] } } });
     session.emit({ type: 'tool_execution_end', toolCallId: 'gated', toolName: 'bash', result: { content: [{ type: 'text', text: 'Operation aborted' }], details: {} }, isError: true });
-    messages.push(result);
+    store(session, result);
 
     expect(sent).toEqual([{ type: 'toolAbandoned', toolUseId: 'gated', toolName: 'Bash', parentToolUseId: 'toolu_parent', reason: 'stopped' }]);
 
@@ -256,6 +267,19 @@ describe('SubagentStreamBridge streaming', () => {
     expect(failed[0]).toMatchObject({ toolUseId: 'toolu_parent', toolName: 'Agent', error: 'boom' });
   });
 
+  // The card words a failure with no text itself, as a reload does.
+  it("gives a failed card the subagent's or tool's own words, and none when there are none", () => {
+    const sent: ExtensionToWebviewMessage[] = [];
+    const bridge = makeBridge(sent);
+    const session = makeFakeSession();
+    bridge.attach(session as never);
+
+    session.emit({ type: 'tool_execution_end', toolCallId: 'silent', toolName: 'read', result: { content: [] }, isError: true });
+    bridge.finish({ responseText: '', resultJson: '{}', isError: true, durationMs: 0 });
+
+    expect(sent.flatMap((m) => (m.type === 'toolFailed' ? [[m.toolUseId, m.error]] : []))).toEqual([['silent', ''], ['toolu_parent', '']]);
+  });
+
   it('subagentStart carries the description and resumedFrom when given, and omits them otherwise', () => {
     const sent: ExtensionToWebviewMessage[] = [];
     new SubagentStreamBridge({
@@ -279,17 +303,16 @@ describe('SubagentStreamBridge streaming', () => {
 
   it('a reopened session seals only the messages of this run, not those it held when attached', () => {
     const sent: ExtensionToWebviewMessage[] = [];
-    const bridge = makeBridge(sent);
-    const messages: unknown[] = [
-      { role: 'user', content: [{ type: 'text', text: 'earlier task' }] },
-      { role: 'assistant', content: [{ type: 'text', text: 'earlier answer' }] },
-    ];
-    const session = { ...makeFakeSession(), messages };
+    const bridge = new SubagentStreamBridge({
+      parentToolUseId: 'toolu_parent', agentId: 'agent-1', agentType: 'Explore', isBackground: false, resumedFrom: 'agent-1',
+      getSessionId: () => 'parent-sid', postMessage: (m) => sent.push(m), onUsage: () => {},
+    });
+    const session = makeFakeSession();
+    store(session, { role: 'user', content: [{ type: 'text', text: 'earlier task' }] }, { role: 'assistant', content: [{ type: 'text', text: 'earlier answer' }] });
     bridge.attach(session as never);
-    messages.push(
-      { role: 'user', content: [{ type: 'text', text: 'continue' }] },
-      { role: 'assistant', content: [{ type: 'text', text: 'resumed answer' }] },
-    );
+    // the resume's segment entry, which `AgentManager` appends as the reopened session opens
+    session.branch.push({ type: 'custom', id: 'segment', customType: 'damocles-agent-segment', data: { toolCallId: 'toolu_parent' } });
+    store(session, { role: 'user', content: [{ type: 'text', text: 'continue' }] }, { role: 'assistant', content: [{ type: 'text', text: 'resumed answer' }] });
 
     bridge.finish({ session: session as never, responseText: 'resumed answer', resultJson: '{}', isError: false, durationMs: 1 });
 
@@ -515,7 +538,7 @@ describe('SubagentStreamBridge provider failures', () => {
     expect(ofType(sent, 'error')).toEqual([]);
     session.emit({ type: 'agent_settled', aborted: false });
 
-    expect(ofType(sent, 'error')).toEqual([{ type: 'error', message: '400 invalid_request_error', parentToolUseId: 'toolu_parent' }]);
+    expect(ofType(sent, 'error')).toEqual([{ type: 'error', message: { message: '{0}', args: ['400 invalid_request_error'] }, parentToolUseId: 'toolu_parent' }]);
     expect(ofType(sent, 'assistantRetracted')).toEqual([]);
   });
 
@@ -530,7 +553,7 @@ describe('SubagentStreamBridge provider failures', () => {
     session.emit({ type: 'agent_settled', aborted: false });
 
     expect(ofType(sent, 'error')).toEqual([
-      { type: 'error', message: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.', parentToolUseId: 'toolu_parent' },
+      { type: 'error', message: { message: 'No credential is set up for {0}, so {1} could not run. Pick a model from a provider you are signed in to.', args: ['cerebras', 'gpt-oss-120b'] }, parentToolUseId: 'toolu_parent' },
     ]);
   });
 
@@ -546,12 +569,11 @@ describe('SubagentStreamBridge provider failures', () => {
 
     expect(ofType(sent, 'authFailure')).toEqual([]);
     expect(ofType(sent, 'error')).toEqual([
-      { type: 'error', message: 'No Anthropic credential is saved, so Sonnet 5.5 could not run. Sign in or add an API key in Settings › Models & accounts.', parentToolUseId: 'toolu_parent' },
+      { type: 'error', message: { message: 'No {0} credential is saved, so {1} could not run. Sign in or add an API key in Settings › Models & accounts.', args: ['Anthropic', 'Sonnet 5.5'] }, parentToolUseId: 'toolu_parent' },
     ]);
   });
 
-  it('shows the live card in the UI language', () => {
-    useGreekLocale();
+  it('shows the live card as text each view renders', () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const bridge = makeBridge(sent);
     const session = makeFakeSession();
@@ -560,9 +582,9 @@ describe('SubagentStreamBridge provider failures', () => {
     emitFailedCall(session, 'Provider is not configured: anthropic', { willRetry: false, provider: 'anthropic', model: 'claude-sonnet-5-5' });
     session.emit({ type: 'agent_settled', aborted: false });
 
-    expect(ofType(sent, 'error')).toEqual([
-      { type: 'error', message: 'Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το Anthropic, οπότε το Sonnet 5.5 δεν μπόρεσε να εκτελεστεί. Συνδεθείτε ή προσθέστε ένα κλειδί API στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.', parentToolUseId: 'toolu_parent' },
-    ]);
+    const [card] = ofType(sent, 'error');
+    expect(card).toEqual({ type: 'error', message: expect.anything(), parentToolUseId: 'toolu_parent' });
+    expect(inGreek(card!.message)).toBe('Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το Anthropic, οπότε το Sonnet 5.5 δεν μπόρεσε να εκτελεστεί. Συνδεθείτε ή προσθέστε ένα κλειδί API στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.');
   });
 
   it('shows the last attempt once the retries run out', () => {
@@ -579,7 +601,7 @@ describe('SubagentStreamBridge provider failures', () => {
     session.emit({ type: 'auto_retry_end', success: false, attempt: 1, finalError: '529 second' });
     session.emit({ type: 'agent_settled', aborted: false });
 
-    expect(ofType(sent, 'error').map((m) => m.message)).toEqual(['529 second']);
+    expect(ofType(sent, 'error').map((m) => m.message)).toEqual([{ message: '{0}', args: ['529 second'] }]);
     expect(ofType(sent, 'assistantRetracted')).toHaveLength(1);
   });
 
@@ -609,7 +631,7 @@ describe('SubagentStreamBridge provider failures', () => {
     // A second overflow after one recovery: a compaction_end with no start (`agent-session.js:2445-2456`).
     session.emit({ type: 'compaction_end', reason: 'overflow', aborted: false, willRetry: false, errorMessage: 'Context overflow recovery failed after one compact-and-retry attempt.' });
 
-    expect(ofType(sent, 'error')).toEqual([{ type: 'error', message: 'prompt is too long', parentToolUseId: 'toolu_parent' }]);
+    expect(ofType(sent, 'error')).toEqual([{ type: 'error', message: { message: '{0}', args: ['prompt is too long'] }, parentToolUseId: 'toolu_parent' }]);
   });
 
   // pi returns from the turn before executing any tool of an errored message (agent-loop.js:148-157), and its turn_end
@@ -652,8 +674,7 @@ describe('SubagentStreamBridge provider failures', () => {
   it('settles the calls an abort skipped as stopped when the aborted call that follows ends, live and sealed', () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const bridge = makeBridge(sent);
-    const messages: unknown[] = [];
-    const session = { ...makeFakeSession(), messages };
+    const session = makeFakeSession();
     bridge.attach(session as never);
     const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: 'ls' } });
     const batch = { role: 'assistant', content: [call('ran'), call('skipped')], stopReason: 'toolUse' };
@@ -664,9 +685,9 @@ describe('SubagentStreamBridge provider failures', () => {
     session.emit({ type: 'message_end', message: batch });
     session.emit({ type: 'tool_execution_start', toolCallId: 'ran', toolName: 'bash', args: { command: 'ls' } });
     session.emit({ type: 'tool_execution_end', toolCallId: 'ran', toolName: 'bash', result: ranResult, isError: true });
+    store(session, ranResult);
     session.emit({ type: 'message_start', message: aborted });
     session.emit({ type: 'message_end', message: aborted });
-    messages.push(batch, ranResult, aborted);
     bridge.finish({ session: session as never, responseText: '', resultJson: '{}', isError: false, durationMs: 1 });
 
     expect(ofType(sent, 'toolAbandoned')).toEqual([{ type: 'toolAbandoned', toolUseId: 'skipped', toolName: 'Bash', parentToolUseId: 'toolu_parent', reason: 'stopped' }]);
@@ -679,10 +700,9 @@ describe('SubagentStreamBridge provider failures', () => {
   it('seals the tool calls of a failed call pi kept in context as not executed', () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const bridge = makeBridge(sent);
-    const messages: unknown[] = [];
-    const session = { ...makeFakeSession(), messages };
+    const session = makeFakeSession();
     bridge.attach(session as never);
-    messages.push({ role: 'assistant', content: [{ type: 'toolCall', id: 'never-ran', name: 'bash', arguments: { command: 'ls' } }], stopReason: 'error', errorMessage: 'terminated' });
+    store(session, { role: 'assistant', content: [{ type: 'toolCall', id: 'never-ran', name: 'bash', arguments: { command: 'ls' } }], stopReason: 'error', errorMessage: 'terminated' });
 
     bridge.finish({ session: session as never, responseText: '', resultJson: '{}', isError: true, durationMs: 1 });
 
@@ -694,21 +714,19 @@ describe('SubagentStreamBridge provider failures', () => {
   it('seals a failed call pi kept in context with its text and its error, and drops what it re-ran', () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const bridge = makeBridge(sent);
-    const messages: unknown[] = [];
-    const session = { ...makeFakeSession(), messages };
+    const session = makeFakeSession();
     bridge.attach(session as never);
-    // The session's messages are pi's projection, which no longer holds a call it re-ran (`_refreshFinalizedContext`).
-    messages.push(
-      { role: 'user', content: [{ type: 'text', text: 'task' }] },
-      { role: 'assistant', content: [{ type: 'text', text: 'Now I will' }], stopReason: 'error', errorMessage: '400 invalid_request_error' },
-    );
+    store(session, { role: 'user', content: [{ type: 'text', text: 'task' }] }, { role: 'assistant', content: [{ type: 'text', text: 'Thinking it over' }], stopReason: 'error', errorMessage: 'overloaded' });
+    // pi re-ran that call, which it took out of model context (`_omitRecoveryAttempt`)
+    session.branch.push({ type: 'context_edit', id: 'omit', targetId: 'e2', replacement: null });
+    store(session, { role: 'assistant', content: [{ type: 'text', text: 'Now I will' }], stopReason: 'error', errorMessage: '400 invalid_request_error' });
 
     bridge.finish({ session: session as never, responseText: '', resultJson: '{}', isError: true, durationMs: 1 });
 
     expect(ofType(sent, 'subagentMessagesUpdate')[0]!.messages).toEqual([
       { role: 'user', contentBlocks: [{ type: 'text', text: 'task' }] },
       { role: 'assistant', contentBlocks: [{ type: 'text', text: 'Now I will' }] },
-      { role: 'error', contentBlocks: [{ type: 'text', text: '400 invalid_request_error' }] },
+      { role: 'error', contentBlocks: [{ type: 'text', text: '400 invalid_request_error' }], error: { message: '{0}', args: ['400 invalid_request_error'] } },
     ]);
   });
 });
@@ -729,8 +747,7 @@ describe('SubagentStreamBridge abort wind-down', () => {
   function stoppedRun(content: unknown[], opts: { recorded: boolean } = { recorded: true }) {
     const sent: ExtensionToWebviewMessage[] = [];
     const bridge = makeBridge(sent);
-    const messages: unknown[] = [];
-    const session = { ...makeFakeSession(), messages };
+    const session = makeFakeSession();
     bridge.attach(session as never);
     const batch = { role: 'assistant', content, stopReason: 'toolUse' };
     const killed = { role: 'toolResult', toolCallId: 'ran', content: [{ type: 'text', text: 'Command aborted' }], details: { damoclesCancelled: true }, isError: true, durationMs: 700 };
@@ -738,13 +755,11 @@ describe('SubagentStreamBridge abort wind-down', () => {
 
     session.emit({ type: 'message_start', message: { role: 'assistant' } });
     session.emit({ type: 'message_end', message: batch });
-    messages.push(batch);
     session.emit({ type: 'tool_execution_start', toolCallId: 'ran', toolName: 'bash', args: { command: 'sleep 20' } });
     session.emit({ type: 'tool_execution_end', toolCallId: 'ran', toolName: 'bash', result: killed, isError: true, durationMs: 700 });
-    messages.push(killed);
+    store(session, killed);
     session.emit({ type: 'message_start', message: windDown });
     session.emit({ type: 'message_end', message: windDown });
-    messages.push(windDown);
     if (opts.recorded) recordWindDown(session, windDown);
     session.emit({ type: 'turn_end', message: windDown, toolResults: [] });
     session.emit({ type: 'agent_end', messages: [windDown], willRetry: false });
@@ -774,7 +789,7 @@ describe('SubagentStreamBridge abort wind-down', () => {
   it('shows the card and leaves the skipped call alone when no record names the error, as a reload does', () => {
     const { sent, sealed } = stoppedRun([call('ran'), call('skipped')], { recorded: false });
 
-    expect(ofType(sent, 'error')).toEqual([{ type: 'error', message: 'This operation was aborted', parentToolUseId: 'toolu_parent' }]);
+    expect(ofType(sent, 'error')).toEqual([{ type: 'error', message: { message: '{0}', args: ['This operation was aborted'] }, parentToolUseId: 'toolu_parent' }]);
     expect(ofType(sent, 'toolAbandoned')).toEqual([]);
     expect(sealed.map((m) => m.role)).toEqual(['assistant', 'error']);
   });
@@ -805,6 +820,47 @@ describe('SubagentStreamBridge abort wind-down', () => {
     emitFailedCall(session, '400 invalid_request_error', { partial: 'Now I will', willRetry: false });
     session.emit({ type: 'agent_settled', aborted: false });
 
-    expect(ofType(sent, 'error')).toEqual([{ type: 'error', message: '400 invalid_request_error', parentToolUseId: 'toolu_parent' }]);
+    expect(ofType(sent, 'error')).toEqual([{ type: 'error', message: { message: '{0}', args: ['400 invalid_request_error'] }, parentToolUseId: 'toolu_parent' }]);
+  });
+});
+
+describe('SubagentStreamBridge.liveSnapshot', () => {
+  it("liveSnapshot lists the running call with its latest output and the open message's text", () => {
+    const sent: ExtensionToWebviewMessage[] = [];
+    const bridge = makeBridge(sent);
+    const session = makeFakeSession();
+    const detach = bridge.attach(session as never);
+    const LS = { type: 'toolCall', id: 't1', name: 'bash', arguments: { command: 'ls' } };
+
+    session.emit({ type: 'message_start', message: { role: 'assistant' } });
+    session.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Check' } });
+    session.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'ing' } });
+    expect(bridge.liveSnapshot().messages).toEqual([
+      { type: 'partial', data: { type: 'partial', content: [], session_id: 'parent-sid', messageId: 'agent-1:a:1', streamingText: 'Checking', isThinking: false }, parentToolUseId: 'toolu_parent' },
+    ]);
+
+    session.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Checking' }, LS], stopReason: 'toolUse' } });
+    // sealed and not started: the run still owns the call, and nothing of it is open
+    expect(bridge.liveSnapshot()).toMatchObject({ messages: [], liveToolCallIds: new Set(['t1']) });
+
+    session.emit({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'bash', args: LS.arguments });
+    session.emit({ type: 'tool_execution_update', toolCallId: 't1', toolName: 'bash', args: {}, partialResult: { content: [{ type: 'text', text: 'a.ts\n' }], details: {} } });
+    session.emit({ type: 'tool_execution_update', toolCallId: 't1', toolName: 'bash', args: {}, partialResult: { content: [{ type: 'text', text: 'a.ts\nb.ts\n' }], details: { truncation: { truncated: true } } } });
+    const running = bridge.liveSnapshot();
+    expect(running.liveToolCallIds).toEqual(new Set(['t1']));
+    expect(running.messages).toEqual([
+      { type: 'toolPending', toolUseId: 't1', toolName: 'Bash', input: { command: 'ls' }, parentToolUseId: 'toolu_parent' },
+      { type: 'toolProgress', toolUseId: 't1', toolName: 'Bash', parentToolUseId: 'toolu_parent', elapsedTimeSeconds: expect.any(Number), output: 'a.ts\nb.ts\n', outputTruncated: true },
+    ]);
+
+    // ended, and pi has not stored its result yet: the end is sent again
+    session.emit({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'bash', result: { content: [{ type: 'text', text: 'a.ts\nb.ts' }], details: {} }, isError: false, durationMs: 12 });
+    expect(bridge.liveSnapshot().messages).toEqual([
+      { type: 'toolCompleted', toolUseId: 't1', toolName: 'Bash', result: 'a.ts\nb.ts', parentToolUseId: 'toolu_parent', durationMs: 12 },
+      { type: 'toolMetadata', toolUseId: 't1', metadata: {} },
+    ]);
+    session.emit({ type: 'message_end', message: { role: 'toolResult', toolCallId: 't1', toolName: 'bash', content: [{ type: 'text', text: 'a.ts\nb.ts' }], details: {}, isError: false } });
+    expect(bridge.liveSnapshot()).toMatchObject({ messages: [], liveToolCallIds: new Set() });
+    detach();
   });
 });

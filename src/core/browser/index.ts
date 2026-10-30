@@ -27,8 +27,9 @@ import { InterceptManager } from './intercept';
 import { ScreencastController, MAX_DEVICE_SCALE } from './screencast';
 import { BrowserAgentScope, type ScopeTabInfo } from './agent-scope';
 import { log } from '../logger';
-import { t } from '../l10n';
+import { l } from '../l10n';
 import { browserUnavailableReason, userScopeRemote } from '../user-scope';
+import { LocalizedError } from '../../shared/localized-text';
 import type { BrowserSessionState, InterceptRule, RedactedInterceptRule } from './types';
 import type { ElementAttachment, ConsoleEntry, NetworkError, DownloadEntry, BrowserDialogRecord } from '../../shared/types/browser';
 
@@ -912,7 +913,7 @@ export class BrowserService {
   // Resolves true when this call launched the context, which adopted its first page for launchScopeId.
   private async ensureContext(launchScopeId: string, signal?: AbortSignal): Promise<boolean> {
     // the browser is the client's, so a daemon's core neither launches Chrome nor creates a browser profile on its host
-    if (userScopeRemote()) throw new Error(browserUnavailableReason());
+    if (userScopeRemote()) throw new LocalizedError(browserUnavailableReason());
     const run = this.openChain.then(() => this.ensureContextInternal(launchScopeId, signal));
     this.openChain = run.then(() => {}, () => {});
     return run;
@@ -1854,12 +1855,11 @@ export class BrowserService {
     // A relaunch is required because --remote-debugging-port is a launch-time Chromium flag: there is
     // no way to open the port on a running browser, and offering a live retry would be a lie.
     if (!this.readDevToolsPortSetting()) {
-      const OPEN_SETTINGS = t('Open Settings');
       const choice = await this.platform.notifications.warn(
-        t('DevTools is unavailable because the debugging port is disabled by damocles.browser.devToolsPort. Enable the setting and relaunch the browser. The port is a launch-time flag and cannot be turned on for a running browser.'),
-        OPEN_SETTINGS,
+        l('DevTools is unavailable because the debugging port is disabled by damocles.browser.devToolsPort. Enable the setting and relaunch the browser. The port is a launch-time flag and cannot be turned on for a running browser.'),
+        [l('Open Settings')],
       );
-      if (choice === OPEN_SETTINGS) {
+      if (choice === 0) {
         await this.platform.editor.openHostSettings('damocles.browser.devToolsPort', 'integrations');
       }
       return;
@@ -1951,7 +1951,7 @@ export class BrowserService {
     log('[Browser] Browser context closed unexpectedly — tearing down the session.');
     // Every browser editor tab is about to vanish; without this the user has no way to tell an
     // unexpected Chrome exit from the extension losing their tabs for no reason.
-    this.platform.notifications.warn(t('The browser closed unexpectedly. Open it again to continue.')).catch((err: unknown) =>
+    this.platform.notifications.warn(l('The browser closed unexpectedly. Open it again to continue.')).catch((err: unknown) =>
       log(`[Browser] Could not show the browser-closed notice — ${err instanceof Error ? err.message : String(err)}`),
     );
     this.close().catch((err) =>

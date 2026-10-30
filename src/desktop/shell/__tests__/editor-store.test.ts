@@ -282,7 +282,7 @@ describe('editor store', () => {
   });
 
   it('saves, formats and auto saves the modified side of an editable diff tab, and nothing of a read-only one', async () => {
-    const diff: ShellEditorTab = { id: 'd1', kind: 'diff', title: 'a.ts', displayPath: 'a.ts', dirty: true, readOnly: false, conflict: false, diff: { originalId: 'doc-old', modifiedId: 'doc-new', added: 1, removed: 1 } };
+    const diff: ShellEditorTab = { id: 'd1', kind: 'diff', title: 'a.ts', displayPath: 'a.ts', dirty: true, readOnly: false, conflict: false, diff: { originalId: 'doc-old', modifiedId: 'doc-new' } };
     const sides = { 'doc-old': { name: 'a.ts', languageId: 'typescript' }, 'doc-new': { name: 'a.ts', languageId: 'typescript' } };
     const { api, store } = await setup(state([diff], 'd1', { autoSave: 'afterDelay' }, sides), { 'doc-old': text('doc-old', 'a'), 'doc-new': text('doc-new', 'b') });
     const model = (await store.model('doc-new')) as unknown as FakeModel;

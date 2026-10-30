@@ -40,17 +40,16 @@ describe('SettingInput, a refusal from its owner', () => {
     expect(shownError(wrapper)).toBe(REFUSAL);
   });
 
-  it('keeps Escape after an edit, reverting the draft and leaving the refusal to its owner', async () => {
+  it('keeps Escape after an edit, reverting the draft', async () => {
     const wrapper = mountField();
     await wrapper.find('input').setValue('7');
 
     expect(await escapeReachesModal(wrapper)).toBe(false);
     expect((wrapper.find('input').element as HTMLInputElement).value).toBe('5');
-    expect(shownError(wrapper)).toBe(REFUSAL);
     expect(await escapeReachesModal(wrapper)).toBe(true);
   });
 
-  it('shows a parse error over the refusal, and the refusal again once Escape drops the edit', async () => {
+  it('shows a parse error in place of the refusal, which the edit already dismissed', async () => {
     const wrapper = mountField();
     await wrapper.find('input').setValue('x');
     await wrapper.find('input').trigger('keydown', { key: 'Enter' });
@@ -60,6 +59,65 @@ describe('SettingInput, a refusal from its owner', () => {
     expect(wrapper.emitted('commit')).toBeUndefined();
 
     expect(await escapeReachesModal(wrapper)).toBe(false);
+    expect(wrapper.find('[data-testid="setting-invalid"]').exists()).toBe(false);
+  });
+
+  // A refusal judges the value that was sent, as a server-side form error does.
+  it('hides the refusal and aria-invalid once the user edits the refused value, even back to it', async () => {
+    const wrapper = mountField();
+    const input = wrapper.find('input');
+    expect(input.attributes('aria-invalid')).toBe('true');
+
+    await input.setValue('7');
+    expect(wrapper.find('[data-testid="setting-invalid"]').exists()).toBe(false);
+    expect(input.attributes('aria-invalid')).toBeUndefined();
+    expect(input.attributes('aria-describedby')).toBeUndefined();
+
+    await input.setValue('5');
+    expect(wrapper.find('[data-testid="setting-invalid"]').exists()).toBe(false);
+  });
+
+  it('shows the refusal again only when its owner refuses the next value sent', async () => {
+    const wrapper = mount(SettingInput, { props: { modelValue: '', parse: parseCount, label: 'Count', commitOnBlur: false, refusal: null }, attachTo: document.body });
+    mounted.push(wrapper);
+    const input = wrapper.find('input');
+    await input.setValue('7');
+    await input.trigger('keydown', { key: 'Enter' });
+    await wrapper.setProps({ refusal: REFUSAL });
     expect(shownError(wrapper)).toBe(REFUSAL);
+
+    await input.setValue('8');
+    expect(wrapper.find('[data-testid="setting-invalid"]').exists()).toBe(false);
+    await input.trigger('keydown', { key: 'Enter' });
+    expect(wrapper.emitted('commit')).toEqual([[7], [8]]);
+    // The owner holds no verdict while it judges the value sent.
+    await wrapper.setProps({ refusal: null });
+    await wrapper.setProps({ refusal: REFUSAL });
+    expect(shownError(wrapper)).toBe(REFUSAL);
+    expect(input.attributes('aria-invalid')).toBe('true');
+  });
+});
+
+describe('SettingInput, its layout', () => {
+  function mountLaidOut(inline: boolean) {
+    const wrapper = mount(SettingInput, { props: { modelValue: '5', parse: parseCount, label: 'Count', refusal: REFUSAL, inline }, attachTo: document.body });
+    mounted.push(wrapper);
+    return wrapper;
+  }
+
+  // An error with no intrinsic width cannot widen the column, so the input keeps its place in its row.
+  it("an inline field aligns to its start and binds its error to the input's width", () => {
+    const wrapper = mountLaidOut(true);
+    expect(wrapper.classes()).toContain('items-start');
+    expect(wrapper.classes()).not.toContain('items-end');
+    expect(wrapper.find('[data-testid="setting-invalid"]').classes()).toEqual(expect.arrayContaining(['w-0', 'min-w-full']));
+  });
+
+  it('a default field keeps items-end and an unbound error', () => {
+    const wrapper = mountLaidOut(false);
+    expect(wrapper.classes()).toContain('items-end');
+    const error = wrapper.find('[data-testid="setting-invalid"]').classes();
+    expect(error).not.toContain('w-0');
+    expect(error).not.toContain('min-w-full');
   });
 });

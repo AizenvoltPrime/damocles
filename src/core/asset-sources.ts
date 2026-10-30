@@ -29,7 +29,7 @@ const DAMOCLES_SOURCE: AssetSource = {
 const CLAUDE_SOURCE: AssetSource = { name: "claude", commands: ".claude/commands", skills: ".claude/skills" };
 const CODEX_SOURCE: AssetSource = { name: "codex", commands: ".codex/prompts", skills: ".codex/skills" };
 
-/** User-only (application scope). Every reader caches by it, so each one listens for a change. */
+/** User-only (machine scope): a daemon's core reads its host's file. Every reader caches by it, so each one listens for a change. */
 export const ASSET_SOURCE_PRECEDENCE_SETTING = "damocles.assetSourcePrecedence";
 
 /** The configured Claude-vs-Codex precedence (default `claude`). */

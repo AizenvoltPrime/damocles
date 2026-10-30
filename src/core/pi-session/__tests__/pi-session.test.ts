@@ -11,6 +11,8 @@ import type { ForkSpawnArgs } from '../../../shared/types/session';
 import type { AccountInfo, AutoCompactConfig } from '../../../shared/types/settings';
 import { DEFAULT_MODELS } from '../../../shared/types/constants';
 import type { Agent, AgentTurnContext, AgentTurnDecision, FinishTurn } from '@earendil-works/pi-agent-core';
+import { inGreek } from '../../../__mocks__/greek-locale';
+import { englishText, type LocalizedText } from '../../../shared/localized-text';
 
 const H = vi.hoisted(() => {
   const CACHE_WARMING_MODES = ['off', 'streaming', 'idle'];
@@ -406,6 +408,7 @@ import { PiSession, workingFolderNote } from '../pi-session';
 import type { CheckpointService } from '../checkpoint-service';
 import { RepoManager, getGitDir, getRepoDir } from '../checkpoints';
 import { PiRuntime } from '../pi-runtime';
+import { osName } from '../os-name';
 import { FolderRuntime } from '../folder-runtime';
 import { reconstructMessages } from '../session-store/history-loader';
 import { formatMcpResourceAttachmentBlock, formatTerminalAttachmentBlock } from '../../terminal-attachment';
@@ -473,6 +476,7 @@ import { createSessionHandlers } from '../../chat-panel/message-router/handlers/
 import type { HandlerContext, HandlerDependencies } from '../../chat-panel/message-router/types';
 import type { HostInstance } from '../../chat-panel/types';
 import { TerminalAttachmentManager } from '../../chat-panel/terminal-attachment-manager';
+import { IdeContextManager } from '../../chat-panel/ide-context-manager';
 import { createHarness, folderEntry, makeFakeHost } from '../../chat-panel/__tests__/panel-manager-harness';
 import { folderKey } from '../../workspace-folders/folder-key';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
@@ -543,6 +547,22 @@ function piRuns(opts: unknown, getBranchMock: unknown, committed: readonly unkno
   getBranch.mockReturnValue(branch);
 }
 
+/**
+ * A daemon's core refreshing pi's availability snapshot for a new acting client: `clientSnapshotSettling` is one promise
+ * until `settle`, which nulls it before its waiters run, as `PiRuntime._settleClientRefreshes` does.
+ */
+function pendingClientRefresh(): { settle: () => void; awaited: () => boolean } {
+  let settle!: () => void;
+  let pending: Promise<void> | null = new Promise<void>((resolve) => {
+    settle = () => {
+      pending = null;
+      resolve();
+    };
+  });
+  const read = vi.spyOn(PiRuntime.get(), 'clientSnapshotSettling').mockImplementation(() => pending);
+  return { settle, awaited: () => read.mock.results.some((result) => result.value !== null) };
+}
+
 /** A SecretStorage stand-in. Without it `start()` skips the provider sync entirely, which is why the
  *  whole custom-provider fallback path was unreachable from this suite. */
 const FAKE_SECRETS = {
@@ -589,6 +609,60 @@ describe('a daemon\'s core pins every run a panel\'s pi session starts', () => {
     seen.length = 0;
     await nested.prompt('a steer to an idle subagent');
     expect(seen).toEqual([expect.objectContaining({ kind: 'turn', clientId: 'client-a', run: 'panel-1' })]);
+    await panel.dispose();
+  });
+
+  // A fresh attach re-publishes an equal clientAuth, which starts no credential refresh, so only the acting-client refresh
+  // brings the device's sign-in back into pi's availability snapshot, and it settles after the device's queued send arrived.
+  it("a send that arrives with a signed-in device's fresh attach runs once pi's snapshot holds that device again, never refused for its sign-in", async () => {
+    const host = createFakeRemoteHost();
+    const signedIn = { providers: { anthropic: { type: 'oauth' as const, expires: Date.now() + 3_600_000, hasKey: false, flatFee: false } } };
+    host.set('clientAuth', 'client-a', signedIn);
+    host.setActing('client-a');
+    Object.assign(testPlatform, { remote: host.remote });
+    const modelRuntime = H.getServices().modelRuntime as unknown as { hasConfiguredAuth: (provider: string) => boolean; refresh: ReturnType<typeof vi.fn> };
+    // pi's availability snapshot: what the acting client held when its last refresh finished
+    let snapshot = new Set(['anthropic']);
+    const refreshes: Array<() => void> = [];
+    modelRuntime.hasConfiguredAuth = (provider) => snapshot.has(provider);
+    modelRuntime.refresh.mockImplementation(() => new Promise((resolve) => refreshes.push(() => {
+      const acting = host.remote.clients.acting();
+      const held = acting === undefined ? undefined : host.remote.clients.auth(acting);
+      snapshot = new Set(Object.entries(held?.providers ?? {}).filter(([, entry]) => entry.type !== 'none').map(([provider]) => provider));
+      resolve({ errors: new Map() });
+    })));
+    const finishRefreshes = async (): Promise<void> => {
+      for (let pass = 0; pass < 5; pass++) {
+        while (refreshes.length > 0) refreshes.shift()!();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    };
+    // pi's own prompt, before a daemon's core wraps it to pin the run
+    let piPrompt!: ReturnType<typeof vi.fn>;
+    H.setSessionSetup((built) => {
+      piPrompt = (built as unknown as { prompt: ReturnType<typeof vi.fn> }).prompt;
+    });
+    const messages: ExtensionToWebviewMessage[] = [];
+    const panel = new PiSession(makeOptions(messages, { panelId: 'panel-1' }));
+    await panel.initializeEarly();
+    await finishRefreshes();
+
+    // the device is lost: its connection goes, and no client acts
+    host.set('clientAuth', 'client-a', undefined);
+    host.setActing(undefined);
+    await finishRefreshes();
+    expect(snapshot.has('anthropic')).toBe(false);
+
+    // a fresh attach: the same clientAuth and the device acting again, then the message it queued offline
+    host.set('clientAuth', 'client-a', signedIn);
+    host.setActing('client-a');
+    const sent = panel.sendMessage('queued offline', undefined, 'c1', { content: 'queued offline' });
+    await new Promise((resolve) => setImmediate(resolve));
+    await finishRefreshes();
+
+    await sent;
+    expect(messages.filter((m) => m.type === 'promptReturned' || m.type === 'openSettingsPanel')).toEqual([]);
+    expect(piPrompt).toHaveBeenCalledWith('queued offline', expect.anything());
     await panel.dispose();
   });
 
@@ -1267,13 +1341,29 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.dispose();
   });
 
-  it('queueInput refuses (returns false) when the session is not streaming', async () => {
+  it('queueInput refuses a message whose run ended, naming why', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     const live = H.getLastSession()!;
     (live as { isStreaming: boolean }).isStreaming = false;
-    expect(session.queueInput('nope')).toBe(false);
+    expect(session.queueInput('nope')).toBe('runEnded');
     expect((live.prompt as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('queueInput refuses a message while no pi session holds the chat, naming why', async () => {
+    const session = new PiSession(makeOptions([]));
+    expect(session.queueInput('before the start')).toBe('noRuntime');
+    await session.dispose();
+  });
+
+  // a kernel or point update must not change the environment section, which would re-fold every chat's prompt
+  it('states the OS in the environment section by its product name, never the kernel release', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const env = (session as unknown as { systemPromptEnv: () => { osVersion: string } }).systemPromptEnv();
+    expect(env.osVersion).toBe(osName());
+    expect(env.osVersion).not.toContain(os.release());
     await session.dispose();
   });
 
@@ -1988,7 +2078,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     }
   }, 20_000);
 
-  it('reports a prompt unsent when it is refused, and sent when pi queued it into the running run', async () => {
+  it('reports a prompt busy while a send holds the session, unsent when pi refuses it, and sent when pi queued it into the running run', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     const live = H.getLastSession()!;
@@ -2001,7 +2091,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
     const queued = session.sendMessage('first', undefined, 'c1', { content: 'first' });
     await vi.waitFor(() => expect(release).toBeDefined());
-    expect(await session.sendMessage('second', undefined, 'c2', { content: 'second' })).toBe('unsent');
+    expect(await session.sendMessage('second', undefined, 'c2', { content: 'second' })).toBe('busy');
     release();
     expect(await queued).toBe('sent');
 
@@ -2084,7 +2174,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       const refusal = (await loadFormatNoApiKeyFoundMessage())('anthropic');
 
       expect(await ask(asideSession(async () => { throw new Error(refusal); }))).toEqual([
-        { type: 'btwError', btwId: 'b1', message: refusal, authFailure: { account: 'anthropic', reason: 'missing' } },
+        { type: 'btwError', btwId: 'b1', message: { message: '{0}', args: [refusal] }, authFailure: { account: 'anthropic', reason: 'missing' } },
       ]);
     });
 
@@ -2093,12 +2183,12 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       const failed = { role: 'assistant', content: [], provider: 'anthropic', model: 'claude-sonnet-5-5', stopReason: 'error', errorMessage: rejected, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 
       expect(await ask(asideSession(async (emit) => { emit({ type: 'message_start', message: failed }); emit({ type: 'message_end', message: failed }); }))).toEqual([
-        { type: 'btwError', btwId: 'b1', message: rejected, authFailure: { account: 'anthropic', reason: 'rejected' } },
+        { type: 'btwError', btwId: 'b1', message: { message: '{0}', args: [rejected] }, authFailure: { account: 'anthropic', reason: 'rejected' } },
       ]);
     });
 
     it('shows any other failure as its text', async () => {
-      expect(await ask(asideSession(async () => { throw new Error('socket hang up'); }))).toEqual([{ type: 'btwError', btwId: 'b1', message: 'socket hang up' }]);
+      expect(await ask(asideSession(async () => { throw new Error('socket hang up'); }))).toEqual([{ type: 'btwError', btwId: 'b1', message: { message: '{0}', args: ['socket hang up'] } }]);
     });
 
     it("refuses an aside on a signed-out chat model with a send's text and account, asking pi nothing", async () => {
@@ -2112,8 +2202,31 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
       expect(create).not.toHaveBeenCalled();
       expect(messages.filter((m) => m.type === 'btwError')).toEqual([
-        { type: 'btwError', btwId: 'b1', message: 'Sign in to Anthropic to use Opus 5.5', authFailure: { account: 'anthropic', reason: 'missing' } },
+        { type: 'btwError', btwId: 'b1', message: { message: 'Sign in to {0} to use {1}', args: ['Anthropic', 'Opus 5.5'] }, authFailure: { account: 'anthropic', reason: 'missing' } },
       ]);
+      await session.dispose();
+    });
+
+    // pi's snapshot can still hold the previous client's sign-ins during a fresh attach, as for a send.
+    it("judges the aside's model once a client refresh settled, never refusing it for the previous client's sign-ins", async () => {
+      const messages: ExtensionToWebviewMessage[] = [];
+      const session = new PiSession(makeOptions(messages));
+      await session.initializeEarly();
+      const create = vi.spyOn(cwdFolder()!, 'createSubagentSession').mockResolvedValue(asideSession(async () => undefined) as never);
+      vi.spyOn(cwdFolder()!, 'forgetSubagentSession').mockImplementation(() => undefined);
+      const auth = H.getServices().modelRuntime as { hasConfiguredAuth: (provider: string) => boolean };
+      auth.hasConfiguredAuth = () => false;
+      const refresh = pendingClientRefresh();
+
+      const asking = session.sendBtw('b1', 'what is this?');
+      await vi.waitFor(() => expect(refresh.awaited()).toBe(true));
+      // the refresh brings the asking device's sign-in into pi's snapshot
+      auth.hasConfiguredAuth = () => true;
+      refresh.settle();
+      await asking;
+
+      expect(messages.filter((m) => m.type === 'btwError' && m.authFailure)).toEqual([]);
+      expect(create).toHaveBeenCalledOnce();
       await session.dispose();
     });
 
@@ -2316,8 +2429,9 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
     // The second arrives before the first reached pi, so pi could not yet tell it to queue.
     const first = session.sendMessage('hi', undefined, 'c1', { content: 'hi' });
-    expect(await session.sendMessage('also this', undefined, 'c2', { content: 'also this' })).toBe('unsent');
-    expect(messages).toContainEqual({ type: 'error', message: 'A request is already in progress' });
+    // a second send returns busy and posts no error: its caller gives the text back to the composer
+    expect(await session.sendMessage('also this', undefined, 'c2', { content: 'also this' })).toBe('busy');
+    expect(messages.filter((m) => m.type === 'error')).toEqual([]);
     await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledOnce());
     endRun();
     await first;
@@ -2499,11 +2613,10 @@ describe('PiSession lifecycle (US-P1-4)', () => {
   };
 
   const errorsOf = (messages: ExtensionToWebviewMessage[]): string[] =>
-    messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'error' }> => m.type === 'error').map((m) => m.message);
+    messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'error' }> => m.type === 'error').map((m) => englishText(m.message));
 
   it('compact() surfaces a "nothing to compact" refusal as a friendly info notice in the UI language, not an error', async () => {
     const greek = elBundle as Record<string, string>;
-    const t = vi.spyOn(testPlatform.localization, 't').mockImplementation((message) => greek[message] ?? message);
     const messages: ExtensionToWebviewMessage[] = [];
     const session = new PiSession(makeOptions(messages));
     await session.initializeEarly();
@@ -2513,45 +2626,35 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       new Error('Nothing to compact (session too small)'),
     );
 
-    try {
-      await session.compact();
-    } finally {
-      t.mockRestore();
-    }
+    await session.compact();
 
     // The adapter deliberately reports nothing for this one, so `compact()` is still its only owner.
     expect(errorsOf(messages)).toEqual([]);
     const notice = messages.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'notification' }> => m.type === 'notification');
     expect(notice?.notificationType).toBe('info');
     expect(greek['The conversation is too short to compact yet.']).toBeDefined();
-    expect(notice?.message).toBe(greek['The conversation is too short to compact yet.']);
-    expect(notice?.message).not.toMatch(/[—:]/);
+    expect(inGreek(notice!.message)).toBe(greek['The conversation is too short to compact yet.']);
+    expect(inGreek(notice!.message)).not.toMatch(/[—:]/);
     await session.dispose();
   });
 
   it('compact() while a compaction runs refuses with a warning in the UI language', async () => {
     const greek = elBundle as Record<string, string>;
-    const t = vi.spyOn(testPlatform.localization, 't').mockImplementation((message) => greek[message] ?? message);
     const messages: ExtensionToWebviewMessage[] = [];
     const session = new PiSession(makeOptions(messages));
     await session.initializeEarly();
     let finish!: () => void;
     (H.getLastSession()!.compact as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise<void>((resolve) => (finish = resolve)));
 
-    let running: Promise<void> | undefined;
     const accepted: string[] = [];
-    try {
-      running = session.compact(undefined, () => accepted.push('first'));
-      await session.compact(undefined, () => accepted.push('second'));
-    } finally {
-      t.mockRestore();
-    }
+    const running = session.compact(undefined, () => accepted.push('first'));
+    await session.compact(undefined, () => accepted.push('second'));
     expect(accepted).toEqual(['first']);
 
     const notice = messages.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'notification' }> => m.type === 'notification');
     expect(notice?.notificationType).toBe('warning');
     expect(greek['Finish or stop the current turn before compacting.']).toBeDefined();
-    expect(notice?.message).toBe(greek['Finish or stop the current turn before compacting.']);
+    expect(inGreek(notice!.message)).toBe(greek['Finish or stop the current turn before compacting.']);
     await vi.waitFor(() => expect(finish).toBeDefined());
     finish();
     await running;
@@ -2784,7 +2887,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
     await session.rewindFiles('comp1', 'code-only');
 
-    expect(messages.some((m) => m.type === 'rewindError' && m.message === 'No checkpoint exists for this message')).toBe(true);
+    expect(messages.some((m) => m.type === 'rewindError' && englishText(m.message) === 'No checkpoint exists for this message')).toBe(true);
     expect(messages.some((m) => m.type === 'rewindComplete')).toBe(false);
     await session.dispose();
   });
@@ -2806,7 +2909,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
   }
 
   const rewindErrors = (messages: ExtensionToWebviewMessage[]) =>
-    messages.flatMap((m) => (m.type === 'rewindError' ? [m.message] : []));
+    messages.flatMap((m) => (m.type === 'rewindError' ? [englishText(m.message)] : []));
 
   it('tells a missing checkpoint service apart from missing git', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
@@ -5139,7 +5242,7 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
       expect((session as unknown as { runtime: unknown }).runtime).toBeNull();
       // The failure is not swallowed: the next send reports that pi failed to start.
       await session.sendMessage('go', undefined, 'c1', { content: 'go' });
-      expect(messages).toContainEqual({ type: 'error', message: 'pi failed to start: malformed transcript' });
+      expect(messages).toContainEqual({ type: 'error', message: { message: 'pi failed to start: {0}', args: [{ message: '{0}', args: ['malformed transcript'] }] } });
       await session.dispose();
     });
 
@@ -6590,7 +6693,7 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
     // pi settled the call before execute, so it carries no durationMs and the live card showed no result either.
     expect(tool).toMatchObject({ abandoned: 'stopped' });
     expect(tool).not.toHaveProperty('result');
-    expect(messages.filter((m) => m.kind === 'error')).toEqual([{ kind: 'error', content: 'An earlier failure' }]);
+    expect(messages.filter((m) => m.kind === 'error')).toEqual([{ kind: 'error', content: { message: '{0}', args: ['An earlier failure'] } }]);
     await session.dispose();
   });
 
@@ -6633,7 +6736,7 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
       // Another process owns the file now; this manager's next append must not reach it.
       live.appendSessionInfo('Written after the lease was lost');
       expect(fsSync.readFileSync(file, 'utf8')).toBe(before);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('another Damocles window'));
+      expect(warn).toHaveBeenCalledWith({ message: 'This conversation was opened in another Damocles window, so this panel closed it.' });
 
       await vi.waitFor(() => expect(messages.some((m) => m.type === 'sessionCleared')).toBe(true));
       expect(H.getLastSession()).not.toBe(first);
@@ -6691,7 +6794,7 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
       expect(order).toEqual(['abort, lease held true', 'drain, lease held true', 'agents settled, lease held true']);
       expect(leaseHeld()).toBe(false);
       expect(fsSync.existsSync(path.join(SESSION_LEASE_DIR, `${sessionId}.owner`))).toBe(false);
-      expect(warn).toHaveBeenCalledWith('This conversation was opened in another Damocles window, so this panel closed it.');
+      expect(warn).toHaveBeenCalledWith({ message: 'This conversation was opened in another Damocles window, so this panel closed it.' });
       expect(messages.filter((m) => m.type === 'processing' && !m.isProcessing).length).toBeGreaterThan(0);
       // The Stop path ran, so a reload in the other window shows the cut-off call as stopped.
       const { messages: replayed } = reconstructMessages(realPi.SessionManager.open(file, dir).getBranch());
@@ -7877,7 +7980,7 @@ describe('PiSession undelivered background results', () => {
     expect((b.prompt as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])).toEqual(['for B']);
     // A's note left with A's transcript, so a Stop in B reports no note of its own discarded.
     await session.interrupt();
-    expect(messages.some((m) => m.type === 'notification' && m.message.includes('discarded your cancel note'))).toBe(false);
+    expect(messages.some((m) => m.type === 'notification' && englishText(m.message).includes('discarded your cancel note'))).toBe(false);
     await session.dispose();
   });
 
@@ -8523,7 +8626,6 @@ describe('PiSession undelivered background results', () => {
 
   it('the delivery, interruption-notice and invocation-record warnings reach the user in the UI language', async () => {
     const greek = elBundle as Record<string, string>;
-    const t = vi.spyOn(testPlatform.localization, 't').mockImplementation((message) => greek[message] ?? message);
     const messages: ExtensionToWebviewMessage[] = [];
     const session = new PiSession(makeOptions(messages));
     await session.initializeEarly();
@@ -8533,14 +8635,10 @@ describe('PiSession undelivered background results', () => {
     vi.mocked(collectUndeliveredFromFiles).mockRejectedValueOnce(new Error('EBUSY'));
     vi.mocked(reconcileInterruptions).mockRejectedValueOnce(new Error('EBUSY'));
     (live.sessionManager['appendCustomEntry'] as ReturnType<typeof vi.fn>).mockImplementationOnce(() => { throw new Error('EPERM'); });
-    try {
-      await session.sendMessage('go', undefined, 'c1', { content: 'go' });
-      session.recordAgentInvocation({ kind: 'subagent', id: X, toolCallId: 'tx', resume: false });
-    } finally {
-      t.mockRestore();
-    }
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    session.recordAgentInvocation({ kind: 'subagent', id: X, toolCallId: 'tx', resume: false });
 
-    const warnings = messages.flatMap((m) => (m.type === 'notification' && m.notificationType === 'warning' ? [m.message] : []));
+    const warnings = messages.flatMap((m) => (m.type === 'notification' && m.notificationType === 'warning' ? [inGreek(m.message)] : []));
     expect(warnings).toEqual([
       greek['Could not deliver the results of finished background subagents; they will be retried with your next message.'],
       greek['Could not record which agents were interrupted; the model will not be told it can resume them.'],
@@ -8780,7 +8878,7 @@ describe('PiSession graceful budget stop (US-008)', () => {
 
     // pi's settle boundary continues the run on a non-empty queue whatever the decider answered, so an
     // accepted steer here is one more billed round trip past a limit the user set as hard.
-    expect(session.queueInput('after the limit', 'q2')).toBe(false);
+    expect(session.queueInput('after the limit', 'q2')).toBe('budgetStopped');
     await session.dispose();
   });
 
@@ -8822,7 +8920,7 @@ describe('PiSession graceful budget stop (US-008)', () => {
 
     await session.sendMessage('hi', undefined, 'c1', { content: 'hi' });
 
-    expect(messages.some((m) => m.type === 'error' && m.message === 'provider exploded')).toBe(true);
+    expect(messages.some((m) => m.type === 'error' && englishText(m.message) === 'provider exploded')).toBe(true);
     await session.dispose();
   });
 
@@ -8961,7 +9059,7 @@ describe('PiSession graceful budget stop (US-008)', () => {
     const notices = messages.filter((m) => m.type === 'notification');
     expect(notices).toHaveLength(1);
     expect(notices[0]).toMatchObject({ notificationType: 'warning' });
-    expect((notices[0] as { message: string }).message).toMatch(/budget limit/i);
+    expect(englishText((notices[0] as { message: LocalizedText }).message)).toMatch(/budget limit/i);
     await session.dispose();
   });
 
@@ -9145,10 +9243,10 @@ describe('PiSession custom-provider fallback warning', () => {
     await settle();
 
     expect(warn).toHaveBeenCalledTimes(1);
-    const [message, action] = warn.mock.calls[0] as [string, string];
+    const [message, actions] = warn.mock.calls[0] as [LocalizedText, LocalizedText[]];
     // Display names, never the raw pi ids the user has never seen (`deepseek` / `deepseek-flash`).
-    expect(message).toBe('Damocles could not reach DeepSeek in time, so "DeepSeek V4.1 Flash" cannot run yet.');
-    expect(action).toBe('Reload Window');
+    expect(englishText(message)).toBe('Damocles could not reach DeepSeek in time, so "DeepSeek V4.1 Flash" cannot run yet.');
+    expect(actions.map(englishText)).toEqual(['Reload Window']);
     expect(session.currentModel).toBe('deepseek-flash');
     await session.dispose();
   });
@@ -9194,7 +9292,7 @@ describe('PiSession custom-provider fallback warning', () => {
     await settle();
 
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0]?.[0] as string).toContain('cannot run yet');
+    expect(englishText(warn.mock.calls[0]![0] as LocalizedText)).toContain('cannot run yet');
     await session.dispose();
   });
 
@@ -9212,7 +9310,7 @@ describe('PiSession custom-provider fallback warning', () => {
 
   it('"Reload Window" reloads the window', async () => {
     stubSync({ wired: [], notWired: ['deepseek'], timedOut: true });
-    vi.spyOn(testPlatform.notifications, 'warn').mockResolvedValue('Reload Window' as never);
+    vi.spyOn(testPlatform.notifications, 'warn').mockResolvedValue(0);
     const session = new PiSession(makeOptions([], { model: 'deepseek-flash', secrets: FAKE_SECRETS }));
 
     await session.initializeEarly();
@@ -9224,7 +9322,7 @@ describe('PiSession custom-provider fallback warning', () => {
 
   it('a failing reload command is handled, not dropped as an unhandled rejection', async () => {
     stubSync({ wired: [], notWired: ['deepseek'], timedOut: true });
-    vi.spyOn(testPlatform.notifications, 'warn').mockResolvedValue('Reload Window' as never);
+    vi.spyOn(testPlatform.notifications, 'warn').mockResolvedValue(0);
     // A PLAIN rejecting function, not a vi mock: vi.fn() attaches its own handler to the promise it
     // returns, which swallows the very unhandled rejection this test exists to detect.
     const lifecycle = testPlatform.lifecycle as { reload: () => Promise<void> };
@@ -9413,7 +9511,7 @@ describe('cancel note delivery: the main build site', () => {
     await session.dispose();
   });
 
-  const NOT_SENT = 'Your cancel note was not sent: this chat cannot run its model now.';
+  const NOT_SENT = { message: 'Your cancel note was not sent: this chat cannot run its model now.' };
   const signOut = () => { H.getServices().modelRuntime.hasConfiguredAuth = () => false; };
 
   // A leftover call's note on an idle session opens a run of its own, so the chat's model is checked as for a send.
@@ -9931,9 +10029,9 @@ describe('the chat model is what pi adopted, published after every switch attemp
     expect(live.prompt).not.toHaveBeenCalled();
     expect(live.compact).not.toHaveBeenCalled();
     expect(returnedPrompts(messages)).toEqual([
-      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: 'Sign in to StepFun to use Step 5 Preview', account: 'stepfun', correlationId: 'c1' },
+      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: { message: 'Sign in to {0} to use {1}', args: ['StepFun', 'Step 5 Preview'] }, account: 'stepfun', correlationId: 'c1' },
       { type: 'openSettingsPanel', section: 'accounts', account: 'stepfun' },
-      { type: 'promptReturned', content: [{ type: 'text', text: '/compact' }], reason: 'modelUnavailable', detail: 'Sign in to StepFun to use Step 5 Preview', account: 'stepfun' },
+      { type: 'promptReturned', content: [{ type: 'text', text: '/compact' }], reason: 'modelUnavailable', detail: { message: 'Sign in to {0} to use {1}', args: ['StepFun', 'Step 5 Preview'] }, account: 'stepfun' },
       { type: 'openSettingsPanel', section: 'accounts', account: 'stepfun' },
     ]);
     await session.dispose();
@@ -9981,9 +10079,9 @@ describe('the chat model is what pi adopted, published after every switch attemp
     expect(live.compact).not.toHaveBeenCalled();
     expect(session.currentModel).toBe('deepseek-flash');
     expect(returnedPrompts(messages)).toEqual([
-      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: 'Sign in to DeepSeek to use DeepSeek V4.1 Flash', account: 'deepseek', correlationId: 'c1' },
+      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: { message: 'Sign in to {0} to use {1}', args: ['DeepSeek', 'DeepSeek V4.1 Flash'] }, account: 'deepseek', correlationId: 'c1' },
       { type: 'openSettingsPanel', section: 'accounts', account: 'deepseek' },
-      { type: 'promptReturned', content: [{ type: 'text', text: '/compact' }], reason: 'modelUnavailable', detail: 'Sign in to DeepSeek to use DeepSeek V4.1 Flash', account: 'deepseek' },
+      { type: 'promptReturned', content: [{ type: 'text', text: '/compact' }], reason: 'modelUnavailable', detail: { message: 'Sign in to {0} to use {1}', args: ['DeepSeek', 'DeepSeek V4.1 Flash'] }, account: 'deepseek' },
       { type: 'openSettingsPanel', section: 'accounts', account: 'deepseek' },
     ]);
 
@@ -10070,7 +10168,7 @@ describe('the chat model is what pi adopted, published after every switch attemp
     expect(await fresh.session.sendMessage('go', undefined, 'c1', { content: 'go' })).toBe('unsent');
     expect(live.prompt).not.toHaveBeenCalled();
     expect(returnedPrompts(messages)).toEqual([
-      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: 'Sign in to Anthropic to use Opus 5.5', account: 'anthropic', correlationId: 'c1' },
+      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: { message: 'Sign in to {0} to use {1}', args: ['Anthropic', 'Opus 5.5'] }, account: 'anthropic', correlationId: 'c1' },
       { type: 'openSettingsPanel', section: 'accounts', account: 'anthropic' },
     ]);
 
@@ -10101,7 +10199,7 @@ describe('the chat model is what pi adopted, published after every switch attemp
     expect(await session.sendMessage('go', undefined, 'c1', { content: 'go' })).toBe('unsent');
     expect(live.prompt).not.toHaveBeenCalled();
     expect(returnedPrompts(messages)).toEqual([
-      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: 'Sign in to Anthropic to use Opus 5.5', correlationId: 'c1' },
+      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: { message: 'Sign in to {0} to use {1}', args: ['Anthropic', 'Opus 5.5'] }, correlationId: 'c1' },
       { type: 'openSettingsPanel', section: 'chat' },
     ]);
     await session.dispose();
@@ -10231,8 +10329,8 @@ describe('the chat model is what pi adopted, published after every switch attemp
    * A chat whose run ends while an input handler screens a queued message, so the re-steer that follows opens a run of
    * its own. `followUps` is pi's follow-up list, which `clearQueue()` hands back; `endRun` ends the run and lets the screening finish.
    */
-  async function queuedWhileRunEnds(messages: ExtensionToWebviewMessage[]) {
-    const { session } = await started(messages);
+  async function queuedWhileRunEnds(messages: ExtensionToWebviewMessage[], extra?: Partial<SessionOptions>) {
+    const { session } = await started(messages, extra);
     const live = H.getLastSession()!;
     const followUps: string[] = [];
     Object.assign(live, { isStreaming: true, getFollowUpMessages: () => followUps });
@@ -10348,6 +10446,112 @@ describe('the chat model is what pi adopted, published after every switch attemp
     await session.dispose();
   });
 
+  /**
+   * A follow-up pi queued, which a re-steer takes out of pi's queue while a client refresh starts, so its re-queue waits for
+   * that refresh before `prompt()`. `followUpPrompts` counts the follow-up's hand-offs to pi.
+   */
+  async function followUpWaitingForRefresh(messages: ExtensionToWebviewMessage[]) {
+    const { session, live, followUps, endRun } = await queuedWhileRunEnds(messages);
+    const prompt = live.prompt as ReturnType<typeof vi.fn>;
+    prompt.mockImplementation(async (text: string, opts: { preflightResult?: (d: string) => void }) => {
+      followUps.push(text);
+      opts.preflightResult?.('queued');
+    });
+    const withdrawn = vi.fn();
+    await session.sendMessage('also look at this', undefined, 'c1', { content: 'also look at this' }, withdrawn);
+    let refresh: ReturnType<typeof pendingClientRefresh> | undefined;
+    (live.clearQueue as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      // an acting client change lands as the re-steer clears pi's queue to put it back
+      refresh ??= pendingClientRefresh();
+      return { steering: [], followUp: followUps.splice(0) };
+    });
+    expect(session.queueInput('and the logs', 'q1')).toBe('queued');
+    endRun();
+    await vi.waitFor(() => expect(refresh?.awaited()).toBe(true));
+    const followUpPrompts = (): number => prompt.mock.calls.filter(([text]) => text === 'also look at this').length;
+    expect(followUpPrompts()).toBe(1);
+    return { session, live, withdrawn, refresh: refresh!, followUpPrompts };
+  }
+
+  it('gives a follow-up back whole on a Stop while its re-queue waits for a client refresh, and never hands it to pi', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, withdrawn, refresh, followUpPrompts } = await followUpWaitingForRefresh(messages);
+
+    await session.interrupt();
+    expect(withdrawn).toHaveBeenCalledOnce();
+    expect(messages).toContainEqual({ type: 'queueCancelled', messageId: 'c1', returnToInput: true });
+    refresh.settle();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(followUpPrompts()).toBe(1);
+    await session.dispose();
+  });
+
+  it('a new chat while a follow-up waits for a client refresh returns it and never commits it to either conversation', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, withdrawn, refresh, followUpPrompts } = await followUpWaitingForRefresh(messages);
+
+    session.reset();
+    refresh.settle();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(withdrawn).toHaveBeenCalledOnce();
+    expect(followUpPrompts()).toBe(1);
+    await session.dispose();
+  });
+
+  it('adopts no model under a run that opened while a re-steer waited for a client refresh', async () => {
+    // a key provider's model is absent from pi's registry until its key is applied, so pi starts on the fallback model
+    const runtime = H.getServices().modelRuntime as { getModel: (provider: string, id: string) => unknown };
+    const lookup = runtime.getModel;
+    let registered = false;
+    runtime.getModel = (provider, id) => (provider === 'deepseek' ? (registered ? DEEPSEEK(id) : undefined) : lookup(provider, id));
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, live, endRun } = await queuedWhileRunEnds(messages, { model: 'deepseek-flash' });
+    expect(live.model).toMatchObject({ provider: 'anthropic' });
+    // its key arrived, so a batch that opens a run adopts the shown model first
+    registered = true;
+    const refresh = pendingClientRefresh();
+    expect(session.queueInput('and the logs', 'q1')).toBe('queued');
+    endRun();
+    await vi.waitFor(() => expect(refresh.awaited()).toBe(true));
+
+    // a run another extension opened meanwhile
+    (live as { isStreaming: boolean }).isStreaming = true;
+    refresh.settle();
+
+    await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledWith('and the logs', expect.objectContaining({ streamingBehavior: 'steer' })));
+    expect(live.setModel).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  // The sending view starts its clock as it posts the send (`App.vue` `handleSendMessage`), before any pre-dispatch wait.
+  it("times a joining view's turn from the send's claim, so it shows the time the sending view shows", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-10-30T10:00:00.000Z'));
+      const messages: ExtensionToWebviewMessage[] = [];
+      const { session } = await started(messages);
+      const live = H.getLastSession()!;
+      // what a view joining while pi holds the prompt is told
+      let joinedAt: number | undefined;
+      (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => { joinedAt = session.liveConversation()?.snapshot.turnStartedAt; });
+      const refresh = pendingClientRefresh();
+      const claimedAt = Date.now();
+
+      const sending = session.sendMessage('go', undefined, 'c1', { content: 'go' });
+      await vi.waitFor(() => expect(refresh.awaited()).toBe(true));
+      vi.setSystemTime(claimedAt + 5_000);
+      refresh.settle();
+      await sending;
+
+      expect(joinedAt).toBe(claimedAt);
+      await session.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // A model runtime retired at shutdown can check nothing, so a send it meets is refused rather than handed to pi.
   it('refuses a send once the model runtime is gone, whatever model the chat adopted earlier', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
@@ -10398,7 +10602,7 @@ describe('the chat model is what pi adopted, published after every switch attemp
     expect(await session.sendMessage('go', undefined, 'c1', { content: 'go' })).toBe('unsent');
     expect(live.prompt).not.toHaveBeenCalled();
     expect(returnedPrompts(messages)).toEqual([
-      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: 'Your GitHub Copilot plan does not include GPT-6.1 Sol (GitHub Copilot)', correlationId: 'c1' },
+      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: { message: 'Your {0} plan does not include {1}', args: ['GitHub Copilot', 'GPT-6.1 Sol (GitHub Copilot)'] }, correlationId: 'c1' },
       { type: 'openSettingsPanel', section: 'chat' },
     ]);
     await session.dispose();
@@ -10743,7 +10947,7 @@ describe('the chat model is what pi adopted, published after every switch attemp
       expect(await next.sendMessage('go', undefined, 'c1', { content: 'go' })).toBe('unsent');
       expect(H.getLastSession()!.prompt).not.toHaveBeenCalled();
       expect(returnedPrompts(messages)).toEqual([
-        { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: 'Sign in to Anthropic to use Opus 5.5', correlationId: 'c1' },
+        { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: { message: 'Sign in to {0} to use {1}', args: ['Anthropic', 'Opus 5.5'] }, correlationId: 'c1' },
         { type: 'openSettingsPanel', section: 'chat' },
       ]);
       expect(panel.held()).toBeUndefined();
@@ -11098,7 +11302,7 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
   }
 
   const waitNotices = (messages: ExtensionToWebviewMessage[]) =>
-    messages.filter((m) => m.type === 'notification' && m.message.startsWith('Waiting for MCP server'));
+    messages.filter((m) => m.type === 'notification' && englishText(m.message).startsWith('Waiting for MCP server'));
 
   it('ends as soon as the server connects, and says which server it waits for', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
@@ -11111,7 +11315,7 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     const waiting = session.waitForAlwaysLoadedMcp('s1', new AbortController().signal).then(() => { done = true; });
     await vi.advanceTimersByTimeAsync(3_000);
     expect(done).toBe(false);
-    expect(waitNotices(messages)).toEqual([{ type: 'notification', notificationType: 'info', message: 'Waiting for MCP server ctx' }]);
+    expect(waitNotices(messages)).toEqual([{ type: 'notification', notificationType: 'info', message: { message: 'Waiting for MCP server {0}', args: ['ctx'] } }]);
 
     connect();
     await waiting;
@@ -11179,11 +11383,11 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     await vi.advanceTimersByTimeAsync(10_000);
     await waiting;
 
-    expect(waitNotices(messages).map((m) => (m as { message: string }).message)).toEqual(['Waiting for MCP servers ctx, git']);
+    expect(waitNotices(messages).map((m) => englishText((m as { message: LocalizedText }).message))).toEqual(['Waiting for MCP servers ctx, git']);
     expect(messages).toContainEqual({
       type: 'notification',
       notificationType: 'info',
-      message: 'MCP servers ctx, git are still connecting. Their Always-loaded tools join from the next turn after they connect.',
+      message: { message: 'MCP servers {0} are still connecting. Their Always-loaded tools join from the next turn after they connect.', args: ['ctx, git'] },
     });
     await session.dispose();
   });
@@ -11369,7 +11573,7 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     await session.dispose();
   });
 
-  it('refuses a second send during the wait, so only the first prompt reaches pi', async () => {
+  it('refuses a second send during the wait as busy, posting no error, so only the first prompt reaches pi', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const session = await startedSession(messages);
     const live = H.getLastSession()!;
@@ -11379,8 +11583,8 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     const provider = piPromptAfterWait(live);
 
     const parked = await sendParkedInWait(session, messages);
-    expect(await session.sendMessage('again', undefined, 'c2', { content: 'again' })).toBe('unsent');
-    expect(errors(messages)).toEqual([{ type: 'error', message: 'A request is already in progress' }]);
+    expect(await session.sendMessage('again', undefined, 'c2', { content: 'again' })).toBe('busy');
+    expect(errors(messages)).toEqual([]);
     connect();
     await parked.sending;
 
@@ -11513,17 +11717,14 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
       await disposed;
     });
 
-    it('holds the session against a second send until it ends', async () => {
+    it('holds the session against a second send until it ends, which returns busy and posts no error', async () => {
       const messages: ExtensionToWebviewMessage[] = [];
       const session = await startedSession(messages);
       const ticket = session.beginSend('c1', { content: 'read these' }, vi.fn())!;
 
       expect(session.beginSend('c2', { content: 'other' }, vi.fn())).toBeNull();
-      expect(await session.sendMessage('other', undefined, 'c3', { content: 'other' })).toBe('unsent');
-      expect(errors(messages)).toEqual([
-        { type: 'error', message: 'A request is already in progress' },
-        { type: 'error', message: 'A request is already in progress' },
-      ]);
+      expect(await session.sendMessage('other', undefined, 'c3', { content: 'other' })).toBe('busy');
+      expect(errors(messages)).toEqual([]);
       ticket.end();
       expect(session.processing).toBe(false);
       expect(await session.sendMessage('other', undefined, 'c3', { content: 'other' })).not.toBe('withdrawn');
@@ -11671,15 +11872,15 @@ describe('PiSession: the UserPromptSubmit hook runs before pi', () => {
     expect(live.setSessionName).not.toHaveBeenCalled();
   }, 20_000);
 
-  it('refuses a second send during the hook, so only the first prompt reaches pi, once', async () => {
+  it('refuses a second send during the hook as busy, posting no error, so only the first prompt reaches pi, once', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const hook = promptHook();
     const { session, live } = await hookedSession(messages, hook);
 
     const sending = session.sendMessage('brief one', undefined, 'c1', { content: 'brief one' });
     await vi.waitFor(() => expect(hook.pid()).toBeDefined(), { timeout: 10_000 });
-    expect(await session.sendMessage('again', undefined, 'c2', { content: 'again' })).toBe('unsent');
-    expect(errors(messages)).toEqual([{ type: 'error', message: 'A request is already in progress' }]);
+    expect(await session.sendMessage('again', undefined, 'c2', { content: 'again' })).toBe('busy');
+    expect(errors(messages)).toEqual([]);
     expect(live.prompt).not.toHaveBeenCalled();
 
     expect(await sending).not.toBe('withdrawn');
@@ -11858,7 +12059,7 @@ describe('PiSession with no project folder takes no checkpoints', () => {
 
     expect(messages.filter((m) => m.type === 'checkpointInfo').at(-1)).toEqual({ type: 'checkpointInfo', userMessageIds: ['u1'] });
     const reason = 'This chat has no project folder, so its files have no checkpoints to restore.';
-    expect(messages.flatMap((m) => (m.type === 'rewindError' ? [m.message] : []))).toEqual([reason, reason]);
+    expect(messages.flatMap((m) => (m.type === 'rewindError' ? [englishText(m.message)] : []))).toEqual([reason, reason]);
     await session.dispose();
   });
 
@@ -12004,7 +12205,7 @@ describe('a resumed conversation continues on the model and thinking level its f
     expect(await unsigned.session.sendMessage('go', H.getLastSession()!.sessionId, 'c1', { content: 'go' })).toBe('unsent');
     expect(H.getLastSession()!.prompt).not.toHaveBeenCalled();
     expect(messages.filter((m) => m.type === 'promptReturned' || m.type === 'openSettingsPanel')).toEqual([
-      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: 'Sign in to GitHub Copilot to use GPT-6 Luna', account: 'github-copilot', correlationId: 'c1' },
+      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: { message: 'Sign in to {0} to use {1}', args: ['GitHub Copilot', 'GPT-6 Luna'] }, account: 'github-copilot', correlationId: 'c1' },
       { type: 'openSettingsPanel', section: 'accounts', account: 'github-copilot' },
     ]);
     await unsigned.session.dispose();
@@ -12022,7 +12223,7 @@ describe('a resumed conversation continues on the model and thinking level its f
     expect(await session.sendMessage('go', H.getLastSession()!.sessionId, 'c1', { content: 'go' })).toBe('unsent');
     expect(H.getLastSession()!.prompt).not.toHaveBeenCalled();
     expect(messages.filter((m) => m.type === 'promptReturned' || m.type === 'openSettingsPanel')).toEqual([
-      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: 'Sign in to DeepSeek to use DeepSeek V4 Pro', account: 'deepseek', correlationId: 'c1' },
+      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: { message: 'Sign in to {0} to use {1}', args: ['DeepSeek', 'DeepSeek V4 Pro'] }, account: 'deepseek', correlationId: 'c1' },
       { type: 'openSettingsPanel', section: 'accounts', account: 'deepseek' },
     ]);
     await session.dispose();
@@ -12065,7 +12266,7 @@ describe('a resumed conversation continues on the model and thinking level its f
     expect(await session.sendMessage('go', H.getLastSession()!.sessionId, 'c1', { content: 'go' })).toBe('unsent');
     expect(H.getLastSession()!.prompt).not.toHaveBeenCalled();
     expect(messages.filter((m) => m.type === 'promptReturned' || m.type === 'openSettingsPanel')).toEqual([
-      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: 'Your GitHub Copilot plan does not include Opus 5.5 (GitHub Copilot)', correlationId: 'c1' },
+      { type: 'promptReturned', content: [{ type: 'text', text: 'go' }], reason: 'modelUnavailable', detail: { message: 'Your {0} plan does not include {1}', args: ['GitHub Copilot', 'Opus 5.5 (GitHub Copilot)'] }, correlationId: 'c1' },
       { type: 'openSettingsPanel', section: 'chat' },
     ]);
     await session.dispose();
@@ -12880,7 +13081,7 @@ describe('a read-only chat is refused by core whether or not its session started
   }
 
   const errors = (messages: ExtensionToWebviewMessage[], type: 'error' | 'rewindError') =>
-    messages.flatMap((m) => (m.type === type ? [m.message] : []));
+    messages.flatMap((m) => (m.type === type ? [englishText(m.message)] : []));
 
   it('refuses a send that arrives before the session started, and runs no prompt', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
@@ -13239,7 +13440,7 @@ describe('a resume shows its conversation only once pi bound it, and a send reac
       getLanguagePreference: () => 'en',
       webviewPrompts: { repost: () => undefined },
     } as unknown as HandlerDependencies;
-    const ctx = { session, host: instance.host, folder: instance.folder, panelId: 'p1', permissionHandler: {}, terminalAttachments: new TerminalAttachmentManager(() => {}) } as unknown as HandlerContext;
+    const ctx = { session, host: instance.host, reply: instance.host, folder: instance.folder, panelId: 'p1', permissionHandler: {}, ideContextManager: new IdeContextManager(testPlatform.editor, () => undefined), terminalAttachments: new TerminalAttachmentManager(() => {}) } as unknown as HandlerContext;
     return { deps, ctx };
   }
 
@@ -13534,7 +13735,8 @@ describe('a resume shows its conversation only once pi bound it, and a send reac
         expect(errors()).toHaveLength(1);
         if (failure === removedAfterReplay) {
           expect(outcome).toBe('unsent');
-          expect(messages).toContainEqual({ type: 'error', message: 'pi failed to start: its file was not found' });
+          // the LocalizedError's own text, which each view renders in its language
+          expect(messages).toContainEqual({ type: 'error', message: { message: 'pi failed to start: {0}', args: [{ message: 'its file was not found' }] } });
           expect(fsSync.readdirSync(dir)).toEqual([]);
         } else {
           expect(bound(session)).toBe(b.id);

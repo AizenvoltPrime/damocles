@@ -1,6 +1,7 @@
 // The errors source control's engine throws that its host acts on, and the text it shows for any of them. Stateless, so desktop
 // main imports them to rebuild what crosses the core protocol (src/desktop/core-protocol/errors.ts).
 import { visibleLines } from '../../shared/visible-text';
+import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 
 // Any scheme://userinfo@ loses its userinfo: tokens and passwords ride in remote URLs.
 const URL_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]*@/gi;
@@ -51,12 +52,12 @@ export class RemoteCancelledError extends Error {
 export type StashKeptOutcome = 'ok' | 'conflict' | 'failed' | 'cancelled';
 
 // Thrown instead of the operation's own outcome, so the user always learns the changes stay in the stash list.
-export class StashKeptError extends Error {
+export class StashKeptError extends LocalizedError {
   readonly outcome: StashKeptOutcome;
   // undefined when refs/stash could not be read after the push
   readonly stash: string | undefined;
-  constructor(message: string, outcome: StashKeptOutcome, stash: string | undefined, cause?: unknown) {
-    super(message, cause === undefined ? undefined : { cause });
+  constructor(text: LocalizedText, outcome: StashKeptOutcome, stash: string | undefined, cause?: unknown) {
+    super(text, cause === undefined ? undefined : { cause });
     this.name = 'StashKeptError';
     this.outcome = outcome;
     this.stash = stash;
@@ -69,12 +70,12 @@ export interface SyncBranch {
   readonly upstreamBranch: string;
 }
 
-export class SyncBranchChangedError extends Error {
+export class SyncBranchChangedError extends LocalizedError {
   readonly stage: 'pull' | 'push';
   readonly confirmed: SyncBranch;
   readonly found: SyncBranch | null;
-  constructor(message: string, stage: 'pull' | 'push', confirmed: SyncBranch, found: SyncBranch | null) {
-    super(message);
+  constructor(text: LocalizedText, stage: 'pull' | 'push', confirmed: SyncBranch, found: SyncBranch | null) {
+    super(text);
     this.name = 'SyncBranchChangedError';
     this.stage = stage;
     this.confirmed = confirmed;

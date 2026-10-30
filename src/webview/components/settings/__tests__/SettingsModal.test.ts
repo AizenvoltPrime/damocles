@@ -4,7 +4,8 @@ import { defineComponent, h, nextTick } from 'vue';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { Palette } from 'lucide-vue-next';
-import { i18n, initLocaleMessaging } from '@/i18n';
+import { applyLocale, i18n, initLocaleMessaging } from '@/i18n';
+import { inGreek } from '../../../../__mocks__/greek-locale';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { VSCODE_HOST_CAPABILITIES, type WebviewToExtensionMessage } from '@shared/types/messages';
 import { KEY_PROVIDER_IDS, type SettingsSectionId } from '@shared/settings-sections';
@@ -436,10 +437,30 @@ describe('save feedback', () => {
     toggle.click();
     await nextTick();
     expect(toggle.getAttribute('aria-checked')).toBe('true');
-    settingsViewHandlers.settingWriteResult({ type: 'settingWriteResult', key: 'damocles.dangerouslySkipPermissions', ok: false, error: 'EACCES' }, context());
+    settingsViewHandlers.settingWriteResult({ type: 'settingWriteResult', key: 'damocles.dangerouslySkipPermissions', ok: false, error: { message: 'EACCES' } }, context());
     await nextTick();
     expect(toggle.getAttribute('aria-checked')).toBe('false');
     expect(row('damocles.dangerouslySkipPermissions')!.querySelector('[data-testid="setting-error"]')!.textContent).toContain('EACCES');
+  });
+
+  it("renders a failed write's reason in the language the view switches to", async () => {
+    const coreText = { message: 'Could not open file: {0}', args: ['settings.json'] };
+    await open(NO_HOST_SETTINGS, 'defaults');
+    const toggle = row('damocles.dangerouslySkipPermissions')!.querySelector<HTMLElement>('[role="switch"]')!;
+    toggle.click();
+    await nextTick();
+    settingsViewHandlers.settingWriteResult({ type: 'settingWriteResult', key: 'damocles.dangerouslySkipPermissions', ok: false, error: coreText }, context());
+    await nextTick();
+    const error = (): string | null | undefined => row('damocles.dangerouslySkipPermissions')!.querySelector('[data-testid="setting-error"]')?.textContent?.trim();
+    expect(error()).toBe('Could not open file: settings.json');
+
+    try {
+      await applyLocale('el');
+      await nextTick();
+      expect(error()).toBe(inGreek(coreText));
+    } finally {
+      await applyLocale('en');
+    }
   });
 
   it('settles two quick writes to one key in order, keeping the confirmed value when the second fails', async () => {
@@ -452,7 +473,7 @@ describe('save feedback', () => {
     expect(toggle.getAttribute('aria-checked')).toBe('false');
     const ctx = context();
     settingsViewHandlers.settingWriteResult({ type: 'settingWriteResult', key: 'damocles.dangerouslySkipPermissions', ok: true, scope: 'user', file: '/home/u/.damocles/settings.json' }, ctx);
-    settingsViewHandlers.settingWriteResult({ type: 'settingWriteResult', key: 'damocles.dangerouslySkipPermissions', ok: false, error: 'EACCES' }, ctx);
+    settingsViewHandlers.settingWriteResult({ type: 'settingWriteResult', key: 'damocles.dangerouslySkipPermissions', ok: false, error: { message: 'EACCES' } }, ctx);
     await nextTick();
     expect(toggle.getAttribute('aria-checked')).toBe('true');
   });
@@ -464,7 +485,7 @@ describe('save feedback', () => {
     await nextTick();
     toggle.click();
     await nextTick();
-    const fail = { type: 'settingWriteResult', key: 'damocles.dangerouslySkipPermissions', ok: false, error: 'EACCES' } as const;
+    const fail = { type: 'settingWriteResult', key: 'damocles.dangerouslySkipPermissions', ok: false, error: { message: 'EACCES' } } as const;
     settingsViewHandlers.settingWriteResult(fail, context());
     await nextTick();
     expect(toggle.getAttribute('aria-checked')).toBe('false');
@@ -891,13 +912,13 @@ describe('Models & accounts model and effort rows', () => {
     await open(NO_HOST_SETTINGS, 'accounts');
     await choose(pair.id, pair.model, 'Step 5 Preview');
     await choose(pair.id, pair.effort, t('settingsModal.effort.low'));
-    settingsViewHandlers.settingWriteResult({ type: 'settingWriteResult', key: pair.modelKey, ok: false, error: 'EACCES' }, context());
+    settingsViewHandlers.settingWriteResult({ type: 'settingWriteResult', key: pair.modelKey, ok: false, error: { message: 'EACCES' } }, context());
     await nextTick();
     expect(readPair(pair)).toEqual({ model: 'claude-sonnet-5-5', effort: 'low' });
 
     setPair(pair, 'claude-sonnet-5-5', 'xhigh');
     await choose(pair.id, pair.model, 'Step 5 Preview');
-    settingsViewHandlers.settingWriteResult({ type: 'settingWriteResult', key: pair.modelKey, ok: false, error: 'EACCES' }, context());
+    settingsViewHandlers.settingWriteResult({ type: 'settingWriteResult', key: pair.modelKey, ok: false, error: { message: 'EACCES' } }, context());
     await nextTick();
     expect(readPair(pair)).toEqual({ model: 'claude-sonnet-5-5', effort: 'xhigh' });
   });

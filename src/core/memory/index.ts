@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import { t } from '../l10n';
+import { l, verbatim } from '../l10n';
 import { log } from '../logger';
 import { perfSpan } from '../perf';
 import { homeDirectory } from '../workspace-folders/folder-registry';
@@ -60,6 +60,7 @@ import type { FileWatcherFactory } from '../../platform/file-watcher';
 import type { AppPaths } from '../../platform/app-paths';
 import { notifySchemaAhead } from '../schema-skew';
 import { globalMemoryUnavailableReason, userScopeRemote } from '../user-scope';
+import { LocalizedError } from '../../shared/localized-text';
 import { localOnly } from './local-only';
 import { USER_SCOPE_UNAVAILABLE } from '../../shared/remote-user';
 import type {
@@ -114,7 +115,7 @@ const GLOBAL_TIERS: ReadonlySet<MemoryTier> = new Set(['global', 'note']);
 function refuseGlobalRow(db: DatabaseInstance, id: string): void {
   if (!userScopeRemote()) return;
   const row = db.prepare('SELECT scope FROM memories WHERE id = ?').get(id) as { scope: string } | undefined;
-  if (row?.scope === 'global') throw new Error(globalMemoryUnavailableReason());
+  if (row?.scope === 'global') throw new LocalizedError(globalMemoryUnavailableReason());
 }
 
 /**
@@ -420,7 +421,7 @@ export class MemoryService {
     if (!opened || opened === 'corrupt') {
       this._initFailed = true;
       log('[MemoryService] Database open failed — disabling memory system');
-      void this.notifications.error('Damocles memory failed to initialize; memory features are disabled.');
+      void this.notifications.error(l('Damocles memory failed to initialize; memory features are disabled.'));
       return;
     }
 
@@ -587,15 +588,15 @@ export class MemoryService {
   }
 
   private notifyDamaged(): void {
-    void this.notifications.warn(t('Damocles found damage in the memory database. It is repaired the next time Damocles starts.'));
+    void this.notifications.warn(l('Damocles found damage in the memory database. It is repaired the next time Damocles starts.'));
   }
 
   private notifyQuarantined(quarantinedFrom: string, salvaged: number): void {
     const name = path.basename(quarantinedFrom);
     void this.notifications.warn(
       salvaged > 0
-        ? t('Damocles memory database was corrupt; {0} memories were recovered into a rebuilt store (original set aside as {1}).', salvaged, name)
-        : t('Damocles memory database was corrupt and has been set aside as {0}. A fresh memory store was created.', name),
+        ? l('Damocles memory database was corrupt; {0} memories were recovered into a rebuilt store (original set aside as {1}).', salvaged, name)
+        : l('Damocles memory database was corrupt and has been set aside as {0}. A fresh memory store was created.', name),
     );
   }
 
@@ -604,7 +605,7 @@ export class MemoryService {
     if (this.readOnly) return;
     this.stopWrites();
     void this.notifications.warn(
-      t('The memory database was moved or replaced after Damocles opened it, for example by another Damocles app repairing it. Restart Damocles to save memory changes again.'),
+      l('The memory database was moved or replaced after Damocles opened it, for example by another Damocles app repairing it. Restart Damocles to save memory changes again.'),
     );
   }
 
@@ -641,15 +642,13 @@ export class MemoryService {
     }
     if (consecutiveFailures >= 3 && !this._persistFailureNotified) {
       this._persistFailureNotified = true;
-      void this.notifications.error(
-        'Damocles memory writes are failing repeatedly. Your recent memory changes may not be saved.',
-      );
+      void this.notifications.error(l('Damocles memory writes are failing repeatedly. Your recent memory changes may not be saved.'));
     }
   }
 
   async addNote(content: string, tags?: string[]): Promise<MemoryEntry | null> {
     // a note is global
-    if (userScopeRemote()) throw new Error(globalMemoryUnavailableReason());
+    if (userScopeRemote()) throw new LocalizedError(globalMemoryUnavailableReason());
     await this.ensureInitialized();
     const db = this.db, writeQueue = this.writeQueue, noteManager = this.noteManager;
     if (!db || !writeQueue || !noteManager) return null;
@@ -686,7 +685,7 @@ export class MemoryService {
     sessionId?: string;
     workspace?: string;
   }): Promise<MemoryEntry | null> {
-    if (args.scope === 'global' && userScopeRemote()) throw new Error(globalMemoryUnavailableReason());
+    if (args.scope === 'global' && userScopeRemote()) throw new LocalizedError(globalMemoryUnavailableReason());
     await this.ensureInitialized();
     if (!this.db || !this.writeQueue || !this.factGraph) return null;
 
@@ -802,7 +801,7 @@ export class MemoryService {
 
   listNotes(tags?: string[]): MemoryEntry[] {
     // every note is global
-    if (userScopeRemote()) throw new Error(globalMemoryUnavailableReason());
+    if (userScopeRemote()) throw new LocalizedError(globalMemoryUnavailableReason());
     return this.noteManager?.list(tags) ?? [];
   }
 
@@ -836,7 +835,7 @@ export class MemoryService {
 
   async searchMemories(query: SearchQuery): Promise<SearchResult[]> {
     // global memory is the client's, so a daemon's core reads no global row, its own host account's included, so retrieval's query leaves them out
-    if (userScopeRemote() && query.tiers !== undefined && query.tiers.length > 0 && query.tiers.every((tier) => GLOBAL_TIERS.has(tier))) throw new Error(globalMemoryUnavailableReason());
+    if (userScopeRemote() && query.tiers !== undefined && query.tiers.length > 0 && query.tiers.every((tier) => GLOBAL_TIERS.has(tier))) throw new LocalizedError(globalMemoryUnavailableReason());
     return this.whileOpen([], async () => (await this.retrievalManager?.search(query)) ?? []);
   }
 
@@ -1349,9 +1348,7 @@ export class MemoryService {
             // manual run still gets its overlay failure card regardless.
             if (!manual || this.extractionPausedNotified) return;
             this.extractionPausedNotified = true;
-            void this.notifications.warn(
-              'Damocles memory: extraction paused — no model available.',
-            );
+            void this.notifications.warn(l('Damocles memory: extraction paused, because no model is available.'));
           },
           onPhase: (event: ConsolidationPhaseEvent) => {
             this.currentPhaseEvents.push(event);
@@ -1469,8 +1466,9 @@ export class MemoryService {
     }
   }
 
+  // the view words the code itself and only logs `message`
   private broadcastAuditError(code: MemoryAuditErrorCode, message: string): void {
-    this.consolidationBroadcast?.({ type: 'memoryError', source: 'audit', code, message });
+    this.consolidationBroadcast?.({ type: 'memoryError', source: 'audit', code, message: verbatim(message) });
   }
 
   private reportAuditOutcome(outcome: AuditRunOutcome): void {

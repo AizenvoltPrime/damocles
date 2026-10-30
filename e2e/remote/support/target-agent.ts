@@ -3,7 +3,7 @@ import { activeChat, nextChat } from '../../desktop/support/fixtures';
 import { seedStubModel, type HermeticHome } from '../../desktop/support/hermetic';
 import { startOpenAIStub, STUB_MODEL_ID, type OpenAIStub } from '../../desktop/support/openai-stub';
 import { shellPage, shellState } from '../../desktop/support/shell';
-import { chatInput, clickMenu } from '../../desktop/support/ui';
+import { clickMenu } from '../../desktop/support/ui';
 import { expect } from './remote';
 import { containerReachableAddress, HOST_FROM_CONTAINER, TARGET_USER, type SshdFixture } from './sshd';
 
@@ -37,6 +37,7 @@ export async function newRemoteChat(app: ElectronApplication, projectKey: string
   await expect.poll(async () => (await shellState(app)).selected.projectKey).toBe(projectKey);
   await clickMenu(app, 'damocles.newChat');
   const tab = await nextChat(app, known);
-  await expect(chatInput(tab)).toBeVisible();
+  // the composer's textbox, found in any display language
+  await expect(tab.getByTestId('composer').getByRole('textbox')).toBeVisible();
   return tab;
 }

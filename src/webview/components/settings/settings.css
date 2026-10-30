@@ -825,6 +825,11 @@ mark.sm-mark {
   flex-wrap: wrap;
 }
 
+/* A row led by an inline field: its error grows the field's column downward, and the buttons stay level with the input. */
+.sm-field-row-start {
+  align-items: flex-start;
+}
+
 .sm-hint {
   font-size: 0.71875rem;
   color: var(--d-muted);

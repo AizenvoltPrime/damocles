@@ -1,8 +1,8 @@
 import type { Disposable } from '../../../platform/disposable';
 import type { ClientSnapshots, ClientTopic, RemoteHost } from '../../../platform/remote-host';
-import type { PanelHost } from '../../../platform/window-service';
+import type { PanelHost, TerminalToggle } from '../../../platform/window-service';
 import { heldClientAuth, type HeldAuth } from '../../../shared/remote-user';
-import type { ClientAuth, ClientPolicy, ClientUser, CoreEndpoint, CoreInit } from '../../core-protocol';
+import type { ClientAuth, ClientPolicy, ClientUser, CoreEndpoint, CoreInit, EditorMirror, MirrorTopics } from '../../core-protocol';
 import { currentActor } from '../../core-protocol/actor';
 import { agentSocketFile } from '../../core-protocol/agent-sockets';
 import { Listeners } from './listeners';
@@ -12,12 +12,15 @@ export function createClientSnapshots(endpoint: CoreEndpoint, init: CoreInit): C
   const auth = new Map<string, HeldAuth>(Object.entries(init.mirrors.clientAuth).map(([clientId, value]) => [clientId, heldClientAuth(value, Date.now())]));
   const user = new Map<string, ClientUser>(Object.entries(init.mirrors.clientUser));
   const policy = new Map<string, ClientPolicy>(Object.entries(init.mirrors.clientPolicy));
+  const editor = new Map<string, EditorMirror>(Object.entries(init.mirrors.clientEditor ?? {}));
+  const terminal = new Map<string, TerminalToggle>(Object.entries(init.mirrors.clientTerminal ?? {}));
+  const language = new Map<string, MirrorTopics['language']>(Object.entries(init.mirrors.clientLanguage ?? {}));
   // the daemon publishes clientAuth on every attach and without a value on every detach
   const attached = new Set(Object.keys(init.mirrors.clientAuth));
   let acting = init.mirrors.actingClient.clientId;
-  const changed = new Listeners<[{ readonly topic: ClientTopic; readonly clientId?: string; readonly before?: unknown }]>('client snapshots');
+  const changed = new Listeners<[{ readonly topic: ClientTopic; readonly clientId?: string; readonly before?: unknown; readonly detached?: true }]>('client snapshots');
   // keepDetached: a detach (a delta without a value) keeps the client's last value, which its pinned runs go on reading
-  const track = <W, T>(topic: 'clientAuth' | 'clientUser' | 'clientPolicy', map: Map<string, T>, held: (value: W) => T, keepDetached = false) =>
+  const track = <W, T>(topic: Exclude<ClientTopic, 'actingClient'>, map: Map<string, T>, held: (value: W) => T, keepDetached = false) =>
     endpoint.onMirror(topic, (patch) => {
       // the daemon stamps every delta it forwards
       if (patch.clientId === undefined) return;
@@ -28,13 +31,16 @@ export function createClientSnapshots(endpoint: CoreEndpoint, init: CoreInit): C
       const before = map.get(patch.clientId);
       if (patch.value === undefined && !keepDetached) map.delete(patch.clientId);
       else if (patch.value !== undefined) map.set(patch.clientId, held(patch.value as W));
-      changed.fire({ topic, clientId: patch.clientId, before });
+      changed.fire({ topic, clientId: patch.clientId, before, ...(patch.value === undefined ? { detached: true as const } : {}) });
     });
   const subscriptions = [
     // a pin copies its client's user and policy, but reads its clientAuth live (allowance transport, key presence, account state)
     track('clientAuth', auth, (value: ClientAuth) => heldClientAuth(value, Date.now()), true),
     track('clientUser', user, (value: ClientUser) => value),
     track('clientPolicy', policy, (value: ClientPolicy) => value),
+    track('clientEditor', editor, (value: EditorMirror) => value),
+    track('clientTerminal', terminal, (value: TerminalToggle) => value),
+    track('clientLanguage', language, (value: MirrorTopics['language']) => value),
     endpoint.onMirror('actingClient', (patch) => {
       acting = patch.clientId;
       changed.fire({ topic: 'actingClient' });
@@ -51,6 +57,9 @@ export function createClientSnapshots(endpoint: CoreEndpoint, init: CoreInit): C
     auth: (clientId) => auth.get(clientId),
     user: (clientId) => user.get(clientId),
     policy: (clientId) => policy.get(clientId),
+    editor: (clientId) => editor.get(clientId)?.context,
+    terminal: (clientId) => terminal.get(clientId),
+    language: (clientId) => language.get(clientId)?.language,
     onDidChange: (cb) => changed.add(cb),
     dispose: () => {
       for (const subscription of subscriptions) subscription.dispose();

@@ -124,7 +124,6 @@ export function useVirtualizedMessages(sources: VirtualizedMessageSources) {
           originalMessageIndex: i,
           sourceMessageId: msg.id,
           spacingLevel: 0,
-          text: msg.content,
         });
         continue;
       }

@@ -10,7 +10,7 @@ import { findSessionPlanFiles } from "../../../paths";
 import { findAgentFile, subagentsDir } from "../../../pi-session/agent-records";
 import { piSessionDirOf } from "../../../pi-session/session-store/reading";
 import { log } from "../../../logger";
-import { t } from "../../../l10n";
+import { errorTextOf, l } from "../../../l10n";
 import { openMarkdownPreview } from "../../markdown-preview";
 import { mentionInChat } from "../../mention-resolver";
 import { parseFileDragTarget } from "../../../../shared/file-drag";
@@ -128,7 +128,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       const sessionId = ctx.session.persistenceSessionId;
       const filePath = sessionId ? await resolveSessionFilePath(ctx.folder.fsPath, sessionId) : null;
       if (!filePath) {
-        void platform.notifications.info(t("No active session to view"));
+        void platform.notifications.info(l("No active session to view"));
         return;
       }
       await platform.editor.openFile(filePath, { editor: "text", preview: false, panelId: ctx.panelId });
@@ -144,14 +144,14 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
         const filePath = await findAgentFile(subagentsDir(piSessionDirOf(ctx.folder.fsPath, sessionId), sessionId), msg.agentId);
         if (!filePath) {
           void platform.notifications.info(
-            t("This agent has no log file. A log is written once the agent receives its task."),
+            l("This agent has no log file. A log is written once the agent receives its task."),
           );
           return;
         }
         await platform.editor.openFile(filePath, { editor: "text", preview: false, panelId: ctx.panelId });
       } catch (err) {
         void platform.notifications.warn(
-          t("Agent log file not found: {0}", err instanceof Error ? err.message : "Unknown error")
+          l("Agent log file not found: {0}", errorTextOf(err))
         );
       }
     },
@@ -159,7 +159,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     openSessionPlan: async (_msg, ctx) => {
       const sessionId = ctx.session.persistenceSessionId;
       if (!sessionId) {
-        void platform.notifications.info(t("No active session"));
+        void platform.notifications.info(l("No active session"));
         return;
       }
 
@@ -168,7 +168,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       const planPath = (await findSessionPlanFiles(sessionId))[0] ?? null;
 
       if (!planPath) {
-        void platform.notifications.info(t("No plan exists for this session"));
+        void platform.notifications.info(l("No plan exists for this session"));
         return;
       }
 
@@ -177,7 +177,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
         postMessage(ctx.reply, { type: "showPlanContent", content, filePath: planPath });
       } catch (err) {
         log("[MessageRouter] Error reading plan file:", err);
-        void platform.notifications.info(t("No plan exists for this session"));
+        void platform.notifications.info(l("No plan exists for this session"));
       }
     },
 
@@ -211,7 +211,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (msg.type !== "bindPlanToSession") return;
       const sessionId = ctx.session.persistenceSessionId;
       if (!sessionId) {
-        void platform.notifications.info(t("No active session"));
+        void platform.notifications.info(l("No active session"));
         return;
       }
 
@@ -219,7 +219,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (msg.candidateId === undefined) {
         const picked = await platform.dialogs.pickFile({
           filters: { Markdown: ["md"] },
-          title: t("Select Plan File to Inject"),
+          title: l("Select Plan File to Inject"),
           defaultPath: ctx.folder.fsPath,
         });
         if (!picked) return;
@@ -246,14 +246,14 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
         postMessage(ctx.reply, {
           type: "notification",
-          message: t("Plan file updated: {0}", planFilePath),
+          message: l("Plan file updated: {0}", planFilePath),
           notificationType: "info",
         });
         log("[MessageRouter] Injected plan from %s to %s", selectedPath, planFilePath);
       } catch (err) {
         log("[MessageRouter] Error injecting plan:", err);
         void platform.notifications.error(
-          t("Failed to inject plan: {0}", err instanceof Error ? err.message : "Unknown error")
+          l("Failed to inject plan: {0}", errorTextOf(err))
         );
       }
     },
@@ -295,7 +295,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     openSystemPrompt: async (_msg, ctx) => {
       const prompt = await ctx.session.getSystemPromptText();
       if (!prompt) {
-        void platform.notifications.info(t("The system prompt isn't available yet. Send a message first."));
+        void platform.notifications.info(l("The system prompt isn't available yet. Send a message first."));
         return;
       }
       await openMarkdownPreview(platform, "system-prompt", prompt, ctx.panelId);
@@ -305,7 +305,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (msg.type !== "openMcpToolInfo") return;
       const markdown = ctx.session.getMcpToolInfoMarkdown(msg.piName);
       if (!markdown) {
-        void platform.notifications.info(t("Tool information isn't available for \"{0}\".", msg.piName));
+        void platform.notifications.info(l("Tool information isn't available for \"{0}\".", msg.piName));
         return;
       }
       await openMarkdownPreview(platform, msg.piName, markdown, ctx.panelId);

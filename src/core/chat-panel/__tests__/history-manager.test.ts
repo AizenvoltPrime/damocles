@@ -105,7 +105,7 @@ describe('HistoryManager.replayLive', () => {
   it('delivers account state to the joining view after the replay', async () => {
     const { manager, host, session, posted } = harness();
     const viewPosts: ExtensionToWebviewMessage[] = [];
-    const live = { sessionId: 's1', stored: true, branch: [], sessionManager: {}, snapshot: { seq: 0, messages: [], liveToolCallIds: new Set<string>() } };
+    const live = { sessionId: 's1', stored: true, branch: [], sessionManager: {}, snapshot: { seq: 0, messages: [], liveToolCallIds: new Set<string>(), liveFailedCalls: new Set<object>() } };
 
     await manager.replayLive({ reasons: undefined, isContextOverflow: undefined } as never, '/ws', session, host, (m) => viewPosts.push(m), live as never);
 

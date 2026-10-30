@@ -3,6 +3,7 @@ import type { AgentUsageTotals } from '../usage-accounting';
 import type { EffortBadgeLevel } from '../effort-badge';
 import type { ChatAttachmentInfo } from './chat-attachment';
 import type { AuthFailure, ChatPlace } from './messages';
+import type { LocalizedText } from '../localized-text';
 
 export interface SystemInitData {
   model: string;
@@ -249,6 +250,8 @@ export interface ChatMessage {
   correlationId?: string;
   role: "user" | "assistant" | "error" | "refusal";
   content: string;
+  /** An error row's text core sent, which the view renders where it shows the row; `content` is then empty. */
+  error?: LocalizedText;
   refusalExplanation?: string | null;
   refusalCategory?: 'cyber' | 'bio' | null;
   /** On a replayed error: the credential refusal the live view showed as that account's card. */

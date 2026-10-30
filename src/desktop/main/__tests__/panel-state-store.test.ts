@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MAX_BROWSER_URL_LENGTH } from '../../../shared/typed-address';
 import { NO_PAGES, PANEL_STATE_FILE, PanelStateStore } from '../panel-state-store';
 import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
@@ -219,6 +219,68 @@ describe('PanelStateStore across a quit or a window close', () => {
   });
 });
 
+describe('PanelStateStore last chats', () => {
+  it('keeps each project\'s last chat across a re-read', async () => {
+    const store = new PanelStateStore(dir, log);
+    store.set({ panelId: 'n', state: null });
+    store.setLastChats([{ projectKey: 'k1', sessionId: 's1' }, { projectKey: 'k2', panelId: 'n' }]);
+    const next = await reopened();
+    expect(next.lastChats()).toEqual([{ projectKey: 'k1', sessionId: 's1' }, { projectKey: 'k2', panelId: 'n' }]);
+    expect(lines).toEqual([]);
+  });
+
+  // An entry that names no chat records that its project's last viewed chat is gone, which LastChats tells from never viewed.
+  it('drops an entry\'s unsaved panelId', async () => {
+    writeFile({
+      version: 2,
+      lastChats: [{ projectKey: 'k1', sessionId: 's1', panelId: 'gone' }, { projectKey: 'k2', panelId: 'gone' }, { projectKey: 'k3', panelId: 'a' }, { projectKey: 'k4' }, { projectKey: 'k1', sessionId: 's9' }, 'junk'],
+      chats: [{ panelId: 'a', state: null }],
+    });
+    const store = new PanelStateStore(dir, log);
+    expect(store.lastChats()).toEqual([{ projectKey: 'k1', sessionId: 's1' }, { projectKey: 'k2' }, { projectKey: 'k3', panelId: 'a' }, { projectKey: 'k4' }]);
+    expect(lines).toEqual([
+      '[panels] ignoring a last viewed chat that is not saved',
+      '[panels] ignoring a last viewed chat that is not saved',
+      '[panels] ignoring a malformed last chat',
+    ]);
+    // a write names only saved chats, and unloading one keeps its entry's session
+    store.setLastChats([{ projectKey: 'k1', sessionId: 's1', panelId: 'a' }, { projectKey: 'k2', panelId: 'gone' }, { projectKey: 'k3', panelId: 'a' }]);
+    expect(store.lastChats()).toEqual([{ projectKey: 'k1', sessionId: 's1', panelId: 'a' }, { projectKey: 'k2' }, { projectKey: 'k3', panelId: 'a' }]);
+    store.delete('a');
+    expect(store.lastChats()).toEqual([{ projectKey: 'k1', sessionId: 's1' }, { projectKey: 'k2' }, { projectKey: 'k3' }]);
+    expect((await reopened()).lastChats()).toEqual([{ projectKey: 'k1', sessionId: 's1' }, { projectKey: 'k2' }, { projectKey: 'k3' }]);
+  });
+
+  it('a file without lastChats reads as none', async () => {
+    writeFile({ version: 2, selected: { projectKey: 'k1', sessionId: 's1' }, chats: [] });
+    const store = new PanelStateStore(dir, log);
+    expect(store.lastChats()).toEqual([]);
+    expect(lines).toEqual([]);
+    store.select({ projectKey: 'k2' });
+    await settled();
+    expect(JSON.parse(fs.readFileSync(path.join(dir, PANEL_STATE_FILE), 'utf8'))).toEqual({ version: 2, selected: { projectKey: 'k2' }, chats: [] });
+  });
+
+  it('the entries survive a selection write', async () => {
+    const store = new PanelStateStore(dir, log);
+    store.set({ panelId: 'a', state: { sessionId: 's1' } });
+    store.setLastChats([{ projectKey: 'k1', sessionId: 's1' }, { projectKey: 'k2', sessionId: 's2' }]);
+    store.select({ projectKey: 'k1', panelId: 'a', sessionId: 's1' });
+    store.set({ panelId: 'a', state: { sessionId: 's1', draft: 'x' } });
+    await settled();
+    expect(JSON.parse(fs.readFileSync(path.join(dir, PANEL_STATE_FILE), 'utf8'))).toEqual({
+      version: 2,
+      selected: { projectKey: 'k1', panelId: 'a', sessionId: 's1' },
+      lastChats: [{ projectKey: 'k1', sessionId: 's1' }, { projectKey: 'k2', sessionId: 's2' }],
+      chats: [{ panelId: 'a', state: { sessionId: 's1', draft: 'x' }, pages: [] }],
+    });
+    // a closing window keeps them as they were
+    store.seal();
+    store.setLastChats([]);
+    expect((await reopened()).lastChats()).toEqual([{ projectKey: 'k1', sessionId: 's1' }, { projectKey: 'k2', sessionId: 's2' }]);
+  });
+});
+
 describe('PanelStateStore v1 migration', () => {
   it('turns tabs into chats and the selected tab into the selected chat with its project and session', async () => {
     writeFile({
@@ -256,5 +318,35 @@ describe('PanelStateStore v1 migration', () => {
     expect(store.list()).toEqual([{ panelId: 'a', state: null, browser: NO_PAGES }]);
     expect(store.selected()).toBeUndefined();
     expect(lines.slice(0, 2)).toEqual(['[panels] dropping tab old: not a chat tab', '[panels] chat a: dropping a malformed browser pane']);
+  });
+});
+
+describe('PanelStateStore batch', () => {
+  it('lands the changes a batch makes in one write of panels.json, a chat switch\'s last chat and selection together', async () => {
+    const store = new PanelStateStore(dir, log);
+    store.set({ panelId: 'a', state: { sessionId: 's1' } });
+    store.set({ panelId: 'b', state: null });
+    await store.flush();
+    const rename = fs.promises.rename.bind(fs.promises);
+    let writes = 0;
+    const spy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (path.basename(String(to)) === PANEL_STATE_FILE) writes++;
+      return rename(from, to);
+    });
+    try {
+      store.batch(() => {
+        store.setLastChats([{ projectKey: 'k1', panelId: 'b' }]);
+        store.select({ projectKey: 'k1', panelId: 'b' });
+      });
+      await store.flush();
+      expect(writes).toBe(1);
+      expect(JSON.parse(fs.readFileSync(path.join(dir, PANEL_STATE_FILE), 'utf8'))).toMatchObject({ selected: { projectKey: 'k1', panelId: 'b' }, lastChats: [{ projectKey: 'k1', panelId: 'b' }] });
+      // a batch that changes nothing writes nothing
+      store.batch(() => store.select({ projectKey: 'k1', panelId: 'b' }));
+      await store.flush();
+      expect(writes).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

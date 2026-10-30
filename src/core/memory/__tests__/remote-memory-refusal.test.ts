@@ -29,6 +29,7 @@ import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { installPlatform } from '../../platform-host';
 import { USER_SCOPE_UNAVAILABLE } from '../../../shared/remote-user';
 import { globalMemoryUnavailableReason } from '../../user-scope';
+import { englishText } from '../../../shared/localized-text';
 import { createTestDbPath } from './test-helpers';
 import { applyDecaySweep, promoteEpisodes, purgeForgottenRows, EPISODE_PROMOTE_ACCESS } from '../dedup-decay';
 import { getUnexpandedMemoryRows } from '../database';
@@ -288,7 +289,7 @@ describe('global memory on a daemon\'s core', () => {
 
     it('refuses to reset a global observation\'s staleness with the reason', async () => {
       const id = insertMemory({ scope: 'global', kind: 'observation', file_change_count: 3 });
-      await expect(service.resetObservationStaleness(id)).rejects.toThrow(globalMemoryUnavailableReason());
+      await expect(service.resetObservationStaleness(id)).rejects.toThrow(englishText(globalMemoryUnavailableReason()));
       expect(row(id)?.file_change_count).toBe(3);
     });
 

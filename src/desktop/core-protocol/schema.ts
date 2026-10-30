@@ -1,4 +1,5 @@
 // Parsers for the core protocol: each returns a fresh value holding only the fields it knows, or INVALID.
+import { parseLocalizedText, type LocalizedText } from '../../shared/localized-text';
 
 export const INVALID: unique symbol = Symbol('invalid');
 export type Invalid = typeof INVALID;
@@ -95,6 +96,11 @@ export function obj<S extends Shape>(shape: S): Parser<ParsedShape<S>> {
     }
     return out as ParsedShape<S>;
   };
+}
+
+/** A LocalizedText whose every string is within maxChars (parseLocalizedText). */
+export function localized(maxChars: number): Parser<LocalizedText> {
+  return (raw) => parseLocalizedText(raw, maxChars) ?? INVALID;
 }
 
 export function either<A, B>(first: Parser<A>, second: Parser<B>): Parser<A | B> {

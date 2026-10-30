@@ -38,7 +38,7 @@ const appendLedgerRecord = (ledgerPath: string, id: string): void => {
   appendFileSync(ledgerPath, `${JSON.stringify(record)}
 `);
 };
-const notice = { level: 'warn', message: expect.stringContaining('the usage index') as string, actions: [] };
+const notice = { level: 'warn', message: expect.stringContaining('the usage index') as string, text: { message: 'Another Damocles app has updated {0} to a newer version. This window can read it but will not save changes to it until you update this Damocles too.', args: [{ message: 'the usage index' }] }, actions: [] };
 const userVersion = (dbPath: string): number => {
   const raw = new DatabaseSync(dbPath, { readOnly: true });
   const { user_version } = raw.prepare('PRAGMA user_version').get() as { user_version: number };

@@ -378,7 +378,7 @@ describe('fetchSubscriptionUsage (network layer)', () => {
     });
 
     const data = await fetchSubscriptionUsage(stubRuntime(SECRET, SECRET));
-    expect(data.claude).toEqual({ status: 'error', bars: [], error: 'HTTP 429', profileError: 'HTTP 429' });
+    expect(data.claude).toEqual({ status: 'error', bars: [], error: { message: 'HTTP {0}', args: [429] }, profileError: { message: 'HTTP {0}', args: [429] } });
     expect(JSON.stringify(data)).not.toContain(SECRET);
   });
 
@@ -397,7 +397,7 @@ describe('fetchSubscriptionUsage (network layer)', () => {
     });
 
     const data = await fetchSubscriptionUsage(stubRuntime(SECRET, SECRET));
-    expect(data.gpt).toEqual({ status: 'error', bars: [], error: 'Unexpected response' });
+    expect(data.gpt).toEqual({ status: 'error', bars: [], error: { message: 'Unexpected response' } });
     expect(data.claude.status).toBe('ok');
   });
 
@@ -411,7 +411,7 @@ describe('fetchSubscriptionUsage (network layer)', () => {
     });
 
     const data = await fetchSubscriptionUsage(stubRuntime(SECRET, SECRET));
-    expect(data.claude).toEqual({ status: 'error', bars: [], error: 'Network error', profileError: 'Network error' });
+    expect(data.claude).toEqual({ status: 'error', bars: [], error: { message: 'Network error' }, profileError: { message: 'Network error' } });
     expect(data.gpt.status).toBe('ok');
     expect(data.gpt.planType).toBe('free');
   });
@@ -492,7 +492,7 @@ describe('fetchSubscriptionUsage (GPT under Sign in with ChatGPT)', () => {
   it('keeps reporting other failures as errors', async () => {
     whamWith(jsonResponse({}, false, 500));
     const data = await fetchSubscriptionUsage(stubRuntime(undefined, undefined, CHATGPT));
-    expect(data.gpt).toEqual({ status: 'error', bars: [], error: 'HTTP 500' });
+    expect(data.gpt).toEqual({ status: 'error', bars: [], error: { message: 'HTTP {0}', args: [500] } });
   });
 
   it('links to the usage page without any request while a preferred key overrides the ChatGPT grant', async () => {
@@ -505,7 +505,7 @@ describe('fetchSubscriptionUsage (GPT under Sign in with ChatGPT)', () => {
   it('keeps the Codex token on its error path for a 401', async () => {
     whamWith(jsonResponse({}, false, 401));
     const data = await fetchSubscriptionUsage(stubRuntime(undefined, 'codex-token'));
-    expect(data.gpt).toEqual({ status: 'error', bars: [], error: 'HTTP 401' });
+    expect(data.gpt).toEqual({ status: 'error', bars: [], error: { message: 'HTTP {0}', args: [401] } });
   });
 });
 
@@ -596,7 +596,7 @@ describe('fetchSubscriptionUsage (Claude account profile)', () => {
     expect(data.claude.status).toBe('ok');
     expect(data.claude.bars).toHaveLength(1);
     expect(data.claude.profile).toBeUndefined();
-    expect(data.claude.profileError).toBe('Network error');
+    expect(data.claude.profileError).toEqual({ message: 'Network error' });
   });
 
   it('reports a non-OK profile response by status alone', async () => {
@@ -605,7 +605,7 @@ describe('fetchSubscriptionUsage (Claude account profile)', () => {
     );
 
     const data = await fetchSubscriptionUsage(stubRuntime(SECRET, undefined));
-    expect(data.claude.profileError).toBe('HTTP 401');
+    expect(data.claude.profileError).toEqual({ message: 'HTTP {0}', args: [401] });
     expect(data.claude.bars).toHaveLength(1);
     expect(JSON.stringify(data)).not.toContain(SECRET);
   });

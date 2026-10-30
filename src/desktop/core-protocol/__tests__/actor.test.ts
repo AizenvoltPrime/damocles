@@ -14,7 +14,7 @@ import type { CoreInit } from '../messages';
 const quiet = (): void => undefined;
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
-const state: DaemonState = { snapshot: () => ({}), update: async () => undefined, applyClient: () => false, flush: async () => undefined };
+const state: DaemonState = { snapshot: () => ({}), update: async () => undefined, flush: async () => undefined };
 const emptyMirrors = {
   state: { global: {}, workspace: {} },
   trust: { keys: [] },
@@ -44,7 +44,7 @@ function daemon() {
     // a raw request's response reaches this endpoint as one it never sent
     const main = createMainEndpoint(loop.main, quiet, quiet);
     attached.attach({ id: `connection-of-${clientId}`, clientId, hostId: 'h1', transport: loop.core, mirrors: emptyMirrors, close: quiet, drained: () => Promise.resolve(), lost: () => false, onLostChange: () => ({ dispose: () => undefined }) });
-    main.serve('notifications.show', () => clientId);
+    main.serve('dialogs.pickFolder', () => clientId);
     return { main, raw: loop.main };
   };
   return { core, client };
@@ -59,13 +59,13 @@ describe('the endpoint\'s actor', () => {
     const core = createCoreEndpoint(loop.core, quiet, undefined, actors);
     core.serve('chats.open', async () => {
       await flush();
-      void core.request('notifications.show', { severity: 'info', message: 'hi', actions: [] }).catch(() => undefined);
+      void core.request('dialogs.pickFolder', {}).catch(() => undefined);
     });
     loop.main.post({ kind: 'request', id: 1, method: 'chats.open', params: {}, actor: 'device-a' });
     loop.main.post({ kind: 'request', id: 2, method: 'chats.open', params: {} });
     await flush();
     await flush();
-    const asks = sent.filter((message) => (message as { method?: string }).method === 'notifications.show');
+    const asks = sent.filter((message) => (message as { method?: string }).method === 'dialogs.pickFolder');
     expect(asks).toEqual([
       expect.objectContaining({ actor: 'device-a' }),
       expect.not.objectContaining({ actor: expect.anything() }),
@@ -135,7 +135,7 @@ describe('the daemon\'s actor', () => {
     core.onPanel((_viewId, envelope) => {
       if (envelope.op !== 'message') return;
       // the turn outlives the message that started it, as pi's run does
-      turn = finished.then(() => core.request('notifications.show', { severity: 'info', message: 'done', actions: [] }));
+      turn = finished.then(() => core.request('dialogs.pickFolder', {}));
     });
     core.serve('chats.restore', () => undefined);
     const a = client('device-a');
@@ -155,7 +155,7 @@ describe('the daemon\'s actor', () => {
     client('device-b');
     await a.main.request('chats.open', {});
     // outside every client's work: no actor
-    expect(await processActor.run(undefined, () => core.request('notifications.show', { severity: 'info', message: 'tick', actions: [] }))).toBe('device-a');
+    expect(await processActor.run(undefined, () => core.request('dialogs.pickFolder', {}))).toBe('device-a');
   });
 
   it('pins a turn to the client whose message started it, through the acting client core reads', async () => {

@@ -200,7 +200,7 @@ describe('ProviderSignInField', () => {
     await byTestId(wrapper, 'provider-sign-in-cancel').trigger('click');
     expect(bridge.posted).toEqual([{ type: 'providerSignInCancel', provider: 'xai' }]);
 
-    await setState({ phase: 'idle', error: { kind: 'cancelled', message: 'Sign-in cancelled' } });
+    await setState({ phase: 'idle', error: { kind: 'cancelled', message: { message: 'Sign-in cancelled' } } });
     const alert = wrapper.find('[role="alert"]');
     expect(alert.text()).toBe('Sign-in cancelled');
     expect(alert.element.closest('[role="status"]')).toBeNull();
@@ -228,7 +228,7 @@ describe('ProviderSignInField', () => {
     expect(bridge.posted.filter((m) => m.type === 'providerSignInCancel')).toHaveLength(1);
     expect(disabled(wrapper, 'provider-sign-in-cancel')).toBe(true);
 
-    await setState({ phase: 'idle', error: { kind: 'cancelled', message: 'Sign-in cancelled' } });
+    await setState({ phase: 'idle', error: { kind: 'cancelled', message: { message: 'Sign-in cancelled' } } });
     expect(disabled(wrapper, 'provider-sign-in-start')).toBe(false);
     await byTestId(wrapper, 'provider-sign-out').trigger('click');
     await byTestId(wrapper, 'provider-sign-out').trigger('click');
@@ -343,6 +343,62 @@ describe('ProviderSignInField', () => {
     expect(wrapper.find('[role="alert"]').exists()).toBe(false);
   });
 
+  it('drops the refusal while the user corrects the domain, and shows it again when core refuses the corrected one', async () => {
+    const wrapper = mountField('github-copilot');
+    await setState(DOMAIN_PROMPT, 'github-copilot');
+    const input = wrapper.find('input');
+    await input.setValue('not a host');
+    await input.trigger('keydown.enter');
+    await setState({ ...DOMAIN_PROMPT, invalid: true }, 'github-copilot');
+    expect(byTestId(wrapper, 'setting-invalid').exists()).toBe(true);
+    expect(input.attributes('aria-invalid')).toBe('true');
+
+    await input.setValue('still bad');
+    expect(byTestId(wrapper, 'setting-invalid').exists()).toBe(false);
+    expect(input.attributes('aria-invalid')).toBeUndefined();
+
+    await input.trigger('keydown.enter');
+    expect(bridge.posted.at(-1)).toEqual({ type: 'providerSignInAnswer', provider: 'github-copilot', input: 'still bad' });
+    expect(byTestId(wrapper, 'setting-invalid').exists()).toBe(false);
+    await setState({ ...DOMAIN_PROMPT, invalid: true }, 'github-copilot');
+    expect(byTestId(wrapper, 'setting-invalid').text()).toBe('Enter a host name such as company.ghe.com, or continue without a domain.');
+    expect(input.attributes('aria-invalid')).toBe('true');
+  });
+
+  // Chromium moves focus to the body when the pending answer disables the field.
+  it('returns focus to the answer field when core refuses an answer sent from it', async () => {
+    const wrapper = mountField('github-copilot');
+    await setState(DOMAIN_PROMPT, 'github-copilot');
+    const input = wrapper.find('input');
+    expect(document.activeElement).toBe(input.element);
+    await input.setValue('not a host');
+    await input.trigger('keydown.enter');
+    expect(input.attributes('disabled')).toBeDefined();
+    // happy-dom keeps focus on a disabled input, so a focused element removed from the page stands in for the fixup.
+    const lost = document.createElement('button');
+    document.body.appendChild(lost);
+    lost.focus();
+    lost.remove();
+    expect(document.activeElement).toBe(document.body);
+
+    await setState({ ...DOMAIN_PROMPT, invalid: true }, 'github-copilot');
+    expect(document.activeElement).toBe(input.element);
+  });
+
+  it('leaves focus where the user moved it while core judged the answer', async () => {
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    const wrapper = mountField('github-copilot');
+    await setState(DOMAIN_PROMPT, 'github-copilot');
+    const input = wrapper.find('input');
+    await input.setValue('not a host');
+    await input.trigger('keydown.enter');
+    outside.focus();
+
+    await setState({ ...DOMAIN_PROMPT, invalid: true }, 'github-copilot');
+    expect(document.activeElement).toBe(outside);
+  });
+
   it('shows no paste field when the browser flow takes no paste', async () => {
     const wrapper = mountField();
     await setState({ phase: 'browser', paste: false });
@@ -371,6 +427,15 @@ describe('ProviderSignInField', () => {
     await input.trigger('keydown.enter');
     expect(bridge.posted).toEqual([{ type: 'providerSignInAnswer', provider: 'github-copilot', input: '' }]);
     expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+  });
+
+  it('the enterprise domain field is inline and its row aligns to the top', async () => {
+    const wrapper = mountField('github-copilot');
+    await setState({ ...DOMAIN_PROMPT, invalid: true }, 'github-copilot');
+    const row = byTestId(wrapper, 'provider-sign-in-submit').element.parentElement;
+    expect(row?.classList.contains('sm-field-row-start')).toBe(true);
+    expect(row?.contains(wrapper.find('input').element)).toBe(true);
+    expect(byTestId(wrapper, 'setting-invalid').classes()).toEqual(expect.arrayContaining(['w-0', 'min-w-full']));
   });
 
   it('sends only the blank answer when a typed domain is left by blur and Continue without a domain', async () => {

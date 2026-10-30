@@ -248,19 +248,17 @@ describe("provider notices and listeners", () => {
     await vi.waitFor(() => expect(logged.join("\n")).toContain("MCP reload after a trust grant failed"));
   });
 
-  it("localizes the warning for an element picked with no chat panel open", async () => {
+  it("sends the warning for an element picked with no chat panel open as text the host renders", async () => {
     const { provider } = await harness();
     const internals = provider as unknown as {
       panelManager: { getPanels: () => Map<string, unknown> };
       browserService: { broadcastToChat: (element: unknown) => void };
     };
     internals.panelManager.getPanels().clear();
-    vi.spyOn(platform.localization, "t").mockImplementation((message: string) => `[el] ${message}`);
-
     internals.browserService.broadcastToChat({ selector: "#a" });
 
-    expect(platform.notifications.calls.map((c) => c.message)).toEqual([
-      "[el] Damocles: No chat panel is open. Open one to receive picked elements.",
+    expect(platform.notifications.calls.map((c) => c.text)).toEqual([
+      { message: "Damocles: No chat panel is open. Open one to receive picked elements." },
     ]);
     vi.restoreAllMocks();
   });

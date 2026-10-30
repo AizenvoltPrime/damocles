@@ -80,3 +80,38 @@ test('Copy code and open page in the settings overlay puts the xAI device code o
     await stub.close();
   }
 });
+
+// pi's Copilot login (pi-ai dist/auth/oauth/github-copilot.js) asks for the domain before any request, and core judges the answer.
+test('a refused GitHub Copilot domain shows its error under the field and moves neither the field nor its buttons', async ({ launch }) => {
+  const { app } = await launch();
+  await expect(chatInput(await activeChat(app))).toBeVisible();
+
+  const overlay = await openSettingsModal(app, 'accounts');
+  await settingsRow(overlay, 'account-github-copilot').getByRole('button', { name: /Sign in|Manage/ }).click();
+  const field = settingsModal(overlay).getByTestId('provider-sign-in');
+  await field.getByTestId('provider-sign-in-start').click();
+  const input = field.getByRole('textbox', { name: 'Enterprise domain' });
+  await expect(input).toBeFocused();
+
+  const boxes = async () => Promise.all([input, field.getByTestId('provider-sign-in-submit'), field.getByTestId('provider-sign-in-skip')].map(async (control) => {
+    const box = await control.boundingBox();
+    if (box === null) throw new Error('a control has no box');
+    return { x: box.x, y: box.y };
+  }));
+  const before = await boxes();
+
+  await input.fill('not a host!');
+  await input.press('Enter');
+  await expect(field.getByTestId('setting-invalid')).toBeVisible();
+  await expect(input).toHaveAttribute('aria-invalid', 'true');
+
+  const after = await boxes();
+  after.forEach((box, i) => {
+    expect(Math.abs(box.x - before[i]!.x)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(box.y - before[i]!.y)).toBeLessThanOrEqual(0.5);
+  });
+
+  await field.getByTestId('provider-sign-in-cancel').click();
+  await expect(field.getByTestId('provider-sign-in-error')).toHaveText('Sign-in cancelled.');
+  await closeSettingsModal(overlay);
+});

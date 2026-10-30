@@ -6,10 +6,11 @@ import { TOOL_EDIT, TOOL_GENERATE_IMAGE, TOOL_WRITE, isShellTool } from '../../s
 import type { PendingPrompt, RaisedPrompt } from './session-state';
 import { AGENT_NAME_MAX_CHARS, agentLabel } from './extension-ui-context';
 import { oneLine } from './untrusted-text';
-import { t } from '../l10n';
+import { l, verbatim } from '../l10n';
+import type { LocalizedText } from '../../shared/localized-text';
 import { log } from '../logger';
 
-/** The longest summary a notification shows; longer text ends in an ellipsis. */
+/** The longest each untrusted part of a summary may be (a path, a command's first line, a name, a question); a longer one ends in an ellipsis. */
 export const PROMPT_SUMMARY_MAX_CHARS = 160;
 
 /** Who a prompt's `parentToolUseId` names: a member of the running team, or a subagent by its `Agent` call. */
@@ -68,44 +69,50 @@ function lineCount(content: string): number {
 type PermissionRequest = Extract<ExtensionToWebviewMessage, { type: 'requestPermission' }>;
 
 /** What an approval asks, or undefined when the file or command it acts on is missing. */
-function approvalSummary(request: PermissionRequest, cwd: string): string | undefined {
+function approvalSummary(request: PermissionRequest, cwd: string): LocalizedText | undefined {
   const input = request.toolInput;
-  const file = request.filePath?.trim() ? displayPath(request.filePath, cwd) : undefined;
+  const file = request.filePath?.trim() ? oneLine(displayPath(request.filePath, cwd), PROMPT_SUMMARY_MAX_CHARS) : undefined;
   if (request.toolName === TOOL_EDIT || request.toolName === TOOL_WRITE) {
     if (file === undefined) return undefined;
     const content = input['content'];
     if (request.toolName === TOOL_WRITE && request.patch === undefined && request.patchOmitted === undefined) {
-      return t('create {0} ({1})', file, `+${lineCount(typeof content === 'string' ? content : '')}`);
+      return l('create {0} ({1})', file, `+${lineCount(typeof content === 'string' ? content : '')}`);
     }
     const counts = request.patch !== undefined ? patchCounts(request.patch) : undefined;
-    return counts ? t('edit {0} ({1})', file, counts) : t('edit {0}', file);
+    return counts ? l('edit {0} ({1})', file, counts) : l('edit {0}', file);
   }
   if (isShellTool(request.toolName)) {
     const command = request.command ?? (typeof input['command'] === 'string' ? input['command'] : '');
     const firstLine = command.split(/\r?\n/).map((line) => line.trim()).find((line) => line !== '');
-    return firstLine === undefined ? undefined : t('run `{0}`', firstLine);
+    return firstLine === undefined ? undefined : l('run `{0}`', oneLine(firstLine, PROMPT_SUMMARY_MAX_CHARS) ?? '');
   }
-  if (request.toolName === TOOL_GENERATE_IMAGE) return file === undefined ? undefined : t('generate image {0}', file);
-  return t('use {0}', request.toolName);
+  if (request.toolName === TOOL_GENERATE_IMAGE) return file === undefined ? undefined : l('generate image {0}', file);
+  return l('use {0}', oneLine(request.toolName, PROMPT_SUMMARY_MAX_CHARS) ?? '');
 }
 
+// a summary's own words are one line, so only the untrusted text in it is flattened and capped
+const asked = (text: string): LocalizedText | undefined => {
+  const line = oneLine(text, PROMPT_SUMMARY_MAX_CHARS);
+  return line === undefined ? undefined : verbatim(line);
+};
+
 /** One line naming what the prompt asks, or undefined when it names nothing (a plan, an untitled form). */
-function summaryOf(request: ExtensionToWebviewMessage, cwd: string): string | undefined {
+function summaryOf(request: ExtensionToWebviewMessage, cwd: string): LocalizedText | undefined {
   switch (request.type) {
-    case 'requestPermission': {
-      const summary = approvalSummary(request, cwd);
-      return summary === undefined ? undefined : oneLine(summary, PROMPT_SUMMARY_MAX_CHARS);
+    case 'requestPermission':
+      return approvalSummary(request, cwd);
+    case 'requestSkillApproval': {
+      const skill = oneLine(request.skillName, PROMPT_SUMMARY_MAX_CHARS);
+      return skill === undefined ? undefined : l('use skill {0}', skill);
     }
-    case 'requestSkillApproval':
-      return oneLine(t('use skill {0}', request.skillName), PROMPT_SUMMARY_MAX_CHARS);
     case 'requestQuestion':
-      return oneLine(request.questions[0]?.question ?? '', PROMPT_SUMMARY_MAX_CHARS);
+      return asked(request.questions[0]?.question ?? '');
     case 'requestForm':
-      return oneLine(request.form.title ?? '', PROMPT_SUMMARY_MAX_CHARS);
+      return asked(request.form.title ?? '');
     case 'requestElicitation':
-      return oneLine(request.message, PROMPT_SUMMARY_MAX_CHARS);
+      return asked(request.message);
     case 'extensionUiRequest':
-      return oneLine(request.title, PROMPT_SUMMARY_MAX_CHARS);
+      return asked(request.title);
     default:
       return undefined;
   }
@@ -127,7 +134,7 @@ export function pendingPromptOwners(raised: readonly RaisedPrompt[]): PendingPro
 }
 
 /** The prompt's summary, or none when building it throws: a display-only summary must never break the state publisher. */
-function guardedSummaryOf(id: string, request: ExtensionToWebviewMessage, cwd: string): string | undefined {
+function guardedSummaryOf(id: string, request: ExtensionToWebviewMessage, cwd: string): LocalizedText | undefined {
   try {
     return summaryOf(request, cwd);
   } catch (err) {
@@ -144,7 +151,7 @@ function guardedSummaryOf(id: string, request: ExtensionToWebviewMessage, cwd: s
  * dropped on the first call it is no longer raised in.
  */
 export function pendingPromptDescriber(cwd: string): (raised: readonly RaisedPrompt[]) => PendingPrompt[] {
-  const summaries = new Map<string, { readonly request: ExtensionToWebviewMessage; readonly summary: string | undefined }>();
+  const summaries = new Map<string, { readonly request: ExtensionToWebviewMessage; readonly summary: LocalizedText | undefined }>();
   return (raised) => {
     const live = new Set(raised.map((prompt) => prompt.id));
     for (const id of summaries.keys()) if (!live.has(id)) summaries.delete(id);

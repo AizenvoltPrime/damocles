@@ -56,6 +56,7 @@ import type { CompassIndexStatus, CompassGraphData, CompassSearchResult, Compass
 import type { ToolsSnapshot, ToolGroup } from './tools';
 import type { WorkspaceFolderInfo } from './workspace-folders';
 import type { SettingsAccountId, SettingsSectionId } from '../settings-sections';
+import type { LocalizedText } from '../localized-text';
 
 // A pi provider id as a credential ask or a run's token note names it; main's user relays and the overlay refuse any other form.
 export const PROVIDER_ID_PATTERN: RegExp = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
@@ -431,8 +432,8 @@ export interface WorktreeStateData {
   targetRewritten?: boolean;
   /** The failed setup's exit code (phase setupFailed). */
   exitCode?: number;
-  /** git's error (phase createFailed). */
-  error?: string;
+  /** Why creation failed (phase createFailed): git's own words as written, or Damocles' refusal. */
+  error?: LocalizedText;
   /** The project's display name; present whenever the chat has a worktree or a pending opt-in. */
   projectName?: string;
   /** Other chats of the project whose latest worktree entry places them in this chat's worktree; absent when 0. */
@@ -454,9 +455,11 @@ export type WorktreeFinishAction = "apply" | "merge" | "update" | "delete";
  * message's `detail` says which and why); modelSignInRequired: no signed-in model can run; modelUnavailable: the chat has
  * no model it can run, or its plan no longer includes the chat's model (`detail` says why); promptRejected: pi refused the
  * prompt before storing it, and the failure core sent with it says why: an `authFailure` card in the dock, else an error row
- * in the transcript.
+ * in the transcript; sendInProgress: another send, a turn or a compaction held the chat; queueRunEnded, queueBudgetStopped,
+ * queueNoRuntime: a queued message core refused because the run it was typed for ended, because the budget stop is winding
+ * the turn down, or because no agent session holds the chat.
  */
-export type PromptReturnReason = "heldPromptWaiting" | "worktreeFinishing" | "heldPromptKept" | "mcpResourceUnavailable" | "conversationChanged" | "modelSignInRequired" | "modelUnavailable" | "promptRejected";
+export type PromptReturnReason = "heldPromptWaiting" | "worktreeFinishing" | "heldPromptKept" | "mcpResourceUnavailable" | "conversationChanged" | "modelSignInRequired" | "modelUnavailable" | "promptRejected" | "sendInProgress" | "queueRunEnded" | "queueBudgetStopped" | "queueNoRuntime";
 
 /** Why a provider call failed on its account's credential (`authFailure`, `errorReplay`, `btwError`). */
 export type AuthFailureReason = "rejected" | "noApiAccess" | "missing";
@@ -493,6 +496,8 @@ export type EditorDocumentBody =
   | { kind: "text"; content: string; languageId: string }
   | { kind: "tooLarge"; bytes: number; limitBytes: number }
   | { kind: "binary" }
+  | { kind: "notAFile" }
+  /** `error` is the system's own words for the failure. */
   | { kind: "unreadable"; error: string };
 
 export interface EditorDocument {
@@ -564,7 +569,7 @@ export type ExtensionToWebviewMessage =
   | { type: "userMessageIdAssigned"; sdkMessageId: string; correlationId: string }
   | { type: "toolPending"; toolUseId: string; toolName: string; input: unknown; parentToolUseId?: string | null }
   /** `parentToolUseId` names the nested agent the error belongs to: a subagent's `Agent` call id or a team agent's id. */
-  | { type: "error"; message: string; parentToolUseId?: string }
+  | { type: "error"; message: LocalizedText; parentToolUseId?: string }
   /**
    * `account`: the Accounts row whose credential the provider refused. `noApiAccess`: xAI answered 402, the account lacks API
    * access. `missing`: pi had no credential for the call, so the provider was never asked.
@@ -579,14 +584,15 @@ export type ExtensionToWebviewMessage =
    * goes on with the conversation it shows (a hand-off, D61), so the composer and its draft stay.
    */
   | { type: "resumeAccepted"; sessionId: string; continued?: true }
-  | { type: "processing"; isProcessing: boolean }
+  /** `elapsedMs`: how long the open turn has run, sent by a live snapshot so a joining or reloaded view's clock matches a view that watched. */
+  | { type: "processing"; isProcessing: boolean; elapsedMs?: number }
   | { type: "storedSessions"; sessions: StoredSession[]; hasMore?: boolean; nextOffset?: number; isFirstPage?: boolean }
   /** `sessionId`: the stored conversation whose replay follows, which a send before its `sessionStarted` names; absent, the panel shows none. */
   | { type: "sessionCleared"; pendingMessage?: { content: string; correlationId: string }; sessionId?: string }
   | { type: "conversationCleared" }
   | { type: "sessionRenamed"; sessionId: string; newName: string }
   | { type: "sessionDeleted"; sessionId: string }
-  | { type: "notification"; message: string; notificationType: string }
+  | { type: "notification"; message: LocalizedText; notificationType: string }
   | { type: "accountInfo"; data: AccountInfo }
   | { type: "availableModels"; models: ModelInfo[] }
   | { type: "systemInit"; data: SystemInitData }
@@ -604,9 +610,9 @@ export type ExtensionToWebviewMessage =
    * the setter wrote now comes from. A write that left its key at the default reports the setter's home scope and no file.
    */
   | { type: "settingWriteResult"; key: string; ok: true; scope: SettingsFileScope; file?: string }
-  | { type: "settingWriteResult"; key: string; ok: false; error: string }
+  | { type: "settingWriteResult"; key: string; ok: false; error: LocalizedText }
   /** An approval diff only (D15): `approvalId` is the `toolUseId` of the pending `requestPermission` the diff belongs to. Every other diff opens in the host's editor. */
-  | { type: "editorShowDiff"; viewId: string; title: string; purpose: "proposal"; approvalId: string; original: EditorDocument; modified: EditorDocument }
+  | { type: "editorShowDiff"; viewId: string; title: LocalizedText; purpose: "proposal"; approvalId: string; original: EditorDocument; modified: EditorDocument }
   /** An unknown `viewId` is ignored. */
   | { type: "editorCloseView"; viewId: string }
   | { type: "settingsFileAvailability"; files: Record<SettingsFileScope, SettingsFileAvailability> }
@@ -616,18 +622,18 @@ export type ExtensionToWebviewMessage =
   /** `toolExposureScopes` lists the settings scopes a per-tool exposure can be saved to in this panel's folder, lowest first. */
   | ({ type: "mcpServerStatus"; servers: McpServerStatusInfo[]; mcpEnabled: boolean; configErrors: McpConfigError[]; toolExposureScopes: McpToolExposureScope[] } & McpLocalUnignoredFlag)
   // Replies to the resource picker's requests; `error` is the localized reason a request failed, with its lists empty.
-  | { type: "mcpResources"; requestId: string; resources: McpResourceRow[]; nextCursor?: string; error?: string }
-  | { type: "mcpResourceTemplates"; requestId: string; templates: McpResourceTemplateRow[]; nextCursor?: string; error?: string }
+  | { type: "mcpResources"; requestId: string; resources: McpResourceRow[]; nextCursor?: string; error?: LocalizedText }
+  | { type: "mcpResourceTemplates"; requestId: string; templates: McpResourceTemplateRow[]; nextCursor?: string; error?: LocalizedText }
   // notDirectory: the read returned content under the URI itself, so the row is a resource to attach
-  | { type: "mcpResourceChildren"; requestId: string; children: McpResourceRow[]; error?: string; notDirectory?: true }
+  | { type: "mcpResourceChildren"; requestId: string; children: McpResourceRow[]; error?: LocalizedText; notDirectory?: true }
   // No values from a server without the `completions` capability or on a failed request.
   | { type: "mcpResourceCompletion"; requestId: string; values: string[] }
   // refused: the localized reason nothing was attached
-  | { type: "mcpResourceAttached"; requestId: string; refused?: string }
+  | { type: "mcpResourceAttached"; requestId: string; refused?: LocalizedText }
   | { type: "checkpointInfo"; userMessageIds: string[] }
   | { type: "togglePromptNavigator" }
   | { type: "rewindComplete"; rewindToMessageId: string; option: RewindOption; promptContent?: string; fileRewindWarning?: string }
-  | { type: "rewindError"; message: string }
+  | { type: "rewindError"; message: LocalizedText }
   | { type: "rewindUndone" }
   /** Replies to `requestSkippedFiles` with the same `target`; a failed read carries no reason, which the host logs. */
   | { type: "skippedFiles"; target: SkippedFilesTarget; files: SkippedFile[] | null }
@@ -655,7 +661,6 @@ export type ExtensionToWebviewMessage =
   | { type: "subagentMessagesUpdate"; agentToolId: string; messages: HistoryAgentMessage[] }
   | { type: "sessionCancelled" }
   | { type: "sessionStart"; source: "startup" | "resume" | "clear" | "compact" }
-  | { type: "sessionEnd"; reason: string }
   | { type: "preCompact"; trigger: CompactionTrigger }
   | { type: "compactBoundary"; preTokens: number; postTokens?: number; trigger: CompactionTrigger; summary?: string; timestamp?: number; isHistorical?: boolean; entryId?: string; billedTokens?: number; billedCost?: number }
   | { type: "compactionAborted"; trigger: CompactionTrigger; willRetry: boolean; errorMessage?: string; timestamp: number }
@@ -665,7 +670,7 @@ export type ExtensionToWebviewMessage =
   | { type: "contextUsage"; data: ContextUsageData | null; reason?: "busy" | "noQuery" }
   | { type: "subscriptionUsage"; data: SubscriptionUsageData }
   | { type: "usageStatsProgress"; requestId: string; filesDone: number; filesTotal: number }
-  | { type: "usageStats"; requestId: string; final: boolean; report: UsageStatsReport | null; error?: string }
+  | { type: "usageStats"; requestId: string; final: boolean; report: UsageStatsReport | null; error?: LocalizedText }
   | { type: "contextUsageSummary"; totalTokens: number; maxTokens: number; percentage: number }
   | { type: "tokenUsageUpdate"; inputTokens?: number; cacheCreationTokens?: number; cacheReadTokens?: number }
   /** The conversation's own spend over every entry in its file, abandoned branches included, and its own user prompts on the current branch. */
@@ -679,11 +684,11 @@ export type ExtensionToWebviewMessage =
   // chat's model run (modelSignInRequired, modelUnavailable) or whose credential failed (promptRejected, the `authFailure`
   // card's account); correlationId: the transcript's echo of the prompt, which the transcript drops; parts: the queued
   // messages a send of several combined, whose text `content` joins, each for the view that queued it.
-  | { type: "promptReturned"; content: UserContentBlock[]; reason: PromptReturnReason; detail?: string; account?: SettingsAccountId; correlationId?: string; parts?: QueuedPart[] }
+  | { type: "promptReturned"; content: UserContentBlock[]; reason: PromptReturnReason; detail?: LocalizedText; account?: SettingsAccountId; correlationId?: string; parts?: QueuedPart[] }
   | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; terminalAttachments?: ChatAttachmentInfo[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; steerTarget?: { agentId: string; agentType?: string; description?: string }; promptIndex?: number; timestamp?: number }
   | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[]; effort?: import('../effort-badge').EffortBadgeLevel }
   /** `authFailure`: the call failed on that account's credential, refused or missing, which the live view showed as its card. */
-  | { type: "errorReplay"; content: string; authFailure?: AuthFailure }
+  | { type: "errorReplay"; content: LocalizedText; authFailure?: AuthFailure }
   | { type: "promptHistory"; history: string[]; hasMore: boolean }
   | { type: "promptHistoryPush"; entry: string }
   | { type: "panelFocused" }
@@ -805,7 +810,7 @@ export type ExtensionToWebviewMessage =
   // requestId echoes a panel createMemory so a failed create settles only its own token; a pin/delete
   // /forget failure carries source:'panel' but no requestId, so it never settles an in-flight create.
   // `code` is set exactly when source is "audit"; the webview localizes it and logs `message`.
-  | { type: "memoryError"; message: string; source?: "consolidation" | "panel" | "audit"; requestId?: string; code?: MemoryAuditErrorCode }
+  | { type: "memoryError"; message: LocalizedText; source?: "consolidation" | "panel" | "audit"; requestId?: string; code?: MemoryAuditErrorCode }
   | { type: "memoryPinned"; id: string }
   | { type: "memoryUnpinned"; id: string }
   | { type: "memoryForgotten"; id: string; count: number }
@@ -817,7 +822,7 @@ export type ExtensionToWebviewMessage =
   | { type: "profileData"; project: UserProfile; global: UserProfile; savedSection?: { scope: "project" | "global"; section: "static" | "dynamic" } }
   // A failed section save: the panel clears that section's pending flag (keeping the draft) so a later
   // unrelated profileData can't silently overwrite the user's unsaved edit with the old server value.
-  | { type: "profileSectionError"; scope: "project" | "global"; section: "static" | "dynamic"; message: string }
+  | { type: "profileSectionError"; scope: "project" | "global"; section: "static" | "dynamic"; message: LocalizedText }
   | { type: "consolidationPendingCount"; count: number; setAside: number }
   | { type: "consolidationPreview"; candidates: PendingConsolidationCandidate[] }
   // `pass` (from 1) and `runSoFar` (the run's result over its ended passes) ride only on `running: true`, sent at every pass start and on overlay-open replay.
@@ -841,10 +846,10 @@ export type ExtensionToWebviewMessage =
   | { type: "contextInjectionComplete"; promptIndex: number }
   | { type: "voiceRecordingStarted" }
   | { type: "transcriptionResult"; text: string }
-  | { type: "transcriptionError"; message: string }
+  | { type: "transcriptionError"; message: LocalizedText }
   | { type: "voiceConfigUpdate"; config: VoiceConfig; hasApiKey: boolean }
   | { type: "voiceRuntimeStatus"; status: VoiceRuntimeStatus }
-  | { type: "voiceSidecarStatus"; state: "stopped" | "loading" | "ready" | "error" | "restarting"; device?: "cuda" | "cpu"; vramMbFree?: number; modelsLoaded?: string[]; message?: string }
+  | { type: "voiceSidecarStatus"; state: "stopped" | "loading" | "ready" | "error" | "restarting"; device?: "cuda" | "cpu"; vramMbFree?: number; modelsLoaded?: string[]; message?: LocalizedText }
   | { type: "voiceWakeDetected"; confidence: number }
   | { type: "voiceWakeAborted"; reason: "no-speech" | "user-cancel" }
   | { type: "voiceVadStarted" }
@@ -853,7 +858,7 @@ export type ExtensionToWebviewMessage =
   | { type: "voiceTtsAudioChunk"; chunkBase64: string; sampleRate: number }
   | { type: "voiceTtsDone" }
   | { type: "voiceMicUnavailable"; reason: "denied" | "stolen" | "no-device" }
-  | { type: "voiceModelDownloadProgress"; modelId: string; bytesReceived: number; bytesTotal: number; status: "downloading" | "verifying" | "done" | "error"; message?: string }
+  | { type: "voiceModelDownloadProgress"; modelId: string; bytesReceived: number; bytesTotal: number; status: "downloading" | "verifying" | "done" | "error"; message?: LocalizedText }
   | { type: "voiceModelDownloadAllDone" }
   | { type: "voiceModelDownloadCancelled" }
   | { type: "voiceModelUpgradeAvailable"; upgrades: { modelId: string; description: string; installedVersion: string; newVersion: string; bytesDelta: number; totalBytes: number; licenseUrl: string; license: string; gated: boolean }[] }
@@ -873,8 +878,6 @@ export type ExtensionToWebviewMessage =
   | { type: "taskNotification"; taskId: string; toolUseId?: string; status: "completed" | "failed" | "stopped"; summary: string; outputFile: string | null; usage?: { totalTokens: number; toolUses: number; durationMs: number } }
   | { type: "toolProgress"; toolUseId: string; toolName: string; parentToolUseId: string | null; elapsedTimeSeconds: number; taskId?: string; output?: string; outputTruncated?: boolean }
   | { type: "toolUseSummary"; summary: string; precedingToolUseIds: string[] }
-  | { type: "authStatusUpdate"; isAuthenticating: boolean; error?: string }
-  | { type: "filesPersisted"; files: { filename: string; fileId: string }[]; failed: { filename: string; error: string }[] }
   | { type: "hookLifecycle"; hookId: string; hookName: string; hookEvent: string; phase: "started" | "progress" | "response"; output?: string; exitCode?: number; outcome?: "success" | "error" | "cancelled" }
   | { type: "configChange"; source: 'user_settings' | 'project_settings' | 'local_settings' | 'policy_settings' | 'skills'; filePath?: string }
   | { type: "taskProgress"; taskId: string; toolUseId?: string; description: string; summary?: string; lastToolName?: string; usage?: { totalTokens: number; toolUses: number; durationMs: number } }
@@ -886,7 +889,7 @@ export type ExtensionToWebviewMessage =
    * `authFailure`: the aside's call failed on that account's credential, shown as the transcript's notice with `message` behind
    * Details, except for `missing`, whose `message` is pi's and never shown.
    */
-  | { type: "btwError"; btwId: string; message: string; authFailure?: AuthFailure }
+  | { type: "btwError"; btwId: string; message: LocalizedText; authFailure?: AuthFailure }
   | { type: "backgroundTaskStarted"; task: import('./background-tasks').BackgroundTask }
   // `requestId` echoes the `steerAgent` this answers; a steer the extension sends on its own carries none.
   | { type: "subagentSteered"; agentId: string; toolUseId: string | null; agentType?: string; description?: string; message: string; images?: ImageBlock[]; requestId?: string; status: 'steered' | 'queued' | 'finished' | 'failed' | 'not-found'; team?: { teamId: string; teamTitle: string; memberName: string; role: 'lead' | 'specialist' } }
@@ -911,7 +914,8 @@ export type ExtensionToWebviewMessage =
   // `metadata` is the team path's only carrier for a tool result's `details`; the other two producers emit `toolMetadata`.
   | { type: "teamAgentToolResult"; teamId: string; agentId: string; toolUseId: string; result: string; isError?: boolean; imageCount?: number; metadata?: Record<string, unknown> }
   | { type: "teamAgentUsageUpdate"; teamId: string; agentId: string; totalInputTokens: number; totalOutputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }
-  | { type: "teamAgentDataLoaded"; teamId: string; agentId: string; messages: import('./team').TeamAgentHistoryMessage[] }
+  // `streaming`: a running member's open message so far, which replaces what the page streams for it
+  | { type: "teamAgentDataLoaded"; teamId: string; agentId: string; messages: import('./team').TeamAgentHistoryMessage[]; streaming?: { text: string; thinking: string; isThinkingPhase: boolean } }
   /**
    * `pendingPrompts` is every unanswered prompt with its owner, in the order raised; non-empty exactly when `state` is `requires_action`.
    * `windDown` is present while the main chat's stopped run outlasts `WIND_DOWN_NOTICE_MS` winding down. Display only.
@@ -935,19 +939,19 @@ export type ExtensionToWebviewMessage =
   // open); it answers a webview waiting for the place, as worktreeState does.
   | { type: "noWorktreeState" }
   | { type: "compassStatusUpdate"; status: CompassIndexStatus }
-  | { type: "compassBuildProgress"; current: number; total: number; phase: 'build' | 'postprocess' | 'serialize'; label?: string }
+  | { type: "compassBuildProgress"; current: number; total: number; phase: 'build' | 'postprocess' | 'serialize' }
   | { type: "compassSearchResults"; results: CompassSearchResult[] }
   | { type: "compassGraphData"; data: CompassGraphData }
   | { type: "compassBlastRadiusData"; data: CompassBlastRadiusResult }
   | { type: "compassBlastRadiusDismissed" }
   | { type: "compassValidationResult"; data: CompassValidationResult }
   | { type: "openaiAuthStatusChanged"; status: { chatgpt: { signedIn: boolean; expiresAt?: number }; codex: { signedIn: boolean; expiresAt?: number }; apikey: { configured: boolean } }; preferApiKey: boolean; active?: ProviderCredentialActive }
-  | { type: "setOpenAIApiKeyAck"; requestId: string; ok: boolean; validated?: boolean; modelCount?: number; warning?: string; error?: string }
-  | { type: "clearOpenAIApiKeyAck"; requestId: string; ok: boolean; error?: string }
-  | { type: "setOpenAIPreferApiKeyAck"; requestId: string; ok: boolean; error?: string }
-  | { type: "setProviderPreferApiKeyAck"; provider: KeyProviderId; requestId: string; ok: boolean; error?: string }
-  | { type: "setProviderApiKeyAck"; provider: KeyProviderId; requestId: string; ok: boolean; error?: string }
-  | { type: "clearProviderApiKeyAck"; provider: KeyProviderId; requestId: string; ok: boolean; error?: string }
+  | { type: "setOpenAIApiKeyAck"; requestId: string; ok: boolean; validated?: boolean; modelCount?: number; warning?: LocalizedText; error?: LocalizedText }
+  | { type: "clearOpenAIApiKeyAck"; requestId: string; ok: boolean; error?: LocalizedText }
+  | { type: "setOpenAIPreferApiKeyAck"; requestId: string; ok: boolean; error?: LocalizedText }
+  | { type: "setProviderPreferApiKeyAck"; provider: KeyProviderId; requestId: string; ok: boolean; error?: LocalizedText }
+  | { type: "setProviderApiKeyAck"; provider: KeyProviderId; requestId: string; ok: boolean; error?: LocalizedText }
+  | { type: "clearProviderApiKeyAck"; provider: KeyProviderId; requestId: string; ok: boolean; error?: LocalizedText }
   | { type: "providerSignInState"; provider: SignInProviderId; state: ProviderSignInState }
   | { type: "providerSignInCopyCodeAck"; provider: SignInProviderId; ok: boolean }
   | { type: "setModelPickerProviderAck"; provider: ModelVendor; requestId: string; ok: boolean }
@@ -957,12 +961,12 @@ export type ExtensionToWebviewMessage =
   | { type: "memoryJudgeStatus"; memoryJudge: MemoryJudge; classifierCredentials: Record<ClassifierProvider, ClassifierCredential> }
   | { type: "openaiChatGPTAuthStarted" }
   | { type: "openaiChatGPTAuthCompleted" }
-  | { type: "openaiChatGPTAuthFailed"; error: string }
+  | { type: "openaiChatGPTAuthFailed"; error: LocalizedText }
   | { type: "openaiAuthRequired"; modelValue: string }
   | { type: "claudeAuthStatusChanged"; mode: "none" | "apikey" | "allowance" | "extra" }
   | { type: "claudeAuthBusy"; busy: boolean }
   | { type: "claudeAuthCancelled" }
-  | { type: "claudeAuthError"; error: string }
+  | { type: "claudeAuthError"; error: LocalizedText }
   /** True while a sign-in waits for the browser to return and accepts a pasted redirect URL instead. */
   | { type: "claudeSignInWaiting"; waiting: boolean }
   | { type: "openSettingsPanel"; section?: SettingsSectionId; account?: SettingsAccountId }

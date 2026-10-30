@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { installFakePlatform } from '../../../__mocks__/fake-platform';
 import { chatgptPlanName, claudePlanName, RATE_LIMIT_REFRESH_BOUND_MS, UsageMonitor, USAGE_REFRESH_INTERVAL_MS, type UsageThresholdCrossing } from '../usage-thresholds';
 import type { ClaudeAccountProfile, ProviderUsage, SubscriptionUsageData, UsageWindowBar } from '../../../shared/types/usage';
+import { englishText } from '../../../shared/localized-text';
 
 const RESET = Date.parse('2026-03-01T15:00:00Z');
 const HOUR = 3_600_000;
@@ -57,8 +58,8 @@ describe('usage threshold crossings', () => {
     await h.observe(claude([bar(99)]));
 
     expect(h.crossings).toEqual([
-      { provider: 'anthropic', windowId: 'five_hour', windowLabel: 'Session (5hr)', threshold: 80, utilization: 81, resetsAt: RESET, planName: 'Max 20x' },
-      { provider: 'anthropic', windowId: 'five_hour', windowLabel: 'Session (5hr)', threshold: 95, utilization: 96, resetsAt: RESET, planName: 'Max 20x' },
+      { provider: 'anthropic', windowId: 'five_hour', windowLabel: { message: 'Session (5hr)' }, threshold: 80, utilization: 81, resetsAt: RESET, planName: 'Max 20x' },
+      { provider: 'anthropic', windowId: 'five_hour', windowLabel: { message: 'Session (5hr)' }, threshold: 95, utilization: 96, resetsAt: RESET, planName: 'Max 20x' },
     ]);
   });
 
@@ -87,12 +88,18 @@ describe('usage threshold crossings', () => {
     const h = harness();
     const scoped = `seven_day_opus\u202e\u0007${'x'.repeat(80)}`;
     await h.observe(claude([bar(81, RESET, 'weekly\nall'), bar(82, RESET, scoped), bar(83, RESET, '\u202e\u0000')]));
-    const [kind, model, empty] = h.crossings.map((c) => c.windowLabel);
+    const [kind, model, empty] = h.crossings.map((c) => englishText(c.windowLabel));
     expect(kind).toBe('Weekly all');
     expect(model).toMatch(/^Weekly Opus x+…$/u);
     expect([...model!]).toHaveLength(60);
     expect(empty).toBe('');
     expect(h.crossings.map((c) => c.windowId)).toEqual(['weekly\nall', scoped, '\u202e\u0000']);
+  });
+
+  it('labels a model-scoped weekly window whose model name has nothing printable as Weekly', async () => {
+    const h = harness();
+    await h.observe(claude([bar(81, RESET, 'seven_day_\u202e\u0007')]));
+    expect(h.crossings.map((c) => c.windowLabel)).toEqual([{ message: 'Weekly' }]);
   });
 
   it('keys each window apart, and a window with no reset time re-arms once its use falls below the threshold', async () => {
@@ -104,15 +111,15 @@ describe('usage threshold crossings', () => {
     await h.observe(gpt(60));
     await h.observe(gpt(83));
     expect(h.crossings).toEqual([
-      { provider: 'openai', windowId: 'codex_secondary', windowLabel: 'Weekly', threshold: 80, utilization: 82, planName: 'Plus' },
-      { provider: 'openai', windowId: 'codex_secondary', windowLabel: 'Weekly', threshold: 80, utilization: 83, planName: 'Plus' },
+      { provider: 'openai', windowId: 'codex_secondary', windowLabel: { message: 'Weekly' }, threshold: 80, utilization: 82, planName: 'Plus' },
+      { provider: 'openai', windowId: 'codex_secondary', windowLabel: { message: 'Weekly' }, threshold: 80, utilization: 83, planName: 'Plus' },
     ]);
   });
 
   it('labels a model-scoped weekly window by its model', async () => {
     const h = harness();
     await h.observe(claude([bar(81, RESET, 'seven_day'), bar(82, RESET, 'seven_day_opus')]));
-    expect(h.crossings.map((c) => c.windowLabel)).toEqual(['Weekly (7 day)', 'Weekly Opus']);
+    expect(h.crossings.map((c) => c.windowLabel)).toEqual([{ message: 'Weekly (7 day)' }, { message: 'Weekly {0}', args: ['Opus'] }]);
   });
 });
 
@@ -143,7 +150,7 @@ describe('a credential change', () => {
     h.monitor.credentialsChanged();
 
     // The change also reset the interval, so the next settled turn fetches with the new credentials at once, never joining the old fetch.
-    h.responses.push(claude([bar(96, RESET + 5 * HOUR)], { profileError: 'HTTP 403' }));
+    h.responses.push(claude([bar(96, RESET + 5 * HOUR)], { profileError: { message: 'HTTP {0}', args: [403] } }));
     h.monitor.refreshAfterTurn();
     expect(h.fetchUsage).toHaveBeenCalledTimes(3);
     answer(claude([bar(96)]));
@@ -158,9 +165,9 @@ describe('plan names', () => {
   it('a crossing carries the last plan when the profile is refused, and none once the account is gone', async () => {
     const h = harness();
     await h.observe(claude([bar(81)]));
-    await h.observe(claude([bar(81, RESET + 5 * HOUR)], { profileError: 'HTTP 403' }));
+    await h.observe(claude([bar(81, RESET + 5 * HOUR)], { profileError: { message: 'HTTP {0}', args: [403] } }));
     await h.observe({ claude: NOT_CONNECTED, gpt: NOT_CONNECTED, fetchedAt: 0 });
-    await h.observe(claude([bar(81, RESET + 10 * HOUR)], { profileError: 'HTTP 403' }));
+    await h.observe(claude([bar(81, RESET + 10 * HOUR)], { profileError: { message: 'HTTP {0}', args: [403] } }));
     expect(h.crossings.map((c) => c.planName)).toEqual(['Max 20x', 'Max 20x', undefined]);
   });
 
@@ -195,27 +202,27 @@ describe('the full window a rate limit names (D55)', () => {
   }
 
   it('names a full session window with its label and reset', async () => {
-    expect(await fullWindowOf(claude([bar(100), bar(40, WEEK, 'seven_day')]))).toEqual({ windowId: 'five_hour', windowLabel: 'Session (5hr)', resetsAt: RESET });
+    expect(await fullWindowOf(claude([bar(100), bar(40, WEEK, 'seven_day')]))).toEqual({ windowId: 'five_hour', windowLabel: { message: 'Session (5hr)' }, resetsAt: RESET });
   });
 
   it('names a full weekly window', async () => {
-    expect(await fullWindowOf(claude([bar(70), bar(100, WEEK, 'seven_day')]))).toEqual({ windowId: 'seven_day', windowLabel: 'Weekly (7 day)', resetsAt: WEEK });
+    expect(await fullWindowOf(claude([bar(70), bar(100, WEEK, 'seven_day')]))).toEqual({ windowId: 'seven_day', windowLabel: { message: 'Weekly (7 day)' }, resetsAt: WEEK });
   });
 
   it('names the window that resets last when several are full, one with no reset time last of all', async () => {
     expect(await fullWindowOf(claude([bar(100), bar(100, WEEK, 'seven_day')]))).toMatchObject({ windowId: 'seven_day', resetsAt: WEEK });
-    expect(await fullWindowOf(claude([bar(100, WEEK, 'seven_day'), bar(100, null)]))).toEqual({ windowId: 'five_hour', windowLabel: 'Session (5hr)' });
+    expect(await fullWindowOf(claude([bar(100, WEEK, 'seven_day'), bar(100, null)]))).toEqual({ windowId: 'five_hour', windowLabel: { message: 'Session (5hr)' } });
   });
 
   it("counts a model-scoped weekly window only for that model", async () => {
     const opus = claude([bar(100, WEEK, 'seven_day_opus')]);
     expect(await fullWindowOf(opus, 'anthropic', 'claude-sonnet-5-5')).toBeUndefined();
-    expect(await fullWindowOf(opus, 'anthropic', 'claude-opus-5-5')).toEqual({ windowId: 'seven_day_opus', windowLabel: 'Weekly Opus', resetsAt: WEEK });
+    expect(await fullWindowOf(opus, 'anthropic', 'claude-opus-5-5')).toEqual({ windowId: 'seven_day_opus', windowLabel: { message: 'Weekly {0}', args: ['Opus'] }, resetsAt: WEEK });
   });
 
   it("reads the chat model's provider", async () => {
     const data: SubscriptionUsageData = { claude: { status: 'ok', bars: [bar(100)], profile: PROFILE }, gpt: gptOk([{ id: 'codex_primary', utilization: 100, resetsAt: WEEK, windowSeconds: 5 * 3600 }]), fetchedAt: 0 };
-    expect(await fullWindowOf(data, 'openai', 'gpt-6.1-sol')).toEqual({ windowId: 'codex_primary', windowLabel: 'Session (5hr)', resetsAt: WEEK });
+    expect(await fullWindowOf(data, 'openai', 'gpt-6.1-sol')).toEqual({ windowId: 'codex_primary', windowLabel: { message: 'Session (5hr)' }, resetsAt: WEEK });
   });
 
   it('names none when no window is full', async () => {

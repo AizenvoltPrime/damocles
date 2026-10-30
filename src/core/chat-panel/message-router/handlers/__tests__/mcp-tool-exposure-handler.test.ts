@@ -4,11 +4,11 @@ vi.mock("../../../../logger", () => ({ log: vi.fn() }));
 
 import { createSettingsHandlers } from "../settings-handlers";
 import { SettingsManager } from "../../../settings-manager";
-import { platform } from "../../../../platform-host";
 import type { HandlerDependencies, HandlerContext } from "../../types";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../../shared/types/messages";
 import type { McpServerStatusInfo, McpToolExposureScope, McpToolExposureSetting } from "../../../../../shared/types/mcp";
 import { createFakePlatform } from "../../../../../__mocks__/fake-platform";
+import { englishText } from "../../../../../shared/localized-text";
 
 const KEY = "damocles.mcp.toolExposure";
 
@@ -164,7 +164,7 @@ describe("mcpSetToolExposure", () => {
     expect(t.posted).toContainEqual({
       type: "notification",
       notificationType: "info",
-      message: "Saved at the User scope, but this tool's Project setting takes precedence, so it did not change. Save to Project to change it.",
+      message: { message: "Saved at the {0} scope, but this tool's {1} setting takes precedence, so it did not change. Save to {1} to change it.", args: [{ message: "User" }, { message: "Project" }] },
     });
   });
 
@@ -186,22 +186,20 @@ describe("mcpSetToolExposure", () => {
 
     expect(t.update).not.toHaveBeenCalled();
     expect(t.posted.filter((m) => m.type === "notification")).toEqual([
-      { type: "notification", notificationType: "error", message: "Failed to save MCP tool setting: Invalid MCP tool setting." },
-      { type: "notification", notificationType: "error", message: "Failed to save MCP tool setting: Invalid MCP tool setting." },
+      { type: "notification", notificationType: "error", message: { message: "Failed to save MCP tool setting: {0}", args: [{ message: "Invalid MCP tool setting." }] } },
+      { type: "notification", notificationType: "error", message: { message: "Failed to save MCP tool setting: {0}", args: [{ message: "Invalid MCP tool setting." }] } },
     ]);
   });
 
-  it("localizes the reason inside the failure notice", async () => {
+  it("sends the reason inside the failure notice as text the view renders", async () => {
     const t = setup({ scopes: ["user"] });
-    vi.spyOn(platform().localization, "t").mockImplementation((message: string, ...args: Array<string | number | boolean>) =>
-      `<${message.replace(/\{(\d+)\}/g, (_match, i: string) => String(args[Number(i)]))}>`);
 
     await t.run("off", "project");
     await t.run("off", "user", "nonexistent");
 
-    expect(t.posted.filter((m) => m.type === "notification").map((m) => (m as { message: string }).message)).toEqual([
-      "<Failed to save MCP tool setting: <This folder cannot save MCP tool settings at the <Project> scope.>>",
-      '<Failed to save MCP tool setting: <MCP server "context7" has no tool "nonexistent".>>',
+    expect(t.posted.filter((m) => m.type === "notification").map((m) => m.type === "notification" && m.message)).toEqual([
+      { message: "Failed to save MCP tool setting: {0}", args: [{ message: "This folder cannot save MCP tool settings at the {0} scope.", args: [{ message: "Project" }] }] },
+      { message: "Failed to save MCP tool setting: {0}", args: [{ message: 'MCP server "{0}" has no tool "{1}".', args: ["context7", "nonexistent"] }] },
     ]);
   });
 
@@ -223,6 +221,6 @@ describe("mcpSetToolExposure", () => {
     await t.run("off", "user", "nonexistent");
 
     expect(t.update).not.toHaveBeenCalled();
-    expect(t.posted.some((m) => m.type === "notification" && m.message.includes("nonexistent"))).toBe(true);
+    expect(t.posted.some((m) => m.type === "notification" && englishText(m.message).includes("nonexistent"))).toBe(true);
   });
 });

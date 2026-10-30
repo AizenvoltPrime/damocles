@@ -873,6 +873,8 @@ export type ScmMergeOperation = (typeof SCM_MERGE_OPERATIONS)[number];
 // as VS Code's merge editor shows them.
 export interface ScmMergeLabel {
   readonly title: string;
+  // the name this input's conflict markers carry, which Reset Result writes as Compute Conflicts With Git does
+  readonly marker: string;
   readonly description?: string;
   readonly detail?: string;
 }

@@ -2,7 +2,7 @@ import { mergeWithMarkers, trimmedMerge, type MergeLabels } from '@shared/scm/me
 import { splitLines } from '../quick-diff/quick-diff-compute';
 import { parseConflicts, type Conflict } from './conflict-parser';
 
-export { MERGE_ALIGN_MAX_LINES, mergeWithMarkers, type MergeLabels } from '@shared/scm/merge-markers';
+export { MERGE_ALIGN_MAX_LINES, markerNames, mergeWithMarkers, type MergeLabels } from '@shared/scm/merge-markers';
 
 // The merge editor's model (B28): node-diff3 aligns base, current and incoming into regions, so each conflict of the Result
 // shows where it sits in the Current and Incoming panes; the Result's own conflicts are its marker blocks, which accepting a

@@ -7,6 +7,7 @@ import { TOOL_AGENT, TEAM_CREATE_TOOL, TEAM_RESUME_TOOL } from "@shared/tool-nam
 import { isImageBlock } from "@shared/types/content";
 import { countReplayItem } from "@/utils/perf";
 import { buildMessage, buildSteerChip, buildUserMessage } from "@/stores/useStreamingStore";
+import { renderText } from "@/composables/useLocalizedText";
 
 /** These append through the streaming store's replay queue; the dispatcher flushes it before any other type. */
 export const QUEUED_REPLAY_TYPES: ReadonlySet<ExtensionToWebviewMessage["type"]> = new Set(["userReplay", "assistantReplay", "errorReplay"]);
@@ -84,7 +85,8 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
     errorReplay: (msg, ctx) => {
       ctx.stores.streamingStore.queueReplayMessage(buildMessage({
         role: "error",
-        content: msg.content,
+        content: "",
+        error: msg.content,
         ...(msg.authFailure ? { authFailure: msg.authFailure } : {}),
         timestamp: Date.now(),
         isReplay: true,
@@ -114,7 +116,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
     },
 
     rewindError: (msg) => {
-      toast.error(i18n.global.t("toast.rewindFailed", { message: msg.message }));
+      toast.error(i18n.global.t("toast.rewindFailed", { message: renderText(msg.message) }));
     },
 
     compactBoundary: (msg, ctx) => {

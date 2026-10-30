@@ -27,4 +27,9 @@ describe('formatTokenCount', () => {
     expect(formatTokenCount(2_000_000, 'en')).toBe('2.0M');
     expect(formatTokenCount(1_500, 'el')).toBe('1,5K');
   });
+
+  it('abbreviates a billion as B', () => {
+    expect(formatTokenCount(1_500_000_000, 'en')).toBe('1.5B');
+    expect(formatTokenCount(1_500_000_000, 'el')).toBe('1,5B');
+  });
 });

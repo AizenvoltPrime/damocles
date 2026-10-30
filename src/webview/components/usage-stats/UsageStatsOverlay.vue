@@ -17,12 +17,14 @@ import StatsTopSessions from './StatsTopSessions.vue';
 import type { StatsMetric } from './stats-chart-data';
 import { useUsageStatsStore } from '@/stores/useUsageStatsStore';
 import { useStatsFormat } from '@/composables/useStatsFormat';
+import { useLocalizedText } from '@/composables/useLocalizedText';
 
 defineEmits<{
   (e: 'close'): void;
 }>();
 
 const { t } = useI18n();
+const { rt } = useLocalizedText();
 const store = useUsageStatsStore();
 const format = useStatsFormat();
 
@@ -111,7 +113,7 @@ const updatedText = computed(() => {
             v-if="store.error"
             class="wrap-break-word text-xs text-(--d-muted)"
           >
-            {{ store.error }}
+            {{ rt(store.error) }}
           </p>
         </div>
         <Button

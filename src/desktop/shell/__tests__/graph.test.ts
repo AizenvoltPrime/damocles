@@ -266,6 +266,19 @@ describe('the Graph section', () => {
     expect(wrapper.find('[data-testid="graph-ref-chip"]').exists()).toBe(false);
   });
 
+  // the repository id stays undefined across the grant, so only the trust change can take the card away
+  it('trusting a project with no repository takes the trust card away', async () => {
+    const scm = scmWith(page(MERGED), { state: 'untrusted', repos: [], selectedRepoId: null });
+    const { wrapper } = await mountGraph(scm);
+    expect(wrapper.get('[data-testid="scm-state"]').attributes('data-state')).toBe('untrusted');
+
+    scm.pushView(view({ state: 'noRepository', repos: [], selectedRepoId: null }));
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="scm-state"]').exists()).toBe(false);
+    expect(scm.history).not.toHaveBeenCalled();
+  });
+
   it('says No commits yet. for an unborn HEAD', async () => {
     const { wrapper } = await mountGraph(scmWith({ ok: false, reason: 'empty' }));
     expect(wrapper.get('[data-testid="graph-state"]').text()).toBe('No commits yet.');

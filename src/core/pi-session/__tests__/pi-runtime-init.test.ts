@@ -30,7 +30,7 @@ const H = vi.hoisted(() => {
       }
     },
   };
-  return { createServicesSpy, settingsCreateSpy, agentSettings, modelRuntime, fakePi, ctrl: { loadable: true }, home: '' };
+  return { createServicesSpy, settingsCreateSpy, agentSettings, modelRuntime, fakePi, ctrl: { loadable: true }, home: '', agentDir: '/fake/agent' };
 });
 
 // The user-scope asset dirs are resolved through `os.homedir()`. Redirect it to a temp dir so the
@@ -53,13 +53,17 @@ vi.mock('../pi-loader', () => ({
 vi.mock('../agent-dir', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../agent-dir')>()),
   ensurePiAgentDir: () => undefined,
-  PI_AGENT_DIR: '/fake/agent',
+  get PI_AGENT_DIR() {
+    return H.agentDir;
+  },
 }));
 
 import { PiRuntime } from '../pi-runtime';
 import { FolderRuntime } from '../folder-runtime';
 import { installLogSink } from '../../logger';
 import { installFakePlatform, type FakeFileWatcher, type FakePlatform } from '../../../__mocks__/fake-platform';
+import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
+import { initPiLoader } from '../pi-loader';
 
 let fake: FakePlatform;
 
@@ -190,6 +194,7 @@ describe('PiRuntime.init lifecycle', () => {
     await PiRuntime.disposeInstance();
     openedDirs.length = 0;
     H.home = '';
+    H.agentDir = '/fake/agent';
     for (const dir of tempDirs.splice(0)) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -359,6 +364,386 @@ describe('PiRuntime.init lifecycle', () => {
     expect(runtime.modelRuntime).toBeNull();
     await expect(runtime.init()).rejects.toThrow(/disposed/);
     await expect(runtime.folder('/cwd')).rejects.toThrow(/disposed/);
+  });
+
+  it('starts no init for a web search setting change, before init or after a failed one', async () => {
+    H.fakePi.ModelRuntime.create.mockClear();
+    const runtime = PiRuntime.get('/agent');
+    await runtime.refreshWebSearch();
+    expect(H.fakePi.ModelRuntime.create).not.toHaveBeenCalled();
+
+    H.fakePi.ModelRuntime.create.mockRejectedValueOnce(new Error('models.json could not be read'));
+    await expect(runtime.init()).rejects.toThrow('models.json could not be read');
+    await runtime.refreshWebSearch();
+    expect(H.fakePi.ModelRuntime.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets no secret or setting change made while it disposes reach the runtime', async () => {
+    const runtime = PiRuntime.get('/agent');
+    const folder = await runtime.folder('/cwd');
+    const refresh = vi.spyOn(folder, 'refreshActiveTools');
+    let published = 0;
+    const stops = [PiRuntime.onMemoryJudgeChange(() => void published++), PiRuntime.onOpenAICredentialChange(() => void published++), PiRuntime.onCustomProvidersSynced(() => void published++)];
+    const reads = vi.spyOn(fake.secrets, 'get');
+    H.modelRuntime.setRuntimeApiKey.mockClear();
+    H.modelRuntime.removeRuntimeApiKey.mockClear();
+    try {
+      const disposed = runtime.dispose();
+      // released at once, so the panels' own listeners publish what arrives while the rest winds down
+      const userWatchers = fake.fileWatchers.watchers.filter((w) => w.base?.startsWith(H.home));
+      expect([PiRuntime.observesSecrets, PiRuntime.observesOpenAIKey, userWatchers.length > 0, userWatchers.every((w) => w.disposed)]).toEqual([false, false, true, true]);
+      await fake.secrets.store('damocles.openai.apiKey', 'sk-another-window');
+      await fake.secrets.store('damocles.typesafe.apiKey', 'ts-another-window');
+      await fake.settings.update('damocles.mcp.toolExposure', { ctx: { query: 'off' } }, 'user');
+      await disposed;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect([reads.mock.calls.length, H.modelRuntime.setRuntimeApiKey.mock.calls.length, H.modelRuntime.removeRuntimeApiKey.mock.calls.length, refresh.mock.calls.length, published]).toEqual([0, 0, 0, 0, 0]);
+    } finally {
+      for (const stop of stops) stop();
+    }
+  });
+
+  /** Counts what the runtime publishes from now on: judge notices, OpenAI credential notices, key sync ends, client auth notices and auth-file notices. */
+  function publications(): { count: () => number; stop: () => void } {
+    let count = 0;
+    const stops = [
+      PiRuntime.onMemoryJudgeChange(() => void count++),
+      PiRuntime.onOpenAICredentialChange(() => void count++),
+      PiRuntime.onCustomProvidersSynced(() => void count++),
+      PiRuntime.onClientAuthChange(() => void count++),
+      PiRuntime.onAuthFileChange(() => void count++),
+    ];
+    return { count: () => count, stop: () => { for (const stop of stops) stop(); } };
+  }
+
+  const held = (): { promise: Promise<void>; release: () => void } => {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => { release = resolve; });
+    return { promise, release };
+  };
+
+  it('installs no listener or watcher when it is disposed while init runs', async () => {
+    H.fakePi.ModelRuntime.create.mockClear();
+    const create = held();
+    H.fakePi.ModelRuntime.create.mockImplementationOnce(async () => {
+      await create.promise;
+      return H.modelRuntime;
+    });
+    const runtime = PiRuntime.get('/agent');
+    const init = runtime.init();
+    await vi.waitFor(() => expect(H.fakePi.ModelRuntime.create).toHaveBeenCalled());
+
+    const disposed = runtime.dispose();
+    create.release();
+
+    await expect(init).rejects.toThrow(/disposed/);
+    await disposed;
+    expect([PiRuntime.observesSecrets, PiRuntime.observesOpenAIKey, fake.fileWatchers.watchers.filter((w) => !w.disposed).length]).toEqual([false, false, 0]);
+  });
+
+  it('publishes nothing for the key sync at init that a dispose overtook, though its read found a key the record missed', async () => {
+    fake = installFakePlatform({ secrets: { 'damocles.openai.apiKey': 'sk-saved' } });
+    // the runtime's first read fails, so its record holds no key
+    vi.spyOn(fake.secrets, 'get').mockRejectedValueOnce(new Error('keyring locked'));
+    const runtime = PiRuntime.get('/agent');
+    await runtime.openaiKeyRecording;
+    expect(runtime.getOpenAIAuthStatus().apiKey).toBe(false);
+    const apply = held();
+    H.modelRuntime.setRuntimeApiKey.mockImplementationOnce(async () => {
+      await apply.promise;
+      return undefined;
+    });
+    const published = publications();
+    try {
+      const init = runtime.init();
+      await vi.waitFor(() => expect(H.modelRuntime.setRuntimeApiKey).toHaveBeenCalled());
+      const disposed = runtime.dispose();
+      apply.release();
+      await expect(init).rejects.toThrow(/disposed/);
+      await disposed;
+
+      expect(published.count()).toBe(0);
+    } finally {
+      published.stop();
+    }
+  });
+
+  it('publishes nothing for a key sync a dispose aborted', async () => {
+    const runtime = PiRuntime.get('/agent');
+    await runtime.init();
+    await runtime.syncCustomProviders(async () => undefined);
+    const secret = held();
+    const published = publications();
+    try {
+      const sync = runtime.syncCustomProviders(async () => {
+        await secret.promise;
+        return undefined;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const disposed = runtime.dispose();
+      secret.release();
+      await sync;
+      await disposed;
+
+      expect(published.count()).toBe(0);
+    } finally {
+      published.stop();
+    }
+  });
+
+  it.each([
+    ['queued behind a sync', 'queued'],
+    ['reading the secret', 'reading'],
+    ['applying the key', 'syncing'],
+  ] as const)('ends an OpenAI key secret change %s when the dispose starts, with nothing more read, applied or published', async (_where, where) => {
+    const runtime = PiRuntime.get('/agent');
+    await runtime.init();
+    const gate = held();
+    const published = publications();
+    const reads = vi.spyOn(fake.secrets, 'get');
+    try {
+      let pending: Promise<unknown> = Promise.resolve();
+      if (where === 'queued') {
+        // a prefer toggle's sync holds the credential chain, so the change waits behind it
+        H.modelRuntime.removeRuntimeApiKey.mockClear();
+        H.modelRuntime.removeRuntimeApiKey.mockImplementationOnce(async () => {
+          await gate.promise;
+          return undefined;
+        });
+        pending = runtime.applyOpenAIPreferApiKey();
+        await vi.waitFor(() => expect(H.modelRuntime.removeRuntimeApiKey).toHaveBeenCalled());
+      } else if (where === 'reading') {
+        reads.mockImplementationOnce(async () => {
+          await gate.promise;
+          return 'sk-another-window';
+        });
+      } else {
+        H.modelRuntime.setRuntimeApiKey.mockImplementationOnce(async () => {
+          await gate.promise;
+          return undefined;
+        });
+      }
+      reads.mockClear();
+      H.modelRuntime.setRuntimeApiKey.mockClear();
+      await fake.secrets.store('damocles.openai.apiKey', 'sk-another-window');
+      if (where === 'reading') await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
+      if (where === 'syncing') await vi.waitFor(() => expect(H.modelRuntime.setRuntimeApiKey).toHaveBeenCalledTimes(1));
+      const disposed = runtime.dispose();
+      gate.release();
+      await pending;
+      await disposed;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      // what ran before the dispose started: the change's own read, and with it its sync's read and key
+      const before = { queued: [0, 0], reading: [1, 0], syncing: [2, 1] }[where];
+      expect([reads.mock.calls.length, H.modelRuntime.setRuntimeApiKey.mock.calls.length, published.count()]).toEqual([...before, 0]);
+    } finally {
+      published.stop();
+    }
+  });
+
+  it.each([
+    ['refreshing pi', 'refresh'],
+    ['syncing the keys', 'keySync'],
+  ] as const)('ends an auth.json change it was %s for when the dispose starts, with nothing more synced or published', async (_step, step) => {
+    const agentDir = tempDir('pi-agent-');
+    const authPath = path.join(agentDir, 'auth.json');
+    const runtime = PiRuntime.get(agentDir);
+    await runtime.init();
+    await runtime.syncCustomProviders(async () => undefined);
+    const gate = held();
+    const getAvailable = vi.fn(async () => {
+      if (step === 'refresh') await gate.promise;
+      return [];
+    });
+    Object.assign(H.modelRuntime, { getAvailable });
+    const keySync = vi.spyOn(runtime, 'syncCustomProviders');
+    // a key sync still running when the dispose starts, as one waiting on pi's auth lock is
+    if (step === 'keySync') keySync.mockImplementationOnce(async () => {
+      await gate.promise;
+      return { wired: [], notWired: [], timedOut: false };
+    });
+    const resets = vi.spyOn(runtime.usage, 'credentialsChanged');
+    const lines: string[] = [];
+    installLogSink({ appendLine: (line) => void lines.push(line), show: () => undefined, dispose: () => undefined });
+    const published = publications();
+    try {
+      fs.writeFileSync(authPath, JSON.stringify({ anthropic: { type: 'api_key', key: 'sk-ant' } }));
+      watcherFor(agentDir, 'auth.json').fireChange(authPath);
+      await vi.waitFor(() => expect(step === 'refresh' ? getAvailable : keySync).toHaveBeenCalled());
+      const disposed = runtime.dispose();
+      gate.release();
+      await disposed;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      // the OpenAI resync runs before the key sync, so it ran only once the refresh was through
+      expect([resets.mock.calls.length, keySync.mock.calls.length, published.count()]).toEqual(step === 'refresh' ? [0, 0, 0] : [1, 1, 0]);
+      expect(lines.filter((line) => line.includes('[PiRuntime]'))).toEqual([]);
+    } finally {
+      published.stop();
+      Reflect.deleteProperty(H.modelRuntime, 'getAvailable');
+    }
+  });
+
+  it('ends a prefer flag resync under way when the dispose starts, publishing nothing, and starts none after it', async () => {
+    const runtime = PiRuntime.get('/agent');
+    await runtime.init();
+    const gate = held();
+    H.modelRuntime.removeRuntimeApiKey.mockImplementationOnce(async () => {
+      await gate.promise;
+      return undefined;
+    });
+    const resets = vi.spyOn(runtime.usage, 'credentialsChanged');
+    const lines: string[] = [];
+    installLogSink({ appendLine: (line) => void lines.push(line), show: () => undefined, dispose: () => undefined });
+    const published = publications();
+    try {
+      H.modelRuntime.removeRuntimeApiKey.mockClear();
+      await fake.state.global.update('damocles.openai.preferApiKey', true);
+      runtime.preferOpenAIApiKey();
+      await vi.waitFor(() => expect(H.modelRuntime.removeRuntimeApiKey).toHaveBeenCalled());
+      const disposed = runtime.dispose();
+      gate.release();
+      await disposed;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(published.count()).toBe(0);
+
+      resets.mockClear();
+      await fake.state.global.update('damocles.openai.preferApiKey', false);
+      runtime.preferOpenAIApiKey();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect([resets.mock.calls.length, published.count()]).toEqual([0, 0]);
+      expect(lines.filter((line) => line.includes('[PiRuntime]'))).toEqual([]);
+    } finally {
+      published.stop();
+    }
+  });
+
+  it('creates no token broker on a daemon\'s core when it is disposed while pi loads', async () => {
+    fake = installFakePlatform();
+    Object.assign(fake, { remote: createFakeRemoteHost().remote });
+    const load = held();
+    vi.mocked(initPiLoader).mockImplementationOnce(async () => {
+      await load.promise;
+      return H.fakePi as never;
+    });
+    const runtime = PiRuntime.get('/agent');
+    const init = runtime.init();
+    await vi.waitFor(() => expect(initPiLoader).toHaveBeenCalled());
+
+    const disposed = runtime.dispose();
+    load.release();
+
+    await expect(init).rejects.toThrow(/disposed/);
+    await disposed;
+    expect(PiRuntime.observesClientAuth).toBe(false);
+  });
+
+  it('starts no init for a prefer flag another window changed after an init that failed past its key sync', async () => {
+    const inspect = fake.settings.inspect.bind(fake.settings);
+    vi.spyOn(fake.settings, 'inspect').mockImplementation(((key: string) => {
+      if (key === 'damocles.tools.disabled') throw new Error('settings unreadable');
+      return inspect(key);
+    }) as never);
+    const runtime = PiRuntime.get('/agent');
+    await expect(runtime.init()).rejects.toThrow('settings unreadable');
+    vi.mocked(fake.settings.inspect).mockRestore();
+    H.fakePi.ModelRuntime.create.mockClear();
+    H.modelRuntime.removeRuntimeApiKey.mockClear();
+
+    await fake.state.global.update('damocles.openai.preferApiKey', true);
+    runtime.preferOpenAIApiKey();
+
+    await vi.waitFor(() => expect(H.modelRuntime.removeRuntimeApiKey).toHaveBeenCalled());
+    expect(H.fakePi.ModelRuntime.create).not.toHaveBeenCalled();
+  });
+
+  it('holds one of each listener, watcher and MCP manager after a retried init whose first attempt failed past its key sync', async () => {
+    const live = { settings: 0, trust: 0 };
+    const counted = <A extends unknown[]>(key: keyof typeof live, subscribe: (...args: A) => { dispose: () => void }) => (...args: A) => {
+      const subscription = subscribe(...args);
+      live[key]++;
+      let disposed = false;
+      return { dispose: () => {
+        if (!disposed) live[key]--;
+        disposed = true;
+        subscription.dispose();
+      } };
+    };
+    fake.settings.onDidChange = counted('settings', fake.settings.onDidChange.bind(fake.settings));
+    fake.trust.onDidGrantTrust = counted('trust', fake.trust.onDidGrantTrust.bind(fake.trust));
+    const inspect = fake.settings.inspect.bind(fake.settings);
+    vi.spyOn(fake.settings, 'inspect').mockImplementation(((key: string) => {
+      if (key === 'damocles.tools.disabled') throw new Error('settings unreadable');
+      return inspect(key);
+    }) as never);
+    const runtime = PiRuntime.get('/agent');
+    await expect(runtime.init()).rejects.toThrow('settings unreadable');
+    const userWatchers = () => fake.fileWatchers.watchers.filter((w) => w.base?.startsWith(H.home) && !w.disposed).length;
+    const watchersOfOneAttempt = userWatchers();
+    expect(watchersOfOneAttempt).toBeGreaterThan(0);
+    const mcp = (runtime as unknown as { _userMcp: unknown })._userMcp;
+    vi.mocked(fake.settings.inspect).mockRestore();
+
+    await runtime.init();
+
+    // the image, tool exposure, resource exposure, disabled tools and asset precedence settings, and trust grants
+    expect({ ...live, userWatchers: userWatchers() }).toEqual({ settings: 5, trust: 1, userWatchers: watchersOfOneAttempt });
+    expect((runtime as unknown as { _userMcp: unknown })._userMcp).toBe(mcp);
+  });
+
+  it('writes no OpenAI prefer flag when its toggle fails, so a later read of the flag starts no resync', async () => {
+    H.fakePi.ModelRuntime.create.mockRejectedValueOnce(new Error('models.json could not be read'));
+    const runtime = PiRuntime.get('/agent');
+    const writes = vi.spyOn(fake.state.global, 'update');
+    // a failed init writes nothing at all, as the key providers' toggle does
+    await expect(runtime.setOpenAIPreferApiKey(true)).rejects.toThrow('models.json could not be read');
+    expect(writes).not.toHaveBeenCalled();
+    expect(fake.state.global.get('damocles.openai.preferApiKey')).toBeUndefined();
+
+    await runtime.init();
+    H.modelRuntime.removeRuntimeApiKey.mockClear();
+    H.modelRuntime.removeRuntimeApiKey.mockRejectedValueOnce(new Error('auth.json is locked'));
+    await expect(runtime.setOpenAIPreferApiKey(true)).rejects.toThrow('auth.json is locked');
+    expect(fake.state.global.get('damocles.openai.preferApiKey')).toBeUndefined();
+
+    const published = publications();
+    try {
+      H.modelRuntime.removeRuntimeApiKey.mockClear();
+      runtime.preferOpenAIApiKey();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect([H.modelRuntime.removeRuntimeApiKey.mock.calls.length, published.count()]).toEqual([0, 0]);
+    } finally {
+      published.stop();
+    }
+  });
+
+  it('runs every auth-file listener when one throws, and an own change that failed keeps its own error', async () => {
+    const agentDir = tempDir('pi-agent-');
+    H.agentDir = agentDir;
+    const authPath = path.join(agentDir, 'auth.json');
+    fs.writeFileSync(authPath, '{}');
+    const watch = PiRuntime.watchAuthFile();
+    const lines: string[] = [];
+    installLogSink({ appendLine: (line) => void lines.push(line), show: () => undefined, dispose: () => undefined });
+    const heard = vi.fn();
+    const stops = [PiRuntime.onAuthFileChange(() => { throw new Error('listener failed'); }), PiRuntime.onAuthFileChange(heard)];
+    try {
+      const runtime = PiRuntime.get(agentDir);
+      // a failure the caller does not publish goes back to the watcher's comparison at once
+      await expect(runtime.ownAuthFileChange(['anthropic'], false, async () => {
+        fs.writeFileSync(authPath, JSON.stringify({ anthropic: { type: 'api_key', key: 'sk-ant' } }));
+        throw new Error('login failed');
+      })).rejects.toThrow('login failed');
+
+      expect(heard).toHaveBeenCalledTimes(1);
+      expect(lines.some((line) => line.includes('auth file listener failed'))).toBe(true);
+    } finally {
+      for (const stop of stops) stop();
+      watch.dispose();
+    }
   });
 
   it('pushes a project .codex/skills dir into the loader via extendResources on init', async () => {
@@ -659,8 +1044,10 @@ describe('PiRuntime.init lifecycle', () => {
   });
 
   // A login, logout or token refresh in another process lands only in auth.json.
-  it('republishes the account state of each live session before and after the key sync, once per burst of auth.json events', async () => {
-    const runtime = PiRuntime.get('/agent');
+  it('republishes the account state of each live session once per burst of auth.json events, after the key sync', async () => {
+    const agentDir = tempDir('pi-agent-');
+    const authPath = path.join(agentDir, 'auth.json');
+    const runtime = PiRuntime.get(agentDir);
     await runtime.init();
     // the first key sync always publishes, so it runs before the bursts this counts
     await runtime.syncCustomProviders(async () => undefined);
@@ -675,19 +1062,27 @@ describe('PiRuntime.init lifecycle', () => {
 
     vi.useFakeTimers();
     try {
-      const watcher = watcherFor('/agent', 'auth.json');
-      watcher.fireChange(path.join('/agent', 'auth.json'));
-      watcher.fireChange(path.join('/agent', 'auth.json'));
-      watcher.fireCreate(path.join('/agent', 'auth.json'));
+      const watcher = watcherFor(agentDir, 'auth.json');
+      // a login in another app; the watch reacts to what the file now holds, never to the event alone
+      fs.writeFileSync(authPath, JSON.stringify({ anthropic: { type: 'api_key', key: 'sk-ant' } }));
+      watcher.fireChange(authPath);
+      watcher.fireChange(authPath);
+      watcher.fireCreate(authPath);
       expect(first.publishAccountInfo).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(150);
-      expect(first.publishAccountInfo).toHaveBeenCalledTimes(2);
-      expect(second.publishAccountInfo).toHaveBeenCalledTimes(2);
+      expect(first.publishAccountInfo).toHaveBeenCalledTimes(1);
+      expect(second.publishAccountInfo).toHaveBeenCalledTimes(1);
       expect(H.modelRuntime.removeRuntimeApiKey).toHaveBeenCalledWith('openai');
 
-      watcher.fireDelete(path.join('/agent', 'auth.json'));
+      fs.rmSync(authPath);
+      watcher.fireDelete(authPath);
       await vi.advanceTimersByTimeAsync(150);
-      expect(first.publishAccountInfo).toHaveBeenCalledTimes(4);
+      expect(first.publishAccountInfo).toHaveBeenCalledTimes(2);
+
+      // an event whose file holds what was published changes nothing
+      watcher.fireChange(authPath);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(first.publishAccountInfo).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
@@ -700,6 +1095,8 @@ describe('PiRuntime.init lifecycle', () => {
 
   // Activation watches auth.json before pi starts; the runtime takes that watch over instead of adding its own.
   it('shares the activation auth.json watch, routes its changes through the runtime, and hands it back on dispose', async () => {
+    H.agentDir = tempDir('pi-agent-');
+    const authPath = path.join(H.agentDir, 'auth.json');
     const authWatchers = () => fake.fileWatchers.watchers.filter((w) => w.glob === 'auth.json' && !w.disposed);
     const activation = PiRuntime.watchAuthFile();
     const judgeChanges = vi.fn();
@@ -709,7 +1106,8 @@ describe('PiRuntime.init lifecycle', () => {
 
     vi.useFakeTimers();
     try {
-      watcherFor('/fake/agent', 'auth.json').fireChange(path.join('/fake/agent', 'auth.json'));
+      fs.writeFileSync(authPath, JSON.stringify({ anthropic: { type: 'api_key', key: 'sk-ant' } }));
+      watcherFor(H.agentDir, 'auth.json').fireChange(authPath);
       await vi.advanceTimersByTimeAsync(150);
       expect(judgeChanges).toHaveBeenCalledTimes(1);
       expect(PiRuntime.exists).toBe(false);
@@ -729,9 +1127,10 @@ describe('PiRuntime.init lifecycle', () => {
     const stopKeySyncs = PiRuntime.onCustomProvidersSynced(keySyncs);
     vi.useFakeTimers();
     try {
-      watcherFor('/fake/agent', 'auth.json').fireChange(path.join('/fake/agent', 'auth.json'));
+      fs.writeFileSync(authPath, JSON.stringify({}));
+      watcherFor(H.agentDir, 'auth.json').fireChange(authPath);
       await vi.advanceTimersByTimeAsync(150);
-      expect(session.publishAccountInfo).toHaveBeenCalledTimes(2);
+      expect(session.publishAccountInfo).toHaveBeenCalledTimes(1);
       expect(H.modelRuntime.removeRuntimeApiKey).toHaveBeenCalledWith('openai');
     } finally {
       vi.useRealTimers();

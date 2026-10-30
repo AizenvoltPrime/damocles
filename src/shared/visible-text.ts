@@ -1,3 +1,5 @@
+import type { LocalizedArg, LocalizedText } from './localized-text';
+
 // C0 controls but tab (whitespace, as in a commit message), C1 controls, the bidi marks, embeddings, overrides and isolates, the zero-width and invisible operator characters, the
 // Mongolian vowel separator, the interlinear annotation marks, variation selectors, the tag characters (which carry ASCII
 // unseen) and the line and paragraph separators, which can make a file or ref name read as another or hide text.
@@ -22,3 +24,9 @@ export const visibleText = (text: string): string => text.replace(HIDDEN_CHARACT
 /** Multi-line repository text (a commit's message or diff) the same way, keeping tabs and line breaks; CRLF reads as LF. */
 export const visibleLines = (text: string): string =>
   text.replace(/\r\n/g, '\n').replace(HIDDEN_CHARACTERS, (char: string, offset: number, whole: string) => (char === '\n' ? char : shownAs(char, offset, whole)));
+
+/** `text` with every string argument, nested ones included, as `visibleLines` shows it; the catalog keys are Damocles' own. */
+export function visibleArgs(text: LocalizedText): LocalizedText {
+  if (text.args === undefined) return text;
+  return { message: text.message, args: text.args.map((arg): LocalizedArg => (typeof arg === 'string' ? visibleLines(arg) : typeof arg === 'object' && 'message' in arg ? visibleArgs(arg) : arg)) };
+}

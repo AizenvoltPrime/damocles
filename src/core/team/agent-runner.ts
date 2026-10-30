@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage, AssistantMessageEvent } from '@earendil-works/pi-ai';
-import type { AgentFailure, AgentRunConfig, AgentResult, TeamDeliveredData, TeamMessage, UndeliveredMessage } from './types';
+import type { AgentFailure, AgentRunConfig, AgentResult, MemberTranscript, TeamDeliveredData, TeamMessage, UndeliveredMessage } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { ImageBlock } from '../../shared/types/content';
 import type { ToolAbandonReason } from '../../shared/types/session';
@@ -18,12 +18,13 @@ import { joinResultText } from '../pi-session/tool-result-text';
 import { mapPiToolName, normalizeToolInput } from '../pi-session/tool-normalization';
 import { extractImages } from '../pi-session/branch-text';
 import { ToolOutputCoalescer } from '../pi-session/tool-output-coalescer';
-import { NestedCallFailures, nestedCallError, nestedRunError } from '../pi-session/nested-call-failures';
+import { NestedCallFailures, nestedCallError, nestedCallFailure, nestedRunError } from '../pi-session/nested-call-failures';
 import { abandonReasonOf } from '../pi-session/abandoned-tool-calls';
 import { turnStoppedToolCallIds, windDownRecorded, type TurnStoppedData } from '../pi-session/session-store/turn-stopped';
 import { DAMOCLES_TEAM_DELIVERED_ENTRY, DAMOCLES_TURN_STOPPED_ENTRY } from '../pi-session/session-store/constants';
 import { failureOutcomeText } from '../pi-session/subagents/status-note';
-import { assistantContentBlocks, skippedCallIds, toolResultBlock, type PiAssistantBlock } from './content-blocks';
+import { assistantContentBlocks, memberHistoryMessages, skippedCallIds, toolResultBlock, type PiAssistantBlock } from './content-blocks';
+import { agentLaunchOf, parseAgentEntries } from '../pi-session/agent-records';
 
 /** A delivery handed to pi: its text as pi matches it, and the images and delivery ids it carries. */
 interface HandedMessage {
@@ -87,6 +88,14 @@ interface CurrentCall {
   stopped: Set<string>;
   /** An error stop, sealed at its `turn_end` once the wind-down record decides it. */
   undecidedError: AssistantMessage | null;
+  /** The open message's text so far, while one streams. */
+  streaming: { text: string; thinking: string; isThinkingPhase: boolean } | null;
+  /** The calls pi started and has not ended, with a live-output call's latest output. */
+  running: Map<string, { output: string; outputTruncated: boolean } | null>;
+  /** The ended calls whose result pi has not stored yet, with the result their end sent. */
+  unstored: Map<string, Extract<ExtensionToWebviewMessage, { type: 'teamAgentToolResult' }>>;
+  /** The id each message this run sealed was sent under, keyed by the message object pi stores. */
+  liveIds: WeakMap<object, string>;
 }
 
 /** What `handleSessionEvent` reports a member session's events to. */
@@ -243,7 +252,7 @@ export class AgentRunner {
     let callError: string | undefined;
     let failure: AgentFailure | null = null;
     let undelivered: UndeliveredMessage[] | undefined;
-    const call: CurrentCall = { id: '', rendered: false, batch: null, stopped: new Set(), undecidedError: null };
+    const call: CurrentCall = { id: '', rendered: false, batch: null, stopped: new Set(), undecidedError: null, streaming: null, running: new Map(), unstored: new Map(), liveIds: new WeakMap() };
     const failures = new NestedCallFailures({
       show: (message) => config.onMessage({ type: 'error', message, parentToolUseId: config.agentId }),
       withdraw: (messageId) => config.onMessage({ type: 'assistantRetracted', messageId, parentToolUseId: config.agentId }),
@@ -337,13 +346,18 @@ export class AgentRunner {
         call,
         branch: () => session.sessionManager.getBranch(),
         onCallEnd: (failed, shownId, windDown) => {
-          callError = failed && nestedCallError(failed, 'model');
-          if (failed && !windDown) failures.hold(nestedCallError(failed, 'user'), shownId);
+          callError = failed && nestedCallError(failed);
+          if (failed && !windDown) failures.hold(nestedCallFailure(failed), shownId);
         },
       });
       // Team tools change review state, summaries and cursors inside a call, so each of these may change the checkpoint.
       if (event.type === 'tool_execution_end' || event.type === 'turn_end' || event.type === 'agent_end') config.onStateBoundary?.();
     });
+    // A member session opens with its launch entry, which numbers the attempt its file is listed under.
+    const launch = agentLaunchOf(session.sessionManager.getBranch());
+    const unbindTranscript = launch?.kind === 'team-member'
+      ? config.bindTranscript?.({ attempt: launch.attempt, read: () => memberTranscript(session, call, launch.attempt) })
+      : undefined;
     const windDown = noticeWindDown(run, config.abortSignal, config.onWindDown);
 
     let released = false;
@@ -552,6 +566,7 @@ export class AgentRunner {
       if (failure !== null && !config.abortSignal.aborted) undelivered = peek();
       release();
       unsubscribeSession();
+      unbindTranscript?.();
       windDown.end();
       outputCoalescer.dispose();
       config.abortSignal.removeEventListener('abort', onAbort);
@@ -604,13 +619,23 @@ export class AgentRunner {
         if (event.message.role === 'assistant') {
           cb.call.id = crypto.randomUUID();
           cb.call.rendered = false;
+          cb.call.streaming = null;
         }
         break;
       case 'message_update':
-        if (this.handleAssistantDelta(event.assistantMessageEvent, config)) cb.call.rendered = true;
+        if (this.handleAssistantDelta(event.assistantMessageEvent, config)) {
+          cb.call.rendered = true;
+          const ame = event.assistantMessageEvent;
+          const streaming = (cb.call.streaming ??= { text: '', thinking: '', isThinkingPhase: false });
+          if (ame.type === 'text_delta') streaming.text += ame.delta;
+          if (ame.type === 'thinking_delta') streaming.thinking += ame.delta;
+          streaming.isThinkingPhase = ame.type === 'thinking_delta';
+        }
         break;
       case 'message_end':
+        if (event.message.role === 'toolResult') cb.call.unstored.delete(event.message.toolCallId);
         if (event.message.role === 'assistant') {
+          cb.call.streaming = null;
           // pi reports a failed call only here; whether it was an abort's wind-down is known at its turn_end.
           if (event.message.stopReason === 'error') cb.call.undecidedError = event.message;
           else this.endCall(event.message, config, cb, false);
@@ -638,6 +663,7 @@ export class AgentRunner {
       case 'tool_execution_start': {
         const toolName = mapPiToolName(event.toolName);
         cb.onToolUse(toolName);
+        cb.call.running.set(event.toolCallId, null);
         // normalizeToolInput switches on the raw pi name.
         const toolInput = normalizeToolInput(event.toolName, (event.args ?? {}) as Record<string, unknown>);
         config.onMessage({ type: 'teamAgentToolCall', teamId: config.teamId, agentId: config.agentId, toolName, toolInput });
@@ -646,6 +672,10 @@ export class AgentRunner {
       case 'tool_execution_update': {
         // The team path has no elapsed-time progress message, so a non-live tool emits nothing at all.
         if (!LIVE_OUTPUT_TOOLS.has(mapPiToolName(event.toolName))) break;
+        if (cb.call.running.has(event.toolCallId)) {
+          const truncation = (event.partialResult as { details?: { truncation?: { truncated?: boolean } } } | undefined)?.details?.truncation;
+          cb.call.running.set(event.toolCallId, { output: joinResultText(event.partialResult), outputTruncated: Boolean(truncation?.truncated) });
+        }
         // A thunk, so a frame the coalescer holds is rendered from the newest partial rather than the
         // one that happened to open the window.
         outputCoalescer.push(event.toolCallId, () => {
@@ -665,6 +695,7 @@ export class AgentRunner {
       case 'tool_execution_end': {
         // Cancel before anything else: a pending partial landing after the result would resurrect stale output.
         outputCoalescer.cancel(event.toolCallId);
+        cb.call.running.delete(event.toolCallId);
         cb.call.batch?.answered.add(event.toolCallId);
         if (cb.call.stopped.has(event.toolCallId) && event.durationMs === undefined && cb.call.batch) {
           cb.call.batch.unexecuted.add(event.toolCallId);
@@ -673,7 +704,7 @@ export class AgentRunner {
         }
         // The team path has no `toolMetadata` message, so the result's details ride on this one or reach the card never.
         const block = toolResultBlock(event.toolCallId, event.result, event.isError === true);
-        config.onMessage({
+        const result: Extract<ExtensionToWebviewMessage, { type: 'teamAgentToolResult' }> = {
           type: 'teamAgentToolResult', teamId: config.teamId,
           agentId: config.agentId,
           toolUseId: event.toolCallId,
@@ -681,7 +712,10 @@ export class AgentRunner {
           isError: block.is_error === true,
           ...(block.imageCount !== undefined ? { imageCount: block.imageCount } : {}),
           ...(block.metadata ? { metadata: block.metadata } : {}),
-        });
+        };
+        // pi stores a parallel batch's results only once all of them ended, so a transcript read before then is sent this end.
+        cb.call.unstored.set(event.toolCallId, result);
+        config.onMessage(result);
         break;
       }
       default:
@@ -705,6 +739,7 @@ export class AgentRunner {
     const abandoned = windDown ? 'stopped' : abandonReasonOf(message.stopReason);
     if (abandoned === 'stopped' && cb.call.batch) this.resealSkipped(cb.call.batch, config);
     const sealed = this.emitAssistant(message.content, config, cb, messageId, failed, abandoned);
+    if (sealed) cb.call.liveIds.set(message, messageId);
     cb.call.batch = sealed ? { messageId, content: message.content, answered: new Set(), unexecuted: new Set() } : null;
     cb.onCallEnd(failed ? message : undefined, sealed || cb.call.rendered ? messageId : undefined, windDown);
   }
@@ -797,4 +832,22 @@ export class AgentRunner {
   private emitRunning(config: AgentRunConfig): void {
     config.onMessage({ type: 'teamAgentStatusUpdate', teamId: config.teamId, agentId: config.agentId, status: 'running' });
   }
+}
+
+/** A running member's transcript from the session's in-memory entries, read in one synchronous step (`MemberTranscript`). */
+function memberTranscript(session: AgentSession, call: CurrentCall, attempt: number): MemberTranscript {
+  // Agent sessions never branch, so the branch is the file's entries in order.
+  const file = parseAgentEntries(session.sessionManager.getSessionFile() ?? '', session.sessionManager.getBranch());
+  const batch = call.batch;
+  const owned = batch ? batch.content.flatMap((b) => (b.type === 'toolCall' && b.id && !batch.answered.has(b.id) && !batch.unexecuted.has(b.id) ? [b.id] : [])) : [];
+  const live = new Set([...call.running.keys(), ...owned, ...call.unstored.keys()]);
+  const ids = new Map([...(file?.entryIds ?? [])].map(([message, id]) => [message, call.liveIds.get(message) ?? `${attempt}:${id}`]));
+  const messages = file ? file.segments.flatMap((segment) => memberHistoryMessages(segment.messages, ids, file.stoppedToolCallIds, file.windDownMessages, live)) : [];
+  const streaming = call.streaming && (call.streaming.text !== '' || call.streaming.thinking !== '') ? { ...call.streaming } : undefined;
+  return {
+    messages,
+    ...(streaming ? { streaming } : {}),
+    outputs: [...call.running].flatMap(([toolUseId, frame]) => (frame ? [{ toolUseId, ...frame }] : [])),
+    results: [...call.unstored.values()],
+  };
 }

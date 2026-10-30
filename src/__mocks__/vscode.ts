@@ -477,10 +477,20 @@ export const commands = {
   executeCommand: () => Promise.resolve(undefined),
 };
 
-// VS Code's format2 leaves a placeholder with no arg as written.
+// The display language's bundle, as VS Code loads l10n/bundle.l10n.<language>.json; undefined is its default language.
+let l10nBundle: Readonly<Record<string, string>> | undefined;
+export function __setL10nBundle(bundle: Readonly<Record<string, string>> | undefined): void {
+  l10nBundle = bundle;
+}
+
+// VS Code's l10n.t (extHostLocalizationService.getMessage, then format2): the bundle's string for the message, else the
+// message itself, with each {n} that has an argument filled in once and every other one left as written.
 export const l10n = {
-  t: (message: string, ...args: unknown[]) =>
-    args.length ? message.replace(/\{(\d+)\}/g, (match, i) => (args[Number(i)] === undefined ? match : String(args[Number(i)]))) : message,
+  t: (message: string, ...args: Array<string | number | boolean>): string => {
+    const template = (l10nBundle !== undefined && Object.hasOwn(l10nBundle, message) ? l10nBundle[message] : undefined) ?? message;
+    const values = args as unknown as Readonly<Record<string, string | number | boolean | undefined>>;
+    return args.length === 0 ? template : template.replace(/\{([^}]+)\}/g, (match, group: string) => String(values[group] ?? match));
+  },
 };
 
 /**
@@ -499,3 +509,7 @@ export const env = {
   },
   language: 'en',
 };
+
+export function __setLanguage(language: string): void {
+  env.language = language;
+}

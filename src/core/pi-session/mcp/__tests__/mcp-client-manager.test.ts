@@ -13,6 +13,7 @@ import { McpServerConnectError } from '../connect-failure';
 import { authenticateMcpServer, revokeAndRemoveAuth, shutdownOAuth } from '../mcp-auth-flow';
 import { installLogSink } from '../../../logger';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
+import { englishText } from '../../../../shared/localized-text';
 
 // The reauthenticate/signOut methods call module-level fns that touch real OAuth/SecretStorage.
 // Stub those; PRESERVE the real `supportsOAuth` (pure config logic the methods branch on).
@@ -567,7 +568,7 @@ describe('McpClientManager', () => {
 
     expect(lines.filter((line) => line.includes('McpHttpError: HTTP status 502'))).toHaveLength(3);
     expect(lines.join('\n')).not.toContain('BODY-SECRET');
-    expect(manager.getServerStatus('remote')?.error).toContain('BODY-SECRET');
+    expect(englishText(manager.getServerStatus('remote')!.error!)).toContain('BODY-SECRET');
   });
 
   it('does not reconnect after dispose() even if a drop was already queued', async () => {
@@ -695,7 +696,7 @@ describe('McpClientManager status rows', () => {
 
     expect(manager.getServerStatus('broken')).toMatchObject({
       status: 'failed',
-      error: 'MCP config env.KEY: environment variable KEY is not set',
+      error: { message: '{0}', args: ['MCP config env.KEY: environment variable KEY is not set'] },
       errorInfo: { code: 'missingVariable', params: { variable: 'KEY', field: 'env.KEY' } },
       stderrTail: 'boom',
     });
@@ -720,7 +721,7 @@ describe('McpClientManager status rows', () => {
     fakes.fake.connect.mockRejectedValueOnce(new McpServerConnectError('fetch failed'));
     fakes.fireConnectionLost('remote');
     await flush();
-    expect(manager.getServerStatus('remote')).toMatchObject({ status: 'failed', error: 'fetch failed' });
+    expect(manager.getServerStatus('remote')).toMatchObject({ status: 'failed', error: { message: '{0}', args: ['fetch failed'] } });
     fakes.fake.connect.mockImplementationOnce(async (name: string) => {
       const conn = { tools: [], hasResources: false, status: 'needs-auth', errorInfo: { code: 'insufficientScope' }, inFlight: 0, lastUsedAt: 0 } as unknown as ServerConnection;
       fakes.connections.set(name, conn);
@@ -756,7 +757,7 @@ describe('McpClientManager connecting state', () => {
 
       expect(isolated.getServerStatus('ctx')).toMatchObject({
         status: 'failed',
-        error: 'The MCP client library failed to load, so no MCP server can connect.',
+        error: { message: 'The MCP client library failed to load, so no MCP server can connect.' },
       });
       expect(isolated.connectingServerNames()).toEqual([]);
       expect(isolated.pendingDirectServers()).toEqual([]);

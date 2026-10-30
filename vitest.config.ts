@@ -77,6 +77,8 @@ export default defineConfig({
         resolve: {
           alias: {
             ...sharedAlias,
+            // a core host test feeds what a panel posts to the real chat page stores
+            ...webviewAlias,
             'electron': path.resolve(__dirname, 'src/__mocks__/electron-unmocked.ts'),
           },
         },

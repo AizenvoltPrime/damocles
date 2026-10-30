@@ -8,7 +8,7 @@ import type { Confined, Project } from '../local-services/confine';
 import { isValidFileName } from '../preload/file-names';
 import type { FileEntry } from '../preload/shell-channels';
 import { MAX_EDITOR_TEXT_CHARS } from '../preload/shell-channels';
-import { MAX_TERMINAL_SCREEN_CHARS, TERMINAL_ICONS, type TerminalLinkKind } from '../preload/terminal-channels';
+import { MAX_KEPT_SHELL_SEQUENCE_CHARS, MAX_TERMINAL_SCREEN_CHARS, TERMINAL_ICONS, type TerminalLinkKind } from '../preload/terminal-channels';
 import { isTerminalId, parseHostMessage, parseHostRequest, parseTerminalView, type HostMessage, type HostRequest, type TerminalView } from '../pty-host/protocol';
 import type { BrowseResult, DeleteResult, EntryResult, WatchEvent } from './file-system';
 import type { FormatResolution } from './format/formatter';
@@ -20,8 +20,9 @@ import type { TerminalProfile } from './terminal/profiles';
 import type { LiveTerminal } from './terminal/terminal-backend';
 import type { FolderListing } from './tree-listing';
 
-// The largest message: a terminal screen of MAX_TERMINAL_SCREEN_CHARS UTF-16 units, at most 3 UTF-8 bytes each, plus its envelope.
-export const WORKSPACE_MAX_MESSAGE_BYTES: number = 3 * MAX_TERMINAL_SCREEN_CHARS + 1024 * 1024;
+// The largest message: a terminal screen of MAX_TERMINAL_SCREEN_CHARS UTF-16 units and its kept shell sequences'
+// MAX_KEPT_SHELL_SEQUENCE_CHARS, at most 3 UTF-8 bytes each, plus its envelope.
+export const WORKSPACE_MAX_MESSAGE_BYTES: number = 3 * (MAX_TERMINAL_SCREEN_CHARS + MAX_KEPT_SHELL_SEQUENCE_CHARS) + 1024 * 1024;
 
 // EntryIdentity's bigints cross as decimal strings: the codec has no bigint tag.
 export interface WireIdentity {
@@ -39,6 +40,7 @@ export type WireFileBytes =
   | { readonly kind: 'bytes'; readonly bytes: Uint8Array; readonly mtimeMs: number; readonly dev: number; readonly ino: number }
   | { readonly kind: 'missing' }
   | { readonly kind: 'tooLarge'; readonly bytes: number }
+  | { readonly kind: 'notAFile'; readonly folder: boolean }
   | { readonly kind: 'unreadable'; readonly error: string; readonly code?: string };
 
 export interface WireHostSettingsRead {
@@ -175,7 +177,7 @@ const fileEntry: Parser<FileEntry> = obj({ name: nonEmpty(MAX_PATH_CHARS), kind:
 const folderListing: Parser<FolderListing> = either(obj({ ok: okTrue, entries: arr(fileEntry, MAX_ITEMS) as Parser<FileEntry[]> }), obj({ ok: okFalse, reason: confineFailure }));
 const fileBytes: Parser<WireFileBytes> = either(
   either(obj({ kind: lit('bytes'), bytes: bytes(MAX_DATA_CHARS), mtimeMs: num, dev: num, ino: num }), obj({ kind: lit('missing') })),
-  either(obj({ kind: lit('tooLarge'), bytes: int(0, Number.MAX_SAFE_INTEGER) }), obj({ kind: lit('unreadable'), error: message, code: opt(str(64)) })),
+  either(obj({ kind: lit('tooLarge'), bytes: int(0, Number.MAX_SAFE_INTEGER) }), either(obj({ kind: lit('notAFile'), folder: bool }), obj({ kind: lit('unreadable'), error: message, code: opt(str(64)) }))),
 );
 const browseResult: Parser<BrowseResult> = either(obj({ ok: okTrue, path: filePath, folders: arr(nonEmpty(MAX_PATH_CHARS), MAX_ITEMS) }), obj({ ok: okFalse, reason: oneOf(['missing', 'failed'] as const) }));
 const rgEvent: Parser<RgEvent> = obj({ type: nonEmpty(64), data: data(MAX_DATA_CHARS) as Parser<Record<string, unknown>> });

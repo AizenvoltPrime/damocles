@@ -135,7 +135,7 @@ describe.each(['vscode', 'desktop'] as const)('an attached MCP resource in the %
 
   it('puts the text back in the composer with the reason when core refuses the send, and core\'s update restores the chip', async () => {
     const page = await chatPage(host);
-    await page.send({ type: 'promptReturned', content: [{ type: 'text', text: 'summarize it' }], reason: 'mcpResourceUnavailable', detail: 'Guide from docs could not be read: gone' });
+    await page.send({ type: 'promptReturned', content: [{ type: 'text', text: 'summarize it' }], reason: 'mcpResourceUnavailable', detail: { message: 'Guide from docs could not be read: gone' } });
     await page.send({ type: 'terminalAttachmentsUpdate', attachments: [guide] });
 
     expect((q('textarea') as HTMLTextAreaElement).value).toBe('summarize it');

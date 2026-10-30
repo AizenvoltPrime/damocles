@@ -54,7 +54,7 @@ describe('WorkspaceManager.openFile', () => {
     const manager = makeManager();
     await manager.handleOpenFile('host-1', 'missing.png', undefined, folder);
 
-    expect(platform.notifications.calls).toEqual([{ level: 'error', message: 'Could not open file: missing.png', actions: [] }]);
+    expect(platform.notifications.calls).toEqual([{ level: 'error', message: 'Could not open file: missing.png', text: { message: 'Could not open file: {0}', args: ['missing.png'] }, actions: [] }]);
     expect(opened()).toEqual([]);
   });
 
@@ -76,7 +76,7 @@ describe('WorkspaceManager.openFile', () => {
 
     const [view] = platform.editor.diffs;
     expect(platform.editor.diffs).toHaveLength(1);
-    expect(view?.request.title('b.ts')).toBe('b.ts (At checkpoint ↔ Current)');
+    expect(view?.request.title('b.ts')).toEqual({ message: '{0} (At checkpoint ↔ Current)', args: ['b.ts'] });
     expect(view?.request).toMatchObject({
       filePath: path.join(ws, 'a.ts'),
       left: { content: 'before' },
@@ -94,7 +94,7 @@ describe('WorkspaceManager.openFile', () => {
     const manager = makeManager([ws]);
     await manager.handleOpenFile('host-1', outside, undefined, folder);
 
-    expect(platform.notifications.calls).toEqual([{ level: 'error', message: `Could not open file: ${outside}`, actions: [] }]);
+    expect(platform.notifications.calls).toEqual([{ level: 'error', message: `Could not open file: ${outside}`, text: { message: 'Could not open file: {0}', args: [outside] }, actions: [] }]);
     expect(opened()).toEqual([]);
   });
 });

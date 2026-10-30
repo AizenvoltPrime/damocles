@@ -42,7 +42,7 @@ describe("chat /remember + /note null-save feedback (M1)", () => {
   it("posts memoryError (no source) when /remember save returns null", async () => {
     const h = makeHarness({ saveMemory: vi.fn(async () => null) });
     await send(h, "/remember something important");
-    expect(h.sent).toContainEqual({ type: "memoryError", message: "Failed to save memory." });
+    expect(h.sent).toContainEqual({ type: "memoryError", message: { message: "Failed to save memory." } });
     expect(h.sent.some((m) => m.type === "memoryCreated")).toBe(false);
   });
 
@@ -56,7 +56,7 @@ describe("chat /remember + /note null-save feedback (M1)", () => {
   it("posts memoryError (no source) when /note save returns null", async () => {
     const h = makeHarness({ addNote: vi.fn(async () => null) });
     await send(h, "/note a knowledge base entry");
-    expect(h.sent).toContainEqual({ type: "memoryError", message: "Failed to save note." });
+    expect(h.sent).toContainEqual({ type: "memoryError", message: { message: "Failed to save note." } });
     expect(h.sent.some((m) => m.type === "memoryCreated")).toBe(false);
   });
 });
@@ -118,7 +118,7 @@ describe("chat /compact echo", () => {
   // The session refuses a compaction while a turn or another compaction runs, with its own notice.
   it.each(["sendMessage", "queueMessage"] as const)("leaves no echo for a /compact the session refuses (%s)", async (type) => {
     const h = makeHarness({});
-    const compact = vi.fn(async () => { h.sent.push({ type: "notification", message: "Finish or stop the current turn before compacting.", notificationType: "warning" }); });
+    const compact = vi.fn(async () => { h.sent.push({ type: "notification", message: { message: "Finish or stop the current turn before compacting." }, notificationType: "warning" }); });
     Object.assign(h.ctx.session, { compact });
     await h.handlers[type]!({ type, content: "/compact", sessionId: null }, h.ctx);
     expect(compact).toHaveBeenCalledTimes(1);

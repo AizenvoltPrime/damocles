@@ -328,7 +328,7 @@ describe('user.clientAuthChanged', () => {
     for (const listener of H.clientAuthListeners) listener();
     await vi.waitFor(() => expect(heard).toHaveBeenCalledTimes(1));
     H.clientAuthListeners.length = 0;
-    start(undefined, { hostId: 'h' });
+    start(undefined, { hostId: 'h', clients: { onDidChange: () => ({ dispose: () => undefined }) } });
     expect(H.clientAuthListeners).toEqual([]);
   });
 });

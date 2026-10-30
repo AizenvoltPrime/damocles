@@ -4,8 +4,9 @@ import type { Disposable } from '../../../platform/disposable';
 import type { HostLifecycle } from '../../../platform/host-lifecycle';
 import type { NotificationOptions, NotificationService } from '../../../platform/notification-service';
 import type { SecretsStore } from '../../../platform/secrets-store';
+import type { LocalizedText } from '../../../shared/localized-text';
 import type { ShellService } from '../../../platform/shell-service';
-import type { CoreEndpoint, CoreInit } from '../../core-protocol';
+import type { AskQuestion, CoreEndpoint, CoreInit } from '../../core-protocol';
 import { Listeners } from './listeners';
 
 // Proxied services: every call is an RPC that main serves.
@@ -27,14 +28,18 @@ export function createSecretsProxy(endpoint: CoreEndpoint, init: CoreInit): Secr
   };
 }
 
+// An index past the actions offered, which a stale or faulty client of a daemon could send, answers as dismissed.
+const offered = (index: number | undefined, actions: readonly unknown[]): number | undefined => (index !== undefined && index < actions.length ? index : undefined);
+
 export function createNotificationsProxy(endpoint: CoreEndpoint): NotificationService {
-  const show = (severity: 'info' | 'warn' | 'error') => (message: string, ...rest: Array<NotificationOptions | string>): Promise<string | undefined> => {
-    const [first, ...others] = rest;
-    const options = typeof first === 'object' ? first : undefined;
-    const actions = (options ? others : rest) as string[];
-    return endpoint.request('notifications.show', { severity, message, ...(options?.modal !== undefined ? { modal: options.modal } : {}), actions });
-  };
+  const show = (severity: 'info' | 'warn' | 'error') => async (message: LocalizedText, actions: readonly LocalizedText[] = [], options?: NotificationOptions): Promise<number | undefined> =>
+    offered(await endpoint.request('notifications.show', { severity, message, ...(options?.modal !== undefined ? { modal: options.modal } : {}), actions }), actions);
   return { info: show('info'), warn: show('warn'), error: show('error') };
+}
+
+/** A modal question main asks (dialogs.ask), answered with the chosen action's index. */
+export function createAskProxy(endpoint: CoreEndpoint): (question: AskQuestion) => Promise<number | undefined> {
+  return async (question) => offered(await endpoint.request('dialogs.ask', question), question.actions);
 }
 
 export type ChatPrompts = Pick<DialogService, 'inputBox' | 'quickPick'>;

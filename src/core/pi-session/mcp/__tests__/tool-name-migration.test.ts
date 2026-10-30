@@ -209,7 +209,7 @@ describe('migrateRenamedToolRules', () => {
     const notices = await showRun(folder, context7(), shown);
 
     expect(readFileSync(project, 'utf-8')).toBe(before);
-    expect(notices).toEqual([{ path: project, displayPath: project, rules: [{ old: OLD, new: NEW }, { old: `${OLD}(x)`, new: `${NEW}(x)` }] }]);
+    expect(notices).toEqual([{ path: project, displayPath: { message: '{0}', args: [project] }, rules: [{ old: OLD, new: NEW }, { old: `${OLD}(x)`, new: `${NEW}(x)` }] }]);
 
     await expect(migrate(folder, context7(), shown)).resolves.toEqual([]);
   });
@@ -241,13 +241,13 @@ describe('migrateRenamedToolRules', () => {
     const notices = await migrate(folder, context7(), memory());
 
     expect(read(join(outside, 'settings.local.json')).permissions).toEqual({ allow: [OLD] });
-    expect(notices).toEqual([{ path: hooks, displayPath: '~/.damocles/hooks.json', rules: [{ old: OLD, new: NEW }] }]);
+    expect(notices).toEqual([{ path: hooks, displayPath: { message: '{0}', args: ['~/.damocles/hooks.json'] }, rules: [{ old: OLD, new: NEW }] }]);
   });
 
   it('shows a path outside home that only shares its prefix in full', async () => {
     const sibling = join(`${fakeHome}2`, 'agents', 'reviewer.md');
     await expect(migrate(folder, context7(), memory(), [{ path: sibling, names: [OLD] }])).resolves.toEqual([
-      { path: sibling, displayPath: sibling, rules: [{ old: OLD, new: NEW }] },
+      { path: sibling, displayPath: { message: '{0}', args: [sibling] }, rules: [{ old: OLD, new: NEW }] },
     ]);
   });
 
@@ -260,7 +260,7 @@ describe('migrateRenamedToolRules', () => {
     const notices = await migrate(folder, context7(), memory());
 
     expect(readFileSync(hooks, 'utf-8')).toBe(text);
-    expect(notices).toEqual([{ path: hooks, displayPath: hooks, rules: [{ old: `${OLD}|Bash`, new: `${NEW}|Bash` }] }]);
+    expect(notices).toEqual([{ path: hooks, displayPath: { message: '{0}', args: [hooks] }, rules: [{ old: `${OLD}|Bash`, new: `${NEW}|Bash` }] }]);
   });
 
   function writeHookMatchers(matchers: string[]): string {
@@ -280,7 +280,7 @@ describe('migrateRenamedToolRules', () => {
     const hooks = writeHookMatchers([`${OLD}|mcp__s__do-it|mcp__s__do-it-now`]);
 
     await expect(migrate(folder, toolRenames(renames, new Map()), memory())).resolves.toEqual([
-      { path: hooks, displayPath: hooks, rules: [{ old: `${OLD}|mcp__s__do-it|mcp__s__do-it-now`, new: `${NEW}|mcp__s__do_it|mcp__s__do-it-now` }] },
+      { path: hooks, displayPath: { message: '{0}', args: [hooks] }, rules: [{ old: `${OLD}|mcp__s__do-it|mcp__s__do-it-now`, new: `${NEW}|mcp__s__do_it|mcp__s__do-it-now` }] },
     ]);
   });
 
@@ -602,7 +602,7 @@ describe('retired get_* resource tools: patterns and files that named them indir
     const project = join(folder, '.damocles', 'settings.json');
     writeSettings(project, { deny: ['mcp__secret__get_*'] });
     const notices = await migrate(folder, renames(), memory());
-    expect(notices).toEqual([{ path: project, displayPath: project, rules: [{ old: 'mcp__secret__get_*', new: 'mcp__secret__get_*, mcp__secret__read_mcp_resource' }] }]);
+    expect(notices).toEqual([{ path: project, displayPath: { message: '{0}', args: [project] }, rules: [{ old: 'mcp__secret__get_*', new: 'mcp__secret__get_*, mcp__secret__read_mcp_resource' }] }]);
   });
 
   it('lists a hook matcher pattern that matched a retired tool and misses the resource read', async () => {
@@ -612,7 +612,7 @@ describe('retired get_* resource tools: patterns and files that named them indir
 
     const notices = await migrate(folder, renames(), memory());
 
-    expect(notices).toEqual([{ path: hooks, displayPath: hooks, rules: [{ old: 'mcp__secret__get_.*', new: 'mcp__secret__get_.*|mcp__secret__read_mcp_resource' }] }]);
+    expect(notices).toEqual([{ path: hooks, displayPath: { message: '{0}', args: [hooks] }, rules: [{ old: 'mcp__secret__get_.*', new: 'mcp__secret__get_.*|mcp__secret__read_mcp_resource' }] }]);
   });
 
   it('lists a retired tool rule in Claude Code\u2019s settings files, never a renamed one, and writes neither', async () => {
@@ -623,7 +623,7 @@ describe('retired get_* resource tools: patterns and files that named them indir
 
     const notices = await migrate(folder, both, memory());
 
-    expect(notices).toEqual([{ path: claude, displayPath: '~/.claude/settings.json', rules: [{ old: 'mcp__secret__get_passwords', new: PASSWORDS_RULE }] }]);
+    expect(notices).toEqual([{ path: claude, displayPath: { message: '{0}', args: ['~/.claude/settings.json'] }, rules: [{ old: 'mcp__secret__get_passwords', new: PASSWORDS_RULE }] }]);
     expect(readFileSync(claude, 'utf-8')).toBe(before);
   });
 
@@ -684,7 +684,7 @@ describe('retired get_* resource tools: patterns and files that named them indir
 
     const notices = await showRun(folder, renames(), shown, [list]);
 
-    expect(notices).toEqual([{ setting: 'damocles.tools.disabled', displayPath: 'damocles.tools.disabled in workspace settings', rules: [{ old: 'mcp__secret__get_passwords', new: PASSWORDS_RULE }] }]);
+    expect(notices).toEqual([{ setting: 'damocles.tools.disabled', displayPath: { message: '{0} in workspace settings', args: ['damocles.tools.disabled'] }, rules: [{ old: 'mcp__secret__get_passwords', new: PASSWORDS_RULE }] }]);
     await expect(migrate(folder, renames(), shown, [list])).resolves.toEqual([]);
   });
 
@@ -701,7 +701,7 @@ describe('retired get_* resource tools: patterns and files that named them indir
 
     const notices = await migrate(folder, toolRenames(new Map(), retiredResourceToolNames(input)), memory(), [{ path: agent, names: ['mcp__my-srv__get_passwords', 'mcp__my_srv__get_passwords'] }]);
 
-    expect(notices).toEqual([{ path: agent, displayPath: agent, rules: [{ old: 'mcp__my_srv__get_passwords', new: 'mcp__my_srv__read_mcp_resource(v://passwords)' }] }]);
+    expect(notices).toEqual([{ path: agent, displayPath: { message: '{0}', args: [agent] }, rules: [{ old: 'mcp__my_srv__get_passwords', new: 'mcp__my_srv__read_mcp_resource(v://passwords)' }] }]);
   });
 
   it('writes a rule that two legacy names became, or that an addition repeats, once', async () => {
@@ -739,7 +739,7 @@ describe('retired get_* resource tools in places every folder shares', () => {
 
     expect(read(owned.user()).permissions).toEqual({ deny: ['mcp__docs__get_readme', PASSWORDS_RULE] });
     expect(read(owned.folderLocal()).permissions).toEqual({ deny: [DOCS_RULE] });
-    expect(notices).toEqual([{ path: owned.user(), displayPath: '~/.damocles/settings.json', rules: [{ old: 'mcp__docs__get_readme', new: DOCS_RULE }] }]);
+    expect(notices).toEqual([{ path: owned.user(), displayPath: { message: '{0}', args: ['~/.damocles/settings.json'] }, rules: [{ old: 'mcp__docs__get_readme', new: DOCS_RULE }] }]);
   });
 
   it('adds a server-wide read rule for a folder server\u2019s get_* glob in a home file, and lists a narrower glob there', async () => {
@@ -748,7 +748,7 @@ describe('retired get_* resource tools in places every folder shares', () => {
     const notices = await migrate(folder, renames(), memory());
 
     expect(read(owned.user()).permissions).toEqual({ deny: ['mcp__docs__get_*', 'mcp__docs__read_mcp_resource'], ask: ['mcp__docs__get_read*'] });
-    expect(notices).toEqual([{ path: owned.user(), displayPath: '~/.damocles/settings.json', rules: [{ old: 'mcp__docs__get_read*', new: `mcp__docs__get_read*, ${DOCS_RULE}` }] }]);
+    expect(notices).toEqual([{ path: owned.user(), displayPath: { message: '{0}', args: ['~/.damocles/settings.json'] }, rules: [{ old: 'mcp__docs__get_read*', new: `mcp__docs__get_read*, ${DOCS_RULE}` }] }]);
   });
 
   it('rewrites only a user server\u2019s entry in the personal lists and lists a folder server\u2019s under its scope', async () => {
@@ -759,8 +759,8 @@ describe('retired get_* resource tools in places every folder shares', () => {
     const notices = await migrate(folder, renames(), memory(), [], personal);
 
     expect(personal.value).toEqual(['mcp__docs__get_readme', PASSWORDS_RULE]);
-    expect(notices).toEqual([{ setting: 'damocles.tools.disabled', scope: 'user', displayPath: 'damocles.tools.disabled in user settings', rules: [{ old: 'mcp__docs__get_readme', new: DOCS_RULE }] }]);
-    expect(renamedRuleNoticeKey(notices[0]!)).not.toBe(renamedRuleNoticeKey({ setting: 'damocles.tools.disabled', displayPath: '' }));
+    expect(notices).toEqual([{ setting: 'damocles.tools.disabled', scope: 'user', displayPath: { message: '{0} in user settings', args: ['damocles.tools.disabled'] }, rules: [{ old: 'mcp__docs__get_readme', new: DOCS_RULE }] }]);
+    expect(renamedRuleNoticeKey(notices[0]!)).not.toBe(renamedRuleNoticeKey({ setting: 'damocles.tools.disabled', displayPath: { message: '' } }));
   });
 
   describe('in a chat worktree, whose personal files are its project\u2019s', () => {
@@ -820,7 +820,7 @@ describe('renamed-rule notice memory across workspaces and replacements', () => 
     );
   const homeNotice = (uri: string): McpRenamedToolRuleNotice => ({
     path: owned.user(),
-    displayPath: '~/.damocles/settings.json',
+    displayPath: { message: '{0}', args: ['~/.damocles/settings.json'] },
     rules: [{ old: 'mcp__docs__get_readme', new: `mcp__docs__read_mcp_resource(${uri})` }],
   });
   /** Two windows on one machine: a workspace state each, one global state. */
@@ -853,7 +853,7 @@ describe('renamed-rule notice memory across workspaces and replacements', () => 
     const { a, b } = windows();
 
     await expect(showRun(folder, docsRenames('file:///a/README.md'), inWindow(a, folder))).resolves.toEqual([
-      { path: claude, displayPath: '~/.claude/settings.json', rules: [{ old: 'mcp__secret__get_passwords', new: 'mcp__secret__read_mcp_resource(secret://passwords)' }] },
+      { path: claude, displayPath: { message: '{0}', args: ['~/.claude/settings.json'] }, rules: [{ old: 'mcp__secret__get_passwords', new: 'mcp__secret__read_mcp_resource(secret://passwords)' }] },
     ]);
     await expect(showRun(folderB, docsRenames('file:///b/README.md'), inWindow(b, folderB))).resolves.toEqual([]);
   });
@@ -889,7 +889,7 @@ describe('renamed-rule notice memory across workspaces and replacements', () => 
     await expect(showRun(folder, docsRenames('file:///a/README.md', context7Legacy()), inWindow(state, folder))).resolves.toEqual([]);
 
     await expect(showRun(folder, docsRenames('file:///a/docs/README.md', context7Legacy()), inWindow(state, folder))).resolves.toEqual([
-      { path: project, displayPath: project, rules: [{ old: 'mcp__docs__get_readme', new: 'mcp__docs__read_mcp_resource(file:///a/docs/README.md)' }] },
+      { path: project, displayPath: { message: '{0}', args: [project] }, rules: [{ old: 'mcp__docs__get_readme', new: 'mcp__docs__read_mcp_resource(file:///a/docs/README.md)' }] },
     ]);
   });
 

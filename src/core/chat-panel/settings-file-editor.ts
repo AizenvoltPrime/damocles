@@ -8,13 +8,14 @@ import { folderKey } from '../workspace-folders/folder-key';
 import { writeJsonConfig } from '../config/json-config-write';
 import { parseSettingsText, settingsFileVersion } from '../config/settings-file';
 import { log } from '../logger';
-import { t } from '../l10n';
+import { errorTextOf, l } from '../l10n';
+import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 
-class SaveRefused extends Error {
+class SaveRefused extends LocalizedError {
   readonly conflict: boolean;
 
-  constructor(message: string, conflict: boolean) {
-    super(message);
+  constructor(text: LocalizedText, conflict: boolean) {
+    super(text);
     this.name = 'SaveRefused';
     this.conflict = conflict;
   }
@@ -49,16 +50,16 @@ export function locateSettingsFile(platform: Platform, scope: SettingsFileScope)
   return filePath;
 }
 
-function unavailableReason(reason: SettingsFileUnavailableReason): string {
+function unavailableReason(reason: SettingsFileUnavailableReason): LocalizedText {
   return reason === 'noProject'
-    ? t('No project is open, so this settings file cannot be saved.')
-    : t('The project is not trusted, so its settings files cannot be saved.');
+    ? l('No project is open, so this settings file cannot be saved.')
+    : l('The project is not trusted, so its settings files cannot be saved.');
 }
 
 export type SettingsFileSaveOutcome =
   | { readonly ok: true; readonly path: string; readonly version: string }
   // conflict: the file's version is no longer baseVersion; cause: the error of a write that failed, which a host may word itself
-  | { readonly ok: false; readonly error: string; readonly conflict: boolean; readonly cause?: unknown };
+  | { readonly ok: false; readonly error: LocalizedText; readonly conflict: boolean; readonly cause?: unknown };
 
 /**
  * The one save rule for a settings file's raw text (`version` is the sha256 of the file read as UTF-8, '' for no file):
@@ -71,22 +72,22 @@ export async function saveSettingsFileText(platform: Platform, scope: SettingsFi
   const located = locateSettingsFile(platform, scope);
   if (typeof located !== 'string') return { ok: false, error: unavailableReason(located.reason), conflict: false };
   if (folderKey(located) !== folderKey(filePath)) {
-    return { ok: false, error: t('The default project changed since this file was opened. Reload it before saving.'), conflict: false };
+    return { ok: false, error: l('The default project changed since this file was opened. Reload it before saving.'), conflict: false };
   }
   try {
     await writeJsonConfig(located, (current) => {
       // A file that does not parse is the user's to fix; overwriting it would lose whatever it holds.
       const currentError = current === undefined ? undefined : parseError(current, located);
-      if (currentError !== undefined) throw new SaveRefused(t('{0} does not parse, so it was not overwritten: {1}', located, currentError), false);
-      if (settingsFileVersion(current) !== baseVersion) throw new SaveRefused(t('{0} changed on disk since it was loaded. Reload it before saving.', located), true);
+      if (currentError !== undefined) throw new SaveRefused(l('{0} does not parse, so it was not overwritten: {1}', located, currentError), false);
+      if (settingsFileVersion(current) !== baseVersion) throw new SaveRefused(l('{0} changed on disk since it was loaded. Reload it before saving.', located), true);
       const contentError = parseError(content, located);
-      if (contentError !== undefined) throw new SaveRefused(t('Not saved: the text is not valid JSON. {0}', contentError), false);
+      if (contentError !== undefined) throw new SaveRefused(l('Not saved: the text is not valid JSON. {0}', contentError), false);
       return content;
     }, scope === 'user' ? {} : { confineTo: path.dirname(located) });
   } catch (err) {
-    if (err instanceof SaveRefused) return { ok: false, error: err.message, conflict: err.conflict };
+    if (err instanceof SaveRefused) return { ok: false, error: err.text, conflict: err.conflict };
     log('[SettingsFileEditor] saving %s failed: %O', located, err);
-    return { ok: false, error: t('Could not save {0}: {1}', located, errorMessage(err)), conflict: false, cause: err };
+    return { ok: false, error: l('Could not save {0}: {1}', located, errorTextOf(err)), conflict: false, cause: err };
   }
   return { ok: true, path: located, version: settingsFileVersion(content) };
 }

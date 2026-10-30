@@ -12,6 +12,7 @@ import type {
   HandlerDependencies,
   MessageHandler,
 } from '../message-router/types';
+import { englishText } from '../../../shared/localized-text';
 
 function skill(name: string, untrusted: boolean): SkillInfo {
   return {
@@ -68,6 +69,7 @@ function makeHarness(opts: {
     memoryService: { isEnabled: false, ensureInitialized: vi.fn(async () => undefined) },
     markUserTypedDuringTurn: vi.fn(),
     worktrees: () => ({ interceptSend: () => false }),
+    platform: {},
   } as unknown as HandlerDependencies;
 
   const ctx = {
@@ -97,7 +99,7 @@ function notifications(posted: ExtensionToWebviewMessage[]): string[] {
     .filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'notification' }> =>
       m.type === 'notification',
     )
-    .map((m) => m.message);
+    .map((m) => englishText(m.message));
 }
 
 async function invoke(h: Harness, text: string): Promise<void> {

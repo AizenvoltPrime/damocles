@@ -7,9 +7,11 @@
 import { renamedRuleNoticeKey, type McpRenamedToolRuleNotice } from '@shared/types/mcp';
 import { useI18n } from 'vue-i18n';
 import { TriangleAlert } from 'lucide-vue-next';
+import { useLocalizedText } from '@/composables/useLocalizedText';
 import DockBanner from './DockBanner.vue';
 
 const { t } = useI18n();
+const { rt } = useLocalizedText();
 
 defineProps<{
   notices: McpRenamedToolRuleNotice[];
@@ -49,12 +51,12 @@ const emit = defineEmits<{
         class="text-xs"
       >
         <div class="flex items-center gap-2">
-          <span class="min-w-0 break-all font-mono text-(--d-text)">{{ notice.displayPath }}</span>
+          <span class="min-w-0 break-all font-mono text-(--d-text)">{{ rt(notice.displayPath) }}</span>
           <button
             v-if="'path' in notice"
             type="button"
             class="d-tool-btn h-6 shrink-0 px-2 text-xs text-(--d-accent)"
-            :aria-label="t('mcp.renamedRules.openFileAria', { file: notice.displayPath })"
+            :aria-label="t('mcp.renamedRules.openFileAria', { file: rt(notice.displayPath) })"
             @click="emit('openFile', notice.path)"
           >
             {{ t('mcp.renamedRules.openFile') }}
@@ -64,7 +66,7 @@ const emit = defineEmits<{
             type="button"
             class="d-tool-btn h-6 shrink-0 px-2 text-xs text-(--d-accent)"
             data-testid="mcp-renamed-rules-open-setting"
-            :aria-label="t('mcp.renamedRules.openSettingAria', { setting: notice.displayPath })"
+            :aria-label="t('mcp.renamedRules.openSettingAria', { setting: rt(notice.displayPath) })"
             @click="emit('openSetting', notice.setting)"
           >
             {{ t('mcp.renamedRules.openSetting') }}

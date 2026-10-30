@@ -63,7 +63,7 @@ describe('memory database schema skew', () => {
     const service = new MemoryService(skewed);
     await service.ensureInitialized();
     expect(skewed.notifications.calls).toEqual([
-      { level: 'warn', message: expect.stringContaining('memory database') as string, actions: [] },
+      { level: 'warn', message: expect.stringContaining('memory database') as string, text: { message: 'Another Damocles app has updated {0} to a newer version. This window can read it but will not save changes to it until you update this Damocles too.', args: [{ message: 'the memory database' }] }, actions: [] },
     ]);
 
     expect(service.listNotes().map((n) => n.id)).toContain(seed!.id);
@@ -167,7 +167,7 @@ describe('memory injection database schema skew', () => {
     expect((await m.getPersistedInjection(second.id, 0))?.exactText).toBe('seeded');
 
     expect(fake.notifications.calls).toEqual([
-      { level: 'warn', message: expect.stringContaining('memory injection records') as string, actions: [] },
+      { level: 'warn', message: expect.stringContaining('memory injection records') as string, text: { message: 'Another Damocles app has updated {0} to a newer version. This window can read it but will not save changes to it until you update this Damocles too.', args: [{ message: 'the memory injection records' }] }, actions: [] },
     ]);
     expect(sqliteContentFingerprint(first.file)).toBe(content);
     expect(sha(first.file)).toBe(before);

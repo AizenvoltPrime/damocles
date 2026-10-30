@@ -157,14 +157,16 @@ test('a question asked while a select\'s list is open takes the pointer from its
     });
 
     await app.evaluate(() => {
-      const g = globalThis as unknown as { __damoclesE2e: { notifications: { warn(message: string, options: { modal: boolean }, ...actions: string[]): Promise<string | undefined> } }; __e2eAnswer?: Promise<string | undefined> };
-      g.__e2eAnswer = g.__damoclesE2e.notifications.warn('Proceed over the open list?', { modal: true }, 'Proceed');
+      type Text = { message: string };
+      const g = globalThis as unknown as { __damoclesE2e: { notifications: { warn(message: Text, actions: Text[], options: { modal: boolean }): Promise<number | undefined> } }; __e2eAnswer?: Promise<number | undefined> };
+      g.__e2eAnswer = g.__damoclesE2e.notifications.warn({ message: 'Proceed over the open list?' }, [{ message: 'Proceed' }], { modal: true });
     });
     const question = dialogIn(modal);
     await expect(question).toBeVisible();
     expect(await modal.evaluate(() => (window as unknown as { __e2eFirstHit?: unknown }).__e2eFirstHit)).toEqual({ bodyPointerEvents: 'none', hit: true });
     await question.getByRole('button', { name: 'Proceed' }).click();
-    expect(await app.evaluate(() => (globalThis as unknown as { __e2eAnswer: Promise<string | undefined> }).__e2eAnswer)).toBe('Proceed');
+    // the host answers with the chosen action's index
+    expect(await app.evaluate(() => (globalThis as unknown as { __e2eAnswer: Promise<number | undefined> }).__e2eAnswer)).toBe(0);
     expect(await nativeBoxes(app)).toEqual([]);
   } finally {
     await stub.close();

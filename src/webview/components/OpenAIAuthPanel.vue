@@ -4,12 +4,14 @@ import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { usePlatformBridge } from "@/composables/usePlatformBridge";
+import { useLocalizedText, type ViewText } from "@/composables/useLocalizedText";
 import { Eye, EyeOff, Trash2, LogOut } from "lucide-vue-next";
 import SettingButton from "@/components/settings/controls/SettingButton.vue";
 import SettingSwitch from "@/components/settings/controls/SettingSwitch.vue";
 import type { ExtensionToWebviewMessage } from "@shared/types/messages";
 
 const { t } = useI18n();
+const { rt, vt } = useLocalizedText();
 const settingsStore = useSettingsStore();
 const {
   openaiAuthStatus,
@@ -23,7 +25,7 @@ const { postMessage, onMessage } = usePlatformBridge();
 const apiKeyInput = ref("");
 const showKey = ref(false);
 const saving = ref(false);
-const inlineMessage = ref<{ kind: "success" | "warning" | "error"; text: string } | null>(null);
+const inlineMessage = ref<{ kind: "success" | "warning" | "error"; text: ViewText } | null>(null);
 const pendingRequestId = ref<string | null>(null);
 
 const apiKeyConfigured = computed(() => openaiAuthStatus.value.apikey.configured);
@@ -63,7 +65,7 @@ const preferLabelId = useId();
 const preferHintId = useId();
 // Its own request, so a toggle never takes over a key save's acknowledgement; the switch shows the value it sent until then.
 const preferPending = ref<{ requestId: string; value: boolean } | null>(null);
-const preferError = ref<string | null>(null);
+const preferError = ref<ViewText | null>(null);
 const preferValue = computed(() => preferPending.value?.value ?? openaiPreferApiKey.value);
 
 function handlePreferenceChange(value: boolean) {
@@ -102,30 +104,30 @@ function handleAck(msg: ExtensionToWebviewMessage) {
       if (msg.validated) {
         inlineMessage.value = {
           kind: "success",
-          text: t('openai.apiKey.validated', { count: msg.modelCount ?? 0 }),
+          text: { key: 'openai.apiKey.validated', named: { count: msg.modelCount ?? 0 } },
         };
       } else {
         inlineMessage.value = {
           kind: "warning",
-          text: msg.warning ?? t('openai.apiKey.savedWithoutValidation'),
+          text: msg.warning ?? { key: 'openai.apiKey.savedWithoutValidation' },
         };
       }
     } else {
-      inlineMessage.value = { kind: "error", text: msg.error ?? t('openai.apiKey.saveFailed') };
+      inlineMessage.value = { kind: "error", text: msg.error ?? { key: 'openai.apiKey.saveFailed' } };
     }
   } else if (msg.type === "clearOpenAIApiKeyAck") {
     if (msg.requestId !== pendingRequestId.value) return;
     pendingRequestId.value = null;
     saving.value = false;
     if (msg.ok) {
-      inlineMessage.value = { kind: "success", text: t('openai.apiKey.cleared') };
+      inlineMessage.value = { kind: "success", text: { key: 'openai.apiKey.cleared' } };
     } else {
-      inlineMessage.value = { kind: "error", text: msg.error ?? t('openai.apiKey.clearFailed') };
+      inlineMessage.value = { kind: "error", text: msg.error ?? { key: 'openai.apiKey.clearFailed' } };
     }
   } else if (msg.type === "setOpenAIPreferApiKeyAck") {
     if (msg.requestId !== preferPending.value?.requestId) return;
     preferPending.value = null;
-    if (!msg.ok) preferError.value = msg.error ?? t('providerAuth.preferApiKey.failed');
+    if (!msg.ok) preferError.value = msg.error ?? { key: 'providerAuth.preferApiKey.failed' };
   }
 }
 
@@ -199,7 +201,7 @@ const messageClass = computed(() => {
         class="sm-hint sm-hint-error"
         role="alert"
       >
-        {{ openaiChatGPTAuthError }}
+        {{ rt(openaiChatGPTAuthError) }}
       </p>
       <p
         v-else-if="!chatgptSignedIn"
@@ -300,7 +302,7 @@ const messageClass = computed(() => {
         :class="messageClass"
         :role="inlineMessage.kind === 'error' ? 'alert' : 'status'"
       >
-        {{ inlineMessage.text }}
+        {{ vt(inlineMessage.text) }}
       </p>
       <p
         v-else
@@ -341,7 +343,7 @@ const messageClass = computed(() => {
       role="alert"
       data-testid="openai-prefer-error"
     >
-      {{ preferError }}
+      {{ vt(preferError) }}
     </p>
   </div>
 </template>

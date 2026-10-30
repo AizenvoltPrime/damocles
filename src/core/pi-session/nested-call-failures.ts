@@ -1,22 +1,27 @@
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import { failureText, type FailureReader } from './provider-account';
+import { failureText, modelFailureText } from './provider-account';
+import type { LocalizedText } from '../../shared/localized-text';
 
-/** A failed call's error as every transcript names it, live and reloaded. */
+/** A failed call's own error text, '' when pi recorded none: `failureText` and `modelFailureText` word that case. */
 export function failedCallError(errorMessage: unknown): string {
-  return typeof errorMessage === 'string' && errorMessage ? errorMessage : 'Unknown error';
+  return typeof errorMessage === 'string' ? errorMessage : '';
 }
 
-/**
- * A subagent's or team agent's failed call as `reader` gets it: its transcript, live and reloaded, which has no account
- * card (`failureText`), or the model its outcome reaches.
- */
-export function nestedCallError(message: { errorMessage?: unknown; provider?: unknown; model?: unknown } | Readonly<Record<string, unknown>>, reader: FailureReader): string {
-  return failureText(typeof message.provider === 'string' ? message.provider : undefined, typeof message.model === 'string' ? message.model : undefined, failedCallError(message.errorMessage), reader);
+type FailedCall = { errorMessage?: unknown; provider?: unknown; model?: unknown } | Readonly<Record<string, unknown>>;
+
+/** A subagent's or team agent's failed call as its transcript shows it, live and reloaded, which has no account card (`failureText`). */
+export function nestedCallFailure(message: FailedCall): LocalizedText {
+  return failureText(typeof message.provider === 'string' ? message.provider : undefined, typeof message.model === 'string' ? message.model : undefined, failedCallError(message.errorMessage));
+}
+
+/** A subagent's or team agent's failed call as the model its outcome reaches reads it. */
+export function nestedCallError(message: FailedCall): string {
+  return modelFailureText(typeof message.provider === 'string' ? message.provider : undefined, typeof message.model === 'string' ? message.model : undefined, failedCallError(message.errorMessage));
 }
 
 /** A subagent's or team agent's run that threw, such as a prompt pi refused, as the model its outcome reaches reads it. */
 export function nestedRunError(session: Pick<AgentSession, 'model'> | undefined, err: unknown): string {
-  return failureText(session?.model?.provider, session?.model?.id, err instanceof Error ? err.message : String(err), 'model');
+  return modelFailureText(session?.model?.provider, session?.model?.id, err instanceof Error ? err.message : String(err));
 }
 
 /**
@@ -32,7 +37,7 @@ export function isWindDownError(stopReason: unknown, runSignal: AbortSignal | un
 /** Where a nested agent's transcript receives the decisions of `NestedCallFailures`. */
 export interface NestedFailureSink {
   /** A failed model call pi will not re-run. */
-  show: (message: string) => void;
+  show: (message: LocalizedText) => void;
   /** pi re-runs the failed call, so what the transcript rendered for it under `shownId` goes. */
   withdraw: (shownId: string) => void;
   retrying: (attempt: number, maxAttempts: number) => void;
@@ -46,7 +51,7 @@ export interface NestedFailureSink {
  * outcome, because pi omits it from context and a reload (`parseAgentEntries`) drops it.
  */
 export class NestedCallFailures {
-  private pending: { message: string; shownId: string | undefined } | null = null;
+  private pending: { message: LocalizedText; shownId: string | undefined } | null = null;
   private waitingOnRetry = false;
   private readonly sink: NestedFailureSink;
 
@@ -86,7 +91,7 @@ export class NestedCallFailures {
   }
 
   /** A call that ended on an error stop, rendered under `shownId`, or undefined when it rendered nothing. */
-  hold(message: string, shownId: string | undefined): void {
+  hold(message: LocalizedText, shownId: string | undefined): void {
     this.pending = { message, shownId };
   }
 

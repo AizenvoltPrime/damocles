@@ -89,6 +89,63 @@ describe('telling a parked run from a working run', () => {
       vi.useRealTimers();
     }
   });
+
+  // A page that loads again mid-turn learns the turn's start from core's snapshot.
+  it('counts from the turn start it is given, and keeps counting from it', async () => {
+    vi.useFakeTimers();
+    try {
+      const bar = mount(StatusBar, {
+        props: { isProcessing: true, awaitingUserAction: false, turnStartedAt: Date.now() - 30_000 },
+        global: { plugins: [i18n] },
+      });
+      expect(bar.get('[data-testid="status-elapsed"]').text()).toBe('30s');
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(bar.get('[data-testid="status-elapsed"]').text()).toBe('32s');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A rejoining page can show the bar for a prompt or a wind-down before core's snapshot says how long the turn has run.
+  it('moves the clock to a turn start that arrives while the bar is up, and keeps it when the start is cleared', async () => {
+    vi.useFakeTimers();
+    try {
+      const bar = mount(StatusBar, {
+        props: { isProcessing: false, awaitingUserAction: true },
+        global: { plugins: [i18n] },
+      });
+      await bar.setProps({ awaitingUserAction: false, isProcessing: true });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(bar.get('[data-testid="status-elapsed"]').text()).toBe('2s');
+
+      await bar.setProps({ turnStartedAt: Date.now() - 40_000 });
+      expect(bar.get('[data-testid="status-elapsed"]').text()).toBe('40s');
+
+      await bar.setProps({ turnStartedAt: undefined, isProcessing: false, awaitingUserAction: true });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(bar.text()).toContain('Waiting for your answer');
+      await bar.setProps({ awaitingUserAction: false, isProcessing: true });
+      expect(bar.get('[data-testid="status-elapsed"]').text()).toBe('41s');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Core measures the turn on its own clock, which can step back.
+  it('never counts below zero', async () => {
+    vi.useFakeTimers();
+    try {
+      const bar = mount(StatusBar, {
+        props: { isProcessing: true, awaitingUserAction: false, turnStartedAt: Date.now() + 5_000 },
+        global: { plugins: [i18n] },
+      });
+      expect(bar.get('[data-testid="status-elapsed"]').text()).toBe('0s');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(bar.get('[data-testid="status-elapsed"]').text()).toBe('0s');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('what a screen reader gets', () => {

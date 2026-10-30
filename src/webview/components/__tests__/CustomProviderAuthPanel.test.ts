@@ -8,6 +8,7 @@ import { i18n, applyLocale } from '@/i18n';
 import { useSettingsStore, type KeyProviderStatus } from '@/stores/useSettingsStore';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@shared/types/messages';
 import { KEY_PROVIDER_IDS, type AccountProviderId } from '@shared/settings-sections';
+import { inGreek } from '../../../__mocks__/greek-locale';
 
 const bridge = vi.hoisted(() => ({
   posted: [] as WebviewToExtensionMessage[],
@@ -149,9 +150,29 @@ describe('CustomProviderAuthPanel (TypeSafe)', () => {
     await wrapper.find('input').setValue('ts-key');
     await wrapper.find('input').trigger('keydown.enter');
     const set = bridge.posted.find((m) => m.type === 'setProviderApiKey');
-    for (const fn of bridge.listeners) fn({ type: 'setProviderApiKeyAck', provider: 'typesafe', requestId: (set as { requestId: string }).requestId, ok: false, error: 'keyring locked' });
+    for (const fn of bridge.listeners) fn({ type: 'setProviderApiKeyAck', provider: 'typesafe', requestId: (set as { requestId: string }).requestId, ok: false, error: { message: 'keyring locked' } });
     await nextTick();
     expect(wrapper.find('[role="alert"]').text()).toBe('keyring locked');
+  });
+
+  it("renders a failed save's and a refused preference's text in the language the view switches to", async () => {
+    const coreText = { message: 'Could not open file: {0}', args: ['auth.json'] };
+    setStatus('typesafe', { configured: true, signedIn: true });
+    const wrapper = mountPanel('typesafe');
+    await nextTick();
+    await wrapper.get('[data-testid="prefer-api-key"]').trigger('click');
+    const prefer = bridge.posted.find((m) => m.type === 'setProviderPreferApiKey') as { requestId: string };
+    for (const fn of bridge.listeners) fn({ type: 'setProviderPreferApiKeyAck', provider: 'typesafe', requestId: prefer.requestId, ok: false, error: coreText });
+    await wrapper.find('input').setValue('ts-key');
+    await wrapper.find('input').trigger('keydown.enter');
+    const set = bridge.posted.find((m) => m.type === 'setProviderApiKey') as { requestId: string };
+    for (const fn of bridge.listeners) fn({ type: 'setProviderApiKeyAck', provider: 'typesafe', requestId: set.requestId, ok: false, error: coreText });
+    await nextTick();
+    expect(wrapper.findAll('[role="alert"]').map((alert) => alert.text())).toEqual(['Could not open file: auth.json', 'Could not open file: auth.json']);
+
+    await applyLocale('el');
+    await nextTick();
+    expect(wrapper.findAll('[role="alert"]').map((alert) => alert.text())).toEqual([inGreek(coreText), inGreek(coreText)]);
   });
 
   it('shows no judge line on other providers', async () => {
@@ -355,12 +376,12 @@ describe('CustomProviderAuthPanel credential precedence', () => {
       for (const fn of bridge.listeners) fn(message);
     };
 
-    ack({ type: 'setProviderPreferApiKeyAck', provider: 'deepseek', requestId: sent.requestId, ok: false, error: 'other provider' });
-    ack({ type: 'setProviderPreferApiKeyAck', provider: 'xai', requestId: 'stale', ok: false, error: 'stale' });
+    ack({ type: 'setProviderPreferApiKeyAck', provider: 'deepseek', requestId: sent.requestId, ok: false, error: { message: 'other provider' } });
+    ack({ type: 'setProviderPreferApiKeyAck', provider: 'xai', requestId: 'stale', ok: false, error: { message: 'stale' } });
     await nextTick();
     expect(wrapper.find('[role="alert"]').exists()).toBe(false);
 
-    ack({ type: 'setProviderPreferApiKeyAck', provider: 'xai', requestId: sent.requestId, ok: false, error: 'refused on a remote host' });
+    ack({ type: 'setProviderPreferApiKeyAck', provider: 'xai', requestId: sent.requestId, ok: false, error: { message: 'refused on a remote host' } });
     await nextTick();
     expect(wrapper.find('[role="alert"]').text()).toBe('refused on a remote host');
   });
@@ -405,7 +426,7 @@ describe('CustomProviderAuthPanel credential precedence', () => {
     await nextTick();
     await preferSwitch(wrapper).trigger('click');
     const sent = bridge.posted.at(-1) as Extract<WebviewToExtensionMessage, { type: 'setProviderPreferApiKey' }>;
-    for (const fn of bridge.listeners) fn({ type: 'setProviderPreferApiKeyAck', provider: 'xai', requestId: sent.requestId, ok: false, error: 'refused' });
+    for (const fn of bridge.listeners) fn({ type: 'setProviderPreferApiKeyAck', provider: 'xai', requestId: sent.requestId, ok: false, error: { message: 'refused' } });
     await nextTick();
     expect(wrapper.find('[role="alert"]').text()).toBe('refused');
 

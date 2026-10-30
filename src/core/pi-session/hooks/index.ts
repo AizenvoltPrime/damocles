@@ -5,6 +5,7 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { log } from '../../logger';
+import { l, verbatim } from '../../l10n';
 import { mapPiToolName, normalizeToolInput } from '../tool-normalization';
 import {
   dispatchToolResult,
@@ -98,14 +99,14 @@ export function postHookSystemMessages(
   messages: readonly string[],
 ): void {
   for (const message of messages) {
-    post({ type: 'notification', notificationType: 'warning', message });
+    post({ type: 'notification', notificationType: 'warning', message: verbatim(message) });
   }
 }
 
 /** Tell the user what the UserPromptSubmit hooks said about a prompt: each `systemMessage`, then a block's reason. */
 export function postUserPromptVerdict(post: (message: ExtensionToWebviewMessage) => void, verdict: InputHookResult): void {
   postHookSystemMessages(post, verdict.systemMessages);
-  if (verdict.block) post({ type: 'notification', notificationType: 'warning', message: verdict.reason ?? 'Your prompt was blocked by a hook.' });
+  if (verdict.block) post({ type: 'notification', notificationType: 'warning', message: verdict.reason !== undefined ? verbatim(verdict.reason) : l('Your prompt was blocked by a hook.') });
 }
 
 /** Build the CC common-keys block (Appendix A) from a pi extension context. Shared by every event. */

@@ -1,19 +1,21 @@
 import * as vscode from 'vscode';
 import type { NotificationOptions, NotificationService } from '../../platform/notification-service';
+import type { LocalizedText } from '../../shared/localized-text';
+import { renderVsCode } from './localization-service';
 
-type Show = (message: string, options: vscode.MessageOptions, ...items: string[]) => Thenable<string | undefined>;
+type Show = (message: string, options: vscode.MessageOptions, ...items: vscode.MessageItem[]) => Thenable<vscode.MessageItem | undefined>;
 
-// A leading object argument is NotificationOptions and goes through as vscode's MessageOptions, so modal stays modal.
-function show(fn: Show, message: string, rest: ReadonlyArray<NotificationOptions | string>): Thenable<string | undefined> {
-  const [first, ...others] = rest;
-  if (typeof first === 'object') return fn(message, { ...(first.modal !== undefined ? { modal: first.modal } : {}) }, ...(others as string[]));
-  return (fn as unknown as (message: string, ...items: string[]) => Thenable<string | undefined>)(message, ...(rest as string[]));
+// Items rather than strings, so the answer is the chosen action's index however its label renders.
+async function show(fn: Show, message: LocalizedText, actions: readonly LocalizedText[] = [], options?: NotificationOptions): Promise<number | undefined> {
+  const items = actions.map((action) => ({ title: renderVsCode(action) }));
+  const chosen = await fn(renderVsCode(message), { ...(options?.modal !== undefined ? { modal: options.modal } : {}) }, ...items);
+  return chosen === undefined ? undefined : items.indexOf(chosen);
 }
 
 export function createVsCodeNotificationService(): NotificationService {
   return {
-    info: async (message: string, ...rest: Array<NotificationOptions | string>) => show(vscode.window.showInformationMessage, message, rest),
-    warn: async (message: string, ...rest: Array<NotificationOptions | string>) => show(vscode.window.showWarningMessage, message, rest),
-    error: async (message: string, ...rest: Array<NotificationOptions | string>) => show(vscode.window.showErrorMessage, message, rest),
+    info: (message, actions, options) => show(vscode.window.showInformationMessage, message, actions, options),
+    warn: (message, actions, options) => show(vscode.window.showWarningMessage, message, actions, options),
+    error: (message, actions, options) => show(vscode.window.showErrorMessage, message, actions, options),
   };
 }

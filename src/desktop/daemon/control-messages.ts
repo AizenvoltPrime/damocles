@@ -2,8 +2,8 @@
 // never change, and they stay served after `refused { reason: 'protocol' }`.
 
 import type { Call, ClientAuth, ClientPolicy, ClientUser, Contract, MirrorTopics, Tables } from '../core-protocol/messages';
-import { MAIN_TO_CORE, parseClientValues, MAX_DATA_CHARS, MAX_ITEMS, MAX_KEY_CHARS, MAX_LABEL_CHARS, MAX_PATH_CHARS } from '../core-protocol/messages';
-import { arr, bool, bytes, data, dict, either, int, INVALID, nonEmpty, none, num, obj, oneOf, opt, str, type Parser } from '../core-protocol/schema';
+import { MAIN_TO_CORE, parseClientValues, MAX_ITEMS, MAX_LABEL_CHARS, MAX_PATH_CHARS } from '../core-protocol/messages';
+import { arr, bool, bytes, either, int, INVALID, nonEmpty, none, num, obj, oneOf, opt, str, type Parser } from '../core-protocol/schema';
 
 export const CONTROL_MAX_MESSAGE_BYTES: number = 8 * 1024 * 1024;
 // the most of one log a logs.read returns
@@ -83,9 +83,8 @@ export interface CoreAttach {
   readonly appInfo: { readonly version: string; readonly host: 'desktop' };
   readonly secretsPersistent: boolean;
   readonly chatBrowserPane: boolean;
-  // version-0 values of the mirrors the daemon takes from clients; state holds CLIENT_STATE_KEYS only
+  // version-0 values of the mirrors the daemon takes from clients
   readonly mirrors: {
-    readonly state: { readonly global: Readonly<Record<string, unknown>>; readonly workspace: Readonly<Record<string, unknown>> };
     readonly trust: { readonly keys: readonly string[] };
     readonly folders: MirrorTopics['folders'];
     readonly editor: MirrorTopics['editor'];
@@ -222,7 +221,6 @@ export const parseCoreState: Parser<CoreState> = obj({
   pid,
   ppid: pid,
 });
-const stateValues = dict(data(MAX_DATA_CHARS), MAX_KEY_CHARS, MAX_ITEMS);
 const coreAttach: Parser<CoreAttach> = obj({
   attach: int(1, Number.MAX_SAFE_INTEGER),
   hostId,
@@ -230,7 +228,6 @@ const coreAttach: Parser<CoreAttach> = obj({
   secretsPersistent: bool,
   chatBrowserPane: bool,
   mirrors: obj({
-    state: obj({ global: stateValues, workspace: stateValues }),
     trust: obj({ keys: arr(nonEmpty(MAX_PATH_CHARS), MAX_ITEMS) }),
     folders: MAIN_TO_CORE.mirrors.folders,
     editor: MAIN_TO_CORE.mirrors.editor,

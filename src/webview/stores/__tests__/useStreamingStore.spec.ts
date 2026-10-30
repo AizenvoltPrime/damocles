@@ -235,7 +235,7 @@ describe('useStreamingStore replay queue', () => {
     const store = useStreamingStore();
     store.queueReplayMessage(buildUserMessage('replayed', true));
 
-    store.addErrorMessage('Unknown steer command');
+    store.addViewErrorMessage('Unknown steer command');
 
     expect(store.messages.map((m) => m.content)).toEqual(['replayed', 'Unknown steer command']);
     expect(frames.size).toBe(0);

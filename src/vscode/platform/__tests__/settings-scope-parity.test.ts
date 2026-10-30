@@ -74,7 +74,6 @@ function desktopStore(): DesktopSettingsStore {
     defaultProject: { folder: () => folder, onDidChange: () => ({ dispose: () => undefined }) },
     chatFolders: { folders: () => [], onDidChange: () => ({ dispose: () => undefined }) },
     notifications: fake.notifications,
-    localization: fake.localization,
     log: () => undefined,
   });
 }

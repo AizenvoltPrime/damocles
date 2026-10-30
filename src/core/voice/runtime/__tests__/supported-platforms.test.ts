@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { installFakePlatform } from "../../../../__mocks__/fake-platform";
 import tarballChecksums from "../tarball-checksums.json";
+import { englishText } from "../../../../shared/localized-text";
 import {
   UnsupportedPlatformError,
   VOICE_RUNTIME_PLATFORMS,
@@ -30,7 +31,7 @@ describe("voice runtime platform matrix", () => {
 
   it.each(REFUSED)("refuses %s %s, naming it and the supported platforms", (platform, arch, name) => {
     expect(() => requireVoiceRuntimePlatform(platform, arch)).toThrow(UnsupportedPlatformError);
-    expect(unsupportedVoicePlatformMessage(platform, arch)).toBe(
+    expect(englishText(unsupportedVoicePlatformMessage(platform, arch)!)).toBe(
       `Jarvis voice mode (wake word and spoken replies) is not available on ${name}. Its local speech runtime supports only Windows x64, Linux x64, macOS arm64. Push-to-talk with cloud speech-to-text (Whisper, Deepgram or Google) still works.`,
     );
   });

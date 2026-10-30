@@ -86,10 +86,24 @@ class ScriptedWorker extends EventEmitter implements QuickOpenWorker {
   terminated = false;
   readonly queries: Array<Extract<WorkerRequest, { kind: 'query' }>> = [];
   readonly received: WorkerRequest[] = [];
+  private readonly waiting = new Set<{ readonly matches: (request: WorkerRequest) => boolean; readonly resolve: () => void }>();
 
   postMessage(request: WorkerRequest): void {
     this.received.push(request);
     if (request.kind === 'query') this.queries.push(request);
+    for (const waiter of this.waiting) if (waiter.matches(request)) waiter.resolve();
+  }
+
+  /** Settles once main posted a request that matches, as soon as it did: a real ripgrep's start has no time bound. */
+  async posted(matches: (request: WorkerRequest) => boolean): Promise<void> {
+    if (this.received.some(matches)) return;
+    await new Promise<void>((resolve) => {
+      const waiter = { matches, resolve: () => {
+        this.waiting.delete(waiter);
+        resolve();
+      } };
+      this.waiting.add(waiter);
+    });
   }
 
   async terminate(): Promise<number> {
@@ -367,7 +381,8 @@ describe('ripgrep listings main runs for the worker', () => {
     void quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
     await turnsUntil(() => worker.queries.length === 1);
     worker.emit('message', { kind: 'list', listing: 7, projectKey: alpha.key });
-    await vi.waitFor(() => expect(worker.received.at(-1)).toEqual({ kind: 'listEnd', listing: 7 }));
+    await worker.posted((request) => request.kind === 'listEnd');
+    expect(worker.received.at(-1)).toEqual({ kind: 'listEnd', listing: 7 });
     expect(spawned).toEqual([{ rgPath, args: ripgrepFileArgs(alpha.fsPath, [], ['**/.git']) }]);
     const output = worker.received.flatMap((request) => (request.kind === 'listOutput' && request.listing === 7 ? [Buffer.from(request.data).toString('utf8')] : [])).join('');
     expect(output.trim()).toBe(path.join(alpha.fsPath, 'a.ts'));
@@ -381,22 +396,26 @@ describe('ripgrep listings main runs for the worker', () => {
     void quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
     await turnsUntil(() => worker.queries.length === 1);
     const ends = (listing: number): WorkerRequest[] => worker.received.filter((request) => request.kind === 'listEnd' && request.listing === listing);
+    const ended = (listing: number): Promise<void> => worker.posted((request) => request.kind === 'listEnd' && request.listing === listing);
 
     worker.emit('message', { kind: 'list', listing: 1, projectKey: beta.key });
-    await vi.waitFor(() => expect(ends(1)).toEqual([{ kind: 'listEnd', listing: 1 }]));
+    await ended(1);
+    expect(ends(1)).toEqual([{ kind: 'listEnd', listing: 1 }]);
     fs.rmSync(alpha.fsPath, { recursive: true });
     worker.emit('message', { kind: 'list', listing: 2, projectKey: alpha.key });
-    await vi.waitFor(() => expect(ends(2)).toEqual([{ kind: 'listEnd', listing: 2, error: expect.stringMatching(/^ripgrep exited with 2: /) }]));
+    await ended(2);
+    expect(ends(2)).toEqual([{ kind: 'listEnd', listing: 2, error: expect.stringMatching(/^ripgrep exited with 2: /) }]);
     resolveRg = async () => path.join(root, 'no-such-rg.exe');
     worker.emit('message', { kind: 'list', listing: 3, projectKey: beta.key });
-    await vi.waitFor(() => expect(ends(3)).toHaveLength(1));
+    await ended(3);
     await settled(Promise.resolve());
     expect(ends(3)).toEqual([{ kind: 'listEnd', listing: 3, error: expect.stringContaining('ENOENT') }]);
     resolveRg = async () => {
       throw new Error('ripgrep is missing from the install');
     };
     worker.emit('message', { kind: 'list', listing: 4, projectKey: beta.key });
-    await vi.waitFor(() => expect(ends(4)).toEqual([{ kind: 'listEnd', listing: 4, error: 'ripgrep is missing from the install' }]));
+    await ended(4);
+    expect(ends(4)).toEqual([{ kind: 'listEnd', listing: 4, error: 'ripgrep is missing from the install' }]);
     quickOpen.dispose();
   });
 
@@ -407,7 +426,8 @@ describe('ripgrep listings main runs for the worker', () => {
     void quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
     await turnsUntil(() => worker.queries.length === 1);
     worker.emit('message', { kind: 'list', listing: 0, projectKey: alpha.key });
-    await vi.waitFor(() => expect(worker.received.at(-1)).toEqual({ kind: 'listEnd', listing: 0 }));
+    await worker.posted((request) => request.kind === 'listEnd');
+    expect(worker.received.at(-1)).toEqual({ kind: 'listEnd', listing: 0 });
     expect(logged).toEqual([expect.stringMatching(/^\[quick-open\] ripgrep: .*error parsing glob 'a\{b'/)]);
     quickOpen.dispose();
   });
@@ -429,7 +449,8 @@ describe('ripgrep listings main runs for the worker', () => {
     void quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
     await turnsUntil(() => worker.queries.length === 1);
     worker.emit('message', { kind: 'list', listing: 0, projectKey: alpha.key });
-    await vi.waitFor(() => expect(worker.received.at(-1)).toEqual({ kind: 'listEnd', listing: 0 }));
+    await worker.posted((request) => request.kind === 'listEnd');
+    expect(worker.received.at(-1)).toEqual({ kind: 'listEnd', listing: 0 });
     quickOpen.dispose();
     expect(kills).toBe(0);
   });

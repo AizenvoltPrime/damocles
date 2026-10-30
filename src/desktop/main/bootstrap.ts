@@ -28,7 +28,7 @@ export interface DesktopCore {
 }
 
 export interface CoreConnectionDeps
-  extends Pick<HostServicesDeps, 'terminalToggle' | 'resolveProxy' | 'createView' | 'git' | 'e2eHooks' | 'paths' | 'logs' | 'language' | 'power' | 'ui' | 'divert' | 'log'> {
+  extends Pick<HostServicesDeps, 'terminalToggle' | 'resolveProxy' | 'createView' | 'git' | 'e2eHooks' | 'paths' | 'logs' | 'language' | 'power' | 'ui' | 'divert' | 'render' | 'log'> {
   // main's platform: what core's proxies reach
   readonly platform: DesktopPlatform;
   readonly trust: TrustStore;
@@ -77,7 +77,7 @@ export function startDesktopCore(deps: CoreConnectionDeps, start: CoreStart): De
     isReady = false;
     endpoint.close(`Damocles Core broke the protocol (${error.message})`);
     child.kill();
-  });
+  }, undefined, deps.render);
   const trust = { trustedKeys: () => deps.trust.trustedFolders().map((folder) => folderKey(folder)), onDidGrant: deps.trust.onDidGrant.bind(deps.trust), requestTrust: deps.trust.requestTrust.bind(deps.trust) };
   const hostServices = createHostServices({ ...deps, trust, endpoint, state: deps.platform.state, endedCores: start.endedCores, worktreeRecords: start.worktreeRecords, user: NO_USER_RELAYS, refusedPosts: new Set() });
   // The init is the channel's first message; core parses everything after it with the protocol's tables.

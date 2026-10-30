@@ -29,7 +29,7 @@ const CORE_ATTACH: CoreAttach = {
   appInfo: { version: '0.0.0-test', host: 'desktop' },
   secretsPersistent: true,
   chatBrowserPane: true,
-  mirrors: { state: { global: {}, workspace: {} }, trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' }, clientAuth: { providers: {} }, clientUser: { settings: {}, permissionRules: [] }, clientPolicy: { voice: false, allowBypass: false } },
+  mirrors: { trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' }, clientAuth: { providers: {} }, clientUser: { settings: {}, permissionRules: [] }, clientPolicy: { voice: false, allowBypass: false } },
 };
 
 // a pty host that ignores its shutdown and ends only when killed

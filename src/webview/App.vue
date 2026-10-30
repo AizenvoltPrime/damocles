@@ -20,6 +20,7 @@ import { chatOffline, useChatHost } from "./composables/useChatHost";
 import { CloudOff, LoaderCircle, Users } from "lucide-vue-next";
 import { branchLeaf } from "@/utils/branch-leaf";
 import { windDownText } from "@/utils/windDownText";
+import { runningToolName } from "@/lib/running-tool";
 import ChatHeader from "./components/chat-header/ChatHeader.vue";
 import SessionHistoryDropdown from "./components/chat-header/SessionHistoryDropdown.vue";
 import type { HeaderAction } from "./components/chat-header/headerActions";
@@ -155,7 +156,7 @@ const {
   showMcpPanel,
   showToolsPanel,
   showMemoryPanel,
-  currentRunningTool,
+  turnStartedAt,
   showRewindTypeModal,
   showRewindBrowser,
   rewindHistoryItems,
@@ -223,6 +224,7 @@ const { tool: expandedTool, owner: expandedToolOwner } = useExpandedTool();
 
 const subagentStore = useSubagentStore();
 const { subagents, expandedSubagent } = storeToRefs(subagentStore);
+const runningTool = computed(() => runningToolName(messages.value, (id) => subagents.value[id]));
 
 const questionStore = useQuestionStore();
 const { pendingQuestion } = storeToRefs(questionStore);
@@ -1248,7 +1250,8 @@ function handleSuggestion(prompt: string) {
         <StatusBar
           :is-processing="isProcessing"
           :awaiting-user-action="isAwaitingUserAction"
-          :current-tool-name="currentRunningTool ?? undefined"
+          :current-tool-name="runningTool ?? undefined"
+          :turn-started-at="turnStartedAt ?? undefined"
           :status-override="statusOverride"
           :wind-down="windDownLine"
           :active-hooks="uiStore.activeHooks"

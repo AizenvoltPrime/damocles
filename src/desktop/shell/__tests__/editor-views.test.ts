@@ -107,6 +107,19 @@ class FakeDiffEditor {
   getModifiedEditor(): FakeCodeEditor { return this.sides[1]!; }
   readonly moves: string[] = [];
   goToDiff(target: string): void { this.moves.push(target); }
+  // null until Monaco computed the diff, as its getLineChanges is
+  lineChanges: Array<{ originalStartLineNumber: number; originalEndLineNumber: number; modifiedStartLineNumber: number; modifiedEndLineNumber: number }> | null = null;
+  readonly diffListeners = new Set<() => void>();
+  getLineChanges(): FakeDiffEditor['lineChanges'] { return this.lineChanges; }
+  onDidUpdateDiff(listener: () => void): { dispose(): void } {
+    this.diffListeners.add(listener);
+    return { dispose: () => this.diffListeners.delete(listener) };
+  }
+  /** Monaco's diff computed again, after a change to either side. */
+  updateDiff(changes: NonNullable<FakeDiffEditor['lineChanges']>): void {
+    this.lineChanges = changes;
+    for (const listener of [...this.diffListeners]) listener();
+  }
   dispose(): void {}
 }
 
@@ -155,7 +168,7 @@ const text = (documentId: string, value: string): ShellDocumentContent =>
 const tab = (id: string, extra: Partial<ShellEditorTab> = {}): ShellEditorTab =>
   ({ id, kind: 'code', title: `${id}.md`, displayPath: `${id}.md`, documentId: `doc-${id}`, dirty: false, readOnly: false, conflict: false, ...extra });
 const diffTab = (): ShellEditorTab & { diff: NonNullable<ShellEditorTab['diff']> } =>
-  ({ id: 'd', kind: 'diff', title: 'a.ts', displayPath: 'a.ts', dirty: false, readOnly: false, conflict: false, diff: { originalId: 'doc-old', modifiedId: 'doc-new', added: 1, removed: 1 } });
+  ({ id: 'd', kind: 'diff', title: 'a.ts', displayPath: 'a.ts', dirty: false, readOnly: false, conflict: false, diff: { originalId: 'doc-old', modifiedId: 'doc-new' } });
 const state = (tabs: ShellEditorTab[], settings: Partial<ShellEditorState['settings']> = {}): ShellEditorState => ({
   ...EDITOR_STATE,
   tabs,
@@ -340,7 +353,7 @@ describe('a document main could not load', () => {
   it('says so in a merge tab whose Result could not load, which shows the merge once a later show of the tab loads it', async () => {
     const merge = tab('m', { kind: 'merge', title: 'a.ts', displayPath: '/srv/a.ts', documentId: 'doc-m', merge: { upload: true, path: 'src/a.ts', documentId: 'doc-m' } }) as ShellEditorTab & { merge: NonNullable<ShellEditorTab['merge']> };
     const { api, store } = await failingFirst(merge, 'doc-m', { 'doc-m': text('doc-m', 'resolved\n') });
-    const label = { title: 'side' };
+    const label = { title: 'side', marker: 'side' };
     vi.mocked(api.uploadMergeInputs).mockResolvedValue({ ok: true, base: 'a\n', current: 'b\n', incoming: 'c\n', labels: { current: label, incoming: label, base: label }, operation: 'merge' });
     const first = mountWith(MergeEditor, store, { api, tab: merge });
     await flushPromises();
@@ -438,6 +451,8 @@ describe('a diff tab', () => {
     expect(editors[0]!.options[0]).toMatchObject({ readOnly: false });
     expect(wrapper.get('[data-testid="diff-editor"]').attributes('data-monaco-ready')).toBe('true');
     expect(api.getDocument).not.toHaveBeenCalledWith('doc-old');
+    // a diff with a side that is not text counts no lines
+    expect(store.diffStats.value.has('d')).toBe(false);
 
     const largeFile: ShellEditorTab & { diff: NonNullable<ShellEditorTab['diff']> } = {
       ...diffTab(),
@@ -449,6 +464,7 @@ describe('a diff tab', () => {
     const modified = large.get('[data-side="modified"]');
     expect(modified.text()).toContain('It is too large to open in the editor. 12 MB');
     expect(editors[1]!.options[0]).toMatchObject({ readOnly: true });
+    expect(store.diffStats.value.has('d2')).toBe(false);
     await modified.get('[data-testid="diff-open-anyway"]').trigger('click');
     expect(api.editorTab).toHaveBeenCalledWith({ action: 'openFile', tabId: 'd2' });
   });
@@ -465,6 +481,58 @@ describe('a diff tab', () => {
     wrapper.unmount();
     mounted.splice(mounted.indexOf(wrapper), 1);
     for (const side of diffEditors[0]!.sides) expect(side.actions).toEqual([]);
+  });
+
+  it('counts the lines of the diff its editor shows, each time Monaco computes it again, and drops the count once unmounted', async () => {
+    const diff = diffTab();
+    const { api, store } = await setup(state([diff]), { 'doc-old': text('doc-old', 'a'), 'doc-new': text('doc-new', 'b') });
+    const wrapper = mountWith(DiffEditor, store, { api, tab: diff, menuShortcuts: STATE.shortcuts.editorMenu });
+    await flushPromises();
+    expect(store.diffStats.value.get('d')).toBeUndefined();
+
+    // an insertion of two lines after line 3, a change of lines 5-6 into one line, a deletion of line 9
+    diffEditors[0]!.updateDiff([
+      { originalStartLineNumber: 3, originalEndLineNumber: 0, modifiedStartLineNumber: 4, modifiedEndLineNumber: 5 },
+      { originalStartLineNumber: 5, originalEndLineNumber: 6, modifiedStartLineNumber: 7, modifiedEndLineNumber: 7 },
+      { originalStartLineNumber: 9, originalEndLineNumber: 9, modifiedStartLineNumber: 9, modifiedEndLineNumber: 0 },
+    ]);
+    expect(store.diffStats.value.get('d')).toEqual({ added: 3, removed: 3 });
+
+    // the index side caught up with the working file after a stage
+    diffEditors[0]!.updateDiff([]);
+    expect(store.diffStats.value.get('d')).toEqual({ added: 0, removed: 0 });
+
+    wrapper.unmount();
+    mounted.splice(mounted.indexOf(wrapper), 1);
+    expect(store.diffStats.value.has('d')).toBe(false);
+  });
+
+  it('shows the count of the newest diff editor of a tab still mounted, whichever of its editors unmounts first', async () => {
+    const diff = diffTab();
+    const { api, store } = await setup(state([diff]), { 'doc-old': text('doc-old', 'a'), 'doc-new': text('doc-new', 'b') });
+    const editorOf = () => mountWith(DiffEditor, store, { api, tab: diff, menuShortcuts: STATE.shortcuts.editorMenu });
+    const unmount = (wrapper: ReturnType<typeof editorOf>): void => {
+      wrapper.unmount();
+      mounted.splice(mounted.indexOf(wrapper), 1);
+    };
+    const changed = (lines: number) => [{ originalStartLineNumber: 1, originalEndLineNumber: lines, modifiedStartLineNumber: 1, modifiedEndLineNumber: lines }];
+    const first = editorOf();
+    const second = editorOf();
+    await flushPromises();
+    diffEditors[0]!.updateDiff(changed(1));
+    diffEditors[1]!.updateDiff(changed(2));
+    expect(store.diffStats.value.get('d')).toEqual({ added: 2, removed: 2 });
+    unmount(first);
+    expect(store.diffStats.value.get('d')).toEqual({ added: 2, removed: 2 });
+
+    const third = editorOf();
+    await flushPromises();
+    diffEditors[2]!.updateDiff(changed(3));
+    expect(store.diffStats.value.get('d')).toEqual({ added: 3, removed: 3 });
+    unmount(third);
+    expect(store.diffStats.value.get('d')).toEqual({ added: 2, removed: 2 });
+    unmount(second);
+    expect(store.diffStats.value.has('d')).toBe(false);
   });
 
   it('takes the editor settings live, as every other editor does', async () => {

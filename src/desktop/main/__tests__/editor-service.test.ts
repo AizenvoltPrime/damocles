@@ -8,6 +8,7 @@ import { EDITOR_MAX_DOCUMENT_BYTES, type ExtensionToWebviewMessage } from '../..
 import { fileBody, fileDocument, languageIdForName, memoryDocument, textBody } from '../platform/editor-document';
 import { createDesktopEditorService, type ChatTabMessenger } from '../platform/editor-service';
 import type { EditorPane } from '../editor-pane';
+import { englishText } from '../../../shared/localized-text';
 
 let dir: string;
 
@@ -57,7 +58,7 @@ describe('editor documents', () => {
   it.skipIf(process.platform === 'win32')('refuses a FIFO without opening it', async () => {
     const fifo = path.join(dir, 'pipe');
     execFileSync('mkfifo', [fifo]);
-    expect(await fileBody(fifo, 'plaintext')).toEqual({ kind: 'unreadable', error: `${fifo} is not a file` });
+    expect(await fileBody(fifo, 'plaintext')).toEqual({ kind: 'notAFile' });
   });
 
   it('reads a file larger than one read chunk whole', async () => {
@@ -69,9 +70,9 @@ describe('editor documents', () => {
     expect(await fileBody(path.join(dir, 'absent.py'), 'python')).toEqual({ kind: 'text', content: '', languageId: 'python' });
   });
 
-  it('reports other read errors as unreadable', async () => {
-    const body = await fileBody(dir, 'plaintext');
-    expect(body.kind).toBe('unreadable');
+  // The view words it in its own language; no sentence of Damocles' own travels in `error`.
+  it('states a folder as no file', async () => {
+    expect(await fileBody(dir, 'plaintext')).toEqual({ kind: 'notAFile' });
   });
 
   it('applies the size and NUL rules to in-memory text', () => {
@@ -103,7 +104,7 @@ describe('editor documents', () => {
     const handle = fs.openSync(huge, 'w');
     fs.ftruncateSync(handle, EDITOR_MAX_DOCUMENT_BYTES + 1);
     fs.closeSync(handle);
-    const service = createDesktopEditorService({} as ChatTabMessenger, () => ({}) as EditorPane, () => undefined, () => Promise.resolve());
+    const service = createDesktopEditorService({} as ChatTabMessenger, () => ({}) as EditorPane, () => undefined, () => Promise.resolve(), englishText);
 
     await expect(service.readText(write('read.ts', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('const a = 1;\n')])))).resolves.toBe('const a = 1;\n');
     await expect(service.readText(huge)).rejects.toThrow('over the');
@@ -158,7 +159,7 @@ describe('desktop editor service (D15 routing)', () => {
         pane.push(`settings:${scope}:${key ?? ''}`);
       },
     } as unknown as EditorPane;
-    return { editor: createDesktopEditorService(tabs, () => fakePane, (section) => { settingsOpened.push(section); }, () => Promise.resolve()), delivered, posted, pane, settingsOpened };
+    return { editor: createDesktopEditorService(tabs, () => fakePane, (section) => { settingsOpened.push(section); }, () => Promise.resolve(), englishText), delivered, posted, pane, settingsOpened };
   }
 
   it('opens files in the editor pane, focused only when the caller did not set preserveFocus, at a valid line only', async () => {
@@ -186,8 +187,8 @@ describe('desktop editor service (D15 routing)', () => {
 
   it('shows a diff without an approval id in the pane, never in a chat', async () => {
     const { editor, delivered, pane } = service();
-    const view = await editor.showDiff({ title: (name) => `${name} (At checkpoint ↔ Current)`, filePath: '/w/a.ts', left: { name: 'x-a.ts', content: 'a' }, right: { path: '/w/a.ts' }, purpose: 'checkpoint', panelId: 'host-2' });
-    const agent = await editor.showDiff({ title: (name) => name, filePath: '/w/b.ts', left: { name: 'b.ts', content: 'a' }, right: { name: 'b2.ts', content: 'b' }, purpose: 'checkpoint', preserveFocus: true });
+    const view = await editor.showDiff({ title: (name) => ({ message: '{0} (At checkpoint ↔ Current)', args: [name] }), filePath: '/w/a.ts', left: { name: 'x-a.ts', content: 'a' }, right: { path: '/w/a.ts' }, purpose: 'checkpoint', panelId: 'host-2' });
+    const agent = await editor.showDiff({ title: (name) => ({ message: '{0}', args: [name] }), filePath: '/w/b.ts', left: { name: 'b.ts', content: 'a' }, right: { name: 'b2.ts', content: 'b' }, purpose: 'checkpoint', preserveFocus: true });
     await view.close();
     await agent.close();
     expect(pane).toEqual(['diff:a.ts (At checkpoint ↔ Current):true', 'diff:b.ts:false', 'closeDiff:a.ts (At checkpoint ↔ Current)', 'closeDiff:b.ts']);
@@ -198,7 +199,7 @@ describe('desktop editor service (D15 routing)', () => {
     const { editor, delivered, posted, pane } = service();
     const file = write('edit.md', '# old\n');
     const view = await editor.showDiff({
-      title: (name) => `${name} (Current ↔ Proposed)`,
+      title: (name) => ({ message: '{0} (Current ↔ Proposed)', args: [name] }),
       filePath: file,
       left: { path: file },
       right: { name: 'tool-1-proposed-edit.md', content: '# new\n' },
@@ -210,7 +211,7 @@ describe('desktop editor service (D15 routing)', () => {
     expect(panelId).toBe('host-2');
     expect(message).toMatchObject({
       type: 'editorShowDiff',
-      title: 'edit.md (Current ↔ Proposed)',
+      title: { message: '{0} (Current ↔ Proposed)', args: ['edit.md'] },
       purpose: 'proposal',
       approvalId: 'tool-1',
       original: { name: 'edit.md', path: file, body: { kind: 'text', content: '# old\n', languageId: 'markdown' } },

@@ -202,7 +202,6 @@ export interface WorkerProgressEvent {
 	phase: 'build' | 'postprocess' | 'serialize';
 	current: number;
 	total: number;
-	label?: string;
 }
 
 /** A newer Damocles migrated the index past this build's schema, before open or since, and it is now read only. */

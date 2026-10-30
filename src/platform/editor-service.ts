@@ -1,3 +1,4 @@
+import type { LocalizedText } from '../shared/localized-text';
 import type { Disposable } from './disposable';
 import type { SettingsSectionId } from '../shared/settings-sections';
 import type { ChatReviewScope, SettingsFileScope } from '../shared/types/messages';
@@ -35,7 +36,7 @@ export type DiffSide = { readonly path: string } | { readonly name: string; read
 export interface DiffRequest {
   // The tab title given the name of the file the diff shows; a host whose tab follows a rename of that file asks again with
   // the new name, as VS Code derives a diff editor's label from its resources.
-  readonly title: (fileName: string) => string;
+  readonly title: (fileName: string) => LocalizedText;
   // the file the diff shows, whose base name the title takes
   readonly filePath: string;
   readonly left: DiffSide;
@@ -75,10 +76,14 @@ export interface EditorService {
    * for a host that cannot read the file where core wrote it.
    */
   showMarkdownPreview(path: string, opts?: { panelId?: string; content?: string }): Promise<void>;
-  // context of the focused text editor; undefined when none has focus
-  getActiveContext(): ActiveEditorContext | undefined;
-  // fires when the focused text editor changes or any text editor's selection changes, with that editor's context (undefined: no editor)
-  onDidChangeActiveContext(listener: (context: ActiveEditorContext | undefined) => void): Disposable;
+  // context of the focused text editor; undefined when none has focus. clientId names the device on a daemon's core, whose
+  // devices each have their own editor (undefined without one); a host with one editor ignores it.
+  getActiveContext(clientId?: string): ActiveEditorContext | undefined;
+  // fires when the focused text editor changes or any text editor's selection changes, with that editor's context (undefined: no
+  // editor) and, on a daemon's core, the device whose editor it is
+  onDidChangeActiveContext(listener: (context: ActiveEditorContext | undefined, clientId?: string) => void): Disposable;
+  // a daemon's core: a device's editor went with its client, so none of its context is current; a host with one editor has none
+  onDidDetachClient?(listener: (clientId: string) => void): Disposable;
   // query filters the host's settings editor, e.g. a setting key; a host without one opens the app settings at section
   openHostSettings(query?: string, section?: SettingsSectionId): Promise<void>;
   // A .damocles settings file in the host's editor, saved under the settings file editor's rules, at key's line when the

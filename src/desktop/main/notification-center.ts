@@ -1,3 +1,4 @@
+import type { LocalizedText } from '../../shared/localized-text';
 import { randomUUID } from 'node:crypto';
 import type { UsageThresholdCrossing } from '../../core/pi-session/usage-thresholds';
 import type { ChatActivity, PendingPrompt, TurnOutcome } from '../../core/pi-session/session-state';
@@ -16,6 +17,7 @@ import {
   type NotificationHost,
   type NotificationEntry,
   type NoticeSeverity,
+  type ToastAnswer,
 } from '../preload/notifications';
 
 // Global KeyValueState key; Do not disturb outlives the run, the entries do not (D26).
@@ -63,7 +65,11 @@ export interface ChatKey {
   readonly sessionId?: string;
 }
 
+// core's text in main's language
+type Render = (text: LocalizedText) => string;
+
 export interface NotificationCenterDeps {
+  readonly render: Render;
   readonly doNotDisturb: () => boolean;
   readonly setDoNotDisturb: (on: boolean) => Promise<void>;
   // damocles.desktop.notifications.enabled
@@ -101,6 +107,11 @@ interface Entry {
   readonly action: EntryAction;
 }
 
+// a notice's answer names its action by index, so actions that read alike stay apart
+function isActionIndex(action: ToastAnswer, actions: readonly string[]): action is number {
+  return typeof action === 'number' && Number.isInteger(action) && action >= 0 && action < actions.length;
+}
+
 function chatOfAction(action: EntryAction): ChatRef | undefined {
   return action.kind === 'none' ? undefined : action.chat;
 }
@@ -111,8 +122,8 @@ function sameChat(ref: ChatRef, chat: ChatKey): boolean {
 
 /** A notice that stays until it is answered: its toast never times out, and its center row offers its actions meanwhile. */
 export interface StickyNotice {
-  // one of its actions; undefined once withdrawn, or when the center is disposed
-  readonly answer: Promise<string | undefined>;
+  // the chosen action's index; undefined once withdrawn, or when the center is disposed
+  readonly answer: Promise<number | undefined>;
   // it no longer applies: its toast goes, its entry stays without its actions, and answer settles undefined
   withdraw(): void;
 }
@@ -124,8 +135,8 @@ interface LiveToast {
   readonly lifeMs: number;
   body: NotificationBody;
   readonly action: EntryAction;
-  // a core notice's caller, answered with an action label or undefined
-  readonly answer: ((action: string | undefined) => void) | undefined;
+  // a notice's caller, answered with the chosen action's index or undefined
+  readonly answer: ((index: number | undefined) => void) | undefined;
   // a sticky notice's toast: no countdown, and dismissing it leaves the notice to its center row
   readonly sticky: boolean;
   remaining: number;
@@ -147,8 +158,8 @@ function chatOf(ref: ChatRef): NotificationChat {
 }
 
 /** The entry and action a pending prompt raises: a prompt a team agent raised is the team's, whatever it asks. */
-export function promptEntry(prompt: PendingPrompt, chat: ChatRef): { readonly body: NotificationBody; readonly action: EntryAction } {
-  const summary = bounded(prompt.summary);
+export function promptEntry(prompt: PendingPrompt, chat: ChatRef, render: Render): { readonly body: NotificationBody; readonly action: EntryAction } {
+  const summary = bounded(prompt.summary && render(prompt.summary));
   const owner = prompt.owner;
   if (owner.kind === 'team') {
     const agentName = bounded(owner.agentName);
@@ -163,17 +174,17 @@ export function promptEntry(prompt: PendingPrompt, chat: ChatRef): { readonly bo
 }
 
 /** The entry a settled turn raises, if any; the caller raises `done` only for a chat the user is not looking at. */
-export function outcomeEntry(outcome: TurnOutcome, chat: ChatRef): { readonly body: NotificationBody; readonly action: EntryAction } | undefined {
+export function outcomeEntry(outcome: TurnOutcome, chat: ChatRef, render: Render): { readonly body: NotificationBody; readonly action: EntryAction } | undefined {
   const open: EntryAction = { kind: 'chat', chat };
   switch (outcome.kind) {
     case 'completed':
       return { body: { kind: 'done', chat: chatOf(chat), ...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}) }, action: open };
     case 'error': {
-      const message = bounded(outcome.message);
+      const message = bounded(outcome.message && render(outcome.message));
       return { body: { kind: 'error', chat: chatOf(chat), reason: 'error', ...(message ? { message } : {}) }, action: open };
     }
     case 'rateLimit': {
-      const windowLabel = bounded(outcome.windowLabel);
+      const windowLabel = bounded(outcome.windowLabel && render(outcome.windowLabel));
       return {
         body: {
           kind: 'error',
@@ -192,13 +203,13 @@ export function outcomeEntry(outcome: TurnOutcome, chat: ChatRef): { readonly bo
   }
 }
 
-export function usageEntry(crossing: UsageThresholdCrossing): { readonly body: NotificationBody; readonly action: EntryAction } {
+export function usageEntry(crossing: UsageThresholdCrossing, render: Render): { readonly body: NotificationBody; readonly action: EntryAction } {
   const planName = bounded(crossing.planName);
   return {
     body: {
       kind: 'limit',
       reason: 'usage',
-      windowLabel: bounded(crossing.windowLabel) ?? '',
+      windowLabel: bounded(render(crossing.windowLabel)) ?? '',
       threshold: crossing.threshold,
       utilization: Math.round(crossing.utilization),
       ...(crossing.resetsAt !== undefined ? { resetsAt: crossing.resetsAt } : {}),
@@ -262,7 +273,7 @@ export class NotificationCenter {
   // entries that flashed the taskbar button and still wait on the user
   private readonly flashing = new Set<string>();
   // each sticky notice waiting for its answer, by entry id
-  private readonly sticky = new Map<string, (action: string | undefined) => void>();
+  private readonly sticky = new Map<string, (index: number | undefined) => void>();
   private attention = 0;
 
   constructor(deps: NotificationCenterDeps) {
@@ -296,7 +307,7 @@ export class NotificationCenter {
       const stillPending = (): boolean => this.pendingPrompts.get(corePanelId)?.get(prompt.id) === entryId;
       void this.deps.describeChat(corePanelId).then((chat) => {
         if (!chat) return;
-        const { body, action } = promptEntry(prompt, chat);
+        const { body, action } = promptEntry(prompt, chat, this.deps.render);
         // A prompt answered while main looked up its chat is logged without a toast.
         this.raise(body, action, { id: entryId, quiet: !stillPending() });
       }, (err: unknown) => this.deps.log(`[notifications] describing a chat failed: ${err instanceof Error ? err.message : String(err)}`));
@@ -316,7 +327,7 @@ export class NotificationCenter {
     if (outcome.kind === 'completed' && this.deps.chatSelected(corePanelId) && this.deps.windowFocused()) return;
     void this.deps.describeChat(corePanelId).then((chat) => {
       if (!chat) return;
-      const raised = outcomeEntry(outcome, chat);
+      const raised = outcomeEntry(outcome, chat, this.deps.render);
       if (raised) this.raise(raised.body, raised.action);
     }, (err: unknown) => this.deps.log(`[notifications] describing a chat failed: ${err instanceof Error ? err.message : String(err)}`));
   }
@@ -327,13 +338,13 @@ export class NotificationCenter {
       this.deps.log(`[notifications] the ${crossing.threshold}% usage warning for this window was shown before`);
       return;
     }
-    const { body, action } = usageEntry(crossing);
+    const { body, action } = usageEntry(crossing, this.deps.render);
     this.raise(body, action);
     this.deps.recordUsageWarning(crossing);
   }
 
-  /** A core notification: always an entry and a toast, answered with one of its actions or undefined; host names a remote core's. */
-  notice(severity: NoticeSeverity, message: string, actions: readonly string[], host?: NotificationHost, title?: string): Promise<string | undefined> {
+  /** A notification: always an entry and a toast, answered with its chosen action's index or undefined; host names a remote core's. */
+  notice(severity: NoticeSeverity, message: string, actions: readonly string[], host?: NotificationHost, title?: string): Promise<number | undefined> {
     return new Promise((resolve) => {
       this.raise({ kind: 'notice', severity, ...(title !== undefined ? { title } : {}), message, actions: [...actions], ...(host !== undefined ? { host: host.name, ...(host.tone !== undefined ? { hostTone: host.tone } : {}) } : {}) }, { kind: 'none' }, { answer: resolve });
     });
@@ -342,37 +353,38 @@ export class NotificationCenter {
   /** A main notice that waits for its answer, popped up whatever silences popups, until answered or withdrawn. */
   stickyNotice(severity: NoticeSeverity, message: string, actions: readonly string[]): StickyNotice {
     const id = randomUUID();
-    const answer = new Promise<string | undefined>((resolve) => this.sticky.set(id, resolve));
+    const answer = new Promise<number | undefined>((resolve) => this.sticky.set(id, resolve));
     this.raise({ kind: 'notice', severity, message, actions: [...actions] }, { kind: 'none' }, { id, sticky: true });
     return { answer, withdraw: () => this.settleSticky(id, undefined) };
   }
 
   /**
-   * An answer to a toast from the popup window, which has dropped it: one of a notice's actions, TOAST_OPEN_ACTION for a
+   * An answer to a toast from the popup window, which has dropped it: the index of a notice's action, TOAST_OPEN_ACTION for a
    * kind's action, or undefined. Dismissing a sticky notice's toast leaves it waiting in its center row.
    */
-  resolveToast(id: string, action: string | undefined): void {
+  resolveToast(id: string, action: ToastAnswer | undefined): void {
     const live = this.toasts.get(id);
     if (!live) return;
     const allowed = action === undefined
-      || (live.body.kind === 'notice' ? live.body.actions.includes(action) : action === TOAST_OPEN_ACTION);
+      || (live.body.kind === 'notice' ? isActionIndex(action, live.body.actions) : action === TOAST_OPEN_ACTION);
     if (!allowed) {
       this.deps.log(`[notifications] ignored an answer that is not one of toast ${id}'s actions`);
       return;
     }
-    this.finish(live, action);
-    if (live.sticky && action !== undefined) this.settleSticky(id, action);
+    const index = typeof action === 'number' ? action : undefined;
+    this.finish(live, index);
+    if (live.sticky && index !== undefined) this.settleSticky(id, index);
     if (action === TOAST_OPEN_ACTION) this.choose(live.id, live.action);
   }
 
-  /** A center row's action for a sticky notice that still waits. */
-  answer(entryId: string, action: string): void {
+  /** A center row's action, by its index, for a sticky notice that still waits. */
+  answer(entryId: string, index: number): void {
     const entry = this.entries.find((candidate) => candidate.id === entryId);
-    if (!this.sticky.has(entryId) || entry?.body.kind !== 'notice' || !entry.body.actions.includes(action)) {
+    if (!this.sticky.has(entryId) || entry?.body.kind !== 'notice' || !isActionIndex(index, entry.body.actions)) {
       this.deps.log(`[notifications] ignored an answer for entry ${entryId}, which waits for none or offers no such action`);
       return;
     }
-    this.settleSticky(entryId, action);
+    this.settleSticky(entryId, index);
   }
 
   holdToast(id: string, held: boolean): void {
@@ -528,7 +540,7 @@ export class NotificationCenter {
 
   // Notices always pop up; the seven kinds pop up, and anything rings or flashes, only while Do not disturb is off and
   // pop-ups are on. An entry about the chat the user is looking at arrives read.
-  private raise(body: NotificationBody, action: EntryAction, options: { readonly id?: string; readonly quiet?: boolean; readonly answer?: (action: string | undefined) => void; readonly sticky?: true } = {}): void {
+  private raise(body: NotificationBody, action: EntryAction, options: { readonly id?: string; readonly quiet?: boolean; readonly answer?: (index: number | undefined) => void; readonly sticky?: true } = {}): void {
     const viewed = this.deps.viewedChat();
     const chat = chatOfAction(action);
     const read = viewed !== undefined && chat !== undefined && sameChat(chat, viewed);
@@ -617,7 +629,7 @@ export class NotificationCenter {
   }
 
   // The sticky notice's toast goes (the popup page may have dropped it already) and its row stops offering its actions.
-  private settleSticky(entryId: string, action: string | undefined): void {
+  private settleSticky(entryId: string, index: number | undefined): void {
     const settle = this.sticky.get(entryId);
     if (!settle) return;
     this.sticky.delete(entryId);
@@ -627,21 +639,21 @@ export class NotificationCenter {
       this.hide(live);
     }
     const entry = this.entries.find((candidate) => candidate.id === entryId);
-    if (entry && action !== undefined) {
+    if (entry && index !== undefined) {
       entry.read = true;
       entry.seen = true;
     }
     this.stopFlash(entryId);
     this.deps.changed();
-    settle(action);
+    settle(index);
   }
 
-  private finish(live: LiveToast, action: string | undefined): void {
+  private finish(live: LiveToast, index: number | undefined): void {
     if (this.toasts.get(live.id) !== live) return;
     this.toasts.delete(live.id);
     clearTimeout(live.timer);
     live.timer = undefined;
-    live.answer?.(action);
+    live.answer?.(index);
   }
 
   // The prompt behind an entry resolved: its popup and flash go, the entry stays.

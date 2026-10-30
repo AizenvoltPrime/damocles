@@ -17,7 +17,6 @@ export interface CompassBuildProgress {
 	current: number;
 	total: number;
 	phase: string;
-	label?: string;
 }
 
 export const useCompassStore = defineStore('compass', () => {

@@ -17,6 +17,7 @@ import {
   Ban, ChevronRight, CircleCheck, CircleOff, CircleX, FileX, FolderOpen, KeyRound, LoaderCircle, LogOut, Pencil, Plug, Plus,
   RefreshCw, Search, Settings, ShieldAlert, Trash2, TriangleAlert, Zap,
 } from 'lucide-vue-next';
+import { renderText } from '@/composables/useLocalizedText';
 import OverlayShell from './OverlayShell.vue';
 import OverlayHeaderAction from './OverlayHeaderAction.vue';
 import SegmentedToggle, { type SegmentedOption } from './SegmentedToggle.vue';
@@ -378,7 +379,7 @@ function getServerErrorText(server: McpServerStatusInfo): string | null {
     }
     return t(`mcp.serverErrors.${info.code}`, params);
   }
-  if (server.status === 'failed' && server.error) return server.error;
+  if (server.status === 'failed' && server.error) return renderText(server.error);
   return null;
 }
 

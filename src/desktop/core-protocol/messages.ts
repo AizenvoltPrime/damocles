@@ -3,21 +3,26 @@
 
 import type { PanelWorktreeStateEvent } from '../../core/chat-panel/panel-worktrees';
 import type { ChatPermissions } from '../../core/permission-handler/types';
-import type { ChatActivity } from '../../core/pi-session/session-state';
+import type { CatalogResult } from '../../core/chat-panel/session-catalog';
+import type { ChatActivity, TurnOutcome } from '../../core/pi-session/session-state';
+import type { UsageThresholdCrossing } from '../../core/pi-session/usage-thresholds';
 import type { EndedLeaseHolder } from '../../core/pi-session/session-store/session-lease';
 import type { AskpassPaths } from '../../core/scm/askpass/askpass-server';
+import type { CommitFailure } from '../../core/scm/repository';
 import type { RemoteOp, RemoteOutcome, RemoteOutcomeKind } from '../../core/scm/scm-service';
 import type { WorkerName } from '../../platform/app-paths';
 import type { PickFileOptions, PickFolderOptions, InputBoxOptions } from '../../platform/dialog-service';
 import type { ActiveEditorContext, DiffSide, OpenFileOptions } from '../../platform/editor-service';
+import type { TerminalToggle } from '../../platform/window-service';
 import type { OpenFolder } from '../../platform/workspace-folders';
 import { parseCredentialFields, isCredentialValue, MAX_CREDENTIAL_PASSWORD_CHARS, MAX_CREDENTIAL_USERNAME_CHARS, type GitCredentialAnswer, type GitCredentialFields } from '../../shared/git-credential';
 import type { PageSpec } from '../../shared/panel-html';
 import { MAX_BROKER_EXPIRES_IN_MS, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, type BrokerAnswer, type ClientAuth, type ClientPolicy, type ClientUser, type HeldAuth } from '../../shared/remote-user';
-import { KEY_PROVIDER_IDS, SETTINGS_ACCOUNT_IDS, SETTINGS_SECTION_IDS, type SettingsAccountId, type SettingsSectionId } from '../../shared/settings-sections';
+import { SETTINGS_ACCOUNT_IDS, SETTINGS_SECTION_IDS, type SettingsAccountId, type SettingsSectionId } from '../../shared/settings-sections';
 import { WORKTREE_PHASES, type ChatPlace, type ChatReviewScope, type SettingsFileScope, type WorktreeFinishAction } from '../../shared/types/messages';
 import { MAX_CALL_ARGS, REPOSITORY_CALLS, SCM_CALLS, WORKTREE_CALLS, type RepositoryCall, type ScmCall, type WorktreeCall } from './scm-calls';
-import { arr, bool, bytes, data, dict, either, int, INVALID, maybe, nonEmpty, none, num, obj, oneOf, opt, str, type Parser } from './schema';
+import { arr, bool, bytes, data, dict, either, int, INVALID, localized, maybe, nonEmpty, none, num, obj, oneOf, opt, str, type Parser } from './schema';
+import type { LocalizedText } from '../../shared/localized-text';
 
 export const MAX_ID_CHARS = 128;
 // secret and memento keys
@@ -39,15 +44,6 @@ export const PAGE_STATE_TYPES: ReadonlySet<string> = new Set(['urlChanged', 'nav
 export const DIFF_TITLE_NAME = '\u0000name\u0000';
 
 export type StateScope = 'global' | 'workspace';
-
-// The key-value state that is the client's on a daemon's core, set in the User tab: the language preference
-// (LANGUAGE_PREFERENCE_KEY) and the prefer-API-key flags (OPENAI_PREFER_API_KEY_STATE, providerPreferApiKeyState).
-// A daemon's core never writes them.
-export const CLIENT_STATE_KEYS: readonly string[] = [
-  'userLanguagePreference',
-  'damocles.openai.preferApiKey',
-  ...KEY_PROVIDER_IDS.map((provider) => `damocles.${provider}.preferApiKey`),
-];
 
 /**
  * A panel envelope's panelId is its view's id on both sides: core issues it for a panel core creates, main for a chat view
@@ -94,8 +90,8 @@ export interface ChatEntry {
 export type { ChatPermissions };
 
 export interface DiffShow {
-  // the tab title with DIFF_TITLE_NAME where the file name goes
-  readonly titleTemplate: string;
+  // the tab title with DIFF_TITLE_NAME as the argument where the file name goes
+  readonly titleTemplate: LocalizedText;
   readonly filePath: string;
   readonly left: DiffSide;
   readonly right: DiffSide;
@@ -118,9 +114,10 @@ export interface CoreRequests {
   'secrets.store': Call<{ readonly key: string; readonly value: string }, void>;
   'secrets.delete': Call<{ readonly key: string }, void>;
   'secrets.keys': Call<object, readonly string[]>;
+  // main renders the text in its own language; the answer is the chosen action's index
   'notifications.show': Call<
-    { readonly severity: 'info' | 'warn' | 'error'; readonly message: string; readonly modal?: boolean; readonly actions: readonly string[] },
-    string | undefined
+    { readonly severity: 'info' | 'warn' | 'error'; readonly message: LocalizedText; readonly modal?: boolean; readonly actions: readonly LocalizedText[] },
+    number | undefined
   >;
   'dialogs.pickFolder': Call<PickFolderOptions, string | undefined>;
   'dialogs.pickFile': Call<PickFileOptions, string | undefined>;
@@ -182,10 +179,10 @@ export type CredentialKind = 'username' | 'password' | 'passphrase' | 'confirm' 
 
 export interface AskQuestion {
   readonly severity: 'info' | 'warning' | 'danger';
-  readonly message: string;
-  readonly detail?: string;
-  readonly actions: readonly string[];
-  readonly cancelLabel?: string;
+  readonly message: LocalizedText;
+  readonly detail?: LocalizedText;
+  readonly actions: readonly LocalizedText[];
+  readonly cancelLabel?: LocalizedText;
   readonly defaultAction?: number;
   readonly preview?: readonly string[];
 }
@@ -249,9 +246,9 @@ export interface MainRequests {
   'chats.leaseRefusal': Call<{ readonly sessionId: string; readonly announce: boolean }, boolean>;
   'catalog.list': Call<{ readonly projectKey: string; readonly complete: boolean }, readonly unknown[]>;
   'catalog.search': Call<{ readonly projectKey: string; readonly query: string }, readonly unknown[]>;
-  'catalog.rename': Call<{ readonly sessionId: string; readonly name: string }, unknown>;
-  'catalog.tag': Call<{ readonly sessionId: string; readonly tag: string | null }, unknown>;
-  'catalog.delete': Call<{ readonly sessionId: string }, unknown>;
+  'catalog.rename': Call<{ readonly sessionId: string; readonly name: string }, CatalogResult>;
+  'catalog.tag': Call<{ readonly sessionId: string; readonly tag: string | null }, CatalogResult>;
+  'catalog.delete': Call<{ readonly sessionId: string }, CatalogResult>;
   'folders.setDefault': Call<{ readonly key: string }, void>;
   'browser.newPage': Call<{ readonly chatViewId: string }, void>;
   'worktree.retrySetup': Call<{ readonly worktreeId: string }, void>;
@@ -277,7 +274,7 @@ export interface MainRequests {
   // core's ScmService (scm-calls.ts): a method of SCM_CALLS with its arguments, answered with its result
   'scm.call': Call<{ readonly method: ScmCall; readonly args: readonly unknown[] }, unknown>;
   // ScmService.commit; branchName names the token core asks scm.branchName with, saved the documents saved just before
-  'scm.commit': Call<{ readonly repoId: string; readonly message: string; readonly variant: unknown; readonly saved: readonly string[]; readonly branchName?: string }, unknown>;
+  'scm.commit': Call<{ readonly repoId: string; readonly message: string; readonly variant: unknown; readonly saved: readonly string[]; readonly branchName?: string }, ScmCommitOutcome>;
   'scm.ignoredIn': Call<{ readonly projectKey: string; readonly relativeDir: string; readonly entries: readonly { readonly name: string; readonly dir: boolean }[] }, readonly string[]>;
   'scm.commitBlob': Call<{ readonly repoId: string; readonly commit: string; readonly path: string }, Uint8Array | 'tooLarge' | undefined>;
   // D24's message over the repository's changes, on the Background model
@@ -322,6 +319,12 @@ export interface MainRequests {
   'panels.foreignMessage': Call<{ readonly viewId: string; readonly message: unknown }, void>;
 }
 
+/** ScmService.commit's outcome as scm.commit answers it: a failure carries the text main shows, git's own words verbatim. */
+export type ScmCommitOutcome =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: Exclude<CommitFailure, 'failed'> }
+  | { readonly ok: false; readonly reason: 'failed'; readonly error: LocalizedText };
+
 export type SettingsViewScope = 'user' | 'machine' | 'project';
 
 export type MentionTargetData = { readonly projectKey: string; readonly relativePath: string } | { readonly path: string };
@@ -332,9 +335,9 @@ export interface CoreEvents {
   // after the chats mirror shows the change; sessionId: the stored session the chat is on, which lets a client that does not
   // view the chat (another device) show it running in its chat list
   'chat.activity': { readonly panelId: string; readonly activity: ChatActivity; readonly sessionId?: string };
-  'chat.turnSettled': { readonly panelId: string; readonly outcome: unknown };
+  'chat.turnSettled': { readonly panelId: string; readonly outcome: TurnOutcome };
   'chat.changes': { readonly panelId: string; readonly totals: unknown; readonly generation: number };
-  'chat.usageThreshold': { readonly crossing: unknown };
+  'chat.usageThreshold': { readonly crossing: UsageThresholdCrossing };
   'chat.worktreeState': { readonly event: PanelWorktreeStateEvent };
   'chat.allClosed': object;
   // the user chose Open here on a lease refusal chats.leaseRefusal announced
@@ -412,19 +415,30 @@ export interface MirrorTopics {
   trust: { readonly keys: readonly string[]; readonly granted: readonly string[] };
   folders: { readonly folders: readonly OpenFolder[] };
   panel: { readonly panelId: string; readonly visible: boolean; readonly active: boolean; readonly column?: number };
-  editor: { readonly context?: ActiveEditorContext };
-  terminal: { readonly shown: boolean; readonly shortcut: string };
-  // the UI language core's localization follows
+  // a local core's one client's; a daemon's core reads clientEditor and clientTerminal instead
+  editor: EditorMirror;
+  terminal: TerminalToggle;
+  // a local core's one client's UI language; a daemon's core reads clientLanguage instead
   language: { readonly language: 'en' | 'el' };
   // per client: a client publishes its own value; the daemon stamps its id for the client, value undefined when it detached
   clientAuth: ClientDelta<ClientAuth>;
   clientUser: ClientDelta<ClientUser>;
   clientPolicy: ClientDelta<ClientPolicy>;
+  // the daemon's: each client's editor and terminal patches under its id, value undefined when it detached; a client's is dropped
+  clientEditor: ClientDelta<EditorMirror>;
+  clientTerminal: ClientDelta<TerminalToggle>;
+  // the daemon's: each client's language patches under its id, value undefined when it detached; a client's is dropped
+  clientLanguage: ClientDelta<MirrorTopics['language']>;
   // the daemon's: the client that most recently sent core a message, published before that message; a client's is dropped
   actingClient: { readonly clientId?: string };
   // the daemon's, after a removed socket folder was made again: its agent folder (CoreInit.remote.agentFolder) and the git
   // credential relay's handle (CoreInit.paths.askpass.credentialRelay), which core listens at from then on; a client's is dropped
   hostSockets: { readonly agentFolder?: string; readonly relayHandle?: string };
+}
+
+/** The focused text editor's context; undefined when none has focus. */
+export interface EditorMirror {
+  readonly context?: ActiveEditorContext;
 }
 
 /** A client's value of a per-client mirror; clientId is the daemon's id for that client, and a client never sets it. */
@@ -501,6 +515,10 @@ export interface CoreInit {
     readonly clientUser: Readonly<Record<string, ClientUser>>;
     readonly clientPolicy: Readonly<Record<string, ClientPolicy>>;
     readonly actingClient: MirrorTopics['actingClient'];
+    // by client id: a daemon's attached clients; a local core reads editor and terminal
+    readonly clientEditor?: Readonly<Record<string, EditorMirror>>;
+    readonly clientTerminal?: Readonly<Record<string, TerminalToggle>>;
+    readonly clientLanguage?: Readonly<Record<string, MirrorTopics['language']>>;
   };
 }
 
@@ -549,6 +567,8 @@ const filePath = nonEmpty(MAX_PATH_CHARS);
 const label = str(MAX_LABEL_CHARS);
 const message = str(MAX_MESSAGE_CHARS);
 const text = str(MAX_DATA_CHARS);
+const localizedLabel = localized(MAX_LABEL_CHARS);
+const localizedMessage = localized(MAX_MESSAGE_CHARS);
 const value = data(MAX_DATA_CHARS);
 const done = none;
 const section = oneOf(SETTINGS_SECTION_IDS);
@@ -558,12 +578,16 @@ const reviewScope = oneOf(['chat', 'turn'] as const);
 const nul: Parser<null> = (raw) => (raw === null ? null : INVALID);
 const column = opt(int(-2, 64));
 const trustedKeys = arr(filePath, MAX_ITEMS);
+// an index into at most MAX_ACTIONS actions
+const actionIndex = int(0, MAX_ACTIONS - 1);
 
 const openFolder = obj({ fsPath: filePath, name: label, ownerKey: opt(str(MAX_PATH_CHARS)) });
 const editorContext = obj({
   filePath: maybe(filePath),
   selection: maybe(obj({ startLine: num, endLine: num, text })),
 });
+const editorMirror: Parser<EditorMirror> = obj({ context: opt(editorContext) });
+const terminalMirror: Parser<TerminalToggle> = obj({ shown: bool, shortcut: label });
 const diffSide = either(obj({ path: filePath }), obj({ name: label, content: text }));
 const panelCreate: Parser<PanelCreate> = obj({
   kind: oneOf(['chat', 'browser'] as const),
@@ -608,10 +632,31 @@ const promptOwner = either(
 const chatActivity: Parser<ChatActivity> = obj({
   state: oneOf(['idle', 'running', 'requires_action'] as const),
   pendingKinds: arr(pendingKind, MAX_ITEMS),
-  pendingPrompts: arr(obj({ id: key, kind: pendingKind, owner: promptOwner, summary: opt(label) }), MAX_ITEMS),
+  pendingPrompts: arr(obj({ id: key, kind: pendingKind, owner: promptOwner, summary: opt(localizedLabel) }), MAX_ITEMS),
   background: bool,
 });
 const count = int(0, Number.MAX_SAFE_INTEGER);
+const yes: Parser<true> = (raw) => (raw === true ? true : INVALID);
+const no: Parser<false> = (raw) => (raw === false ? false : INVALID);
+// main renders the LocalizedText these carry, so it is parsed as such, never passed on as opaque data
+const turnOutcome: Parser<TurnOutcome> = either(
+  either(obj({ kind: oneOf(['completed'] as const), durationMs: opt(num) }), obj({ kind: oneOf(['error'] as const), message: opt(localizedMessage) })),
+  either(obj({ kind: oneOf(['budget', 'cancelled'] as const) }), obj({ kind: oneOf(['rateLimit'] as const), windowId: opt(label), windowLabel: opt(localizedLabel), resetsAt: opt(num) })),
+);
+const USAGE_THRESHOLDS: readonly number[] = Object.keys({ 80: 0, 95: 0 } satisfies Record<UsageThresholdCrossing['threshold'], 0>).map(Number);
+const usageCrossing: Parser<UsageThresholdCrossing> = obj({
+  provider: oneOf(['anthropic', 'openai'] as const),
+  windowId: label,
+  windowLabel: localizedLabel,
+  threshold: (raw: unknown) => (typeof raw === 'number' && USAGE_THRESHOLDS.includes(raw) ? (raw as UsageThresholdCrossing['threshold']) : INVALID),
+  utilization: num,
+  resetsAt: opt(num),
+  planName: opt(label),
+});
+const catalogResult: Parser<CatalogResult> = either(
+  obj({ ok: yes }),
+  either(obj({ ok: no, reason: oneOf(['leased', 'missing'] as const) }), obj({ ok: no, reason: oneOf(['invalid', 'failed'] as const), message: localizedMessage })),
+);
 const worktreeStateEvent: Parser<PanelWorktreeStateEvent> = obj({
   panelId: id,
   sessionId: opt(id),
@@ -629,7 +674,7 @@ const worktreeStateEvent: Parser<PanelWorktreeStateEvent> = obj({
     behind: opt(count),
     targetRewritten: opt(bool),
     exitCode: opt(int(-(2 ** 31), 2 ** 32)),
-    error: opt(message),
+    error: opt(localizedMessage),
     projectName: opt(label),
     sharedWith: opt(count),
     setupStep: opt(obj({ command: text, index: int(1, MAX_ITEMS), total: int(1, MAX_ITEMS) })),
@@ -670,6 +715,11 @@ const scmRepository: Parser<ScmRepositoryEntry> = obj({
 const nullable = <T>(parser: Parser<T>): Parser<T | null> => (raw) => (raw === null ? null : parser(raw));
 const REMOTE_OPS = Object.keys({ fetch: 0, pull: 0, push: 0, sync: 0, deleteRemoteBranch: 0, deleteRemoteTag: 0 } satisfies Record<RemoteOp, 0>) as readonly RemoteOp[];
 const REMOTE_OUTCOMES = Object.keys({ ok: 0, failed: 0, cancelled: 0 } satisfies Record<RemoteOutcomeKind, 0>) as readonly RemoteOutcomeKind[];
+const COMMIT_REFUSALS = Object.keys({ emptyMessage: 0, nothingToCommit: 0, unresolvedConflicts: 0, missingUserConfig: 0, cancelled: 0 } satisfies Record<Exclude<CommitFailure, 'failed'>, 0>) as ReadonlyArray<Exclude<CommitFailure, 'failed'>>;
+const commitOutcome: Parser<ScmCommitOutcome> = either(
+  obj({ ok: yes }),
+  either(obj({ ok: no, reason: oneOf(COMMIT_REFUSALS) }), obj({ ok: no, reason: oneOf(['failed'] as const), error: localizedMessage })),
+);
 const scmRepositoryState = obj({
   kind: oneOf(['repositoryState'] as const),
   repoId: id,
@@ -752,12 +802,12 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'secrets.delete': method(obj({ key }), done),
   'secrets.keys': method(obj({}), arr(key, MAX_ITEMS)),
   'notifications.show': method(
-    obj({ severity: oneOf(['info', 'warn', 'error'] as const), message, modal: opt(bool), actions: arr(label, MAX_ACTIONS) }),
-    maybe(label),
+    obj({ severity: oneOf(['info', 'warn', 'error'] as const), message: localizedMessage, modal: opt(bool), actions: arr(localizedLabel, MAX_ACTIONS) }),
+    maybe(actionIndex),
   ),
-  'dialogs.pickFolder': method(obj({ title: opt(label), defaultPath: opt(filePath), buttonLabel: opt(label) }), maybe(filePath)),
+  'dialogs.pickFolder': method(obj({ title: opt(localizedLabel), defaultPath: opt(filePath), buttonLabel: opt(localizedLabel) }), maybe(filePath)),
   'dialogs.pickFile': method(
-    obj({ title: opt(label), defaultPath: opt(filePath), filters: opt(dict(arr(label, MAX_ACTIONS), MAX_LABEL_CHARS, MAX_ACTIONS)) }),
+    obj({ title: opt(localizedLabel), defaultPath: opt(filePath), filters: opt(dict(arr(label, MAX_ACTIONS), MAX_LABEL_CHARS, MAX_ACTIONS)) }),
     maybe(filePath),
   ),
   'clipboard.writeText': method(obj({ text }), done),
@@ -775,7 +825,7 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'editor.readText': method(obj({ path: filePath }), text),
   'editor.showDiff': method(
     obj({
-      titleTemplate: label,
+      titleTemplate: localizedLabel,
       filePath,
       left: diffSide,
       right: diffSide,
@@ -803,14 +853,14 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'dialogs.ask': method(
     obj({
       severity: oneOf(['info', 'warning', 'danger'] as const),
-      message,
-      detail: opt(message),
-      actions: arr(label, MAX_ACTIONS),
-      cancelLabel: opt(label),
-      defaultAction: opt(int(0, MAX_ACTIONS)),
+      message: localizedMessage,
+      detail: opt(localizedMessage),
+      actions: arr(localizedLabel, MAX_ACTIONS),
+      cancelLabel: opt(localizedLabel),
+      defaultAction: opt(actionIndex),
       preview: opt(arr(text, MAX_ITEMS)),
     }),
-    maybe(int(0, MAX_ACTIONS)),
+    maybe(actionIndex),
   ),
   'askpass.prompt': method(
     obj({ kind: oneOf(['username', 'password', 'passphrase', 'confirm', 'notice'] as const), text: message }),
@@ -841,14 +891,17 @@ const MIRROR_TOPICS: Tables<MainToCore>['mirrors'] = {
   trust: obj({ keys: trustedKeys, granted: arr(filePath, MAX_ITEMS) }),
   folders: obj({ folders: arr(openFolder, MAX_ITEMS) }),
   panel: obj({ panelId: id, visible: bool, active: bool, column }),
-  editor: obj({ context: opt(editorContext) }),
-  terminal: obj({ shown: bool, shortcut: label }),
+  editor: editorMirror,
+  terminal: terminalMirror,
   language: obj({ language: oneOf(['en', 'el'] as const) }),
   clientAuth: clientDelta(clientAuth),
   clientUser: clientDelta(clientUser),
   clientPolicy: clientDelta(clientPolicy),
   actingClient,
   hostSockets: obj({ agentFolder: opt(filePath), relayHandle: opt(filePath) }),
+  clientEditor: clientDelta(editorMirror),
+  clientTerminal: clientDelta(terminalMirror),
+  clientLanguage: clientDelta(obj({ language: oneOf(['en', 'el'] as const) })),
 };
 
 const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
@@ -880,9 +933,9 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'chats.leaseRefusal': method(obj({ sessionId: id, announce: bool }), bool),
   'catalog.list': method(obj({ projectKey: filePath, complete: bool }), rows),
   'catalog.search': method(obj({ projectKey: filePath, query: label }), rows),
-  'catalog.rename': method(obj({ sessionId: id, name: label }), value),
-  'catalog.tag': method(obj({ sessionId: id, tag: either(label, nul) }), value),
-  'catalog.delete': method(obj({ sessionId: id }), value),
+  'catalog.rename': method(obj({ sessionId: id, name: label }), catalogResult),
+  'catalog.tag': method(obj({ sessionId: id, tag: either(label, nul) }), catalogResult),
+  'catalog.delete': method(obj({ sessionId: id }), catalogResult),
   'folders.setDefault': method(obj({ key: filePath }), done),
   'browser.newPage': method(obj({ chatViewId: id }), done),
   'worktree.retrySetup': method(obj({ worktreeId: id }), done),
@@ -898,7 +951,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'settingsView.detach': method(attachmentRef, done),
   'views.join': method(obj({ viewId: id, viewKey: key, sessionId: opt(id), joining: viewKey }), either(obj({ panelId: id }), nul)),
   'scm.call': method(obj({ method: oneOf(SCM_CALLS), args: callArgs }), value),
-  'scm.commit': method(obj({ repoId: id, message: text, variant: value, saved: arr(filePath, MAX_ITEMS), branchName: opt(id) }), value),
+  'scm.commit': method(obj({ repoId: id, message: text, variant: value, saved: arr(filePath, MAX_ITEMS), branchName: opt(id) }), commitOutcome),
   'scm.ignoredIn': method(obj({ projectKey: filePath, relativeDir: str(MAX_PATH_CHARS), entries: arr(obj({ name: filePath, dir: bool }), MAX_ITEMS) }), arr(filePath, MAX_ITEMS)),
   'scm.commitBlob': method(obj({ repoId: id, commit: label, path: filePath }), maybe(either(oneOf(['tooLarge'] as const), bytes(MAX_DATA_CHARS)))),
   'scm.generateMessage': method(obj({ repoId: id }), value),
@@ -931,9 +984,9 @@ export const CORE_TO_MAIN: Tables<CoreToMain> = {
     'window.openAppSettings': obj({ section: opt(section), account: opt(account) }),
     'window.toggleTerminal': nothing,
     'chat.activity': obj({ panelId: id, activity: chatActivity, sessionId: opt(id) }),
-    'chat.turnSettled': obj({ panelId: id, outcome: value }),
+    'chat.turnSettled': obj({ panelId: id, outcome: turnOutcome }),
     'chat.changes': obj({ panelId: id, totals: value, generation: num }),
-    'chat.usageThreshold': obj({ crossing: value }),
+    'chat.usageThreshold': obj({ crossing: usageCrossing }),
     'chat.worktreeState': obj({ event: worktreeStateEvent }),
     'chat.allClosed': nothing,
     'chat.takeover': obj({ sessionId: id }),
@@ -1021,6 +1074,9 @@ export const parseCoreInit: Parser<CoreInit> = obj({
     clientUser: dict(clientUser, MAX_ID_CHARS, MAX_ITEMS),
     clientPolicy: dict(clientPolicy, MAX_ID_CHARS, MAX_ITEMS),
     actingClient,
+    clientEditor: opt(dict(editorMirror, MAX_ID_CHARS, MAX_ITEMS)),
+    clientTerminal: opt(dict(terminalMirror, MAX_ID_CHARS, MAX_ITEMS)),
+    clientLanguage: opt(dict(MIRROR_TOPICS.language, MAX_ID_CHARS, MAX_ITEMS)),
   }),
 });
 

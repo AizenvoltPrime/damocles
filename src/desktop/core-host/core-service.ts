@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { ChatPanelProvider, flushCoreWrites } from '../../core/chat-panel';
 import { announceLeaseRefusal, leaseRefusalFor } from '../../core/chat-panel/session-ownership';
 import { listMirroredSessions, mirroredProjectFolder, mirroredSessionFile } from '../../core/chat-panel/transcript-view';
+import type { PanelManager } from '../../core/chat-panel/panel-manager';
 import type { AttachedView, CompassViewsHandle, HostInstance } from '../../core/chat-panel/types';
 import { log } from '../../core/logger';
 import { runCheckpointMaintenance, setCheckpointGitAvailability } from '../../core/pi-session/checkpoints';
@@ -56,6 +57,18 @@ export interface CoreServiceOptions {
 export interface CoreService {
   // core.shutdown's steps, run once however often asked
   readonly shutdown: () => Promise<void>;
+}
+
+/**
+ * Every loaded chat's header toggle follows the terminal pane: on a daemon's core each device's views follow that device's
+ * window alone. A chat that loads later gets it with its ready.
+ */
+export function followTerminalPane(platform: Pick<CorePlatform, 'endpoint' | 'remote' | 'window'>, panelManager: Pick<PanelManager, 'broadcast'>): Disposable {
+  const { remote } = platform;
+  if (!remote) return platform.endpoint.onMirror('terminal', ({ shown, shortcut }) => panelManager.broadcast({ type: 'terminalShown', shown, shortcut }));
+  return remote.clients.onDidChange(({ topic, clientId }) => {
+    if (topic === 'clientTerminal' && clientId !== undefined) panelManager.broadcast({ type: 'terminalShown', ...platform.window.terminalToggle(clientId) }, clientId);
+  });
 }
 
 export function startCoreService(platform: CorePlatform, options: CoreServiceOptions): CoreService {
@@ -199,8 +212,7 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
     // published as each change lands, so a crash right after it still reopens the chat with it
     panelManager.onPermissionsChanged(publishChat),
     catalog.onDidChange((change) => endpoint.emit('catalog.changed', change.projectKey !== undefined ? { projectKey: change.projectKey } : {})),
-    // every loaded chat's header toggle follows the terminal pane; a chat that loads later gets it with its ready
-    endpoint.onMirror('terminal', ({ shown, shortcut }) => panelManager.broadcast({ type: 'terminalShown', shown, shortcut })),
+    followTerminalPane(platform, panelManager),
   );
   publishFolders();
   options.chatFolders.set(() => [...panelManager.getPanels().values()].flatMap((instance) => settingsFolderOf(instance.folder) ?? []));

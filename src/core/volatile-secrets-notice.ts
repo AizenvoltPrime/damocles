@@ -1,7 +1,7 @@
 import type { NotificationService } from '../platform/notification-service';
 import type { SecretsStore } from '../platform/secrets-store';
 import type { ShellService } from '../platform/shell-service';
-import { t } from './l10n';
+import { l } from './l10n';
 
 // README section "Desktop credential storage"; keep the anchor equal to that heading.
 export const CREDENTIAL_STORAGE_HELP_URL = 'https://github.com/AizenvoltPrime/damocles#desktop-credential-storage';
@@ -23,13 +23,12 @@ export function withVolatileSecretsNotice(secrets: SecretsStore, notifications: 
       await secrets.store(key, value);
       if (noticed) return;
       noticed = true;
-      const howTo = t('How to Turn It On');
       // Not awaited: the notice resolves only when the user answers it, and the store must not wait for that.
       void notifications.warn(
-        t('Damocles cannot reach your operating system\'s keyring, so the key or sign-in you just saved lasts only until Damocles restarts. Turn on the keyring to keep it.'),
-        howTo,
+        l('Damocles cannot reach your operating system\'s keyring, so the key or sign-in you just saved lasts only until Damocles restarts. Turn on the keyring to keep it.'),
+        [l('How to Turn It On')],
       ).then((choice) => {
-        if (choice === howTo) void shell.openExternal(CREDENTIAL_STORAGE_HELP_URL);
+        if (choice === 0) void shell.openExternal(CREDENTIAL_STORAGE_HELP_URL);
       });
     },
   };

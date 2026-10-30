@@ -2,8 +2,8 @@ import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import type { Disposable } from '../../../../platform/disposable';
-import type { HostState } from '../../core-services/host-services';
 import { hostExtras } from '../../core-services/__tests__/host-deps';
+import { createDesktopNotificationService } from '../../platform/notification-service';
 import { namespacedSecrets, remoteServices } from '../remote-services';
 
 const none = (): Disposable => ({ dispose: () => undefined });
@@ -20,18 +20,11 @@ function services() {
   const notices: unknown[] = [];
   const diffs: unknown[] = [];
   const picks: unknown[] = [];
-  const state: HostState = {
-    global: { get: ((key: string) => (key === 'userLanguagePreference' ? 'el' : 'secret')) as HostState['global']['get'], update: vi.fn(async () => undefined) },
-    workspace: { get: (() => undefined) as HostState['workspace']['get'], update: vi.fn(async () => undefined) },
-    snapshot: () => ({ userLanguagePreference: 'el', 'damocles.secretThing': 1 }),
-    onDidUpdate: none,
-  };
   const deps = remoteServices({
     authority: 'loopback',
     hostId: 'loopback',
     hostName: () => 'Local daemon',
     platform: main,
-    state,
     projects: () => [PROJECT],
     fileRoots: () => [PROJECT],
     onProjectsChanged: none,
@@ -64,14 +57,15 @@ function services() {
       return args[0] === 'file' ? '/srv/app/plan.md' : undefined;
     },
     ui: { ask: async () => 0, askpass: async () => ({ cancelled: true }), worktrees: hostExtras().ui.worktrees },
-    notices: {
-      info: async (message: string) => {
+    notices: createDesktopNotificationService({
+      notice: async (_severity, message) => {
         notices.push(message);
         return undefined;
       },
-      warn: async () => undefined,
-      error: async () => undefined,
-    },
+      ask: async () => undefined,
+      t: (message) => message,
+      log: () => undefined,
+    }),
     user: { credentials: async () => ({ type: 'none' }), speak: async () => undefined, gitCredential: async () => ({ kind: 'none' }) },
     base: { terminalToggle: () => ({ shown: false, shortcut: '' }), createView: () => { throw new Error('no view'); }, git: { available: true }, e2eHooks: false, ...hostExtras(), log: (line) => logged.push(line) },
     t: (message, ...args) => args.reduce((text, arg, index) => text.replace(`{${index}}`, arg), message),
@@ -96,8 +90,8 @@ describe('a remote core\'s services', () => {
     await expect(deps.platform.shell.openFolder('/srv/app')).resolves.toBe(false);
     await expect(deps.platform.shell.revealPath('/srv/app/a.ts')).resolves.toBeUndefined();
     const pickFile = vi.spyOn(main.dialogs, 'pickFile');
-    await expect(deps.platform.dialogs.pickFolder({ title: 'x', defaultPath: '/srv/app', buttonLabel: 'Use' })).resolves.toBeUndefined();
-    await expect(deps.platform.dialogs.pickFile({ title: 'y', defaultPath: '/srv/app', filters: { Markdown: ['md'] } })).resolves.toBe('/srv/app/plan.md');
+    await expect(deps.platform.dialogs.pickFolder({ title: { message: 'x' }, defaultPath: '/srv/app', buttonLabel: { message: 'Use' } })).resolves.toBeUndefined();
+    await expect(deps.platform.dialogs.pickFile({ title: { message: 'y' }, defaultPath: '/srv/app', filters: { Markdown: ['md'] } })).resolves.toBe('/srv/app/plan.md');
     expect(picks).toEqual([
       ['folder', { title: 'x', defaultPath: '/srv/app', buttonLabel: 'Use' }],
       ['file', { title: 'y', defaultPath: '/srv/app', extensions: ['md'] }],
@@ -151,14 +145,14 @@ describe('a remote core\'s services', () => {
   it('shows notifications through the host-labeled notices, never this computer\'s own', async () => {
     const { deps, main, notices } = services();
     const info = vi.spyOn(main.notifications, 'info');
-    await deps.platform.notifications.info('Pushed');
+    await deps.platform.notifications.info({ message: 'Pushed' });
     expect(notices).toEqual(['Pushed']);
     expect(info).not.toHaveBeenCalled();
   });
 
   it('hands a diff to main\'s remote diff, which resolves its paths inside the host\'s projects', async () => {
     const { deps, diffs } = services();
-    await deps.platform.editor.showDiff({ title: (name) => name, filePath: '/srv/app/a.ts', left: { path: '/srv/app/a.ts' }, right: { name: 'a.ts', content: 'x' }, purpose: 'proposal' });
+    await deps.platform.editor.showDiff({ title: (name) => ({ message: '{0}', args: [name] }), filePath: '/srv/app/a.ts', left: { path: '/srv/app/a.ts' }, right: { name: 'a.ts', content: 'x' }, purpose: 'proposal' });
     expect(diffs).toEqual(['/srv/app/a.ts']);
   });
 
@@ -195,12 +189,12 @@ describe('namespacedSecrets', () => {
   });
 });
 
-describe('clientState', () => {
-  it('shows a remote core only the client state keys and never writes', async () => {
+describe('the key-value state', () => {
+  // a remote core's state is its daemon's own, and a device's language reaches it as clientLanguage
+  it('shows a remote core none of this computer\'s state and takes no write', async () => {
     const { deps } = services();
-    expect(deps.state.snapshot('global')).toEqual({ userLanguagePreference: 'el' });
-    expect(deps.state.global.get('damocles.secretThing')).toBeUndefined();
-    expect(deps.state.global.get('userLanguagePreference')).toBe('el');
+    expect(deps.state.snapshot('global')).toEqual({});
+    expect(deps.state.global.get('userLanguagePreference')).toBeUndefined();
     await expect(deps.state.global.update('userLanguagePreference', 'en')).rejects.toThrow('not available');
   });
 });

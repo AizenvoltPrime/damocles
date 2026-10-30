@@ -1,4 +1,5 @@
-import { t } from "../../l10n";
+import { l } from "../../l10n";
+import { LocalizedError, type LocalizedText } from "../../../shared/localized-text";
 
 export type PbsTriple = "x86_64-pc-windows-msvc" | "x86_64-unknown-linux-gnu" | "aarch64-apple-darwin";
 
@@ -11,9 +12,9 @@ export const VOICE_RUNTIME_PLATFORMS: readonly VoiceRuntimePlatform[] = [
   { platform: "darwin", arch: "arm64", pbsTriple: "aarch64-apple-darwin" },
 ];
 
-export class UnsupportedPlatformError extends Error {
-  constructor(message: string) {
-    super(message);
+export class UnsupportedPlatformError extends LocalizedError {
+  constructor(text: LocalizedText) {
+    super(text);
     this.name = "UnsupportedPlatformError";
   }
 }
@@ -28,17 +29,17 @@ function findVoiceRuntimePlatform(platform: NodeJS.Platform, arch: string): Voic
   return VOICE_RUNTIME_PLATFORMS.find((supported) => supported.platform === platform && supported.arch === arch);
 }
 
-function refusal(platform: NodeJS.Platform, arch: string): string {
+function refusal(platform: NodeJS.Platform, arch: string): LocalizedText {
   const supported = VOICE_RUNTIME_PLATFORMS.map((entry) => platformName(entry.platform, entry.arch)).join(", ");
-  return t(
+  return l(
     "Jarvis voice mode (wake word and spoken replies) is not available on {0}. Its local speech runtime supports only {1}. Push-to-talk with cloud speech-to-text (Whisper, Deepgram or Google) still works.",
     platformName(platform, arch),
     supported,
   );
 }
 
-/** The localized refusal on a host the voice runtime cannot install on, null on a supported one. */
-export function unsupportedVoicePlatformMessage(platform: NodeJS.Platform, arch: string): string | null {
+/** The refusal on a host the voice runtime cannot install on, null on a supported one. */
+export function unsupportedVoicePlatformMessage(platform: NodeJS.Platform, arch: string): LocalizedText | null {
   return findVoiceRuntimePlatform(platform, arch) === undefined ? refusal(platform, arch) : null;
 }
 

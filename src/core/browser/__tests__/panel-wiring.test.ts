@@ -209,7 +209,6 @@ function withBrowserEnabled(enabled: boolean): FakePlatform {
   return platform;
 }
 
-// Installed, not just created: the panel's l10n t() reads the installed platform.
 let platform: FakePlatform;
 beforeEach(() => {
   platform = installFakePlatform();
@@ -755,9 +754,8 @@ describe('C9 — the unreachable disconnected/clipboard model is gone from every
 // ── Acceptance: "an unexpected Chrome exit produces exactly one localised warning." (step 8) ─────
 
 describe('an unexpected Chrome exit produces EXACTLY ONE localised warning', () => {
-  it('warns once, through l10n, when the context closes on its own', async () => {
+  it('warns once, by text the host renders, when the context closes on its own', async () => {
     const warn = vi.spyOn(platform.notifications, 'warn');
-    const translate = vi.spyOn(platform.localization, 't');
     const service = await makeService();
     const context = priv(service).context;
     await addTab(service);
@@ -766,9 +764,8 @@ describe('an unexpected Chrome exit produces EXACTLY ONE localised warning', () 
     await Promise.resolve();
 
     expect(warn).toHaveBeenCalledTimes(1);
-    // Localised, not a hardcoded literal: the message the user sees came out of the LocalizationService.
-    const shown = warn.mock.calls[0]![0] as string;
-    expect(translate.mock.results.some((r) => r.value === shown)).toBe(true);
+    // The host renders it in its own language from the catalog key core sends.
+    expect(warn.mock.calls[0]![0]).toEqual({ message: 'The browser closed unexpectedly. Open it again to continue.' });
     service.dispose();
   });
 
@@ -1159,114 +1156,6 @@ describe('P6 — the watchdog runs only while a panel is visible', () => {
 
     expect(priv(service).watchdogTimer).toBeNull();
     expect(service.isConnected()).toBe(false);
-  });
-});
-
-// ── Acceptance: "`buildHtml` output contains no letter-bearing text node or title/placeholder
-//    attribute outside the injected string set." (Q1) ─────────────────────────────────────────────
-
-describe('Q1 — every user-visible panel string comes from l10n', () => {
-  const MARKER = 'ZZQXLOCALEMARKERZZ';
-
-  /** The panel html with every t() call replaced by a uniquely-identifiable marker. */
-  function markedHtml(): { html: string; keys: string[] } {
-    const keys: string[] = [];
-    let n = 0;
-    vi.spyOn(platform.localization, 't').mockImplementation((message: string) => {
-      keys.push(message);
-      return `${MARKER}${n++}`;
-    });
-    const panel = new BrowserPanel(platform.window);
-    panel.show('http://a');
-    const html = platform.window.panels[platform.window.panels.length - 1]!.html;
-    panel.dispose();
-    return { html, keys };
-  }
-
-  /** Visible text nodes, excluding <script> and <style> — both are letter-bearing by construction. */
-  function visibleTextNodes(html: string): string[] {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    for (const el of [...doc.querySelectorAll('script, style')]) el.remove();
-    const walker = doc.createTreeWalker(doc.documentElement, NodeFilter.SHOW_TEXT);
-    const out: string[] = [];
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      const text = (node.textContent ?? '').trim();
-      if (text) out.push(text);
-    }
-    return out;
-  }
-
-  it('has no hardcoded letter-bearing visible text — every text node is a marker', () => {
-    const { html } = markedHtml();
-
-    for (const text of visibleTextNodes(html)) {
-      // Anything with a letter that is not a marker is user-visible English baked into the source.
-      if (/\p{L}/u.test(text)) expect(text).toContain(MARKER);
-    }
-  });
-
-  it('has no hardcoded title or placeholder attribute — every one is a marker', () => {
-    const { html } = markedHtml();
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-
-    const attrs = [...doc.querySelectorAll('[title], [placeholder]')].flatMap((el) =>
-      ['title', 'placeholder'].map((a) => el.getAttribute(a)).filter((v): v is string => v !== null),
-    );
-    expect(attrs.length).toBeGreaterThanOrEqual(7); // back/forward/reload/pick/devtools/newtab/url
-    for (const value of attrs) {
-      if (/\p{L}/u.test(value)) expect(value).toContain(MARKER);
-    }
-  });
-
-  it('requests exactly the documented key set, and every key is in BOTH l10n bundles', () => {
-    const { keys } = markedHtml();
-    const expected = [
-      'Back', 'Forward', 'Reload', 'Pick Element',
-      'Open Developer Tools (F12)', 'New Tab', 'Enter URL...', 'Waiting for browser frames...', 'Not secure',
-      'The connection to this site is not encrypted, so others on the network can read and change what it sends.',
-    ];
-
-    expect([...keys].sort()).toEqual([...expected].sort());
-
-    const root = join(SRC_DIR, '..', '..', '..');
-    const en = JSON.parse(readFileSync(join(root, 'l10n', 'bundle.l10n.json'), 'utf8')) as Record<string, string>;
-    const el = JSON.parse(readFileSync(join(root, 'l10n', 'bundle.l10n.el.json'), 'utf8')) as Record<string, string>;
-    // The Chrome-exit warning is localised in the same slice but requested from index.ts, not buildHtml.
-    for (const key of [...expected, 'The browser closed unexpectedly. Open it again to continue.']) {
-      expect(`en:${key}:${key in en}`).toBe(`en:${key}:true`);
-      expect(`el:${key}:${key in el}`).toBe(`el:${key}:true`);
-      expect(el[key]).not.toBe(''); // a blank Greek value is a missing translation, not a translation
-    }
-  });
-
-  it('builds the strings PER PANEL, not at module load, so t() is observable per construction', () => {
-    // A module-scope `const strings = {...}` would be evaluated once, at import, before any locale is
-    // active — and would make the marker test above pass for the wrong reason on the first panel only.
-    const first = markedHtml();
-    vi.restoreAllMocks();
-    const second = markedHtml();
-
-    expect(second.keys).toEqual(first.keys);
-    expect(second.html).toContain(MARKER);
-  });
-
-  it('escapes the injected strings, so a translation containing markup cannot break out', () => {
-    vi.spyOn(platform.localization, 't').mockImplementation(() => '"><img src=x onerror=alert(1)>\'&');
-    const panel = new BrowserPanel(platform.window);
-    panel.show('http://a');
-    const html = platform.window.panels[platform.window.panels.length - 1]!.html;
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-
-    // These land in title="…" / placeholder="…" attributes, so all five of &<>"' must be escaped.
-    // The security property is that NO element or attribute breaks out — not that the substring
-    // "onerror=..." is absent, which survives harmlessly as inert text once < > and " are escaped.
-    expect(doc.querySelector('img')).toBeNull();
-    expect(html).not.toContain('<img');
-    // Round-trips exactly: the parser sees one attribute value, not markup plus a stray attribute.
-    expect(doc.getElementById('btn-back')!.getAttribute('title')).toBe('"><img src=x onerror=alert(1)>\'&');
-    expect(doc.getElementById('btn-back')!.hasAttribute('onerror')).toBe(false);
-    expect(doc.getElementById('url-input')!.getAttribute('placeholder')).toBe('"><img src=x onerror=alert(1)>\'&');
-    panel.dispose();
   });
 });
 

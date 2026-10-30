@@ -246,11 +246,12 @@ export class RemoteCore {
       endpoint.close(why);
     };
     const transport: AttachedTransport = attachedTransport(connection.coreChannel, generation, (reason) => connection.close(reason));
+    const serviceDeps = this.deps.services();
     const endpoint = createMainEndpoint(transport, log, (error) => {
       log(`[remote] the core on ${authority} broke the protocol (${error.message}); closing the connection`);
       connection.close(error.message);
-    });
-    const services: HostServices = createHostServices({ ...this.deps.services(), endpoint });
+    }, undefined, serviceDeps.render);
+    const services: HostServices = createHostServices({ ...serviceDeps, endpoint });
     const client = new CoreClient(endpoint, (view, attach) => services.adopt(view, attach), authorityProjectKeys(authority, (error) => connection.close(error.message)));
     const closed = connection.onClose((reason) => end(`the connection closed: ${reason}`));
     // a delta published before the attach opens waits in the transport, after the values the attach names
@@ -263,7 +264,7 @@ export class RemoteCore {
       appInfo: services.init.appInfo,
       secretsPersistent: services.init.secretsPersistent,
       chatBrowserPane: services.init.chatBrowserPane,
-      mirrors: { state: mirrors.state, trust: mirrors.trust, folders: mirrors.folders, editor: mirrors.editor, terminal: mirrors.terminal, language: mirrors.language, ...relayed.mirrors },
+      mirrors: { trust: mirrors.trust, folders: mirrors.folders, editor: mirrors.editor, terminal: mirrors.terminal, language: mirrors.language, ...relayed.mirrors },
     };
     const ready = (async () => {
       const published = new Promise<void>((resolve) => {

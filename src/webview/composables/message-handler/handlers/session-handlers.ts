@@ -3,7 +3,7 @@ import { i18n } from "@/i18n";
 import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
 import { useTeamStore } from "@/stores/useTeamStore";
 import { useConsolidationStore } from "@/stores/useConsolidationStore";
-import type { HandlerContext, HandlerRegistry, ScrollBehavior } from "../types";
+import type { HandlerContext, HandlerRegistry, HandlerOutcome } from "../types";
 import { beginReplayIngest } from "@/utils/perf";
 import { settingsViewHandlers } from "./settings-handlers";
 
@@ -93,7 +93,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       );
     },
 
-    sessionCleared: (msg, ctx): ScrollBehavior => {
+    sessionCleared: (msg, ctx): HandlerOutcome => {
       const { uiStore, streamingStore, sessionStore } = ctx.stores;
       const { bridge } = ctx;
 

@@ -14,7 +14,7 @@ vi.mock("fs/promises", () => ({
 
 vi.mock("../../../session-file-path", () => ({ resolveSessionFilePath: vi.fn(async () => null) }));
 
-const syncRules = vi.hoisted(() => vi.fn(async (): Promise<string[]> => []));
+const syncRules = vi.hoisted(() => vi.fn(async (): Promise<LocalizedText[]> => []));
 vi.mock("../../../settings-manager/utils", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../settings-manager/utils")>()),
   syncPermissionRulesToSettings: syncRules,
@@ -25,6 +25,9 @@ import { ApprovalManager } from "../../../../permission-handler/managers/approva
 import { PermissionState } from "../../../../permission-handler/state";
 import type { DiffManager } from "../../../../permission-handler/diff-manager";
 import type { PermissionUpdate } from "../../../../../shared/types/permissions";
+import type { LocalizedText } from "../../../../../shared/localized-text";
+import type { ExtensionToWebviewMessage } from "../../../../../shared/types/messages";
+import { l } from "../../../../l10n";
 import { buildPlanImplementationMessage } from "../../utils";
 import { computePlanFilePath } from "../../../../paths";
 import type { HandlerContext, HandlerDependencies } from "../../types";
@@ -145,6 +148,47 @@ describe("approvePlan — clear context", () => {
     expect(H.writes.some((w) => w.path === "/old-plan.md")).toBe(false);
   });
 
+  describe("refused as busy, because a send, a turn or a compaction took the new session first", () => {
+    function refused(turnRunning: boolean) {
+      const h = setup();
+      const toPanel: ExtensionToWebviewMessage[] = [];
+      const toApprover: ExtensionToWebviewMessage[] = [];
+      const host = { id: "panel" };
+      const reply = { id: "approving view" };
+      Object.assign(h.session, { turnRunning, sendMessage: vi.fn(async () => "busy" as const) });
+      Object.assign(h.deps, { postMessage: (target: unknown, message: ExtensionToWebviewMessage) => (target === reply ? toApprover : toPanel).push(message) });
+      Object.assign(h.ctx, { host, reply });
+      return { ...h, toPanel, toApprover };
+    }
+    /** A view's spinner: raised by the clear's pending message, then set by each `processing` core posts it. */
+    const spinnerAfter = (posted: readonly ExtensionToWebviewMessage[]): boolean =>
+      posted.reduce((shown, m) => (m.type === "sessionCleared" && m.pendingMessage ? true : m.type === "processing" ? m.isProcessing : shown), false);
+
+    it.each([true, false])("lowers every view's spinner unless a turn runs (a turn running: %s)", async (turnRunning) => {
+      const h = refused(turnRunning);
+      await createPermissionHandlers(h.deps).approvePlan!({ type: "approvePlan", toolUseId: "t1", approved: true, clearContext: true } as never, h.ctx);
+      expect(spinnerAfter(h.toPanel)).toBe(turnRunning);
+    });
+
+    it("tells the approving view the plan was not sent, with no feedback typed", async () => {
+      const h = refused(false);
+      await createPermissionHandlers(h.deps).approvePlan!({ type: "approvePlan", toolUseId: "t1", approved: true, clearContext: true } as never, h.ctx);
+      expect(h.toPanel.filter((m) => m.type === "promptReturned")).toEqual([{ type: "promptReturned", content: [], reason: "sendInProgress", correlationId: expect.stringMatching(/^plan-impl-/) }]);
+      expect(h.toApprover).toEqual([{ type: "notification", message: l("The approved plan was not sent, because this chat started working on something else first."), notificationType: "warning" }]);
+    });
+
+    it("gives the typed feedback back to the approving view with the same notice", async () => {
+      const h = refused(false);
+      await createPermissionHandlers(h.deps).approvePlan!({ type: "approvePlan", toolUseId: "t1", approved: true, clearContext: true, feedback: " keep the tests " } as never, h.ctx);
+      expect(h.toApprover).toEqual([{
+        type: "promptReturned",
+        content: [{ type: "text", text: "keep the tests" }],
+        reason: "sendInProgress",
+        detail: l("The approved plan was not sent, because this chat started working on something else first."),
+      }]);
+    });
+  });
+
   it("skips the swap and persists nothing when the plan file is gone (defensive)", async () => {
     const { session, permissionHandler, deps, ctx, platform } = setup();
     session.getPlanContent.mockResolvedValueOnce(null);
@@ -227,7 +271,7 @@ describe("approveEdit — saving an always-allow rule", () => {
 
   it("hands the evaluator the write before it lands, since the approved call already runs", async () => {
     const { state, manager, answer, permissionHandler } = approvalSetup();
-    let land!: (failures: string[]) => void;
+    let land!: (failures: LocalizedText[]) => void;
     syncRules.mockReturnValueOnce(new Promise((resolve) => (land = resolve)));
     state.workspacePath = "/folder-a";
     const toolCall = manager.handleShellPermission("Bash", { command: "git status" }, shellCall("t1"));
@@ -241,7 +285,7 @@ describe("approveEdit — saving an always-allow rule", () => {
 
   it("tells the user about each rule that was not saved", async () => {
     const { state, manager, answer, platform } = approvalSetup();
-    syncRules.mockResolvedValueOnce(["not saved: a.json", "not saved: b.json"]);
+    syncRules.mockResolvedValueOnce([{ message: "Could not save {0}: {1}", args: ["a.json", "EACCES"] }, { message: "Could not save {0}: {1}", args: ["b.json", "EACCES"] }]);
     state.workspacePath = "/folder-a";
     const toolCall = manager.handleShellPermission("Bash", { command: "git status" }, shellCall("t1"));
 
@@ -249,8 +293,8 @@ describe("approveEdit — saving an always-allow rule", () => {
 
     expect((await toolCall).behavior).toBe("allow");
     expect(platform.notifications.calls).toEqual([
-      { level: "warn", message: "not saved: a.json", actions: [] },
-      { level: "warn", message: "not saved: b.json", actions: [] },
+      { level: "warn", message: "Could not save a.json: EACCES", text: { message: "Could not save {0}: {1}", args: ["a.json", "EACCES"] }, actions: [] },
+      { level: "warn", message: "Could not save b.json: EACCES", text: { message: "Could not save {0}: {1}", args: ["b.json", "EACCES"] }, actions: [] },
     ]);
   });
 

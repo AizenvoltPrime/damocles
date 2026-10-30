@@ -1,5 +1,4 @@
 import { inject, onScopeDispose, provide, shallowRef, type InjectionKey, type ShallowRef } from 'vue';
-import { useI18n } from 'vue-i18n';
 import { useSettingWritesStore } from '@/components/settings/settings-writes';
 import type { DamoclesOverlayApi, OverlayPrefs } from '../../../preload/overlay-channels';
 import type { ShellPlatform } from '../../../preload/shell-channels';
@@ -27,7 +26,6 @@ export function provideDesktopPrefs(api: DamoclesOverlayApi): DesktopPrefs {
   const platform = shallowRef<ShellPlatform | undefined>(undefined);
   const remoteEnabled = shallowRef(false);
   const writes = useSettingWritesStore();
-  const { t } = useI18n();
   // A read never overwrites a value set since it was asked for: the first read skips each key set before it answered,
   // and a change main pushes skips each key whose write main has not answered yet.
   const setBeforeLoad = new Set<string>();
@@ -62,13 +60,12 @@ export function provideDesktopPrefs(api: DamoclesOverlayApi): DesktopPrefs {
           answered(key);
           // The modal closed before main wrote it; the next open reads every value again.
           if (!result) return;
-          writes.settle(result.ok
-            ? { type: 'settingWriteResult', key, ok: true, scope: 'user', file: result.file }
-            : { type: 'settingWriteResult', key, ok: false, error: result.error });
+          if (result.ok) writes.settle({ type: 'settingWriteResult', key, ok: true, scope: 'user', file: result.file });
+          else writes.settleError(key, { verbatim: result.error });
         },
         () => {
           answered(key);
-          writes.settle({ type: 'settingWriteResult', key, ok: false, error: t('settingsHost.prefWriteFailed') });
+          writes.settleError(key, { key: 'settingsHost.prefWriteFailed' });
         },
       );
     },

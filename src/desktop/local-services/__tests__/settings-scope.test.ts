@@ -49,7 +49,6 @@ function store(remote: boolean): DesktopSettingsStore {
     trust: trustAll,
     chatFolders: { folders: () => [], onDidChange: () => ({ dispose: () => undefined }) },
     notifications: undefined,
-    localization: fake.localization,
     log: () => undefined,
     ...(remote
       ? { remote: { fromHostTab: () => settingsViewScope() === 'machine', clientSettings: () => ({}), onDidChangeClientSettings: () => ({ dispose: () => undefined }) } }

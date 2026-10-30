@@ -4,7 +4,8 @@ import type { AuthFailure, ExtensionToWebviewMessage } from '@shared/types/messa
 import type { ContentBlock, HistoryAgentMessage, HistoryToolCall, ImageBlock } from '@shared/types/content';
 import { initPiLoader, loadPiAi } from '../pi-loader';
 import { log } from '../../logger';
-import { t } from '../../l10n';
+import { errorTextOf, l, verbatim } from '../../l10n';
+import type { LocalizedText } from '../../../shared/localized-text';
 import { approxStringLength, perfDebugEnabled, perfSpan } from '../../perf';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../tool-normalization';
 import { piMessagesToHistoryAgentMessages } from '../subagents/message-mapper';
@@ -79,7 +80,7 @@ interface ReplayAssistant {
 }
 interface ReplayError {
   kind: 'error';
-  content: string;
+  content: LocalizedText;
   authFailure?: AuthFailure;
 }
 interface ReplayCompaction {
@@ -103,7 +104,7 @@ type ReplayMessage = ReplayUser | ReplayAssistant | ReplayError | ReplayCompacti
 /** A failed call's replay: the live card's account and the provider's text, else the live error card's text. */
 function replayedFailure(message: { provider?: unknown; model?: unknown } | undefined, text: string): ReplayError {
   const card = failureCard(typeof message?.provider === 'string' ? message.provider : undefined, typeof message?.model === 'string' ? message.model : undefined, text);
-  return card.type === 'authFailure' ? { kind: 'error', content: text, authFailure: { account: card.account, reason: card.reason } } : { kind: 'error', content: card.message };
+  return card.type === 'authFailure' ? { kind: 'error', content: verbatim(text), authFailure: { account: card.account, reason: card.reason } } : { kind: 'error', content: card.message };
 }
 
 // When the entry was written: pi's message time (epoch ms), else the entry's ISO time; undefined when neither parses.
@@ -155,6 +156,16 @@ function userContentBlocks(content: unknown, attachmentCount: number, attachment
   return [...images, ...(text ? [{ type: 'text' as const, text }] : [])];
 }
 
+/** What a live run still decides of the branch a joining view replays (`PiStreamAdapter.liveSnapshot`). */
+export interface LiveRunClaims {
+  /** The calls whose outcome the live run still owns, which the replay posts `live`. */
+  readonly liveToolCallIds: ReadonlySet<string>;
+  /** The failed calls, by the message pi stored, whose card the live view does not show, which the replay leaves out. */
+  readonly liveFailedCalls: ReadonlySet<object>;
+}
+
+const NO_LIVE_RUN: LiveRunClaims = { liveToolCallIds: new Set(), liveFailedCalls: new Set() };
+
 /**
  * Reconstruct the displayable replay messages from a pi session's active branch (root→leaf order),
  * pairing assistant `toolCall` blocks with their `toolResult` message entries and skipping inert
@@ -171,7 +182,7 @@ export function reconstructMessages(
   branch: readonly SessionEntry[],
   modelReasons: ModelReasonsLookup = () => undefined,
   isContextOverflow: OverflowTest = () => false,
-  liveToolCallIds: ReadonlySet<string> = new Set(),
+  { liveToolCallIds, liveFailedCalls }: LiveRunClaims = NO_LIVE_RUN,
 ): { messages: ReplayMessage[]; usage: ContextSnapshot } {
   const originalInputs = extractOriginalInputs(branch);
   const attachmentCounts = extractTerminalAttachmentCounts(branch);
@@ -294,6 +305,8 @@ export function reconstructMessages(
       for (const tool of skippedToolCalls(batch, (id) => toolResults.has(id))) tool.abandoned = 'stopped';
     }
     batch = [];
+    // The live run still decides this call's card, and the live snapshot posts what a watching view shows of it.
+    if (failed && !windDown && liveFailedCalls.has(message)) continue;
     // pi re-ran an omitted call, and the live view took back what it streamed. A retried call shows no card, as it
     // showed none live; an omitted overflow's card is cleared by the recovery compaction that follows it.
     if (failed && !windDown && omitted.has(entry.id)) {
@@ -387,13 +400,15 @@ function countToolUses(messages: readonly HistoryAgentMessage[]): number {
  * Attach each replayed `Agent` tool call to its subagent's pi session file, found through the parent
  * branch's invocation entries, so the card rehydrates its nested conversation and outcome. A resume
  * call gets its own card holding only the segment it opened. A call with no invocation entry (sessions
- * recorded before agent files existed) stays a bare tool card.
+ * recorded before agent files existed) stays a bare tool card. A running run's card takes its transcript from
+ * `liveTranscripts`, read from memory with the live snapshot, never from its file, which its run still writes.
  */
 async function hydrateSubagentCards(
   sessionDir: string,
   sessionId: string,
   branch: readonly SessionEntry[],
   messages: ReplayMessage[],
+  liveTranscripts: ReadonlyMap<string, HistoryAgentMessage[]> = new Map(),
 ): Promise<number> {
   const invocations = new Map<string, AgentInvocationData>();
   for (const inv of agentInvocationsOnBranch(branch)) {
@@ -443,10 +458,12 @@ async function hydrateSubagentCards(
         const effort = inv.resume ? segment?.effort : file.launch.effort;
         if (effort !== undefined) tool.agentEffort = effort;
       }
-      if (file && segment) {
-        const agentMessages = piMessagesToHistoryAgentMessages(segment.messages, file.stoppedToolCallIds, file.windDownMessages);
+      const agentMessages = liveTranscripts.get(tool.id) ?? (file && segment ? piMessagesToHistoryAgentMessages(segment.messages, file.stoppedToolCallIds, file.windDownMessages) : undefined);
+      if (agentMessages) {
         if (agentMessages.length > 0) tool.agentMessages = agentMessages;
         tool.agentToolCount = countToolUses(agentMessages);
+      }
+      if (file && segment) {
         tool.agentUsage = segment.usage;
         if (segment.startTimestamp !== undefined) tool.agentStartTimestamp = segment.startTimestamp;
         if (segment.endTimestamp !== undefined) tool.agentEndTimestamp = segment.endTimestamp;
@@ -489,7 +506,7 @@ export async function loadPiSessionHistory(
     const resolveSpan = perfSpan('replay.resolve');
     const filePath = await resolvePiSessionFile(cwd, sessionId);
     resolveSpan.end();
-    if (!filePath) return t("This conversation's file could not be found. It may have been deleted.");
+    if (!filePath) return l("This conversation's file could not be found. It may have been deleted.");
     return { open: () => pi.SessionManager.open(filePath, path.dirname(filePath)), sessionDir: () => piSessionDirOf(cwd, sessionId) };
   });
 }
@@ -519,7 +536,7 @@ export async function replaySessionFileReadOnly(filePath: string, sessionId: str
       text = await fs.promises.readFile(filePath, 'utf8');
     } catch (err) {
       log('[session-store] reading the transcript %s failed: %O', filePath, err);
-      return t("This conversation's file could not be found. It may have been deleted.");
+      return l("This conversation's file could not be found. It may have been deleted.");
     }
     const entries = sessionFileEntries(text);
     const sessionDir = path.dirname(filePath);
@@ -530,7 +547,7 @@ export async function replaySessionFileReadOnly(filePath: string, sessionId: str
 
 type PiLoaded = NonNullable<Awaited<ReturnType<typeof initPiLoader>>>;
 // What a replay reads: the session, opened once the loader is up, and the folder its agent files sit in; or why it cannot.
-type SessionSource = { readonly open: () => ReturnType<PiLoaded['SessionManager']['open']>; readonly sessionDir: () => string } | string;
+type SessionSource = { readonly open: () => ReturnType<PiLoaded['SessionManager']['open']>; readonly sessionDir: () => string } | LocalizedText;
 
 async function replaySession(
   sessionId: string,
@@ -551,7 +568,7 @@ async function replaySession(
   // load leaves a blank, permanently-spinning panel — the "silent failure that masks the issue" the
   // quality bar forbids. Failures additionally surface an `errorReplay` so the user sees the cause.
   const finish = (): void => post({ type: 'done', data: { type: 'result', session_id: sessionId, is_done: true } });
-  const fail = (reason: string): void => {
+  const fail = (reason: LocalizedText): void => {
     // Checked here because every call follows an await, during which a newer replay may have taken the panel.
     if (signal?.aborted) return;
     // Every failure comes before any replayed message: the panel shows none of the conversation, so sends stop naming it.
@@ -562,11 +579,11 @@ async function replaySession(
 
   const pi = await initPiLoader();
   if (!pi) {
-    fail(t('The pi runtime is unavailable, so this conversation could not be loaded.'));
+    fail(l('The pi runtime is unavailable, so this conversation could not be loaded.'));
     return null;
   }
   const resolved = await source(pi);
-  if (typeof resolved === 'string') {
+  if ('message' in resolved) {
     fail(resolved);
     return null;
   }
@@ -596,7 +613,7 @@ async function replaySession(
     checkpointUserIds = fileCheckpoints ? rewindableUserIdsOnBranch(branch) : promptUserIdsOnBranch(branch);
   } catch (err) {
     log('[session-store] loadPiSessionHistory failed for %s: %O', sessionId, err);
-    fail(t('This conversation could not be opened: {0}', err instanceof Error ? err.message : String(err)));
+    fail(l('This conversation could not be opened: {0}', errorTextOf(err)));
     return null;
   }
   // A newer replay superseded us mid-load; stop silently (it owns the panel and emits its own done).
@@ -701,7 +718,9 @@ export async function replayContext(modelReasons?: ModelReasonsLookup | Promise<
 /**
  * A live conversation's transcript, from the branch pi holds in memory, posted as a replay of its file posts it. The branch
  * and its usage are read before the first await, so the caller's capture and this replay describe one moment. A call in
- * `liveToolCallIds` with no stored result is posted `live`, since the live snapshot and events decide its card.
+ * `live.liveToolCallIds` with no stored result is posted `live` and a failed call in `live.liveFailedCalls` is left out, since
+ * the live snapshot and events decide their cards, and a running subagent's card takes its transcript from `liveTranscripts`
+ * (`AgentsLiveSnapshot.transcripts`).
  */
 export async function replayLiveBranch(
   context: ReplayContext,
@@ -711,14 +730,15 @@ export async function replayLiveBranch(
   branch: readonly SessionEntry[],
   post: (m: ExtensionToWebviewMessage) => void,
   fileCheckpoints: boolean,
-  liveToolCallIds: ReadonlySet<string>,
+  live: LiveRunClaims,
   paced: () => Promise<void> = unpaced,
+  liveTranscripts: ReadonlyMap<string, HistoryAgentMessage[]> = new Map(),
 ): Promise<string[]> {
-  const { messages, usage } = reconstructMessages(branch, context.reasons, context.isContextOverflow, liveToolCallIds);
+  const { messages, usage } = reconstructMessages(branch, context.reasons, context.isContextOverflow, live);
   const sessionUsage = sessionUsageMessage(sm);
   const checkpointUserIds = fileCheckpoints ? rewindableUserIdsOnBranch(branch) : promptUserIdsOnBranch(branch);
   post({ type: 'sessionCleared', sessionId });
-  await hydrateSubagentCards(piSessionDirOf(cwd, sessionId), sessionId, branch, messages);
+  await hydrateSubagentCards(piSessionDirOf(cwd, sessionId), sessionId, branch, messages, liveTranscripts);
   await postReplayMessages(messages, post, paced);
   postReplayTotals(usage, sessionUsage, checkpointUserIds, post);
   post({ type: 'done', data: { type: 'result', session_id: sessionId, is_done: true } });

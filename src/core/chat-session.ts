@@ -1,6 +1,7 @@
 import type { ContentInput, McpScope, RewindOption } from './session-types';
 import type { McpServerStatusInfo } from '../shared/types/mcp';
 import type { ToolsSnapshot } from '../shared/types/tools';
+import type { LocalizedText } from '../shared/localized-text';
 import type { ImageBlock, UserContentBlock } from '../shared/types/content';
 import type { PermissionMode, ModelInfo } from '../shared/types/settings';
 import type { SlashCommandInfo } from '../shared/types/commands';
@@ -15,6 +16,7 @@ import type { McpUserResourcePort } from './pi-session/mcp/tool-source';
 import type { ChatAttachmentInfo } from '../shared/types/chat-attachment';
 import type { AgentSession, SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { LiveSnapshot } from './pi-session/pi-stream-adapter';
+import type { AgentsLiveSnapshot } from './pi-session/subagents/agent-manager';
 
 /** What the transcript shows for a sent message: the typed text, its images and the attachments sent with it. */
 export interface UserBroadcast {
@@ -29,8 +31,29 @@ export interface UserBroadcast {
 /**
  * `unsent`: the prompt was refused or stopped before pi committed or queued it, so nothing it carried reached the conversation.
  * `withdrawn`: the session itself returned the prompt to the composer, its chips through `onWithdrawn`, before it reached the conversation.
+ * `busy`: another send, a turn or a compaction held the session, so the send never started; its caller gives typed text back.
  */
-export type SendOutcome = 'sent' | 'unsent' | 'withdrawn';
+export type SendOutcome = 'sent' | 'unsent' | 'withdrawn' | 'busy';
+
+/**
+ * Why `queueInput` refused a message: `runEnded`, the run it was typed for ended and no send holds the session; `budgetStopped`,
+ * the budget stop is winding the turn down; `noRuntime`, no pi session holds the chat.
+ */
+export type QueueRefusal = 'runEnded' | 'budgetStopped' | 'noRuntime';
+
+/** `otherConversation`: the message names another conversation than the running one (`sendMessage`'s `target`), so it was not queued. */
+export type QueueDisposition = 'queued' | 'flushed' | 'otherConversation' | QueueRefusal;
+
+/** The conversation pi holds, read in one synchronous step (`ChatSession.liveConversation`). */
+export interface LiveConversation {
+  readonly sessionId: string;
+  readonly stored: boolean;
+  readonly branch: readonly SessionEntry[];
+  readonly sessionManager: AgentSession["sessionManager"];
+  readonly snapshot: LiveSnapshot;
+  /** Its unsettled subagent runs, absent before the session has an agent manager. */
+  readonly agents?: AgentsLiveSnapshot;
+}
 
 /** A send claimed before its content is built (`ChatSession.beginSend`). */
 export interface SendTicket {
@@ -46,7 +69,7 @@ export interface SendTicket {
  */
 export type ResumeOutcome =
   | { readonly kind: 'switched' }
-  | { readonly kind: 'failed'; readonly reason: string }
+  | { readonly kind: 'failed'; readonly reason: LocalizedText }
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'deferred' };
 
@@ -140,12 +163,17 @@ export interface ChatSession extends ActivitySource {
   /** Settles once no resume, restore or hand-off switch is pending (`openResumeTarget`'s outcome). */
   whenConversationSettled(): Promise<void>;
   /** The conversation pi holds with its in-memory branch and live snapshot, read in one step; undefined with no runtime. */
-  liveConversation(): { readonly sessionId: string; readonly stored: boolean; readonly branch: readonly SessionEntry[]; readonly sessionManager: AgentSession["sessionManager"]; readonly snapshot: LiveSnapshot } | undefined;
+  liveConversation(): LiveConversation | undefined;
+  /**
+   * Whether the runtime holds a conversation and keeps it: `sessionId` names it, or is undefined for a page that names none
+   * (an unstored conversation), and no resume targets another one.
+   */
+  holdsLiveConversation(sessionId: string | undefined): boolean;
 
   /**
    * Claims the session's one send for a message whose content still needs reading, so a Stop, New chat, resume
    * switch or disposal meanwhile returns it (`returnUnsent`'s text, then `onWithdrawn`) and aborts the ticket's
-   * signal. Null, with the refusal reported, while another send or a compaction holds the session.
+   * signal. Null while another send or a compaction holds the session; the caller gives the message back.
    */
   beginSend(correlationId: string, userBroadcast: UserBroadcast, onWithdrawn: () => void): SendTicket | null;
   /**
@@ -165,11 +193,8 @@ export interface ChatSession extends ActivitySource {
   ): Promise<SendOutcome>;
   /** Resolves `text` as pi would when it starts the prompt, for a caller that puts blocks ahead of it. */
   resolveSlashInvocation(text: string): Promise<SlashInvocation>;
-  /**
-   * `typed` is what the user typed, which a UserPromptSubmit hook gets when `content` is a rewrite of it.
-   * `otherConversation`: the message names another conversation than the running one (`sendMessage`'s `target`), so it was not queued.
-   */
-  queueInput(content: ContentInput, messageId?: string, typed?: string, target?: string): 'queued' | 'flushed' | 'otherConversation' | false;
+  /** `typed` is what the user typed, which a UserPromptSubmit hook gets when `content` is a rewrite of it. */
+  queueInput(content: ContentInput, messageId?: string, typed?: string, target?: string): QueueDisposition;
   interrupt(): Promise<void>;
   cancel(): void;
   /** Stops one running shell call; the turn continues, unlike interrupt/cancel which tear it down. */

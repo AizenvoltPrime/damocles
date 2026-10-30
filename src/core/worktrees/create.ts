@@ -15,7 +15,8 @@ import { updateSerially } from '../scm/serial-update';
 import { folderKey } from '../workspace-folders/folder-key';
 import { log } from '../logger';
 import { pidAlive } from '../pi-session/checkpoints/lock';
-import { t } from '../l10n';
+import { errorTextOf, l, verbatim } from '../l10n';
+import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import { branchBaseName, branchSlug, freeBranchName } from './slug';
 import { newWorktreeId, type ChatWorktreeRecord, type WorktreeRegistry } from './registry';
 import { folderContains, worktreeFolderFor } from './records';
@@ -31,9 +32,10 @@ const MAX_SETUP_COMMAND_LENGTH = 4096;
 const MAX_SETUP_TOTAL_LENGTH = 6000;
 const MAX_INCLUDE_FILE_BYTES = 64 * 1024;
 
-export class WorktreeCreateError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
+/** A failed creation, in its cause's words (`gitFailureText`). */
+export class WorktreeCreateError extends LocalizedError {
+  constructor(cause: unknown) {
+    super(gitFailureText(cause), { cause });
     this.name = 'WorktreeCreateError';
   }
 }
@@ -42,6 +44,11 @@ export class WorktreeCreateError extends Error {
 export function gitMessage(err: unknown): string {
   if (err instanceof GitError) return (err.stderr.trim() || err.message).slice(0, 2000);
   return err instanceof Error ? err.message : String(err);
+}
+
+/** `gitMessage` as a view shows it: git's own words as written, else the error's text, a LocalizedError's own included. */
+export function gitFailureText(err: unknown): LocalizedText {
+  return err instanceof GitError ? verbatim(gitMessage(err)) : errorTextOf(err);
 }
 
 /** Runs git for one project: `project` decides trust, `cwd` where it runs. */
@@ -103,7 +110,7 @@ export async function repositoryOf(git: ProjectGit, folder: string): Promise<{ r
   const root = path.resolve(folder, cdup);
   const [rootReal, toplevelReal] = await Promise.all([fs.realpath(root), fs.realpath(toplevel)]);
   if (folderKey(rootReal) !== folderKey(toplevelReal)) {
-    throw new Error(t('{0} leads into the repository {1} through a link, below its root, so git cannot work on it there. Add the project by its own path, {2}.', folder, toplevelReal, await fs.realpath(folder)));
+    throw new LocalizedError(l('{0} leads into the repository {1} through a link, below its root, so git cannot work on it there. Add the project by its own path, {2}.', folder, toplevelReal, await fs.realpath(folder)));
   }
   return { root, prefix };
 }
@@ -305,7 +312,7 @@ export async function createChatWorktree(input: CreateChatWorktreeInput): Promis
     currentRef = await currentBranchRef(git, projectPath);
     branch = await freeBranchName(input.git, projectPath, projectPath, branchBaseName(input.branchPrefix, branchSlug(input.slugSource, id)));
   } catch (err) {
-    throw new WorktreeCreateError(gitMessage(err), { cause: err });
+    throw new WorktreeCreateError(err);
   }
   const worktreeRoot = worktreeFolderFor(registry.rootDir, projectPath, id);
   // git's names, never the project's spelling: an 8.3 alias of the project's folder need not exist in the worktree
@@ -317,7 +324,7 @@ export async function createChatWorktree(input: CreateChatWorktreeInput): Promis
     await git.run(projectPath, addWorktreeArgs(worktreeRoot, startCommit, branch, git.eoo()), { kind: 'mutation' });
   } catch (err) {
     await undoFailedAdd(git, registry, record, startCommit);
-    throw new WorktreeCreateError(gitMessage(err), { cause: err });
+    throw new WorktreeCreateError(err);
   }
   const skippedLinks: string[] = [];
   try {
@@ -325,7 +332,7 @@ export async function createChatWorktree(input: CreateChatWorktreeInput): Promis
     skippedLinks.push(...(await copyWorktreeInclude(input.git, projectPath, workingFolder)).skippedLinks);
   } catch (err) {
     await discardChatWorktree(input.git, registry, record).catch((discardErr: unknown) => log(`[worktrees] Discarding ${worktreeRoot} after a failed copy failed: ${gitMessage(discardErr)}`));
-    throw new WorktreeCreateError(gitMessage(err), { cause: err });
+    throw new WorktreeCreateError(err);
   }
   return { record, skippedLinks };
 }
@@ -518,8 +525,8 @@ export async function readSetupCommands(projectPath: string, platform: NodeJS.Pl
   try {
     // lstat: a link or a FIFO in the repository is never followed or read.
     const stat = await fs.lstat(file);
-    if (!stat.isFile()) throw new Error(`${file} is not a regular file`);
-    if (stat.size > MAX_SETUP_FILE_BYTES) throw new Error(`${file} is larger than ${MAX_SETUP_FILE_BYTES} bytes`);
+    if (!stat.isFile()) throw new LocalizedError(l('{0} is not a regular file.', file));
+    if (stat.size > MAX_SETUP_FILE_BYTES) throw new LocalizedError(l('{0} is larger than {1} bytes.', file, { number: MAX_SETUP_FILE_BYTES }));
     text = await fs.readFile(file, 'utf8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
@@ -529,22 +536,22 @@ export async function readSetupCommands(projectPath: string, platform: NodeJS.Pl
   try {
     parsed = JSON.parse(stripBom(text));
   } catch (err) {
-    throw new Error(`${file} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+    throw new LocalizedError(l('{0} is not valid JSON: {1}', file, err instanceof Error ? err.message : String(err)));
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error(`${file} must hold an object`);
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new LocalizedError(l('{0} must hold a JSON object.', file));
   const config = parsed as Record<string, unknown>;
   const osKey = platform === 'win32' ? 'setupWindows' : 'setupUnix';
   const key = config[osKey] !== undefined ? osKey : 'setup';
   const list = config[key];
   if (list === undefined) return [];
   if (!Array.isArray(list) || list.length > MAX_SETUP_COMMANDS || !list.every((c) => typeof c === 'string' && c.trim() !== '' && c.length <= MAX_SETUP_COMMAND_LENGTH)) {
-    throw new Error(`${file}: "${key}" must be an array of at most ${MAX_SETUP_COMMANDS} non-empty commands`);
+    throw new LocalizedError(l('{0}: "{1}" must be an array of at most {2} commands, none of them empty.', file, key, { number: MAX_SETUP_COMMANDS }));
   }
   const commands = list as string[];
   // A line break would make one entry several shell lines, and only the last line's exit status would be checked.
-  if (commands.some((c) => /[\r\n]/.test(c))) throw new Error(t('{0}: each setup command must be one line. Put each command in its own entry of "{1}".', file, key));
+  if (commands.some((c) => /[\r\n]/.test(c))) throw new LocalizedError(l('{0}: each setup command must be one line. Put each command in its own entry of "{1}".', file, key));
   const total = commands.reduce((sum, c) => sum + c.length, 0);
-  if (total > MAX_SETUP_TOTAL_LENGTH) throw new Error(t('{0}: the commands in "{1}" are {2} characters long together, and setup runs at most {3}.', file, key, total, MAX_SETUP_TOTAL_LENGTH));
+  if (total > MAX_SETUP_TOTAL_LENGTH) throw new LocalizedError(l('{0}: the commands in "{1}" are {2} characters long together, and setup runs at most {3}.', file, key, { number: total }, { number: MAX_SETUP_TOTAL_LENGTH }));
   return commands;
 }
 

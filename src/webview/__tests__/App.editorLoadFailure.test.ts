@@ -34,7 +34,7 @@ describe('App when the editor chunk fails to load', () => {
     mounted.push(mount(App, { global: { plugins: [i18n], config: { errorHandler: (err) => { errors.push(err); } } } }) as VueWrapper);
 
     const doc = { name: 'a.ts', path: '/w/a.ts', body: { kind: 'text' as const, content: 'x', languageId: 'typescript' } };
-    editorStore.showDiff({ type: 'editorShowDiff', viewId: 'v1', title: 'a.ts', purpose: 'proposal', approvalId: 'tool-1', original: doc, modified: doc });
+    editorStore.showDiff({ type: 'editorShowDiff', viewId: 'v1', title: { message: 'a.ts' }, purpose: 'proposal', approvalId: 'tool-1', original: doc, modified: doc });
     editorStore.openProposal('tool-1');
 
     await vi.waitFor(() => {

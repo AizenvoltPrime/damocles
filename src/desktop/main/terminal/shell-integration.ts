@@ -26,12 +26,16 @@ const IDENT_PREFIX = /^0*(?:6(?:3(?:3)?)?)?$/;
 const IDENT_633 = /^0*633$/;
 // xterm's PAYLOAD_LIMIT (common/parser/Constants.ts): its OSC handler never sees a longer payload.
 const XTERM_OSC_PAYLOAD_LIMIT = 10_000_000;
-// A raw C0 control or DEL inside a body: the scripts escape every one, so the sequence is malformed. A C1 control ends
-// the sequence before it reaches a body.
 // eslint-disable-next-line no-control-regex -- the C0 controls and DEL are what this matches
 const RAW_CONTROL = /[\x00-\x1f\x7f]/;
-// eslint-disable-next-line no-control-regex -- the C0 controls xterm never puts into an OSC payload
-const C0_CONTROLS = /[\x00-\x1f]/g;
+
+/**
+ * A body holding a raw control is malformed, since the scripts escape every one. Live output and a restored screen's kept
+ * payloads both go through this; a body is xterm's OSC payload, which leaves C0 controls out and keeps DEL.
+ */
+export function holdsRawControl(body: string): boolean {
+  return RAW_CONTROL.test(body);
+}
 
 // xterm's EXECUTABLES: run at once after a lone ESC, which still waits, and ignored inside an OSC, where BEL ends it instead.
 function isExecutable(char: string): boolean {
@@ -226,11 +230,12 @@ export class Osc633Stream {
         this.state = { kind: 'ground' };
       } else if (state.kind === 'discard') {
         this.state = discarded(state, char);
-      } else {
+      } else if (!isExecutable(char)) {
+        // a C0 control is left out, as xterm leaves it out of the payload the pty host's screen keeps for a replay
         const body = state.body + char;
         this.state = state.body.length >= MAX_SHELL_SEQUENCE_CHARS
-          ? { kind: 'discard', escape: false, ident: null, handled: true, payload: body.replace(C0_CONTROLS, '').length }
-          : { ...state, body, malformed: state.malformed || RAW_CONTROL.test(char) };
+          ? { kind: 'discard', escape: false, ident: null, handled: true, payload: body.length }
+          : { ...state, body, malformed: state.malformed || holdsRawControl(char) };
       }
     }
     return { data: out, sequences, stripped };

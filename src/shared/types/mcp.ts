@@ -1,4 +1,5 @@
 import type { AssetSourcePrecedence } from "./settings";
+import type { LocalizedText } from "../localized-text";
 
 /** OAuth configuration for a remote MCP server (US-014.5). */
 export interface McpOAuthConfig {
@@ -245,7 +246,7 @@ export interface McpServerErrorInfo {
 /** Where a renamed-tool notice's names are: a file it opens in the editor, or a setting the host's settings editor shows. */
 export type McpRenamedToolRuleLocation = {
   /** The file with home collapsed to `~`, or the setting and its scope, for rendering. */
-  displayPath: string;
+  displayPath: LocalizedText;
 } & (
   | { /** Absolute, for opening in the editor. */ path: string }
   | {
@@ -276,8 +277,8 @@ export interface McpServerStatusInfo {
   displayName?: string;
   status: "connected" | "failed" | "needs-auth" | "pending" | "disabled" | "idle";
   enabled: boolean;
-  /** English fallback for `errorInfo`. */
-  error?: string;
+  /** Shown when `errorInfo` names no code the view words. */
+  error?: LocalizedText;
   errorInfo?: McpServerErrorInfo;
   /** The config `description`, else the first line of the server's `instructions`; control chars stripped, 120-char cap. */
   description?: string;

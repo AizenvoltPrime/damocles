@@ -1,5 +1,6 @@
 import type { AgentUsageTotals } from '../usage-accounting';
 import type { ToolAbandonReason } from './session';
+import type { LocalizedText } from '../localized-text';
 
 export interface TextBlock {
   type: "text";
@@ -72,12 +73,14 @@ export type HistoryAgentContentBlock =
   | { type: 'text'; text: string }
   | ImageBlock
   // `abandoned`: its model call failed or was aborted, or an abort skipped it in its batch, so pi never ran it.
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; result?: string; isError?: boolean; imageCount?: number; metadata?: Record<string, unknown>; durationMs?: number; abandoned?: ToolAbandonReason };
+  // `live`: a running run still owns its outcome, which the live snapshot and events after the replay set.
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; result?: string; isError?: boolean; imageCount?: number; metadata?: Record<string, unknown>; durationMs?: number; abandoned?: ToolAbandonReason; live?: true };
 
 export interface HistoryAgentMessage {
-  /** `error` carries a failed model call's error as one text block. */
+  /** `error` carries a failed model call's error as one text block, in English, and as `error`, which the view renders. */
   role: 'user' | 'assistant' | 'error';
   contentBlocks: HistoryAgentContentBlock[];
+  error?: LocalizedText;
 }
 
 export interface HistoryToolCall {

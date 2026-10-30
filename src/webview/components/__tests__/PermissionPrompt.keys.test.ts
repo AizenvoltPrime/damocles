@@ -277,7 +277,7 @@ describe('what the card says about the change', () => {
     settingsStore.setHostCapabilities({ ...settingsStore.hostCapabilities, monaco: true });
     const editorStore = useEditorStore();
     const doc = (content: string) => ({ name: 'a.ts', body: { kind: 'text' as const, content, languageId: 'typescript' } });
-    editorStore.showDiff({ type: 'editorShowDiff', viewId: 'v1', title: 'a.ts', purpose: 'proposal', approvalId: 'p-1', original: doc('a'), modified: doc('b') });
+    editorStore.showDiff({ type: 'editorShowDiff', viewId: 'v1', title: { message: 'a.ts' }, purpose: 'proposal', approvalId: 'p-1', original: doc('a'), modified: doc('b') });
     expect(editorStore.view).toBeNull();
     const wrapper = card();
 

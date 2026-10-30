@@ -839,6 +839,8 @@ describe.skipIf(!HAS_GIT)('worktree chats against real git', { timeout: 120_000 
     expect(await isRewritten(current, run)).toBe(false);
   });
 
+  const UNFINISHED_OPERATION = '{0} has an unfinished merge, rebase, cherry pick or revert. Finish or abort it, then try again.';
+
   it('refuses a finish action while a merge or rebase is unfinished, and leaves the base and the pending base alone', async () => {
     const { project, registry, run } = setup('refuse-in-progress');
     const record = await create(project, registry, run);
@@ -850,7 +852,7 @@ describe.skipIf(!HAS_GIT)('worktree chats against real git', { timeout: 120_000 
     const pending = (registry.get(record.id) as ChatWorktreeRecord).pendingBase;
     for (const action of [updateFrom, rebaseOnto, mergeInto]) {
       const outcome = await action(record, run, registry);
-      expect(outcome).toEqual({ kind: 'refused', message: expect.stringContaining(record.worktreeRoot) as unknown as string });
+      expect(outcome).toEqual({ kind: 'refused', message: { message: UNFINISHED_OPERATION, args: [record.worktreeRoot] } });
       expect((registry.get(record.id) as ChatWorktreeRecord).baseCommit).toBe(record.baseCommit);
       expect((registry.get(record.id) as ChatWorktreeRecord).pendingBase).toEqual(pending);
     }
@@ -863,7 +865,7 @@ describe.skipIf(!HAS_GIT)('worktree chats against real git', { timeout: 120_000 
     expect(() => git(['merge', 'side'], project)).toThrow();
     const settled = await settlePendingBase(record, run, registry);
     expect(settled.pendingBase).toBeUndefined();
-    expect(await mergeInto(settled, run, registry)).toEqual({ kind: 'refused', message: expect.stringContaining(project) as unknown as string });
+    expect(await mergeInto(settled, run, registry)).toEqual({ kind: 'refused', message: { message: UNFINISHED_OPERATION, args: [project] } });
     expect((registry.get(record.id) as ChatWorktreeRecord).baseCommit).toBe(record.baseCommit);
   });
 
@@ -981,7 +983,7 @@ describe('setup commands (D32)', () => {
     expect(isSetupApproved(state, project, commands)).toBe(true);
     expect(isSetupApproved(state, project, ['npm ci --unix', 'rm -rf /'])).toBe(false);
     fs.writeFileSync(path.join(project, '.damocles', 'worktree.json'), JSON.stringify({ setup: ['ok', 3] }));
-    await expect(readSetupCommands(project, 'linux')).rejects.toThrow('non-empty commands');
+    await expect(readSetupCommands(project, 'linux')).rejects.toThrow('none of them empty');
     fs.rmSync(project, { recursive: true, force: true });
   });
 
@@ -1004,9 +1006,28 @@ describe('setup commands (D32)', () => {
       fs.writeFileSync(file, JSON.stringify({ setup: ['npm ci\nrm -rf build'] }));
       await expect(readSetupCommands(project, 'linux')).rejects.toThrow('must be one line');
       fs.writeFileSync(file, JSON.stringify({ setup: Array.from({ length: 2 }, () => 'x'.repeat(4000)) }));
-      await expect(readSetupCommands(project, 'linux')).rejects.toThrow('8000 characters long together');
+      await expect(readSetupCommands(project, 'linux')).rejects.toThrow('8,000 characters long together');
       fs.writeFileSync(file, JSON.stringify({ setup: ['x'.repeat(4000), 'y'.repeat(2000)] }));
       expect(await readSetupCommands(project, 'linux')).toHaveLength(2);
+    } finally {
+      fs.rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  // Each refusal is Damocles' own text, which each view renders in its language, with the file and JSON's own words as arguments.
+  it('refuses a malformed worktree.json in localized text naming the file', async () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-setup-'));
+    fs.mkdirSync(path.join(project, '.damocles'));
+    const file = path.join(project, '.damocles', 'worktree.json');
+    try {
+      const refusal = async (json: string): Promise<unknown> => {
+        fs.writeFileSync(file, json);
+        return readSetupCommands(project, 'linux').then(() => undefined, (err: unknown) => (err as { text?: unknown }).text);
+      };
+      expect(await refusal('{ not json')).toEqual({ message: '{0} is not valid JSON: {1}', args: [file, expect.any(String)] });
+      expect(await refusal('[]')).toEqual({ message: '{0} must hold a JSON object.', args: [file] });
+      expect(await refusal(JSON.stringify({ setup: ['ok', 3] }))).toEqual({ message: '{0}: "{1}" must be an array of at most {2} commands, none of them empty.', args: [file, 'setup', { number: 20 }] });
+      expect(await refusal(' '.repeat(64 * 1024 + 1))).toEqual({ message: '{0} is larger than {1} bytes.', args: [file, { number: 64 * 1024 }] });
     } finally {
       fs.rmSync(project, { recursive: true, force: true });
     }
@@ -1119,6 +1140,8 @@ describe.skipIf(!HAS_GIT)('a project spelled otherwise than git spells its repos
     const refused = create(link, registry, run);
     await expect(refused).rejects.toBeInstanceOf(WorktreeCreateError);
     await expect(refused).rejects.toThrow(`${link} leads into the repository ${repo} through a link, below its root, so git cannot work on it there. Add the project by its own path, ${path.join(repo, 'app')}.`);
+    // the refusal's own text, which each view renders in its language
+    await expect(refused).rejects.toMatchObject({ text: { message: '{0} leads into the repository {1} through a link, below its root, so git cannot work on it there. Add the project by its own path, {2}.' } });
     expect(registry.records()).toEqual([]);
   });
 });

@@ -26,14 +26,14 @@
 import type { AgentSession, AgentSessionEvent, SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessageEvent } from '@earendil-works/pi-ai';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
-import type { ContentBlock } from '../../../shared/types/content';
-import type { AgentTerminalStatus } from '../agent-records';
+import type { ContentBlock, HistoryAgentMessage } from '../../../shared/types/content';
+import { parseAgentEntries, segmentForInvocation, type AgentTerminalStatus } from '../agent-records';
 import { TOOL_AGENT, LIVE_OUTPUT_TOOLS } from '../../../shared/tool-names';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../tool-normalization';
 import { joinResultText, resultImageCount } from '../tool-result-text';
 import { ToolOutputCoalescer } from '../tool-output-coalescer';
 import { piMessagesToHistoryAgentMessages } from './message-mapper';
-import { NestedCallFailures, nestedCallError } from '../nested-call-failures';
+import { NestedCallFailures, nestedCallFailure } from '../nested-call-failures';
 import { skippedToolCalls } from '../abandoned-tool-calls';
 import { turnStoppedToolCallIds, windDownRecorded } from '../session-store/turn-stopped';
 import type { ToolAbandonReason } from '../../../shared/types/session';
@@ -62,6 +62,18 @@ export interface SubagentStreamBridgeDeps {
   onUsage: (usage: AgentUsageTotals) => void;
 }
 
+/**
+ * What a joining or reloaded view needs of a running subagent beyond its card (`SubagentStreamBridge.liveSnapshot`):
+ * the transcript of its run so far, the open message, its running calls and its usage, read at one moment.
+ */
+export interface SubagentLiveSnapshot {
+  readonly messages: readonly ExtensionToWebviewMessage[];
+  /** The calls whose outcome the run still owns: running, or of its latest batch with no result yet. */
+  readonly liveToolCallIds: ReadonlySet<string>;
+  /** The run's stored messages as a reload maps them, its live calls marked `live`; absent before the run's session exists. */
+  readonly transcript?: HistoryAgentMessage[];
+}
+
 /** Build the JSON result string the webview's Agent-completion path parses (mirrors the SDK shape). */
 export function buildAgentResultJson(opts: {
   responseText: string;
@@ -85,16 +97,21 @@ export function buildAgentResultJson(opts: {
 export class SubagentStreamBridge {
   private readonly deps: SubagentStreamBridgeDeps;
   private readonly toolStarts = new Map<string, number>();
+  /** The ended calls whose result pi has not stored yet, with the messages their end sent. */
+  private readonly unstored = new Map<string, readonly ExtensionToWebviewMessage[]>();
+  /** The calls pi started and has not ended, with their normalized input and latest output. */
+  private readonly running = new Map<string, { name: string; input: Record<string, unknown>; output?: { text: string; truncated: boolean } }>();
   /** Live shell output frames only. Elapsed-only progress stays uncoalesced so its cadence is unchanged. */
   private readonly outputCoalescer = new ToolOutputCoalescer<ExtensionToWebviewMessage>((m) => this.emit(m));
   private emittedModel: { model: string | undefined; effort: EffortBadgeLevel | undefined } | undefined;
-  private templateEmitted = false;
+  private emittedTemplate: string | undefined;
   /** Per-assistant-message streaming state — mirrors PiStreamAdapter so the card streams text/thinking. */
   private assistantSeq = 0;
   private currentMsgId = '';
   private streamingText = '';
   private streamingThinking = '';
   private thinkingStart: number | null = null;
+  private thinkingDuration: number | undefined;
   /** Whether the current assistant message has reached the card, so a re-run must take it back. */
   private currentRendered = false;
   /** The tool calls of the latest assistant message, and every call pi reported a result for. */
@@ -102,8 +119,6 @@ export class SubagentStreamBridge {
   private readonly answered = new Set<string>();
   /** The calls this session's turn-stopped entries name: its aborted run settled them before they ran. */
   private readonly stopped = new Set<string>();
-  /** The error stops that were an abort's wind-down, which the sealing snapshot maps as a reload does. */
-  private readonly windDown = new Set<unknown>();
   /** An error stop, decided at its `turn_end` by the wind-down record (`decideErrorStop`). */
   private undecidedError: {
     message: { errorMessage?: string; provider?: string; model?: string };
@@ -112,14 +127,13 @@ export class SubagentStreamBridge {
     shownId: string | undefined;
   } | null = null;
   private branch: () => readonly SessionEntry[] = () => [];
+  private session: AgentSession | undefined;
   private readonly failures = new NestedCallFailures({
     show: (message) => this.emit({ type: 'error', message, parentToolUseId: this.deps.parentToolUseId }),
     withdraw: (messageId) => this.emit({ type: 'assistantRetracted', messageId, parentToolUseId: this.deps.parentToolUseId }),
     retrying: (attempt, maxAttempts) => this.emit({ type: 'statusUpdate', status: 'retrying', attempt, maxAttempts, parentToolUseId: this.deps.parentToolUseId }),
     retryEnded: () => this.emit({ type: 'statusUpdate', status: 'ready', parentToolUseId: this.deps.parentToolUseId }),
   });
-  /** Messages the session held when attached; a reopened session's earlier runs belong to earlier cards. */
-  private firstMessageIndex = 0;
   /** This run's usage; the baseline is taken at attach, so a reopened session's earlier runs are excluded. */
   private runUsage?: () => AgentUsageTotals;
   private publishedUsage = emptyAgentUsage();
@@ -151,13 +165,17 @@ export class SubagentStreamBridge {
     if (!model && !effort) return;
     if (this.emittedModel && this.emittedModel.model === model && this.emittedModel.effort === effort) return;
     this.emittedModel = { model, effort };
-    this.emit({ type: 'subagentModelUpdate', agentToolId: this.deps.parentToolUseId, ...(model ? { model } : {}), ...(effort ? { effort } : {}) });
+    this.emit(this.modelMessage(this.emittedModel));
+  }
+
+  private modelMessage({ model, effort }: { model: string | undefined; effort: EffortBadgeLevel | undefined }): ExtensionToWebviewMessage {
+    return { type: 'subagentModelUpdate', agentToolId: this.deps.parentToolUseId, ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
   }
 
   /** Emit `subagentTemplateUpdate` once for the agent's markdown template file path. */
   emitTemplate(templatePath: string): void {
-    if (this.templateEmitted || !templatePath) return;
-    this.templateEmitted = true;
+    if (this.emittedTemplate !== undefined || !templatePath) return;
+    this.emittedTemplate = templatePath;
     this.emit({ type: 'subagentTemplateUpdate', agentToolId: this.deps.parentToolUseId, templatePath });
   }
 
@@ -169,7 +187,7 @@ export class SubagentStreamBridge {
   attach(session: AgentSession, dollarBilled?: boolean, effort?: EffortBadgeLevel): () => void {
     this.dollarBilled = dollarBilled;
     if (effort) this.emitModel(this.emittedModel?.model, effort);
-    this.firstMessageIndex = session.messages.length;
+    this.session = session;
     this.branch = () => session.sessionManager.getBranch();
     this.runUsage = runUsageMeter(session);
     const unsubscribe = session.subscribe((event: AgentSessionEvent) => this.handle(event));
@@ -191,6 +209,7 @@ export class SubagentStreamBridge {
         this.handleAssistantEvent(event.assistantMessageEvent);
         break;
       case 'message_end':
+        if (event.message.role === 'toolResult') this.unstored.delete(event.message.toolCallId);
         if (event.message.role === 'assistant') {
           const messageId = this.assistantMessageId();
           const sealed = this.emitAssistantMessage(event.message.content);
@@ -221,13 +240,9 @@ export class SubagentStreamBridge {
         break;
       case 'tool_execution_start': {
         this.toolStarts.set(event.toolCallId, Date.now());
-        this.emit({
-          type: 'toolPending',
-          toolUseId: event.toolCallId,
-          toolName: mapPiToolName(event.toolName),
-          input: normalizeToolInput(event.toolName, (event.args ?? {}) as Record<string, unknown>),
-          parentToolUseId,
-        });
+        const input = normalizeToolInput(event.toolName, (event.args ?? {}) as Record<string, unknown>);
+        this.running.set(event.toolCallId, { name: event.toolName, input });
+        this.emit({ type: 'toolPending', toolUseId: event.toolCallId, toolName: mapPiToolName(event.toolName), input, parentToolUseId });
         break;
       }
       case 'tool_execution_update': {
@@ -238,6 +253,8 @@ export class SubagentStreamBridge {
         }
         // pi omits `truncation` entirely on an untruncated partial frame, so the boolean is derived, not read.
         const details = (event.partialResult as { details?: { truncation?: { truncated?: boolean } } } | undefined)?.details;
+        const call = this.running.get(event.toolCallId);
+        if (call) call.output = { text: joinResultText(event.partialResult), truncated: Boolean(details?.truncation?.truncated) };
         // Built at emit time so a frame held for the whole window reports the elapsed time the card is
         // showing, not the one it had when the frame was pushed.
         this.outputCoalescer.push(event.toolCallId, () => ({
@@ -259,23 +276,28 @@ export class SubagentStreamBridge {
         const duration = event.durationMs === undefined ? {} : { durationMs: event.durationMs };
         const toolName = mapPiToolName(event.toolName);
         this.toolStarts.delete(event.toolCallId);
+        this.running.delete(event.toolCallId);
+        const ended: ExtensionToWebviewMessage[] = [];
         if (this.stopped.has(event.toolCallId) && event.durationMs === undefined) {
-          this.emitAbandoned({ id: event.toolCallId, name: event.toolName }, 'stopped');
-          break;
-        }
-        const resultText = joinResultText(event.result);
-        const details = (event.result as { details?: unknown } | undefined)?.details;
-        const metadata = details && typeof details === 'object' ? normalizeToolDetails(details as Record<string, unknown>) : undefined;
-        // A stopped call lands as completed, and its marker alone tells the card apart from a success.
-        if (event.isError && metadata?.[CANCELLED_TOOL_DETAIL_KEY] !== true) {
-          this.emit({ type: 'toolFailed', toolUseId: event.toolCallId, toolName, error: resultText || 'Tool failed', parentToolUseId, ...duration });
-          // An error result keeps the details a tool returned with it (a thrown error's are empty), and a reload shows them.
-          if (metadata && Object.keys(metadata).length > 0) this.emit({ type: 'toolMetadata', toolUseId: event.toolCallId, metadata });
+          ended.push(this.abandonedMessage({ id: event.toolCallId, name: event.toolName }, 'stopped'));
         } else {
-          const imageCount = resultImageCount(event.result);
-          this.emit({ type: 'toolCompleted', toolUseId: event.toolCallId, toolName, result: resultText, parentToolUseId, ...duration, ...(imageCount > 0 ? { imageCount } : {}) });
-          if (metadata) this.emit({ type: 'toolMetadata', toolUseId: event.toolCallId, metadata });
+          const resultText = joinResultText(event.result);
+          const details = (event.result as { details?: unknown } | undefined)?.details;
+          const metadata = details && typeof details === 'object' ? normalizeToolDetails(details as Record<string, unknown>) : undefined;
+          // A stopped call lands as completed, and its marker alone tells the card apart from a success.
+          if (event.isError && metadata?.[CANCELLED_TOOL_DETAIL_KEY] !== true) {
+            ended.push({ type: 'toolFailed', toolUseId: event.toolCallId, toolName, error: resultText, parentToolUseId, ...duration });
+            // An error result keeps the details a tool returned with it (a thrown error's are empty), and a reload shows them.
+            if (metadata && Object.keys(metadata).length > 0) ended.push({ type: 'toolMetadata', toolUseId: event.toolCallId, metadata });
+          } else {
+            const imageCount = resultImageCount(event.result);
+            ended.push({ type: 'toolCompleted', toolUseId: event.toolCallId, toolName, result: resultText, parentToolUseId, ...duration, ...(imageCount > 0 ? { imageCount } : {}) });
+            if (metadata) ended.push({ type: 'toolMetadata', toolUseId: event.toolCallId, metadata });
+          }
         }
+        // pi stores a parallel batch's results only once all of them ended, so a view joining before then is sent the end.
+        this.unstored.set(event.toolCallId, ended);
+        for (const message of ended) this.emit(message);
         break;
       }
       default:
@@ -293,16 +315,19 @@ export class SubagentStreamBridge {
     if (!pending) return;
     this.undecidedError = null;
     if (windDownRecorded(this.branch(), pending.message)) {
-      this.windDown.add(pending.message);
       for (const call of [...pending.skipped, ...pending.calls]) this.emitAbandoned(call, 'stopped');
       return;
     }
     for (const call of pending.calls) this.emitAbandoned(call, 'failed');
-    this.failures.hold(nestedCallError(pending.message, 'user'), pending.shownId);
+    this.failures.hold(nestedCallFailure(pending.message), pending.shownId);
   }
 
   private emitAbandoned(call: { id: string; name: string }, reason: ToolAbandonReason): void {
-    this.emit({ type: 'toolAbandoned', toolUseId: call.id, toolName: mapPiToolName(call.name), parentToolUseId: this.deps.parentToolUseId, reason });
+    this.emit(this.abandonedMessage(call, reason));
+  }
+
+  private abandonedMessage(call: { id: string; name: string }, reason: ToolAbandonReason): ExtensionToWebviewMessage {
+    return { type: 'toolAbandoned', toolUseId: call.id, toolName: mapPiToolName(call.name), parentToolUseId: this.deps.parentToolUseId, reason };
   }
 
   /** Begin a new nested assistant message: assign its own webview id and reset streaming buffers. */
@@ -312,6 +337,7 @@ export class SubagentStreamBridge {
     this.streamingText = '';
     this.streamingThinking = '';
     this.thinkingStart = null;
+    this.thinkingDuration = undefined;
     this.currentRendered = false;
   }
 
@@ -337,6 +363,7 @@ export class SubagentStreamBridge {
         break;
       case 'thinking_end': {
         const thinkingDuration = this.thinkingStart !== null ? Math.round((Date.now() - this.thinkingStart) / 1000) : undefined;
+        this.thinkingDuration = thinkingDuration;
         this.emitPartial({ streamingThinking: this.streamingThinking, isThinking: false, ...(thinkingDuration !== undefined ? { thinkingDuration } : {}) });
         break;
       }
@@ -403,13 +430,64 @@ export class SubagentStreamBridge {
     });
   }
 
+  /**
+   * The run as a view that watched it holds it beyond its stored messages, modelled on `PiStreamAdapter.liveSnapshot`: the
+   * model, effort and template the card was sent, which its file holds only once pi committed the task, the open message's
+   * text, each running call with its latest output, the ended calls pi has not stored, and the usage the card was last sent.
+   * Read in one synchronous step with the transcript, so every event after it is one the view has not seen.
+   */
+  liveSnapshot(): SubagentLiveSnapshot {
+    const parentToolUseId = this.deps.parentToolUseId;
+    const messages: ExtensionToWebviewMessage[] = [];
+    if (this.emittedModel) messages.push(this.modelMessage(this.emittedModel));
+    if (this.emittedTemplate !== undefined) messages.push({ type: 'subagentTemplateUpdate', agentToolId: parentToolUseId, templatePath: this.emittedTemplate });
+    if (this.currentMsgId && (this.streamingText !== '' || this.streamingThinking !== '')) {
+      messages.push({
+        type: 'partial',
+        data: {
+          type: 'partial',
+          content: [],
+          session_id: this.deps.getSessionId(),
+          messageId: this.currentMsgId,
+          ...(this.streamingThinking !== '' ? { streamingThinking: this.streamingThinking } : {}),
+          ...(this.streamingText !== '' ? { streamingText: this.streamingText } : {}),
+          isThinking: this.thinkingStart !== null && this.thinkingDuration === undefined && this.streamingText === '',
+          ...(this.thinkingDuration !== undefined ? { thinkingDuration: this.thinkingDuration } : {}),
+        },
+        parentToolUseId,
+      });
+    }
+    for (const [toolUseId, call] of this.running) {
+      const toolName = mapPiToolName(call.name);
+      messages.push({ type: 'toolPending', toolUseId, toolName, input: call.input, parentToolUseId });
+      if (call.output) messages.push({ type: 'toolProgress', toolUseId, toolName, parentToolUseId, elapsedTimeSeconds: this.elapsed(toolUseId), output: call.output.text, outputTruncated: call.output.truncated });
+    }
+    for (const ended of this.unstored.values()) messages.push(...ended);
+    if (this.runUsage && !sameAgentUsage(this.publishedUsage, emptyAgentUsage())) {
+      messages.push({ type: 'subagentUsageUpdate', agentToolId: parentToolUseId, usage: this.publishedUsage, ...(this.dollarBilled !== undefined ? { dollarBilled: this.dollarBilled } : {}) });
+    }
+    const liveToolCallIds = new Set([...this.running.keys(), ...this.unstored.keys(), ...this.batch.flatMap((call) => (this.answered.has(call.id) ? [] : [call.id]))]);
+    const session = this.session;
+    return {
+      messages,
+      liveToolCallIds,
+      ...(session ? { transcript: this.transcript(session, liveToolCallIds) } : {}),
+    };
+  }
+
+  /**
+   * This run's card transcript from the entries pi stored, read as a reload reads the agent file (`parseAgentEntries`, the
+   * segment of this run's invocation), so a compaction or a reopened file's earlier runs cannot change it.
+   */
+  private transcript(session: AgentSession, liveToolCallIds?: ReadonlySet<string>): HistoryAgentMessage[] {
+    const file = parseAgentEntries(session.sessionManager.getSessionFile() ?? '', session.sessionManager.getBranch());
+    const segment = file && segmentForInvocation(file, { toolCallId: this.deps.parentToolUseId, resume: this.deps.resumedFrom !== undefined });
+    return file && segment ? piMessagesToHistoryAgentMessages(segment.messages, file.stoppedToolCallIds, file.windDownMessages, liveToolCallIds) : [];
+  }
+
   /** Emit the final (sealing) message snapshot for the card. */
   emitMessages(session: AgentSession): void {
-    this.emit({
-      type: 'subagentMessagesUpdate',
-      agentToolId: this.deps.parentToolUseId,
-      messages: piMessagesToHistoryAgentMessages(session.messages.slice(this.firstMessageIndex), this.stopped, this.windDown),
-    });
+    this.emit({ type: 'subagentMessagesUpdate', agentToolId: this.deps.parentToolUseId, messages: this.transcript(session) });
   }
 
   /**
@@ -427,7 +505,7 @@ export class SubagentStreamBridge {
   }): void {
     if (opts.session) this.emitMessages(opts.session);
     if (opts.isError) {
-      this.emit({ type: 'toolFailed', toolUseId: this.deps.parentToolUseId, toolName: TOOL_AGENT, error: opts.responseText || 'Subagent failed', durationMs: opts.durationMs });
+      this.emit({ type: 'toolFailed', toolUseId: this.deps.parentToolUseId, toolName: TOOL_AGENT, error: opts.responseText, durationMs: opts.durationMs });
     } else {
       this.emit({ type: 'toolCompleted', toolUseId: this.deps.parentToolUseId, toolName: TOOL_AGENT, result: opts.resultJson, durationMs: opts.durationMs });
     }

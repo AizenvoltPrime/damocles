@@ -185,7 +185,7 @@ describe('the conflict bar', () => {
   it('resolves a Compare tab\'s conflict on the document of its modified side', async () => {
     const api = fakeShellApi();
     const store = createEditorStore(api);
-    const compare: ShellEditorTab = { id: 'c', kind: 'diff', diff: { originalId: 'disk', modifiedId: 'd-a', added: 1, removed: 1, conflictCompare: true }, title: 'app.ts (On disk ↔ Yours)', displayPath: 'C:\\work\\app.ts', dirty: true, readOnly: false, conflict: true };
+    const compare: ShellEditorTab = { id: 'c', kind: 'diff', diff: { originalId: 'disk', modifiedId: 'd-a', conflictCompare: true }, title: 'app.ts (On disk ↔ Yours)', displayPath: 'C:\\work\\app.ts', dirty: true, readOnly: false, conflict: true };
     await store.resolveConflict(compare, 'revert');
     await store.resolveConflict(codeTab('a', 'app.ts', { conflict: true }), 'overwrite');
     expect(vi.mocked(api.resolveConflict).mock.calls).toEqual([[{ documentId: 'd-a', action: 'revert' }], [{ documentId: 'd-a', action: 'overwrite' }]]);

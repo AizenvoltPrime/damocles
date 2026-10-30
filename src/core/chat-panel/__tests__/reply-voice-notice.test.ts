@@ -19,15 +19,17 @@ vi.mock("node:os", async (importOriginal) => {
 import { ChatPanelProvider } from "../index";
 import { installFakePlatform, type FakePlatform } from "../../../__mocks__/fake-platform";
 import { PiRuntime } from "../../pi-session/pi-runtime";
+import { l, verbatim, withDetail } from "../../l10n";
 import type { Disposable } from "../../../platform/disposable";
 import type { HostCapabilities } from "../../../shared/types/messages";
+import type { LocalizedText } from "../../../shared/localized-text";
 
 let platform: FakePlatform;
 let subscriptions: Disposable[];
 
 type Internals = {
   panelManager: { getPanels(): Map<string, unknown> };
-  voiceService: { speakReply(text: string, origin: string): Promise<void>; emit(event: "replyNotSpoken", notice: { reason: string; origin: string }): boolean };
+  voiceService: { speakReply(text: string, origin: string): Promise<void>; emit(event: "replyNotSpoken", notice: { reason: LocalizedText; origin: string }): boolean };
   dispatchTtsForReply(text: string, panelId: string): void;
 };
 
@@ -86,10 +88,19 @@ describe("a reply that could not be spoken", () => {
     internals.panelManager.getPanels().set("p2", { host: other });
     platform.notifications.answerWith((call) => call.actions[0]);
 
-    internals.voiceService.emit("replyNotSpoken", { reason: "pip install failed (exit 1):\nline 1\nline 2", origin: "p1" });
+    internals.voiceService.emit("replyNotSpoken", { reason: verbatim("pip install failed (exit 1):\nline 1\nline 2"), origin: "p1" });
 
     await vi.waitFor(() => expect(other.posted).toEqual([{ type: "openSettingsPanel", section: "voice" }]));
     expect(platform.notifications.calls.at(-1)?.message).toBe("A reply could not be spoken: pip install failed (exit 1):");
     expect(other.reveal).toHaveBeenCalledOnce();
+  });
+
+  it("names only the headline of Damocles' own reason over its detail lines", async () => {
+    const internals = provider();
+    platform.notifications.answerWith(() => undefined);
+
+    internals.voiceService.emit("replyNotSpoken", { reason: withDetail(l("The voice runtime check failed while importing {0}.", "torch"), "Traceback (most recent call last):\nImportError: no torch"), origin: "p1" });
+
+    await vi.waitFor(() => expect(platform.notifications.calls.at(-1)?.message).toBe("A reply could not be spoken: The voice runtime check failed while importing torch."));
   });
 });

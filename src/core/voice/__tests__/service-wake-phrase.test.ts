@@ -82,7 +82,7 @@ describe("VoiceService wake phrase", () => {
       {
         kind: "error",
         code: "fatal",
-        message: "The damocles.voice.wakeWord setting is not a valid wake phrase: \"hey-jarvis\". Use 1 to 4 English words of letters only, such as \"hey jarvis\".",
+        message: { message: "The damocles.voice.wakeWord setting is not a valid wake phrase: \"{0}\". Use 1 to 4 English words of letters only, such as \"hey jarvis\".", args: ["hey-jarvis"] },
       },
     ]);
   });

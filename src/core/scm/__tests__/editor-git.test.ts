@@ -78,7 +78,7 @@ describe('timeline log', () => {
 });
 
 describe('merge editor labels', () => {
-  const titles: MergeTitles = { current: 'Current', incoming: 'Incoming', base: 'Base', stash: 'Stashed Changes', worktree: (branch) => `${branch} (worktree)` };
+  const titles: MergeTitles = { current: { message: 'Current' }, incoming: { message: 'Incoming' }, base: { message: 'Base' }, stash: { message: 'Stashed Changes' }, worktree: (branch) => ({ message: '{0} (worktree)', args: [branch] }) };
 
   it('names the operation from the repository, else a stash apply from its markers', () => {
     expect(mergeOperationOf('rebase', '')).toBe('rebase');
@@ -94,10 +94,10 @@ describe('merge editor labels', () => {
   });
 
   it('labels Incoming "Stashed Changes" for a stash and "{branch} (worktree)" for a worktree apply', () => {
-    expect(mergeTitles('merge', titles)).toEqual({ current: 'Current', incoming: 'Incoming', base: 'Base' });
-    expect(mergeTitles('rebase', titles)).toEqual({ current: 'Current', incoming: 'Incoming', base: 'Base' });
-    expect(mergeTitles('stash', titles).incoming).toBe('Stashed Changes');
-    expect(mergeTitles('worktreeApply', titles, 'damocles/fix').incoming).toBe('damocles/fix (worktree)');
+    expect(mergeTitles('merge', titles)).toEqual({ current: { message: 'Current' }, incoming: { message: 'Incoming' }, base: { message: 'Base' } });
+    expect(mergeTitles('rebase', titles)).toEqual({ current: { message: 'Current' }, incoming: { message: 'Incoming' }, base: { message: 'Base' } });
+    expect(mergeTitles('stash', titles).incoming).toEqual({ message: 'Stashed Changes' });
+    expect(mergeTitles('worktreeApply', titles, 'damocles/fix').incoming).toEqual({ message: '{0} (worktree)', args: ['damocles/fix'] });
   });
 
   it('details a commit by its ref names, HEAD\'s arrow dropped', () => {

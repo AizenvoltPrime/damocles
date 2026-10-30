@@ -41,7 +41,7 @@ function setUp(sockets: { agentFolder?: string; relayHandle?: string } = {}) {
       },
     };
   };
-  const state: DaemonState = { snapshot: () => ({}), update: async () => undefined, applyClient: () => false, flush: async () => undefined };
+  const state: DaemonState = { snapshot: () => ({}), update: async () => undefined, flush: async () => undefined };
   const host = createRemoteCoreHost({
     root: '/opt/damocles',
     paths: runPaths('/home/u', 'box'),
@@ -65,7 +65,7 @@ const attach = (n: number, hostId = 'client-host'): CoreAttach => ({
   appInfo: { version: '9.9.9', host: 'desktop' },
   secretsPersistent: true,
   chatBrowserPane: true,
-  mirrors: { state: { global: {}, workspace: {} }, trust: { keys: ['/srv/app'] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'el' }, clientAuth: { providers: {} }, clientUser: { settings: {}, permissionRules: [] }, clientPolicy: { voice: false, allowBypass: false } },
+  mirrors: { trust: { keys: ['/srv/app'] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'el' }, clientAuth: { providers: {} }, clientUser: { settings: {}, permissionRules: [] }, clientPolicy: { voice: false, allowBypass: false } },
 });
 
 function connection(host: ReturnType<typeof setUp>['host'], id = 'connection-1', clientId = 'device-a') {
@@ -85,16 +85,20 @@ describe('remote core host', () => {
     const { host, cores } = setUp();
     const first = connection(host, 'connection-1', 'device-a');
     first.core.attach(attach(1));
+    const started = (parseCoreInit(cores[0]!.sent[0]) as CoreInit).mirrors;
+    expect([started.clientEditor, started.clientTerminal, started.clientLanguage]).toEqual([{ 'device-a': {} }, { 'device-a': { shown: false, shortcut: '' } }, { 'device-a': { language: 'el' } }]);
     const second = connection(host, 'connection-2', 'device-a');
     second.core.attach(attach(1));
     first.core.dispose();
     cores.at(-1)!.exit(1);
     const init = parseCoreInit(cores.at(-1)!.sent[0]) as CoreInit;
     expect(Object.keys(init.mirrors.clientAuth)).toEqual(['device-a']);
+    expect([init.mirrors.clientEditor, init.mirrors.clientTerminal, init.mirrors.clientLanguage]).toEqual([{ 'device-a': {} }, { 'device-a': { shown: false, shortcut: '' } }, { 'device-a': { language: 'el' } }]);
     expect(init.mirrors.actingClient).toEqual({ clientId: 'device-a' });
     second.core.dispose();
     cores.at(-1)!.exit(1);
-    expect((parseCoreInit(cores.at(-1)!.sent[0]) as CoreInit).mirrors.clientAuth).toEqual({});
+    const detached = (parseCoreInit(cores.at(-1)!.sent[0]) as CoreInit).mirrors;
+    expect([detached.clientAuth, detached.clientEditor, detached.clientTerminal, detached.clientLanguage]).toEqual([{}, {}, {}, {}]);
   });
 
   it('forks core on the first attach with an init the daemon builds, carrying remote but no client value of it', () => {

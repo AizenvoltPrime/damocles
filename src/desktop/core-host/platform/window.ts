@@ -1,12 +1,17 @@
 import type { Disposable } from '../../../platform/disposable';
-import type { WindowService } from '../../../platform/window-service';
-import type { CoreEndpoint, CoreInit, MirrorTopics } from '../../core-protocol';
+import type { ClientSnapshots } from '../../../platform/remote-host';
+import type { TerminalToggle, WindowService } from '../../../platform/window-service';
+import type { CoreEndpoint, CoreInit } from '../../core-protocol';
 import type { CorePanels } from './panels';
 
-// Proxied; the terminal pane's state is mirrored, since the chat header reads it synchronously.
-export function createWindowProxy(endpoint: CoreEndpoint, init: CoreInit, panels: CorePanels): WindowService & Disposable {
-  let terminal: MirrorTopics['terminal'] = init.mirrors.terminal;
-  const subscription = endpoint.onMirror('terminal', (patch) => {
+// a device the daemon has no terminal state of shows its toggle off
+const NO_TERMINAL: TerminalToggle = { shown: false, shortcut: '' };
+
+// Proxied; the terminal pane's state is mirrored, since the chat header reads it synchronously. clients: a daemon's core, which
+// reads each device's state from its clientTerminal mirror.
+export function createWindowProxy(endpoint: CoreEndpoint, init: CoreInit, panels: CorePanels, clients: ClientSnapshots | undefined): WindowService & Disposable {
+  let terminal: TerminalToggle = init.mirrors.terminal;
+  const subscription = clients ? undefined : endpoint.onMirror('terminal', (patch) => {
     terminal = patch;
   });
   return {
@@ -16,7 +21,7 @@ export function createWindowProxy(endpoint: CoreEndpoint, init: CoreInit, panels
     createPanelInOwnColumn: async (options) => panels.create(options),
     openAppSettings: (section, account) => endpoint.emit('window.openAppSettings', { ...(section !== undefined ? { section } : {}), ...(account !== undefined ? { account } : {}) }),
     toggleTerminal: () => endpoint.emit('window.toggleTerminal', {}),
-    terminalToggle: () => terminal,
-    dispose: () => subscription.dispose(),
+    terminalToggle: (clientId) => (clients ? (clientId === undefined ? undefined : clients.terminal(clientId)) ?? NO_TERMINAL : terminal),
+    dispose: () => subscription?.dispose(),
   };
 }

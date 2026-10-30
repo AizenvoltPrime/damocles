@@ -12,7 +12,7 @@ import type { StoredSession } from '../../shared/types/session';
 import type { BrokerAnswer, HeldAuth } from '../../shared/remote-user';
 import type { PushedCredential } from '../core-protocol/messages';
 import type { ChatEntry, ChatPermissions, FolderTargetEntry, MainRequests, MentionTargetData, RepositoryCall, ScmCall, ScmMirrorPatch, WorktreeCall } from '../core-protocol';
-import type { MainEndpoint } from '../core-protocol';
+import { parsedCallText, SCM_CALL_LOCALIZED_TEXT, WORKTREE_CALL_LOCALIZED_TEXT, type MainEndpoint, type ScmCommitOutcome } from '../core-protocol';
 import type { ReviewSession } from './chat-review-host';
 import type { RelayView } from './core-services/host-services';
 import { finishHold, type FinishHold } from './worktrees/engine';
@@ -116,7 +116,7 @@ export class CoreClient implements Disposable {
   }
 
   onTurnSettled(listener: (panelId: string, outcome: TurnOutcome) => void): Disposable {
-    return this.endpoint.onEvent('chat.turnSettled', ({ panelId, outcome }) => listener(panelId, outcome as TurnOutcome));
+    return this.endpoint.onEvent('chat.turnSettled', ({ panelId, outcome }) => listener(panelId, outcome));
   }
 
   onChatChanges(listener: (panelId: string, totals: ChatChangeTotals, generation: number) => void): Disposable {
@@ -124,7 +124,7 @@ export class CoreClient implements Disposable {
   }
 
   onUsageThreshold(listener: (crossing: UsageThresholdCrossing) => void): Disposable {
-    return this.endpoint.onEvent('chat.usageThreshold', ({ crossing }) => listener(crossing as UsageThresholdCrossing));
+    return this.endpoint.onEvent('chat.usageThreshold', ({ crossing }) => listener(crossing));
   }
 
   onWorktreeState(listener: (event: PanelWorktreeStateEvent) => void): Disposable {
@@ -277,16 +277,16 @@ export class CoreClient implements Disposable {
     return ((await this.request('catalog.search', { projectKey: this.keys.toCore(projectKey), query })) as readonly StoredSession[]).map((row) => storedSessionToShell(this.keys, row));
   }
 
-  async renameSession(sessionId: string, name: string): Promise<CatalogResult> {
-    return (await this.request('catalog.rename', { sessionId, name })) as CatalogResult;
+  renameSession(sessionId: string, name: string): Promise<CatalogResult> {
+    return this.request('catalog.rename', { sessionId, name });
   }
 
-  async tagSession(sessionId: string, tag: string | null): Promise<CatalogResult> {
-    return (await this.request('catalog.tag', { sessionId, tag })) as CatalogResult;
+  tagSession(sessionId: string, tag: string | null): Promise<CatalogResult> {
+    return this.request('catalog.tag', { sessionId, tag });
   }
 
-  async deleteSession(sessionId: string): Promise<CatalogResult> {
-    return (await this.request('catalog.delete', { sessionId })) as CatalogResult;
+  deleteSession(sessionId: string): Promise<CatalogResult> {
+    return this.request('catalog.delete', { sessionId });
   }
 
   // ---- folders, browser pages, worktrees
@@ -389,11 +389,11 @@ export class CoreClient implements Disposable {
     this.endpoint.serve('scm.branchName', ({ token }) => ask(token));
   }
 
-  scmCall(method: ScmCall, args: readonly unknown[]): Promise<unknown> {
-    return this.request('scm.call', { method, args });
+  async scmCall(method: ScmCall, args: readonly unknown[]): Promise<unknown> {
+    return parsedCallText('scm.call', method, SCM_CALL_LOCALIZED_TEXT[method], await this.request('scm.call', { method, args }));
   }
 
-  scmCommit(repoId: string, message: string, variant: unknown, saved: readonly string[], branchName: string | undefined): Promise<unknown> {
+  scmCommit(repoId: string, message: string, variant: unknown, saved: readonly string[], branchName: string | undefined): Promise<ScmCommitOutcome> {
     return this.request('scm.commit', { repoId, message, variant, saved, ...(branchName !== undefined ? { branchName } : {}) });
   }
 
@@ -413,8 +413,8 @@ export class CoreClient implements Disposable {
     return this.request('scm.repo', { repoId, method, args });
   }
 
-  worktreeCall(method: WorktreeCall, args: readonly unknown[]): Promise<unknown> {
-    return this.request('worktrees.call', { method, args });
+  async worktreeCall(method: WorktreeCall, args: readonly unknown[]): Promise<unknown> {
+    return parsedCallText('worktrees.call', method, WORKTREE_CALL_LOCALIZED_TEXT[method], await this.request('worktrees.call', { method, args }));
   }
 
   // ---- this computer's user scope, which the local core serves to remote chats

@@ -30,6 +30,8 @@ import { stashApply, stashClear, stashDrop, stashPush, type StashScope, type Sta
 import { readCommitAttachment } from './commit-attachment';
 import type { CommitAttachmentInput } from '../../shared/types/chat-attachment';
 import { visibleText } from '../../shared/visible-text';
+import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
+import { l } from '../l10n';
 import { createTagArgs, deleteTagArgs, parseRemoteTags, PUSH_TAGS_ARGS, remoteTagsArgs, type RemoteTag } from './tags';
 import { addWorktree, removeWorktree } from './worktrees';
 import { recordWorktreeRoot, worktreeRoot } from './worktree-roots';
@@ -96,13 +98,13 @@ const GIT_DIR_WATCHED = /^(HEAD|index|packed-refs|FETCH_HEAD|MERGE_HEAD|REBASE_H
 
 export type ScmQuestionSeverity = 'info' | 'warning' | 'danger';
 
-// The fields of desktop's MessageQuestion (src/desktop/main/message-dialog.ts).
+// MessageQuestion's fields (src/desktop/main/message-dialog.ts), as text main renders.
 export interface ScmQuestion {
   readonly severity: ScmQuestionSeverity;
-  readonly message: string;
-  readonly detail?: string;
-  readonly actions: readonly string[];
-  readonly cancelLabel?: string;
+  readonly message: LocalizedText;
+  readonly detail?: LocalizedText;
+  readonly actions: readonly LocalizedText[];
+  readonly cancelLabel?: LocalizedText;
   readonly defaultAction?: number;
   readonly preview?: readonly string[];
 }
@@ -120,12 +122,11 @@ export interface ScmServiceDeps {
   // global KeyValueState: closed repositories by project, parent repositories the user opened
   readonly globalState: Memento;
   readonly ask: ScmAsk;
-  // a non-modal notice with actions (NotificationService.info); resolves the chosen action's label
-  readonly notify: (message: string, ...actions: string[]) => Promise<string | undefined>;
+  // a non-modal notice with actions (NotificationService.info); resolves the chosen action's index
+  readonly notify: (message: LocalizedText, actions: readonly LocalizedText[]) => Promise<number | undefined>;
   readonly trash: (absolutePath: string) => Promise<void>;
   // the host has no trash (a daemon's core): trash deletes permanently, and the questions say so in VS Code's words
   readonly deletesPermanently?: boolean;
-  readonly t: (message: string, ...args: Array<string | number>) => string;
   readonly log: (line: string) => void;
   readonly platform?: NodeJS.Platform;
   // a registered project folder's realpath (fs.promises.realpath); it runs on the main thread, so it must never block
@@ -592,13 +593,12 @@ export class ScmService implements Disposable {
     const listed = project.unsafe.find((entry) => samePath(entry, unsafePath));
     if (listed === undefined) throw new Error('Unknown unsafe repository');
     await this.refuseDeclined(path.resolve(listed));
-    const t = this.deps.t;
     const choice = await this.deps.ask({
       severity: 'warning',
-      message: t('The git repository in the current folder is potentially unsafe as the folder is owned by someone other than the current user.'),
-      detail: t('Opening it adds "{0}" to safe.directory in your global git configuration, so git runs its configuration and hooks for you.', visibleText(listed)),
-      actions: [t('Open Repository')],
-      cancelLabel: t('Cancel'),
+      message: l('The git repository in the current folder is potentially unsafe as the folder is owned by someone other than the current user.'),
+      detail: l('Opening it adds "{0}" to safe.directory in your global git configuration, so git runs its configuration and hooks for you.', visibleText(listed)),
+      actions: [l('Open Repository')],
+      cancelLabel: l('Cancel'),
     });
     if (choice !== 0) return false;
     // the answer may come after the folder's project was registered or untrusted
@@ -706,9 +706,8 @@ export class ScmService implements Disposable {
     const entry = this.requireRepo(repoId);
     const head = await entry.repo.headCommit();
     if (!head) return { kind: 'noCommit' };
-    const t = this.deps.t;
     if (head.parents.length > 1) {
-      const choice = await this.deps.ask({ severity: 'warning', message: t('The last commit was a merge commit. Are you sure you want to undo it?'), actions: [t('Undo merge commit')], cancelLabel: t('Cancel'), defaultAction: 0 });
+      const choice = await this.deps.ask({ severity: 'warning', message: l('The last commit was a merge commit. Are you sure you want to undo it?'), actions: [l('Undo merge commit')], cancelLabel: l('Cancel'), defaultAction: 0 });
       if (choice !== 0) return { kind: 'cancelled' };
     }
     let undone: 'undone' | 'moved' | 'merging';
@@ -717,8 +716,8 @@ export class ScmService implements Disposable {
     } finally {
       await this.wrote(entry, ['branches']);
     }
-    if (undone === 'moved') throw new Error(t('The last commit changed after you asked to undo it, so nothing was undone.'));
-    if (undone === 'merging') throw new Error(t('Can\'t undo the last commit while a merge is in progress or files have merge conflicts.'));
+    if (undone === 'moved') throw new LocalizedError(l('The last commit changed after you asked to undo it, so nothing was undone.'));
+    if (undone === 'merging') throw new LocalizedError(l('Can\'t undo the last commit while a merge is in progress or files have merge conflicts.'));
     return { kind: 'undone', message: head.message };
   }
 
@@ -852,7 +851,7 @@ export class ScmService implements Disposable {
   async integrate(repoId: string, command: 'merge' | 'rebase', name: string): Promise<'ok' | 'conflict'> {
     const entry = this.requireRepo(repoId);
     try {
-      const conflicted = this.deps.t('Resolve the merge conflicts before merging or rebasing a branch.');
+      const conflicted = l('Resolve the merge conflicts before merging or rebasing a branch.');
       const stashed = await integrate(entry.repo, command, name, () => (this.declinedInside(entry.repo.root).length > 0 ? 'fenced' : 'none'), conflicted);
       return this.settleStash(stashed, (result) => (result.ok ? result.value : 'failed'));
     } finally {
@@ -864,7 +863,7 @@ export class ScmService implements Disposable {
   async stash(repoId: string, scope: StashScope, message: string, paths: readonly string[] = []): Promise<'ok' | 'noCommits' | 'noChanges'> {
     const entry = this.requireRepo(repoId);
     // one stash takes every path in one call, so the paths must fit one command line
-    if (paths.reduce((length, candidate) => length + candidate.length + 3, 0) > MAX_CLI_LENGTH) throw new Error(this.deps.t('Too many files to stash at once. Stash fewer files, or stash all changes.'));
+    if (paths.reduce((length, candidate) => length + candidate.length + 3, 0) > MAX_CLI_LENGTH) throw new LocalizedError(l('Too many files to stash at once. Stash fewer files, or stash all changes.'));
     try {
       return await stashPush(entry.repo, scope, message, paths);
     } finally {
@@ -875,7 +874,7 @@ export class ScmService implements Disposable {
   async stashApply(repoId: string, target: StashTarget, pop: boolean): Promise<'ok' | 'conflict' | 'moved'> {
     const entry = this.requireRepo(repoId);
     try {
-      return await stashApply(entry.repo, target, pop, this.deps.t('Resolve the merge conflicts before applying a stash.'));
+      return await stashApply(entry.repo, target, pop, l('Resolve the merge conflicts before applying a stash.'));
     } finally {
       await this.wrote(entry, pop ? ['stashes'] : []);
     }
@@ -1039,7 +1038,7 @@ export class ScmService implements Disposable {
       return await entry.repo.mutate(async (git) => {
         // each lives in this worktree's own git dir, as git keeps them per worktree
         const states = ['CHERRY_PICK_HEAD', 'MERGE_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'sequencer'].map((name) => path.join(gitDir, name));
-        if ((await Promise.all(states.map(exists))).some(Boolean)) throw new Error(this.deps.t('A merge, rebase, revert or cherry-pick is in progress. Finish or abort it before cherry picking.'));
+        if ((await Promise.all(states.map(exists))).some(Boolean)) throw new LocalizedError(l('A merge, rebase, revert or cherry-pick is in progress. Finish or abort it before cherry picking.'));
         const args = ['cherry-pick', ...entry.repo.endOfOptions(), revision(commit)];
         ran = true;
         const result = await git(args, { allowFailure: true });
@@ -1090,8 +1089,7 @@ export class ScmService implements Disposable {
   }
 
   private mergeTitles(): MergeTitles {
-    const t = this.deps.t;
-    return { current: t('Current'), incoming: t('Incoming'), base: t('Base'), stash: t('Stashed Changes'), worktree: (branch) => t('{0} (worktree)', branch) };
+    return { current: l('Current'), incoming: l('Incoming'), base: l('Base'), stash: l('Stashed Changes'), worktree: (branch) => l('{0} (worktree)', branch) };
   }
 
   /** Create Tag at HEAD, or at commit; a message makes it annotated, and goes in on stdin. */
@@ -1231,15 +1229,14 @@ export class ScmService implements Disposable {
    * user said no. It uses --force-with-lease, plus --force-if-includes from git 2.30, never a plain --force.
    */
   async push(repoId: string, request: PushRequest): Promise<boolean> {
-    const t = this.deps.t;
     if (request.force) {
-      if (!this.flag(SCM_SETTING_KEYS.allowForcePush, false)) throw new Error(t('Force push is not allowed, please enable it with the "Allow force push" setting.'));
+      if (!this.flag(SCM_SETTING_KEYS.allowForcePush, false)) throw new LocalizedError(l('Force push is not allowed, please enable it with the "Allow force push" setting.'));
       const choice = await this.deps.ask({
         severity: 'danger',
-        message: t('You are about to force push your changes, this can be destructive and could inadvertently overwrite changes made by others.'),
-        detail: t('Are you sure to continue?'),
-        actions: [t('Force Push')],
-        cancelLabel: t('Cancel'),
+        message: l('You are about to force push your changes, this can be destructive and could inadvertently overwrite changes made by others.'),
+        detail: l('Are you sure to continue?'),
+        actions: [l('Force Push')],
+        cancelLabel: l('Cancel'),
       });
       if (choice !== 0) return false;
     }
@@ -1255,13 +1252,12 @@ export class ScmService implements Disposable {
     const entry = this.requireRepo(repoId);
     const confirmed = syncBranchOf(entry.status?.head ?? null, entry.status?.upstream ?? null);
     if (!confirmed) throw new Error('Sync needs a branch with an upstream');
-    const t = this.deps.t;
     if (this.flag(SCM_SETTING_KEYS.confirmSync, true)) {
       const choice = await this.deps.ask({
         severity: 'warning',
-        message: t('This action will pull and push commits from and to "{0}/{1}".', visibleText(confirmed.remote), visibleText(confirmed.upstreamBranch)),
-        actions: [t('OK'), t('OK, Don\'t Show Again')],
-        cancelLabel: t('Cancel'),
+        message: l('This action will pull and push commits from and to "{0}/{1}".', visibleText(confirmed.remote), visibleText(confirmed.upstreamBranch)),
+        actions: [l('OK'), l('OK, Don\'t Show Again')],
+        cancelLabel: l('Cancel'),
         defaultAction: 0,
       });
       if (choice === undefined) return false;
@@ -1288,12 +1284,11 @@ export class ScmService implements Disposable {
 
   // No trust decides a clone, which runs no code of an existing repository; the clone's project starts untrusted.
   async clone(url: string, parent: string, recursive: boolean): Promise<string> {
-    const t = this.deps.t;
     const runner = this.deps.runner;
-    if (!runner) throw new Error(t('Git was not found'));
-    if (this.cloning) throw new Error(t('A clone is already running.'));
+    if (!runner) throw new LocalizedError(l('Git was not found'));
+    if (this.cloning) throw new LocalizedError(l('A clone is already running.'));
     const name = cloneFolderName(url);
-    if (name === undefined) throw new Error(t('The repository URL names no folder to clone into.'));
+    if (name === undefined) throw new LocalizedError(l('The repository URL names no folder to clone into.'));
     const controller = new AbortController();
     this.cloning = { name, controller };
     this.emit({ kind: 'clone' });
@@ -1304,7 +1299,7 @@ export class ScmService implements Disposable {
       await fs.mkdir(parent, { recursive: true });
       // the clone's project starts untrusted, so a folder name the trust store still lists is skipped
       target = await freeCloneTarget(parent, name, (folder) => this.deps.trust.isTrusted(folder));
-      if (target === undefined) throw new Error(t('Every folder name for the clone already exists in {0}.', parent));
+      if (target === undefined) throw new LocalizedError(l('Every folder name for the clone already exists in {0}.', parent));
       registration = await this.register('clone', controller);
       await runner.clone({ cwd: parent, args: cloneArgs(url, target, recursive), signal: controller.signal, relayCredentials: true, ...(this.sessionJob ? { session: this.sessionJob } : {}), ...(registration ? { askpassEnv: registration.env } : {}) });
       outcome = 'ok';
@@ -1344,14 +1339,13 @@ export class ScmService implements Disposable {
     variant: CommitVariant,
     hooks: CommitHooks,
   ): Promise<{ readonly ok: true; readonly opts: CommitOptions } | { readonly ok: false; readonly reason: 'emptyMessage' | 'nothingToCommit' | 'cancelled' | 'failed'; readonly error?: unknown }> {
-    const t = this.deps.t;
     const cancelled = { ok: false as const, reason: 'cancelled' as const };
     const keys = SCM_SETTING_KEYS;
     // a rebase continues with git's prepared message, so its box may be empty
     const rebase = status.operation === 'rebase';
     if (!variant.amend && !rebase && message.trim() === '') return { ok: false, reason: 'emptyMessage' };
     if (variant.empty && this.flag(keys.confirmEmptyCommits, true)) {
-      const choice = await this.deps.ask({ severity: 'warning', message: t('Are you sure you want to create an empty commit?'), actions: [t('Yes'), t('Yes, Don\'t Show Again')], cancelLabel: t('Cancel'), defaultAction: 0 });
+      const choice = await this.deps.ask({ severity: 'warning', message: l('Are you sure you want to create an empty commit?'), actions: [l('Yes'), l('Yes, Don\'t Show Again')], cancelLabel: l('Cancel'), defaultAction: 0 });
       if (choice === undefined) return cancelled;
       if (choice === 1) await this.deps.settings.update(keys.confirmEmptyCommits, false, 'user');
     }
@@ -1364,10 +1358,10 @@ export class ScmService implements Disposable {
         if (!this.flag(keys.suggestSmartCommit, true)) return { ok: false, reason: 'nothingToCommit' };
         const choice = await this.deps.ask({
           severity: 'warning',
-          message: t('There are no staged changes to commit.'),
-          detail: t('Would you like to stage all your changes and commit them directly?'),
-          actions: [t('Yes'), t('Always'), t('Never')],
-          cancelLabel: t('Cancel'),
+          message: l('There are no staged changes to commit.'),
+          detail: l('Would you like to stage all your changes and commit them directly?'),
+          actions: [l('Yes'), l('Always'), l('Never')],
+          cancelLabel: l('Cancel'),
           defaultAction: 0,
         });
         if (choice === undefined) return cancelled;
@@ -1386,17 +1380,17 @@ export class ScmService implements Disposable {
     const staged = all && (changes === 'tracked' || this.untrackedChanges() !== 'mixed') ? 'tracked' : all ? 'all' : false;
     // staging 'all' adds the listed changes only, so past the status limit it would commit part of them
     if (staged === 'all' && status.tooManyChanges) {
-      return { ok: false, reason: 'failed', error: new Error(t('The change list shows only the first {0} changes, so nothing was committed. Stage the changes to commit, or commit from a terminal.', STATUS_LIMIT)) };
+      return { ok: false, reason: 'failed', error: new LocalizedError(l('The change list shows only the first {0} changes, so nothing was committed. Stage the changes to commit, or commit from a terminal.', STATUS_LIMIT)) };
     }
     if (variant.noVerify) {
-      if (!this.flag(keys.allowNoVerifyCommit, false)) return { ok: false, reason: 'failed', error: new Error(t('Commits without verification are not allowed, please enable them with the "Allow no-verify commits" setting.')) };
+      if (!this.flag(keys.allowNoVerifyCommit, false)) return { ok: false, reason: 'failed', error: new LocalizedError(l('Commits without verification are not allowed, please enable them with the "Allow no-verify commits" setting.')) };
       if (this.flag(keys.confirmNoVerifyCommit, true)) {
         const choice = await this.deps.ask({
           severity: 'warning',
-          message: t('You are about to commit your changes without verification, this skips pre-commit hooks and can be undesirable.'),
-          detail: t('Are you sure to continue?'),
-          actions: [t('OK'), t('OK, Don\'t Ask Again')],
-          cancelLabel: t('Cancel'),
+          message: l('You are about to commit your changes without verification, this skips pre-commit hooks and can be undesirable.'),
+          detail: l('Are you sure to continue?'),
+          actions: [l('OK'), l('OK, Don\'t Ask Again')],
+          cancelLabel: l('Cancel'),
           defaultAction: 0,
         });
         if (choice === undefined) return cancelled;
@@ -1411,9 +1405,9 @@ export class ScmService implements Disposable {
       if (prompt === 'alwaysPrompt') {
         const choice = await this.deps.ask({
           severity: 'warning',
-          message: t('You are trying to commit to a protected branch. How would you like to proceed?'),
-          actions: [t('Commit to a New Branch'), t('Commit Anyway')],
-          cancelLabel: t('Cancel'),
+          message: l('You are trying to commit to a protected branch. How would you like to proceed?'),
+          actions: [l('Commit to a New Branch'), l('Commit Anyway')],
+          cancelLabel: l('Cancel'),
           defaultAction: 0,
         });
         if (choice === undefined) return cancelled;
@@ -1422,7 +1416,7 @@ export class ScmService implements Disposable {
       if (toNewBranch) {
         branch = (await hooks.branchName?.())?.trim();
         if (!branch) return cancelled;
-        if (!(await entry.repo.isValidBranchName(branch))) return { ok: false, reason: 'failed', error: new Error(t('Invalid branch name')) };
+        if (!(await entry.repo.isValidBranchName(branch))) return { ok: false, reason: 'failed', error: new LocalizedError(l('Invalid branch name')) };
       }
     }
     const stagedPaths = new Set(status.groups.index.map((change) => change.path));
@@ -1445,7 +1439,7 @@ export class ScmService implements Disposable {
   // One per common dir, which linked worktrees share; a pull passes no locks and cleans up in its own slot.
   private async remoteOp<T>(entry: RepoEntry, op: RemoteOp, work: (net: NetworkCall) => Promise<T>, locks?: LockScope): Promise<T> {
     const commonDir = folderKey(entry.repo.info.commonDir);
-    if (this.remoteRunningIn(commonDir)) throw new Error(this.deps.t('Another remote operation is running in this repository.'));
+    if (this.remoteRunningIn(commonDir)) throw new LocalizedError(l('Another remote operation is running in this repository.'));
     const controller = new AbortController();
     entry.running = { op, controller };
     this.emit({ kind: 'repository', repoId: entry.id });
@@ -1563,7 +1557,7 @@ export class ScmService implements Disposable {
   private settleStash<T>(stashed: StashedOutcome<T>, outcomeOf: (result: StashedOutcome<T>['result']) => StashKeptOutcome): T {
     const { result, kept } = stashed;
     if (kept) {
-      const message = this.deps.t('Your changes were stashed for this operation and could not be applied back, so they are kept in the stash list.');
+      const message = l('Your changes were stashed for this operation and could not be applied back, so they are kept in the stash list.');
       throw new StashKeptError(message, outcomeOf(result), kept.stash, result.ok ? kept.error : result.error);
     }
     if (!result.ok) throw result.error;
@@ -1571,10 +1565,9 @@ export class ScmService implements Disposable {
   }
 
   private syncBranchChanged(stage: 'pull' | 'push', confirmed: SyncBranch, found: SyncBranch | null): SyncBranchChangedError {
-    const t = this.deps.t;
     const message = stage === 'pull'
-      ? t('The branch or its upstream changed after you confirmed the sync, so nothing was pulled or pushed.')
-      : t('The branch or its upstream changed during the sync, so nothing was pushed.');
+      ? l('The branch or its upstream changed after you confirmed the sync, so nothing was pulled or pushed.')
+      : l('The branch or its upstream changed during the sync, so nothing was pushed.');
     return new SyncBranchChangedError(message, stage, confirmed, found);
   }
 
@@ -1645,11 +1638,10 @@ export class ScmService implements Disposable {
     if (paths.length === 0) return true;
     const unresolved = await entry.repo.unresolved(paths);
     if (unresolved.length === 0) return true;
-    const t = this.deps.t;
     const message = unresolved.length > 1
-      ? t('Are you sure you want to stage {0} files with merge conflicts?', unresolved.length)
-      : t('Are you sure you want to stage {0} with merge conflicts?', visibleText(path.basename(unresolved[0]!)));
-    return (await this.deps.ask({ severity: 'warning', message, actions: [t('Yes')], cancelLabel: t('Cancel'), defaultAction: 0 })) === 0;
+      ? l('Are you sure you want to stage {0} files with merge conflicts?', unresolved.length)
+      : l('Are you sure you want to stage {0} with merge conflicts?', visibleText(path.basename(unresolved[0]!)));
+    return (await this.deps.ask({ severity: 'warning', message, actions: [l('Yes')], cancelLabel: l('Cancel'), defaultAction: 0 })) === 0;
   }
 
   // VS Code's _cleanAll: tracked only, untracked only, or both with its three-way question
@@ -1659,19 +1651,18 @@ export class ScmService implements Disposable {
     const untracked = changes.filter((change) => isUntrackedStatus(change.status));
     if (untracked.length === 0) return this.cleanTracked(entry, changes);
     if (tracked.length === 0) return this.cleanUntracked(entry, changes);
-    const t = this.deps.t;
     const [untrackedMessage, untrackedDetail] = this.untrackedQuestion(untracked);
     const trackedMessage = tracked.length === 1
-      ? t('\n\nAre you sure you want to discard changes in \'{0}\'?', visibleText(path.basename(tracked[0]!.path)))
-      : t('\n\nAre you sure you want to discard ALL changes in {0} files?', tracked.length);
-    const yesTracked = tracked.length === 1 ? t('Discard 1 Tracked File') : t('Discard All {0} Tracked Files', tracked.length);
-    const yesAll = t('Discard All {0} Files', changes.length);
+      ? l('\n\nAre you sure you want to discard changes in \'{0}\'?', visibleText(path.basename(tracked[0]!.path)))
+      : l('\n\nAre you sure you want to discard ALL changes in {0} files?', tracked.length);
+    const yesTracked = tracked.length === 1 ? l('Discard 1 Tracked File') : l('Discard All {0} Tracked Files', tracked.length);
+    const yesAll = l('Discard All {0} Files', changes.length);
     const trackedDetail = this.trackedQuestionDetail(tracked);
     const choice = await this.deps.ask({
       severity: 'danger',
-      message: `${untrackedMessage} ${untrackedDetail}${trackedMessage}${trackedDetail === undefined ? '' : `\n\n${trackedDetail}`}`,
+      message: trackedDetail === undefined ? l('{0} {1}{2}', untrackedMessage, untrackedDetail, trackedMessage) : l('{0} {1}{2}\n\n{3}', untrackedMessage, untrackedDetail, trackedMessage, trackedDetail),
       actions: [yesTracked, yesAll],
-      cancelLabel: t('Cancel'),
+      cancelLabel: l('Cancel'),
     });
     if (choice === undefined) return false;
     await this.runDiscard(entry, choice === 0 ? tracked : changes);
@@ -1679,60 +1670,56 @@ export class ScmService implements Disposable {
   }
 
   private async cleanTracked(entry: RepoEntry, changes: readonly Change[]): Promise<boolean> {
-    const t = this.deps.t;
     const allDeleted = changes.every((change) => change.status === 'DELETED');
     const one = changes.length === 1 ? visibleText(path.basename(changes[0]!.path)) : '';
     const message = allDeleted
-      ? changes.length === 1 ? t('Are you sure you want to restore \'{0}\'?', one) : t('Are you sure you want to restore ALL {0} files?', changes.length)
+      ? changes.length === 1 ? l('Are you sure you want to restore \'{0}\'?', one) : l('Are you sure you want to restore ALL {0} files?', changes.length)
       : changes.length === 1
-        ? t('Are you sure you want to discard changes in \'{0}\'?', one)
-        : t('Are you sure you want to discard ALL changes in {0} files?', changes.length);
+        ? l('Are you sure you want to discard changes in \'{0}\'?', one)
+        : l('Are you sure you want to discard ALL changes in {0} files?', changes.length);
     const yes = allDeleted
-      ? changes.length === 1 ? t('Restore File') : t('Restore All {0} Files', changes.length)
-      : changes.length === 1 ? t('Discard File') : t('Discard All {0} Files', changes.length);
+      ? changes.length === 1 ? l('Restore File') : l('Restore All {0} Files', changes.length)
+      : changes.length === 1 ? l('Discard File') : l('Discard All {0} Files', changes.length);
     const detail = this.trackedQuestionDetail(changes);
-    if ((await this.deps.ask({ severity: 'danger', message, ...(detail === undefined ? {} : { detail }), actions: [yes], cancelLabel: t('Cancel') })) !== 0) return false;
+    if ((await this.deps.ask({ severity: 'danger', message, ...(detail === undefined ? {} : { detail }), actions: [yes], cancelLabel: l('Cancel') })) !== 0) return false;
     await this.runDiscard(entry, changes);
     return true;
   }
 
   private async cleanUntracked(entry: RepoEntry, changes: readonly Change[]): Promise<boolean> {
-    const t = this.deps.t;
     const [message, detail] = this.untrackedQuestion(changes);
     const action = this.deps.deletesPermanently
-      ? changes.length === 1 ? t('Delete File') : t('Delete All {0} Files', changes.length)
-      : this.platform() === 'win32' ? t('Move to Recycle Bin') : t('Move to Trash');
-    if ((await this.deps.ask({ severity: 'danger', message, detail, actions: [action], cancelLabel: t('Cancel') })) !== 0) return false;
+      ? changes.length === 1 ? l('Delete File') : l('Delete All {0} Files', changes.length)
+      : this.platform() === 'win32' ? l('Move to Recycle Bin') : l('Move to Trash');
+    if ((await this.deps.ask({ severity: 'danger', message, detail, actions: [action], cancelLabel: l('Cancel') })) !== 0) return false;
     await this.runDiscard(entry, changes);
     return true;
   }
 
   // VS Code's discardUntrackedChangesToTrash wording, whose {1} is empty when the files go to the OS trash.
-  private untrackedQuestion(changes: readonly Change[]): [string, string] {
-    const t = this.deps.t;
+  private untrackedQuestion(changes: readonly Change[]): [LocalizedText, LocalizedText] {
     const message = changes.length === 1
-      ? t('Are you sure you want to DELETE the following untracked file: \'{0}\'?', visibleText(path.basename(changes[0]!.path)))
-      : t('Are you sure you want to DELETE the {0} untracked files?', changes.length);
+      ? l('Are you sure you want to DELETE the following untracked file: \'{0}\'?', visibleText(path.basename(changes[0]!.path)))
+      : l('Are you sure you want to DELETE the {0} untracked files?', changes.length);
     if (this.deps.deletesPermanently) {
-      return [message, changes.length === 1 ? t('This is IRREVERSIBLE!\nThis file will be FOREVER LOST if you proceed.') : t('This is IRREVERSIBLE!\nThese files will be FOREVER LOST if you proceed.')];
+      return [message, changes.length === 1 ? l('This is IRREVERSIBLE!\nThis file will be FOREVER LOST if you proceed.') : l('This is IRREVERSIBLE!\nThese files will be FOREVER LOST if you proceed.')];
     }
     const windows = this.platform() === 'win32';
     const detail = changes.length === 1
-      ? windows ? t('You can restore this file from the Recycle Bin.') : t('You can restore this file from the Trash.')
-      : windows ? t('You can restore these files from the Recycle Bin.') : t('You can restore these files from the Trash.');
+      ? windows ? l('You can restore this file from the Recycle Bin.') : l('You can restore this file from the Trash.')
+      : windows ? l('You can restore these files from the Recycle Bin.') : l('You can restore these files from the Trash.');
     return [message, detail];
   }
 
   // Where a tracked discard puts the working copies it replaces; none for a deletion or a submodule, which have none to trash.
-  private trackedQuestionDetail(changes: readonly Change[]): string | undefined {
+  private trackedQuestionDetail(changes: readonly Change[]): LocalizedText | undefined {
     if (this.deps.deletesPermanently) return undefined;
     const trashed = changes.filter((change) => change.status !== 'DELETED' && !change.submodule).length;
     if (trashed === 0) return undefined;
-    const t = this.deps.t;
     const windows = this.platform() === 'win32';
     return trashed === 1
-      ? windows ? t('You can restore the changed file from the Recycle Bin.') : t('You can restore the changed file from the Trash.')
-      : windows ? t('You can restore the changed files from the Recycle Bin.') : t('You can restore the changed files from the Trash.');
+      ? windows ? l('You can restore the changed file from the Recycle Bin.') : l('You can restore the changed file from the Trash.')
+      : windows ? l('You can restore the changed files from the Recycle Bin.') : l('You can restore the changed files from the Trash.');
   }
 
   private async runDiscard(entry: RepoEntry, changes: readonly Change[]): Promise<void> {
@@ -1742,28 +1729,27 @@ export class ScmService implements Disposable {
     } finally {
       await this.wrote(entry);
     }
-    if (outcome.kind === 'changed') throw new Error(this.deps.t('The files changed after you confirmed, so nothing was discarded. Review the changes and try again.'));
-    if (outcome.failed.length > 0) throw new Error(this.notTrashedMessage(outcome.failed));
+    if (outcome.kind === 'changed') throw new LocalizedError(l('The files changed after you confirmed, so nothing was discarded. Review the changes and try again.'));
+    if (outcome.failed.length > 0) throw new LocalizedError(this.notTrashedMessage(outcome.failed));
   }
 
-  private notTrashedMessage(failed: readonly DiscardFailure[]): string {
-    const t = this.deps.t;
+  private notTrashedMessage(failed: readonly DiscardFailure[]): LocalizedText {
     const windows = this.platform() === 'win32';
     const reason = errorText(failed[0]!.error);
     if (this.deps.deletesPermanently) {
       return failed.length > 1
-        ? t('{0} files could not be deleted, so their changes were not discarded: {1}', failed.length, reason)
-        : t('\'{0}\' could not be deleted, so its changes were not discarded: {1}', path.basename(failed[0]!.path), reason);
+        ? l('{0} files could not be deleted, so their changes were not discarded: {1}', failed.length, reason)
+        : l('\'{0}\' could not be deleted, so its changes were not discarded: {1}', path.basename(failed[0]!.path), reason);
     }
     if (failed.length > 1) {
       return windows
-        ? t('{0} files could not be moved to the Recycle Bin, so their changes were not discarded: {1}', failed.length, reason)
-        : t('{0} files could not be moved to the Trash, so their changes were not discarded: {1}', failed.length, reason);
+        ? l('{0} files could not be moved to the Recycle Bin, so their changes were not discarded: {1}', failed.length, reason)
+        : l('{0} files could not be moved to the Trash, so their changes were not discarded: {1}', failed.length, reason);
     }
     const name = path.basename(failed[0]!.path);
     return windows
-      ? t('\'{0}\' could not be moved to the Recycle Bin, so its changes were not discarded: {1}', name, reason)
-      : t('\'{0}\' could not be moved to the Trash, so its changes were not discarded: {1}', name, reason);
+      ? l('\'{0}\' could not be moved to the Recycle Bin, so its changes were not discarded: {1}', name, reason)
+      : l('\'{0}\' could not be moved to the Trash, so its changes were not discarded: {1}', name, reason);
   }
 
   private platform(): NodeJS.Platform {
@@ -1786,7 +1772,7 @@ export class ScmService implements Disposable {
   }
 
   private runner(): GitRunner {
-    if (!this.gitRunner) throw new Error('Git was not found');
+    if (!this.gitRunner) throw new LocalizedError(l('Git was not found'));
     return this.gitRunner;
   }
 
@@ -1904,7 +1890,7 @@ export class ScmService implements Disposable {
 
   private async refuseDeclined(...folders: string[]): Promise<void> {
     while (this.realpathPending()) await this.realpathsSettled();
-    if (!folders.every((folder) => this.mayRunIn(folder))) throw new Error(this.deps.t('That folder belongs to a project you have not trusted, so source control runs no git there.'));
+    if (!folders.every((folder) => this.mayRunIn(folder))) throw new LocalizedError(l('That folder belongs to a project you have not trusted, so source control runs no git there.'));
   }
 
   // Rediscovers every trusted project whose folder holds, or lies inside, one of folders, except skip.
@@ -1976,14 +1962,13 @@ export class ScmService implements Disposable {
     const pending = project.parents.filter((root) => again || !project.asked.has(rootKey(root)));
     if (pending.length === 0 || this.parentSetting() !== 'prompt') return;
     for (const root of pending) project.asked.add(rootKey(root));
-    const t = this.deps.t;
     const message = pending.length === 1
-      ? t('A git repository was found in the parent folders of the workspace or the open file(s). Would you like to open the repository?')
-      : t('Git repositories were found in the parent folders of the workspace or the open file(s). Would you like to open the repositories?');
-    const actions = [t('Yes'), t('Always'), t('Never')];
+      ? l('A git repository was found in the parent folders of the workspace or the open file(s). Would you like to open the repository?')
+      : l('Git repositories were found in the parent folders of the workspace or the open file(s). Would you like to open the repositories?');
+    const actions = [l('Yes'), l('Always'), l('Never')];
     const choice = again
-      ? await this.deps.ask({ severity: 'warning', message, preview: pending.map(visibleText), actions, cancelLabel: t('Cancel') })
-      : await this.deps.notify([message, ...pending.map(visibleText)].join('\n'), ...actions).then((answer) => (answer === undefined ? undefined : actions.indexOf(answer)));
+      ? await this.deps.ask({ severity: 'warning', message, preview: pending.map(visibleText), actions, cancelLabel: l('Cancel') })
+      : await this.deps.notify(l('{0}\n{1}', message, pending.map(visibleText).join('\n')), actions);
     if (choice === 0) await this.rememberParents(pending);
     else if (choice === 1 || choice === 2) await this.deps.settings.update(SCM_SETTING_KEYS.openRepositoryInParentFolders, choice === 1 ? 'always' : 'never', 'user');
     if (choice === 0 || choice === 1) await this.discoverProject(project);

@@ -196,8 +196,8 @@ describe('source control errors across the channel', () => {
     const { main, core } = pairWith();
     const confirmed = { branch: 'main', remote: 'origin', upstreamBranch: 'main' };
     const errors: Error[] = [
-      new StashKeptError('Your changes are in the stash', 'failed', 'a'.repeat(40), new GitError('git pull exited with 1', 1, 'out', 'error: conflict in a.ts')),
-      new SyncBranchChangedError('The branch changed', 'push', confirmed, null),
+      new StashKeptError({ message: 'Your changes are in the stash' }, 'failed', 'a'.repeat(40), new GitError('git pull exited with 1', 1, 'out', 'error: conflict in a.ts')),
+      new SyncBranchChangedError({ message: 'The branch changed' }, 'push', confirmed, null),
       new RemoteCancelledError(),
       new GitUntrustedError(),
       new GitError('git fetch exited with 128', 128, 'ignored', 'fatal: unable to access'),
@@ -208,11 +208,11 @@ describe('source control errors across the channel', () => {
     for (let i = 0; i < errors.length; i++) rebuilt.push(await main.request('scm.call', { method: 'fetch', args: ['repo-1', {}] }).catch((err: unknown) => err));
     const [stash, sync, cancelled, untrusted, git] = rebuilt as [StashKeptError, SyncBranchChangedError, Error, Error, GitError];
     expect(stash).toBeInstanceOf(StashKeptError);
-    expect({ message: stash.message, outcome: stash.outcome, stash: stash.stash }).toEqual({ message: 'Your changes are in the stash', outcome: 'failed', stash: 'a'.repeat(40) });
+    expect({ text: stash.text, message: stash.message, outcome: stash.outcome, stash: stash.stash }).toEqual({ text: { message: 'Your changes are in the stash' }, message: 'Your changes are in the stash', outcome: 'failed', stash: 'a'.repeat(40) });
     expect(stash.cause).toBeInstanceOf(GitError);
     expect(gitErrorText(stash.cause)).toBe('error: conflict in a.ts');
     expect(sync).toBeInstanceOf(SyncBranchChangedError);
-    expect({ stage: sync.stage, confirmed: sync.confirmed, found: sync.found }).toEqual({ stage: 'push', confirmed, found: null });
+    expect({ text: sync.text, stage: sync.stage, confirmed: sync.confirmed, found: sync.found }).toEqual({ text: { message: 'The branch changed' }, stage: 'push', confirmed, found: null });
     expect(cancelled).toBeInstanceOf(RemoteCancelledError);
     expect(untrusted).toBeInstanceOf(GitUntrustedError);
     expect(git).toBeInstanceOf(GitError);
@@ -249,7 +249,7 @@ describe('a chat\'s activity and worktree state', () => {
     state: 'requires_action',
     pendingKinds: ['approval'],
     pendingPrompts: [
-      { id: 'toolu_1', kind: 'approval', owner: { kind: 'main' }, summary: 'edit a.ts' },
+      { id: 'toolu_1', kind: 'approval', owner: { kind: 'main' }, summary: { message: 'edit {0}', args: ['a.ts'] } },
       { id: 'toolu_2', kind: 'approval', owner: { kind: 'team', teamId: 't', agentId: 'a', agentName: 'Reviewer' } },
     ],
     background: false,
@@ -280,6 +280,67 @@ describe('a chat\'s activity and worktree state', () => {
     expect(() => transports.core.post({ kind: 'event', name: 'chat.activity', payload: { panelId: 'p', activity: { ...activity, state: 'busy' } } })).toThrow(CoreProtocolError);
     expect(() => transports.core.post({ kind: 'event', name: 'chat.worktreeState', payload: { event: { ...worktree, state: { ...worktree.state, phase: 'gone' } } } })).toThrow(CoreProtocolError);
     expect(() => transports.core.post({ kind: 'event', name: 'chat.worktreeState', payload: { event: { ...worktree, busy: 'no' } } })).toThrow(CoreProtocolError);
+  });
+});
+
+describe('core\'s text main renders', () => {
+  const outcome = { kind: 'error', message: { message: 'The provider refused: {0}', args: ['overloaded'] } };
+  const rateLimit = { kind: 'rateLimit', windowId: 'five_hour', windowLabel: { message: 'Session (5hr)' }, resetsAt: 1 };
+  const crossing = { provider: 'anthropic', windowId: 'five_hour', windowLabel: { message: 'Weekly {0}', args: ['Opus'] }, threshold: 80, utilization: 81.5, planName: 'Max 20x' };
+
+  it('reaches main as LocalizedText in a turn outcome and a usage crossing', () => {
+    const { main, transports } = pair();
+    const received: unknown[] = [];
+    main.onEvent('chat.turnSettled', ({ outcome: settled }) => received.push(settled));
+    main.onEvent('chat.usageThreshold', ({ crossing: crossed }) => received.push(crossed));
+    for (const settled of [outcome, rateLimit, { kind: 'completed', durationMs: 5 }, { kind: 'cancelled' }]) transports.core.post({ kind: 'event', name: 'chat.turnSettled', payload: { panelId: 'p', outcome: settled } });
+    transports.core.post({ kind: 'event', name: 'chat.usageThreshold', payload: { crossing } });
+    expect(received).toEqual([outcome, rateLimit, { kind: 'completed', durationMs: 5 }, { kind: 'cancelled' }, crossing]);
+  });
+
+  it('is a violation at the parse when it is not LocalizedText', () => {
+    const { transports } = pair();
+    const settle = (settled: unknown) => (): void => transports.core.post({ kind: 'event', name: 'chat.turnSettled', payload: { panelId: 'p', outcome: settled } });
+    expect(settle({ kind: 'error', message: 'The provider refused' })).toThrow(CoreProtocolError);
+    expect(settle({ ...rateLimit, windowLabel: 'Session (5hr)' })).toThrow(CoreProtocolError);
+    expect(settle({ kind: 'exploded' })).toThrow(CoreProtocolError);
+    expect(() => transports.core.post({ kind: 'event', name: 'chat.usageThreshold', payload: { crossing: { ...crossing, windowLabel: 'Weekly' } } })).toThrow(CoreProtocolError);
+    expect(() => transports.core.post({ kind: 'event', name: 'chat.usageThreshold', payload: { crossing: { ...crossing, threshold: 50 } } })).toThrow(CoreProtocolError);
+  });
+
+  it('reaches main as LocalizedText in a catalog refusal, and a string there is a violation', async () => {
+    const violations: CoreProtocolError[] = [];
+    const { main, core } = pair((error) => violations.push(error));
+    const refusal = { ok: false, reason: 'invalid', message: { message: 'A chat name is at most {0} characters.', args: [200] } };
+    let answer: unknown = refusal;
+    core.serve('catalog.rename', () => answer as never);
+    expect(await main.request('catalog.rename', { sessionId: 's', name: 'n' })).toEqual(refusal);
+    answer = { ok: true };
+    expect(await main.request('catalog.rename', { sessionId: 's', name: 'n' })).toEqual({ ok: true });
+    answer = { ok: false, reason: 'failed', message: 'disk full' };
+    await expect(main.request('catalog.rename', { sessionId: 's', name: 'n' })).rejects.toThrow(CoreProtocolError);
+    expect(violations).toHaveLength(1);
+  });
+
+  it('reaches main as LocalizedText in a commit\'s failure, and a string there is a violation', async () => {
+    const violations: CoreProtocolError[] = [];
+    const { main, core } = pair((error) => violations.push(error));
+    const request = { repoId: 'r', message: 'm', variant: {}, saved: [] };
+    const refusal = { ok: false, reason: 'failed', error: { message: 'Invalid branch name' } };
+    let answer: unknown = refusal;
+    core.serve('scm.commit', () => answer as never);
+    expect(await main.request('scm.commit', request)).toEqual(refusal);
+    answer = { ok: false, reason: 'nothingToCommit' };
+    expect(await main.request('scm.commit', request)).toEqual({ ok: false, reason: 'nothingToCommit' });
+    answer = { ok: true };
+    expect(await main.request('scm.commit', request)).toEqual({ ok: true });
+    answer = { ok: false, reason: 'failed', error: 'Invalid branch name' };
+    await expect(main.request('scm.commit', request)).rejects.toThrow(CoreProtocolError);
+    answer = { ok: false, reason: 'failed' };
+    await expect(main.request('scm.commit', request)).rejects.toThrow(CoreProtocolError);
+    answer = { ok: false, reason: 'exploded' };
+    await expect(main.request('scm.commit', request)).rejects.toThrow(CoreProtocolError);
+    expect(violations).toHaveLength(3);
   });
 });
 

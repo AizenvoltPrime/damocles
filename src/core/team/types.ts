@@ -5,7 +5,7 @@ import type { MessageBus } from './message-bus';
 import type { Scratchpad } from './scratchpad';
 import type { CheckpointWriter } from './checkpoint-writer';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
-import type { TeamRunSummary } from '../../shared/types/team';
+import type { TeamAgentHistoryMessage, TeamRunSummary } from '../../shared/types/team';
 import type { AgentWindDown } from '../../shared/types/wind-down';
 import type { ImageBlock } from '../../shared/types/content';
 import type { UserSteerNote } from '../../shared/steer';
@@ -272,6 +272,8 @@ export interface AgentRunConfig {
    * and any pi has not yet committed, without taking them, for a live checkpoint.
    */
   bindTakeUndelivered: (take: () => UndeliveredMessage[], peek: () => UndeliveredMessage[]) => () => void;
+  /** Publishes this run's transcript reader (`MemberTranscript`) while its session is subscribed, and returns its teardown. */
+  bindTranscript?: (source: MemberTranscriptSource) => () => void;
   /** Fired at each member `tool_execution_end`, `turn_end` and `agent_end`, where team state can have changed. */
   onStateBoundary?: () => void;
   onMessage: (msg: ExtensionToWebviewMessage) => void;
@@ -600,3 +602,21 @@ export interface AgentMcpContext {
   getRecentlyCancelledNames?: () => string[];
 }
 
+/**
+ * A running member's transcript read from the messages pi holds, as a reopened member's file maps them, with what it streams
+ * now: the open message's text, each running live-output call's latest output, and the result of each ended call pi has not
+ * stored. A message the run sent live keeps the id it was sent under, so a re-seal finds it; any other takes the file
+ * reader's `<attempt>:<entry id>`.
+ */
+export interface MemberTranscript {
+  readonly messages: readonly TeamAgentHistoryMessage[];
+  readonly streaming?: { readonly text: string; readonly thinking: string; readonly isThinkingPhase: boolean };
+  readonly outputs: ReadonlyArray<{ readonly toolUseId: string; readonly output: string; readonly outputTruncated: boolean }>;
+  readonly results: ReadonlyArray<Extract<ExtensionToWebviewMessage, { type: 'teamAgentToolResult' }>>;
+}
+
+/** A subscribed member run's transcript reader, and the attempt its session file records (`TeamMemberFile.attempt`). */
+export interface MemberTranscriptSource {
+  readonly attempt: number;
+  readonly read: () => MemberTranscript;
+}

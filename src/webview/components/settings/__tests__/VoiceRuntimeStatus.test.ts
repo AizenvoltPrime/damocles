@@ -63,8 +63,8 @@ describe('the voice runtime status row', () => {
   it.each<[VoiceRuntimeStatus, string, string[]]>([
     [{ kind: 'idle' }, 'Not running yet.', ['voice-runtime-start']],
     [{ kind: 'ready' }, 'Running.', []],
-    [{ kind: 'needs-install', message: 'The voice runtime is not installed.', consentRequired: false }, 'The voice runtime is not installed.', ['voice-runtime-install']],
-    [{ kind: 'failed', message: 'pip install failed' }, 'pip install failed', ['voice-runtime-retry']],
+    [{ kind: 'needs-install', message: { message: 'The voice runtime is not installed.' }, consentRequired: false }, 'The voice runtime is not installed.', ['voice-runtime-install']],
+    [{ kind: 'failed', message: { message: 'pip install failed' } }, 'pip install failed', ['voice-runtime-retry']],
     [{ kind: 'cancelled' }, 'Cancelled.', ['voice-runtime-install']],
     [{ kind: 'starting', stage: 'smoke-check', pct: 10, installing: false }, 'Verifying the runtime…', ['voice-runtime-cancel']],
   ])('renders %o', async (status, text, buttons) => {
@@ -82,14 +82,14 @@ describe('the voice runtime status row', () => {
     expect(actions()).toEqual(['voice-runtime-cancel']);
   });
 
-  it.each<VoiceRuntimeStatus>([{ kind: 'not-needed' }, { kind: 'unsupported', message: 'Not on this platform.' }])('is absent for %o', async (status) => {
+  it.each<VoiceRuntimeStatus>([{ kind: 'not-needed' }, { kind: 'unsupported', message: { message: 'Not on this platform.' } }])('is absent for %o', async (status) => {
     await openVoice(status);
     expect(byTestId('settings-row-voice-runtime')).toBeNull();
   });
 
   it.each<[VoiceRuntimeStatus, string, string]>([
-    [{ kind: 'needs-install', message: 'missing', consentRequired: false }, 'voice-runtime-install', 'voiceRuntimeInstall'],
-    [{ kind: 'failed', message: 'broken' }, 'voice-runtime-retry', 'voiceRuntimeInstall'],
+    [{ kind: 'needs-install', message: { message: 'missing' }, consentRequired: false }, 'voice-runtime-install', 'voiceRuntimeInstall'],
+    [{ kind: 'failed', message: { message: 'broken' } }, 'voice-runtime-retry', 'voiceRuntimeInstall'],
     [{ kind: 'starting', stage: 'installing-pip', pct: 80, installing: true }, 'voice-runtime-cancel', 'voiceRuntimeCancel'],
   ])('sends the request of its button for %o', async (status, button, type) => {
     await openVoice(status);
@@ -99,7 +99,7 @@ describe('the voice runtime status row', () => {
   });
 
   it('follows the status the host pushes', async () => {
-    await openVoice({ kind: 'needs-install', message: 'missing', consentRequired: false });
+    await openVoice({ kind: 'needs-install', message: { message: 'missing' }, consentRequired: false });
     useSettingsStore().setVoiceRuntimeStatus({ kind: 'starting', stage: 'extracting-python', pct: 65, installing: true });
     await nextTick();
     expect(statusText()).toBe('Extracting Python… 65%');
@@ -109,7 +109,7 @@ describe('the voice runtime status row', () => {
   });
 
   it('shows the first line of a long failure, the rest under Details, and announces only the first line', async () => {
-    await openVoice({ kind: 'failed', message: 'pip install failed (exit 1):\nCollecting torch\nERROR: No matching distribution' });
+    await openVoice({ kind: 'failed', message: { message: 'pip install failed (exit 1):\nCollecting torch\nERROR: No matching distribution' } });
     expect(statusText()).toBe('pip install failed (exit 1):');
     expect(byTestId('voice-runtime-details')?.querySelector('pre')?.textContent).toBe('Collecting torch\nERROR: No matching distribution');
     expect(byTestId('voice-runtime-announcement')?.textContent?.trim()).toBe('pip install failed (exit 1):');
@@ -126,7 +126,7 @@ describe('the download consent in Settings', () => {
   const consentDialog = (): HTMLElement | null => byTestId('voice-runtime-consent');
 
   it('opens the first-run disclosure from Install while no consent is stored, and installs with consent once accepted', async () => {
-    await openVoice({ kind: 'needs-install', message: 'The voice runtime is not installed.', consentRequired: true });
+    await openVoice({ kind: 'needs-install', message: { message: 'The voice runtime is not installed.' }, consentRequired: true });
     posted.length = 0;
     byTestId('voice-runtime-install')!.click();
     await nextTick();
@@ -139,7 +139,7 @@ describe('the download consent in Settings', () => {
   });
 
   it('sends nothing when the disclosure is cancelled', async () => {
-    await openVoice({ kind: 'needs-install', message: 'missing', consentRequired: true });
+    await openVoice({ kind: 'needs-install', message: { message: 'missing' }, consentRequired: true });
     posted.length = 0;
     byTestId('voice-runtime-install')!.click();
     await nextTick();
@@ -157,14 +157,14 @@ describe('the download consent in Settings', () => {
     store.setVoiceRuntimeStatus({ kind: 'starting', stage: 'smoke-check', pct: 10, installing: false });
     await nextTick();
     expect(consentDialog()).toBeNull();
-    store.setVoiceRuntimeStatus({ kind: 'needs-install', message: 'The voice runtime is not installed.', consentRequired: true });
+    store.setVoiceRuntimeStatus({ kind: 'needs-install', message: { message: 'The voice runtime is not installed.' }, consentRequired: true });
     await nextTick();
     expect(consentDialog()).not.toBeNull();
   });
 
   it('does not open the disclosure for a status the row did not ask for', async () => {
     await openVoice({ kind: 'ready' });
-    useSettingsStore().setVoiceRuntimeStatus({ kind: 'needs-install', message: 'missing', consentRequired: true });
+    useSettingsStore().setVoiceRuntimeStatus({ kind: 'needs-install', message: { message: 'missing' }, consentRequired: true });
     await nextTick();
     expect(consentDialog()).toBeNull();
   });

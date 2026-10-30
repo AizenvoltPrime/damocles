@@ -52,7 +52,7 @@ import {
 } from '../../local-services/desktop-configuration';
 import { terminalsToConfirm } from './kill-confirmation';
 import { MAX_OVERLAY_LABEL_LENGTH } from '../../preload/overlay-channels';
-import { cwdFolderName, newShellNonce, Osc633Stream, parseShellSequence, sanitizeDisplayText, sanitizeTitle } from './shell-integration';
+import { cwdFolderName, holdsRawControl, newShellNonce, Osc633Stream, parseShellSequence, sanitizeDisplayText, sanitizeTitle } from './shell-integration';
 import type { PtyHostProcess } from '../../workspace/host-starters';
 import { NONCE_ENV } from '../../workspace/terminal/shell-integration-injection';
 import type { LiveTerminal, TerminalBackend } from '../../workspace/terminal/terminal-backend';
@@ -361,6 +361,12 @@ export function terminalSettings(settings: SettingsStore): TerminalServiceSettin
 
 function newShellSession(cwd: string): ShellSession {
   return { nonce: newShellNonce(), stream: new Osc633Stream(), integrated: false, commandLine: null, running: null, cwd, processName: null, spawned: false, marks: new Map() };
+}
+
+// The pty host's foreground process name: Linux reports argv[0], which may be a path; macOS the command name.
+function processNameOf(name: string): string | null {
+  const base = path.posix.basename(name);
+  return base === '' ? null : base;
 }
 
 // The shell's own executable name, which a foreground process name equal to it means idle.
@@ -1398,44 +1404,52 @@ export class TerminalService {
     const before = JSON.stringify([this.title(terminal), this.description(terminal), this.running(terminal), shell.integrated]);
     const now = this.deps.now ?? Date.now;
     for (const { offset, fields, index } of parsed.sequences) {
-      const sequence = parseShellSequence(fields, shell.nonce, this.pathStyle(terminal));
-      if (!sequence) continue;
-      shell.integrated = true;
-      const firstEvent = events.length;
-      switch (sequence.type) {
-        case 'promptStart':
-          // a prompt while a command still runs: its D never arrived
-          if (shell.running) events.push({ offset, event: this.finish(terminal, null, now()) });
-          events.push({ offset, event: { kind: 'promptStart' } });
-          break;
-        case 'commandStart':
-          events.push({ offset, event: { kind: 'commandStart' } });
-          break;
-        case 'commandLine':
-          shell.commandLine = sequence.commandLine;
-          break;
-        case 'commandExecuted': {
-          const commandId = terminal.nextCommandId++;
-          const commandLine = shell.commandLine ?? '';
-          shell.commandLine = null;
-          shell.running = { id: commandId, commandLine };
-          terminal.commands.set(commandId, { commandLine, exitCode: null });
-          if (terminal.commands.size > MAX_TRACKED_COMMANDS) terminal.commands.delete(terminal.commands.keys().next().value!);
-          events.push({ offset, event: { kind: 'commandExecuted', commandId, commandLine, time: now() } });
-          terminal.task?.onCommandStart?.();
-          break;
-        }
-        case 'commandFinished':
-          events.push({ offset, event: this.finish(terminal, sequence.exitCode, now()) });
-          break;
-        case 'cwd':
-          shell.cwd = sequence.cwd;
-          break;
-      }
-      if (events.length > firstEvent) this.recordMarks(shell, index, events.slice(firstEvent).map(({ event }) => event));
+      for (const event of this.applyShellSequence(terminal, fields, index, now())) events.push({ offset, event });
     }
     if (terminal.restoring === 0 && (parsed.data.length > 0 || events.length > 0)) this.shell?.data({ id: terminal.id, data: parsed.data, ...(events.length > 0 ? { events } : {}) });
     if (JSON.stringify([this.title(terminal), this.description(terminal), this.running(terminal), shell.integrated]) !== before) this.changed(false);
+  }
+
+  // One sequence's fields from live output or a screen's kept payload: nothing unless it is trusted, else its effect on the
+  // shell's state and its events, which become the marks of its index.
+  private applyShellSequence(terminal: Terminal, fields: readonly string[], index: number, time: number): TerminalShellEvent[] {
+    const { shell } = terminal;
+    const sequence = parseShellSequence(fields, shell.nonce, this.pathStyle(terminal));
+    if (!sequence) return [];
+    shell.integrated = true;
+    const events: TerminalShellEvent[] = [];
+    switch (sequence.type) {
+      case 'promptStart':
+        // a prompt while a command still runs: its D never arrived
+        if (shell.running) events.push(this.finish(terminal, null, time));
+        events.push({ kind: 'promptStart' });
+        break;
+      case 'commandStart':
+        events.push({ kind: 'commandStart' });
+        break;
+      case 'commandLine':
+        shell.commandLine = sequence.commandLine;
+        break;
+      case 'commandExecuted': {
+        const commandId = terminal.nextCommandId++;
+        const commandLine = shell.commandLine ?? '';
+        shell.commandLine = null;
+        shell.running = { id: commandId, commandLine };
+        terminal.commands.set(commandId, { commandLine, exitCode: null });
+        if (terminal.commands.size > MAX_TRACKED_COMMANDS) terminal.commands.delete(terminal.commands.keys().next().value!);
+        events.push({ kind: 'commandExecuted', commandId, commandLine, time });
+        terminal.task?.onCommandStart?.();
+        break;
+      }
+      case 'commandFinished':
+        events.push(this.finish(terminal, sequence.exitCode, time));
+        break;
+      case 'cwd':
+        shell.cwd = sequence.cwd;
+        break;
+    }
+    if (events.length > 0) this.recordMarks(shell, index, events);
+    return events;
   }
 
   private finish(terminal: Terminal, exitCode: number | null, time: number): Extract<TerminalShellEventAt['event'], { kind: 'commandFinished' }> {
@@ -1456,7 +1470,16 @@ export class TerminalService {
   // it replaces the view as a reattach does.
   private restored(terminal: Terminal, message: Extract<HostMessage, { type: 'screen' }>): void {
     const { shell } = terminal;
-    // A reattach or a lag screen holds output main never parsed, so main's count restarts at the screen's, in ground state.
+    // A reattach or a lag screen holds output main never parsed: its kept payloads from main's count on are applied as live
+    // output would apply them, each dated main's now less its age on the host's clock, and main's count restarts at the
+    // screen's, in ground state. A page reload's screen replays none. A screen without `now` is taken as on main's clock.
+    const now = (this.deps.now ?? Date.now)();
+    const hostNow = message.now ?? now;
+    for (const kept of message.shellSequences ?? []) {
+      if (kept.index < shell.stream.next || holdsRawControl(kept.body)) continue;
+      this.applyShellSequence(terminal, kept.body.split(';'), kept.index, now - Math.max(0, hostNow - kept.time));
+    }
+    if (message.processName !== undefined) shell.processName = processNameOf(message.processName);
     if (shell.stream.next !== message.sequences) shell.stream = new Osc633Stream(message.sequences);
     if (terminal.restoring > 0) terminal.restoring--;
     if (terminal.restoring > 0) return;
@@ -1468,7 +1491,7 @@ export class TerminalService {
       rows: message.rows,
       marks: message.marks.flatMap(({ index, line }) => (marks.get(index) ?? []).map((event) => ({ line, event }))),
     });
-    this.publish();
+    this.changed(false);
   }
 
   private post(terminal: Terminal, message: HostRequest): void {
@@ -1510,7 +1533,7 @@ export class TerminalService {
 
   // The host is main's own code: a message outside the contract is a bug, and stopping it marks every terminal exited.
   private receive(host: Host, backend: TerminalBackend, raw: unknown): void {
-    const message = parseHostMessage(raw);
+    const message = parseHostMessage(raw, (field, id) => this.deps.log(`[terminal] dropped the ${field} of ${id}'s screen, which is outside the contract`));
     if (!message) {
       this.deps.log('[terminal] stopping the pty host: it sent a message outside the contract');
       host.process.kill();
@@ -1531,9 +1554,7 @@ export class TerminalService {
         this.restored(terminal, message);
         return;
       case 'process': {
-        // Linux reports argv[0], which may be a path; macOS the command name.
-        const name = path.posix.basename(message.name);
-        const processName = name === '' ? null : name;
+        const processName = processNameOf(message.name);
         if (terminal.shell.processName === processName) return;
         terminal.shell.processName = processName;
         if (!terminal.shell.integrated) this.changed(false);

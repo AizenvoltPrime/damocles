@@ -28,6 +28,8 @@ import type {
   TtsAudioChunkHeader,
 } from "./protocol";
 import { spawnSidecar } from "./spawn";
+import { errorTextOf, l, verbatim } from "../../l10n";
+import type { LocalizedText } from "../../../shared/localized-text";
 import type { SpawnOptions, SpawnResult } from "./spawn";
 
 const DEFAULT_LOCK_DIR = join(homedir(), ".damocles", "voice", "sidecar.lock");
@@ -101,10 +103,10 @@ function readLines(child: LaunchedProcess, stream: OutputStream, onLine: (line: 
 
 export type SidecarManagerStatus =
   | { kind: "stopped" }
-  | { kind: "loading"; message: string }
+  | { kind: "loading"; message: LocalizedText }
   | { kind: "ready"; device: "cuda" | "cpu"; vramMbFree: number; modelsLoaded: string[]; cpuFallbackActive: boolean }
   | { kind: "restarting"; attempt: number }
-  | { kind: "error"; code: ErrorCodeValue | "fatal" | "unsupported-platform"; message: string }
+  | { kind: "error"; code: ErrorCodeValue | "fatal" | "unsupported-platform"; message: LocalizedText }
   | { kind: "cpu-fallback"; reason: CpuFallbackReason };
 
 export type CpuFallbackReason = "no-cuda" | "low-vram" | "user-pref" | "cuda-oom-fallback";
@@ -186,7 +188,7 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
   async start(): Promise<void> {
     if (this.status.kind === "ready" || this.status.kind === "loading") return;
     this.stopping = false;
-    this.setStatus({ kind: "loading", message: "Initializing voice mode..." });
+    this.setStatus({ kind: "loading", message: l("Initializing voice mode...") });
     getVoiceOutputChannel();
 
     const lockDir = this.cfg.lockDir ?? DEFAULT_LOCK_DIR;
@@ -390,7 +392,7 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
       this.setStatus({
         kind: "error",
         code: "fatal",
-        message: `failed to spawn sidecar: ${(err as Error).message}`,
+        message: l("The voice helper process could not start: {0}", errorTextOf(err)),
       });
       throw err;
     }
@@ -406,7 +408,7 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
       this.setStatus({
         kind: "error",
         code: "fatal",
-        message: `sidecar ready timeout: ${(err as Error).message}`,
+        message: l("The voice helper process did not become ready: {0}", errorTextOf(err)),
       });
       await this.stop();
       throw err;
@@ -461,7 +463,7 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
     const tail = this.stderrTail.join("\n");
     for (const { name, re } of FATAL_STDERR_PATTERNS) {
       if (re.test(tail)) {
-        this.setStatus({ kind: "error", code: name, message: tail.split("\n").slice(-3).join(" | ") });
+        this.setStatus({ kind: "error", code: name, message: verbatim(tail.split("\n").slice(-3).join(" | ")) });
         this.emit("error", { code: name, message: tail.split("\n").slice(-3).join(" | "), stderrTail: tail });
         return;
       }
@@ -469,7 +471,7 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
     const now = Date.now();
     this.restartTimestamps = this.restartTimestamps.filter((ts) => now - ts < RESTART_WINDOW_MS);
     if (this.restartTimestamps.length >= RESTART_MAX_ATTEMPTS) {
-      this.setStatus({ kind: "error", code: ErrorCode.CrashLoop, message: "sidecar crashed too often; giving up" });
+      this.setStatus({ kind: "error", code: ErrorCode.CrashLoop, message: l("The voice helper process stopped unexpectedly too many times, so Damocles no longer restarts it.") });
       this.emit("error", {
         code: ErrorCode.CrashLoop,
         message: "sidecar crashed too often; giving up",
@@ -488,9 +490,8 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
     // cpu). Escalate to fatal instead of relooping into another
     // start() that lands back here.
     if (this.cpuFallbackActive) {
-      const message = "CPU-mode sidecar also OOM'd; voice runtime cannot recover.";
-      this.setStatus({ kind: "error", code: ErrorCode.CudaOom, message });
-      this.emit("error", { code: ErrorCode.CudaOom, message, stderrTail: this.stderrTail.join("\n") });
+      this.setStatus({ kind: "error", code: ErrorCode.CudaOom, message: l("The voice helper process ran out of memory on the GPU and then on the CPU too, so voice cannot run.") });
+      this.emit("error", { code: ErrorCode.CudaOom, message: "CPU-mode sidecar also OOM'd; voice runtime cannot recover.", stderrTail: this.stderrTail.join("\n") });
       return;
     }
     this.cpuFallbackActive = true;
@@ -642,7 +643,7 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
     // ready and transitions to kind=ready — without this, the second
     // window's isAlive() stays false forever and any send() from this
     // manager silently drops.
-    this.setStatus({ kind: "loading", message: "Attaching to existing voice sidecar..." });
+    this.setStatus({ kind: "loading", message: l("Attaching to existing voice sidecar...") });
     const deadline = Date.now() + COLD_START_TIMEOUT_MS;
     await this.awaitReadyHandshake(existing.port, existing.token, deadline, { sendInit: false });
   }

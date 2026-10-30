@@ -266,7 +266,7 @@ describe('bindPlanToSession', () => {
 
     await h.bind(files[0]!.id);
 
-    expect(platform.notifications.calls).toEqual([{ level: 'info', message: 'No active session', actions: [] }]);
+    expect(platform.notifications.calls).toEqual([{ level: 'info', message: 'No active session', text: { message: 'No active session' }, actions: [] }]);
     expect(fs.existsSync(path.join(root, 'plans'))).toBe(false);
   });
 });

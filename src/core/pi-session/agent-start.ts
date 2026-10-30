@@ -7,6 +7,7 @@ import type {
 import {
   buildEnvironmentSection,
   buildModelSection,
+  ENVIRONMENT_SECTION,
   EXPLORE_FALLBACK_SECTION,
   MODEL_SECTION,
   SYSTEM_PROMPT_PREAMBLE,
@@ -25,6 +26,7 @@ import { mechanismLabels, SESSION_TEAM_RULE } from './delivery-mechanisms';
 import { isWebSearchEnabled } from './web-access';
 import { CONTEXT_INJECTION_CUSTOM_TYPE, readLiveInjections } from './live-injections';
 import { isCancelNoteDispatch, nextPromptIndex } from './session-store/prompt-index';
+import { earlierModelRuns } from './session-store/model-runs';
 import { estimateTokens } from '../memory/token-estimate';
 import { escapeAttribute } from '../memory/injection/render';
 import { splitIdeContext } from '@shared/ide-context';
@@ -145,6 +147,8 @@ export interface DamoclesSystemPromptInputs {
   /** The tool the skills prose names, or undefined when the session has neither `read` nor `bash` and
    *  pi emits no skills section. Produce it with `resolveSkillFileReadTool`, never by hand. */
   skillFileReadTool: SkillFileReadTool | undefined;
+  /** The models that wrote the chat's replies before its latest switch. Produce it with `earlierModelRuns` from the chat's branch and `env.model`, never by hand. */
+  earlierModels: readonly string[];
 }
 
 /** The Damocles-owned pieces of the system prompt. `preamble` becomes pi's `customPrompt`, which pi
@@ -184,8 +188,8 @@ export function assembleDamoclesSystemPrompt(i: DamoclesSystemPromptInputs): Dam
   const skills = renderSkills(i.skills, i.skillFileReadTool);
   if (skills) sections['skills'] = skills;
   // Kept at the end so the model reads cwd and platform closest to its first tool call.
-  sections['damocles_environment'] = buildEnvironmentSection(i.env);
-  sections[MODEL_SECTION] = buildModelSection(i.env.model);
+  sections[ENVIRONMENT_SECTION] = buildEnvironmentSection(i.env);
+  sections[MODEL_SECTION] = buildModelSection(i.env.model, i.earlierModels);
   if (i.env.thinkingDisabled) sections['damocles_output_form'] = THINKING_OFF_SECTION;
   // Inserted last so it stays the final section of the assembled prompt.
   sections['damocles_tone'] = TONE_REMINDER_SECTION;
@@ -208,10 +212,12 @@ async function buildDamoclesSystemPrompt(
   event: BeforeAgentStartEvent,
   panel: PanelGateContext,
   sessionId: string,
+  sessionManager: Pick<ProjectionReader, 'getBranch'>,
 ): Promise<DamoclesPromptSections> {
   const planMode = panel.isPlanMode();
+  const env = panel.getSystemPromptEnv();
   return assembleDamoclesSystemPrompt({
-    env: panel.getSystemPromptEnv(),
+    env,
     memoryEnabled: !!panel.memoryService?.isEnabled,
     planMode,
     teamEnabled: panel.isTeamEnabled?.() ?? false,
@@ -221,6 +227,7 @@ async function buildDamoclesSystemPrompt(
     contextFiles: event.systemPromptOptions.contextFiles,
     skills: event.systemPromptOptions.skills,
     skillFileReadTool: resolveSkillFileReadTool(event.systemPromptOptions.selectedTools),
+    earlierModels: earlierModelRuns(sessionManager.getBranch(), env.model),
   });
 }
 
@@ -325,7 +332,7 @@ export async function buildAgentStartResult(
   sessionManager: ProjectionReader,
   isLive: () => boolean,
 ): Promise<BeforeAgentStartEventResult | undefined> {
-  const prompt = await buildDamoclesSystemPrompt(event, panel, sessionId);
+  const prompt = await buildDamoclesSystemPrompt(event, panel, sessionId, sessionManager);
   const options = event.systemPromptOptions;
   // Returning `systemPrompt` from this handler would set pi's `forceSystemPrompt` and kill every section.
   options.customPrompt = prompt.preamble;

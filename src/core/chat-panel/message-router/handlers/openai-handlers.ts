@@ -8,7 +8,7 @@ import type { ProviderCredentialActive } from "../../../../shared/settings-secti
 import {
   OPENAI_API_KEY_SECRET,
   OPENAI_API_PROVIDER,
-  OPENAI_PREFER_API_KEY_STATE,
+  OPENAI_CODEX_PROVIDER,
   openaiAuthStatus,
   openaiRuntimeKeyWanted,
   readOpenAIAuthFromDisk,
@@ -22,10 +22,14 @@ import { deviceHost } from "../../device-hosts";
 import type { PanelHost } from "../../../../platform/window-service";
 import { republishAccountInfo } from "./account-info";
 import { log } from "../../../logger";
-import { t } from "../../../l10n";
+import { l } from "../../../l10n";
+import { signInFailure, signInFailureLog } from "./sign-in-failure";
+import { LocalizedError, type LocalizedText } from "../../../../shared/localized-text";
 
 /** Sentinel thrown when the user dismisses the OAuth prompt — a benign cancel, not a failure. */
 const CHATGPT_SIGN_IN_CANCELLED = "__chatgpt_signin_cancelled__";
+// pi's own text when its loopback callback port is taken, read before any provider text (openai-chatgpt.js:202 in pi-ai 1.4.0)
+const PI_PORT_IN_USE = /^Port (\d+) is in use\b/;
 
 const OPENAI_MODELS_PROBE_URL = "https://api.openai.com/v1/models";
 const OPENAI_PROBE_TIMEOUT_MS = 8_000;
@@ -69,6 +73,15 @@ async function probeOpenAIKey(key: string): Promise<ProbeResult> {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/** A failed ChatGPT sign-in as Damocles' own text, pi's busy loopback port, or a fixed message per class, never pi's other text. */
+function chatGPTSignInFailure(err: unknown): { text: LocalizedText; log: string } {
+  if (err instanceof LocalizedError) return { text: err.text, log: err.message };
+  const port = err instanceof Error ? PI_PORT_IN_USE.exec(err.message) : null;
+  if (port) return { text: l("Port {0} is in use, probably by an unfinished sign-in in another app or by the Codex CLI. Cancel that sign-in and try again.", Number(port[1])), log: "port in use" };
+  const failure = signInFailure(err);
+  return { text: failure.message, log: signInFailureLog(err, failure) };
 }
 
 /** The settings panel's view of OpenAI auth: presence and expiry only, never a key or token. */
@@ -143,11 +156,19 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
     }
   }
 
-  /** Called on the mutation paths only. The read-only status queries post `openaiAuthStatusMessage()` direct,
-   *  because a read changes nothing the account state is derived from. */
+  /**
+   * Called on the mutation paths only, once the runtime's own sync set the state they read; the secret or auth.json change
+   * of the write publishes nothing more (`ownAuthFileChange`, and the runtime's key secret check). The read-only status
+   * queries post `openaiAuthStatusMessage()` direct, because a read changes nothing the account state is derived from.
+   */
   async function broadcastAuthStatus(): Promise<void> {
     await deps.broadcastAccountState("the OpenAI auth status", "openai", () => openaiAuthStatusMessage(platform));
     republishAccountInfo(getPanels);
+  }
+
+  /** Runs a change of the `openai` or `openai-codex` entries in auth.json, which this handler publishes after it settled, failed or not. */
+  function ownChange<T>(providers: readonly string[], op: () => Promise<T>): Promise<T> {
+    return runtime().ownAuthFileChange(providers, true, op);
   }
 
   /** The OpenAI account's credential changed, so its rejected-credential card goes. */
@@ -182,7 +203,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
           type: "setOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: false,
-          error: t("API key cannot be empty"),
+          error: l("API key cannot be empty"),
         });
         return;
       }
@@ -194,7 +215,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
           type: "setOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: false,
-          error: t("Key rejected. Verify it on platform.openai.com."),
+          error: l("Key rejected. Verify it on platform.openai.com."),
         });
         return;
       }
@@ -204,7 +225,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
           type: "setOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: false,
-          error: t("Key returned 403. It is likely rate-limited, IP-restricted or region-blocked. Verify it on platform.openai.com."),
+          error: l("Key returned 403. It is likely rate-limited, IP-restricted or region-blocked. Verify it on platform.openai.com."),
         });
         return;
       }
@@ -212,7 +233,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       // A pending sign-in holds the credential chain, so this save would wait for it to end.
       signInAbort?.abort();
       try {
-        await runtime().setOpenAIApiKey(key);
+        await ownChange([OPENAI_API_PROVIDER], () => runtime().setOpenAIApiKey(key));
       } catch (err) {
         log("[OpenAIHandlers] Failed to persist API key: %s", describeAuthError(err));
         await broadcastAuthStatus();
@@ -221,7 +242,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
           type: "setOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: false,
-          error: t("Failed to persist API key"),
+          error: l("Failed to persist API key"),
         });
         return;
       }
@@ -244,7 +265,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
           requestId: msg.requestId,
           ok: true,
           validated: false,
-          warning: t("Couldn't validate the key because of a network error."),
+          warning: l("Couldn't validate the key because of a network error."),
         });
       }
     },
@@ -257,7 +278,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       }
       signInAbort?.abort();
       try {
-        await runtime().clearOpenAIApiKey();
+        await ownChange([OPENAI_API_PROVIDER], () => runtime().clearOpenAIApiKey());
         await broadcastAuthStatus();
         credentialChanged();
         postMessage(ctx.reply, { type: "clearOpenAIApiKeyAck", requestId: msg.requestId, ok: true });
@@ -268,7 +289,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
           type: "clearOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: false,
-          error: t("Failed to clear API key"),
+          error: l("Failed to clear API key"),
         });
       }
     },
@@ -279,10 +300,14 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
 
     setOpenAIPreferApiKey: async (msg, ctx) => {
       if (msg.type !== "setOpenAIPreferApiKey") return;
+      // each device's flag is its own, which its clientAuth carries
+      if (platform.remote) {
+        postMessage(ctx.reply, { type: "setOpenAIPreferApiKeyAck", requestId: msg.requestId, ok: false, error: remoteSignInRefusal() });
+        return;
+      }
       signInAbort?.abort();
       try {
-        await platform.state.global.update(OPENAI_PREFER_API_KEY_STATE, msg.preferApiKey);
-        await runtime().applyOpenAIPreferApiKey();
+        await runtime().setOpenAIPreferApiKey(msg.preferApiKey);
       } catch (err) {
         log("[OpenAIHandlers] Failed to apply the API key preference: %s", describeAuthError(err));
         await broadcastAuthStatus();
@@ -290,7 +315,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
           type: "setOpenAIPreferApiKeyAck",
           requestId: msg.requestId,
           ok: false,
-          error: t("Failed to apply the preference"),
+          error: l("Failed to apply the preference"),
         });
         return;
       }
@@ -320,17 +345,18 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
 
       let signedIn = false;
       try {
-        await runtime().signInChatGPT(buildChatGPTInteraction(abort.signal));
+        await ownChange([OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER], () => runtime().signInChatGPT(buildChatGPTInteraction(abort.signal)));
         signedIn = true;
         toAsker(ctx.reply, { type: "openaiChatGPTAuthCompleted" });
         credentialChanged();
       } catch (err) {
         // pi rethrows a flow abort as its own "Login cancelled", so the signal is checked as well as the sentinel.
         if (abort.signal.aborted || (err instanceof Error && err.message === CHATGPT_SIGN_IN_CANCELLED)) {
-          toAsker(ctx.reply, { type: "openaiChatGPTAuthFailed", error: t("Sign-in cancelled.") });
+          toAsker(ctx.reply, { type: "openaiChatGPTAuthFailed", error: l("Sign-in cancelled.") });
         } else {
-          log("[OpenAIHandlers] ChatGPT sign-in failed: %s", describeAuthError(err));
-          toAsker(ctx.reply, { type: "openaiChatGPTAuthFailed", error: err instanceof Error ? err.message : String(err) });
+          const failure = chatGPTSignInFailure(err);
+          log("[OpenAIHandlers] ChatGPT sign-in failed: %s", failure.log);
+          toAsker(ctx.reply, { type: "openaiChatGPTAuthFailed", error: failure.text });
         }
       } finally {
         signInBusy = false;
@@ -346,7 +372,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       // Abort an in-flight sign-in so a stalled OAuth flow cannot land after the sign-out.
       signInAbort?.abort();
       try {
-        await runtime().signOutChatGPT();
+        await ownChange([OPENAI_API_PROVIDER], () => runtime().signOutChatGPT());
         credentialChanged();
       } catch (err) {
         log("[OpenAIHandlers] ChatGPT sign-out failed: %s", describeAuthError(err));
@@ -359,7 +385,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       // The panel disables this sign-out during a ChatGPT sign-in; one arriving anyway must not queue behind the flow.
       signInAbort?.abort();
       try {
-        await runtime().signOutCodex();
+        await ownChange([OPENAI_CODEX_PROVIDER], () => runtime().signOutCodex());
         credentialChanged();
       } catch (err) {
         log("[OpenAIHandlers] Codex sign-out failed: %s", describeAuthError(err));

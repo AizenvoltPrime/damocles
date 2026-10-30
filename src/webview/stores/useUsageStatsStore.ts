@@ -11,6 +11,7 @@ import {
 } from '@/composables/useStatsRange';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import type { UsageStatsReport } from '@shared/types/usage-stats';
+import type { LocalizedText } from '@shared/localized-text';
 
 export type UsageStatsStatus = 'indexing' | 'loading' | 'ready' | 'error';
 
@@ -32,7 +33,7 @@ export const useUsageStatsStore = defineStore('usageStats', () => {
   const status = ref<UsageStatsStatus>('loading');
   const progress = ref<{ filesDone: number; filesTotal: number } | null>(null);
   const report = ref<UsageStatsReport | null>(null);
-  const error = ref<string | null>(null);
+  const error = ref<LocalizedText | null>(null);
   /** The range the latest request asked for, resolved at the moment it was sent. */
   const activeRange = ref<ResolvedStatsRange | null>(null);
 

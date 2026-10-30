@@ -3,6 +3,7 @@
 // an option. checkout parses --end-of-options as a path before git 2.44, so its revision follows `-q` and precedes `--`.
 import { endOfOptions, revision, type GitResult, type GitVersion } from './git-runner';
 import { GitError } from './errors';
+import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import type { Repository, SlotGit, StashedOutcome, StashMode } from './repository';
 import { remoteArg } from './sync';
 
@@ -74,10 +75,10 @@ export async function hasUnmerged(git: SlotGit): Promise<boolean> {
  * Merge or Rebase Branch. Refused with conflicted as the message while the index has unmerged entries, which git refuses to
  * merge or rebase over, so any found after git ran are its own.
  */
-export function integrate(repo: Repository, command: 'merge' | 'rebase', name: string, mode: () => StashMode, conflicted: string): Promise<StashedOutcome<'ok' | 'conflict'>> {
+export function integrate(repo: Repository, command: 'merge' | 'rebase', name: string, mode: () => StashMode, conflicted: LocalizedText): Promise<StashedOutcome<'ok' | 'conflict'>> {
   const args = [command, ...repo.endOfOptions(), revision(name)];
   return repo.withStash(mode, async (git, slot) => {
-    if (await hasUnmerged(git)) throw new Error(conflicted);
+    if (await hasUnmerged(git)) throw new LocalizedError(conflicted);
     await slot.stash();
     const result = await git(args, { allowFailure: true });
     if (result.exitCode === 0) return 'ok';

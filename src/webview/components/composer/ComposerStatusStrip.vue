@@ -13,6 +13,7 @@ import { useSessionStore, useSettingsStore } from '@/stores';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useContextPercentage } from '@/composables/useContextPercentage';
 import { useCostLabel } from '@/composables/useCostLabel';
+import { formatTokenCount } from '@/composables/useTeamFormatting';
 import { contextWarningBands } from '@/utils/contextBands';
 import { cacheHitPercent } from '@/utils/cacheHitPercent';
 import { agentCacheHitRate, agentUsageUnpriced, promptTokens } from '@shared/usage-accounting';
@@ -80,10 +81,7 @@ const costTooltip = computed(() =>
 );
 
 function formatNumber(num: number): string {
-  if (num >= 1_000_000_000) return `${(num / 1_000_000_000).toFixed(1)}B`;
-  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
-  return num.toString();
+  return formatTokenCount(num, locale.value);
 }
 </script>
 

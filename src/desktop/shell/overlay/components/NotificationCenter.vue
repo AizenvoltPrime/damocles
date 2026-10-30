@@ -69,8 +69,8 @@ function open(entry: NotificationEntry): void {
   emit('answer', { kind: 'notifications', action: 'open', entryId: entry.id });
 }
 
-function answer(entry: NotificationEntry, label: string): void {
-  emit('answer', { kind: 'notifications', action: 'answer', entryId: entry.id, label });
+function answer(entry: NotificationEntry, index: number): void {
+  emit('answer', { kind: 'notifications', action: 'answer', entryId: entry.id, index });
 }
 
 // A notice main keeps until it is answered offers its actions under its row.
@@ -330,7 +330,7 @@ onBeforeUnmount(() => {
                 :class="actionIndex === 0
                   ? [TONE_CLASSES[view.tone].pill, TONE_CLASSES[view.tone].pillText, 'font-semibold hover:brightness-115']
                   : 'border border-(--d-border2) text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text)'"
-                @click="answer(entry, label)"
+                @click="answer(entry, actionIndex)"
               >
                 {{ label }}
               </button>

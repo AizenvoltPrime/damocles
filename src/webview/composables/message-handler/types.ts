@@ -1,6 +1,7 @@
 import type { Ref } from "vue";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "@shared/types/messages";
 import type { UserContentBlock } from "@shared/types/content";
+import type { LocalizedText } from "@shared/localized-text";
 import type { useUIStore } from "@/stores/useUIStore";
 import type { useSettingsStore } from "@/stores/useSettingsStore";
 import type { useSessionStore } from "@/stores/useSessionStore";
@@ -59,7 +60,7 @@ export interface ChatInputExposed {
   appendTranscription: (text: string) => void;
   voiceSetRecording: () => void;
   voiceSetDone: () => void;
-  voiceSetError: (msg: string) => void;
+  voiceSetError: (msg: LocalizedText) => void;
   settleSteer: (requestId: string, delivered: boolean) => void;
   restoreQueued: (blocks: readonly UserContentBlock[]) => void;
   appendPrompt: (text: string) => void;
@@ -81,15 +82,17 @@ export interface HandlerContext {
   bridge: BridgeContext;
 }
 
-export interface ScrollBehavior {
+export interface HandlerOutcome {
   /** The transcript follows its output again, as for another session's transcript. */
   forceScrollToBottom?: boolean;
+  /** Every later message waits until this settles, then is handled in arrival order: a language switch whose catalogs load. */
+  holdUntil?: PromiseLike<unknown>;
 }
 
 export type MessageHandler<T extends ExtensionToWebviewMessage = ExtensionToWebviewMessage> = (
   message: T,
   ctx: HandlerContext
-) => ScrollBehavior | void;
+) => HandlerOutcome | void;
 
 export type HandlerRegistry = {
   [K in ExtensionToWebviewMessage["type"]]?: MessageHandler<Extract<ExtensionToWebviewMessage, { type: K }>>;

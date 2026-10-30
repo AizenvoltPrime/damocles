@@ -25,7 +25,7 @@ export function createSubagentHandlers(): Partial<HandlerRegistry> {
         return;
       }
       const key = msg.status === "not-found" ? "notFound" : msg.status;
-      ctx.stores.streamingStore.addErrorMessage(i18n.global.t(`steerCommand.${key}`));
+      ctx.stores.streamingStore.addViewErrorMessage(i18n.global.t(`steerCommand.${key}`));
     },
 
     subagentStart: (msg, ctx) => {

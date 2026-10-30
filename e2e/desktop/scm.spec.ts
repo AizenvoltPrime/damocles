@@ -541,3 +541,28 @@ test('after Unstage Selected Ranges in the Staged Changes diff, Stage Selected R
   await pressKeys(app, '/shell/', 'S', [PRIMARY, 'alt']);
   await expect.poll(async () => (await recordedToasts(app)).map((toast) => toast.message)).toContain('The selection holds no unstaged changes, so nothing was staged.');
 });
+
+test('a diff tab counts the lines of the diff it shows: an edit on disk and a stage both move the count', async ({ home, launch }) => {
+  const base = ['const a = 1;', 'const b = 2;', 'const c = 3;', 'const d = 4;', 'const e = 5;', 'const f = 6;', 'const g = 7;', 'const h = 8;', ''].join('\n');
+  const file = path.join(home.project, 'app.ts');
+  await initRepo(home, home.project, { 'app.ts': base });
+  fs.writeFileSync(file, base.replace('const b = 2;', 'const b = 20;'));
+  await git(home, home.project, 'add', 'app.ts');
+  fs.writeFileSync(file, base.replace('const b = 2;', 'const b = 20;').replace('const g = 7;', 'const g = 70;'));
+  const { app } = await launch();
+  const shell = await openScmProject(app, home.project);
+  const stats = shell.getByTestId('editor-diff-stats');
+
+  // The Changes diff of a file that is staged too counts against the index, not HEAD.
+  await changeRow(shell, 'workingTree', 'app.ts').click();
+  await expect(diffEditor(shell)).toHaveAttribute('data-monaco-ready', 'true');
+  await expect(stats).toHaveText('+1−1');
+
+  // An agent's write on disk reloads the file side.
+  fs.writeFileSync(file, base.replace('const b = 2;', 'const b = 20;').replace('const g = 7;', 'const g = 70;').replace('const h = 8;', 'const h = 80;\nconst i = 9;'));
+  await expect(stats).toHaveText('+3−2');
+
+  // A stage moves the index side up to the file.
+  await git(home, home.project, 'add', 'app.ts');
+  await expect(stats).toHaveText('+0−0');
+});

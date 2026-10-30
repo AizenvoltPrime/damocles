@@ -44,7 +44,6 @@ function twoDevices() {
     trust: trustAll,
     chatFolders: { folders: () => [], onDidChange: () => ({ dispose: () => undefined }) },
     notifications: undefined,
-    localization: fake.localization,
     log: () => undefined,
     remote: remoteSettings(remote.remote),
   });

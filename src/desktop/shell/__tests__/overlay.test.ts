@@ -681,7 +681,7 @@ describe('toasts', () => {
     expect(api.reportToastArea).toHaveBeenLastCalledWith({ width: 412, height: 132, parts: [] });
 
     await wrapper.findAll('[data-testid="overlay-toast"]')[2]!.get('[data-toast-primary]').trigger('click');
-    expect(api.resolveToast).toHaveBeenCalledWith('t5', 'Retry');
+    expect(api.resolveToast).toHaveBeenCalledWith('t5', 0);
     api.dismissToast('t4');
     // A toast and the pill stay in the DOM while their exit plays.
     await vi.waitFor(() => expect(wrapper.find('[data-testid="overlay-toasts-more"]').exists()).toBe(false));

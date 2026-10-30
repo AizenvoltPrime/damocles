@@ -48,6 +48,16 @@ describe('editor breadcrumbs', () => {
     expect(crumbsOf({ displayPath: 'Untitled-1', kind: 'untitled' })).toEqual({ texts: ['Untitled-1'], current: 'Untitled-1' });
   });
 
+  it('shows a diff\'s line counts only once its editor counted them', () => {
+    const diff: ShellEditorTab = { id: 'd', kind: 'diff', title: 'a.ts', displayPath: 'a.ts', dirty: false, readOnly: false, conflict: false, diff: { originalId: 'o', modifiedId: 'm' } };
+    const counted = mount(Breadcrumbs, { props: { tab: diff, diffStats: { added: 3, removed: 1 } }, global: { plugins: [shellI18n] } });
+    const pending = mount(Breadcrumbs, { props: { tab: diff }, global: { plugins: [shellI18n] } });
+    mounted.push(counted, pending);
+    expect(counted.get('[data-testid="editor-diff-stats"]').findAll('span').map((span) => span.text())).toEqual(['+3', '−1']);
+    expect(counted.get('[data-testid="editor-diff-stats"]').attributes('aria-label')).toBe('3 lines added, 1 removed');
+    expect(pending.find('[data-testid="editor-diff-stats"]').exists()).toBe(false);
+  });
+
   it('gives way by weight: the folders first, the place next, and the file crumb truncates last', () => {
     const crumbs = mountTab({ displayPath: 'C:\\a\\b.ts', readOnly: true }).findAll('[data-crumb]');
     const folders = crumbs[0]!.element.parentElement!;

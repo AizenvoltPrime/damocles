@@ -15,6 +15,7 @@ import { DocumentService, type TextDocument } from '../documents/document-servic
 import { EditorPane, selectionText, settingLine, type BrowserTabSource, type PersistedEditor } from '../editor-pane';
 import type { MessageQuestion } from '../message-dialog';
 import { projectKeyOf } from '../../../shared/project-location';
+import { englishText } from '../../../shared/localized-text';
 
 let root: string;
 let projectDir: string;
@@ -76,6 +77,7 @@ beforeEach(() => {
   loopbackUp = true;
   uploadConflicts = [];
   documents = new DocumentService({
+    render: englishText,
     hostLabel: (authority) => ({ hostId: authority, name: authority }),
     uploadsConflicted: (_authority, conflicted) => void uploadConflicts.push([...conflicted]),
     warn: (message) => warnings.push(message),
@@ -95,7 +97,7 @@ beforeEach(() => {
     log: () => undefined,
     pickSavePath: async () => undefined,
     backups: { changed: () => undefined, writeNow: async () => true, remove: (id) => backupsRemoved.push(id) },
-    settings: { locate: (scope) => (scope === 'user' ? path.join(root, 'settings.json') : undefined), save: async () => ({ ok: false, error: 'unused', conflict: false }) },
+    settings: { locate: (scope) => (scope === 'user' ? path.join(root, 'settings.json') : undefined), save: async () => ({ ok: false, error: { message: 'unused' }, conflict: false }) },
   });
   pane = new EditorPane({
     authorityOs: (authority) => (authority === 'loopback' ? hostOs : process.platform),
@@ -1269,7 +1271,7 @@ describe('offline saves of a remote file', () => {
       base: 'one\ntwo\n',
       current: 'one\ntheirs\n',
       incoming: 'one\nmine\n',
-      labels: { current: { title: 'Current', detail: 'loopback' }, incoming: { title: 'Incoming', detail: 'Saved on this computer' }, base: { title: 'Base' } },
+      labels: { current: { title: 'Current', detail: 'loopback', marker: 'loopback' }, incoming: { title: 'Incoming', detail: 'Saved on this computer', marker: 'Saved on this computer' }, base: { title: 'Base', marker: 'Base' } },
       operation: 'merge',
     });
     pane.focusUploadMerge({ projectKey: remote.key, relativePath: 'src/a.ts' });

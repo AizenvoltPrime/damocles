@@ -28,6 +28,7 @@ vi.mock("../../../../pi-session/checkpoints/exec", () => ({ exec: execMock }));
 import { installFakePlatform, type FakePlatform } from "../../../../../__mocks__/fake-platform";
 import { McpManager } from "../mcp-manager";
 import { folderTarget } from "./mcp-folder-fixtures";
+import { englishText } from "../../../../../shared/localized-text";
 
 const WS = folderTarget(fakeWorkspace);
 const USER_PI = () => path.join(fakeHome, ".pi", "agent", "mcp.json");
@@ -184,7 +185,7 @@ describe("pi's path rules for pi-format entries", () => {
     const rows = Object.fromEntries(manager.getServersForUI(WS.key).map((s) => [s.name, s]));
     for (const name of ["braces", "powershell"]) {
       expect(rows[name]).toMatchObject({ status: "failed", errorInfo: { code: "invalidConfig" } });
-      expect(rows[name]?.error).toMatch(/^cwd /);
+      expect(englishText(rows[name]!.error!)).toMatch(/^cwd /);
     }
     const servers = manager.getEnabledServers(WS.key);
     expect(servers.folder).toEqual({});
@@ -205,7 +206,7 @@ describe("error rows", () => {
     const rows = Object.fromEntries(manager.getServersForUI(WS.key).map((s) => [s.name, s]));
 
     expect(rows["legacy"]).toMatchObject({ status: "failed", errorInfo: { code: "sseUnsupported" } });
-    expect(rows["legacy"]?.error).toBe("legacy SSE transport is not supported; use the server's streamable HTTP URL");
+    expect(rows["legacy"]?.error).toEqual({ message: "{0}", args: ["legacy SSE transport is not supported; use the server's streamable HTTP URL"] });
     expect(rows["provider"]).toMatchObject({ status: "failed", errorInfo: { code: "authProviderUnsupported" } });
     expect(rows["broken"]).toMatchObject({ status: "failed", errorInfo: { code: "invalidConfig" } });
     expect(manager.getEnabledServers(WS.key).userUnion).toEqual({});

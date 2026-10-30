@@ -206,7 +206,7 @@ describe('renamed-tool rule migration', () => {
     await settled();
     expect(rules(files.local)).toEqual([NEW]);
     expect(rules(files.project)).toEqual([OLD]);
-    expect(posted).toEqual([[{ path: files.project, displayPath: files.project, rules: [{ old: OLD, new: NEW }] }]]);
+    expect(posted).toEqual([[{ path: files.project, displayPath: { message: '{0}', args: [files.project] }, rules: [{ old: OLD, new: NEW }] }]]);
   });
 
   it('retries a run that failed instead of treating its inputs as done', async () => {
@@ -244,7 +244,7 @@ describe('renamed-tool rule migration', () => {
     folder.registerRuleNoticePoster('sess-b', (notices) => posted['b']!.push(notices));
     await settled();
 
-    const expected = [[{ path: files.project, displayPath: files.project, rules: [{ old: OLD, new: NEW }] }]];
+    const expected = [[{ path: files.project, displayPath: { message: '{0}', args: [files.project] }, rules: [{ old: OLD, new: NEW }] }]];
     expect(posted).toEqual({ a: expected, b: expected });
   });
 
@@ -256,8 +256,8 @@ describe('renamed-tool rule migration', () => {
     const second = createFakePlatform();
     const home = path.join(os.tmpdir(), 'home');
     const folderA = path.join(os.tmpdir(), 'ws-a');
-    const homeFile = { path: path.join(home, '.damocles', 'hooks.json'), displayPath: '' };
-    const folderFile = { path: path.join(folderA, '.damocles', 'settings.json'), displayPath: '' };
+    const homeFile = { path: path.join(home, '.damocles', 'hooks.json'), displayPath: { message: '' } };
+    const folderFile = { path: path.join(folderA, '.damocles', 'settings.json'), displayPath: { message: '' } };
     await renamedRuleNoticeMemory(first.state, folderA).add(homeFile, [everywhere, thisFolder]);
     await renamedRuleNoticeMemory(first.state, folderA).add(folderFile, [everywhere]);
 
@@ -273,8 +273,8 @@ describe('renamed-tool rule migration', () => {
   it('remembers a workspace setting\u2019s notice per workspace, and a user setting\u2019s by its replacement, wherever the process runs', async () => {
     const first = createFakePlatform();
     const second = createFakePlatform();
-    const workspaceSetting = { setting: 'damocles.tools.disabled', displayPath: '' };
-    const userSetting = { setting: 'damocles.tools.disabled', scope: 'user' as const, displayPath: '' };
+    const workspaceSetting = { setting: 'damocles.tools.disabled', displayPath: { message: '' } };
+    const userSetting = { setting: 'damocles.tools.disabled', scope: 'user' as const, displayPath: { message: '' } };
     const folderA = path.join(os.tmpdir(), 'ws-a');
     const cwd = vi.spyOn(process, 'cwd').mockReturnValue(path.join(os.tmpdir(), 'elsewhere'));
     try {

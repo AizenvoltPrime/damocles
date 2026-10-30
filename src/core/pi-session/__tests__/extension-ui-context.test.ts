@@ -50,7 +50,7 @@ describe('WebviewExtensionUIContext (US-026)', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const ui = new WebviewExtensionUIContext((m) => out.push(m), () => 'SID');
     ui.notify('hello', 'warning');
-    expect(out[0]).toEqual({ type: 'notification', message: 'hello', notificationType: 'warning' });
+    expect(out[0]).toEqual({ type: 'notification', message: { message: '{0}', args: ['hello'] }, notificationType: 'warning' });
   });
 
   it('a panel dialog carries NO attribution keys (omitted, never undefined)', () => {

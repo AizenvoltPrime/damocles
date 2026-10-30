@@ -75,11 +75,16 @@ describe('core\'s ScmService as main reads it', () => {
     const { core, client } = connected();
     const scm = createScmClient({ core: (_authority, _label, work) => work(client), gitVersion: undefined, log: quiet });
     scm.attach(client);
-    core.serve('scm.commit', async ({ branchName }) => ({ ok: true, asked: await core.request('scm.branchName', { token: branchName! }) }));
+    let asked: string | undefined;
+    core.serve('scm.commit', async ({ branchName }) => {
+      asked = await core.request('scm.branchName', { token: branchName! });
+      return { ok: true } as const;
+    });
     core.serve('scm.commitBlob', () => new Uint8Array([104, 105]));
     core.serve('scm.ignoredIn', () => ['dist', 'node_modules']);
     const outcome = await scm.commit('repo-1', 'msg', { scope: 'auto', amend: false, signoff: false, noVerify: false, empty: false }, { saved: [], branchName: async () => 'feature/x' });
-    expect(outcome).toEqual({ ok: true, asked: 'feature/x' });
+    expect(outcome).toEqual({ ok: true });
+    expect(asked).toBe('feature/x');
     const blob = await scm.commitBlob('repo-1', 'a'.repeat(40), 'a.ts');
     expect(Buffer.isBuffer(blob)).toBe(true);
     expect((blob as Buffer).toString('utf8')).toBe('hi');

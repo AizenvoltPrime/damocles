@@ -160,6 +160,8 @@ interface PanelViewsDeps {
   // the root holding dist/webview and resources, which a chat page loads its bundle and logo from
   readonly resourceRoot: string;
   readonly pageStrings: () => PageStrings;
+  // this device's language, the one its views get in languageChange, so a chat page first renders in it
+  readonly language: () => string;
   // the host of a remote chat's authority as this computer's host store names it, never as its core does; undefined for a local chat
   readonly hostLabel: (authority: string) => PanelHostLabel | undefined;
   // a remote chat page's banner asked to reconnect, sign in, show the log or edit its own host
@@ -717,6 +719,7 @@ export class PanelViews {
     const themeCss = currentTheme().css;
     if (panel.kind === 'chat' && page.kind === 'chat') {
       return chatPageHtml({
+        lang: this.deps.language(),
         cspSource: APP_ORIGIN,
         workerSrc: CHAT_WORKER_SRC,
         nonce: randomBytes(16).toString('base64'),

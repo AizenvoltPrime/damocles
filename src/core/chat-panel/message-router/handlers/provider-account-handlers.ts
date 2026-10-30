@@ -6,19 +6,17 @@ import type { ProviderSignInError, ProviderSignInState } from "../../../../share
 import { isKeyProviderId, isSignInProviderId, SIGN_IN_PROVIDER_IDS, type AccountProviderId, type SignInProviderId } from "../../../../shared/settings-sections";
 import { PiRuntime, remoteSignInRefusal } from "../../../pi-session/pi-runtime";
 import { providerSignInDef } from "../../../pi-session/custom-providers";
-import { httpStatusOf } from "../../../pi-session/http-status";
+import { signInFailure, signInFailureLog } from "./sign-in-failure";
 import { deleteProviderKey, storeProviderKey } from "../../settings-manager/managers/provider-keys";
 import { buildAuthInteraction } from "./auth-interaction";
-import { republishAccountInfo } from "./account-info";
 import { log } from "../../../logger";
-import { t } from "../../../l10n";
+import { l } from "../../../l10n";
 
 /** Thrown when a flow is aborted while a prompt waits; a cancel, not a failure. */
 const SIGN_IN_CANCELLED = "__provider_signin_cancelled__";
 const MAX_ANSWER_BYTES = 8 * 1024;
 const MAX_HOSTNAME_CHARS = 253;
 const HOSTNAME = /^(?!-)[a-z0-9-]{1,63}(?<!-)(?:\.(?!-)[a-z0-9-]{1,63}(?<!-))*$/i;
-const NETWORK_ERROR_CODES: ReadonlySet<unknown> = new Set(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENETUNREACH", "EHOSTUNREACH"]);
 
 type AnswerKind = "enterpriseDomain" | "code";
 
@@ -39,35 +37,9 @@ export interface ProviderAccountHandlers {
   postState: (host: PanelHost) => void;
 }
 
-// pi's own phrases, matched only at the start of its text before any punctuation, so a provider body quoted after
-// pi's ": " or "(" never classifies (device-code.js:2-3, xai.js:149,152, kimi-coding.js:160,163, meta.js:119,121 in pi-ai 1.4.0).
-const PI_EXPIRED = /^(?:Device flow timed out\b|[\w ]*\bdevice (?:code|authorization) expired\b)/;
-const PI_DENIED = /^[\w ]*\b(?:authorization|login) was denied\b/;
-// "(HTTP 400)" (xai.js:81, openrouter.js:91), "(status 400)" (kimi-coding.js:167, meta.js:147), "with status 400" (kimi-coding.js:62, meta.js:73).
-const PI_STATUS = /^[\w ]*?(?:\((?:HTTP|status) (\d{3})\)|\bwith status (\d{3})\b)/;
-
-/** The HTTP status pi's text names before any provider body: Copilot's leading "404 Not Found: …" (github-copilot.js:150) or one of pi's own forms. */
-function signInHttpStatus(message: string): number | undefined {
-  // only the leading form: httpStatusOf's "(404):" form could find a status inside a body
-  if (/^\d{3} /.test(message)) return httpStatusOf(message);
-  const own = PI_STATUS.exec(message);
-  return own ? Number(own[1] ?? own[2]) : undefined;
-}
-
-/** A fixed message per failure class: pi's error text for these flows can carry an OAuth response, so it is never shown or logged. */
 function signInError(err: unknown, cancelled: boolean): ProviderSignInError {
-  if (cancelled || (err instanceof Error && err.message === SIGN_IN_CANCELLED)) return { kind: "cancelled", message: t("Sign-in cancelled.") };
-  if (!(err instanceof Error)) return { kind: "provider", message: t("The provider could not complete the sign-in.") };
-  if (PI_EXPIRED.test(err.message)) return { kind: "expired", message: t("Code expired. Start the sign-in again.") };
-  if (PI_DENIED.test(err.message)) return { kind: "denied", message: t("The sign-in was denied.") };
-  const code = (err.cause as { code?: unknown } | undefined)?.code;
-  if (err.name === "TimeoutError" || (err.name === "TypeError" && err.message === "fetch failed") || NETWORK_ERROR_CODES.has(code)) {
-    return { kind: "network", message: t("Could not reach the sign-in service. Check the connection and try again.") };
-  }
-  const httpStatus = signInHttpStatus(err.message);
-  return httpStatus === undefined
-    ? { kind: "provider", message: t("The provider could not complete the sign-in.") }
-    : { kind: "provider", message: t("The provider could not complete the sign-in (HTTP {0}).", httpStatus), status: httpStatus };
+  if (cancelled || (err instanceof Error && err.message === SIGN_IN_CANCELLED)) return { kind: "cancelled", message: l("Sign-in cancelled.") };
+  return signInFailure(err);
 }
 
 function isHttpsUrl(url: string | undefined): url is string {
@@ -102,7 +74,10 @@ export function createProviderAccountHandlers(deps: HandlerDependencies): Provid
     broadcast({ type: "providerSignInState", provider, state });
   }
 
-  /** A credential change succeeded, so an error an earlier flow or sign-out left no longer describes the provider. */
+  /**
+   * A credential change succeeded, so an error an earlier flow or sign-out left no longer describes the provider. The account
+   * state and judge status are the key sync's to publish, which the secret change or the sign-in or sign-out ran.
+   */
   function credentialChanged(account: AccountProviderId): void {
     if (isSignInProviderId(account)) {
       const previous = settled.get(account);
@@ -110,7 +85,6 @@ export function createProviderAccountHandlers(deps: HandlerDependencies): Provid
       if (previous?.phase === "idle" && previous.error) broadcast({ type: "providerSignInState", provider: account, state: { phase: "idle" } });
     }
     broadcast({ type: "authFailureCleared", account });
-    republishAccountInfo(getPanels);
   }
 
   /** Waits for the user's answer to a prompt; rejects as `buildAuthInteraction` does: the sentinel on a flow abort, the prompt signal's reason when pi withdraws it. */
@@ -179,8 +153,7 @@ export function createProviderAccountHandlers(deps: HandlerDependencies): Provid
       credentialChanged(provider);
     } catch (err) {
       const error = signInError(err, flow.abort.signal.aborted);
-      const name = err instanceof Error ? err.name : typeof err;
-      log("[ProviderSignIn:%s] sign-in ended: %s (%s)%s", provider, error.kind, name, error.status !== undefined ? ` (HTTP ${error.status})` : "");
+      log("[ProviderSignIn:%s] sign-in ended: %s", provider, signInFailureLog(err, error));
       settle(provider, flow, { phase: "idle", error });
     }
   }
@@ -294,7 +267,7 @@ export function createProviderAccountHandlers(deps: HandlerDependencies): Provid
         credentialChanged(provider);
       } catch (err) {
         log("[ProviderSignIn:%s] sign-out failed: %s", provider, err instanceof Error ? err.name : typeof err);
-        const state: ProviderSignInState = { phase: "idle", error: { kind: "provider", message: t("Could not sign out. Try again.") } };
+        const state: ProviderSignInState = { phase: "idle", error: { kind: "provider", message: l("Could not sign out. Try again.") } };
         settled.set(provider, state);
         broadcast({ type: "providerSignInState", provider, state });
       }
@@ -312,7 +285,7 @@ export function createProviderAccountHandlers(deps: HandlerDependencies): Provid
       }
       const key = msg.key.trim();
       if (!key) {
-        postMessage(ctx.reply, { type: "setProviderApiKeyAck", provider, requestId, ok: false, error: t("API key cannot be empty") });
+        postMessage(ctx.reply, { type: "setProviderApiKeyAck", provider, requestId, ok: false, error: l("API key cannot be empty") });
         return;
       }
       await abortFlow(provider);
@@ -322,7 +295,7 @@ export function createProviderAccountHandlers(deps: HandlerDependencies): Provid
       } catch (err) {
         log("[ProviderAccounts] Failed to store the %s key:", provider, err);
         // The store's error text is not localized and can name a keyring path, so only the log carries it.
-        postMessage(ctx.reply, { type: "setProviderApiKeyAck", provider, requestId, ok: false, error: t("Failed to store API key") });
+        postMessage(ctx.reply, { type: "setProviderApiKeyAck", provider, requestId, ok: false, error: l("Failed to store API key") });
         return;
       }
       credentialChanged(provider);
@@ -342,7 +315,7 @@ export function createProviderAccountHandlers(deps: HandlerDependencies): Provid
         postMessage(ctx.reply, { type: "clearProviderApiKeyAck", provider, requestId, ok: true });
       } catch (err) {
         log("[ProviderAccounts] Failed to clear the %s key:", provider, err);
-        postMessage(ctx.reply, { type: "clearProviderApiKeyAck", provider, requestId, ok: false, error: t("Failed to clear API key") });
+        postMessage(ctx.reply, { type: "clearProviderApiKeyAck", provider, requestId, ok: false, error: l("Failed to clear API key") });
         return;
       }
       credentialChanged(provider);

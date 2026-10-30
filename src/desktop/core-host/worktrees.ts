@@ -5,6 +5,8 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { DAMOCLES_HOME_DIR } from '../../core/paths';
+import { l } from '../../core/l10n';
+import { LocalizedError } from '../../shared/localized-text';
 import { SCM_SETTING_KEYS } from '../../core/scm/settings-keys';
 import type { GitRunner } from '../../core/scm/git-runner';
 import { folderKey } from '../../core/workspace-folders/folder-key';
@@ -118,12 +120,12 @@ export function worktreeCalls(deps: WorktreeCallDeps): WorktreeCalls {
   const { registry, holds, log } = deps;
   const requireGit = (): GitRunner => {
     const git = deps.git();
-    if (!git) throw new Error('Git was not found, so the worktree action cannot run.');
+    if (!git) throw new LocalizedError(l('Git was not found, so the worktree action cannot run.'));
     return git;
   };
   const liveChat = (worktreeId: string): ChatWorktreeRecord => {
     const record = registry.get(worktreeId);
-    if (record?.kind !== 'chat' || record.deletedAt !== undefined) throw new Error('This worktree no longer exists.');
+    if (record?.kind !== 'chat' || record.deletedAt !== undefined) throw new LocalizedError(l('This worktree no longer exists.'));
     return record;
   };
   // a finish action runs only while this core holds its worktree's chats (D33)

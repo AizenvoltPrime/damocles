@@ -455,7 +455,7 @@ describe('errors', () => {
     const wrapper = await openOverlay();
     await wrapper.get('[data-audit-start]').trigger('click');
 
-    await deliver({ type: 'memoryError', source: 'audit', code: 'busy', message: 'A quality audit is already running in this or another window.' });
+    await deliver({ type: 'memoryError', source: 'audit', code: 'busy', message: { message: 'A quality audit is already running in this or another window.' } });
 
     expect(wrapper.get('[data-audit-error]').text()).toBe(i18n.global.t('memoryAudit.error.busy'));
     expect(toasts).toEqual([]);
@@ -466,7 +466,7 @@ describe('errors', () => {
     const wrapper = await openOverlay();
     i18n.global.locale.value = 'el';
     try {
-      await deliver({ type: 'memoryError', source: 'audit', code: 'no-model', message: 'No model with a configured credential' });
+      await deliver({ type: 'memoryError', source: 'audit', code: 'no-model', message: { message: 'No model with a configured credential' } });
       expect(wrapper.get('[data-audit-error]').text()).toBe(i18n.global.t('memoryAudit.error.no-model'));
       expect(wrapper.get('[data-audit-error]').text()).not.toContain('No model');
       expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('No model with a configured credential'));
@@ -479,22 +479,22 @@ describe('errors', () => {
     const wrapper = await openOverlay(null);
     expect(wrapper.find('[data-audit-loading]').exists()).toBe(true);
 
-    await deliver({ type: 'memoryError', source: 'audit', code: 'unavailable', message: 'Memory system is not available' });
+    await deliver({ type: 'memoryError', source: 'audit', code: 'unavailable', message: { message: 'Memory system is not available' } });
 
     expect(wrapper.find('[data-audit-loading]').exists()).toBe(false);
     expect(wrapper.get('[data-audit-error]').text()).toBe(i18n.global.t('memoryAudit.error.unavailable'));
   });
 
   it('toasts an error while the overlay is closed only when it answers a pending action or ends a run', async () => {
-    await deliver({ type: 'memoryError', source: 'audit', code: 'unavailable', message: 'Memory system is not available' });
+    await deliver({ type: 'memoryError', source: 'audit', code: 'unavailable', message: { message: 'Memory system is not available' } });
     expect(toasts).toEqual([]);
     expect(useMemoryAuditStore().error).toBeNull();
 
-    await deliver({ type: 'memoryError', source: 'audit', code: 'all-failed', message: 'every call failed' });
+    await deliver({ type: 'memoryError', source: 'audit', code: 'all-failed', message: { message: 'every call failed' } });
     expect(toasts).toEqual([i18n.global.t('memoryAudit.error.all-failed')]);
 
     useMemoryAuditStore().start();
-    await deliver({ type: 'memoryError', source: 'audit', code: 'no-model', message: 'no model' });
+    await deliver({ type: 'memoryError', source: 'audit', code: 'no-model', message: { message: 'no model' } });
     expect(toasts.at(-1)).toBe(i18n.global.t('memoryAudit.error.no-model'));
     expect(useMemoryAuditStore().pendingAction).toBeNull();
   });

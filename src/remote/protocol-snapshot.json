@@ -69,7 +69,24 @@
   "panels.binaryAudience",
   "chat.queuedPartsReturn",
   "control.listOwnRuns",
-  "files.watchReady"
+  "files.watchReady",
+  "terminals.screenShellState",
+  "history.nestedLive",
+  "chat.sendRefusalReturned",
+  "chat.turnElapsed",
+  "clients.windowState",
+  "l10n.localizedText",
+  "clients.language",
+  "l10n.parsedText",
+  "notices.answerIndex",
+  "scm.commitFailureText",
+  "scm.mergeMarkers",
+  "files.notAFile",
+  "chat.worktreeStateText",
+  "chat.queueRefusalCause",
+  "terminals.screenHostClock",
+  "core.attachClientStateRemoved",
+  "account.signInInputError"
  ],
  "contracts": {
   "CoreRequests": {
@@ -242,12 +259,70 @@
           "actions": {
            "optional": false,
            "type": {
-            "array": "string"
+            "array": {
+             "object": {
+              "args": {
+               "optional": true,
+               "type": {
+                "array": {
+                 "union": [
+                  "number",
+                  "string",
+                  {
+                   "object": {
+                    "number": {
+                     "optional": false,
+                     "type": "number"
+                    }
+                   }
+                  },
+                  {
+                   "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                  }
+                 ]
+                }
+               }
+              },
+              "message": {
+               "optional": false,
+               "type": "string"
+              }
+             }
+            }
            }
           },
           "cancelLabel": {
            "optional": true,
-           "type": "string"
+           "type": {
+            "object": {
+             "args": {
+              "optional": true,
+              "type": {
+               "array": {
+                "union": [
+                 "number",
+                 "string",
+                 {
+                  "object": {
+                   "number": {
+                    "optional": false,
+                    "type": "number"
+                   }
+                  }
+                 },
+                 {
+                  "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                 }
+                ]
+               }
+              }
+             },
+             "message": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
           },
           "defaultAction": {
            "optional": true,
@@ -255,11 +330,69 @@
           },
           "detail": {
            "optional": true,
-           "type": "string"
+           "type": {
+            "object": {
+             "args": {
+              "optional": true,
+              "type": {
+               "array": {
+                "union": [
+                 "number",
+                 "string",
+                 {
+                  "object": {
+                   "number": {
+                    "optional": false,
+                    "type": "number"
+                   }
+                  }
+                 },
+                 {
+                  "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                 }
+                ]
+               }
+              }
+             },
+             "message": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
           },
           "message": {
            "optional": false,
-           "type": "string"
+           "type": {
+            "object": {
+             "args": {
+              "optional": true,
+              "type": {
+               "array": {
+                "union": [
+                 "number",
+                 "string",
+                 {
+                  "object": {
+                   "number": {
+                    "optional": false,
+                    "type": "number"
+                   }
+                  }
+                 },
+                 {
+                  "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                 }
+                ]
+               }
+              }
+             },
+             "message": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
           },
           "preview": {
            "optional": true,
@@ -320,7 +453,36 @@
           },
           "title": {
            "optional": true,
-           "type": "string"
+           "type": {
+            "object": {
+             "args": {
+              "optional": true,
+              "type": {
+               "array": {
+                "union": [
+                 "number",
+                 "string",
+                 {
+                  "object": {
+                   "number": {
+                    "optional": false,
+                    "type": "number"
+                   }
+                  }
+                 },
+                 {
+                  "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                 }
+                ]
+               }
+              }
+             },
+             "message": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
           }
          }
         }
@@ -347,7 +509,36 @@
          "object": {
           "buttonLabel": {
            "optional": true,
-           "type": "string"
+           "type": {
+            "object": {
+             "args": {
+              "optional": true,
+              "type": {
+               "array": {
+                "union": [
+                 "number",
+                 "string",
+                 {
+                  "object": {
+                   "number": {
+                    "optional": false,
+                    "type": "number"
+                   }
+                  }
+                 },
+                 {
+                  "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                 }
+                ]
+               }
+              }
+             },
+             "message": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
           },
           "defaultPath": {
            "optional": true,
@@ -355,7 +546,36 @@
           },
           "title": {
            "optional": true,
-           "type": "string"
+           "type": {
+            "object": {
+             "args": {
+              "optional": true,
+              "type": {
+               "array": {
+                "union": [
+                 "number",
+                 "string",
+                 {
+                  "object": {
+                   "number": {
+                    "optional": false,
+                    "type": "number"
+                   }
+                  }
+                 },
+                 {
+                  "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                 }
+                ]
+               }
+              }
+             },
+             "message": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
           }
          }
         }
@@ -721,7 +941,36 @@
           },
           "titleTemplate": {
            "optional": false,
-           "type": "string"
+           "type": {
+            "object": {
+             "args": {
+              "optional": true,
+              "type": {
+               "array": {
+                "union": [
+                 "number",
+                 "string",
+                 {
+                  "object": {
+                   "number": {
+                    "optional": false,
+                    "type": "number"
+                   }
+                  }
+                 },
+                 {
+                  "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                 }
+                ]
+               }
+              }
+             },
+             "message": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
           }
          }
         }
@@ -846,12 +1095,70 @@
           "actions": {
            "optional": false,
            "type": {
-            "array": "string"
+            "array": {
+             "object": {
+              "args": {
+               "optional": true,
+               "type": {
+                "array": {
+                 "union": [
+                  "number",
+                  "string",
+                  {
+                   "object": {
+                    "number": {
+                     "optional": false,
+                     "type": "number"
+                    }
+                   }
+                  },
+                  {
+                   "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                  }
+                 ]
+                }
+               }
+              },
+              "message": {
+               "optional": false,
+               "type": "string"
+              }
+             }
+            }
            }
           },
           "message": {
            "optional": false,
-           "type": "string"
+           "type": {
+            "object": {
+             "args": {
+              "optional": true,
+              "type": {
+               "array": {
+                "union": [
+                 "number",
+                 "string",
+                 {
+                  "object": {
+                   "number": {
+                    "optional": false,
+                    "type": "number"
+                   }
+                  }
+                 },
+                 {
+                  "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                 }
+                ]
+               }
+              }
+             },
+             "message": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
           },
           "modal": {
            "optional": true,
@@ -874,7 +1181,7 @@
         "optional": false,
         "type": {
          "union": [
-          "string",
+          "number",
           "undefined"
          ]
         }
@@ -1593,7 +1900,85 @@
        },
        "result": {
         "optional": false,
-        "type": "unknown"
+        "type": {
+         "union": [
+          {
+           "object": {
+            "message": {
+             "optional": false,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"failed\"",
+               "\"invalid\""
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"leased\"",
+               "\"missing\""
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "true"
+            }
+           }
+          }
+         ]
+        }
        }
       }
      }
@@ -1647,7 +2032,85 @@
        },
        "result": {
         "optional": false,
-        "type": "unknown"
+        "type": {
+         "union": [
+          {
+           "object": {
+            "message": {
+             "optional": false,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"failed\"",
+               "\"invalid\""
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"leased\"",
+               "\"missing\""
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "true"
+            }
+           }
+          }
+         ]
+        }
        }
       }
      }
@@ -1706,7 +2169,85 @@
        },
        "result": {
         "optional": false,
-        "type": "unknown"
+        "type": {
+         "union": [
+          {
+           "object": {
+            "message": {
+             "optional": false,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"failed\"",
+               "\"invalid\""
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"leased\"",
+               "\"missing\""
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "true"
+            }
+           }
+          }
+         ]
+        }
        }
       }
      }
@@ -3118,7 +3659,83 @@
        },
        "result": {
         "optional": false,
-        "type": "unknown"
+        "type": {
+         "union": [
+          {
+           "object": {
+            "error": {
+             "optional": false,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": "\"failed\""
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"cancelled\"",
+               "\"emptyMessage\"",
+               "\"missingUserConfig\"",
+               "\"nothingToCommit\"",
+               "\"unresolvedConflicts\""
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "true"
+            }
+           }
+          }
+         ]
+        }
        }
       }
      }
@@ -3910,7 +4527,36 @@
               },
               "summary": {
                "optional": true,
-               "type": "string"
+               "type": {
+                "object": {
+                 "args": {
+                  "optional": true,
+                  "type": {
+                   "array": {
+                    "union": [
+                     "number",
+                     "string",
+                     {
+                      "object": {
+                       "number": {
+                        "optional": false,
+                        "type": "number"
+                       }
+                      }
+                     },
+                     {
+                      "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                     }
+                    ]
+                   }
+                  }
+                 },
+                 "message": {
+                  "optional": false,
+                  "type": "string"
+                 }
+                }
+               }
               }
              }
             }
@@ -3999,7 +4645,129 @@
       "object": {
        "outcome": {
         "optional": false,
-        "type": "unknown"
+        "type": {
+         "variants": "kind",
+         "of": {
+          "\"budget\"": {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": "\"budget\""
+            }
+           }
+          },
+          "\"cancelled\"": {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": "\"cancelled\""
+            }
+           }
+          },
+          "\"completed\"": {
+           "object": {
+            "durationMs": {
+             "optional": true,
+             "type": "number"
+            },
+            "kind": {
+             "optional": false,
+             "type": "\"completed\""
+            }
+           }
+          },
+          "\"error\"": {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": "\"error\""
+            },
+            "message": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            }
+           }
+          },
+          "\"rateLimit\"": {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": "\"rateLimit\""
+            },
+            "resetsAt": {
+             "optional": true,
+             "type": "number"
+            },
+            "windowId": {
+             "optional": true,
+             "type": "string"
+            },
+            "windowLabel": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
        },
        "panelId": {
         "optional": false,
@@ -4014,7 +4782,77 @@
       "object": {
        "crossing": {
         "optional": false,
-        "type": "unknown"
+        "type": {
+         "object": {
+          "planName": {
+           "optional": true,
+           "type": "string"
+          },
+          "provider": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"anthropic\"",
+             "\"openai\""
+            ]
+           }
+          },
+          "resetsAt": {
+           "optional": true,
+           "type": "number"
+          },
+          "threshold": {
+           "optional": false,
+           "type": {
+            "union": [
+             "80",
+             "95"
+            ]
+           }
+          },
+          "utilization": {
+           "optional": false,
+           "type": "number"
+          },
+          "windowId": {
+           "optional": false,
+           "type": "string"
+          },
+          "windowLabel": {
+           "optional": false,
+           "type": {
+            "object": {
+             "args": {
+              "optional": true,
+              "type": {
+               "array": {
+                "union": [
+                 "number",
+                 "string",
+                 {
+                  "object": {
+                   "number": {
+                    "optional": false,
+                    "type": "number"
+                   }
+                  }
+                 },
+                 {
+                  "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                 }
+                ]
+               }
+              }
+             },
+             "message": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          }
+         }
+        }
        }
       }
      }
@@ -4065,7 +4903,36 @@
              },
              "error": {
               "optional": true,
-              "type": "string"
+              "type": {
+               "object": {
+                "args": {
+                 "optional": true,
+                 "type": {
+                  "array": {
+                   "union": [
+                    "number",
+                    "string",
+                    {
+                     "object": {
+                      "number": {
+                       "optional": false,
+                       "type": "number"
+                      }
+                     }
+                    },
+                    {
+                     "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                    }
+                   ]
+                  }
+                 }
+                },
+                "message": {
+                 "optional": false,
+                 "type": "string"
+                }
+               }
+              }
              },
              "exitCode": {
               "optional": true,
@@ -4811,6 +5678,91 @@
       }
      }
     },
+    "clientEditor": {
+     "optional": false,
+     "type": {
+      "object": {
+       "clientId": {
+        "optional": true,
+        "type": "string"
+       },
+       "value": {
+        "optional": true,
+        "type": {
+         "object": {
+          "context": {
+           "optional": true,
+           "type": {
+            "object": {
+             "filePath": {
+              "optional": false,
+              "type": {
+               "union": [
+                "string",
+                "undefined"
+               ]
+              }
+             },
+             "selection": {
+              "optional": false,
+              "type": {
+               "union": [
+                "undefined",
+                {
+                 "object": {
+                  "endLine": {
+                   "optional": false,
+                   "type": "number"
+                  },
+                  "startLine": {
+                   "optional": false,
+                   "type": "number"
+                  },
+                  "text": {
+                   "optional": false,
+                   "type": "string"
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "clientLanguage": {
+     "optional": false,
+     "type": {
+      "object": {
+       "clientId": {
+        "optional": true,
+        "type": "string"
+       },
+       "value": {
+        "optional": true,
+        "type": {
+         "object": {
+          "language": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"el\"",
+             "\"en\""
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
     "clientPolicy": {
      "optional": false,
      "type": {
@@ -4846,6 +5798,32 @@
            "type": "boolean"
           },
           "voice": {
+           "optional": false,
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "clientTerminal": {
+     "optional": false,
+     "type": {
+      "object": {
+       "clientId": {
+        "optional": true,
+        "type": "string"
+       },
+       "value": {
+        "optional": true,
+        "type": {
+         "object": {
+          "shortcut": {
+           "optional": false,
+           "type": "string"
+          },
+          "shown": {
            "optional": false,
            "type": "boolean"
           }
@@ -5517,6 +6495,85 @@
          ]
         }
        },
+       "clientEditor": {
+        "optional": true,
+        "type": {
+         "object": {},
+         "index": [
+          {
+           "key": "string",
+           "value": {
+            "object": {
+             "context": {
+              "optional": true,
+              "type": {
+               "object": {
+                "filePath": {
+                 "optional": false,
+                 "type": {
+                  "union": [
+                   "string",
+                   "undefined"
+                  ]
+                 }
+                },
+                "selection": {
+                 "optional": false,
+                 "type": {
+                  "union": [
+                   "undefined",
+                   {
+                    "object": {
+                     "endLine": {
+                      "optional": false,
+                      "type": "number"
+                     },
+                     "startLine": {
+                      "optional": false,
+                      "type": "number"
+                     },
+                     "text": {
+                      "optional": false,
+                      "type": "string"
+                     }
+                    }
+                   }
+                  ]
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         ]
+        }
+       },
+       "clientLanguage": {
+        "optional": true,
+        "type": {
+         "object": {},
+         "index": [
+          {
+           "key": "string",
+           "value": {
+            "object": {
+             "language": {
+              "optional": false,
+              "type": {
+               "union": [
+                "\"el\"",
+                "\"en\""
+               ]
+              }
+             }
+            }
+           }
+          }
+         ]
+        }
+       },
        "clientPolicy": {
         "optional": false,
         "type": {
@@ -5549,6 +6606,29 @@
               "type": "boolean"
              },
              "voice": {
+              "optional": false,
+              "type": "boolean"
+             }
+            }
+           }
+          }
+         ]
+        }
+       },
+       "clientTerminal": {
+        "optional": true,
+        "type": {
+         "object": {},
+         "index": [
+          {
+           "key": "string",
+           "value": {
+            "object": {
+             "shortcut": {
+              "optional": false,
+              "type": "string"
+             },
+             "shown": {
               "optional": false,
               "type": "boolean"
              }
@@ -6601,6 +7681,18 @@
             }
            }
           },
+          "\"notAFile\"": {
+           "object": {
+            "folder": {
+             "optional": false,
+             "type": "boolean"
+            },
+            "kind": {
+             "optional": false,
+             "type": "\"notAFile\""
+            }
+           }
+          },
           "\"tooLarge\"": {
            "object": {
             "bytes": {
@@ -6689,6 +7781,18 @@
                "kind": {
                 "optional": false,
                 "type": "\"missing\""
+               }
+              }
+             },
+             "\"notAFile\"": {
+              "object": {
+               "folder": {
+                "optional": false,
+                "type": "boolean"
+               },
+               "kind": {
+                "optional": false,
+                "type": "\"notAFile\""
                }
               }
              },
@@ -8537,6 +9641,14 @@
               }
              }
             },
+            "now": {
+             "optional": true,
+             "type": "number"
+            },
+            "processName": {
+             "optional": true,
+             "type": "string"
+            },
             "rows": {
              "optional": false,
              "type": "number"
@@ -8544,6 +9656,27 @@
             "sequences": {
              "optional": false,
              "type": "number"
+            },
+            "shellSequences": {
+             "optional": true,
+             "type": {
+              "array": {
+               "object": {
+                "body": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "index": {
+                 "optional": false,
+                 "type": "number"
+                },
+                "time": {
+                 "optional": false,
+                 "type": "number"
+                }
+               }
+              }
+             }
             },
             "type": {
              "optional": false,
@@ -8861,37 +9994,6 @@
                   "union": [
                    "\"el\"",
                    "\"en\""
-                  ]
-                 }
-                }
-               }
-              }
-             },
-             "state": {
-              "optional": false,
-              "type": {
-               "object": {
-                "global": {
-                 "optional": false,
-                 "type": {
-                  "object": {},
-                  "index": [
-                   {
-                    "key": "string",
-                    "value": "unknown"
-                   }
-                  ]
-                 }
-                },
-                "workspace": {
-                 "optional": false,
-                 "type": {
-                  "object": {},
-                  "index": [
-                   {
-                    "key": "string",
-                    "value": "unknown"
-                   }
                   ]
                  }
                 }
@@ -10687,6 +11789,10 @@
                      "optional": true,
                      "type": "boolean"
                     },
+                    "live": {
+                     "optional": true,
+                     "type": "true"
+                    },
                     "metadata": {
                      "optional": true,
                      "type": {
@@ -10713,6 +11819,39 @@
                     }
                    }
                   }
+                 }
+                }
+               }
+              },
+              "error": {
+               "optional": true,
+               "type": {
+                "object": {
+                 "args": {
+                  "optional": true,
+                  "type": {
+                   "array": {
+                    "union": [
+                     "number",
+                     "string",
+                     {
+                      "object": {
+                       "number": {
+                        "optional": false,
+                        "type": "number"
+                       }
+                      }
+                     },
+                     {
+                      "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                     }
+                    ]
+                   }
+                  }
+                 },
+                 "message": {
+                  "optional": false,
+                  "type": "string"
                  }
                 }
                }
@@ -10941,22 +12080,6 @@
       "type": {
        "optional": false,
        "type": "\"authFailureCleared\""
-      }
-     }
-    },
-    "\"authStatusUpdate\"": {
-     "object": {
-      "error": {
-       "optional": true,
-       "type": "string"
-      },
-      "isAuthenticating": {
-       "optional": false,
-       "type": "boolean"
-      },
-      "type": {
-       "optional": false,
-       "type": "\"authStatusUpdate\""
       }
      }
     },
@@ -11501,7 +12624,36 @@
       },
       "message": {
        "optional": false,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "type": {
        "optional": false,
@@ -11647,7 +12799,36 @@
      "object": {
       "error": {
        "optional": false,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "type": {
        "optional": false,
@@ -11690,7 +12871,36 @@
      "object": {
       "error": {
        "optional": true,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "ok": {
        "optional": false,
@@ -11710,7 +12920,36 @@
      "object": {
       "error": {
        "optional": true,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "ok": {
        "optional": false,
@@ -12047,10 +13286,6 @@
       "current": {
        "optional": false,
        "type": "number"
-      },
-      "label": {
-       "optional": true,
-       "type": "string"
       },
       "phase": {
        "optional": false,
@@ -14261,6 +15496,14 @@
               }
              }
             },
+            "\"notAFile\"": {
+             "object": {
+              "kind": {
+               "optional": false,
+               "type": "\"notAFile\""
+              }
+             }
+            },
             "\"text\"": {
              "object": {
               "content": {
@@ -14336,6 +15579,14 @@
               }
              }
             },
+            "\"notAFile\"": {
+             "object": {
+              "kind": {
+               "optional": false,
+               "type": "\"notAFile\""
+              }
+             }
+            },
             "\"text\"": {
              "object": {
               "content": {
@@ -14400,7 +15651,36 @@
       },
       "title": {
        "optional": false,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "type": {
        "optional": false,
@@ -14416,7 +15696,36 @@
      "object": {
       "message": {
        "optional": false,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "parentToolUseId": {
        "optional": true,
@@ -14467,7 +15776,36 @@
       },
       "content": {
        "optional": false,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "type": {
        "optional": false,
@@ -14570,48 +15908,6 @@
       "type": {
        "optional": false,
        "type": "\"extensionUiRequest\""
-      }
-     }
-    },
-    "\"filesPersisted\"": {
-     "object": {
-      "failed": {
-       "optional": false,
-       "type": {
-        "array": {
-         "object": {
-          "error": {
-           "optional": false,
-           "type": "string"
-          },
-          "filename": {
-           "optional": false,
-           "type": "string"
-          }
-         }
-        }
-       }
-      },
-      "files": {
-       "optional": false,
-       "type": {
-        "array": {
-         "object": {
-          "fileId": {
-           "optional": false,
-           "type": "string"
-          },
-          "filename": {
-           "optional": false,
-           "type": "string"
-          }
-         }
-        }
-       }
-      },
-      "type": {
-       "optional": false,
-       "type": "\"filesPersisted\""
       }
      }
     },
@@ -15380,7 +16676,36 @@
           },
           "error": {
            "optional": true,
-           "type": "string"
+           "type": {
+            "object": {
+             "args": {
+              "optional": true,
+              "type": {
+               "array": {
+                "union": [
+                 "number",
+                 "string",
+                 {
+                  "object": {
+                   "number": {
+                    "optional": false,
+                    "type": "number"
+                   }
+                  }
+                 },
+                 {
+                  "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                 }
+                ]
+               }
+              }
+             },
+             "message": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
           },
           "errorInfo": {
            "optional": true,
@@ -15592,7 +16917,36 @@
            "object": {
             "displayPath": {
              "optional": false,
-             "type": "string"
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
             },
             "path": {
              "optional": false,
@@ -15621,7 +16975,36 @@
            "object": {
             "displayPath": {
              "optional": false,
-             "type": "string"
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
             },
             "rules": {
              "optional": false,
@@ -15664,7 +17047,36 @@
      "object": {
       "refused": {
        "optional": true,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "requestId": {
        "optional": false,
@@ -15728,7 +17140,36 @@
       },
       "error": {
        "optional": true,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "notDirectory": {
        "optional": true,
@@ -15766,7 +17207,36 @@
      "object": {
       "error": {
        "optional": true,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "nextCursor": {
        "optional": true,
@@ -15815,7 +17285,36 @@
      "object": {
       "error": {
        "optional": true,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "nextCursor": {
        "optional": true,
@@ -16231,7 +17730,36 @@
           },
           "error": {
            "optional": true,
-           "type": "string"
+           "type": {
+            "object": {
+             "args": {
+              "optional": true,
+              "type": {
+               "array": {
+                "union": [
+                 "number",
+                 "string",
+                 {
+                  "object": {
+                   "number": {
+                    "optional": false,
+                    "type": "number"
+                   }
+                  }
+                 },
+                 {
+                  "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                 }
+                ]
+               }
+              }
+             },
+             "message": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
           },
           "errorInfo": {
            "optional": true,
@@ -17529,7 +19057,36 @@
       },
       "message": {
        "optional": false,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "requestId": {
        "optional": true,
@@ -19270,7 +20827,36 @@
      "object": {
       "message": {
        "optional": false,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "notificationType": {
        "optional": false,
@@ -19453,7 +21039,36 @@
      "object": {
       "error": {
        "optional": false,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "type": {
        "optional": false,
@@ -19844,6 +21459,10 @@
     },
     "\"processing\"": {
      "object": {
+      "elapsedMs": {
+       "optional": true,
+       "type": "number"
+      },
       "isProcessing": {
        "optional": false,
        "type": "boolean"
@@ -19921,7 +21540,36 @@
      "object": {
       "message": {
        "optional": false,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "scope": {
        "optional": false,
@@ -20071,7 +21719,36 @@
       },
       "detail": {
        "optional": true,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "parts": {
        "optional": true,
@@ -20153,6 +21830,10 @@
          "\"modelSignInRequired\"",
          "\"modelUnavailable\"",
          "\"promptRejected\"",
+         "\"queueBudgetStopped\"",
+         "\"queueNoRuntime\"",
+         "\"queueRunEnded\"",
+         "\"sendInProgress\"",
          "\"worktreeFinishing\""
         ]
        }
@@ -20324,6 +22005,7 @@
                  "\"cancelled\"",
                  "\"denied\"",
                  "\"expired\"",
+                 "\"input\"",
                  "\"network\"",
                  "\"provider\"",
                  "\"remote\""
@@ -20332,7 +22014,36 @@
               },
               "message": {
                "optional": false,
-               "type": "string"
+               "type": {
+                "object": {
+                 "args": {
+                  "optional": true,
+                  "type": {
+                   "array": {
+                    "union": [
+                     "number",
+                     "string",
+                     {
+                      "object": {
+                       "number": {
+                        "optional": false,
+                        "type": "number"
+                       }
+                      }
+                     },
+                     {
+                      "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                     }
+                    ]
+                   }
+                  }
+                 },
+                 "message": {
+                  "optional": false,
+                  "type": "string"
+                 }
+                }
+               }
               },
               "status": {
                "optional": true,
@@ -21466,7 +23177,36 @@
      "object": {
       "message": {
        "optional": false,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "type": {
        "optional": false,
@@ -22058,18 +23798,6 @@
       }
      }
     },
-    "\"sessionEnd\"": {
-     "object": {
-      "reason": {
-       "optional": false,
-       "type": "string"
-      },
-      "type": {
-       "optional": false,
-       "type": "\"sessionEnd\""
-      }
-     }
-    },
     "\"sessionRenamed\"": {
      "object": {
       "newName": {
@@ -22333,7 +24061,36 @@
      "object": {
       "error": {
        "optional": true,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "modelCount": {
        "optional": true,
@@ -22357,7 +24114,36 @@
       },
       "warning": {
        "optional": true,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       }
      }
     },
@@ -22365,7 +24151,36 @@
      "object": {
       "error": {
        "optional": true,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "ok": {
        "optional": false,
@@ -22385,7 +24200,36 @@
      "object": {
       "error": {
        "optional": true,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "ok": {
        "optional": false,
@@ -22420,7 +24264,36 @@
      "object": {
       "error": {
        "optional": true,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "ok": {
        "optional": false,
@@ -22457,7 +24330,36 @@
        "object": {
         "error": {
          "optional": false,
-         "type": "string"
+         "type": {
+          "object": {
+           "args": {
+            "optional": true,
+            "type": {
+             "array": {
+              "union": [
+               "number",
+               "string",
+               {
+                "object": {
+                 "number": {
+                  "optional": false,
+                  "type": "number"
+                 }
+                }
+               },
+               {
+                "ref": "import(\"src/shared/localized-text\").LocalizedText"
+               }
+              ]
+             }
+            }
+           },
+           "message": {
+            "optional": false,
+            "type": "string"
+           }
+          }
+         }
         },
         "key": {
          "optional": false,
@@ -23538,6 +25440,10 @@
                  "optional": true,
                  "type": "boolean"
                 },
+                "live": {
+                 "optional": true,
+                 "type": "true"
+                },
                 "metadata": {
                  "optional": true,
                  "type": {
@@ -23564,6 +25470,39 @@
                 }
                }
               }
+             }
+            }
+           }
+          },
+          "error": {
+           "optional": true,
+           "type": {
+            "object": {
+             "args": {
+              "optional": true,
+              "type": {
+               "array": {
+                "union": [
+                 "number",
+                 "string",
+                 {
+                  "object": {
+                   "number": {
+                    "optional": false,
+                    "type": "number"
+                   }
+                  }
+                 },
+                 {
+                  "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                 }
+                ]
+               }
+              }
+             },
+             "message": {
+              "optional": false,
+              "type": "string"
              }
             }
            }
@@ -23899,7 +25838,36 @@
             },
             "error": {
              "optional": true,
-             "type": "string"
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
             },
             "planType": {
              "optional": true,
@@ -23977,7 +25945,36 @@
             },
             "profileError": {
              "optional": true,
-             "type": "string"
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
             },
             "spend": {
              "optional": true,
@@ -24080,7 +26077,36 @@
             },
             "error": {
              "optional": true,
-             "type": "string"
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
             },
             "planType": {
              "optional": true,
@@ -24158,7 +26184,36 @@
             },
             "profileError": {
              "optional": true,
-             "type": "string"
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
             },
             "spend": {
              "optional": true,
@@ -24577,6 +26632,10 @@
              "optional": false,
              "type": "unknown"
             },
+            "live": {
+             "optional": true,
+             "type": "true"
+            },
             "name": {
              "optional": false,
              "type": "string"
@@ -24739,6 +26798,10 @@
                  "optional": false,
                  "type": "unknown"
                 },
+                "live": {
+                 "optional": true,
+                 "type": "true"
+                },
                 "name": {
                  "optional": false,
                  "type": "string"
@@ -24749,6 +26812,39 @@
                 }
                }
               }
+             }
+            }
+           }
+          },
+          "error": {
+           "optional": true,
+           "type": {
+            "object": {
+             "args": {
+              "optional": true,
+              "type": {
+               "array": {
+                "union": [
+                 "number",
+                 "string",
+                 {
+                  "object": {
+                   "number": {
+                    "optional": false,
+                    "type": "number"
+                   }
+                  }
+                 },
+                 {
+                  "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                 }
+                ]
+               }
+              }
+             },
+             "message": {
+              "optional": false,
+              "type": "string"
              }
             }
            }
@@ -24768,6 +26864,25 @@
             ]
            }
           }
+         }
+        }
+       }
+      },
+      "streaming": {
+       "optional": true,
+       "type": {
+        "object": {
+         "isThinkingPhase": {
+          "optional": false,
+          "type": "boolean"
+         },
+         "text": {
+          "optional": false,
+          "type": "string"
+         },
+         "thinking": {
+          "optional": false,
+          "type": "string"
          }
         }
        }
@@ -26577,7 +28692,36 @@
      "object": {
       "message": {
        "optional": false,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "type": {
        "optional": false,
@@ -26601,7 +28745,36 @@
      "object": {
       "error": {
        "optional": true,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "final": {
        "optional": false,
@@ -27946,7 +30119,36 @@
       },
       "message": {
        "optional": true,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "modelId": {
        "optional": false,
@@ -28053,7 +30255,36 @@
            },
            "message": {
             "optional": false,
-            "type": "string"
+            "type": {
+             "object": {
+              "args": {
+               "optional": true,
+               "type": {
+                "array": {
+                 "union": [
+                  "number",
+                  "string",
+                  {
+                   "object": {
+                    "number": {
+                     "optional": false,
+                     "type": "number"
+                    }
+                   }
+                  },
+                  {
+                   "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                  }
+                 ]
+                }
+               }
+              },
+              "message": {
+               "optional": false,
+               "type": "string"
+              }
+             }
+            }
            }
           }
          },
@@ -28077,7 +30308,36 @@
            },
            "message": {
             "optional": false,
-            "type": "string"
+            "type": {
+             "object": {
+              "args": {
+               "optional": true,
+               "type": {
+                "array": {
+                 "union": [
+                  "number",
+                  "string",
+                  {
+                   "object": {
+                    "number": {
+                     "optional": false,
+                     "type": "number"
+                    }
+                   }
+                  },
+                  {
+                   "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                  }
+                 ]
+                }
+               }
+              },
+              "message": {
+               "optional": false,
+               "type": "string"
+              }
+             }
+            }
            }
           }
          },
@@ -28137,7 +30397,36 @@
            },
            "message": {
             "optional": false,
-            "type": "string"
+            "type": {
+             "object": {
+              "args": {
+               "optional": true,
+               "type": {
+                "array": {
+                 "union": [
+                  "number",
+                  "string",
+                  {
+                   "object": {
+                    "number": {
+                     "optional": false,
+                     "type": "number"
+                    }
+                   }
+                  },
+                  {
+                   "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                  }
+                 ]
+                }
+               }
+              },
+              "message": {
+               "optional": false,
+               "type": "string"
+              }
+             }
+            }
            }
           }
          }
@@ -28163,7 +30452,36 @@
       },
       "message": {
        "optional": true,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "modelsLoaded": {
        "optional": true,
@@ -28389,7 +30707,36 @@
       },
       "error": {
        "optional": true,
-       "type": "string"
+       "type": {
+        "object": {
+         "args": {
+          "optional": true,
+          "type": {
+           "array": {
+            "union": [
+             "number",
+             "string",
+             {
+              "object": {
+               "number": {
+                "optional": false,
+                "type": "number"
+               }
+              }
+             },
+             {
+              "ref": "import(\"src/shared/localized-text\").LocalizedText"
+             }
+            ]
+           }
+          }
+         },
+         "message": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       }
       },
       "exitCode": {
        "optional": true,

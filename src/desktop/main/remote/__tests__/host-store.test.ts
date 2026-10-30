@@ -413,4 +413,3 @@ describe('HostStore', () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining('malformed host record'));
   });
 });
-

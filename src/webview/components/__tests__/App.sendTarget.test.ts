@@ -74,7 +74,7 @@ describe('the conversation a send names', () => {
     ['its replay read no file', [
       { type: 'sessionCleared', sessionId: 'stored-1' },
       { type: 'sessionCleared' },
-      { type: 'errorReplay', content: 'gone' },
+      { type: 'errorReplay', content: { message: 'gone' } },
       { type: 'done', data: { type: 'result', session_id: 'stored-1', is_done: true } },
     ]],
   ])('is none for a restore whose conversation did not open because %s', async (_why, messages) => {

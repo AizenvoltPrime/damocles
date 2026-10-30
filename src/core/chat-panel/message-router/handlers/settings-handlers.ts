@@ -20,7 +20,8 @@ import { log } from "../../../logger";
 import { isSwitchableToolGroup, TOOL_GROUP_SETTINGS } from "../../../../shared/types/tools";
 import { IMAGE_ENABLED_SETTING, IMAGE_MODEL_SETTING } from "../../../pi-session/tools/image-tool-specs";
 import { writeSetting } from "../setting-write";
-import { t } from "../../../l10n";
+import { errorTextOf, l } from "../../../l10n";
+import { englishText, LocalizedError, type LocalizedText } from "../../../../shared/localized-text";
 import { openaiAuthStatusMessage } from "./openai-handlers";
 import { postVoiceFilesSize, postVoiceRuntimeStatus } from "./voice-stream-handlers";
 import type { McpUserResourcePort } from "../../../pi-session/mcp/tool-source";
@@ -36,8 +37,8 @@ import { MODEL_PICKER_SETTING } from "../../../../shared/model-vendor";
 
 const EXPOSURE_SCOPES: readonly string[] = ["user", "project", "local"] satisfies McpToolExposureScope[];
 
-function exposureScopeLabel(scope: McpToolExposureScope): string {
-  return scope === "user" ? t("User") : scope === "project" ? t("Project") : t("Local");
+function exposureScopeLabel(scope: McpToolExposureScope): LocalizedText {
+  return scope === "user" ? l("User") : scope === "project" ? l("Project") : l("Local");
 }
 
 const MAX_REQUEST_ID_LENGTH = 128;
@@ -62,7 +63,7 @@ function completionContext(value: unknown): Record<string, string> | undefined {
 
 function requireUserResources(ctx: HandlerContext): McpUserResourcePort {
   const port = ctx.session.mcpUserResources();
-  if (!port) throw new Error(t("MCP is not available in this chat yet."));
+  if (!port) throw new LocalizedError(l("MCP is not available in this chat yet."));
   return port;
 }
 
@@ -104,13 +105,13 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     msg: Extract<WebviewToExtensionMessage, { type: "mcpSetToolExposure" }>,
     ctx: HandlerContext,
   ): Promise<void> {
-    if (!isToolExposureSetting(msg.exposure) || !EXPOSURE_SCOPES.includes(msg.scope)) throw new Error(t("Invalid MCP tool setting."));
+    if (!isToolExposureSetting(msg.exposure) || !EXPOSURE_SCOPES.includes(msg.scope)) throw new LocalizedError(l("Invalid MCP tool setting."));
     if (!settingsManager.getMcpToolExposureScopes(ctx.folder.key).includes(msg.scope)) {
-      throw new Error(t("This folder cannot save MCP tool settings at the {0} scope.", exposureScopeLabel(msg.scope)));
+      throw new LocalizedError(l("This folder cannot save MCP tool settings at the {0} scope.", exposureScopeLabel(msg.scope)));
     }
     const server = (await ctx.session.getMcpServerStatus()).find((status) => status.name === msg.serverName);
     const tool = server?.tools?.find((candidate) => candidate.name === msg.toolName);
-    if (!tool) throw new Error(t('MCP server "{0}" has no tool "{1}".', resourceLabel(undefined, msg.serverName), resourceLabel(undefined, msg.toolName)));
+    if (!tool) throw new LocalizedError(l('MCP server "{0}" has no tool "{1}".', resourceLabel(undefined, msg.serverName), resourceLabel(undefined, msg.toolName)));
     const { layers, index, current } = exposureLayersAt(MCP_TOOL_EXPOSURE_SETTING, msg.scope, ctx);
     const next = toolExposureMapForScope(current, layers.slice(0, index), msg.serverName, msg.toolName, msg.exposure, tool.configExposure ?? "deferred");
     await platform.settings.update(MCP_TOOL_EXPOSURE_SETTING, next, msg.scope);
@@ -119,7 +120,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       postMessage(ctx.reply, {
         type: "notification",
         notificationType: "info",
-        message: t(
+        message: l(
           "Saved at the {0} scope, but this tool's {1} setting takes precedence, so it did not change. Save to {1} to change it.",
           exposureScopeLabel(msg.scope),
           exposureScopeLabel(above.source),
@@ -132,12 +133,12 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     msg: Extract<WebviewToExtensionMessage, { type: "mcpSetResourceExposure" }>,
     ctx: HandlerContext,
   ): Promise<void> {
-    if (!isToolExposureSetting(msg.exposure) || !EXPOSURE_SCOPES.includes(msg.scope)) throw new Error(t("Invalid MCP resource setting."));
+    if (!isToolExposureSetting(msg.exposure) || !EXPOSURE_SCOPES.includes(msg.scope)) throw new LocalizedError(l("Invalid MCP resource setting."));
     if (!settingsManager.getMcpToolExposureScopes(ctx.folder.key).includes(msg.scope)) {
-      throw new Error(t("This folder cannot save MCP resource settings at the {0} scope.", exposureScopeLabel(msg.scope)));
+      throw new LocalizedError(l("This folder cannot save MCP resource settings at the {0} scope.", exposureScopeLabel(msg.scope)));
     }
     const server = (await ctx.session.getMcpServerStatus()).find((status) => status.name === msg.serverName);
-    if (!server) throw new Error(t('MCP server "{0}" is not available in this folder.', resourceLabel(undefined, msg.serverName)));
+    if (!server) throw new LocalizedError(l('MCP server "{0}" is not available in this folder.', resourceLabel(undefined, msg.serverName)));
     const { layers, index, current } = exposureLayersAt(MCP_RESOURCE_EXPOSURE_SETTING, msg.scope, ctx);
     const next = resourceExposureMapForScope(current, layers.slice(0, index), msg.serverName, msg.exposure, server.configResourceExposure ?? "deferred");
     await platform.settings.update(MCP_RESOURCE_EXPOSURE_SETTING, next, msg.scope);
@@ -146,7 +147,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       postMessage(ctx.reply, {
         type: "notification",
         notificationType: "info",
-        message: t(
+        message: l(
           "Saved at the {0} scope, but this server's {1} resource setting takes precedence, so it did not change. Save to {1} to change it.",
           exposureScopeLabel(msg.scope),
           exposureScopeLabel(above.source),
@@ -201,7 +202,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     } catch (err) {
       // The server NAME only: `msg.config` may carry an `env` or `headers` map, and this channel is
       // written to disk.
-      log("[MessageRouter] Error %s MCP server %s:", what, serverName, err instanceof Error ? err.message : "Unknown error");
+      log("[MessageRouter] Error %s MCP server %s: %s", what, serverName, err instanceof Error ? err.message : String(err));
       const error = err instanceof McpWriteError
         ? err.info
         : { code: "writeFailed" as const, params: { detail: err instanceof Error ? err.message : "Unknown error" } };
@@ -259,7 +260,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         log("[MessageRouter] Error setting pinned header visibility:", err);
         postMessage(ctx.reply, {
           type: "notification",
-          message: t("Failed to save pinned header setting: {0}", err instanceof Error ? err.message : "Unknown error"),
+          message: l("Failed to save pinned header setting: {0}", errorTextOf(err)),
           notificationType: "error",
         });
         await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
@@ -280,7 +281,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         log("[MessageRouter] Error setting panel effort:", err);
         postMessage(ctx.reply, {
           type: "notification",
-          message: t("Failed to save effort setting: {0}", err instanceof Error ? err.message : "Unknown error"),
+          message: l("Failed to save effort setting: {0}", errorTextOf(err)),
           notificationType: "error",
         });
       }
@@ -289,149 +290,149 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     setDefaultThinkingDisabled: async (msg, ctx) => {
       if (msg.type !== "setDefaultThinkingDisabled") return;
-      const saved = await writeSetting(deps, ctx, "damocles.thinkingDisabled", (detail) => t("Failed to save default thinking setting: {0}", detail), () =>
+      const saved = await writeSetting(deps, ctx, "damocles.thinkingDisabled", (detail) => l("Failed to save default thinking setting: {0}", detail), () =>
         settingsManager.handleSetDefaultThinkingDisabled(msg.disabled, ctx.folder));
       if (!saved) settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
     },
 
     setDefaultEffort: async (msg, ctx) => {
       if (msg.type !== "setDefaultEffort") return;
-      const saved = await writeSetting(deps, ctx, "damocles.effortByModel", (detail) => t("Failed to save default effort: {0}", detail), () =>
+      const saved = await writeSetting(deps, ctx, "damocles.effortByModel", (detail) => l("Failed to save default effort: {0}", detail), () =>
         settingsManager.handleSetDefaultEffort(msg.effort, msg.model, ctx.folder));
       if (!saved) settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
     },
 
     setTeamRoleModel: async (msg, ctx) => {
       if (msg.type !== "setTeamRoleModel") return;
-      await writeSetting(deps, ctx, `damocles.team.${msg.role}Model`, (detail) => t("Failed to save team role model: {0}", detail), () =>
+      await writeSetting(deps, ctx, `damocles.team.${msg.role}Model`, (detail) => l("Failed to save team role model: {0}", detail), () =>
         settingsManager.handleSetTeamRoleModel(msg.role, msg.model, ctx.folder));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setTeamRoleEffort: async (msg, ctx) => {
       if (msg.type !== "setTeamRoleEffort") return;
-      await writeSetting(deps, ctx, `damocles.team.${msg.role}Effort`, (detail) => t("Failed to save team role effort: {0}", detail), () =>
+      await writeSetting(deps, ctx, `damocles.team.${msg.role}Effort`, (detail) => l("Failed to save team role effort: {0}", detail), () =>
         settingsManager.handleSetTeamRoleEffort(msg.role, msg.effort, ctx.folder));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setBackgroundModel: async (msg, ctx) => {
       if (msg.type !== "setBackgroundModel") return;
-      await writeSetting(deps, ctx, "damocles.background.model", (detail) => t("Failed to save the background model: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.background.model", (detail) => l("Failed to save the background model: {0}", detail), () =>
         settingsManager.handleSetBackgroundModel(msg.model));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setBackgroundEffort: async (msg, ctx) => {
       if (msg.type !== "setBackgroundEffort") return;
-      await writeSetting(deps, ctx, "damocles.background.effort", (detail) => t("Failed to save the background effort: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.background.effort", (detail) => l("Failed to save the background effort: {0}", detail), () =>
         settingsManager.handleSetBackgroundEffort(msg.effort));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setMemoryJudge: async (msg, ctx) => {
       if (msg.type !== "setMemoryJudge") return;
-      await writeSetting(deps, ctx, "damocles.memory.judge", (detail) => t("Failed to save the memory judge: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.memory.judge", (detail) => l("Failed to save the memory judge: {0}", detail), () =>
         settingsManager.handleSetMemoryJudge(msg.judge));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setMemoryJudgeEffort: async (msg, ctx) => {
       if (msg.type !== "setMemoryJudgeEffort") return;
-      await writeSetting(deps, ctx, "damocles.memory.judgeEffort", (detail) => t("Failed to save the memory judge effort: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.memory.judgeEffort", (detail) => l("Failed to save the memory judge effort: {0}", detail), () =>
         settingsManager.handleSetMemoryJudgeEffort(msg.effort));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setBudgetLimit: async (msg, ctx) => {
       if (msg.type !== "setBudgetLimit") return;
-      const saved = await writeSetting(deps, ctx, "damocles.maxBudgetUsd", (detail) => t("Failed to save budget limit: {0}", detail), () =>
+      const saved = await writeSetting(deps, ctx, "damocles.maxBudgetUsd", (detail) => l("Failed to save budget limit: {0}", detail), () =>
         settingsManager.handleSetBudgetLimit(msg.budgetUsd, ctx.folder));
       if (!saved) await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setTaskBudget: async (msg, ctx) => {
       if (msg.type !== "setTaskBudget") return;
-      await writeSetting(deps, ctx, "damocles.taskBudget", (detail) => t("Failed to save task budget: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.taskBudget", (detail) => l("Failed to save task budget: {0}", detail), () =>
         settingsManager.handleSetTaskBudget(msg.budget, ctx.folder));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setAutoCompact: async (msg, ctx) => {
       if (msg.type !== "setAutoCompact") return;
-      await writeSetting(deps, ctx, "damocles.autoCompact", (detail) => t("Failed to save auto-compact settings: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.autoCompact", (detail) => l("Failed to save auto-compact settings: {0}", detail), () =>
         settingsManager.handleSetAutoCompact(msg.config, ctx.folder));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setSubagentsMaxConcurrent: async (msg, ctx) => {
       if (msg.type !== "setSubagentsMaxConcurrent") return;
-      await writeSetting(deps, ctx, "damocles.subagents.maxConcurrent", (detail) => t("Failed to save the subagent limit: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.subagents.maxConcurrent", (detail) => l("Failed to save the subagent limit: {0}", detail), () =>
         settingsManager.handleSetSubagentsMaxConcurrent(msg.count, ctx.folder));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setShowCacheMissNotices: async (msg, ctx) => {
       if (msg.type !== "setShowCacheMissNotices") return;
-      await writeSetting(deps, ctx, "damocles.showCacheMissNotices", (detail) => t("Failed to save the cost notice setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.showCacheMissNotices", (detail) => l("Failed to save the cost notice setting: {0}", detail), () =>
         settingsManager.handleSetShowCacheMissNotices(msg.enabled, ctx.folder));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setShowThinkingDroppedNotices: async (msg, ctx) => {
       if (msg.type !== "setShowThinkingDroppedNotices") return;
-      await writeSetting(deps, ctx, "damocles.showThinkingDroppedNotices", (detail) => t("Failed to save the dropped thinking notice setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.showThinkingDroppedNotices", (detail) => l("Failed to save the dropped thinking notice setting: {0}", detail), () =>
         settingsManager.handleSetShowThinkingDroppedNotices(msg.enabled, ctx.folder));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setAssetSourcePrecedence: async (msg, ctx) => {
       if (msg.type !== "setAssetSourcePrecedence") return;
-      await writeSetting(deps, ctx, "damocles.assetSourcePrecedence", (detail) => t("Failed to save the skill and command source setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.assetSourcePrecedence", (detail) => l("Failed to save the skill and command source setting: {0}", detail), () =>
         settingsManager.handleSetAssetSourcePrecedence(msg.precedence));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setMemoryAutoExtract: async (msg, ctx) => {
       if (msg.type !== "setMemoryAutoExtract") return;
-      await writeSetting(deps, ctx, "damocles.memory.autoExtract.enabled", (detail) => t("Failed to save the memory extraction setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.memory.autoExtract.enabled", (detail) => l("Failed to save the memory extraction setting: {0}", detail), () =>
         settingsManager.handleSetMemoryAutoExtract(msg.enabled));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setMemoryProfile: async (msg, ctx) => {
       if (msg.type !== "setMemoryProfile") return;
-      await writeSetting(deps, ctx, "damocles.memory.profile.enabled", (detail) => t("Failed to save the user profile setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.memory.profile.enabled", (detail) => l("Failed to save the user profile setting: {0}", detail), () =>
         settingsManager.handleSetMemoryProfile(msg.enabled));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setBrowserHeadless: async (msg, ctx) => {
       if (msg.type !== "setBrowserHeadless") return;
-      await writeSetting(deps, ctx, "damocles.browser.headless", (detail) => t("Failed to save the headless browser setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.browser.headless", (detail) => l("Failed to save the headless browser setting: {0}", detail), () =>
         settingsManager.handleSetBrowserHeadless(msg.headless));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setModelPickerProvider: async (msg, ctx) => {
       if (msg.type !== "setModelPickerProvider") return;
-      const saved = await writeSetting(deps, ctx, MODEL_PICKER_SETTING, (detail) => t("Failed to save the model picker setting: {0}", detail), () =>
+      // Both hosts' settings stores fire the change before the write resolves, so ChatPanelProvider's listener, the setting's one
+      // publisher, has published every panel before this ack ends the switch's pending state.
+      const saved = await writeSetting(deps, ctx, MODEL_PICKER_SETTING, (detail) => l("Failed to save the model picker setting: {0}", detail), () =>
         settingsManager.handleSetModelPickerProvider(msg.provider, msg.shown));
-      // Before the ack, which ends the switch's pending state, so it never shows the old value in between.
-      if (saved) ctx.session.publishAccountInfo();
       postMessage(ctx.reply, { type: "setModelPickerProviderAck", provider: msg.provider, requestId: msg.requestId, ok: saved });
     },
 
     setCacheWarming: async (msg, ctx) => {
       if (msg.type !== "setCacheWarming") return;
-      await writeSetting(deps, ctx, "damocles.cacheWarming", (detail) => t("Failed to save cache warming setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.cacheWarming", (detail) => l("Failed to save cache warming setting: {0}", detail), () =>
         settingsManager.handleSetCacheWarming(parseCacheWarmingMode(msg.mode)));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setCheckpointRetentionDays: async (msg, ctx) => {
       if (msg.type !== "setCheckpointRetentionDays") return;
-      await writeSetting(deps, ctx, "damocles.checkpoints.retentionDays", (detail) => t("Failed to save checkpoint retention: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.checkpoints.retentionDays", (detail) => l("Failed to save checkpoint retention: {0}", detail), () =>
         settingsManager.handleSetCheckpointRetentionDays(msg.days));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
@@ -453,7 +454,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         refuseMode(ctx, String(msg.mode), "unknown-mode");
         return;
       }
-      const saved = await writeSetting(deps, ctx, "damocles.permissionMode", (detail) => t("Failed to save default permission mode: {0}", detail), () =>
+      const saved = await writeSetting(deps, ctx, "damocles.permissionMode", (detail) => l("Failed to save default permission mode: {0}", detail), () =>
         settingsManager.handleSetDefaultPermissionMode(msg.mode, ctx.folder));
       if (!saved) await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
@@ -469,18 +470,18 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       // a daemon's core never takes the default while its client's policy refuses YOLO; the row says why
       if (msg.enabled && !bypassAllowed(deps.platform)) {
         refuseMode(ctx, "dangerouslySkipPermissions", "remote-host");
-        postMessage(ctx.reply, { type: "settingWriteResult", key: "damocles.dangerouslySkipPermissions", ok: false, error: t("YOLO is off for your turns on this host.") });
+        postMessage(ctx.reply, { type: "settingWriteResult", key: "damocles.dangerouslySkipPermissions", ok: false, error: l("YOLO is off for your turns on this host.") });
         await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
         return;
       }
-      const saved = await writeSetting(deps, ctx, "damocles.dangerouslySkipPermissions", (detail) => t("Failed to save default YOLO mode: {0}", detail), () =>
+      const saved = await writeSetting(deps, ctx, "damocles.dangerouslySkipPermissions", (detail) => l("Failed to save default YOLO mode: {0}", detail), () =>
         settingsManager.handleSetDefaultDangerouslySkipPermissions(msg.enabled, ctx.folder));
       if (!saved) await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setIdeContextEnabled: async (msg, ctx) => {
       if (msg.type !== "setIdeContextEnabled") return;
-      const saved = await writeSetting(deps, ctx, "damocles.ideContext.enabled", (detail) => t("Failed to save IDE context setting: {0}", detail), () =>
+      const saved = await writeSetting(deps, ctx, "damocles.ideContext.enabled", (detail) => l("Failed to save IDE context setting: {0}", detail), () =>
         settingsManager.handleSetIdeContextEnabled(msg.enabled));
       if (!saved) await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
@@ -497,7 +498,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         log("[MessageRouter] Error toggling MCP server:", err);
         postMessage(ctx.reply, {
           type: "notification",
-          message: t("Failed to save MCP server setting: {0}", err instanceof Error ? err.message : "Unknown error"),
+          message: l("Failed to save MCP server setting: {0}", errorTextOf(err)),
           notificationType: "error",
         });
         await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
@@ -538,7 +539,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       if (!success) {
         postMessage(ctx.reply, {
           type: "notification",
-          message: t("Failed to reconnect MCP server"),
+          message: l("Failed to reconnect MCP server"),
           notificationType: "error",
         });
       }
@@ -551,7 +552,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       if (!success) {
         postMessage(ctx.reply, {
           type: "notification",
-          message: t("Failed to authenticate MCP server"),
+          message: l("Failed to authenticate MCP server"),
           notificationType: "error",
         });
       }
@@ -564,7 +565,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         if (!success) {
           postMessage(ctx.reply, {
             type: "notification",
-            message: t("Failed to re-authenticate MCP server"),
+            message: l("Failed to re-authenticate MCP server"),
             notificationType: "error",
           });
         }
@@ -572,7 +573,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         log("[MessageRouter] Error re-authenticating MCP server:", err);
         postMessage(ctx.reply, {
           type: "notification",
-          message: t("Failed to re-authenticate MCP server: {0}", err instanceof Error ? err.message : "Unknown error"),
+          message: l("Failed to re-authenticate MCP server: {0}", errorTextOf(err)),
           notificationType: "error",
         });
       } finally {
@@ -588,7 +589,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         log("[MessageRouter] Error signing out of MCP server:", err);
         postMessage(ctx.reply, {
           type: "notification",
-          message: t("Failed to sign out of MCP server: {0}", err instanceof Error ? err.message : "Unknown error"),
+          message: l("Failed to sign out of MCP server: {0}", errorTextOf(err)),
           notificationType: "error",
         });
       } finally {
@@ -606,7 +607,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     setMcpEnabled: async (msg, ctx) => {
       if (msg.type !== "setMcpEnabled") return;
-      const saved = await writeSetting(deps, ctx, "damocles.mcp.enabled", (detail) => t("Failed to save MCP setting: {0}", detail), () =>
+      const saved = await writeSetting(deps, ctx, "damocles.mcp.enabled", (detail) => l("Failed to save MCP setting: {0}", detail), () =>
         updateConfigAtEffectiveScope(platform, "damocles.mcp.enabled", msg.enabled));
       // Feed the master-gated set: disabling returns {} so live connections are torn down, not just
       // hidden; re-enabling re-feeds the enabled servers so they reconnect (M6).
@@ -628,7 +629,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         log("[MessageRouter] Error setting MCP tool exposure:", err);
         postMessage(ctx.reply, {
           type: "notification",
-          message: t("Failed to save MCP tool setting: {0}", err instanceof Error ? err.message : "Unknown error"),
+          message: l("Failed to save MCP tool setting: {0}", errorTextOf(err)),
           notificationType: "error",
         });
       }
@@ -645,7 +646,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         log("[MessageRouter] Error setting MCP resource exposure:", err);
         postMessage(ctx.reply, {
           type: "notification",
-          message: t("Failed to save MCP resource setting: {0}", err instanceof Error ? err.message : "Unknown error"),
+          message: l("Failed to save MCP resource setting: {0}", errorTextOf(err)),
           notificationType: "error",
         });
       }
@@ -661,7 +662,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         postMessage(ctx.reply, { type: "mcpResources", requestId: msg.requestId, ...fields });
       const cursor = pageCursor(msg.cursor);
       if (!isName(msg.serverName) || cursor === null) {
-        reply({ resources: [], error: t("This MCP request is not valid.") });
+        reply({ resources: [], error: l("This MCP request is not valid.") });
         return;
       }
       try {
@@ -669,7 +670,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         const filter = await ctx.permissionHandler.mcpResourceRuleFilter(READ_MCP_RESOURCE);
         reply({ resources: resourceRows(page.resources, msg.serverName, filter), ...cursorOf(page.nextCursor) });
       } catch (err) {
-        reply({ resources: [], error: t("Could not list the resources of {0}: {1}", resourceLabel(undefined, msg.serverName), errorText(err)) });
+        reply({ resources: [], error: l("Could not list the resources of {0}: {1}", resourceLabel(undefined, msg.serverName), errorText(err)) });
       }
     },
 
@@ -679,14 +680,14 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         postMessage(ctx.reply, { type: "mcpResourceTemplates", requestId: msg.requestId, ...fields });
       const cursor = pageCursor(msg.cursor);
       if (!isName(msg.serverName) || cursor === null) {
-        reply({ templates: [], error: t("This MCP request is not valid.") });
+        reply({ templates: [], error: l("This MCP request is not valid.") });
         return;
       }
       try {
         const page = await requireUserResources(ctx).listResourceTemplatesPage(msg.serverName, cursor);
         reply({ templates: templateRows(page.resourceTemplates), ...cursorOf(page.nextCursor) });
       } catch (err) {
-        reply({ templates: [], error: t("Could not list the resource templates of {0}: {1}", resourceLabel(undefined, msg.serverName), errorText(err)) });
+        reply({ templates: [], error: l("Could not list the resource templates of {0}: {1}", resourceLabel(undefined, msg.serverName), errorText(err)) });
       }
     },
 
@@ -696,7 +697,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       const reply = (fields: Omit<Extract<ExtensionToWebviewMessage, { type: "mcpResourceChildren" }>, "type" | "requestId">) =>
         postMessage(ctx.reply, { type: "mcpResourceChildren", requestId: msg.requestId, ...fields });
       if (!isName(msg.serverName) || !isName(msg.uri)) {
-        reply({ children: [], error: t("This MCP request is not valid.") });
+        reply({ children: [], error: l("This MCP request is not valid.") });
         return;
       }
       try {
@@ -705,7 +706,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         const children = directoryChildren(msg.uri, result, msg.serverName, filter);
         reply(children ? { children } : { children: [], notDirectory: true });
       } catch (err) {
-        reply({ children: [], error: t("Could not open {0}: {1}", resourceLabel(undefined, msg.uri), errorText(err)) });
+        reply({ children: [], error: l("Could not open {0}: {1}", resourceLabel(undefined, msg.uri), errorText(err)) });
       }
     },
 
@@ -722,7 +723,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         const values = await requireUserResources(ctx).completeResourceArgument(msg.serverName, msg.template, msg.argument, value, context);
         reply(values.flatMap((completion) => oneLine(completion, MAX_RESOURCE_FIELD_LENGTH) ?? []));
       } catch (err) {
-        log("[MessageRouter] MCP completion for %s failed: %s", msg.serverName, errorText(err));
+        log("[MessageRouter] MCP completion for %s failed: %s", msg.serverName, englishText(errorText(err)));
         reply([]);
       }
     },
@@ -730,39 +731,39 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     /** Holds the resource by reference (D12); a deny rule that covers it refuses the attach (D13), and nothing is read now. */
     attachMcpResource: async (msg, ctx) => {
       if (msg.type !== "attachMcpResource" || !isRequestId(msg.requestId)) return;
-      const refuse = (refused: string) => postMessage(ctx.reply, { type: "mcpResourceAttached", requestId: msg.requestId, refused });
+      const refuse = (refused: LocalizedText) => postMessage(ctx.reply, { type: "mcpResourceAttached", requestId: msg.requestId, refused });
       if (!isName(msg.serverName) || !isName(msg.uri)) {
-        refuse(t("This resource cannot be attached."));
+        refuse(l("This resource cannot be attached."));
         return;
       }
       const name = resourceLabel(msg.name, msg.uri);
       const mimeType = mimeTypeOf(msg.mimeType);
       if (isMcpAppResource({ uri: msg.uri, mimeType: msg.mimeType })) {
-        refuse(t("{0} is an MCP App interface, which cannot be sent to the model.", name));
+        refuse(l("{0} is an MCP App interface, which cannot be sent to the model.", name));
         return;
       }
       // Only a directory MIME type refuses: a URI ending in `/` may be a file, which Open reports and the read at send decides.
       if (isDirectoryMimeType(mimeType)) {
-        refuse(t("{0} is a directory. Open it and attach a resource inside it.", name));
+        refuse(l("{0} is a directory. Open it and attach a resource inside it.", name));
         return;
       }
       if (isBinaryMimeType(mimeType)) {
-        refuse(t("{0} is binary content ({1}), which cannot be sent to the model.", name, mimeType ?? ""));
+        refuse(l("{0} is binary content ({1}), which cannot be sent to the model.", name, mimeType ?? ""));
         return;
       }
       const serverId = ctx.session.mcpUserResources()?.serverIdOf(msg.serverName);
       if (serverId === undefined) {
-        refuse(t("MCP server {0} is not available in this chat.", resourceLabel(undefined, msg.serverName)));
+        refuse(l("MCP server {0} is not available in this chat.", resourceLabel(undefined, msg.serverName)));
         return;
       }
       const rule = (await ctx.permissionHandler.mcpResourceRuleFilter(READ_MCP_RESOURCE)).resourceDenyRule(msg.serverName, msg.uri);
       if (rule !== undefined) {
-        refuse(t("A deny rule covers this resource: {0}", rule));
+        refuse(l("A deny rule covers this resource: {0}", rule));
         return;
       }
       // Checked after the last await: `add` past the bound drops the oldest chip, and a chip may have arrived meanwhile.
       if (ctx.terminalAttachments.displayInfo().length >= MAX_PENDING_TERMINAL_ATTACHMENTS) {
-        refuse(t("A message holds at most {0} attachments. Remove one to attach another.", MAX_PENDING_TERMINAL_ATTACHMENTS));
+        refuse(l("A message holds at most {0} attachments. Remove one to attach another.", MAX_PENDING_TERMINAL_ATTACHMENTS));
         return;
       }
       ctx.terminalAttachments.add({ kind: "mcpResource", server: msg.serverName, uri: msg.uri, name, ...(mimeType !== undefined ? { mimeType } : {}), serverId });
@@ -782,7 +783,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         log("[MessageRouter] Error toggling tool:", err);
         postMessage(ctx.reply, {
           type: "notification",
-          message: t("Failed to save tool setting: {0}", err instanceof Error ? err.message : "Unknown error"),
+          message: l("Failed to save tool setting: {0}", errorTextOf(err)),
           notificationType: "error",
         });
       }
@@ -793,7 +794,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       if (msg.type !== "toggleToolGroup") return;
       const group = msg.group;
       if (!isSwitchableToolGroup(group)) throw new Error(`The ${String(group)} tool group has no switch`);
-      const saved = await writeSetting(deps, ctx, TOOL_GROUP_SETTINGS[group], (detail) => t("Failed to save tool group setting: {0}", detail), () =>
+      const saved = await writeSetting(deps, ctx, TOOL_GROUP_SETTINGS[group], (detail) => l("Failed to save tool group setting: {0}", detail), () =>
         settingsManager.setToolGroupEnabled(group, msg.enabled));
       if (saved) ctx.session.refreshActiveTools();
       if (msg.group === "image") broadcastImageGenerationState(deps);
@@ -806,14 +807,14 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     setImageGenerationEnabled: async (msg, ctx) => {
       if (msg.type !== "setImageGenerationEnabled") return;
-      await writeSetting(deps, ctx, IMAGE_ENABLED_SETTING, (detail) => t("Failed to save image generation setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, IMAGE_ENABLED_SETTING, (detail) => l("Failed to save image generation setting: {0}", detail), () =>
         settingsManager.setImageGenerationEnabled(msg.enabled));
       broadcastImageGenerationState(deps);
     },
 
     setImageGenerationModel: async (msg, ctx) => {
       if (msg.type !== "setImageGenerationModel") return;
-      await writeSetting(deps, ctx, IMAGE_MODEL_SETTING, (detail) => t("Failed to save image generation setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, IMAGE_MODEL_SETTING, (detail) => l("Failed to save image generation setting: {0}", detail), () =>
         settingsManager.setImageGenerationModel(msg.model));
       broadcastImageGenerationState(deps);
     },
@@ -831,14 +832,14 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     setExploreModel: async (msg, ctx) => {
       if (msg.type !== "setExploreModel") return;
-      await writeSetting(deps, ctx, "damocles.explore.model", (detail) => t("Failed to save the Explore model: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.explore.model", (detail) => l("Failed to save the Explore model: {0}", detail), () =>
         settingsManager.setExploreModel(msg.model));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setExploreEffort: async (msg, ctx) => {
       if (msg.type !== "setExploreEffort") return;
-      await writeSetting(deps, ctx, "damocles.explore.effort", (detail) => t("Failed to save the Explore effort: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.explore.effort", (detail) => l("Failed to save the Explore effort: {0}", detail), () =>
         settingsManager.setExploreEffort(msg.effort));
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
@@ -860,7 +861,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         for (const [, instance] of getPanels()) postMessage(instance.host, { type: "authFailureCleared", account: provider });
       } catch (err) {
         log("[SettingsHandlers] Failed to apply the %s API key preference:", provider, err);
-        postMessage(ctx.reply, { type: "setProviderPreferApiKeyAck", provider, requestId, ok: false, error: t("Failed to apply the preference") });
+        postMessage(ctx.reply, { type: "setProviderPreferApiKeyAck", provider, requestId, ok: false, error: l("Failed to apply the preference") });
       }
     },
 

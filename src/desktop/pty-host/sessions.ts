@@ -254,7 +254,7 @@ export function createPtySessions(deps: PtySessionsDeps): PtySessions {
           deps.log(`the screen of ${id} could not be serialized: ${errorText(err)}`);
           return session.screen.blank();
         });
-        if (screen && sessions.get(id) === session) deps.post({ type: 'screen', id, ...screen });
+        if (screen && sessions.get(id) === session) deps.post({ type: 'screen', id, ...screen, ...(session.processName !== undefined ? { processName: session.processName } : {}) });
       } finally {
         session.holding = false;
         if (sessions.get(id) === session) flush(id, session);

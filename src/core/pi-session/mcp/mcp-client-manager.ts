@@ -47,7 +47,7 @@ import { createElicitationHandler, type ElicitationUI } from './elicitation-hand
 import type { McpResourceServer, McpToolCallOptions, McpToolSource } from './tool-source';
 import { McpResourceServerGoneError, noResourcesError, resourcesOffError, unknownResourceServerError } from './resource-errors';
 import { stripBidiControls, stripControlChars } from '../untrusted-text';
-import { t } from '../../l10n';
+import { l, verbatim } from '../../l10n';
 import { log } from '../../logger';
 
 const FAILURE_BACKOFF_MS = 60_000;
@@ -977,10 +977,10 @@ export class McpClientManager implements McpToolSource {
     const description = def ? serverDescriptionOf(def, connection?.status === 'connected' ? connection.instructions : undefined) : undefined;
     if (description) info.description = description;
     if (status === 'needs-auth' && connection?.errorInfo) info.errorInfo = connection.errorInfo;
-    if (this.clientUnavailable) info.error = t('The MCP client library failed to load, so no MCP server can connect.');
+    if (this.clientUnavailable) info.error = l('The MCP client library failed to load, so no MCP server can connect.');
     const error = this.lastError.get(name);
     if (error && status !== 'connected') {
-      info.error = error.message;
+      info.error = verbatim(error.message);
       if (error.errorInfo) info.errorInfo = error.errorInfo;
       if (error.stderrTail) info.stderrTail = error.stderrTail;
     }

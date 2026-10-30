@@ -9,6 +9,7 @@ import { isInside, samePath } from '../../../core/scm/discovery';
 import { gitErrorText, gitFailureCode, GitUntrustedError, redactUrls, RemoteCancelledError, StashKeptError, SyncBranchChangedError, type SyncBranch } from '../../../core/scm/errors';
 import { isRemoteName, isRemoteUrl, type Remote } from '../../../core/scm/remotes';
 import { isObjectName, type CommitPairDiff, type StashArtifact, type WorktreeArtifact } from '../../../core/scm/artifacts';
+import type { MergeLabel } from '../../../core/scm/merge';
 import type { Change, ChangeGroup } from '../../../core/scm/repository';
 import type { StageRefusal, TextCodec } from '../../../core/scm/staging';
 import type { ProjectView } from '../../../core/scm/scm-service';
@@ -18,6 +19,7 @@ import type { CommitAttachmentInput } from '../../../shared/types/chat-attachmen
 import { folderKey, folderKeyOn } from '../../../core/workspace-folders/folder-key';
 import { inputProblem } from '../../../shared/input-validation';
 import { visibleText } from '../../../shared/visible-text';
+import type { LocalizedText } from '../../../shared/localized-text';
 import type { FileRef, ShellFileGit } from '../../preload/shell-channels';
 import {
   parseScmAmend,
@@ -46,6 +48,7 @@ import {
   type ScmCommitFile,
   type ScmMergeFileResult,
   type ScmMergeInputsResult,
+  type ScmMergeLabel,
   type ScmQuickDiffBaseResult,
   type ScmResource,
   type ScmStageRangesRequest,
@@ -168,6 +171,8 @@ export interface ScmHostDeps {
     warn(message: string, ...actions: string[]): Promise<string | undefined>;
     error(message: string, ...actions: string[]): Promise<string | undefined>;
   };
+  // core's text in main's language
+  readonly render: (text: LocalizedText) => string;
   readonly t: (message: string, ...args: Array<string | number>) => string;
   readonly showGitLog: () => void;
   // a remote authority's offer to turn on agent forwarding: its POSIX host with forwarding off, else undefined
@@ -683,7 +688,7 @@ export class ScmHost {
       if (saved === undefined) return { ok: false, reason: 'cancelled' };
       const outcome = await this.deps.service.commit(request.repoId, request.message, request.variant, { saved, branchName: () => this.askBranchName() });
       if (!outcome.ok) {
-        if (outcome.reason === 'failed') this.failed(gitErrorText(outcome.error));
+        if (outcome.reason === 'failed') this.failed(this.deps.render(outcome.error));
         return { ok: false, reason: outcome.reason };
       }
       this.leaveAmend(request.repoId);
@@ -856,7 +861,10 @@ export class ScmHost {
     const document = this.documentOf(repo, request.path);
     if (document?.kind !== 'text') return { ok: false, reason: document ? 'binary' : 'notOpen' };
     try {
-      return await this.deps.service.mergeInputs(request.repoId, request.path, codecOf(document), document.text);
+      const inputs = await this.deps.service.mergeInputs(request.repoId, request.path, codecOf(document), document.text);
+      if (!inputs.ok) return inputs;
+      const label = (side: MergeLabel): ScmMergeLabel => ({ ...side, title: this.deps.render(side.title) });
+      return { ...inputs, labels: { current: label(inputs.labels.current), incoming: label(inputs.labels.incoming), base: label(inputs.labels.base) } };
     } catch (err) {
       this.deps.log(`[scm] reading the merge inputs failed: ${gitErrorText(err)}`);
       return { ok: false, reason: 'failed' };

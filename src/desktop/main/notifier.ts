@@ -9,7 +9,7 @@ import {
   type OverlayToast,
   type OverlayToastArea,
 } from '../preload/overlay-channels';
-import { CHIME_URGENCY, type ChimeTone } from '../preload/notifications';
+import { CHIME_URGENCY, TOAST_OPEN_ACTION, type ChimeTone, type ToastAnswer } from '../preload/notifications';
 import type { PanelTheme } from '../preload/panel-channels';
 import type { ToastSink } from './notification-center';
 import { NOTIFIER_PAGE_URL } from './protocol';
@@ -19,7 +19,6 @@ import { isPanelSender } from './views';
 // A page that kills its renderer on every load is left dead rather than reloaded in a loop.
 const MAX_CRASHES_IN_WINDOW = 3;
 const CRASH_WINDOW_MS = 60_000;
-const MAX_TOAST_ACTION_LENGTH = 500;
 const TRANSPARENT = '#00000000';
 
 // The window type that keeps the popups out of the task switcher and above full-screen apps. None on Linux: Electron 44.4
@@ -36,8 +35,8 @@ export interface NotifierDeps {
   // the overlay preload: the popup page runs the overlay bundle's toast stack, and main answers only its toast channels here
   readonly preloadPath: string;
   readonly state: () => OverlayState;
-  // an answer from a popup: an action label, or undefined for a dismissal
-  readonly resolveToast: (id: string, action: string | undefined) => void;
+  // an answer from a popup: a notice action's index or TOAST_OPEN_ACTION, or undefined for a dismissal
+  readonly resolveToast: (id: string, action: ToastAnswer | undefined) => void;
   readonly holdToast: (id: string, held: boolean) => void;
   // Escape in the popups, or their last card going while they hold focus
   readonly leave: () => void;
@@ -263,7 +262,7 @@ export class NotifierHost implements ToastSink {
     this.handle(contents, OVERLAY_CHANNELS.getState, () => this.deps.state());
     this.on(contents, OVERLAY_CHANNELS.resolveToast, (id, action) => {
       if (typeof id !== 'string' || id.length === 0 || id.length > MAX_OVERLAY_ID_LENGTH) return this.deps.log('[notifier] ignoring a malformed toast answer');
-      if (!(action === undefined || (typeof action === 'string' && action.length <= MAX_TOAST_ACTION_LENGTH))) return this.deps.log('[notifier] ignoring a malformed toast answer');
+      if (!(action === undefined || action === TOAST_OPEN_ACTION || (typeof action === 'number' && Number.isInteger(action) && action >= 0))) return this.deps.log('[notifier] ignoring a malformed toast answer');
       this.deps.resolveToast(id, action);
     });
     this.on(contents, OVERLAY_CHANNELS.toastHold, (id, held) => {

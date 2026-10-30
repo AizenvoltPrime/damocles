@@ -8,6 +8,7 @@ import { estimateTokens } from '../token-estimate';
 import { USEFULNESS_RUBRIC } from '../rubric';
 import { neutralizeTags } from '../injection/render';
 import { globalMemoryUnavailableReason, userScopeRemote } from '../../user-scope';
+import { LocalizedError } from '../../../shared/localized-text';
 
 export type ProfileScope = 'project' | 'global';
 export type ProfileSection = 'static' | 'dynamic';
@@ -143,7 +144,7 @@ export class ProfileManager {
 
   /** Upsert one section's content under the write queue. */
   setProfileSection(scope: ProfileScope, workspace: string, section: ProfileSection, content: string): Promise<void> {
-    if (scope === 'global' && userScopeRemote()) return Promise.reject(new Error(globalMemoryUnavailableReason()));
+    if (scope === 'global' && userScopeRemote()) return Promise.reject(new LocalizedError(globalMemoryUnavailableReason()));
     return this.writeQueue.run(() => {
       this.upsertSection(scope, workspace, section, content);
     });

@@ -49,8 +49,12 @@ describe('damocles.assetSourcePrecedence contribution', () => {
 });
 
 // A project file must not reorder the user's own .claude and .codex assets, or set the sweep that covers every project.
-describe.each(['damocles.assetSourcePrecedence', 'damocles.checkpoints.retentionDays'])('%s contribution', (key) => {
-  it('is application-scoped, not settable per project', () => {
-    expect(contribution(key)?.scope).toBe('application');
+// The precedence is machine scoped because skill and command loading runs on the remote host, which then owns it.
+describe.each([
+  ['damocles.assetSourcePrecedence', 'machine'],
+  ['damocles.checkpoints.retentionDays', 'application'],
+])('%s contribution', (key, scope) => {
+  it(`is ${scope}-scoped, not settable per project`, () => {
+    expect(contribution(key)?.scope).toBe(scope);
   });
 });

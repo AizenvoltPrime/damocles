@@ -47,6 +47,7 @@ import { DocumentService, type TextDocument } from '../documents/document-servic
 import { EditorPane } from '../editor-pane';
 import { closeWorktreeRoot, type CloseWorktreeDeps } from '../worktrees/close-worktree';
 import { LOCAL_PROJECT_KEYS } from '../remote/remote-project-keys';
+import { englishText } from '../../../shared/localized-text';
 
 const PROJECT = process.platform === 'win32' ? 'C:\\work\\alpha' : '/work/alpha';
 const KEY = process.platform === 'win32' ? PROJECT.toLowerCase() : PROJECT;
@@ -99,6 +100,7 @@ function controller(overrides: Partial<WorktreeControllerDeps> & { readonly regi
     return undefined;
   };
   return new WorktreeController({
+    render: englishText,
     authority: 'local',
     projectKeyOf: (projectPath) => folderKey(projectPath),
     records: registry as unknown as WorktreeRecordReader,
@@ -501,11 +503,11 @@ describe('WorktreeController', () => {
     }],
     ['a refused merge', async () => {
       H.uncommitted = [];
-      vi.mocked(mergeInto).mockResolvedValueOnce({ kind: 'refused', message: `${PROJECT}\u202E has an unfinished merge` });
+      vi.mocked(mergeInto).mockResolvedValueOnce({ kind: 'refused', message: { message: '{0} has an unfinished merge', args: [`${PROJECT}\u202E`] } });
       await controller().finish(record.id, 'merge');
     }],
     ['a refused update', async () => {
-      vi.mocked(updateFrom).mockResolvedValueOnce({ kind: 'refused', message: 'error: fe\u202Eat cannot be updated' });
+      vi.mocked(updateFrom).mockResolvedValueOnce({ kind: 'refused', message: { message: '{0}', args: ['error: fe\u202Eat cannot be updated'] } });
       await controller().finish(record.id, 'update');
     }],
     ['a failed delete', async () => {
@@ -616,6 +618,7 @@ describe('Delete with a dirty editor tab of the worktree', () => {
     fs.writeFileSync(path.join(folder, 'b.ts'), 'disk');
     let worktrees!: WorktreeController;
     const documents = new DocumentService({
+      render: englishText,
       hostLabel: (authority) => ({ hostId: authority, name: authority }),
       uploadsConflicted: () => undefined,
       warn: () => undefined,
@@ -628,7 +631,7 @@ describe('Delete with a dirty editor tab of the worktree', () => {
       log: () => undefined,
       pickSavePath: async () => undefined,
       backups: { changed: () => undefined, writeNow: async () => true, remove: () => undefined },
-      settings: { locate: () => undefined, save: async () => ({ ok: false, error: 'unused', conflict: false }) },
+      settings: { locate: () => undefined, save: async () => ({ ok: false, error: { message: 'unused' }, conflict: false }) },
     });
     const pane: EditorPane = new EditorPane({
       authorityOs: () => process.platform,

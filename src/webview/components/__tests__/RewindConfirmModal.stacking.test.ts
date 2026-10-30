@@ -46,7 +46,7 @@ describe('the rewind confirmation over a proposal diff', () => {
     mounted.push(mount(App, { attachTo: document.body, global: { plugins: [i18n] } }) as VueWrapper);
     const editorStore = useEditorStore();
     const side = { name: 'a.ts', path: '/w/a.ts', body: { kind: 'text' as const, content: 'a', languageId: 'typescript' } };
-    editorStore.showDiff({ type: 'editorShowDiff', viewId: 'v1', title: 'a.ts', purpose: 'proposal', approvalId: 'tool-1', original: side, modified: side });
+    editorStore.showDiff({ type: 'editorShowDiff', viewId: 'v1', title: { message: 'a.ts' }, purpose: 'proposal', approvalId: 'tool-1', original: side, modified: side });
     editorStore.openProposal('tool-1');
     await flushPromises();
     expect(query('[data-testid="editor-overlay"]')).not.toBeNull();

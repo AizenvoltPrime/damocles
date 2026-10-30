@@ -6,7 +6,7 @@ import type { editor as MonacoEditor, IDisposable } from 'monaco-editor/editor/e
 import { Button } from '@/components/ui/button';
 import type { DamoclesShellApi, EditorMenuShortcut, ShellEditorSettings, ShellEditorTab } from '../../preload/shell-channels';
 import { attachEditorContextMenu } from './context-menu';
-import { EDITOR_STORE } from './editor-store';
+import { EDITOR_STORE, type DiffStats } from './editor-store';
 import { attachDiffGit, type DiffGit } from './diff-git';
 import { addEditorGitKeybindings, gitKeyLabels } from './editor-keys';
 import NotDisplayedNotice from './NotDisplayedNotice.vue';
@@ -49,6 +49,17 @@ function setSideHost(element: unknown): void {
 
 function optionsFrom(settings: ShellEditorSettings | undefined): MonacoEditor.IDiffEditorOptions {
   return settings ? { fontSize: settings.fontSize, wordWrap: settings.wordWrap, renderWhitespace: settings.renderWhitespace } : {};
+}
+
+// Monaco marks a side with no lines in a change (an insertion's original, a deletion's modified) with an end line of 0.
+function lineCounts(changes: readonly MonacoEditor.ILineChange[]): DiffStats {
+  let added = 0;
+  let removed = 0;
+  for (const change of changes) {
+    if (change.originalEndLineNumber > 0) removed += change.originalEndLineNumber - change.originalStartLineNumber + 1;
+    if (change.modifiedEndLineNumber > 0) added += change.modifiedEndLineNumber - change.modifiedStartLineNumber + 1;
+  }
+  return { added, removed };
 }
 
 // The original side never takes edits; the modified one follows the tab.
@@ -116,6 +127,14 @@ async function mountDiff(): Promise<void> {
     glyphMargin: props.tab.diff.git?.group === 'workingTree',
   });
   created.setModel({ original, modified });
+  // The breadcrumbs count the diff shown, which Monaco recomputes after every change to either side.
+  const stats = store.publishDiffStats(props.tab.id);
+  const publishStats = (): void => {
+    const changes = created.getLineChanges();
+    stats.set(changes ? lineCounts(changes) : undefined);
+  };
+  menus.push(created.onDidUpdateDiff(publishStats), stats);
+  publishStats();
   const git = props.tab.diff.git;
   if (git) {
     diffGit = attachDiffGit(created, monaco, git, {

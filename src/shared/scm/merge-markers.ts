@@ -10,6 +10,11 @@ export interface MergeLabels {
   readonly base: string;
 }
 
+/** Reset Result's marker names: each input's own marker, never its title, which the view shows in its language. */
+export function markerNames(labels: { readonly current: { readonly marker: string }; readonly incoming: { readonly marker: string }; readonly base: { readonly marker: string } }): MergeLabels {
+  return { current: labels.current.marker, incoming: labels.incoming.marker, base: labels.base.marker };
+}
+
 type Diff3Region = ReturnType<typeof diff3Merge<string>>[number];
 
 // Split as a Monaco model splits, so line numbers match the editor's.

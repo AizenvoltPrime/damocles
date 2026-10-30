@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import McpResourcePicker from '../McpResourcePicker.vue';
 import { stackLayout } from '../ui/__tests__/list-layout';
-import { i18n } from '@/i18n';
+import { applyLocale, i18n } from '@/i18n';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
+import { inGreek } from '../../../__mocks__/greek-locale';
 
 const bridge = (globalThis as unknown as { acquireVsCodeApi: () => { postMessage: (message: unknown) => void } }).acquireVsCodeApi();
 let posted: Array<{ type: string; requestId?: string; [key: string]: unknown }> = [];
@@ -209,7 +210,7 @@ describe('McpResourcePicker', () => {
 
   it('shows a list error from core, and a failed first page offers Retry', async () => {
     const wrapper = picker();
-    await answer('mcpResources', { resources: [], error: 'Could not list the resources of docs: boom' });
+    await answer('mcpResources', { resources: [], error: { message: 'Could not list the resources of {0}: {1}', args: ['docs', 'boom'] } });
     expect(wrapper.get('[data-testid="mcp-resource-section"] [role="alert"]').text()).toBe('Could not list the resources of docs: boom');
     const retry = wrapper.get('[data-testid="mcp-resource-load-more"]');
     expect(retry.text()).toBe('Retry');
@@ -222,6 +223,31 @@ describe('McpResourcePicker', () => {
     expect(wrapper.find('[data-testid="mcp-resource-section"] [role="alert"]').exists()).toBe(false);
     expect(rowUris(wrapper)).toEqual(['docs://a']);
     expect(highlighted()?.getAttribute('data-uri')).toBe('docs://a');
+  });
+
+  it("renders core's list, directory and attach errors in the language the view switches to", async () => {
+    const coreText = { message: 'Could not open file: {0}', args: ['docs://a'] };
+    const wrapper = picker();
+    await answer('mcpResources', { resources: [{ uri: 'docs://a', name: 'a' }, { uri: 'docs://dir', name: 'dir', directory: true }], error: coreText });
+    await answer('mcpResourceTemplates', { templates: [], error: coreText });
+    await wrapper.get('[data-uri="docs://a"]').trigger('click');
+    await answer('mcpResourceAttached', { refused: coreText });
+    const shown = (): string[] => [
+      wrapper.get('[data-testid="mcp-resource-section"] [role="alert"]').text(),
+      wrapper.get('[data-testid="mcp-template-section"] [role="alert"]').text(),
+      wrapper.get('[data-testid="mcp-resource-attach-error"]').text(),
+    ];
+    expect(shown()).toEqual(Array(3).fill('Could not open file: docs://a'));
+
+    await applyLocale('el');
+    await flushPromises();
+    expect(shown()).toEqual(Array(3).fill(inGreek(coreText)));
+
+    await wrapper.get('[data-uri="docs://dir"] [data-testid="mcp-row-action"]').trigger('click');
+    await answer('mcpResourceChildren', { children: [], error: coreText });
+    await applyLocale('en');
+    await flushPromises();
+    expect(wrapper.get('[data-testid="mcp-resource-section"] [role="alert"]').text()).toBe('Could not open file: docs://a');
   });
 
   it('opens a directory in place, a sub-directory below it, and Back returns level by level to the row it left', async () => {
@@ -341,7 +367,7 @@ describe('McpResourcePicker', () => {
     await wrapper.get('[data-uri="docs://notes"]').trigger('click');
     expect(last('attachMcpResource')).toMatchObject({ serverName: 'docs', uri: 'docs://notes', name: 'notes' });
     expect(wrapper.get('[data-uri="docs://notes"]').text()).toContain('Attaching...');
-    await answer('mcpResourceAttached', { refused: 'A message holds at most 8 attachments. Remove one to attach another.' });
+    await answer('mcpResourceAttached', { refused: { message: 'A message holds at most {0} attachments. Remove one to attach another.', args: [8] } });
     const error = wrapper.get('[data-testid="mcp-resource-attach-error"]');
     expect(error.attributes('role')).toBe('alert');
     expect(error.text()).toContain('at most 8');

@@ -11,8 +11,8 @@ export interface FinishedAwayDeps {
   readonly coreRestarted: (authorityKey: string) => boolean;
   readonly hostName: (authorityKey: string) => string;
   readonly t: (message: string, ...args: Array<string | number>) => string;
-  // one notice; resolves the action label the user chose, else undefined
-  readonly notify: (message: string, actions: readonly string[], authorityKey: string) => Promise<string | undefined>;
+  // one notice; resolves the index of the action the user chose, else undefined
+  readonly notify: (message: string, actions: readonly string[], authorityKey: string) => Promise<number | undefined>;
   readonly open: (authorityKey: string, chat: AwayChat) => Promise<void>;
   readonly log: (line: string) => void;
 }
@@ -58,9 +58,8 @@ export async function announceFinishedAway(deps: FinishedAwayDeps, authorityKey:
   const message = stopped
     ? (finished.length === 1 ? deps.t('1 chat on {0} stopped when Damocles restarted there', name) : deps.t('{0} chats on {1} stopped when Damocles restarted there', finished.length, name))
     : (finished.length === 1 ? deps.t('1 chat on {0} finished while you were away', name) : deps.t('{0} chats on {1} finished while you were away', finished.length, name));
-  const labels = actionLabels(finished, deps.t('New conversation'));
-  const chosen = await deps.notify(message, labels, authorityKey);
-  const index = chosen === undefined ? -1 : labels.indexOf(chosen);
-  if (index >= 0) await deps.open(authorityKey, finished[index]!);
-  deps.log(`[remote] ${authorityKey}: ${finished.length} chats ${stopped ? 'stopped by a restart' : 'finished'} while away${index >= 0 ? '; opened one' : ''}`);
+  const index = await deps.notify(message, actionLabels(finished, deps.t('New conversation')), authorityKey);
+  const chosen = index === undefined ? undefined : finished[index];
+  if (chosen) await deps.open(authorityKey, chosen);
+  deps.log(`[remote] ${authorityKey}: ${finished.length} chats ${stopped ? 'stopped by a restart' : 'finished'} while away${chosen ? '; opened one' : ''}`);
 }

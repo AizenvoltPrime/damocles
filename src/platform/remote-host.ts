@@ -1,8 +1,9 @@
 import type { BrokerAnswer, ClientPolicy, ClientUser, HeldAuth } from '../shared/remote-user';
 import type { Disposable } from './disposable';
-import type { PanelHost } from './window-service';
+import type { ActiveEditorContext } from './editor-service';
+import type { PanelHost, TerminalToggle } from './window-service';
 
-export type ClientTopic = 'clientAuth' | 'clientUser' | 'clientPolicy' | 'actingClient';
+export type ClientTopic = 'clientAuth' | 'clientUser' | 'clientPolicy' | 'clientEditor' | 'clientTerminal' | 'clientLanguage' | 'actingClient';
 
 /** The per-client mirrors of a daemon's core, by the daemon's id for each attached client. */
 export interface ClientSnapshots {
@@ -17,8 +18,14 @@ export interface ClientSnapshots {
   auth(clientId: string): HeldAuth | undefined;
   user(clientId: string): ClientUser | undefined;
   policy(clientId: string): ClientPolicy | undefined;
-  // before: a per-client topic's previous value for that client
-  onDidChange(cb: (change: { readonly topic: ClientTopic; readonly clientId?: string; readonly before?: unknown }) => void): Disposable;
+  // the client's focused text editor; undefined when none has focus or the client is detached
+  editor(clientId: string): ActiveEditorContext | undefined;
+  // undefined while the client is detached
+  terminal(clientId: string): TerminalToggle | undefined;
+  // the client's UI language, which its views render core's text in; undefined while the client is detached
+  language(clientId: string): 'en' | 'el' | undefined;
+  // before: a per-client topic's previous value for that client; detached: the topic's delta had no value, as the client detached
+  onDidChange(cb: (change: { readonly topic: ClientTopic; readonly clientId?: string; readonly before?: unknown; readonly detached?: true }) => void): Disposable;
 }
 
 /** A daemon's core: user scope, AI sign-ins, voice and the trash are its clients', never this host's. */

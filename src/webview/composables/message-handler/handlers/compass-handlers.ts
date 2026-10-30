@@ -13,7 +13,6 @@ export function createCompassHandlers(): Partial<HandlerRegistry> {
 				current: msg.current,
 				total: msg.total,
 				phase: msg.phase,
-				...(msg.label ? { label: msg.label } : {}),
 			};
 		},
 		compassSearchResults: (msg, ctx) => {

@@ -1,6 +1,5 @@
-// Only the positional-argument form of vscode.l10n.t is in use; {0}, {1}, ... in message are replaced by args.
+// Core renders no user-facing text (core/l10n.ts l()); it reads only the host's display language.
 export interface LocalizationService {
-  t(message: string, ...args: Array<string | number | boolean>): string;
   // BCP 47 display language of the host, e.g. 'en' or 'el'
   readonly language: string;
 }

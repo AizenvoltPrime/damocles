@@ -336,7 +336,8 @@ describe('PiRuntime memory judge', () => {
   }
 
   function judged(opts: Options) {
-    const platform: FakePlatform = installFakePlatform({ settings: { user: opts.settings ?? {} } });
+    // the secret the runtime's own read records, so that read agrees with the key presence set below
+    const platform: FakePlatform = installFakePlatform({ settings: { user: opts.settings ?? {} }, ...(opts.openaiKey ? { secrets: { 'damocles.openai.apiKey': 'sk-key' } } : {}) });
     const runtime = PiRuntime.get();
     const configured = new Set(opts.configured);
     const sent: Array<{ model: string; reasoning: unknown }> = [];

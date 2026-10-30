@@ -11,6 +11,8 @@ import {
 import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { catalogEntryOfPiModel, modelLabel } from "../../../../shared/model-vendor";
 import { log } from "../../../logger";
+import { errorTextOf, l } from "../../../l10n";
+import type { LocalizedText } from "../../../../shared/localized-text";
 import type { UsageStatsModel } from "../../../usage-stats";
 
 type Parsed<T> = { value: T } | { error: string };
@@ -119,10 +121,12 @@ export function createUsageStatsHandlers(deps: HandlerDependencies): Partial<Han
     requestUsageStats: async (msg, ctx) => {
       if (msg.type !== "requestUsageStats") return;
       const requestId = typeof msg.requestId === "string" ? msg.requestId : "";
-      const fail = (error: string) => deps.postMessage(ctx.reply, { type: "usageStats", requestId, final: true, report: null, error });
+      const fail = (error: LocalizedText) => deps.postMessage(ctx.reply, { type: "usageStats", requestId, final: true, report: null, error });
       const parsed = requestId === "" ? { error: "requestId is missing" } : parseUsageStatsQuery(msg.query);
+      // The webview builds the query, so a refused one is a defect whose detail is for the log, not the user.
       if ("error" in parsed) {
-        fail(`Invalid usage stats query: ${parsed.error}`);
+        log("[UsageStats] refused a query: %s", parsed.error);
+        fail(l("The statistics request was not valid. The log has the details."));
         return;
       }
       const folderOf = (sessionId: string) => deps.storageManager.folderOf(sessionId);
@@ -143,7 +147,7 @@ export function createUsageStatsHandlers(deps: HandlerDependencies): Partial<Han
         await early.catch((err: unknown) => log("[UsageStats] early report dropped: %O", err));
         report = await withOpenableSessions(final, folderOf);
       } catch (err) {
-        fail(err instanceof Error ? err.message : String(err));
+        fail(errorTextOf(err));
         return;
       }
       // Outside the try: a failed post must not be answered with a second final.

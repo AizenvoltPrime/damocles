@@ -40,8 +40,8 @@ import { getCheckpointEntries } from '../../checkpoints';
 import { getCheckpointEntries as realGetCheckpointEntries } from '../../checkpoints/checkpoint-entry';
 import { readAgentFile } from '../../agent-records';
 import { storedTypedText } from '../prompt-context';
-import { platform } from '../../../platform-host';
-import elBundle from '../../../../../l10n/bundle.l10n.el.json';
+import { inGreek } from '../../../../__mocks__/greek-locale';
+import { englishText, type LocalizedText } from '../../../../shared/localized-text';
 import {
   DAMOCLES_AGENT_INVOCATION_ENTRY,
   DAMOCLES_AGENT_LAUNCH_ENTRY,
@@ -260,7 +260,7 @@ describe('reconstructMessages — failed model calls', () => {
   const omitted = (targetId: string): SessionEntry =>
     ({ id: `edit-${targetId}`, type: 'context_edit', targetId, replacement: null }) as unknown as SessionEntry;
   const errors = (branch: SessionEntry[]) =>
-    reconstructMessages(branch).messages.filter((m) => m.kind === 'error').map((m) => (m as { content: string }).content);
+    reconstructMessages(branch).messages.filter((m) => m.kind === 'error').map((m) => englishText((m as { content: LocalizedText }).content));
 
   it('shows a call pi re-ran as nothing and the answer that replaced it, as the live view does', () => {
     const branch = [userMsg('u1', 'hi'), failed('a1', '529 overloaded'), omitted('a1'), assistantMsg('a2', 'the answer')];
@@ -287,6 +287,8 @@ describe('reconstructMessages — failed model calls', () => {
   it('shows the card of a failure pi recorded with no message, as the live view does', () => {
     const silent = { id: 'a1', type: 'message', message: { role: 'assistant', content: [], stopReason: 'error' } } as unknown as SessionEntry;
     expect(errors([userMsg('u1', 'hi'), silent])).toEqual(['Unknown error']);
+    // Damocles' own words, which each view translates
+    expect(reconstructMessages([userMsg('u1', 'hi'), silent]).messages.find((m) => m.kind === 'error')).toMatchObject({ content: { message: 'Unknown error' } });
   });
 
   /** A call that streamed before it failed: pi keeps the partial content on the error stop (agent-loop.js:292-325). */
@@ -304,7 +306,7 @@ describe('reconstructMessages — failed model calls', () => {
 
     expect(messages.map((m) => m.kind)).toEqual(['user', 'assistant', 'error']);
     expect(messages[1]).toMatchObject({ kind: 'assistant', content: 'Reading the file', thinking: 'Let me look' });
-    expect(messages[2]).toEqual({ kind: 'error', content: 'terminated' });
+    expect(messages[2]).toEqual({ kind: 'error', content: { message: '{0}', args: ['terminated'] } });
   });
 
   // pi returns from the turn before executing any tool of an errored message (agent-loop.js:148-157), so the call never ran.
@@ -358,7 +360,7 @@ describe('reconstructMessages — failed model calls', () => {
     // _checkCompaction omits it (agent-session.js:2468); _runAutoCompaction returns before compacting (:2529-2536) or its compaction throws (:2616-2641).
     it('shows its card when no compaction followed, as the live view does', () => {
       expect(reconstructMessages([userMsg('u1', 'hi'), failed('a1', OVERFLOW), omitted('a1')], undefined, isOverflow).messages
-        .filter((m) => m.kind === 'error')).toEqual([{ kind: 'error', content: OVERFLOW }]);
+        .filter((m) => m.kind === 'error')).toEqual([{ kind: 'error', content: { message: '{0}', args: [OVERFLOW] } }]);
     });
 
     // A recovered overflow is followed by the compaction (:2562) and the re-run call.
@@ -468,7 +470,7 @@ describe('loadPiSessionHistory — failed model calls', () => {
     const posts: ExtensionToWebviewMessage[] = [];
     await loadPiSessionHistory('/cwd', 'sess-overflow', (m) => posts.push(m));
 
-    expect(posts.filter((p) => p.type === 'errorReplay')).toEqual([{ type: 'errorReplay', content: overflow }]);
+    expect(posts.filter((p) => p.type === 'errorReplay')).toEqual([{ type: 'errorReplay', content: { message: '{0}', args: [overflow] } }]);
   });
 
   // The live view showed these as the account's card (`PiStreamAdapter.showPendingFailure`), from the same classifier.
@@ -489,7 +491,7 @@ describe('loadPiSessionHistory — failed model calls', () => {
     const posts: ExtensionToWebviewMessage[] = [];
     await loadPiSessionHistory('/cwd', 'sess-auth', (m) => posts.push(m));
 
-    expect(posts.filter((p) => p.type === 'errorReplay')).toEqual([{ type: 'errorReplay', content: errorMessage, ...(authFailure ? { authFailure } : {}) }]);
+    expect(posts.filter((p) => p.type === 'errorReplay')).toEqual([{ type: 'errorReplay', content: { message: '{0}', args: [errorMessage] }, ...(authFailure ? { authFailure } : {}) }]);
   });
 
   it('replays a provider with no Accounts row that had no credential as the live card\'s text naming it and the model, never pi\'s', async () => {
@@ -501,7 +503,7 @@ describe('loadPiSessionHistory — failed model calls', () => {
     await loadPiSessionHistory('/cwd', 'sess-auth', (m) => posts.push(m));
 
     expect(posts.filter((p) => p.type === 'errorReplay')).toEqual([
-      { type: 'errorReplay', content: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.' },
+      { type: 'errorReplay', content: { message: 'No credential is set up for {0}, so {1} could not run. Pick a model from a provider you are signed in to.', args: ['cerebras', 'gpt-oss-120b'] } },
     ]);
   });
 });
@@ -637,19 +639,15 @@ describe('loadPiSessionHistory — rewindable ids', () => {
     expect(await loadPiSessionHistory('/cwd', 'sess-gone', () => {})).toBeNull();
   });
 
-  it('a missing session file posts its notice in the UI language, then done', async () => {
-    const greek = elBundle as Record<string, string>;
-    const t = vi.spyOn(platform().localization, 't').mockImplementation((message) => greek[message] ?? message);
+  it('a missing session file posts its notice as text each view renders, then done', async () => {
     vi.mocked(resolvePiSessionFile).mockResolvedValueOnce(null);
     const posts: ExtensionToWebviewMessage[] = [];
-    try {
-      await loadPiSessionHistory('/cwd', 'sess-gone', (m) => posts.push(m));
-    } finally {
-      t.mockRestore();
-    }
+    await loadPiSessionHistory('/cwd', 'sess-gone', (m) => posts.push(m));
 
     expect(posts.map((m) => m.type)).toEqual(['sessionCleared', 'sessionCleared', 'errorReplay', 'done']);
-    expect(posts[2]).toEqual({ type: 'errorReplay', content: 'Το αρχείο αυτής της συνομιλίας δεν βρέθηκε. Μπορεί να έχει διαγραφεί.' });
+    const replay = posts[2] as Extract<ExtensionToWebviewMessage, { type: 'errorReplay' }>;
+    expect(replay).toEqual({ type: 'errorReplay', content: { message: "This conversation's file could not be found. It may have been deleted." } });
+    expect(inGreek(replay.content)).toBe('Το αρχείο αυτής της συνομιλίας δεν βρέθηκε. Μπορεί να έχει διαγραφεί.');
   });
 
   // A send made while the replay runs names the conversation; one made after a replay that read nothing names none.
@@ -981,7 +979,7 @@ describe('loadPiSessionHistory — subagent cards from invocation entries and ag
     hoisted.branch = [userMsg('u1', 'explore it'), agentCall('a1', 'tc1'), invocation('agent-1', 'tc1')];
 
     const [tool] = await replayedAgentTools();
-    expect(tool!.agentMessages!.filter((m) => m.role === 'error')).toEqual([{ role: 'error', contentBlocks: [{ type: 'text', text: '529 overloaded_error' }] }]);
+    expect(tool!.agentMessages!.filter((m) => m.role === 'error')).toEqual([{ role: 'error', contentBlocks: [{ type: 'text', text: '529 overloaded_error' }], error: { message: '{0}', args: ['529 overloaded_error'] } }]);
   });
 
   it("replays each tool's recorded execution time, main and nested, and none for a result recorded without one", async () => {
@@ -1067,7 +1065,7 @@ describe('loadPiSessionHistory — subagent cards from invocation entries and ag
     expect(tool!.agentMessages).toEqual([
       { role: 'user', contentBlocks: [{ type: 'text', text: 'look around' }] },
       { role: 'assistant', contentBlocks: [{ type: 'text', text: 'Now I will' }] },
-      { role: 'error', contentBlocks: [{ type: 'text', text: '400 invalid_request_error' }] },
+      { role: 'error', contentBlocks: [{ type: 'text', text: '400 invalid_request_error' }], error: { message: '{0}', args: ['400 invalid_request_error'] } },
     ]);
   });
 

@@ -953,7 +953,7 @@
             "claude",
             "codex"
           ],
-          "scope": "application",
+          "scope": "machine",
           "default": "claude",
           "description": "Breaks a tie between .claude and .codex when a skill, slash command or MCP server with the same name exists in both. .damocles always outranks both and is not affected by this setting. Applies to every project, open chats included."
         },

@@ -48,6 +48,7 @@ function views(width = 1200): PanelViews {
     preloadPath: 'preload-panel.js',
     resourceRoot: '/app',
     pageStrings: () => ({ error: ERROR_PAGE_STRINGS, browser: BROWSER_STRINGS }),
+    language: () => 'el',
     hostLabel: () => undefined,
     onHostAction: (panel, action) => hostActions.push(`${panel.authority}:${action}`),
     connection: (panel) => (panel.authority === 'local' ? undefined : { state: { phase: 'offline' }, queued: [] }),
@@ -155,6 +156,7 @@ describe('PanelViews pages', () => {
     chat.showPage({ kind: 'chat' });
     const first = tabs.htmlFor(chat.panelId);
     expect(csp(first)).toBe("default-src 'none'; style-src app://damocles 'unsafe-inline'; script-src 'nonce-NONCE' 'wasm-unsafe-eval'; font-src app://damocles; img-src app://damocles data: https:; form-action 'none'; worker-src app://damocles/webview/assets/;");
+    expect(first).toContain('<html lang="el">');
     chat.showPage({ kind: 'chat' });
     expect(tabs.htmlFor(chat.panelId)).not.toBe(first);
     chat.showPage({ kind: 'error' });

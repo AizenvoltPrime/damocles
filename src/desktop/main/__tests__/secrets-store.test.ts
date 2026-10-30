@@ -11,8 +11,8 @@ const safeStorage = vi.hoisted(() => ({
 }));
 vi.mock('electron', () => ({ safeStorage }));
 
-import type { NotificationService } from '../../../platform/notification-service';
-import { formatMessage } from '../../local-services/localization-service';
+import type { TextNotifications } from '../platform/notification-service';
+import { fillMessage } from '../../../shared/localized-text';
 import { SECRETS_FILE, createDesktopSecretsStore } from '../platform/secrets-store';
 import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
 import { createRememberedSecrets } from '../remote/ssh/remembered-secrets';
@@ -20,8 +20,8 @@ import { createRememberedSecrets } from '../remote/ssh/remembered-secrets';
 let userData: string;
 const originalPlatform = process.platform;
 const warn = vi.fn(async () => undefined);
-const notifications = { info: vi.fn(), warn, error: vi.fn() } as unknown as NotificationService;
-const t = (message: string, ...args: Array<string | number | boolean>): string => `[el] ${formatMessage(message, args)}`;
+const notifications = { info: vi.fn(), warn, error: vi.fn() } as unknown as TextNotifications;
+const t = (message: string, ...args: Array<string | number | boolean>): string => `[el] ${fillMessage(message, args)}`;
 
 function setPlatform(value: NodeJS.Platform): void {
   Object.defineProperty(process, 'platform', { value, configurable: true });

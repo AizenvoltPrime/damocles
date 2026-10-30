@@ -342,11 +342,14 @@ async function loadMore(): Promise<boolean> {
   return true;
 }
 
-watch([repoId, choiceKey, untrusted], ([id, key], [previousId]) => {
+watch([repoId, choiceKey, untrusted], ([id, key, isUntrusted], [previousId, , wasUntrusted]) => {
   if (id !== previousId) {
     reset();
     seen = new Set();
     seenFor = '';
+  } else if (wasUntrusted !== undefined && isUntrusted !== wasUntrusted) {
+    // a trusted folder with no repository keeps its undefined id, and reload reads nothing for it; the first run has no trust before it
+    reset();
   }
   if (untrusted.value) {
     reset();

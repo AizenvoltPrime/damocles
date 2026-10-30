@@ -11,6 +11,8 @@ import { Button } from '@/components/ui/button';
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList, isListEdgeChord, isListPageKey } from '@/components/ui/command';
 import { Input } from '@/components/ui/input';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { useLocalizedText } from '@/composables/useLocalizedText';
+import type { LocalizedText } from '@shared/localized-text';
 import { formatBytes } from '@/utils/format-bytes';
 import OverlayShell from './OverlayShell.vue';
 
@@ -22,6 +24,7 @@ const props = defineProps<{ serverName: string }>();
 const emit = defineEmits<{ close: []; attached: [] }>();
 
 const { t, locale } = useI18n();
+const { rt } = useLocalizedText();
 const { postMessage, onMessage } = usePlatformBridge();
 const ids = useId();
 
@@ -75,7 +78,7 @@ interface Listing<T> {
   rows: T[];
   cursor: string | undefined;
   loading: boolean;
-  error: string | null;
+  error: LocalizedText | null;
 }
 
 const resources = reactive<Listing<McpResourceRow>>({ rows: [], cursor: undefined, loading: true, error: null });
@@ -115,7 +118,7 @@ interface DirectoryLevel {
   row: McpResourceRow;
   children: McpResourceRow[];
   loading: boolean;
-  error: string | null;
+  error: LocalizedText | null;
 }
 
 const directories = ref<DirectoryLevel[]>([]);
@@ -129,7 +132,7 @@ function isDirectory(row: McpResourceRow): boolean {
 
 const filter = ref('');
 const attaching = ref<string | null>(null);
-const attachError = ref<string | null>(null);
+const attachError = ref<LocalizedText | null>(null);
 const attachErrorElement = ref<HTMLElement | null>(null);
 
 function openDirectory(row: McpResourceRow): void {
@@ -557,7 +560,7 @@ const ERROR = 'rounded-9 border border-[color-mix(in_srgb,var(--d-danger)_30%,tr
           :class="ERROR"
           data-testid="mcp-resource-attach-error"
         >
-          {{ attachError }}
+          {{ rt(attachError) }}
         </p>
         <!-- Not disabled while attaching: a disabled button loses focus, which would drop to the page. -->
         <Button
@@ -596,7 +599,7 @@ const ERROR = 'rounded-9 border border-[color-mix(in_srgb,var(--d-danger)_30%,tr
             :class="ERROR"
             data-testid="mcp-resource-attach-error"
           >
-            {{ attachError }}
+            {{ rt(attachError) }}
           </p>
         </div>
 
@@ -616,7 +619,7 @@ const ERROR = 'rounded-9 border border-[color-mix(in_srgb,var(--d-danger)_30%,tr
               role="alert"
               :class="[ERROR, 'mb-1']"
             >
-              {{ listError }}
+              {{ rt(listError) }}
             </p>
             <CommandItem
               v-if="directory"
@@ -708,7 +711,7 @@ const ERROR = 'rounded-9 border border-[color-mix(in_srgb,var(--d-danger)_30%,tr
               role="alert"
               :class="[ERROR, 'mb-1']"
             >
-              {{ templates.error }}
+              {{ rt(templates.error) }}
             </p>
             <CommandItem
               v-for="option in templateOptions"

@@ -61,4 +61,3 @@ export function stepProject(
 export function stepGroup(groupOrder: readonly string[], group: string, delta: -1 | 1): ReorderResult {
   return moveGroup(groupOrder, group, groupOrder.indexOf(group) + delta);
 }
-

@@ -9,7 +9,7 @@ import { MAX_PENDING_TERMINAL_ATTACHMENT_CHARS, TerminalAttachmentManager } from
 import type { ChatAttachmentInput } from "../../shared/types/chat-attachment";
 import { log } from "../logger";
 import { mentionInChat, type MentionTarget } from "./mention-resolver";
-import { t } from "../l10n";
+import { errorTextOf, l } from "../l10n";
 import { perfSpan, type PerfSpan } from "../perf";
 import type { ChatSession } from "../chat-session";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../shared/types/messages";
@@ -24,10 +24,10 @@ import { folderContains } from "../worktrees/records";
 import type { ChatPlace, WorktreeAction, WorktreeFinishAction } from "../../shared/types/messages";
 import type { UserContentBlock } from "../../shared/types/content";
 import { settingsFolderOf, type FolderChange, type FolderTarget, type WorkspaceFolderRegistry } from "../workspace-folders/folder-registry";
-import { chatPageHtml, ERROR_PAGE_STRINGS, errorPageHtml } from "../../shared/panel-html";
+import { chatPageHtml, errorPageHtml } from "../../shared/panel-html";
 import { readContributedConfiguration } from "../config/read-contributed-configuration";
 import { writableKeysOf } from "./settings-view-scope";
-import { hostForChange } from "./device-hosts";
+import { deviceHost, hostForChange } from "./device-hosts";
 import { PanelActivity, type PanelActivityListener, type PanelChatChangesListener, type PanelTurnSettledListener, type UsageThresholdListener } from "./activity";
 import type { UsageThresholdCrossing } from "../pi-session/usage-thresholds";
 import { SETTINGS_VIEW_MESSAGE_TYPES, SETTINGS_VIEW_REQUEST_TYPES } from "../../shared/settings-view-messages";
@@ -88,9 +88,8 @@ interface MessageGate {
 
 /** A view joining a panel: the panel's posts it waits for, and its view key when the panel's other views go on live. */
 interface Join {
-  readonly session: ChatSession;
-  // each held post with the views it is not for
-  held: Array<{ readonly message: ExtensionToWebviewMessage; readonly except?: readonly string[] }> | undefined;
+  // from the hold: the session the join captured, its live event count then, and each held post with the views it is not for
+  held: { readonly session: ChatSession; readonly seq: number; readonly posts: Array<{ readonly message: ExtensionToWebviewMessage; readonly except?: readonly string[] }> } | undefined;
   readonly joining?: string;
 }
 
@@ -98,6 +97,8 @@ const arrivalContext = (): (<T>(body: () => T) => T) => AsyncResource.bind(<T>(b
 
 export interface PanelManagerConfig {
   platform: PlatformWithWorktrees;
+  /** The language a device's views render in (MessageRouter.languagePreference), which a page this core builds starts in. */
+  languagePreference: (clientId?: string) => string;
   createSessionForPanel: (
     host: PanelHost,
     permissionHandler: PermissionHandler,
@@ -150,6 +151,7 @@ export class PanelManager {
   private readonly allClosedListeners: Set<() => void> = new Set();
   private readonly resourceRoot: string;
   private readonly platform: PlatformWithWorktrees;
+  private readonly languagePreference: PanelManagerConfig["languagePreference"];
   private readonly createSessionForPanel: PanelManagerConfig["createSessionForPanel"];
   private readonly handleWebviewMessage: PanelManagerConfig["handleWebviewMessage"];
   private readonly joinViewOf: PanelManagerConfig["joinView"];
@@ -191,6 +193,7 @@ export class PanelManager {
 
   constructor(config: PanelManagerConfig) {
     this.platform = config.platform;
+    this.languagePreference = config.languagePreference;
     this.resourceRoot = config.platform.paths.resourceRoot;
     this.createSessionForPanel = config.createSessionForPanel;
     this.handleWebviewMessage = config.handleWebviewMessage;
@@ -266,10 +269,10 @@ export class PanelManager {
     const instance = this.panels.get(panelId);
     if (!instance) throw new Error('The chat is not loaded');
     if (instance.terminalAttachments.add(attachment)) return true;
-    const limit = MAX_PENDING_TERMINAL_ATTACHMENT_CHARS.toLocaleString(this.platform.localization.language);
+    const limit = { number: MAX_PENDING_TERMINAL_ATTACHMENT_CHARS };
     void this.platform.notifications.warn(attachment.kind === 'commit'
-      ? t('Not added to the chat: with this commit its attachments would pass {0} characters. Send or remove an attachment first.', limit)
-      : t('Not added to the chat: its attached terminal output would pass {0} characters. Send or remove an attachment first.', limit));
+      ? l('Not added to the chat: with this commit its attachments would pass {0} characters. Send or remove an attachment first.', limit)
+      : l('Not added to the chat: its attached terminal output would pass {0} characters. Send or remove an attachment first.', limit));
     return false;
   }
 
@@ -437,7 +440,7 @@ export class PanelManager {
       log("[PanelManager.replayForkedHistory] history replay failed: %O", err);
       this.postMessage(host, {
         type: "rewindError",
-        message: `Failed to replay forked history: ${err instanceof Error ? err.message : String(err)}`,
+        message: l("Failed to replay forked history: {0}", errorTextOf(err)),
       });
     }
 
@@ -587,8 +590,9 @@ export class PanelManager {
     permissionHandler.setWorkspacePath(folder.projectScope ? folder.fsPath : null);
     permissionHandler.setCwd(folder.fsPath);
 
-    const ideContextManager = new IdeContextManager(this.platform.editor, (context) => {
-      this.postMessage(host, { type: "ideContextUpdate", context });
+    const ideContextManager = new IdeContextManager(this.platform.editor, (context, clientId) => {
+      // a daemon's core: that device's editor, so that device's views alone
+      this.postMessage(clientId === undefined ? host : deviceHost(host, clientId), { type: "ideContextUpdate", context });
     }, (filePath) => {
       // AD12's wrong-copy guard: a worktree chat takes IDE context only from files in its working folder.
       const current = this.panels.get(panelId)?.folder ?? folder;
@@ -941,14 +945,13 @@ export class PanelManager {
       return undefined;
     }
     if (reason === "user" && instance.session.hasConversation()) {
-      const confirm = t("Start new conversation");
       const choice = await this.platform.notifications.warn(
-        t("Switch this panel to {0}? This starts a new conversation. The current one stays in history.", target.label),
+        l("Switch this panel to {0}? This starts a new conversation. The current one stays in history.", target.label),
+        [l("Start new conversation")],
         { modal: true },
-        confirm,
       );
       if (this.panels.get(panelId) !== instance) return undefined;
-      if (choice !== confirm) {
+      if (choice !== 0) {
         this.postWorkspaceFolderUpdate(instance, false);
         return undefined;
       }
@@ -1038,7 +1041,7 @@ export class PanelManager {
     if (this.panels.get(panelId) !== instance) return;
     this.postMessage(instance.host, {
       type: "error",
-      message: t("Damocles could not start a session in {0}: {1}", folder.label, detail),
+      message: l("Damocles could not start a session in {0}: {1}", folder.label, errorTextOf(err)),
     });
   }
 
@@ -1114,7 +1117,7 @@ export class PanelManager {
       const moved = await this.replaceSession(panelId, instance, to, "folderRemoved");
       // The home target leaves the registry when the first folder opens, which the user did not remove.
       if (moved && from.projectScope) {
-        void this.platform.notifications.warn(t(
+        void this.platform.notifications.warn(l(
           "The workspace folder {0} was removed, so a Damocles panel moved to {1} and started a new conversation. The previous one stays in history.",
           from.label,
           to.label,
@@ -1127,7 +1130,7 @@ export class PanelManager {
   /** except: the views of a panel several views show that this post is not for. */
   postMessage(host: PanelHost, message: ExtensionToWebviewMessage, except?: readonly string[]): void {
     const join = this.joins.get(host);
-    const held = join?.held;
+    const held = join?.held?.posts;
     if (held) {
       // a newer partial replaces its stream's older one among the partials held last, which keeps every other message's order
       const key = partialStreamKey(message);
@@ -1166,7 +1169,26 @@ export class PanelManager {
    * panel id, or undefined when no open panel holds that host and token. Never changes the panel's token. A join waits for
    * the panel's join in flight, so a post's `except` names at most the joining view and a give-back's sender.
    */
-  async joinView(host: PanelHost, viewKey: string, joining?: string): Promise<string | undefined> {
+  joinView(host: PanelHost, viewKey: string, joining?: string): Promise<string | undefined> {
+    return this.afterJoins(host, async () => {
+      const found = [...this.panels].find(([, instance]) => instance.host === host);
+      if (!found || found[1].panelToken === null || found[1].panelToken !== viewKey) return undefined;
+      const [panelId] = found;
+      await this.gateView(host, joining, (gate, joinHost) => this.joinViewOf(panelId, gate, joinHost));
+      return panelId;
+    });
+  }
+
+  /**
+   * Runs `run` with a gate on the panel `host` serves, after the host's joins in flight: what `run` posts through the gate goes
+   * to the view `joining` names (the whole panel when `host` has one view), and from `hold` on the panel's posts wait for it.
+   * A join and a page that loads again share it (views.join, `ready`), so their replays never overlap.
+   */
+  withViewGate(host: PanelHost, joining: string | undefined, run: (gate: ViewJoinGate) => Promise<void>): Promise<void> {
+    return this.afterJoins(host, () => this.gateView(host, joining, run));
+  }
+
+  private async afterJoins<T>(host: PanelHost, body: () => Promise<T>): Promise<T> {
     const before = this.joinQueues.get(host) ?? Promise.resolve();
     let done!: () => void;
     const finished = new Promise<void>((resolve) => { done = resolve; });
@@ -1174,48 +1196,46 @@ export class PanelManager {
     this.joinQueues.set(host, queued);
     try {
       await before;
-      return await this.joinViewNow(host, viewKey, joining);
+      return await body();
     } finally {
       done();
       if (this.joinQueues.get(host) === queued) this.joinQueues.delete(host);
     }
   }
 
-  private async joinViewNow(host: PanelHost, viewKey: string, joining?: string): Promise<string | undefined> {
-    const found = [...this.panels].find(([, instance]) => instance.host === host);
-    if (!found || found[1].panelToken === null || found[1].panelToken !== viewKey) return undefined;
-    const [panelId, instance] = found;
+  private async gateView(host: PanelHost, joining: string | undefined, run: (gate: ViewJoinGate, joinHost: PanelHost) => Promise<void>): Promise<void> {
+    if (![...this.panels.values()].some((candidate) => candidate.host === host)) throw new Error("No open chat panel for this host");
     // a view of a panel several views show gets the replay alone, and the others go on live meanwhile
     const joinHost = joining !== undefined && host.viewHost ? host.viewHost(joining) : host;
-    const join: Join = { session: instance.session, held: undefined, ...(joinHost !== host && joining !== undefined ? { joining } : {}) };
+    const join: Join = { held: undefined, ...(joinHost !== host && joining !== undefined ? { joining } : {}) };
     this.joins.set(host, join);
     let released = false;
     const gate: ViewJoinGate = {
       post: (message) => this.deliver(joinHost, message),
-      hold: () => {
-        join.held ??= [];
+      hold: (session) => {
+        join.held ??= { session, seq: session.eventSeq, posts: [] };
       },
-      release: (snapshotSeq) => {
+      release: () => {
         if (released) return;
         released = true;
-        const held = join.held ?? [];
+        const { held } = join;
         this.joins.delete(host);
+        if (!held) return;
         // the other views' live copy of a held post already reached the settings view
         const copiedWhenHeld = join.joining !== undefined && host.postMessageExcept !== undefined;
-        for (const { message, except } of held) {
+        for (const { message, except } of held.posts) {
           if (join.joining !== undefined && except?.includes(join.joining)) continue;
-          const seq = join.session.eventSeqOf(message);
-          if (seq === undefined || seq > snapshotSeq) this.deliver(joinHost, message, joinHost === host ? except : undefined, !copiedWhenHeld);
+          const seq = held.session.eventSeqOf(message);
+          if (seq === undefined || seq > held.seq) this.deliver(joinHost, message, joinHost === host ? except : undefined, !copiedWhenHeld);
         }
       },
     };
     try {
-      await this.joinViewOf(panelId, gate, joinHost);
+      await run(gate, joinHost);
     } finally {
       // a join that failed before its release delivers everything it held
-      gate.release(-1);
+      gate.release();
     }
-    return panelId;
   }
 
   /**
@@ -1303,9 +1323,10 @@ export class PanelManager {
     return [];
   }
 
-  broadcast(message: ExtensionToWebviewMessage): void {
+  /** clientId: only that device's views of each panel (a daemon's core). */
+  broadcast(message: ExtensionToWebviewMessage, clientId?: string): void {
     for (const [, instance] of this.panels) {
-      this.postMessage(instance.host, message);
+      this.postMessage(clientId === undefined ? instance.host : deviceHost(instance.host, clientId), message);
     }
   }
 
@@ -1359,11 +1380,12 @@ export class PanelManager {
       host.showPage({ kind: "error" });
       return;
     }
+    if (!host.errorPageStrings) throw new Error("A host core builds pages for words its error page (errorPageStrings)");
     host.setHtml(errorPageHtml({
       cspSource: host.cspSource,
       logoUri: host.asResourceUri(path.join(this.resourceRoot, "resources", "icon.png")),
       themeCss: host.themeCssSource(),
-      strings: ERROR_PAGE_STRINGS,
+      strings: host.errorPageStrings(),
     }));
   }
 
@@ -1371,6 +1393,7 @@ export class PanelManager {
   getHtmlContent(host: PanelHost): string {
     htmlToReadySpans.set(host, perfSpan("panel.html→ready"));
     return chatPageHtml({
+      lang: this.languagePreference(host.clientId),
       cspSource: host.cspSource,
       ...(host.workerSrc !== undefined ? { workerSrc: host.workerSrc } : {}),
       nonce: this.getNonce(),

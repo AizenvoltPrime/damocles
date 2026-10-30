@@ -17,9 +17,9 @@ interface Recorded {
 }
 
 interface HookGlobals {
-  __damoclesE2e: { notifications: { warn(message: string, options: { modal: boolean }, ...actions: string[]): Promise<string | undefined> } };
+  __damoclesE2e: { notifications: { warn(message: { message: string }, actions: Array<{ message: string }>, options: { modal: boolean }): Promise<number | undefined> } };
   __e2eOverlayCrash?: Recorded;
-  __e2eHeldAnswer?: Promise<string | undefined>;
+  __e2eHeldAnswer?: Promise<number | undefined>;
 }
 
 // A request made while the overlay page navigates is held for the next page; a crash of the renderer during that
@@ -58,7 +58,7 @@ test('a question asked while the overlay reloads is held through a crash of its 
     const crashDuringReload = (details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>): void => {
       if (!details.isMainFrame || details.isSameDocument) return;
       overlay.removeListener('did-start-navigation', crashDuringReload);
-      g.__e2eHeldAnswer = g.__damoclesE2e.notifications.warn(question, { modal: true }, 'Proceed');
+      g.__e2eHeldAnswer = g.__damoclesE2e.notifications.warn({ message: question }, [{ message: 'Proceed' }], { modal: true });
       overlay.forcefullyCrashRenderer();
     };
     overlay.on('did-start-navigation', crashDuringReload);
@@ -77,7 +77,8 @@ test('a question asked while the overlay reloads is held through a crash of its 
     const overlay = webContents.getAllWebContents().find((contents) => contents.getURL() === url)!;
     return overlay.executeJavaScript('[...document.querySelectorAll(\'[role="alertdialog"] button\')].find((button) => button.textContent.trim() === "Proceed").click()');
   }, OVERLAY_URL);
-  expect(await app.evaluate(() => (globalThis as unknown as HookGlobals).__e2eHeldAnswer)).toBe('Proceed');
+  // the host answers with the chosen action's index
+  expect(await app.evaluate(() => (globalThis as unknown as HookGlobals).__e2eHeldAnswer)).toBe(0);
 
   const recorded = await app.evaluate(() => (globalThis as unknown as HookGlobals).__e2eOverlayCrash!);
   // Electron 44's order, which OverlayHost's liveness check relies on: the dying renderer stops loading first, while

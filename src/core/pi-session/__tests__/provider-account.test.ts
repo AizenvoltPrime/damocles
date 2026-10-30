@@ -7,10 +7,11 @@ import * as path from 'path';
 import { InMemoryModelsStore, type Api, type Model } from '@earendil-works/pi-ai';
 import { ModelRuntime, SessionManager, SettingsManager, createAgentSession } from '@earendil-works/pi-coding-agent';
 import { accountFailureOf, failureCard, failureText } from '../provider-account';
-import { nestedCallError, nestedRunError } from '../nested-call-failures';
+import { nestedCallError, nestedCallFailure, nestedRunError } from '../nested-call-failures';
 import { customProviderDef } from '../custom-providers';
 import { loadFormatNoApiKeyFoundMessage } from '../../../__mocks__/pi-auth-guidance';
-import { useGreekLocale } from '../../../__mocks__/greek-locale';
+import { inGreek } from '../../../__mocks__/greek-locale';
+import { englishText, type LocalizedText } from '../../../shared/localized-text';
 
 let formatNoApiKeyFoundMessage: (provider: string) => string;
 beforeAll(async () => {
@@ -130,7 +131,7 @@ describe('accountFailureOf, a failed compaction in pi\'s wrappers', () => {
 
     expect(ended).toHaveLength(3);
     for (const message of [...ended, thrown]) {
-      expect(failureCard('cerebras', model.id, message)).toEqual({ type: 'error', message: `No credential is set up for cerebras, so ${model.id} could not run. Pick a model from a provider you are signed in to.` });
+      expect(failureCard('cerebras', model.id, message)).toEqual({ type: 'error', message: { message: 'No credential is set up for {0}, so {1} could not run. Pick a model from a provider you are signed in to.', args: ['cerebras', model.id] } });
     }
   }, 30_000);
 
@@ -216,21 +217,23 @@ describe('accountFailureOf, a missing credential in pi\'s own words', () => {
 
     for (const message of [formatNoApiKeyFoundMessage('cerebras'), callFailure]) {
       expect(accountFailureOf('cerebras', message)).toBeUndefined();
-      expect(failureCard('cerebras', model.id, message)).toEqual({ type: 'error', message: words });
-      expect(failureText('cerebras', model.id, message, 'user')).toBe(words);
+      const card = failureCard('cerebras', model.id, message);
+      expect(card.type).toBe('error');
+      expect(englishText(card.message as LocalizedText)).toBe(words);
+      expect(englishText(failureText('cerebras', model.id, message))).toBe(words);
     }
-    expect(failureCard('cerebras', model.id, 'cerebras API error (500): overloaded')).toEqual({ type: 'error', message: 'cerebras API error (500): overloaded' });
+    expect(failureCard('cerebras', model.id, 'cerebras API error (500): overloaded')).toEqual({ type: 'error', message: { message: '{0}', args: ['cerebras API error (500): overloaded'] } });
   });
 
   it('gives a transcript with no account card a provider-named text for a row\'s missing credential', () => {
-    expect(failureText('deepseek', 'deepseek-v4-pro', formatNoApiKeyFoundMessage('deepseek'), 'user')).toBe('No DeepSeek credential is saved, so DeepSeek V4 Pro could not run. Add an API key in Settings › Models & accounts.');
-    expect(nestedCallError({ errorMessage: 'Provider is not configured: deepseek', provider: 'deepseek', model: 'deepseek-v4-pro' }, 'user')).toBe('No DeepSeek credential is saved, so DeepSeek V4 Pro could not run. Add an API key in Settings › Models & accounts.');
-    expect(nestedCallError({ errorMessage: 'Anthropic (529): overloaded', provider: 'anthropic', model: 'claude-sonnet-5-5' }, 'user')).toBe('Anthropic (529): overloaded');
+    expect(englishText(failureText('deepseek', 'deepseek-v4-pro', formatNoApiKeyFoundMessage('deepseek')))).toBe('No DeepSeek credential is saved, so DeepSeek V4 Pro could not run. Add an API key in Settings › Models & accounts.');
+    expect(englishText(nestedCallFailure({ errorMessage: 'Provider is not configured: deepseek', provider: 'deepseek', model: 'deepseek-v4-pro' }))).toBe('No DeepSeek credential is saved, so DeepSeek V4 Pro could not run. Add an API key in Settings › Models & accounts.');
+    expect(nestedCallFailure({ errorMessage: 'Anthropic (529): overloaded', provider: 'anthropic', model: 'claude-sonnet-5-5' })).toEqual({ message: '{0}', args: ['Anthropic (529): overloaded'] });
   });
 
   // What a row takes comes from the account facts: a key, a sign-in, or either.
   it('tells the user what the row takes: a key, a sign-in, or either', () => {
-    const text = (provider: string, model: string) => failureText(provider, model, `Provider is not configured: ${provider}`, 'user');
+    const text = (provider: string, model: string) => englishText(failureText(provider, model, `Provider is not configured: ${provider}`));
 
     expect(text('minimax', 'MiniMax-M3')).toMatch(/could not run\. Add an API key in Settings › Models & accounts\.$/);
     expect(text('github-copilot', 'claude-opus-5.5')).toBe('No GitHub Copilot credential is saved, so Opus 5.5 could not run. Sign in to GitHub Copilot in Settings › Models & accounts.');
@@ -243,16 +246,16 @@ describe('accountFailureOf, a missing credential in pi\'s own words', () => {
     }
   });
 
-  // Text the model reads stays English whatever the UI language; only the transcript's card is translated.
-  it('gives the model English and the transcript the UI language, from one text', () => {
-    useGreekLocale();
+  // Text the model reads is English; the transcript's card is text each view renders in its own language.
+  it('gives the model English and the transcript text a Greek view renders in Greek, from one text', () => {
     const refused = { errorMessage: 'Provider is not configured: anthropic', provider: 'anthropic', model: 'claude-sonnet-5-5' };
     const english = 'No Anthropic credential is saved, so Sonnet 5.5 could not run. Sign in or add an API key in Settings › Models & accounts.';
 
-    expect(nestedCallError(refused, 'model')).toBe(english);
+    expect(nestedCallError(refused)).toBe(english);
     expect(nestedRunError({ model: { provider: 'anthropic', id: 'claude-sonnet-5-5' } } as never, new Error(formatNoApiKeyFoundMessage('anthropic')))).toBe(english);
-    expect(nestedCallError(refused, 'user')).toBe('Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το Anthropic, οπότε το Sonnet 5.5 δεν μπόρεσε να εκτελεστεί. Συνδεθείτε ή προσθέστε ένα κλειδί API στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.');
-    expect(failureCard('cerebras', 'gpt-oss-120b', 'Provider is not configured: cerebras')).toEqual({ type: 'error', message: 'Δεν έχει ρυθμιστεί διαπιστευτήριο για το cerebras, οπότε το gpt-oss-120b δεν μπόρεσε να εκτελεστεί. Επιλέξτε ένα μοντέλο από έναν πάροχο στον οποίο έχετε συνδεθεί.' });
+    expect(englishText(nestedCallFailure(refused))).toBe(english);
+    expect(inGreek(nestedCallFailure(refused))).toBe('Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το Anthropic, οπότε το Sonnet 5.5 δεν μπόρεσε να εκτελεστεί. Συνδεθείτε ή προσθέστε ένα κλειδί API στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.');
+    expect(inGreek(failureCard('cerebras', 'gpt-oss-120b', 'Provider is not configured: cerebras').message as LocalizedText)).toBe('Δεν έχει ρυθμιστεί διαπιστευτήριο για το cerebras, οπότε το gpt-oss-120b δεν μπόρεσε να εκτελεστεί. Επιλέξτε ένα μοντέλο από έναν πάροχο στον οποίο έχετε συνδεθεί.');
   });
 
   it('matches only the exact shapes, naming the run\'s own provider', () => {

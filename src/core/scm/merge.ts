@@ -6,11 +6,14 @@ import * as path from 'node:path';
 import { gitAtLeast } from './git-runner';
 import { checkRepoPath, MAX_SHOW_BYTES, type Operation, type Repository } from './repository';
 import { decodeBlob, isBinary, readBlob, type TextCodec } from './staging';
+import { englishText, type LocalizedText } from '../../shared/localized-text';
 
 export type MergeOperation = 'merge' | 'rebase' | 'cherryPick' | 'stash' | 'worktreeApply';
 
 export interface MergeLabel {
-  readonly title: string;
+  readonly title: LocalizedText;
+  // what this input's conflict markers say, in Compute Conflicts With Git and in Reset Result alike (markerName)
+  readonly marker: string;
   // the commit's short hash
   readonly description?: string;
   // the commit's ref names, HEAD's arrow dropped
@@ -24,12 +27,12 @@ export interface MergeLabels {
 }
 
 export interface MergeTitles {
-  readonly current: string;
-  readonly incoming: string;
-  readonly base: string;
-  readonly stash: string;
+  readonly current: LocalizedText;
+  readonly incoming: LocalizedText;
+  readonly base: LocalizedText;
+  readonly stash: LocalizedText;
   // slice 12a's Apply: "{branch} (worktree)"
-  readonly worktree: (branch: string) => string;
+  readonly worktree: (branch: string) => LocalizedText;
 }
 
 // The commit each operation brings in (VS Code reads MERGE_HEAD, or REBASE_HEAD while rebasing).
@@ -51,7 +54,7 @@ export function mergeOperationOf(operation: Operation | null, fileText: string):
 }
 
 /** The titles of the two inputs: Current and Incoming, Incoming named "Stashed Changes" for a stash or "{branch} (worktree)" for a worktree's Apply. */
-export function mergeTitles(operation: MergeOperation, titles: MergeTitles, worktreeBranch?: string): { readonly current: string; readonly incoming: string; readonly base: string } {
+export function mergeTitles(operation: MergeOperation, titles: MergeTitles, worktreeBranch?: string): { readonly current: LocalizedText; readonly incoming: LocalizedText; readonly base: LocalizedText } {
   const incoming = operation === 'stash' ? titles.stash : operation === 'worktreeApply' && worktreeBranch !== undefined ? titles.worktree(worktreeBranch) : titles.incoming;
   return { current: titles.current, incoming, base: titles.base };
 }
@@ -123,19 +126,20 @@ export function mergeOperationIn(repo: Repository, fileText: string, worktreeBra
   return worktreeBranch !== undefined ? 'worktreeApply' : mergeOperationOf(repo.lastStatus?.operation ?? null, fileText);
 }
 
-/** The inputs' labels: the operation's titles, each side with its short hash and ref names. */
+/** The inputs' labels: the operation's titles, each side with its short hash and ref names, and each input's marker name. */
 export async function mergeLabels(repo: Repository, operation: MergeOperation, titles: MergeTitles, worktreeBranch?: string): Promise<MergeLabels> {
   const named = mergeTitles(operation, titles, worktreeBranch);
   const incomingHead = operation === 'merge' || operation === 'rebase' || operation === 'cherryPick' ? INCOMING_HEAD[operation] : undefined;
   const [head, incoming] = await Promise.all([commitLabel(repo, 'HEAD'), incomingHead === undefined ? Promise.resolve({}) : commitLabel(repo, incomingHead)]);
   // a rebase that replayed commits already has HEAD past the branch it rebases onto, so the branch is read from git's onto
   const current = operation === 'rebase' && head.detail === undefined ? { ...head, ...(await ontoBranches(repo)) } : head;
-  return { current: { title: named.current, ...current }, incoming: { title: named.incoming, ...incoming }, base: { title: named.base } };
+  const label = (title: LocalizedText, commit: Pick<MergeLabel, 'description' | 'detail'>): MergeLabel => ({ title, marker: markerName(title, commit), ...commit });
+  return { current: label(named.current, current), incoming: label(named.incoming, incoming), base: label(named.base, {}) };
 }
 
-/** The name a conflict marker gives a side: its ref names, else its short hash, else its title; Reset Result writes the same. */
-export function markerName(label: MergeLabel): string {
-  return label.detail || label.description || label.title;
+// An input's conflict marker name: its ref names, else its short hash, else its title in English, whatever language the view shows.
+function markerName(title: LocalizedText, commit: Pick<MergeLabel, 'description' | 'detail'>): string {
+  return commit.detail || commit.description || englishText(title);
 }
 
 // The branches at a rebase's onto commit (rebase-merge/onto, or rebase-apply/onto for an apply rebase), as a label detail.
@@ -166,8 +170,8 @@ async function commitLabel(repo: Repository, ref: string): Promise<Pick<MergeLab
 export type MergeFileResult = { readonly ok: true; readonly text: string } | { readonly ok: false; readonly reason: MergeRefusal | 'failed' };
 
 /**
- * git merge-file -p of current, base and incoming (diff3 adds the base section), its markers named as markerName names the
- * sides and as long as the path's conflict-marker-size attribute makes git's own merge write them. On git 2.43 or later it
+ * git merge-file -p of current, base and incoming (diff3 adds the base section), its markers named by each label's marker and
+ * as long as the path's conflict-marker-size attribute makes git's own merge write them. On git 2.43 or later it
  * reads the blobs by --object-id; otherwise, or with no base (AA), it runs on three files in a fresh folder under the OS temp
  * folder, which is always removed.
  */
@@ -176,7 +180,7 @@ export async function mergeFile(repo: Repository, relativePath: string, codec: T
   const stages = await stagesOf(repo, relativePath);
   if (!stages) return { ok: false, reason: 'notConflicted' };
   const style = diff3 ? '--diff3' : '--no-diff3';
-  const named = ['-L', markerName(labels.current), '-L', labels.base.title, '-L', markerName(labels.incoming)];
+  const named = ['-L', labels.current.marker, '-L', labels.base.marker, '-L', labels.incoming.marker];
   // check-attr -z: path, attribute and value, NUL-separated
   const sizeValue = (await repo.read(['check-attr', '-z', 'conflict-marker-size', '--', relativePath], { literalPathspecs: true })).stdout.toString('utf8').split('\0')[2];
   const markerSize = sizeValue !== undefined && /^[1-9]\d{0,3}$/.test(sizeValue) ? [`--marker-size=${sizeValue}`] : [];

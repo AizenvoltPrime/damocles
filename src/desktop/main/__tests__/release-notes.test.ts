@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { NotificationService } from '../../../platform/notification-service';
+import type { TextNotifications } from '../platform/notification-service';
 import { announceInstalledVersion, compareVersions, isVersion, LAST_SEEN_VERSION_KEY, parseChangelog, ReleaseNotesSource, type InstalledVersionDeps } from '../release-notes';
 
 const changelogUrl = new URL('../../../../CHANGELOG.md', import.meta.url);
@@ -118,7 +118,7 @@ describe('announceInstalledVersion', () => {
         notices.push([message, ...actions]);
         return answer;
       },
-    } as unknown as NotificationService;
+    } as unknown as TextNotifications;
     return {
       stored,
       notices,

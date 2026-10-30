@@ -8,6 +8,7 @@ import type { HandlerDependencies, HandlerContext } from "../../types";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../../shared/types/messages";
 import type { McpServerStatusInfo, McpToolExposureScope, McpToolExposureSetting } from "../../../../../shared/types/mcp";
 import { createFakePlatform } from "../../../../../__mocks__/fake-platform";
+import { englishText } from "../../../../../shared/localized-text";
 
 const KEY = "damocles.mcp.resourceExposure";
 
@@ -91,7 +92,7 @@ describe("mcpSetResourceExposure", () => {
     expect(t.posted).toContainEqual({
       type: "notification",
       notificationType: "info",
-      message: "Saved at the User scope, but this server's Local resource setting takes precedence, so it did not change. Save to Local to change it.",
+      message: { message: "Saved at the {0} scope, but this server's {1} resource setting takes precedence, so it did not change. Save to {1} to change it.", args: [{ message: "User" }, { message: "Local" }] },
     });
   });
 
@@ -103,7 +104,7 @@ describe("mcpSetResourceExposure", () => {
     await t.run("off", "project");
 
     expect(t.update).not.toHaveBeenCalled();
-    expect(t.posted.filter((m) => m.type === "notification").map((m) => (m as { message: string }).message)).toEqual([
+    expect(t.posted.flatMap((m) => (m.type === "notification" ? [englishText(m.message)] : []))).toEqual([
       'Failed to save MCP resource setting: MCP server "nope" is not available in this folder.',
       "Failed to save MCP resource setting: Invalid MCP resource setting.",
       "Failed to save MCP resource setting: This folder cannot save MCP resource settings at the Project scope.",

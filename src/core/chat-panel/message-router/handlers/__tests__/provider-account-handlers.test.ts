@@ -13,7 +13,7 @@ const H = vi.hoisted(() => ({
 vi.mock("../../../../logger", () => ({ log: vi.fn() }));
 vi.mock("../../../../pi-session/pi-runtime", () => ({
   PiRuntime: { get: () => H.runtime, exists: true, notifyMemoryJudgeChange: () => {} },
-  remoteSignInRefusal: () => "Sign-ins change only in the User tab on your computer.",
+  remoteSignInRefusal: () => ({ message: "Sign-ins change only in the User tab on your computer." }),
 }));
 vi.mock("../../../../pi-session/custom-providers", () => ({ providerSignInDef: () => H.signInDef }));
 vi.mock("../../../settings-manager/managers/provider-keys", () => ({
@@ -83,10 +83,12 @@ function parkOnDeviceCode(verificationUri = "https://accounts.x.ai/device?code=A
   };
 }
 
-const EXPIRED = { kind: "expired", message: "Code expired. Start the sign-in again." };
-const DENIED = { kind: "denied", message: "The sign-in was denied." };
-const PROVIDER = { kind: "provider", message: "The provider could not complete the sign-in." };
-const providerStatus = (status: number) => ({ kind: "provider", message: `The provider could not complete the sign-in (HTTP ${status}).`, status });
+const EXPIRED = { kind: "expired", message: { message: "Code expired. Start the sign-in again." } };
+const DENIED = { kind: "denied", message: { message: "The sign-in was denied." } };
+const PROVIDER = { kind: "provider", message: { message: "The provider could not complete the sign-in." } };
+const OTHER_SIGN_IN = { kind: "input", message: { message: "That link is from another sign-in. Paste the link this sign-in opened, or start again." } };
+const NO_CODE = { kind: "input", message: { message: "That text holds no sign-in code. Paste the whole link or code." } };
+const providerStatus = (status: number) => ({ kind: "provider", message: { message: "The provider could not complete the sign-in (HTTP {0}).", args: [status] }, status });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -106,7 +108,7 @@ describe("provider sign-in flow", () => {
     await t.send({ type: "providerSignInCancel", provider: "xai" });
     await first;
     expect(t.states()[0]).toEqual({ phase: "starting" });
-    expect(t.states().at(-1)).toEqual({ phase: "idle", error: { kind: "cancelled", message: "Sign-in cancelled." } });
+    expect(t.states().at(-1)).toEqual({ phase: "idle", error: { kind: "cancelled", message: { message: "Sign-in cancelled." } } });
     expect(t.sent.some((m) => m.type === "authFailureCleared")).toBe(false);
   });
 
@@ -146,6 +148,10 @@ describe("provider sign-in flow", () => {
     ["xai.js:149", "xAI device authorization was denied", DENIED],
     ["kimi-coding.js:163", "Kimi Code login was denied.", DENIED],
     ["meta.js:119", "Meta login was denied.", DENIED],
+    ["anthropic.js:159, a pasted link of another sign-in", "OAuth state mismatch", OTHER_SIGN_IN],
+    ["openai-codex.js:304, a pasted link of another sign-in", "State mismatch", OTHER_SIGN_IN],
+    ["anthropic.js, a paste with no code", "Missing authorization code", NO_CODE],
+    ["a state mismatch phrase followed by other text", "OAuth state mismatch: state=abc", PROVIDER],
     ["callback-server.js:96, OpenRouter has no code", "OpenRouter sign-in timed out", PROVIDER],
     ["openrouter.js:82, OpenRouter has no code", "OpenRouter OAuth token exchange timed out", PROVIDER],
     ["meta.js:147, a session, not a code", "Meta session expired (status 401). Run `/login meta` to sign in again.: Session has expired", providerStatus(401)],
@@ -171,8 +177,8 @@ describe("provider sign-in flow", () => {
     const t = setup();
     H.runtime.signInProvider.mockRejectedValueOnce(err);
     await t.send({ type: "providerSignIn", provider: "xai" });
-    expect(t.states().at(-1)).toEqual({ phase: "idle", error: { kind: "network", message: "Could not reach the sign-in service. Check the connection and try again." } });
-    expect(vi.mocked(log)).toHaveBeenCalledWith("[ProviderSignIn:%s] sign-in ended: %s (%s)%s", "xai", "network", err.name, "");
+    expect(t.states().at(-1)).toEqual({ phase: "idle", error: { kind: "network", message: { message: "Could not reach the sign-in service. Check the connection and try again." } } });
+    expect(vi.mocked(log)).toHaveBeenCalledWith("[ProviderSignIn:%s] sign-in ended: %s", "xai", `network (${err.name})`);
   });
 
   it("aborts a running flow before saving a key, then saves it", async () => {
@@ -197,7 +203,7 @@ describe("provider sign-in flow", () => {
     await t.send({ type: "providerSignIn", provider: "xai" });
     await t.send({ type: "providerSignOut", provider: "xai" });
 
-    const refused = { phase: "idle", error: { kind: "remote", message: "Sign-ins change only in the User tab on your computer." } };
+    const refused = { phase: "idle", error: { kind: "remote", message: { message: "Sign-ins change only in the User tab on your computer." } } };
     expect(t.states()).toEqual([refused, refused]);
     expect(t.otherSent).toEqual([]);
     expect(remounted(t, "xai")).toEqual({ phase: "idle" });
@@ -210,8 +216,8 @@ describe("provider sign-in flow", () => {
     await t.send({ type: "setProviderApiKey", provider: "xai", key: "xai-key", requestId: "r1" });
     await t.send({ type: "clearProviderApiKey", provider: "deepseek", requestId: "r2" });
     expect(t.sent).toEqual([
-      { type: "setProviderApiKeyAck", provider: "xai", requestId: "r1", ok: false, error: "Sign-ins change only in the User tab on your computer." },
-      { type: "clearProviderApiKeyAck", provider: "deepseek", requestId: "r2", ok: false, error: "Sign-ins change only in the User tab on your computer." },
+      { type: "setProviderApiKeyAck", provider: "xai", requestId: "r1", ok: false, error: { message: "Sign-ins change only in the User tab on your computer." } },
+      { type: "clearProviderApiKeyAck", provider: "deepseek", requestId: "r2", ok: false, error: { message: "Sign-ins change only in the User tab on your computer." } },
     ]);
     expect(vi.mocked(storeProviderKey)).not.toHaveBeenCalled();
     expect(vi.mocked(deleteProviderKey)).not.toHaveBeenCalled();
@@ -275,7 +281,7 @@ describe("provider sign-in flow", () => {
     const t = setup(true);
     await t.send({ type: "providerSignInCopyCode", provider: "xai" });
     expect(t.platform.clipboard.writes).toEqual([]);
-    expect(t.states()).toEqual([{ phase: "idle", error: { kind: "remote", message: "Sign-ins change only in the User tab on your computer." } }]);
+    expect(t.states()).toEqual([{ phase: "idle", error: { kind: "remote", message: { message: "Sign-ins change only in the User tab on your computer." } } }]);
     expect(t.otherSent).toEqual([]);
   });
 
@@ -430,7 +436,7 @@ describe("provider sign-in flow", () => {
     const t = setup();
     H.runtime.signOutProvider.mockRejectedValueOnce(new Error("EBUSY: resource busy or locked"));
     await t.send({ type: "providerSignOut", provider: "xai" });
-    const failed = { phase: "idle", error: { kind: "provider", message: "Could not sign out. Try again." } };
+    const failed = { phase: "idle", error: { kind: "provider", message: { message: "Could not sign out. Try again." } } };
     expect(t.states().at(-1)).toEqual(failed);
     expect(remounted(t, "xai")).toEqual(failed);
 
@@ -459,7 +465,7 @@ describe("provider sign-in flow", () => {
     await run;
 
     const phases = t.states();
-    expect(phases.at(-2)).toEqual({ phase: "idle", error: { kind: "cancelled", message: "Sign-in cancelled." } });
+    expect(phases.at(-2)).toEqual({ phase: "idle", error: { kind: "cancelled", message: { message: "Sign-in cancelled." } } });
     expect(phases.at(-1)).toEqual({ phase: "idle" });
     expect(remounted(t, "xai")).toEqual({ phase: "idle" });
     expect(t.sent).toContainEqual({ type: "authFailureCleared", account: "xai" });
@@ -491,7 +497,7 @@ describe("provider sign-in flow", () => {
 
     await t.send({ type: "providerSignInCancel", provider: "xai" });
     await xaiRun;
-    expect(t.states("xai").at(-1)).toEqual({ phase: "idle", error: { kind: "cancelled", message: "Sign-in cancelled." } });
+    expect(t.states("xai").at(-1)).toEqual({ phase: "idle", error: { kind: "cancelled", message: { message: "Sign-in cancelled." } } });
     expect(t.states("meta").at(-1)).toEqual({ phase: "idle" });
   });
 
@@ -513,7 +519,7 @@ describe("provider sign-in flow", () => {
     await vi.waitFor(() => expect(t.states().at(-1)?.phase).toBe("deviceCode"));
     t.dispose();
     await run;
-    expect(t.states().at(-1)).toEqual({ phase: "idle", error: { kind: "cancelled", message: "Sign-in cancelled." } });
+    expect(t.states().at(-1)).toEqual({ phase: "idle", error: { kind: "cancelled", message: { message: "Sign-in cancelled." } } });
   });
 
   it("refuses an unknown provider", async () => {

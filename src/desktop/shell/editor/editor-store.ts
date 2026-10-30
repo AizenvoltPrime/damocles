@@ -44,6 +44,17 @@ export interface BufferReplaceTarget {
   readonly text?: string;
 }
 
+export interface DiffStats {
+  readonly added: number;
+  readonly removed: number;
+}
+
+// One mounted diff editor's line counts for its tab.
+export interface DiffStatsPublisher {
+  set(stats: DiffStats | undefined): void;
+  dispose(): void;
+}
+
 export type BufferReplaceResult = { readonly ok: true; readonly replaced: number } | { readonly ok: false; readonly reason: 'changed' | 'unsupportedRegex' | 'readOnly' };
 
 interface TextBuffer {
@@ -89,6 +100,10 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
   const focusOverlay = shallowRef(false);
   // documents whose format has run past FORMATTING_INDICATOR_DELAY_MS, which their editor marks
   const formatting = shallowRef<ReadonlySet<string>>(new Set());
+  // each mounted diff tab's line counts, from the diff its newest editor shows; absent until that diff is computed
+  const diffStats = shallowRef<ReadonlyMap<string, DiffStats>>(new Map());
+  // each tab's mounted diff editors, oldest first, with the counts each last computed; the tab shows its newest editor's
+  const diffStatsEditors = new Map<string, Array<{ stats: DiffStats | undefined }>>();
   let focusSerial = 0;
   let applyingRemote = false;
   let monacoModule: Promise<ShellMonacoModule> | undefined;
@@ -344,6 +359,34 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
     if (on) next.add(documentId);
     else next.delete(documentId);
     formatting.value = next;
+  }
+
+  /** A mounted diff editor's counts for tabId; its dispose drops only its own, so another editor of the tab keeps its count. */
+  function publishDiffStats(tabId: string): DiffStatsPublisher {
+    const own: { stats: DiffStats | undefined } = { stats: undefined };
+    diffStatsEditors.set(tabId, [...(diffStatsEditors.get(tabId) ?? []), own]);
+    const show = (): void => setDiffStats(tabId, diffStatsEditors.get(tabId)?.at(-1)?.stats);
+    return {
+      set: (stats) => {
+        own.stats = stats;
+        show();
+      },
+      dispose: () => {
+        const left = (diffStatsEditors.get(tabId) ?? []).filter((editor) => editor !== own);
+        if (left.length > 0) diffStatsEditors.set(tabId, left);
+        else diffStatsEditors.delete(tabId);
+        show();
+      },
+    };
+  }
+
+  function setDiffStats(tabId: string, stats: DiffStats | undefined): void {
+    const current = diffStats.value.get(tabId);
+    if (current?.added === stats?.added && current?.removed === stats?.removed) return;
+    const next = new Map(diffStats.value);
+    if (stats) next.set(tabId, stats);
+    else next.delete(tabId);
+    diffStats.value = next;
   }
 
   // The built-in formatter's edits within the budget; a failure or a timeout is main's to log and tell, and formats nothing.
@@ -832,6 +875,8 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
     saveError,
     focusOverlay,
     formatting,
+    diffStats,
+    publishDiffStats,
     setFocusOverlay,
     setCommandTarget,
     editRepoFile,

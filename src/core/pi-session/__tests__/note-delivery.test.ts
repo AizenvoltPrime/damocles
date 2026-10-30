@@ -16,6 +16,7 @@ import { buildCustomTools } from '../tools';
 import type { ShellCancelRegistry } from '../tools/shell-cancel-registry';
 import { log } from '../../logger';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { englishText } from '../../../shared/localized-text';
 
 // The only visible trace a team note left nothing behind, so it is asserted rather than assumed.
 vi.mock('../../logger', () => ({ log: vi.fn() }));
@@ -392,7 +393,7 @@ describe('a note that pi accepted is not silently discarded later', () => {
     internals.stopForBudget();
 
     // The echo said the agent was told; the clear means it never will be, so the transcript is corrected.
-    const notices = h.emitted.filter((m) => m.type === 'notification').map((m) => m.message);
+    const notices = h.emitted.flatMap((m) => (m.type === 'notification' ? [englishText(m.message)] : []));
     expect(notices.some((t) => t.includes('discarded your cancel note'))).toBe(true);
   });
 
@@ -405,7 +406,7 @@ describe('a note that pi accepted is not silently discarded later', () => {
     internals.processingFlag = true;
     internals.stopForBudget();
 
-    const notices = h.emitted.filter((m) => m.type === 'notification').map((m) => m.message);
+    const notices = h.emitted.flatMap((m) => (m.type === 'notification' ? [englishText(m.message)] : []));
     expect(notices.some((t) => t.includes('discarded your cancel note'))).toBe(false);
     expect(notices.some((t) => t.includes('Budget limit reached'))).toBe(true);
   });
@@ -461,7 +462,7 @@ describe('a note for a run that was stopped', () => {
   const stopped = (h: Harness): void => {
     (h.session as unknown as { abortPromise: Promise<void> | null }).abortPromise = new Promise(() => undefined);
   };
-  const noticeTexts = (h: Harness): string[] => h.emitted.flatMap((m) => (m.type === 'notification' ? [m.message] : []));
+  const noticeTexts = (h: Harness): string[] => h.emitted.flatMap((m) => (m.type === 'notification' ? [englishText(m.message)] : []));
 
   it('is never handed to pi while an ESC winds the run down, and the user is told it was not sent', () => {
     const h = harness();

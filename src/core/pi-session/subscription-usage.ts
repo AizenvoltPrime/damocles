@@ -7,7 +7,8 @@ import type {
 } from '../../shared/types/usage';
 import type { PiRuntime } from './pi-runtime';
 import { installedPlatform } from '../platform-host';
-import { t } from '../l10n';
+import { l } from '../l10n';
+import type { LocalizedText } from '../../shared/localized-text';
 
 const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const CLAUDE_PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile';
@@ -256,7 +257,7 @@ export function parseClaudeProfile(json: unknown): ClaudeAccountProfile | undefi
 /** Never throws. The profile holds the account email, so no branch here may log the body. */
 export async function fetchClaudeProfile(
   token: string,
-): Promise<{ profile: ClaudeAccountProfile } | { profileError: string }> {
+): Promise<{ profile: ClaudeAccountProfile } | { profileError: LocalizedText }> {
   try {
     const res = await fetch(CLAUDE_PROFILE_URL, {
       headers: {
@@ -266,11 +267,11 @@ export async function fetchClaudeProfile(
       },
       signal: AbortSignal.timeout(PROFILE_TIMEOUT_MS),
     });
-    if (!res.ok) return { profileError: `HTTP ${res.status}` };
+    if (!res.ok) return { profileError: l('HTTP {0}', res.status) };
     const profile = parseClaudeProfile(await res.json().catch(() => undefined));
-    return profile ? { profile } : { profileError: 'Unexpected response' };
+    return profile ? { profile } : { profileError: l('Unexpected response') };
   } catch {
-    return { profileError: 'Network error' };
+    return { profileError: l('Network error') };
   }
 }
 
@@ -292,13 +293,13 @@ async function fetchClaudeWindows(token: string): Promise<ProviderUsage> {
       },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-    if (!res.ok) return { status: 'error', bars: [], error: `HTTP ${res.status}` };
+    if (!res.ok) return { status: 'error', bars: [], error: l('HTTP {0}', res.status) };
 
     const json = await res.json();
     const { bars, spend } = parseClaudeUsage(json);
     return { status: 'ok', bars, ...(spend ? { spend } : {}) };
   } catch {
-    return { status: 'error', bars: [], error: 'Network error' };
+    return { status: 'error', bars: [], error: l('Network error') };
   }
 }
 
@@ -334,25 +335,25 @@ async function fetchWhamUsage(token: string, chatgpt: boolean): Promise<Provider
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (chatgpt && (res.status === 401 || res.status === 403)) return usagePage;
-    if (!res.ok) return { status: 'error', bars: [], error: `HTTP ${res.status}` };
+    if (!res.ok) return { status: 'error', bars: [], error: l('HTTP {0}', res.status) };
 
     // A Cloudflare HTML challenge page carries no JSON content-type; bail before res.json() would throw on it.
     if (!res.headers.get('content-type')?.includes('application/json')) {
-      return chatgpt ? usagePage : { status: 'error', bars: [], error: 'Unexpected response' };
+      return chatgpt ? usagePage : { status: 'error', bars: [], error: l('Unexpected response') };
     }
 
     const json = await res.json();
     const { bars, planType, spend } = parseCodexUsage(json);
     return { status: 'ok', bars, ...(planType !== undefined ? { planType } : {}), ...(spend ? { spend } : {}) };
   } catch {
-    return { status: 'error', bars: [], error: 'Network error' };
+    return { status: 'error', bars: [], error: l('Network error') };
   }
 }
 
 export async function fetchSubscriptionUsage(runtime: PiRuntime): Promise<SubscriptionUsageData> {
   // usage windows are user scope: this computer's core reads them, and a daemon's core never pulls a client's tokens for them
   if (installedPlatform()?.remote) {
-    const elsewhere: ProviderUsage = { status: 'error', bars: [], error: t('Subscription usage is read on your computer, not on a remote host') };
+    const elsewhere: ProviderUsage = { status: 'error', bars: [], error: l('Subscription usage is read on your computer, not on a remote host') };
     return { claude: elsewhere, gpt: elsewhere, fetchedAt: Date.now() };
   }
   const [claudeResult, gptResult] = await Promise.allSettled([
@@ -361,9 +362,9 @@ export async function fetchSubscriptionUsage(runtime: PiRuntime): Promise<Subscr
   ]);
   const claude = claudeResult.status === 'fulfilled'
     ? claudeResult.value
-    : { status: 'error' as const, bars: [], error: 'Network error' };
+    : { status: 'error' as const, bars: [], error: l('Network error') };
   const gpt = gptResult.status === 'fulfilled'
     ? gptResult.value
-    : { status: 'error' as const, bars: [], error: 'Network error' };
+    : { status: 'error' as const, bars: [], error: l('Network error') };
   return { claude, gpt, fetchedAt: Date.now() };
 }

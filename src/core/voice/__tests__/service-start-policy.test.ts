@@ -2,8 +2,10 @@ import { EventEmitter } from "node:events";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installFakePlatform } from "../../../__mocks__/fake-platform";
 import type { SidecarInbound, SidecarManagerStatus } from "../sidecar";
+import type { LocalizedText } from "../../../shared/localized-text";
+import { verbatim } from "../../l10n";
 
-type InstallResult = { ok: boolean; pythonExe: string; errorMessage?: string; missing?: "runtime" | "models" };
+type InstallResult = { ok: boolean; pythonExe: string; errorMessage?: LocalizedText; missing?: "runtime" | "models" };
 
 const consent = vi.hoisted(() => ({ given: true }));
 
@@ -107,7 +109,7 @@ vi.mock("../sidecar", () => ({
 
 const { VoiceService } = await import("../service");
 
-const failed = (errorMessage: string): InstallResult => ({ ok: false, pythonExe: "/fake/voice/python", errorMessage });
+const failed = (errorMessage: LocalizedText): InstallResult => ({ ok: false, pythonExe: "/fake/voice/python", errorMessage });
 
 function ttsService() {
   const platform = installFakePlatform({ settings: { user: { "damocles.voice.mode": "off", "damocles.voice.tts.enabled": true } } });
@@ -158,7 +160,7 @@ describe("VoiceService start policy", () => {
 
   it("does not repeat a failed start under the same settings until a retry or a settings change", async () => {
     const { platform, service } = ttsService();
-    runtime.results.push(failed("The voice runtime is not installed."), failed("pip install failed"), failed("pip install failed"));
+    runtime.results.push(failed({ message: "The voice runtime is not installed." }), failed(verbatim("pip install failed")), failed(verbatim("pip install failed")));
     await service.ensureStarted({ install: false });
     await service.ensureStarted({ install: false });
     expect(runtime.calls).toEqual([{ allowInstall: false }]);
@@ -168,7 +170,7 @@ describe("VoiceService start policy", () => {
     await service.ensureStarted({ install: true });
     await service.ensureStarted({ install: false });
     expect(runtime.calls).toEqual([{ allowInstall: false }, { allowInstall: true }]);
-    expect(service.failureMessage()).toBe("pip install failed");
+    expect(service.failureMessage()).toEqual(verbatim("pip install failed"));
 
     await service.ensureStarted({ install: true, retry: true });
     expect(runtime.calls).toHaveLength(3);
@@ -184,7 +186,7 @@ describe("VoiceService start policy", () => {
     const { service } = ttsService();
     const verify = gate();
     runtime.gate = verify.promise;
-    runtime.results.push(failed("The voice runtime is not installed."));
+    runtime.results.push(failed({ message: "The voice runtime is not installed." }));
     const reply = service.ensureStarted({ install: false });
     const enable = service.ensureStarted({ install: true });
     verify.open();
@@ -283,7 +285,7 @@ describe("VoiceService start policy", () => {
     const reply = service.ensureStarted({ install: false });
     install.open();
     await expect(Promise.all([enable, reply])).resolves.toBeDefined();
-    expect(service.failureMessage()).toBe("EACCES: permission denied, mkdir '/fake/voice'");
+    expect(service.failureMessage()).toEqual(verbatim("EACCES: permission denied, mkdir '/fake/voice'"));
 
     await service.ensureStarted({ install: true });
     await service.ensureStarted({ install: false });
@@ -294,13 +296,13 @@ describe("VoiceService start policy", () => {
     it("is not started again under the same settings until a retry", async () => {
       const { service } = ttsService();
       await service.ensureStarted({ install: false });
-      sidecars.all[0]!.setStatus({ kind: "error", code: "crash-loop", message: "sidecar crashed too often; giving up" });
+      sidecars.all[0]!.setStatus({ kind: "error", code: "crash-loop", message: { message: "The voice helper process stopped unexpectedly too many times, so Damocles no longer restarts it." } });
 
       await service.ensureStarted({ install: false });
       await service.ensureStarted({ install: true });
       expect(runtime.calls).toHaveLength(1);
       expect(sidecars.all).toHaveLength(1);
-      expect(service.failureMessage()).toBe("sidecar crashed too often; giving up");
+      expect(service.failureMessage()).toEqual({ message: "The voice helper process stopped unexpectedly too many times, so Damocles no longer restarts it." });
 
       await service.ensureStarted({ install: true, retry: true });
       expect(sidecars.all).toHaveLength(2);
@@ -324,7 +326,7 @@ describe("VoiceService start policy", () => {
     const { service } = ttsService();
     const firstRuns: unknown[] = [];
     service.on("firstRunRequired", (info) => firstRuns.push(info));
-    const notInstalled = { ...failed("The voice runtime is not installed."), missing: "runtime" as const };
+    const notInstalled = { ...failed({ message: "The voice runtime is not installed." }), missing: "runtime" as const };
     runtime.results.push(notInstalled, notInstalled);
     await service.ensureStarted({ install: false });
     expect(firstRuns).toEqual([]);
@@ -349,7 +351,7 @@ describe("VoiceService start policy", () => {
 
     it("never installs the runtime", async () => {
       const { service } = ttsService();
-      runtime.results.push(failed("The voice runtime is not installed."));
+      runtime.results.push(failed({ message: "The voice runtime is not installed." }));
       await service.speakReply("hello", "chat");
       expect(runtime.calls).toEqual([{ allowInstall: false }]);
       expect(spoken()).toEqual([]);

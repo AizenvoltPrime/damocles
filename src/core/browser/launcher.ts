@@ -2,7 +2,8 @@ import { existsSync, promises as fsp } from 'fs';
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'path';
 import { chromium, type BrowserContext } from 'patchright';
-import { t } from '../l10n';
+import { l } from '../l10n';
+import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import { log } from '../logger';
 import { findOnAbsolutePath } from '../system-tools';
 
@@ -134,7 +135,7 @@ const CURATED_EXTRA_ARGS = [
  */
 export async function launchBrowserContext(opts: LaunchBrowserOptions): Promise<BrowserContext> {
   const { userDataDir, headless, viewport, deviceScaleFactor, devToolsPort } = opts;
-  if (process.getuid?.() === 0) throw new Error(runningAsRootMessage());
+  if (process.getuid?.() === 0) throw new LocalizedError(runningAsRootMessage());
 
   const args = [
     '--window-position=-32000,-32000',
@@ -181,19 +182,19 @@ export async function launchBrowserContext(opts: LaunchBrowserOptions): Promise<
     const sandboxMessage = sandboxFailureMessage(err instanceof Error ? err.message : String(err));
     if (!sandboxMessage) throw err;
     log(`[Browser] Chromium could not start its sandbox — ${err instanceof Error ? err.message : String(err)}`);
-    throw new Error(sandboxMessage, { cause: err });
+    throw new LocalizedError(sandboxMessage, { cause: err });
   }
 }
 
 // Chromium's sandbox stays on, so these launches fail; the messages say how to fix the environment instead.
-function runningAsRootMessage(): string {
-  return t('The browser cannot start while Damocles runs as root, because Chromium refuses to run as root with its sandbox on. Run Damocles as a normal user; in a container, run it as a non-root user.');
+function runningAsRootMessage(): LocalizedText {
+  return l('The browser cannot start while Damocles runs as root, because Chromium refuses to run as root with its sandbox on. Run Damocles as a normal user; in a container, run it as a non-root user.');
 }
 
-function sandboxFailureMessage(launchError: string): string | null {
+function sandboxFailureMessage(launchError: string): LocalizedText | null {
   if (/Running as root without --no-sandbox/i.test(launchError)) return runningAsRootMessage();
   if (/No usable sandbox/i.test(launchError)) {
-    return t("The browser cannot start because Chromium found no usable sandbox on this system. Enable unprivileged user namespaces, or install your distribution's Chrome or Chromium package, which sets up the chrome-sandbox helper or the AppArmor profile it needs.");
+    return l("The browser cannot start because Chromium found no usable sandbox on this system. Enable unprivileged user namespaces, or install your distribution's Chrome or Chromium package, which sets up the chrome-sandbox helper or the AppArmor profile it needs.");
   }
   return null;
 }

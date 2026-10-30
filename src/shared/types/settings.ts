@@ -1,6 +1,7 @@
 import type { ASSET_SOURCE_PRECEDENCES, CACHE_WARMING_MODES } from "./constants";
 import type { ModelVendor } from "../model-vendor";
 import type { AccountProviderId } from "../settings-sections";
+import type { LocalizedText } from '../localized-text';
 
 export const PERMISSION_MODES = ["default", "acceptEdits", "plan"] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
@@ -192,12 +193,12 @@ export interface AccountInfo {
 
 /** Why a provider sign-in ended without a credential. */
 /** `denied`: the provider refused the sign-in; `remote`: a remote chat's core, which never changes this computer's sign-ins. */
-export type ProviderSignInErrorKind = "cancelled" | "expired" | "denied" | "network" | "provider" | "remote";
+export type ProviderSignInErrorKind = "cancelled" | "expired" | "denied" | "input" | "network" | "provider" | "remote";
 
-/** `message` is core's fixed localized text for `kind`, never the provider's or pi's error text. */
+/** `message` is core's fixed text for `kind`, never the provider's or pi's error text. */
 export interface ProviderSignInError {
   kind: ProviderSignInErrorKind;
-  message: string;
+  message: LocalizedText;
   status?: number;
 }
 

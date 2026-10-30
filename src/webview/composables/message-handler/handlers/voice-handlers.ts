@@ -1,5 +1,6 @@
 import { toast } from "vue-sonner";
 import type { HandlerRegistry } from "../types";
+import { renderText } from "@/composables/useLocalizedText";
 
 export function createVoiceHandlers(): Partial<HandlerRegistry> {
   return {
@@ -23,7 +24,7 @@ export function createVoiceHandlers(): Partial<HandlerRegistry> {
       if (chatInput) {
         chatInput.voiceSetError(msg.message);
       }
-      toast.error(msg.message);
+      toast.error(renderText(msg.message));
     },
   };
 }

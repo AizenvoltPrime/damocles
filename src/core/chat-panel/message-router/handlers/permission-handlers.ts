@@ -6,7 +6,7 @@ import { buildPlanImplementationMessage } from "../utils";
 import { syncPermissionRulesToSettings } from "../../settings-manager/utils";
 import { computePlanFilePath } from "../../../paths";
 import { log } from "../../../logger";
-import { t } from "../../../l10n";
+import { l } from "../../../l10n";
 
 /** Write the approved plan to a session's deterministic plan path, creating the plans dir if needed. */
 async function writePlanFile(planFilePath: string, planContent: string): Promise<void> {
@@ -77,7 +77,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
           ctx.permissionHandler.resolvePlanApproval(msg.toolUseId, false, {
             feedback: PLAN_FILE_UNAVAILABLE_MESSAGE,
           });
-          void platform.notifications.info(t(PLAN_FILE_UNAVAILABLE_MESSAGE));
+          void platform.notifications.info(l(PLAN_FILE_UNAVAILABLE_MESSAGE));
           return;
         }
 
@@ -114,7 +114,17 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
           await writePlanFile(computePlanFilePath(continuationId, newMessage), fullPlan);
         }
 
-        await ctx.session.sendMessage(newMessage, continuationId ?? undefined, correlationId);
+        const outcome = await ctx.session.sendMessage(newMessage, continuationId ?? undefined, correlationId);
+        if (outcome === "busy") {
+          // The clear's pending message raised every view's spinner; a turn already running owns it.
+          if (!ctx.session.turnRunning) postMessage(ctx.host, { type: "processing", isProcessing: false });
+          // The plan's message is core's own, so only what the user typed goes back; every view drops the pending echo.
+          postMessage(ctx.host, { type: "promptReturned", content: [], reason: "sendInProgress", correlationId });
+          const notice = l("The approved plan was not sent, because this chat started working on something else first.");
+          const feedback = msg.feedback?.trim();
+          if (feedback) postMessage(ctx.reply, { type: "promptReturned", content: [{ type: "text", text: feedback }], reason: "sendInProgress", detail: notice });
+          else postMessage(ctx.reply, { type: "notification", message: notice, notificationType: "warning" });
+        }
 
         return;
       }

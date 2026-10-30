@@ -6,7 +6,7 @@ import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import { hasUnsafeWindowsSegment, isRelativeFilePath } from '../../shared/relative-path';
 import { folderKey } from '../workspace-folders/folder-key';
 import type { WorkspaceFolderRegistry } from '../workspace-folders/folder-registry';
-import { t } from '../l10n';
+import { l } from '../l10n';
 import { worktreeProjectOf } from '../worktrees/personal-config';
 
 // A file a renderer or main names for a chat mention: a project by key and a relative path, or a path main already holds.
@@ -89,9 +89,9 @@ export async function mentionInChat(
     deps.post({ type: 'insertMention', path: resolved.path, display: resolved.display });
     return true;
   }
-  const message = resolved.reason === 'missing' ? t('The file no longer exists.')
-    : resolved.reason === 'projectCopy' ? t('This file is in the project folder. This chat works in its worktree.')
-      : t("This file is outside this chat's project");
+  const message = resolved.reason === 'missing' ? l('The file no longer exists.')
+    : resolved.reason === 'projectCopy' ? l('This file is in the project folder. This chat works in its worktree.')
+      : l("This file is outside this chat's project");
   void deps.notifications.warn(message);
   return false;
 }

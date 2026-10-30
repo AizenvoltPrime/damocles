@@ -14,7 +14,7 @@ import type { BrowserService } from "../../browser";
 import type { CompassRegistry } from "../../compass/compass-registry";
 import type { VoiceService } from "../../voice/service";
 import type { UsageStatsService } from "../../usage-stats";
-import type { AttachedView, HostInstance } from "../types";
+import type { AttachedView, HostInstance, ViewJoinGate } from "../types";
 import type { PanelHost } from "../../../platform/window-service";
 import type { FolderTarget, WorkspaceFolderRegistry } from "../../workspace-folders/folder-registry";
 import type { AfterFolderSwitch, FolderSwitchReason } from "../panel-manager";
@@ -67,7 +67,8 @@ export interface HandlerDependencies {
   platform: Platform;
   // Disposed when the extension deactivates.
   subscriptions: Disposable[];
-  getLanguagePreference: () => string;
+  // the language a device's views render core's text in; clientId names the device on a daemon's core
+  getLanguagePreference: (clientId?: string) => string;
   setLanguagePreference: (locale: string) => Promise<void>;
   memoryService: MemoryService;
   browserService?: BrowserService;
@@ -96,6 +97,8 @@ export interface HandlerDependencies {
   /** A panel's `restoreRetry` was set or cleared. */
   restoreRetryChanged: (panelId: string) => void;
   webviewPrompts: WebviewPrompts;
+  /** `PanelManager.withViewGate`: runs a replay to one view of the panel `host` serves, queued behind its joins, while the panel's posts wait. */
+  withViewGate: (host: PanelHost, joining: string | undefined, run: (gate: ViewJoinGate) => Promise<void>) => Promise<void>;
   /** The panels' worktree work (slice 12a), read when a handler runs. */
   worktrees: () => PanelWorktrees;
 }

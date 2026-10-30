@@ -40,3 +40,15 @@ export async function loadAgentConversation(
   if (!sessionId || !isValidUuid(teamId) || !isValidUuid(agentId)) return [];
   return new TeamPersistence(cwd, sessionId).loadAgentConversation(teamId, agentId);
 }
+
+/** A running member's attempts before the one `before` numbers, from their files (`TeamPersistence.loadAgentAttempts`). */
+export async function loadAgentAttempts(
+  cwd: string,
+  sessionId: string,
+  teamId: string,
+  agentId: string,
+  before: number,
+): Promise<TeamAgentHistoryMessage[]> {
+  if (!sessionId || !isValidUuid(teamId) || !isValidUuid(agentId)) return [];
+  return new TeamPersistence(cwd, sessionId).loadAgentAttempts(teamId, agentId, before);
+}

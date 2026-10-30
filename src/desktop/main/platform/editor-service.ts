@@ -6,6 +6,7 @@ import type { WindowService } from '../../../platform/window-service';
 import type { ChatReviewScope, ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { EditorPane } from '../editor-pane';
 import { knownLanguageId, readFileText, sideDocument } from './editor-document';
+import type { LocalizedText } from '../../../shared/localized-text';
 
 export interface ChatTabMessenger {
   // Posts to the requesting chat (or the fallback chat, opened when none is) without revealing it, and resolves the core panel
@@ -36,6 +37,7 @@ export function createDesktopEditorService(
   pane: () => EditorPane,
   openAppSettings: WindowService['openAppSettings'],
   showChatReview: (panelId: string, scope: ChatReviewScope) => Promise<void>,
+  render: (text: LocalizedText) => string,
 ): DesktopEditorService {
   const unavailable = (feature: string): Promise<never> => Promise.reject(new Error(`${feature} is not available in the desktop app yet`));
   return {
@@ -51,7 +53,7 @@ export function createDesktopEditorService(
     readText: (filePath) => readFileText(filePath),
     showDiff: async (req): Promise<HostDiffView> => {
       if (req.approvalId === undefined) {
-        const view = await pane().showDiff(req.title, req.filePath, req.left, req.right, { focus: req.preserveFocus !== true });
+        const view = await pane().showDiff((fileName) => render(req.title(fileName)), req.filePath, req.left, req.right, { focus: req.preserveFocus !== true });
         return { close: () => Promise.resolve(view.close()), closed: view.closed };
       }
       const [original, modified] = await Promise.all([sideDocument(req.left), sideDocument(req.right)]);

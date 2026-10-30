@@ -12,7 +12,8 @@ import { oneLine } from '../pi-session/untrusted-text';
 import { formatAttachmentBlock, formatMcpResourceAttachmentBlock } from '../terminal-attachment';
 import { heldChars, MAX_PENDING_TERMINAL_ATTACHMENT_CHARS, type TakenAttachment } from './terminal-attachment-manager';
 import { McpResourceServerGoneError } from '../pi-session/mcp/resource-errors';
-import { formatNumber, t } from '../l10n';
+import { l, verbatim } from '../l10n';
+import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 
 /*
  * The MCP panel's resource picker and the send-time read of an attached resource. Server output is untrusted: text
@@ -39,9 +40,11 @@ export function mimeTypeOf(value: unknown): string | undefined {
   return text(value, MAX_MIME_TYPE_CHARS);
 }
 
-/** An error's message as the user may read it: server text, flattened and capped. */
-export function errorText(error: unknown): string {
-  return oneLine(error instanceof Error ? error.message : String(error), MAX_ERROR_CHARS) ?? t('Unknown error');
+/** A caught error as the user may read it: Damocles' own text (a LocalizedError's), else server text flattened and capped. */
+export function errorText(error: unknown): LocalizedText {
+  if (error instanceof LocalizedError) return error.text;
+  const text = oneLine(error instanceof Error ? error.message : String(error), MAX_ERROR_CHARS);
+  return text === undefined ? l('Unknown error') : verbatim(text);
 }
 
 function deniedOf(filter: McpResourceRuleFilter, server: string, uri: string): { denied?: { rule: string } } {
@@ -127,25 +130,25 @@ export function directoryChildren(uri: string, result: ReadResourceResult, serve
 }
 
 /** What an attached resource's read gave at send: its text, its images, or why the message cannot go. */
-type ResourceRead = { ok: true; text: string | undefined; images: ImageBlock[] } | { ok: false; reason: string };
+type ResourceRead = { ok: true; text: string | undefined; images: ImageBlock[] } | { ok: false; reason: LocalizedText };
 
 async function readAttached(port: McpUserResourcePort, filter: McpResourceRuleFilter, attachment: McpResourceAttachmentInput, signal: AbortSignal): Promise<ResourceRead> {
   const label = { name: attachment.name, server: attachment.server };
-  const mcpApp = { ok: false as const, reason: t('{0} from {1} is an MCP App interface, which cannot be sent to the model.', label.name, label.server) };
-  const replaced = { ok: false as const, reason: t('{0} from {1} was attached from a server that has since been replaced or removed. Attach it again to send it.', label.name, label.server) };
+  const mcpApp = { ok: false as const, reason: l('{0} from {1} is an MCP App interface, which cannot be sent to the model.', label.name, label.server) };
+  const replaced = { ok: false as const, reason: l('{0} from {1} was attached from a server that has since been replaced or removed. Attach it again to send it.', label.name, label.server) };
   if (isMcpAppResource({ uri: attachment.uri, mimeType: attachment.mimeType })) return mcpApp;
   if (port.serverIdOf(attachment.server) !== attachment.serverId) return replaced;
   const rule = filter.resourceDenyRule(attachment.server, attachment.uri);
-  if (rule !== undefined) return { ok: false, reason: t('A deny rule now covers {0} from {1}: {2}', label.name, label.server, rule) };
+  if (rule !== undefined) return { ok: false, reason: l('A deny rule now covers {0} from {1}: {2}', label.name, label.server, rule) };
   let result: ReadResourceResult;
   try {
     result = await port.readResource(attachment.server, attachment.uri, { signal, expectedServerId: attachment.serverId });
   } catch (error) {
     if (error instanceof McpResourceServerGoneError) return replaced;
-    return { ok: false, reason: t('{0} from {1} could not be read: {2}', label.name, label.server, errorText(error)) };
+    return { ok: false, reason: l('{0} from {1} could not be read: {2}', label.name, label.server, errorText(error)) };
   }
   const own = items(result.contents).filter((item) => item.uri === attachment.uri);
-  if (own.length === 0) return { ok: false, reason: t('{0} from {1} returned no content of its own, so it may be a directory.', label.name, label.server) };
+  if (own.length === 0) return { ok: false, reason: l('{0} from {1} returned no content of its own, so it may be a directory.', label.name, label.server) };
   const texts: string[] = [];
   const images: ImageBlock[] = [];
   let chars = 0;
@@ -160,7 +163,7 @@ async function readAttached(port: McpUserResourcePort, filter: McpResourceRuleFi
     } else if (isTextMimeType(mimeType)) {
       // UTF-8 decoding yields at least one UTF-16 unit per three bytes, so this many bytes already exceed the cap.
       if (Math.ceil(base64ByteLength(item.blob) / 3) > MAX_PENDING_TERMINAL_ATTACHMENT_CHARS - chars) {
-        return { ok: false, reason: t('{0} from {1} holds more text than one message can carry.', label.name, label.server) };
+        return { ok: false, reason: l('{0} from {1} holds more text than one message can carry.', label.name, label.server) };
       }
       const decoded = Buffer.from(item.blob, 'base64').toString('utf8');
       texts.push(decoded);
@@ -171,20 +174,20 @@ async function readAttached(port: McpUserResourcePort, filter: McpResourceRuleFi
         return {
           ok: false,
           reason: image.reason === 'tooLarge'
-            ? t('{0} from {1} is an image too large to send.', label.name, label.server)
-            : t('{0} from {1} is labelled {2}, but its content is not a PNG, JPEG, GIF or WebP image.', label.name, label.server, mimeType ?? ''),
+            ? l('{0} from {1} is an image too large to send.', label.name, label.server)
+            : l('{0} from {1} is labelled {2}, but its content is not a PNG, JPEG, GIF or WebP image.', label.name, label.server, mimeType ?? ''),
         };
       }
       images.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } });
     } else {
-      return { ok: false, reason: t('{0} from {1} is binary content ({2}), which cannot be sent to the model.', label.name, label.server, mimeType ?? t('unknown type')) };
+      return { ok: false, reason: l('{0} from {1} is binary content ({2}), which cannot be sent to the model.', label.name, label.server, mimeType ?? l('unknown type')) };
     }
   }
   return { ok: true, text: texts.length > 0 ? texts.join('\n') : images.length > 0 ? undefined : '', images };
 }
 
 /** The blocks that lead a sent message, in attachment order, and the images its resources add; `stopped` when `signal` aborted first. */
-export type AttachmentContent = { ok: true; blocks: string[]; images: ImageBlock[] } | { ok: false; reason: string } | { ok: false; stopped: true };
+export type AttachmentContent = { ok: true; blocks: string[]; images: ImageBlock[] } | { ok: false; reason: LocalizedText } | { ok: false; stopped: true };
 
 /** Settles once `signal` aborts: a server still connecting cannot see the signal its read was given. */
 function whenAborted(signal: AbortSignal): Promise<'stopped'> {
@@ -215,7 +218,7 @@ export async function attachmentContent(
     })();
     const results = await Promise.race([reading, whenAborted(signal)]);
     if (results === 'stopped') return { ok: false, stopped: true };
-    if (!results) return { ok: false, reason: t('MCP is not available in this chat yet.') };
+    if (!results) return { ok: false, reason: l('MCP is not available in this chat yet.') };
     resourceAttachments.forEach((attachment, index) => reads.set(attachment, results[index]!));
   }
   const blocks: string[] = [];
@@ -239,10 +242,10 @@ export async function attachmentContent(
     }));
   }
   if (chars > MAX_PENDING_TERMINAL_ATTACHMENT_CHARS) {
-    return { ok: false, reason: t('The attachments hold {0} characters of text, more than the {1} one message can carry.', formatNumber(chars), formatNumber(MAX_PENDING_TERMINAL_ATTACHMENT_CHARS)) };
+    return { ok: false, reason: l('The attachments hold {0} characters of text, more than the {1} one message can carry.', { number: chars }, { number: MAX_PENDING_TERMINAL_ATTACHMENT_CHARS }) };
   }
   if (typedImages + images.length > MAX_IMAGES_PER_MESSAGE) {
-    return { ok: false, reason: t('The message would carry {0} images, more than the {1} one message can carry.', typedImages + images.length, MAX_IMAGES_PER_MESSAGE) };
+    return { ok: false, reason: l('The message would carry {0} images, more than the {1} one message can carry.', typedImages + images.length, MAX_IMAGES_PER_MESSAGE) };
   }
   return { ok: true, blocks, images };
 }

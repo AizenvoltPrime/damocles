@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { Disposable } from '../../platform/disposable';
 import type { ActiveEditorContext, DiffRequest, DiffSide, DiffView, EditorService, OpenFileOptions } from '../../platform/editor-service';
+import { renderVsCode } from './localization-service';
 
 const DIFF_SCHEMES: Readonly<Record<DiffRequest['purpose'], string>> = {
   proposal: 'claude-diff',
@@ -127,7 +128,7 @@ export function createVsCodeEditorService(subscriptions: Disposable[]): EditorSe
         if (right.scheme === scheme) provider.deleteContent(right.path);
       };
       try {
-        await vscode.commands.executeCommand('vscode.diff', left, right, req.title(path.basename(req.filePath)), {
+        await vscode.commands.executeCommand('vscode.diff', left, right, renderVsCode(req.title(path.basename(req.filePath))), {
           ...(req.column !== undefined ? { viewColumn: req.column } : {}),
           ...(req.preserveFocus !== undefined ? { preserveFocus: req.preserveFocus } : {}),
           ...(req.preview !== undefined ? { preview: req.preview } : {}),

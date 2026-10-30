@@ -86,8 +86,18 @@ function service(workspace: string): { fake: FakePlatform; compass: CompassServi
   return { fake, compass };
 }
 
-const readOnlyNotice = (workspace: string) => ({ level: 'warn', message: expect.stringContaining(`the Compass index of ${workspace}`) as string, actions: [] });
-const rebuildRefused = { level: 'warn', message: expect.stringContaining('is read only') as string, actions: [] };
+const readOnlyNotice = (workspace: string) => ({
+  level: 'warn',
+  message: expect.stringContaining(`the Compass index of ${workspace}`) as string,
+  text: { message: 'Another Damocles app has updated {0} to a newer version. This window can read it but will not save changes to it until you update this Damocles too.', args: [{ message: 'the Compass index of {0}', args: [workspace] }] },
+  actions: [],
+});
+const rebuildRefused = {
+  level: 'warn',
+  message: expect.stringContaining('is read only') as string,
+  text: { message: 'The Compass index of {0} is read only: another Damocles app has updated it to a newer version. Update this Damocles to rebuild it.', args: [expect.any(String)] },
+  actions: [],
+};
 
 describe('Compass index schema skew', () => {
   it('the current version opens normally and indexes without a notice', async () => {

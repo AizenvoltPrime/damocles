@@ -66,7 +66,7 @@ describe('promptReturned toast for a model the chat cannot run', () => {
   });
 
   it('tells the user to sign in to the provider whose row settings open at, with the reason below', () => {
-    returned({ reason: 'modelUnavailable', detail: 'Sign in to DeepSeek to use DeepSeek V4 Pro', account: 'deepseek' });
+    returned({ reason: 'modelUnavailable', detail: { message: 'Sign in to DeepSeek to use DeepSeek V4 Pro' }, account: 'deepseek' });
 
     expect(toastMock.info).toHaveBeenCalledWith(
       "Sign in to DeepSeek to send messages with this chat's model. Your message is back in the input.",
@@ -81,7 +81,7 @@ describe('promptReturned toast for a model the chat cannot run', () => {
   });
 
   it('asks for a pick in This chat only when no sign-in fixes it', () => {
-    returned({ reason: 'modelUnavailable', detail: 'Your GitHub Copilot plan does not include Opus 5.5 (GitHub Copilot)' });
+    returned({ reason: 'modelUnavailable', detail: { message: 'Your GitHub Copilot plan does not include Opus 5.5 (GitHub Copilot)' } });
 
     expect(toastMock.info).toHaveBeenCalledWith('Pick a model this chat can run. Your message is back in the input.', {
       description: 'Your GitHub Copilot plan does not include Opus 5.5 (GitHub Copilot)',

@@ -236,7 +236,7 @@ describe('member card history from the member pi session file', () => {
     expect(history).toEqual([
       { id: `0:${task}`, role: 'user', content: [{ type: 'text', text: 'fix the parser' }] },
       { id: `0:${final}`, role: 'assistant', content: [{ type: 'text', text: 'Now I will' }] },
-      { id: `0:${final}:error`, role: 'error', content: [{ type: 'text', text: '400 invalid_request_error' }] },
+      { id: `0:${final}:error`, role: 'error', content: [{ type: 'text', text: '400 invalid_request_error' }], error: { message: '{0}', args: ['400 invalid_request_error'] } },
     ]);
   });
 
@@ -334,6 +334,23 @@ describe('member card history from the member pi session file', () => {
 
     expect(history.map((m) => (m.content[0] as { text: string }).text)).toEqual(['first try', 'gave up', 'second try', 'fixed']);
     expect(new Set(history.map((m) => m.id)).size).toBe(4);
+  });
+
+  // A running member's transcript read from memory names its messages by attempt too, and follows the attempts before it.
+  it('names each message by its attempt, and with `before` reads only the attempts before that one, found or not', async () => {
+    const cwd = join(DAMOCLES_HOME_DIR, 'attempts-before');
+    // attempt 1 committed nothing, so it has no file
+    const first = writeMemberAttempt(cwd, 0, [userMessage('first try'), assistantMessage([{ type: 'text', text: 'gave up' }])]);
+    const third = writeMemberAttempt(cwd, 2, [userMessage('third try'), assistantMessage([{ type: 'text', text: 'fixed' }])]);
+    const persistence = new TeamPersistence(cwd, SESSION_ID);
+    const texts = (history: Awaited<ReturnType<TeamPersistence['loadAgentAttempts']>>) => history.filter((m) => m.role === 'user').map((m) => [m.id, (m.content[0] as { text: string }).text]);
+
+    expect(texts(await persistence.loadAgentAttempts(TEAM_ID, AGENT_ID))).toEqual([[`0:${first.entryIds[0]}`, 'first try'], [`2:${third.entryIds[0]}`, 'third try']]);
+    // the running attempt has its file
+    expect(texts(await persistence.loadAgentAttempts(TEAM_ID, AGENT_ID, 2))).toEqual([[`0:${first.entryIds[0]}`, 'first try']]);
+    // the running attempt's file is not written yet
+    expect(texts(await persistence.loadAgentAttempts(TEAM_ID, AGENT_ID, 3))).toEqual([[`0:${first.entryIds[0]}`, 'first try'], [`2:${third.entryIds[0]}`, 'third try']]);
+    expect(texts(await persistence.loadAgentAttempts(TEAM_ID, AGENT_ID, 0))).toEqual([]);
   });
 
   it('is empty for a member that never answered, since pi writes no file until then', async () => {

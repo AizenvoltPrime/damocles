@@ -19,6 +19,7 @@ import TranscriptNotice from './TranscriptNotice.vue';
 import EffortBadge from './EffortBadge.vue';
 import ErrorMessageText from './ErrorMessageText.vue';
 import AuthFailureNotice from './AuthFailureNotice.vue';
+import { errorRowText } from '@/composables/useLocalizedText';
 
 const { t } = useI18n();
 
@@ -157,7 +158,7 @@ onUnmounted(() => {
     <AuthFailureNotice
       v-else-if="item.type === 'error-message' && item.message.authFailure"
       :failure="item.message.authFailure"
-      :details="item.text ?? ''"
+      :details="errorRowText(item.message)"
     />
 
     <TranscriptNotice
@@ -168,7 +169,7 @@ onUnmounted(() => {
     >
       <ErrorMessageText
         class="text-12.5 wrap-break-word whitespace-pre-wrap text-(--d-text)"
-        :text="item.text ?? ''"
+        :text="errorRowText(item.message)"
       />
     </TranscriptNotice>
 

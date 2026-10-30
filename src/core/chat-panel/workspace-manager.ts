@@ -15,7 +15,7 @@ import type { HostInstance } from "./types";
 import type { PanelHost } from "../../platform/window-service";
 import type { FolderTarget } from "../workspace-folders/folder-registry";
 import { log } from "../logger";
-import { t } from "../l10n";
+import { l } from "../l10n";
 import { isWithinRoot } from "../compass/util";
 
 export interface WorkspaceManagerConfig {
@@ -162,7 +162,7 @@ export class WorkspaceManager {
       await this.openFile(filePath, line, folder, panelId);
     } catch (err) {
       log("[WorkspaceManager] Error opening file:", err);
-      void this.platform.notifications.error(t("Could not open file: {0}", filePath));
+      void this.platform.notifications.error(l("Could not open file: {0}", filePath));
     }
   }
 
@@ -170,7 +170,7 @@ export class WorkspaceManager {
     const fileName = path.basename(filePath);
     const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     await this.platform.editor.showDiff({
-      title: (name) => t("{0} (At checkpoint ↔ Current)", name),
+      title: (name) => l("{0} (At checkpoint ↔ Current)", name),
       filePath,
       left: { name: `${id}-${fileName}`, content: beforeContent },
       right: { path: filePath },

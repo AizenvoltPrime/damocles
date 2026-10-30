@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
+const logged = vi.hoisted(() => [] as string[]);
+vi.mock("../../../../logger", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../../logger")>()),
+  log: (...args: unknown[]) => void logged.push(args.map(String).join(" ")),
+}));
+
 const H = vi.hoisted(() => ({
   init: vi.fn(),
   getModels: vi.fn(),
@@ -176,21 +182,23 @@ describe("requestUsageStats handler", () => {
     await send({ requestId: "r2", query: { ...VALID, startMs: 5_000 } });
     expect(service.query).not.toHaveBeenCalled();
     expect(posted).toHaveLength(1);
-    expect(posted[0]).toMatchObject({ type: "usageStats", requestId: "r2", final: true, report: null, error: expect.stringContaining("start before it ends") });
+    expect(posted[0]).toMatchObject({ type: "usageStats", requestId: "r2", final: true, report: null, error: { message: "The statistics request was not valid. The log has the details." } });
+    // the developer detail stays in the log, in English
+    expect(logged.some((line) => line.includes("start before it ends"))).toBe(true);
   });
 
   it("answers an unknown time zone with one final error and never reaches the service", async () => {
     const { send, posted, service } = setup(async () => REPORT);
     await send({ requestId: "r7", query: { ...VALID, timeZone: "Mars/Olympus_Mons" } });
     expect(service.query).not.toHaveBeenCalled();
-    expect(posted).toEqual([{ type: "usageStats", requestId: "r7", final: true, report: null, error: "Invalid usage stats query: timeZone is not a known time zone" }]);
+    expect(posted).toEqual([{ type: "usageStats", requestId: "r7", final: true, report: null, error: { message: "The statistics request was not valid. The log has the details." } }]);
   });
 
   it("answers a missing requestId with one final error", async () => {
     const { send, posted, service } = setup(async () => REPORT);
     await send({ query: VALID });
     expect(service.query).not.toHaveBeenCalled();
-    expect(posted).toEqual([{ type: "usageStats", requestId: "", final: true, report: null, error: expect.stringContaining("requestId") }]);
+    expect(posted).toEqual([{ type: "usageStats", requestId: "", final: true, report: null, error: { message: "The statistics request was not valid. The log has the details." } }]);
   });
 
   it("answers a worker failure with one final error", async () => {
@@ -199,7 +207,7 @@ describe("requestUsageStats handler", () => {
       throw new Error("usage stats request timed out after 60000ms");
     });
     await send({ requestId: "r3", query: VALID });
-    expect(finals()).toEqual([{ type: "usageStats", requestId: "r3", final: true, report: null, error: "usage stats request timed out after 60000ms" }]);
+    expect(finals()).toEqual([{ type: "usageStats", requestId: "r3", final: true, report: null, error: { message: "{0}", args: ["usage stats request timed out after 60000ms"] } }]);
     expect(posted).toHaveLength(2);
   });
 
@@ -208,7 +216,7 @@ describe("requestUsageStats handler", () => {
     const { send, posted, service } = setup(async () => REPORT);
     await send({ requestId: "r4", query: VALID });
     expect(service.query).not.toHaveBeenCalled();
-    expect(posted).toEqual([{ type: "usageStats", requestId: "r4", final: true, report: null, error: "pi failed to load" }]);
+    expect(posted).toEqual([{ type: "usageStats", requestId: "r4", final: true, report: null, error: { message: "{0}", args: ["pi failed to load"] } }]);
   });
 });
 

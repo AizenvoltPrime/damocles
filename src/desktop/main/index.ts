@@ -10,6 +10,7 @@ import { getRipgrepSearchOptions } from '../../core/chat-panel/ripgrep';
 import { locateSettingsFile, saveSettingsFileText } from '../../core/chat-panel/settings-file-editor';
 import type { MentionTarget } from '../../core/chat-panel/mention-resolver';
 import { installPlatform } from '../../core/platform-host';
+import { l, verbatim } from '../../core/l10n';
 import type { ChatActivity } from '../../core/pi-session/session-state';
 import { LANGUAGE_PREFERENCE_KEY } from '../../shared/language-preference';
 import type { CatalogResult } from '../../core/chat-panel/session-catalog';
@@ -142,6 +143,7 @@ import { OverlaySettings, writeDesktopSetting, type SettingsAttachTarget, type S
 import { HiddenOpening } from './hidden-opening';
 import type { SettingsTarget } from '../../shared/settings-sections';
 import { PanelStateStore } from './panel-state-store';
+import { LastChats, openProjectChat } from './last-chats';
 import { createDesktopPlatform, type DesktopPlatform } from './platform';
 import { askpassPaths, coreHostEntryPath, createDesktopAppPaths, quickOpenWorkerPath, unpackagedResourceRoot, watchWorkerPath, type DesktopLayout } from './platform/app-paths';
 import type { ChatTabMessenger } from './platform/editor-service';
@@ -149,7 +151,7 @@ import { createDesktopKeyValueState, type DesktopKeyValueState } from '../local-
 import { createDesktopLocalizationService, launchLanguage, readLanguageSetting, type DesktopLocalizationService } from '../local-services/localization-service';
 import { createDesktopLogSinkFactory, logFileName } from '../local-services/log-sink';
 import { Emitter } from '../local-services/emitter';
-import { createDesktopNotificationService } from './platform/notification-service';
+import { createDesktopNotificationService, type DesktopNotifications } from './platform/notification-service';
 import { logUncaughtErrors } from '../local-services/process-errors';
 import { ProjectList } from './projects';
 import { announceInstalledVersion, ReleaseNotesSource } from './release-notes';
@@ -188,7 +190,6 @@ import { KeptPermissions } from './kept-permissions';
 import { releaseRemoteTerminals, removeProject, type WaitingChat } from './remove-project';
 import { ShownFolderState } from './worktrees/shown-folder';
 import { setupTaskKey, WorktreeController, type WorktreeControllerDeps } from './worktrees/worktree-controller';
-import type { NotificationService } from '../../platform/notification-service';
 import { createWorktreeDialogAsker, type AskWorktreeDialog } from './worktrees/worktree-dialogs';
 import type { WorktreeDialog } from '../preload/overlay-channels';
 import { remoteSetupShell, setupShell } from './worktrees/setup-terminal';
@@ -243,6 +244,7 @@ import { OfflineTranscripts } from './remote/offline-transcripts';
 import { MAX_HELD_BYTES, MAX_HELD_PER_PANEL, OfflineQueue } from './remote/offline-queue';
 import { remoteE2eEnvironment } from './remote/remote-e2e-environment';
 import { visibleLines } from '../../shared/visible-text';
+import { englishText } from '../../shared/localized-text';
 import { adoptCompatibleDaemon, FollowedDaemons, followOtherProtocolDaemon, otherDeviceCount, shutDownNow, type SwitchListing } from './remote/app-update-flow';
 import { askRemoteRuns, closeRowId, listHostRuns, type CloseWithRunningAgents, type HostRuns } from './remote/close-remote';
 import { CloseRelease } from './close-release';
@@ -650,6 +652,7 @@ class DesktopApp {
   });
   private userRelays: UserRelays | undefined;
   private readonly notificationCenter: NotificationCenter = new NotificationCenter({
+    render: (text) => this.requireLocalization().render(text),
     doNotDisturb: () => this.state.global.get<boolean>(DO_NOT_DISTURB_KEY, false) === true,
     setDoNotDisturb: (on) => this.state.global.update(DO_NOT_DISTURB_KEY, on),
     popupsEnabled: () => this.platform?.settings.get<boolean>(NOTIFICATIONS_SETTING, true) !== false,
@@ -776,8 +779,11 @@ class DesktopApp {
   private selectedProjectKey: string | undefined;
   // ShellState.layoutRevision
   private layoutRevision = 0;
-  // In memory only: the chat id last viewed in each project, which selecting the project selects again.
-  private readonly lastChatByProject = new Map<string, string>();
+  // the chat last viewed in each project, which selecting the project selects again
+  private readonly lastChats = new LastChats({
+    writeLocal: (entries) => this.states.setLastChats(entries),
+    writeRemote: (authority, entries) => this.remoteState?.setLastChats(authority, entries).catch(this.report('Saving the last chats')),
+  });
   // The project a chat was opened in, until core reports the chat's folder.
   private readonly openedInProject = new WeakMap<DesktopPanel, string>();
   private readonly lastViewed = new WeakMap<DesktopPanel, number>();
@@ -799,7 +805,7 @@ class DesktopApp {
       return panel ? this.titleOf(panel) : '';
     },
     editorPane: () => this.requireEditorPane(),
-    warn: (message) => void this.requirePlatform().notifications.warn(message),
+    warn: (message) => void this.notifications.warn(message),
     t: (message, ...args) => this.requirePlatform().localization.t(message, ...args),
     menuChanged: () => this.refreshMenuState(),
     log: (line) => log(line),
@@ -1098,6 +1104,7 @@ class DesktopApp {
       },
       logs: { dir: this.logsDir, echo: !app.isPackaged },
       language: { current: () => localization.language, onDidChange: (listener) => localization.onDidChangeLanguage(() => listener()) },
+      render: (text) => localization.render(text),
       power: {
         onSuspend: (listener) => {
           powerMonitor.on('suspend', listener);
@@ -1134,7 +1141,7 @@ class DesktopApp {
       platform: process.platform,
       arch: process.arch,
       version,
-      notifications: this.platform.notifications,
+      notifications: this.notifications,
       shell: this.platform.shell,
       state: this.state.global,
       checkAutomatically: () => this.platform?.settings.get<boolean>(UPDATE_CHECK_AUTOMATICALLY_SETTING, true) !== false,
@@ -1166,6 +1173,7 @@ class DesktopApp {
         this.shellStateChanged();
       }),
       this.projects.onDidChange(() => {
+        this.forgetUnlistedProjects();
         this.adoptOpenWorktrees().catch(this.report('Recording adopted worktrees'));
         this.terminalLinks.clear();
         this.installMenu();
@@ -1173,6 +1181,7 @@ class DesktopApp {
         this.worktreesChanged();
       }),
       this.hostStore.onDidChange(() => {
+        this.forgetUnlistedProjects();
         // a removed remote project hands the selection back to the selected chat's project
         if (this.remoteSelected() && !this.remoteProject(this.selectedProjectKey!)) {
           this.selectedProjectKey = undefined;
@@ -1284,6 +1293,11 @@ class DesktopApp {
     for (const key of new Set(this.remoteProjects().map((project) => project.authorityKey))) {
       if (!authorities.connection(key)) this.requireTerminals().showReconnecting(remoteState.terminals(key));
     }
+    // before any chat shows, since a selection writes both files from memory
+    this.lastChats.seed([
+      ...this.states.lastChats().filter((entry) => this.projectListed(entry.projectKey)),
+      ...this.remoteProjects().flatMap((project) => remoteState.lastChats(project.authorityKey).filter((entry) => entry.projectKey === project.key)),
+    ]);
     const launched = this.core.start();
     this.createWindow();
     this.tray = new AppTray(trayIcon(resourceRoot), {
@@ -1306,7 +1320,6 @@ class DesktopApp {
     const savedSelection = savedRemoteSelection;
     const savedRemote = savedSelection === undefined ? undefined : this.remoteProject(savedSelection.projectKey);
     if (savedSelection && savedRemote) {
-      if (savedSelection.sessionId !== undefined) this.lastChatByProject.set(savedRemote.key, savedSelection.sessionId);
       await this.remoteSelection.select(savedRemote.key).catch(this.report('Selecting the saved remote project'));
     }
     // a remote project's chats open once the window holds the local ones; a host not connected shows their mirrored copies
@@ -1321,16 +1334,16 @@ class DesktopApp {
     await this.adoptOpenWorktrees().catch(this.report('Recording adopted worktrees'));
     this.requireWorktrees().scanAtStartup(this.desktopProjects().map((project) => project.fsPath)).catch(this.report('Scanning for leftover worktrees'));
 
-    if (!git.available) void this.platform.notifications.warn(git.reason);
+    if (!git.available) void this.notifications.warn(git.reason);
     const hostsUnreadable = this.hostStore.unreadable();
-    if (hostsUnreadable !== undefined) void this.platform.notifications.warn(localization.t('Damocles can\'t read {0}, so remote hosts, projects and their order can\'t be changed until it is fixed and Damocles restarts: {1}', this.hostStore.filePath, hostsUnreadable));
+    if (hostsUnreadable !== undefined) void this.notifications.warn(localization.t('Damocles can\'t read {0}, so remote hosts, projects and their order can\'t be changed until it is fixed and Damocles restarts: {1}', this.hostStore.filePath, hostsUnreadable));
     const remoteStateUnreadable = remoteState.unreadable();
-    if (remoteStateUnreadable !== undefined) void this.platform.notifications.warn(localization.t('Damocles can\'t read {0}, so remote chats, terminals and messages typed while a host is away aren\'t kept until it is fixed and Damocles restarts: {1}', remoteState.filePath, remoteStateUnreadable));
+    if (remoteStateUnreadable !== undefined) void this.notifications.warn(localization.t('Damocles can\'t read {0}, so remote chats, terminals and messages typed while a host is away aren\'t kept until it is fixed and Damocles restarts: {1}', remoteState.filePath, remoteStateUnreadable));
     updates.start();
     announceInstalledVersion({
       version,
       state: this.state.global,
-      notifications: this.platform.notifications,
+      notifications: this.notifications,
       t: (message, ...args) => localization.t(message, ...args),
       openWhatsNew: (release) => this.openSettings({ section: 'about', release }),
       log: bootLog,
@@ -1620,7 +1633,7 @@ class DesktopApp {
     const notice = this.notificationCenter.stickyNotice('error', t('The Damocles engine stopped unexpectedly {0} times in 5 minutes, so it was not restarted.', RESTART_LIMIT + 1), [restart]);
     this.haltNotice = notice;
     notice.answer.then((choice) => {
-      if (choice === restart) this.restartEngine('local');
+      if (choice === 0) this.restartEngine('local');
     }, this.report('The engine notice'));
   }
 
@@ -1769,6 +1782,7 @@ class DesktopApp {
         preloadPath: path.join(__dirname, 'preload-panel.js'),
         resourceRoot,
         pageStrings: () => this.pageStrings(),
+        language: () => this.requireLocalization().language,
         hostLabel: (authority) => this.panelHostLabel(authority),
         onHostAction: (panel, action) => this.panelHostAction(panel, action),
         connection: (panel) => this.panelConnection(panel),
@@ -2297,7 +2311,7 @@ class DesktopApp {
 
   private async addProject(): Promise<void> {
     const platform = this.requirePlatform();
-    const folder = await platform.dialogs.pickFolder({ title: platform.localization.t('Add Project') });
+    const folder = await platform.nativeDialogs.pickFolder({ title: platform.localization.t('Add Project') });
     if (folder === undefined) return;
     await this.addProjectAt(folder);
   }
@@ -2501,11 +2515,15 @@ class DesktopApp {
       // the New Terminal dropdown lists the selected project's host's shells
       this.terminals?.publish();
     }
-    this.lastChatByProject.set(projectKey, this.chatIdOf(panel));
     const sessionId = this.sessionIdOf(panel);
-    // panels.json names only local chats, which an older version reads; a remote selection is remote-state.json's
-    if (panel.authority === 'local') this.states.select({ projectKey, panelId: panel.panelId, ...(sessionId !== undefined ? { sessionId } : {}) });
-    this.remoteState?.select(panel.authority === 'local' ? undefined : { projectKey, ...(sessionId !== undefined ? { sessionId } : {}) }).catch(this.report('Saving the remote selection'));
+    const record = (): void => {
+      this.lastChats.remember(projectKey, this.chatIdOf(panel));
+      // panels.json names only local chats, which an older version reads; a remote selection is remote-state.json's
+      if (panel.authority === 'local') this.states.select({ projectKey, panelId: panel.panelId, ...(sessionId !== undefined ? { sessionId } : {}) });
+      this.remoteState?.select(panel.authority === 'local' ? undefined : { projectKey, ...(sessionId !== undefined ? { sessionId } : {}) }).catch(this.report('Saving the remote selection'));
+    };
+    // the last chat and the selection land in one write of each file
+    this.states.batch(() => (this.remoteState ? this.remoteState.batch(record) : record()));
     const client = this.clientOf(panel);
     if (projectChanged && client && client.defaultTarget()?.key !== projectKey) {
       client.setDefaultFolder(projectKey).catch(this.report('Following the selected project'));
@@ -2610,7 +2628,7 @@ class DesktopApp {
     return { ok: false, reason: 'missing' };
   }
 
-  // The project's last viewed chat when it still exists, else a new chat in it.
+  // The project's last viewed chat while it exists, once it is gone the top of its Chats list, else a new chat; never viewed: a new chat.
   private selectProject(key: string): Promise<void> {
     if (authorityKeyOfProject(key) === 'local') return this.core.run('Select Project', (core) => this.selectProjectIn(core, key));
     return this.remoteSelection.select(key);
@@ -2622,19 +2640,24 @@ class DesktopApp {
 
   private async selectProjectIn(core: ChatCore, key: string): Promise<void> {
     if (!this.isKnownProject(key, core)) throw new Error(this.requireLocalization().t('The project is no longer in the project list.'));
-    const remembered = this.lastChatByProject.get(key);
-    if (remembered !== undefined) {
-      const loaded = this.loadedChat(remembered);
-      if (loaded) {
-        this.showChat(loaded, { focus: false });
-        return;
-      }
-      if (!remembered.startsWith(NEW_CHAT_ID_PREFIX) && (await this.storedChat(core, remembered))?.projectKey === key) {
-        const result = await this.selectChatIn(core, remembered);
-        if (result.ok) return;
-      }
+    await openProjectChat({
+      remembered: this.lastChats.remembered(key),
+      open: (chatId) => this.openChatOfProject(core, key, chatId),
+      topOfList: async () => (await this.listChatsIn(core, key)).chats[0]?.id,
+      newChat: () => this.newChatIn(core, key),
+    });
+  }
+
+  // false: the chat is gone, or works in another project
+  private async openChatOfProject(core: ChatCore, key: string, chatId: string): Promise<boolean> {
+    const loaded = this.loadedChat(chatId);
+    if (loaded) {
+      if (this.projectOf(loaded) !== key) return false;
+      this.showChat(loaded, { focus: false });
+      return true;
     }
-    await this.newChatIn(core, key);
+    if (chatId.startsWith(NEW_CHAT_ID_PREFIX) || (await this.storedChat(core, chatId))?.projectKey !== key) return false;
+    return (await this.selectChatIn(core, chatId)).ok;
   }
 
   private selectRelativeChat(delta: 1 | -1): Promise<void> {
@@ -2762,9 +2785,10 @@ class DesktopApp {
     const { t } = this.requireLocalization();
     if (result.reason === 'leased') return { ok: false, reason: 'leased' };
     if (!('message' in result)) return this.missingChat();
-    log(`[chats] ${failure} ${result.reason}: ${result.message}`);
-    // An invalid request's message is already localized for the user; a failure's is error detail.
-    void this.notifications.error(result.reason === 'invalid' ? result.message : t('Damocles could not change the session: {0}', result.message));
+    log(`[chats] ${failure} ${result.reason}: ${englishText(result.message)}`);
+    // An invalid request's message is the user's to read; a failure's is error detail.
+    const message = this.requireLocalization().render(result.message);
+    void this.notifications.error(result.reason === 'invalid' ? message : t('Damocles could not change the session: {0}', message));
     return { ok: false, reason: 'failed' };
   }
 
@@ -2809,6 +2833,7 @@ class DesktopApp {
       const chat = this.loadedChat(chatId);
       if (!chat) return this.missingChat();
       this.forgetHeldMessages(chat);
+      this.lastChats.forgetChat(chatId);
       chat.close();
       return { ok: true };
     }
@@ -2818,6 +2843,7 @@ class DesktopApp {
       const holder = this.loadedChat(chatId);
       const worktreeId = (holder ? this.worktreeEventOf(holder)?.worktreeId : undefined) ?? (await this.storedChat(core, chatId))?.session.worktree?.worktreeId;
       const result = this.mutationResult(await core.client.deleteSession(chatId), 'delete');
+      if (result.ok) this.lastChats.forgetChat(chatId);
       if (result.ok && holder && !holder.isDisposed) {
         const key = this.chatKeyOf(holder);
         if (key !== undefined) this.worktreeStates.delete(key);
@@ -2872,8 +2898,10 @@ class DesktopApp {
   private chatChanged(panel: DesktopPanel): void {
     const projectKey = this.projectOf(panel);
     if (projectKey !== undefined) {
+      const chatId = this.chatIdOf(panel);
       // A chat remembered before its first file write is remembered by its session id once it has one.
-      if (this.lastChatByProject.get(projectKey) === `${NEW_CHAT_ID_PREFIX}${panel.panelId}`) this.lastChatByProject.set(projectKey, this.chatIdOf(panel));
+      this.lastChats.renamed(`${NEW_CHAT_ID_PREFIX}${panel.panelId}`, chatId);
+      this.lastChats.chatMoved(chatId, projectKey);
       if (panel === this.views?.selected() && !this.chatElsewhereSelected()) this.selectionChanged(panel);
     }
     if (panel.authority !== 'local') this.saveRemoteChats(panel.authority);
@@ -3381,7 +3409,7 @@ class DesktopApp {
     });
     if (answer.kind === 'notifications') {
       if (answer.action === 'open') this.notificationCenter.open(answer.entryId);
-      else this.notificationCenter.answer(answer.entryId, answer.label);
+      else this.notificationCenter.answer(answer.entryId, answer.index);
     }
     if (answer.kind === 'dropZones' && request.kind === 'dropZones' && answer.slot !== null) this.layoutMove(request.pane, answer.slot);
     return answer;
@@ -3399,6 +3427,7 @@ class DesktopApp {
       authorityOs: (authority) => this.authorityOs(authority),
       ask: this.ask,
       t,
+      render: (text) => localization.render(text),
       log: report,
       pickSavePath: (defaultPath) => this.pickSavePath(defaultPath),
       backups: this.backups,
@@ -3519,7 +3548,7 @@ class DesktopApp {
       excludeSettings: () => [...fileTree.excludePatterns(), ...this.searchExcludePatterns()],
       ask: this.ask,
       t,
-      warn: (message) => void platform.notifications.warn(message),
+      warn: (message) => void this.notifications.warn(message),
       copy: (text) => platform.clipboard.writeText(text),
       selectedText: () => editorPane.activeContext()?.selection?.text,
       showSidebar: () => this.showSidebar(),
@@ -3544,7 +3573,7 @@ class DesktopApp {
     const askInput = createInputAsker({
       overlay: () => this.overlay,
       focused: () => webContents.getFocusedWebContents() ?? undefined,
-      unavailable: () => void platform.notifications.error(t('The text box could not be shown, so nothing was changed. Try again.')),
+      unavailable: () => void this.notifications.error(t('The text box could not be shown, so nothing was changed. Try again.')),
       log: report,
     });
     this.askCredential = createAskpassBridge({ ask: this.ask, askInput, t });
@@ -3565,8 +3594,9 @@ class DesktopApp {
       selectedProjectKey: () => this.searchFolder()?.projectKey,
       editorPane,
       selection: { get: (projectKey) => this.windowLayout.scmSelected(projectKey), set: (projectKey, root) => this.windowLayout.setScmSelected(projectKey, root) },
-      notify: platform.notifications,
+      notify: this.notifications,
       t,
+      render: (text) => localization.render(text),
       showGitLog: () => {
         const authority = authorityKeyOfProject(this.selectedProjectKey ?? '');
         if (authority === 'local') this.openLogTab(path.join(this.logsDir, logFileName('Git')), false);
@@ -3585,7 +3615,7 @@ class DesktopApp {
       openExternal: async (url) => {
         if (!(await platform.shell.openExternal(url))) throw new Error('The link could not be opened');
       },
-      pickFolder: (defaultPath, title, buttonLabel) => platform.dialogs.pickFolder({ title: title ?? t('Open Repository'), defaultPath, ...(buttonLabel !== undefined ? { buttonLabel } : {}) }),
+      pickFolder: (defaultPath, title, buttonLabel) => platform.nativeDialogs.pickFolder({ title: title ?? t('Open Repository'), defaultPath, ...(buttonLabel !== undefined ? { buttonLabel } : {}) }),
       addProject: async (authority, folder) => {
         if (authority === 'local') await this.addProjectAt(folder);
         else await this.addRemoteProject(authority, folder);
@@ -3596,8 +3626,8 @@ class DesktopApp {
       quickPick: createQuickPickAsker({
         overlay: () => this.overlay,
         focused: () => webContents.getFocusedWebContents() ?? undefined,
-        unavailable: () => void platform.notifications.error(t('The list could not be shown, so nothing was changed. Try again.')),
-        tooLarge: () => void platform.notifications.error(t('The list has too many entries to show, so nothing was changed.')),
+        unavailable: () => void this.notifications.error(t('The list could not be shown, so nothing was changed. Try again.')),
+        tooLarge: () => void this.notifications.error(t('The list has too many entries to show, so nothing was changed.')),
         log: report,
       }),
       ask: this.ask,
@@ -3724,9 +3754,11 @@ class DesktopApp {
           reconnectNow: (authorityKey: string) => this.reconnector?.reconnectNow(authorityKey),
           latency: (authorityKey: string) => this.latency?.latency(authorityKey),
           // the picker a remote core's dialogs.pickFile or dialogs.pickFolder opens, answered as core would be
-          pick: (authorityKey: string, kind: 'file' | 'folder', options: { readonly title?: string; readonly defaultPath?: string; readonly buttonLabel?: string }) => {
+          pick: (authorityKey: string, kind: 'file' | 'folder', { title, ...options }: { readonly title?: string; readonly defaultPath?: string; readonly buttonLabel?: string }) => {
             const { dialogs } = this.remoteServicesOf(authorityKey).platform;
-            return kind === 'file' ? dialogs.pickFile(options) : dialogs.pickFolder(options);
+            const named = { ...options, ...(title !== undefined ? { title: verbatim(title) } : {}) };
+            const { buttonLabel, ...file } = named;
+            return kind === 'file' ? dialogs.pickFile(file) : dialogs.pickFolder({ ...file, ...(buttonLabel !== undefined ? { buttonLabel: verbatim(buttonLabel) } : {}) });
           },
           addHost: async (target: { readonly alias: string; readonly name: string } | { readonly input: string; readonly name: string }) => {
             const destination = 'alias' in target ? { kind: 'alias' as const, alias: target.alias } : (() => {
@@ -3972,6 +4004,17 @@ class DesktopApp {
 
   private remoteProject(key: string): RemoteProject | undefined {
     return this.remoteProjects().find((project) => project.key === key);
+  }
+
+  // A project of the sidebar's list, local or remote.
+  private projectListed(key: string): boolean {
+    if (authorityKeyOfProject(key) !== 'local') return this.remoteProject(key) !== undefined;
+    return this.projects.folders().some((folder) => folderKey(folder.fsPath) === key);
+  }
+
+  // A removed project's last chat goes with it, whichever path removed it.
+  private forgetUnlistedProjects(): void {
+    for (const key of this.lastChats.projects()) if (!this.projectListed(key)) this.lastChats.forgetProject(key);
   }
 
   // Files, the editor, Search, Quick Open, the formatter and terminals: every shown project, in the sidebar order.
@@ -4233,7 +4276,7 @@ class DesktopApp {
       clientAuth: () => this.core.run('Sign-ins for remote chats', (core) => core.client.clientAuth()),
       voice: desktopHostCapabilities(process.platform).voice,
       homedir: homeDirectory(),
-      userSettingKeys: () => contributed.keys.filter((key) => !contributed.machineKeys.has(key)),
+      userSettingKeys: () => contributed.keys.filter((key) => !contributed.clientMachineKeys.has(key) && !contributed.hostKeys.has(key)),
       userValue: (key) => platform.settings.inspect(key).userValue,
       hostPolicy: (authorityKey) => {
         const hostId = hostIdOfAuthority(authorityKey);
@@ -4293,7 +4336,7 @@ class DesktopApp {
     const right = side(request.right);
     const pane = this.requireEditorPane();
     if (request.approvalId === undefined) {
-      const view = await pane.showRemoteDiff(request.title, file, left, right, { focus: request.preserveFocus !== true });
+      const view = await pane.showRemoteDiff((fileName) => this.requireLocalization().render(request.title(fileName)), file, left, right, { focus: request.preserveFocus !== true });
       return { close: () => Promise.resolve(view.close()), closed: view.closed };
     }
     const client = this.clientFor(authority);
@@ -4338,7 +4381,7 @@ class DesktopApp {
     if (!panel || panel !== view || panel.kind !== 'chat') return false;
     const from = crossedByViewMessage(panel.authority, message);
     if (from !== undefined) {
-      void this.requirePlatform().notifications.warn(this.crossAuthorityRefusal(panel.authority, from));
+      void this.notifications.warn(this.crossAuthorityRefusal(panel.authority, from));
       return true;
     }
     if (this.holdWhileAway(panel, message)) return true;
@@ -4362,7 +4405,6 @@ class DesktopApp {
       hostId: this.hostIdOf(authority),
       hostName: () => this.hostName(authority),
       platform: deps.platform,
-      state: deps.platform.state,
       projects: () => this.remoteProjects().filter((project) => project.authorityKey === authority),
       fileRoots: () => this.remoteFileRoots(authority),
       onProjectsChanged: (listener) => this.requireHostStore().onDidChange(listener),
@@ -4391,6 +4433,7 @@ class DesktopApp {
         gitCredential: (request, signal) => this.gitCredentialClient().handle(this.hostIdOf(authority), request, signal),
       },
       base: {
+        render: deps.render,
         divert: deps.divert,
         terminalToggle: deps.terminalToggle,
         createView: (panelId, create) => this.createCoreView(panelId, create, authority),
@@ -4635,6 +4678,7 @@ class DesktopApp {
     await removeTree(path.join(this.userDataDir, 'remote', hostId));
     await removeTree(path.join(DAMOCLES_HOME_DIR, 'browser-profiles', authority));
     this.offlineQueue?.forgetAuthority(authority);
+    this.lastChats.forgetAuthority(authority);
     await this.requireRemoteState().forgetAuthority(authority);
   }
 
@@ -4904,7 +4948,7 @@ class DesktopApp {
           });
         },
       }),
-      notify: (message, action) => this.requirePlatform().notifications.warn(message, action),
+      notify: (message, action) => this.notifications.warn(message, action),
       t: (message, ...args) => this.requireLocalization().t(message, ...args),
       log: (line) => log(line),
     });
@@ -5198,12 +5242,12 @@ class DesktopApp {
     const outcome = queue.hold(panel.authority, token, message);
     if (outcome === 'held' || outcome === 'ignored') return outcome === 'held';
     // past the bounds the message goes back to the composer with why, as core gives back a send it refuses
-    const { t } = this.requireLocalization();
+    // the chat's page renders it in its own language
     const detail = outcome === 'tooMany'
-      ? t('A chat holds at most {0} messages while {1} is away.', MAX_HELD_PER_PANEL, this.hostName(panel.authority))
+      ? l('A chat holds at most {0} messages while {1} is away.', MAX_HELD_PER_PANEL, this.hostName(panel.authority))
       : outcome === 'tooLarge'
-        ? t('Messages held while {0} is away can take at most {1} MB.', this.hostName(panel.authority), MAX_HELD_BYTES / (1024 * 1024))
-        : t('Damocles can\'t hold messages while {0} is away, because it can\'t read {1}.', this.hostName(panel.authority), this.requireRemoteState().filePath);
+        ? l('Messages held while {0} is away can take at most {1} MB.', this.hostName(panel.authority), MAX_HELD_BYTES / (1024 * 1024))
+        : l('Damocles can\'t hold messages while {0} is away, because it can\'t read {1}.', this.hostName(panel.authority), this.requireRemoteState().filePath);
     const content = parseContent((message as { content?: unknown }).content) ?? [];
     log(`[views] panel ${panel.panelId}: a held message was refused (${outcome})`);
     void panel.postMessage({ type: 'promptReturned', content: typeof content === 'string' ? [{ type: 'text', text: content }] : content, reason: 'heldPromptKept', detail } satisfies ExtensionToWebviewMessage);
@@ -5292,7 +5336,7 @@ class DesktopApp {
     const show = t('Show host');
     this.notificationCenter.notice('warning', message, [show], this.notificationHost(authorityKey), title).then(async (answer) => {
       const hostId = hostIdOfAuthority(authorityKey);
-      if (answer === show && hostId !== undefined) await this.remoteHostsOrRefuse().openConnect(hostId, 'show');
+      if (answer === 0 && hostId !== undefined) await this.remoteHostsOrRefuse().openConnect(hostId, 'show');
     }).catch(this.report('Showing the machines sharing the home'));
   }
 
@@ -5308,7 +5352,7 @@ class DesktopApp {
       : t('{0} files changed on {1} while you were offline. Your saves are kept in the merge editor.', files.length, name);
     const review = t('Review');
     this.notificationCenter.notice('warning', message, [review], this.notificationHost(authority)).then((answer) => {
-      if (answer === review) this.requireEditorPane().focusUploadMerge(first);
+      if (answer === 0) this.requireEditorPane().focusUploadMerge(first);
     }, this.report('Showing the offline save conflicts'));
   }
 
@@ -5346,7 +5390,7 @@ class DesktopApp {
   private async openFolderThroughLocalDaemon(): Promise<void> {
     const platform = this.requirePlatform();
     const { t } = platform.localization;
-    const folder = await platform.dialogs.pickFolder({ title: t('Open Folder Through Local Daemon') });
+    const folder = await platform.nativeDialogs.pickFolder({ title: t('Open Folder Through Local Daemon') });
     if (folder === undefined) return;
     await this.addLoopbackProject(folder);
   }
@@ -5645,6 +5689,7 @@ class DesktopApp {
       ask: this.ask,
       notify: local ? this.notifications : this.hostNotices(authority),
       t,
+      render: (text) => this.requireLocalization().render(text),
       log: report,
       setupShell: () => (local
         ? setupShell(process.platform, process.env, this.terminalProfiles?.profiles().find((profile) => profile.id === 'pwsh')?.file)
@@ -5889,7 +5934,7 @@ class DesktopApp {
   }
 
   // Main's notices about a remote host's work, with the host's name from this computer's host store beside them, never one a core sent.
-  private hostNotices(authority: string): NotificationService {
+  private hostNotices(authority: string): DesktopNotifications {
     return createDesktopNotificationService({
       notice: (severity, message, actions) => this.notificationCenter.notice(severity, message, actions, this.notificationHost(authority)),
       ask: (question, signal) => this.ask({ ...question, message: this.requireLocalization().t('{0}: {1}', this.hostName(authority), question.message) }, signal),
@@ -5900,7 +5945,7 @@ class DesktopApp {
 
   // A project's selected chat for its shown folder (D31): its id, and core's worktree state while it is loaded.
   private selectedChatPlace(projectKey: string): { readonly chatId: string; readonly worktreeId?: string; readonly state?: WorktreeStateData } | undefined {
-    const chatId = this.lastChatByProject.get(projectKey);
+    const chatId = this.lastChats.get(projectKey);
     if (chatId === undefined) return undefined;
     const panel = this.loadedChat(chatId);
     const key = panel ? this.chatKeyOf(panel) : undefined;
@@ -6298,7 +6343,7 @@ class DesktopApp {
       const restored = panel ? await this.restoredCorePanel(panel) : undefined;
       const corePanelId = restored?.corePanelId;
       if (restored?.failed) {
-        void this.requirePlatform().notifications.warn(notLoaded);
+        void this.notifications.warn(notLoaded);
         return;
       }
       if (!panel || corePanelId === undefined || !(await this.entryActionDeps.whenReady(panel)) || this.views?.selected() !== panel) {
@@ -6355,7 +6400,7 @@ class DesktopApp {
       return;
     }
     const opened = await this.requireEditorPane().openFromUser(pick.projectKey, pick.relativePath, pick.line !== undefined ? { line: pick.line } : {});
-    if (!opened.ok) void this.requirePlatform().notifications.warn(this.requireLocalization().t('{0} could not be opened.', pick.relativePath));
+    if (!opened.ok) void this.notifications.warn(this.requireLocalization().t('{0} could not be opened.', pick.relativePath));
   }
 
   // Files' and Source Control's Mention in chat, the editor's mention button and Quick Open's @ mention in the selected chat.
@@ -6365,7 +6410,7 @@ class DesktopApp {
     // a target named by path alone is a file of this computer
     const from = crossedAuthority(authority, 'projectKey' in target ? target.projectKey : '');
     if (from !== undefined && this.views?.selected()) {
-      void this.requirePlatform().notifications.warn(this.crossAuthorityRefusal(authority, from));
+      void this.notifications.warn(this.crossAuthorityRefusal(authority, from));
       return;
     }
     await this.chatHost(authority).run('Mention', async (core) => {
@@ -6375,7 +6420,7 @@ class DesktopApp {
       // A chat page drops a message core posts before it is ready.
       if (!selected || corePanelId === undefined || !(await this.entryActionDeps.whenReady(selected))) {
         const { t } = this.requireLocalization();
-        void this.requirePlatform().notifications.warn(restored?.failed ? t('The chat could not be loaded, so the file was not mentioned in it.') : t('Open a chat to mention a file in it.'));
+        void this.notifications.warn(restored?.failed ? t('The chat could not be loaded, so the file was not mentioned in it.') : t('Open a chat to mention a file in it.'));
         return;
       }
       await core.client.mention(corePanelId, target);

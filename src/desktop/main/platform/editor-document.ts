@@ -97,6 +97,7 @@ async function readBody(filePath: string, languageId: string): Promise<EditorDoc
   const read = await readFileBytes(filePath);
   if (read.kind === 'missing') return 'missing';
   if (read.kind === 'tooLarge') return tooLarge(read.bytes);
+  if (read.kind === 'notAFile') return { kind: 'notAFile' };
   if (read.kind === 'unreadable') return { kind: 'unreadable', error: read.error };
   return bytesBody(read.bytes, languageId);
 }
@@ -177,6 +178,7 @@ export async function readFileText(filePath: string): Promise<string> {
   if (body.kind === 'text') return body.content;
   if (body.kind === 'tooLarge') throw new Error(`${filePath} is ${body.bytes} bytes, over the ${body.limitBytes}-byte limit`);
   if (body.kind === 'binary') throw new Error(`${filePath} is a binary file`);
+  if (body.kind === 'notAFile') throw new Error(`${filePath} is not a file`);
   throw new Error(body.error);
 }
 

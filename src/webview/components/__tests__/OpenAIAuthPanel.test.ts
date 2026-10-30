@@ -5,7 +5,10 @@ import { nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import OpenAIAuthPanel from '../OpenAIAuthPanel.vue';
 import ExtensionUiDialog from '../ExtensionUiDialog.vue';
-import { i18n } from '@/i18n';
+import { applyLocale, i18n } from '@/i18n';
+import { createSettingsHandlers } from '@/composables/message-handler/handlers/settings-handlers';
+import type { HandlerContext } from '@/composables/message-handler/types';
+import { inGreek } from '../../../__mocks__/greek-locale';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useExtensionUiStore } from '@/stores/useExtensionUiStore';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@shared/types/messages';
@@ -120,7 +123,7 @@ describe('OpenAIAuthPanel ChatGPT sign-in', () => {
 
   it('shows a failed sign-in as an alert', async () => {
     const wrapper = mountPanel();
-    useSettingsStore().setChatGPTAuthError('ChatGPT sign-in timed out');
+    useSettingsStore().setChatGPTAuthError({ message: 'ChatGPT sign-in timed out' });
     await nextTick();
 
     expect(wrapper.get('[role="alert"]').text()).toBe('ChatGPT sign-in timed out');
@@ -220,7 +223,7 @@ describe('OpenAIAuthPanel prefer-API-key toggle', () => {
     await toggle(wrapper).trigger('click');
     const retry = posted[1] as Extract<WebviewToExtensionMessage, { type: 'setOpenAIPreferApiKey' }>;
     expect(wrapper.find('[data-testid="openai-prefer-error"]').exists()).toBe(false);
-    ack({ type: 'setOpenAIPreferApiKeyAck', requestId: retry.requestId, ok: false, error: 'refused on a remote host' });
+    ack({ type: 'setOpenAIPreferApiKeyAck', requestId: retry.requestId, ok: false, error: { message: 'refused on a remote host' } });
     await nextTick();
     expect(wrapper.get('[data-testid="openai-prefer-error"]').text()).toBe('refused on a remote host');
   });
@@ -268,13 +271,13 @@ describe('OpenAIAuthPanel API key', () => {
 
   it('announces a failed save as an alert', async () => {
     const wrapper = mountPanel();
-    await save(wrapper, { ok: false, error: 'keyring locked' });
+    await save(wrapper, { ok: false, error: { message: 'keyring locked' } });
     expect(wrapper.get('[role="alert"]').text()).toBe('keyring locked');
   });
 
   it('announces a saved key as a status', async () => {
     const wrapper = mountPanel();
-    await save(wrapper, { ok: true, validated: false, warning: 'saved, not checked' });
+    await save(wrapper, { ok: true, validated: false, warning: { message: 'saved, not checked' } });
     expect(wrapper.findAll('[role="status"]').map((el) => el.text())).toContain('saved, not checked');
   });
 });
@@ -297,5 +300,43 @@ describe('OpenAIAuthPanel active credential', () => {
   it('hides the line when core does not report it', () => {
     const wrapper = mountPanel(status({ chatgpt: true, apiKey: true }));
     expect(wrapper.find('[data-testid="credential-active"]').exists()).toBe(false);
+  });
+});
+
+describe('OpenAIAuthPanel after a language switch', () => {
+  const CORE_TEXT = { message: 'Could not open file: {0}', args: ['auth.json'] };
+  const ack = (message: ExtensionToWebviewMessage): void => {
+    for (const fn of listeners) fn(message);
+  };
+  afterEach(() => applyLocale('en'));
+
+  it("renders a failed save's and a refused preference's text in the new language", async () => {
+    const wrapper = mountPanel(status({ apiKey: true, chatgpt: true }));
+    await wrapper.get('[data-testid="openai-prefer-api-key"]').trigger('click');
+    const prefer = posted.find((m) => m.type === 'setOpenAIPreferApiKey') as { requestId: string };
+    ack({ type: 'setOpenAIPreferApiKeyAck', requestId: prefer.requestId, ok: false, error: CORE_TEXT });
+    await wrapper.get('input[type="password"]').setValue('sk-test');
+    await wrapper.get('input[type="password"]').trigger('keydown.enter');
+    const set = posted.find((m) => m.type === 'setOpenAIApiKey') as { requestId: string };
+    ack({ type: 'setOpenAIApiKeyAck', requestId: set.requestId, ok: false, error: CORE_TEXT });
+    await nextTick();
+    expect(wrapper.get('[data-testid="openai-prefer-error"]').text()).toBe('Could not open file: auth.json');
+
+    await applyLocale('el');
+    await nextTick();
+    expect(wrapper.get('[data-testid="openai-prefer-error"]').text()).toBe(inGreek(CORE_TEXT));
+    expect(wrapper.findAll('[role="alert"]').map((alert) => alert.text())).toEqual([inGreek(CORE_TEXT), inGreek(CORE_TEXT)]);
+  });
+
+  it('renders a failed ChatGPT sign-in in the new language', async () => {
+    const wrapper = mountPanel();
+    const ctx = { stores: { settingsStore: useSettingsStore() } } as unknown as HandlerContext;
+    createSettingsHandlers().openaiChatGPTAuthFailed!({ type: 'openaiChatGPTAuthFailed', error: CORE_TEXT }, ctx);
+    await nextTick();
+    expect(wrapper.get('[role="alert"]').text()).toBe('Could not open file: auth.json');
+
+    await applyLocale('el');
+    await nextTick();
+    expect(wrapper.get('[role="alert"]').text()).toBe(inGreek(CORE_TEXT));
   });
 });

@@ -1,10 +1,11 @@
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { RestorePoint, RewindHistoryItem, SkippedFile, SkippedFilesTarget } from "../../shared/types/session";
 import type { Result } from "../pi-session/checkpoints";
-import type { ChatSession } from "../chat-session";
+import type { ChatSession, LiveConversation } from "../chat-session";
 import type { PanelHost } from "../../platform/window-service";
 import { loadPiSessionHistory, getPiRewindHistory, getPiFileCheckpointContent, getPiSkippedFiles, replaySessionFileReadOnly } from "../pi-session/session-store";
 import { replayContext, replayLiveBranch, type ModelReasonsLookup, type ReplayContext } from "../pi-session/session-store/history-loader";
+import { snapshotMessageAtPost } from "../pi-session/pi-stream-adapter";
 
 export interface HistoryManagerConfig {
   postMessage: (host: PanelHost, message: ExtensionToWebviewMessage) => void;
@@ -71,14 +72,28 @@ export class HistoryManager {
     return replayContext(this.modelReasons?.());
   }
 
+  /** Settles once a file replay in flight that reaches `host` ended: one to `host`, to its whole panel, or to one of its views. */
+  replayReaching(host: PanelHost): Promise<void> | undefined {
+    for (const [other, { done }] of this.inflight) {
+      if (other === host || other === host.panelHost || other.panelHost === host) return done;
+    }
+    return undefined;
+  }
+
   /**
-   * A joining view's replay of the conversation `session` holds, from the branch `liveConversation` captured; posts go to
-   * `post`, never through the panel, whose own posts wait while the view joins, each once `host` took the ones before.
+   * A view's replay of the conversation `session` holds (views.join, or a page that loads again), from the branch
+   * `liveConversation` captured; posts go to `post`, never through the panel, whose own posts wait meanwhile, each once `host`
+   * took the ones before.
    */
-  async replayLive(context: ReplayContext, cwd: string, session: ChatSession, host: PanelHost, post: (message: ExtensionToWebviewMessage) => void, live: NonNullable<ReturnType<ChatSession["liveConversation"]>>): Promise<void> {
+  async replayLive(context: ReplayContext, cwd: string, session: ChatSession, host: PanelHost, post: (message: ExtensionToWebviewMessage) => void, live: LiveConversation): Promise<void> {
     const paced = (): Promise<void> => host.drained?.() ?? Promise.resolve();
-    await replayLiveBranch(context, cwd, live.sessionId, live.sessionManager, live.branch, post, session.fileCheckpoints, live.snapshot.liveToolCallIds, paced);
+    await replayLiveBranch(context, cwd, live.sessionId, live.sessionManager, live.branch, post, session.fileCheckpoints, live.snapshot, paced, live.agents?.transcripts);
     for (const message of live.snapshot.messages) {
+      await paced();
+      post(snapshotMessageAtPost(live.snapshot, message));
+    }
+    // the subagents' cards exist once the branch replayed, so their live state follows the turn's own
+    for (const message of live.agents?.messages ?? []) {
       await paced();
       post(message);
     }

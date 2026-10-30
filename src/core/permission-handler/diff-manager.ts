@@ -5,7 +5,7 @@ import { TOOL_WRITE } from '../../shared/tool-names';
 import type { FilePatch, FilePatchOmitted } from '../../shared/types/file-patch';
 import { FILE_PATCH_MAX_BYTES, filePatch } from '../pi-session/tools/file-patch';
 import { replaceEveryOccurrence } from '../pi-session/tools/edit-tool';
-import { t } from '../l10n';
+import { l } from '../l10n';
 import { log } from '../logger';
 
 export interface DiffInfo {
@@ -98,7 +98,7 @@ export class DiffManager {
     const fileName = path.basename(filePath);
 
     const view = await this.editor.showDiff({
-      title: (name) => t('{0} (Current ↔ Proposed)', name),
+      title: (name) => l('{0} (Current ↔ Proposed)', name),
       filePath,
       left: { name: `${diffId}-original-${fileName}`, content: originalContent },
       right: { name: `${diffId}-proposed-${fileName}`, content: proposedContent },

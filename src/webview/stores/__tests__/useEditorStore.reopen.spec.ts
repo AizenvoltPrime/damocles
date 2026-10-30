@@ -5,7 +5,7 @@ import { useEditorStore } from '../useEditorStore';
 /** The agent raises a proposal diff, so it never opens by itself: the permission card opens it, as often as asked, until the host closes it. */
 
 const doc = (content: string) => ({ name: 'a.ts', body: { kind: 'text' as const, content, languageId: 'typescript' } });
-const proposal = { type: 'editorShowDiff' as const, viewId: 'v1', title: 'a.ts', purpose: 'proposal' as const, approvalId: 'p-1', original: doc('a'), modified: doc('b') };
+const proposal = { type: 'editorShowDiff' as const, viewId: 'v1', title: { message: 'a.ts' }, purpose: 'proposal' as const, approvalId: 'p-1', original: doc('a'), modified: doc('b') };
 
 beforeEach(() => setActivePinia(createPinia()));
 

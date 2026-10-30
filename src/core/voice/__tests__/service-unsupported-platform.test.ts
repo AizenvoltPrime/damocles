@@ -14,9 +14,9 @@ vi.mock("../runtime", () => ({
     modelsDir: `${rootDir}/models`,
   }),
   VoiceRuntimeInstaller: class {
-    async installAll(): Promise<{ ok: false; pythonExe: string; errorMessage: string; missing: "runtime" }> {
+    async installAll(): Promise<{ ok: false; pythonExe: string; errorMessage: { message: string }; missing: "runtime" }> {
       counts.installs++;
-      return { ok: false, pythonExe: "/fake/voice/python", errorMessage: "The voice runtime is not installed.", missing: "runtime" };
+      return { ok: false, pythonExe: "/fake/voice/python", errorMessage: { message: "The voice runtime is not installed." }, missing: "runtime" };
     }
   },
 }));
@@ -34,8 +34,10 @@ vi.mock("../sidecar", () => ({
 
 const { VoiceService } = await import("../service");
 
-const WINDOWS_ARM64_REFUSAL =
-  "Jarvis voice mode (wake word and spoken replies) is not available on Windows arm64. Its local speech runtime supports only Windows x64, Linux x64, macOS arm64. Push-to-talk with cloud speech-to-text (Whisper, Deepgram or Google) still works.";
+const WINDOWS_ARM64_REFUSAL = {
+  message: "Jarvis voice mode (wake word and spoken replies) is not available on {0}. Its local speech runtime supports only {1}. Push-to-talk with cloud speech-to-text (Whisper, Deepgram or Google) still works.",
+  args: ["Windows arm64", "Windows x64, Linux x64, macOS arm64"],
+};
 
 const original = { platform: process.platform, arch: process.arch };
 

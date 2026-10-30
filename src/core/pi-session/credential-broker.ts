@@ -7,7 +7,8 @@ import type { RemoteHost } from '../../platform/remote-host';
 import { CREDENTIAL_CLIENT_ABSENT, MAX_BROKER_EXPIRES_IN_MS, planModelIdsOf, type BrokerAnswer, type HeldAuth } from '../../shared/remote-user';
 import { clientCredentialProviders, currentPin, onPinReleased, pinnedClients, repin, runInTurnPin, runPin, type ClientPin, type SignInPrompts } from '../client-snapshots';
 import { DAMOCLES_CREDENTIAL_SOURCE_ENTRY } from './session-store/constants';
-import { t } from '../l10n';
+import { l } from '../l10n';
+import { LocalizedError } from '../../shared/localized-text';
 import { log } from '../logger';
 
 // pi's minimum OAuth validity (pi-ai auth/resolve.js DEFAULT_OAUTH_MINIMUM_VALIDITY_MS)
@@ -28,6 +29,9 @@ export interface BrokerDeps {
 }
 
 const cacheKey = (clientId: string, provider: string): string => `${clientId}\n${provider}`;
+
+const brokerStopped = (provider: string): LocalizedError =>
+  new LocalizedError(l('Damocles stopped on this host, so it has no sign-in for {0}.', provider), { cause: 'credential' });
 
 /** An answer as the credential pi reads; expires is set after the extras, on this host's clock. */
 export function credentialOf(answer: BrokerAnswer, now: number): Credential | undefined {
@@ -133,7 +137,7 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
   private readonly subscriptions: Disposable[];
   private readonly now: () => number;
   private readonly deps: BrokerDeps;
-  // an answer that arrives after dispose is returned to its asker but never held
+  // an answer that arrives after dispose is returned to its asker but never held, and a turn's read after it asks no device
   private disposed = false;
 
   constructor(deps: BrokerDeps) {
@@ -182,7 +186,7 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
 
   delete(providerId: string): Promise<void> {
     log('[credential-broker] refused pi\'s delete of %s: sign-ins change only on the client', providerId);
-    return Promise.reject(new Error(t('Sign-ins change only in the User tab on your computer, so {0} was not signed out on this host.', providerId)));
+    return Promise.reject(new LocalizedError(l('Sign-ins change only in the User tab on your computer, so {0} was not signed out on this host.', providerId)));
   }
 
   /** An access token a client pushed for itself (Keep running): lands only in that client's entry and resumes only its own turns' waits. */
@@ -200,7 +204,7 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
   dispose(): void {
     this.disposed = true;
     for (const subscription of this.subscriptions) subscription.dispose();
-    for (const wait of [...this.waits]) this.settle(wait, (waiter) => waiter.reject(new Error('The token broker stopped', { cause: 'credential' })));
+    for (const wait of [...this.waits]) this.settle(wait, (waiter) => waiter.reject(brokerStopped(wait.provider)));
     for (const held of [this.cache, this.asking, this.generations, this.lastAuth, this.used, this.away]) held.clear();
   }
 
@@ -226,6 +230,7 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
   private async serve(providerId: string, refresh: boolean, signal: AbortSignal | undefined): Promise<Cached> {
     const pin = runPin();
     if (pin === undefined) return this.statusOnly(providerId);
+    if (this.disposed) throw brokerStopped(providerId);
     if (pin.run !== undefined && !this.used.get(pin.run)?.has(providerId)) {
       const used = this.used.get(pin.run) ?? new Set<string>();
       used.add(providerId);
@@ -298,7 +303,7 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
       log('[credential-broker] %s: the turn\'s device %s is not attached; waiting for its sign-in', provider, pin.clientId);
       wait.prompt = signIn.raise(provider, {
         continueWith: (clientId) => this.continueWith(wait, clientId),
-        cancel: () => this.settle(wait, (each) => each.reject(new Error(t('The chat closed before a sign-in for {0} arrived.', provider), { cause: 'credential' }))),
+        cancel: () => this.settle(wait, (each) => each.reject(new LocalizedError(l('The chat closed before a sign-in for {0} arrived.', provider), { cause: 'credential' }))),
       });
       // the device may have come back between the absent answer and this wait
       if (pin.clientId !== undefined && this.deps.remote.clients.attached(pin.clientId)) this.askAgain(wait);
@@ -367,6 +372,6 @@ export class BrokeredCredentialStore implements CredentialStore, Disposable {
   // a turn and a sub-call both fail at once, with the cause pi reads as a credential failure
   private absent(providerId: string, kind: 'turn' | 'subcall'): Error {
     log('[credential-broker] %s: the %s\'s client is not attached', providerId, kind);
-    return new Error(t('The computer that started this chat is not connected, so this host has no sign-in for {0}. Reconnect from that computer to continue.', providerId), { cause: 'credential' });
+    return new LocalizedError(l('The computer that started this chat is not connected, so this host has no sign-in for {0}. Reconnect from that computer to continue.', providerId), { cause: 'credential' });
   }
 }

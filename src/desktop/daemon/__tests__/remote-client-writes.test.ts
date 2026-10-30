@@ -21,7 +21,6 @@ import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../..
 import { runPinnedTurn } from '../../../core/client-snapshots';
 import { createCoreEndpoint, createLoopback, createMainEndpoint } from '../../core-protocol';
 import { createActorContext, processActor, type ActorContext } from '../../core-protocol/actor';
-import { CLIENT_STATE_KEYS } from '../../core-protocol/messages';
 import { DesktopSettingsStore } from '../../local-services/settings-store';
 import { createClientMirrors, createCoreRouter, type CoreRouter } from '../core-routes';
 import { createDaemonState } from '../daemon-state';
@@ -64,7 +63,7 @@ function attachedClient() {
     hostId: 'h1',
     transport: loop.core,
     mirrors: {
-      state: { global: {}, workspace: {} }, trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' },
+      trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' },
       clientAuth: { providers: {} }, clientUser: { settings: {}, permissionRules: [] }, clientPolicy: { voice: false, allowBypass: false },
     },
     close: vi.fn(),
@@ -84,12 +83,6 @@ describe('a daemon\'s core cannot write client files or change client credential
     expect(clientSecrets.get(`remote/h1/${key}`)).toBeDefined();
   });
 
-  it.each(CLIENT_STATE_KEYS)('client state key %s: core\'s write is refused and nothing is stored', async (key) => {
-    const { core, state } = attachedClient();
-    await expect(core.request('state.update', { scope: 'global', key, value: 'x' })).rejects.toThrow(/client/);
-    expect(state.snapshot('global')[key]).toBeUndefined();
-  });
-
   it('user-scope settings: a write from anywhere but the host tab is refused and the client\'s user layer is never a file', async () => {
     const machineFile = path.join(dir, 'home', '.damocles', 'settings.json');
     const fake = createFakePlatform();
@@ -101,7 +94,6 @@ describe('a daemon\'s core cannot write client files or change client credential
       trust: fake.trust,
       chatFolders: { folders: () => [], onDidChange: () => ({ dispose: () => undefined }) },
       notifications: undefined,
-      localization: fake.localization,
       log: quiet,
       remote: { fromHostTab: () => false, clientSettings: () => ({ 'damocles.model': 'client-model' }), onDidChangeClientSettings: () => ({ dispose: () => undefined }) },
     });
@@ -121,7 +113,7 @@ describe('a daemon\'s core cannot write client files or change client credential
 
 describe('a daemon routes credential and transcript requests so no client\'s files or credentials change', () => {
   const MIRRORS = {
-    state: { global: {}, workspace: {} }, trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' },
+    trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' },
     clientAuth: { providers: {} }, clientUser: { settings: {}, permissionRules: [] }, clientPolicy: { voice: false, allowBypass: false },
   } as const;
 
@@ -239,7 +231,7 @@ describe('a daemon\'s core refuses every sign-in and key change before any pi ca
     const { deps, ctx } = handlerDeps(platform, posted);
     const message = { type: 'setProviderPreferApiKey', provider: 'xai', preferApiKey: true, requestId: 'r1' } as WebviewToExtensionMessage;
     await createSettingsHandlers(deps).setProviderPreferApiKey!(message, ctx);
-    expect(posted).toEqual([{ type: 'setProviderPreferApiKeyAck', provider: 'xai', requestId: 'r1', ok: false, error: 'Sign-ins change only in the User tab on your computer.' }]);
+    expect(posted).toEqual([{ type: 'setProviderPreferApiKeyAck', provider: 'xai', requestId: 'r1', ok: false, error: { message: 'Sign-ins change only in the User tab on your computer.' } }]);
     expect(stateWrite).not.toHaveBeenCalled();
     expect(PiRuntime.exists).toBe(false);
   });
@@ -278,7 +270,7 @@ describe('a daemon\'s core refuses every sign-in and key change before any pi ca
     const posted: ExtensionToWebviewMessage[] = [];
     const { deps, ctx } = handlerDeps(platform, posted);
     await createOpenAIHandlers(deps)[route as 'setOpenAIApiKey']!(message, ctx);
-    expect(posted).toEqual([{ type: ack, requestId: 'r1', ok: false, error: 'Sign-ins change only in the User tab on your computer.' }]);
+    expect(posted).toEqual([{ type: ack, requestId: 'r1', ok: false, error: { message: 'Sign-ins change only in the User tab on your computer.' } }]);
     expect(fetched).not.toHaveBeenCalled();
     expect(PiRuntime.exists).toBe(false);
   });
@@ -290,7 +282,7 @@ describe('a daemon\'s core refuses every sign-in and key change before any pi ca
     const posted: ExtensionToWebviewMessage[] = [];
     const { deps, ctx } = handlerDeps(platform, posted);
     await createOpenAIHandlers(deps)[route as 'startChatGPTOAuth']!(message, ctx);
-    expect(posted).toContainEqual({ type: 'openaiChatGPTAuthFailed', error: 'Sign-ins change only in the User tab on your computer.' });
+    expect(posted).toContainEqual({ type: 'openaiChatGPTAuthFailed', error: { message: 'Sign-ins change only in the User tab on your computer.' } });
   });
 
   it.each<[string, WebviewToExtensionMessage]>([
@@ -303,7 +295,7 @@ describe('a daemon\'s core refuses every sign-in and key change before any pi ca
     const posted: ExtensionToWebviewMessage[] = [];
     const { deps, ctx } = handlerDeps(platform, posted);
     await createClaudeAuthHandlers(deps).handlers[route as 'claudeSetApiKey']!(message, ctx);
-    expect(posted).toContainEqual({ type: 'claudeAuthError', error: 'Sign-ins change only in the User tab on your computer.' });
+    expect(posted).toContainEqual({ type: 'claudeAuthError', error: { message: 'Sign-ins change only in the User tab on your computer.' } });
   });
 
   it.each<[string, WebviewToExtensionMessage]>([
@@ -315,7 +307,7 @@ describe('a daemon\'s core refuses every sign-in and key change before any pi ca
     const { deps, ctx } = handlerDeps(platform, posted);
     await createProviderAccountHandlers(deps).handlers[route as 'providerSignIn']!(message, ctx);
     expect(posted).toEqual([
-      { type: 'providerSignInState', provider: 'xai', state: { phase: 'idle', error: { kind: 'remote', message: 'Sign-ins change only in the User tab on your computer.' } } },
+      { type: 'providerSignInState', provider: 'xai', state: { phase: 'idle', error: { kind: 'remote', message: { message: 'Sign-ins change only in the User tab on your computer.' } } } },
     ]);
     expect(PiRuntime.exists).toBe(false);
   });
@@ -330,7 +322,7 @@ describe('a daemon\'s core refuses every sign-in and key change before any pi ca
     const posted: ExtensionToWebviewMessage[] = [];
     const { deps, ctx } = handlerDeps(platform, posted);
     await createProviderAccountHandlers(deps).handlers[route as 'setProviderApiKey']!(message, ctx);
-    expect(posted).toEqual([{ type: ack, provider: 'xai', requestId: 'r1', ok: false, error: 'Sign-ins change only in the User tab on your computer.' }]);
+    expect(posted).toEqual([{ type: ack, provider: 'xai', requestId: 'r1', ok: false, error: { message: 'Sign-ins change only in the User tab on your computer.' } }]);
     expect(store).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
     expect(PiRuntime.exists).toBe(false);

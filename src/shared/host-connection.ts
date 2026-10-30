@@ -60,4 +60,3 @@ export function shownFrom(reconnect: HostReconnect): number {
 export function secondsUntil(retryAt: number, now: number): number {
   return Math.max(0, Math.ceil((retryAt - now) / 1000));
 }
-

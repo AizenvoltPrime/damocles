@@ -89,6 +89,8 @@ export interface RequeuedFollowUp {
   withdrawn: () => boolean;
   /** True when a Stop's withdraw left it to pi's verdict on this re-queue. */
   stopped: () => boolean;
+  /** Call right before the re-queue's `prompt()`: from here a Stop's withdraw leaves it to pi's verdict. Until then it returns it. */
+  inPi: () => void;
   /** pi gave its verdict on this re-queue, so a later withdraw takes the prompt back as usual. */
   dispatched: () => void;
   /** Stops tracking the prompt without returning it, and gives its `onCommitted` for the entry a stopped run commits. */
@@ -164,9 +166,8 @@ export function queuedPromptEntries(): QueuedPromptEntries {
         const index = unmatched.findIndex((queued) => queued.text === text);
         const queued = index === -1 ? undefined : unmatched.splice(index, 1)[0];
         if (!queued) {
-          return { text, images: [], withdrawn: () => false, stopped: () => false, dispatched: () => {}, release: () => () => {}, giveBack: () => {}, refuse: () => {} };
+          return { text, images: [], withdrawn: () => false, stopped: () => false, inPi: () => {}, dispatched: () => {}, release: () => () => {}, giveBack: () => {}, refuse: () => {} };
         }
-        queued.requeuing = true;
         queued.stopped = false;
         return {
           text,
@@ -174,6 +175,7 @@ export function queuedPromptEntries(): QueuedPromptEntries {
           ...(queued.hookContext !== undefined ? { hookContext: queued.hookContext } : {}),
           withdrawn: () => !pending.includes(queued),
           stopped: () => queued.stopped && pending.includes(queued),
+          inPi: () => { queued.requeuing = true; },
           dispatched: () => { queued.requeuing = false; },
           release: () => {
             untrack(queued);

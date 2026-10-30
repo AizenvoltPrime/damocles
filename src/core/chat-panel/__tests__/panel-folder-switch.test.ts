@@ -16,6 +16,7 @@ import { folderKey } from '../../workspace-folders/folder-key';
 import type { FakeSession } from './panel-manager-harness';
 import { restoredWorkspaceFolderKey } from '../../../shared/restored-folder-key';
 import { releaseSessionLease, type SessionLeaseHolder } from '../../pi-session/session-store/session-lease';
+import { englishText } from '../../../shared/localized-text';
 
 const ROOT = path.resolve(os.tmpdir(), 'pfs-root');
 const A = path.join(ROOT, 'alpha');
@@ -688,7 +689,7 @@ describe('switch races and failures', () => {
 
     expect(await h.manager.switchPanelFolder(panelId, folderKey(B), 'user')).toBeUndefined();
 
-    const errors = host.posted.filter((m) => m.type === 'error') as Array<{ message: string }>;
+    const errors = host.posted.flatMap((m) => (m.type === 'error' ? [{ message: englishText(m.message) }] : []));
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('beta');
     expect(errors[0]!.message).toContain('mcp config unreadable');
@@ -782,7 +783,7 @@ describe('switch races and failures', () => {
 
     expect(await h.manager.switchPanelFolder(panelId, folderKey(B), 'user')).toBeUndefined();
 
-    const errors = host.posted.filter((m) => m.type === 'error') as Array<{ message: string }>;
+    const errors = host.posted.flatMap((m) => (m.type === 'error' ? [{ message: englishText(m.message) }] : []));
     expect(errors.map((e) => e.message)).toEqual([
       expect.stringContaining('first failure'),
       expect.stringContaining('second failure'),

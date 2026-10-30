@@ -364,21 +364,30 @@ export class TeamPersistence implements TeamPersistenceWriter {
 
   /** A member's card messages, every attempt in order, mapped from its pi session files. */
   async loadAgentConversation(teamId: string, agentId: string): Promise<TeamAgentHistoryMessage[]> {
+    return this.loadAgentAttempts(teamId, agentId);
+  }
+
+  /**
+   * The card messages of a member's attempts, each id `<attempt>:<entry id>`, as a running member's transcript read from memory
+   * gives its own; with `before`, only the attempts before that one, which that transcript follows.
+   */
+  async loadAgentAttempts(teamId: string, agentId: string, before?: number): Promise<TeamAgentHistoryMessage[]> {
     try {
       const files = (await indexTeamMemberFiles(this.membersDir(teamId))).get(agentId) ?? [];
       const history: TeamAgentHistoryMessage[] = [];
-      for (const [index, { path: filePath }] of files.entries()) {
+      for (const { attempt, path: filePath } of files) {
+        if (before !== undefined && attempt >= before) break;
         const file = await readAgentFile(filePath);
         if (!file) continue;
         // Each segment is one run of the member's runner, which starts with no batch an abort could cut.
         for (const segment of file.segments) {
           // Entry ids are unique only within one file, and the card keys its messages by id.
-          for (const message of memberHistoryMessages(segment.messages, file.entryIds, file.stoppedToolCallIds, file.windDownMessages)) history.push({ ...message, id: `${index}:${message.id}` });
+          for (const message of memberHistoryMessages(segment.messages, file.entryIds, file.stoppedToolCallIds, file.windDownMessages)) history.push({ ...message, id: `${attempt}:${message.id}` });
         }
       }
       return history;
     } catch (err) {
-      log('[TeamPersistence] loadAgentConversation failed for agent %s (team %s): %O', agentId, teamId, err);
+      log('[TeamPersistence] loadAgentAttempts failed for agent %s (team %s): %O', agentId, teamId, err);
       return [];
     }
   }

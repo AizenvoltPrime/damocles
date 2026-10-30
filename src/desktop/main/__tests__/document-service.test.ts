@@ -15,6 +15,7 @@ import { DEFAULT_SEARCH_EDITOR_CONFIG } from '../search/search-editor-format';
 import type { MessageQuestion } from '../message-dialog';
 import type { Project } from '../../local-services/confine';
 import { DocumentService, isDocumentDirty, type Backups, type DocumentChange, type TextDocument } from '../documents/document-service';
+import { englishText } from '../../../shared/localized-text';
 
 let root: string;
 let projectDir: string;
@@ -66,6 +67,7 @@ beforeEach(() => {
     },
   };
   service = new DocumentService({
+    render: englishText,
     hostLabel: (authority) => ({ hostId: authority, name: authority }),
     uploadsConflicted: () => undefined,
     warn: () => undefined,
@@ -1274,10 +1276,10 @@ describe('save failure messages (textFileSaveErrorHandler.ts genericSaveError)',
   it('words a settings file whose write failed by its errno code, and keeps the settings writer\'s own refusals', async () => {
     write('.damocles/settings.json', '{}');
     const settings = (await service.openSettingsFile('project')) as TextDocument;
-    settingsOutcome = { ok: false, error: `Could not save ${projectDir}: raw`, conflict: false, cause: Object.assign(new Error('raw'), { code: 'EACCES' }) };
+    settingsOutcome = { ok: false, error: { message: 'Could not save {0}: {1}', args: [projectDir, 'raw'] }, conflict: false, cause: Object.assign(new Error('raw'), { code: 'EACCES' }) };
     expect(await service.save(settings.id, settings.version, '{ }')).toEqual({ ok: false, reason: 'failed', message: 'Failed to save \'settings.json\': Insufficient permissions.' });
-    settingsOutcome = { ok: false, error: 'Not saved: the text is not valid JSON.', conflict: false };
-    expect(await service.save(settings.id, settings.version, '{')).toEqual({ ok: false, reason: 'failed', message: 'Not saved: the text is not valid JSON.' });
+    settingsOutcome = { ok: false, error: { message: 'Not saved: the text is not valid JSON. {0}', args: ['Unexpected end of input'] }, conflict: false };
+    expect(await service.save(settings.id, settings.version, '{')).toEqual({ ok: false, reason: 'failed', message: 'Not saved: the text is not valid JSON. Unexpected end of input' });
   });
 
   it('words a save it refuses itself by that refusal, not as unexpected', async () => {
@@ -1332,6 +1334,7 @@ describe('documents of projects on other hosts', () => {
 
   function serviceOver(projects: readonly Project[], workspaces: Workspaces, authorityOs: (authority: string) => NodeJS.Platform): DocumentService {
     return new DocumentService({
+      render: englishText,
       hostLabel: (authority) => ({ hostId: authority, name: authority }), uploadsConflicted: () => undefined, warn: () => undefined, reopen: () => undefined,
       projects: () => projects, workspaces, authorityOs, ask: async () => 0, t, log: (line) => logged.push(line), pickSavePath: async () => undefined, backups: noBackups, settings: noSettings,
     });
@@ -1383,6 +1386,7 @@ describe('documents of projects on other hosts', () => {
     const away: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(remoteDir)), fsPath: remoteDir, name: 'remote' };
     const offered: string[] = [];
     const documents = new DocumentService({
+      render: englishText,
       hostLabel: (authority) => ({ hostId: authority, name: authority }), uploadsConflicted: () => undefined, warn: () => undefined, reopen: () => undefined,
       projects: () => [away, project], workspaces: testWorkspaces({ watchers: platform.fileWatchers, remote: () => remote.workspace() }), authorityOs: () => process.platform,
       ask: async () => 0, t, log: (line) => logged.push(line), backups: noBackups, settings: noSettings,
@@ -1505,6 +1509,7 @@ describe('documents of a host that is not connected', () => {
     const replaced: Array<{ from: string; to: string }> = [];
     const warned: string[] = [];
     const documents = new DocumentService({
+      render: englishText,
       hostLabel: (authority) => ({ hostId: authority, name: 'prod-1' }), uploadsConflicted: () => undefined, warn: (message) => warned.push(message), reopen: () => undefined,
       projects: () => [away], authorityOs: () => process.platform, ask: async () => 0, t, log: (line) => logged.push(line), pickSavePath: async () => undefined, backups, settings: noSettings,
       workspaces: testWorkspaces({ watchers: platform.fileWatchers, remote: (authorityKey) => {

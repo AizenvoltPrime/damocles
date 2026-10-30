@@ -2,7 +2,6 @@ import { describe, it, expect, vi } from 'vitest';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { formatAgentConversation, runSubagent, normalizeMaxTurns } from '../subagent-runner';
 import { trackRunLifecycle } from '../../run-lifecycle';
-import { useGreekLocale } from '../../../../__mocks__/greek-locale';
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
@@ -230,8 +229,7 @@ describe('runSubagent provider failures', () => {
   });
 
   // The run's error is the parent model's `Agent` result, so it stays English whatever the UI language.
-  it('reports a call that had no credential in English while the UI is in Greek', async () => {
-    useGreekLocale();
+  it('reports a call that had no credential in English', async () => {
     const f = makeSession();
     const p = runSubagent({ createSession: async () => f.session, onSessionCreated: bind, prompt: 'go' });
     await vi.waitFor(() => expect(f.promptCount()).toBe(1));

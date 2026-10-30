@@ -67,7 +67,7 @@ type ShowDiff = Extract<ExtensionToWebviewMessage, { type: 'editorShowDiff' }>;
 function showDiff(overrides: Partial<ShowDiff> = {}): void {
   const store = useEditorStore();
   const msg: ShowDiff = {
-    type: 'editorShowDiff', viewId: 'v1', title: 'a.ts', purpose: 'proposal', approvalId: 'tool-1',
+    type: 'editorShowDiff', viewId: 'v1', title: { message: 'a.ts' }, purpose: 'proposal', approvalId: 'tool-1',
     original: doc(text('old')), modified: doc(text('new')), ...overrides,
   };
   store.showDiff(msg);
@@ -178,6 +178,7 @@ describe('editor view overlay', () => {
     ['tooLarge', { kind: 'tooLarge', bytes: 12 * 1024 * 1024, limitBytes: 10 * 1024 * 1024 }, 'editor-body-too-large', () => t('editor.body.tooLarge', { size: '12.0', limit: 10 })],
     ['binary', { kind: 'binary' }, 'editor-body-binary', () => t('editor.body.binary')],
     ['unreadable', { kind: 'unreadable', error: 'EACCES: permission denied' }, 'editor-body-unreadable', () => t('editor.body.unreadable', { error: 'EACCES: permission denied' })],
+    ['notAFile', { kind: 'notAFile' }, 'editor-body-not-a-file', () => t('editor.body.notAFile')],
   ] as const)('states a %s side instead of diffing it', async (_kind, body, testId, message) => {
     showDiff({ modified: doc(body) });
     mountHost();
@@ -188,6 +189,18 @@ describe('editor view overlay', () => {
     expect(state.textContent).toContain(message());
     expect(byTestId('editor-diff-view')).toBeNull();
     expect(fake.state.models).toEqual([]);
+  });
+
+  it('states a side that is no file in the view\'s language', async () => {
+    i18n.global.locale.value = 'el';
+    try {
+      showDiff({ modified: doc({ kind: 'notAFile' }) });
+      mountHost();
+      await nextTick();
+      expect(byTestId('editor-body-not-a-file')!.textContent).toContain('Αυτή η διαδρομή δεν είναι αρχείο.');
+    } finally {
+      i18n.global.locale.value = 'en';
+    }
   });
 
   it('reads the tooLarge sizes as written, in binary units', () => {

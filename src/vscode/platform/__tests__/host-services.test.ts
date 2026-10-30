@@ -62,7 +62,7 @@ import { createVsCodeShellService } from '../shell-service';
 import { createVsCodeClipboardService } from '../clipboard-service';
 import { createVsCodeHostLifecycle } from '../host-lifecycle';
 import { createVsCodeLogSinkFactory } from '../log-sink-factory';
-import { createVsCodeLocalizationService } from '../localization-service';
+import { createVsCodeLocalizationService, renderVsCode } from '../localization-service';
 import { createVsCodeDialogService } from '../dialog-service';
 import { createVsCodeNotificationService } from '../notification-service';
 
@@ -113,11 +113,11 @@ describe('clipboard, lifecycle, log sinks, localization', () => {
     expect(sink).toBe(H.createOutputChannel.mock.results[0]!.value);
   });
 
-  it('translates through vscode.l10n.t with positional args and reads the display language on each access', () => {
+  it('renders core\'s text through vscode.l10n.t, a nested argument first, and reads the display language on each access', () => {
     const l10n = createVsCodeLocalizationService();
 
-    expect(l10n.t('Switch to {0}? {1}', 'beta', 2)).toBe('t:Switch to {0}? {1}');
-    expect(H.l10nT).toHaveBeenCalledWith('Switch to {0}? {1}', 'beta', 2);
+    expect(renderVsCode({ message: 'Switch to {0}? {1}', args: ['beta', { message: 'Yes' }] })).toBe('t:Switch to {0}? {1}');
+    expect(H.l10nT.mock.calls).toEqual([['Yes'], ['Switch to {0}? {1}', 'beta', 't:Yes']]);
     expect(l10n.language).toBe('el');
     H.language = 'en';
     expect(l10n.language).toBe('en');
@@ -128,7 +128,7 @@ describe('dialogs', () => {
   it('picks one file with the filters, title and folder the caller gives', async () => {
     H.showOpenDialog.mockResolvedValueOnce([{ fsPath: '/ws/plan.md' }]);
 
-    const picked = await createVsCodeDialogService().pickFile({ filters: { Markdown: ['md'] }, title: 'Select', defaultPath: '/ws' });
+    const picked = await createVsCodeDialogService().pickFile({ filters: { Markdown: ['md'] }, title: { message: 'Select' }, defaultPath: '/ws' });
 
     expect(picked).toBe('/ws/plan.md');
     expect(H.showOpenDialog).toHaveBeenCalledWith({
@@ -136,7 +136,7 @@ describe('dialogs', () => {
       canSelectFolders: false,
       canSelectMany: false,
       filters: { Markdown: ['md'] },
-      title: 'Select',
+      title: 't:Select',
       defaultUri: vscode.Uri.file('/ws'),
     });
   });
@@ -211,23 +211,23 @@ describe('dialogs', () => {
 });
 
 describe('notifications', () => {
-  it('passes a modal prompt through as vscode MessageOptions with its actions', async () => {
-    H.showWarningMessage.mockResolvedValueOnce('Delete');
+  // VS Code renders core's text with vscode.l10n.t and answers with the chosen item, which maps back to its index
+  it('renders a modal prompt and its actions with vscode.l10n.t, and answers with the chosen action\'s index', async () => {
+    H.showWarningMessage.mockImplementationOnce((...args: unknown[]) => Promise.resolve(args[3] as string | undefined));
 
-    const choice = await createVsCodeNotificationService().warn('Remove everything?', { modal: true }, 'Delete');
+    const choice = await createVsCodeNotificationService().warn({ message: 'Remove everything?' }, [{ message: 'Keep' }, { message: 'Delete' }], { modal: true });
 
-    expect(choice).toBe('Delete');
-    expect(H.showWarningMessage).toHaveBeenCalledWith('Remove everything?', { modal: true }, 'Delete');
+    expect(choice).toBe(1);
+    expect(H.showWarningMessage).toHaveBeenCalledWith('t:Remove everything?', { modal: true }, { title: 't:Keep' }, { title: 't:Delete' });
   });
 
-  it('passes a plain message and its actions with no options argument', async () => {
+  it('renders a plain message and its actions, and answers undefined when dismissed', async () => {
     const notifications = createVsCodeNotificationService();
 
-    await notifications.info('Saved', 'Open', 'Dismiss');
-    await notifications.error('Failed');
+    expect(await notifications.info({ message: 'Saved' }, [{ message: 'Open' }, { message: 'Dismiss' }])).toBeUndefined();
+    await notifications.error({ message: 'Failed' });
 
-    expect(H.showInformationMessage).toHaveBeenCalledWith('Saved', 'Open', 'Dismiss');
-    expect(H.showErrorMessage).toHaveBeenCalledWith('Failed');
-    expect(H.showErrorMessage.mock.calls[0]).toHaveLength(1);
+    expect(H.showInformationMessage).toHaveBeenCalledWith('t:Saved', {}, { title: 't:Open' }, { title: 't:Dismiss' });
+    expect(H.showErrorMessage).toHaveBeenCalledWith('t:Failed', {});
   });
 });

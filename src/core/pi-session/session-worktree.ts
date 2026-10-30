@@ -16,6 +16,7 @@ import { piSessionDir } from './session-store/session-dir';
 import { extractFirstUserMessage } from './session-store/metadata';
 import type { HandOff } from './chat-changes';
 import type { WorktreeIsolation } from './worktree-isolation';
+import type { LocalizedText } from '../../shared/localized-text';
 
 /** The panel's part of the state: an opt-in not yet created, or creation and setup under way (rule 4). */
 export interface PanelWorktreeView {
@@ -23,7 +24,7 @@ export interface PanelWorktreeView {
   readonly branch?: string;
   readonly uncommittedCount?: number;
   readonly exitCode?: number;
-  readonly error?: string;
+  readonly error?: LocalizedText;
   readonly setupStep?: SetupStep;
   readonly heldPrompt?: { readonly text: string; readonly imageCount: number };
 }

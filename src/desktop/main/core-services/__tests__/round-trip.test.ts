@@ -20,6 +20,7 @@ interface Harness {
   readonly state: DesktopKeyValueState;
   readonly grant: (folder: string) => void;
   readonly setTerminal: (shown: boolean) => void;
+  readonly setLanguage: (language: 'en' | 'el') => void;
   // the JSON text main forwarded to each view, unparsed
   readonly relayed: Array<{ readonly viewId: string; readonly type: string; readonly json: string }>;
   // main's side of the channel closes, as when core's process ends
@@ -53,7 +54,9 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function connect(options: { readonly trusted?: readonly string[]; readonly globalState?: Record<string, unknown>; readonly ui?: Partial<HostUi> } = {}): Harness {
+function connect(options: { readonly trusted?: readonly string[]; readonly globalState?: Record<string, unknown>; readonly ui?: Partial<HostUi>; readonly language?: 'en' | 'el' } = {}): Harness {
+  let language = options.language ?? 'en';
+  const languageListeners = new Set<() => void>();
   const main = createFakePlatform({ chatBrowserPane: true, secrets: { stored: 'one' }, folders: [{ fsPath: path.resolve('/projects/a'), name: 'a' }] });
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'core-round-trip-'));
   dirs.push(userData);
@@ -95,6 +98,13 @@ function connect(options: { readonly trusted?: readonly string[]; readonly globa
     git: { available: true },
     e2eHooks: false,
     ...hostExtras(options.ui ? { ui: options.ui } : {}),
+    language: {
+      current: () => language,
+      onDidChange: (listener): Disposable => {
+        languageListeners.add(listener);
+        return { dispose: () => { languageListeners.delete(listener); } };
+      },
+    },
     log: () => undefined,
   });
   const init = parseCoreInit(structuredClone(host.init));
@@ -104,7 +114,6 @@ function connect(options: { readonly trusted?: readonly string[]; readonly globa
     settings: main.settings,
     fileWatchers: main.fileWatchers,
     confinement: main.confinement,
-    localization: main.localization,
     logSinks: main.logSinks,
     paths: main.paths,
   }));
@@ -119,6 +128,10 @@ function connect(options: { readonly trusted?: readonly string[]; readonly globa
     host,
     state,
     grant,
+    setLanguage: (next) => {
+      language = next;
+      for (const listener of [...languageListeners]) listener();
+    },
     setTerminal: (shown) => {
       terminal = { ...terminal, shown };
       host.terminalToggleChanged();
@@ -131,13 +144,22 @@ function connect(options: { readonly trusted?: readonly string[]; readonly globa
 
 const CHAT: PanelOptions = { kind: 'chat', title: 'Damocles', localResourceRoots: [path.resolve('/app/dist/webview')] };
 
+describe('the display language', () => {
+  it('is main\'s, followed through its mirror; core holds no catalog to render with', () => {
+    const { core, setLanguage } = connect({ language: 'el' });
+    expect(core.localization.language).toBe('el');
+    setLanguage('en');
+    expect(core.localization.language).toBe('en');
+    expect(Object.keys(core.localization)).toEqual(['language', 'dispose']);
+  });
+});
+
 describe('local services', () => {
   it('are the instances core was given', () => {
     const { main, core } = connect();
     expect(core.settings).toBe(main.settings);
     expect(core.fileWatchers).toBe(main.fileWatchers);
     expect(core.confinement).toBe(main.confinement);
-    expect(core.localization).toBe(main.localization);
     expect(core.logSinks).toBe(main.logSinks);
     expect(core.paths).toBe(main.paths);
     expect(core.capabilities).toEqual(main.capabilities);
@@ -255,13 +277,13 @@ describe('proxied services', () => {
   it('notifications, with and without options', async () => {
     const { main, core } = connect();
     main.notifications.answerWith((call) => call.actions[1]);
-    expect(await core.notifications.warn('careful', 'One', 'Two')).toBe('Two');
-    expect(await core.notifications.error('broken', { modal: true }, 'Retry')).toBeUndefined();
-    await core.notifications.info('plain');
+    expect(await core.notifications.warn({ message: 'careful' }, [{ message: 'One' }, { message: 'Two' }])).toBe(1);
+    expect(await core.notifications.error({ message: 'broken' }, [{ message: 'Retry' }], { modal: true })).toBeUndefined();
+    await core.notifications.info({ message: 'plain' });
     expect(main.notifications.calls).toEqual([
-      { level: 'warn', message: 'careful', actions: ['One', 'Two'] },
-      { level: 'error', message: 'broken', options: { modal: true, signal: expect.any(AbortSignal) }, actions: ['Retry'] },
-      { level: 'info', message: 'plain', actions: [] },
+      { level: 'warn', message: 'careful', text: { message: 'careful' }, actions: ['One', 'Two'] },
+      { level: 'error', message: 'broken', text: { message: 'broken' }, options: { modal: true, signal: expect.any(AbortSignal) }, actions: ['Retry'] },
+      { level: 'info', message: 'plain', text: { message: 'plain' }, actions: [] },
     ]);
   });
 
@@ -283,11 +305,11 @@ describe('proxied services', () => {
       return new Promise<undefined>(() => undefined) as unknown as undefined;
     });
     const requests = Promise.allSettled([
-      core.endpoint.request('dialogs.ask', { severity: 'info', message: 'Keep?', actions: ['Keep'] }),
+      core.endpoint.request('dialogs.ask', { severity: 'info', message: { message: 'Keep?' }, actions: [{ message: 'Keep' }] }),
       core.endpoint.request('worktrees.reviewSetup', { projectPath: path.resolve('/p'), projectName: 'p', commands: ['npm ci'] }),
       core.endpoint.request('worktrees.confirmHandOff', { direction: 'toWorktree', files: [] }),
       core.endpoint.request('worktrees.showRefusal', { kind: 'apply', files: [] }),
-      core.notifications.warn('Reload?', { modal: true }, 'Reload'),
+      core.notifications.warn({ message: 'Reload?' }, [{ message: 'Reload' }], { modal: true }),
     ]);
     const all = [...Object.values(signals), modalSignal];
     expect(all).toHaveLength(5);
@@ -302,7 +324,7 @@ describe('proxied services', () => {
     const folder = path.resolve('/picked');
     main.dialogs.answerPickFolder(() => folder);
     main.dialogs.answerPickFile(() => path.join(folder, 'f.md'));
-    expect(await core.dialogs.pickFolder({ title: 'Folder', buttonLabel: 'Open' })).toBe(folder);
+    expect(await core.dialogs.pickFolder({ title: { message: 'Folder' }, buttonLabel: { message: 'Open' } })).toBe(folder);
     expect(await core.dialogs.pickFile({ filters: { Markdown: ['md'] } })).toBe(path.join(folder, 'f.md'));
     expect(main.dialogs.pickFileCalls).toEqual([{ filters: { Markdown: ['md'] } }]);
     await expect(core.dialogs.inputBox({ prompt: 'Key' })).rejects.toThrow('core services were not running');
@@ -352,7 +374,7 @@ describe('proxied services', () => {
   it('a diff\'s title follows its file\'s name on main, and closing it reaches main', async () => {
     const { main, core } = connect();
     const view = await core.editor.showDiff({
-      title: (name) => `${name} (Current ↔ Proposed)`,
+      title: (name) => ({ message: '{0} (Current ↔ Proposed)', args: [name] }),
       filePath: path.resolve('/projects/a/old.ts'),
       left: { path: path.resolve('/projects/a/old.ts') },
       right: { name: 'old.ts', content: 'proposed' },
@@ -360,7 +382,7 @@ describe('proxied services', () => {
       approvalId: 'tool-1',
     });
     const opened = main.editor.diffs[0]!;
-    expect(opened.request.title('renamed.ts')).toBe('renamed.ts (Current ↔ Proposed)');
+    expect(opened.request.title('renamed.ts')).toEqual({ message: '{0} (Current ↔ Proposed)', args: ['renamed.ts'] });
     expect(opened.request.right).toEqual({ name: 'old.ts', content: 'proposed' });
     expect(opened.request.approvalId).toBe('tool-1');
     await view.close();
@@ -370,7 +392,7 @@ describe('proxied services', () => {
   it('forgets a diff whose tab the user closed, so a checkpoint diff core never closes holds nothing in main', async () => {
     const { main, core } = connect();
     const view = await core.editor.showDiff({
-      title: (name) => `${name} (At checkpoint ↔ Current)`,
+      title: (name) => ({ message: '{0} (At checkpoint ↔ Current)', args: [name] }),
       filePath: path.resolve('/projects/a/a.ts'),
       left: { name: 'a.ts', content: 'before' },
       right: { path: path.resolve('/projects/a/a.ts') },

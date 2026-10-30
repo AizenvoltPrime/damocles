@@ -4,7 +4,6 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { SessionManager, type AgentSession } from '@earendil-works/pi-coding-agent';
 import { loadFormatNoApiKeyFoundMessage } from '../../../../__mocks__/pi-auth-guidance';
-import { useGreekLocale } from '../../../../__mocks__/greek-locale';
 import { AgentManager, isSubagentId, type SubagentEngine, type SpawnRequest } from '../agent-manager';
 import { AgentRegistry } from '../agent-types';
 import { RESUME_NOTE_LABEL, STEER_INSTRUCTION_PREFIX, buildResumePrompt, withResumeNote, wrapSteerMessage } from '../../../../shared/steer';
@@ -116,6 +115,8 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
       let resolve!: () => void;
       const promise = new Promise<void>((r) => (resolve = r));
       gates.push({ resolve });
+      // pi's session branch: the entries appended to this session, in order
+      const entries: unknown[] = [];
       const session = {
         subscribe: () => () => {},
         prompt: (text: string) => {
@@ -134,9 +135,13 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
         // pi-agent-core's Agent: a stop subscribes to stop a run pi still prepares at its start.
         agent: { subscribe: () => () => {}, abort: () => {} },
         sessionManager: {
-          appendCustomEntry: (customType: string, data: unknown) => void customEntries.push({ customType, data }),
+          appendCustomEntry: (customType: string, data: unknown) => {
+            customEntries.push({ customType, data });
+            entries.push({ type: 'custom', id: `c${entries.length}`, customType, data });
+          },
           getSessionFile: () => `/store/${customEntries.length}.jsonl`,
           getEntries: () => statsAsEntries(session),
+          getBranch: () => entries,
         },
       };
       return session as unknown as AgentSession;
@@ -867,7 +872,7 @@ describe('AgentManager thinkingLevel precedence', () => {
         sessionId: 'sid',
         // pi-agent-core's Agent: a stop subscribes to stop a run pi still prepares at its start.
         agent: { subscribe: () => () => {}, abort: () => {} },
-        sessionManager: { appendCustomEntry: () => 'e', getSessionFile: () => '/store/x.jsonl', getEntries: () => statsAsEntries(session) },
+        sessionManager: { appendCustomEntry: () => 'e', getSessionFile: () => '/store/x.jsonl', getEntries: () => statsAsEntries(session), getBranch: () => [] },
       };
       return session as unknown as AgentSession;
     };
@@ -2980,8 +2985,7 @@ describe('AgentManager Agent result JSON', () => {
   });
 
   // The error reaches the parent model's `Agent` result, the keep-alive delivery and the status entry, so it stays English.
-  it('gives the parent model a refused run in English while the UI is in Greek', async () => {
-    useGreekLocale();
+  it('gives the parent model a refused run in English', async () => {
     const formatNoApiKeyFoundMessage = await loadFormatNoApiKeyFoundMessage();
     const { engine } = makeEngine();
     const create = engine.createSession;

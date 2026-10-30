@@ -11,6 +11,7 @@ import {
   getDefaultRuntimePaths,
 } from "../index";
 import type { GpuDetection } from "../gpu-detect";
+import { englishText } from "../../../../shared/localized-text";
 
 vi.mock("../compiler-check", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../compiler-check")>();
@@ -95,7 +96,7 @@ describe("VoiceRuntimeInstaller — smoke-check error path", () => {
     try {
       const result = await installer.installAll({ onProgress: () => {}, allowInstall: true });
       expect(result.ok).toBe(false);
-      expect(result.errorMessage).toMatch(/network|download|smoke check/i);
+      expect(result.errorMessage && englishText(result.errorMessage)).toMatch(/network|download|smoke check/i);
     } finally {
       fetchSpy.mockRestore();
     }
@@ -115,8 +116,8 @@ describe("checkRuntimeModeCompatibility", () => {
     const result = checkRuntimeModeCompatibility(CPU_NO_SMI, "cuda");
     expect(result.ok).toBe(false);
     if (result.ok === false) {
-      expect(result.message).toContain("voice.localGpu");
-      expect(result.message).toContain("nvidia-smi");
+      expect(englishText(result.message)).toContain("voice.localGpu");
+      expect(englishText(result.message)).toContain("nvidia-smi");
     }
   });
 
@@ -124,7 +125,7 @@ describe("checkRuntimeModeCompatibility", () => {
     const result = checkRuntimeModeCompatibility(CPU_OLD, "cuda");
     expect(result.ok).toBe(false);
     if (result.ok === false) {
-      expect(result.message).toMatch(/525\.x/);
+      expect(englishText(result.message)).toMatch(/525\.x/);
     }
   });
 
@@ -171,6 +172,22 @@ describe("expectedTorchChannel", () => {
   });
 });
 
+describe("VoiceRuntimeInstaller — disk space", () => {
+  it("gives the sizes as numbers the reader's locale formats, rounded to a tenth of a gigabyte", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "damocles-disk-"));
+    try {
+      const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(tmp), noExtractWorker, noModelsMissing);
+      vi.spyOn(installer, "detectDevice").mockResolvedValue(CPU_NO_SMI);
+      const GiB = 1024 * 1024 * 1024;
+      vi.spyOn(installer, "checkDisk").mockResolvedValue({ ok: false, freeBytes: 1.24 * GiB, requiredBytes: 12.34 * GiB });
+      const result = await installer.installAll({ allowInstall: true, onProgress: () => {} });
+      expect(result.errorMessage?.args).toEqual([{ number: 12.3 }, tmp, { number: 1.2 }]);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("VoiceRuntimeInstaller — runtime-mode compatibility gate", () => {
   it("fails fast (no Python download) when localGpu=cuda but no GPU detected", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "damocles-rtm-"));
@@ -181,10 +198,10 @@ describe("VoiceRuntimeInstaller — runtime-mode compatibility gate", () => {
       const result = await installer.installAll({
         allowInstall: true,
         runtimeMode: "cuda",
-        onProgress: (p) => events.push({ stage: p.stage, message: p.message }),
+        onProgress: (p) => events.push({ stage: p.stage, message: englishText(p.message) }),
       });
       expect(result.ok).toBe(false);
-      expect(result.errorMessage).toContain("voice.localGpu");
+      expect(result.errorMessage && englishText(result.errorMessage)).toContain("voice.localGpu");
 
       // Defense-in-depth: the gate must fire BEFORE any of the downstream
       // pre-flights (compiler probe, PortAudio probe, disk check) or any

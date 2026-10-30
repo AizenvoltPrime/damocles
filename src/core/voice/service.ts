@@ -5,7 +5,8 @@ import { EventEmitter } from "node:events";
 import type { Disposable } from "../../platform/disposable";
 import type { Platform } from "../../platform/platform";
 import { log } from "../logger";
-import { t } from "../l10n";
+import { errorTextOf, l } from "../l10n";
+import { englishText, type LocalizedText } from "../../shared/localized-text";
 import { DEFAULT_WAKE_PHRASE, parseWakePhrase } from "../../shared/wake-phrase";
 import type { VoiceRuntimeStage, VoiceRuntimeStatus } from "../../shared/types/voice";
 import { VoiceRuntimeInstaller, getDefaultRuntimePaths, DEFAULT_RUNTIME_DIR } from "./runtime";
@@ -34,7 +35,7 @@ export type VoiceServiceEvents = {
   ttsUnloaded: [TtsUnloadedEvent];
   runtimeStatus: [VoiceRuntimeStatus];
   /** Once per failed or cancelled start; `origin` is the caller's tag for the reply's chat. */
-  replyNotSpoken: [{ reason: string; origin: string }];
+  replyNotSpoken: [{ reason: LocalizedText; origin: string }];
 };
 
 export type VoiceServiceOptions = {
@@ -54,11 +55,11 @@ const CHATTY_STAGES: ReadonlySet<RuntimeStage> = new Set(["downloading-python", 
 const CHATTY_LOG_INTERVAL_MS = 1000;
 
 type StartProgress = { stage: VoiceRuntimeStage; pct: number; installing: boolean };
-type StartOutcome = { settings: string; message: string };
+type StartOutcome = { settings: string; message: LocalizedText };
 /** Why a start left no sidecar; `consentRequired` when a download would fix it and the user has not consented to one. */
-type StartFailure = { message: string; consentRequired: boolean };
+type StartFailure = { message: LocalizedText; consentRequired: boolean };
 
-const startFailure = (message: string): StartFailure => ({ message, consentRequired: false });
+const startFailure = (message: LocalizedText): StartFailure => ({ message, consentRequired: false });
 
 export class VoiceService extends EventEmitter<VoiceServiceEvents> {
   private readonly installer: VoiceRuntimeInstaller;
@@ -117,11 +118,10 @@ export class VoiceService extends EventEmitter<VoiceServiceEvents> {
     if (!this.platform.capabilities.hostSpeechExtensions || !editor.isHostExtensionActive(VSCODE_SPEECH_EXTENSION_ID)) return;
     this.speechConflictWarned = true;
     void this.platform.notifications.warn(
-      "VS Code Speech extension is active and may compete for the microphone. Disable it for best Jarvis performance.",
-      "Open extension",
-      "Dismiss",
+      l("VS Code Speech extension is active and may compete for the microphone. Disable it for best Jarvis performance."),
+      [l("Open extension"), l("Dismiss")],
     ).then((choice) => {
-      if (choice === "Open extension") {
+      if (choice === 0) {
         void editor.searchHostExtensions(`@id:${VSCODE_SPEECH_EXTENSION_ID}`);
       }
     });
@@ -181,7 +181,7 @@ export class VoiceService extends EventEmitter<VoiceServiceEvents> {
    */
   cancelStart(): void {
     if (this.starting === null && !this.isRecovering()) return;
-    this.cancelled = { settings: this.settingsKey(), message: t("Starting the voice runtime was cancelled.") };
+    this.cancelled = { settings: this.settingsKey(), message: l("Starting the voice runtime was cancelled.") };
     this.emitRuntimeStatus();
     this.stop().catch((err) => log("[VoiceService] stop on cancel failed:", err));
   }
@@ -281,7 +281,7 @@ export class VoiceService extends EventEmitter<VoiceServiceEvents> {
   }
 
   /** Why the last start under the current settings, or the sidecar it left running, failed, or null. */
-  failureMessage(): string | null {
+  failureMessage(): LocalizedText | null {
     return this.failure?.settings === this.settingsKey() ? this.failure.message : null;
   }
 
@@ -340,7 +340,7 @@ export class VoiceService extends EventEmitter<VoiceServiceEvents> {
         mayDownload = install && consented;
         failure = await this.doStart(signal, { install, consented, askConsent, settings }, progress);
       } catch (err) {
-        failure = startFailure(err instanceof Error ? err.message : String(err));
+        failure = startFailure(errorTextOf(err));
       } finally {
         if (this.starting === progress) this.starting = null;
       }
@@ -350,7 +350,7 @@ export class VoiceService extends EventEmitter<VoiceServiceEvents> {
         return;
       }
       this.failure = failure === null ? null : { settings, verifyOnly: !mayDownload, ...failure };
-      if (failure !== null) log(`[VoiceService] start failed; not retried under these settings until a retry: ${failure.message}`);
+      if (failure !== null) log(`[VoiceService] start failed; not retried under these settings until a retry: ${englishText(failure.message)}`);
       this.emitRuntimeStatus();
     });
   }
@@ -385,7 +385,7 @@ export class VoiceService extends EventEmitter<VoiceServiceEvents> {
 
     const unsupported = unsupportedVoicePlatformMessage(process.platform, process.arch);
     if (unsupported !== null) {
-      log(`[VoiceService] ${unsupported}`);
+      log(`[VoiceService] ${englishText(unsupported)}`);
       this.emit("status", { kind: "error", code: "unsupported-platform", message: unsupported });
       return startFailure(unsupported);
     }
@@ -417,7 +417,7 @@ export class VoiceService extends EventEmitter<VoiceServiceEvents> {
       signal,
       onProgress: (p) => {
         if (p.stage !== "done" && p.stage !== "error") advance(p.stage, p.pct);
-        logProgress(p.stage, p.message);
+        logProgress(p.stage, englishText(p.message));
       },
       runtimeMode: userRuntimeMode,
       allowInstall: opts.install && opts.consented,
@@ -426,7 +426,7 @@ export class VoiceService extends EventEmitter<VoiceServiceEvents> {
     const result = await this.installer.installAll(installOpts);
     if (signal.aborted) return null;
     if (!result.ok) {
-      const message = result.errorMessage ?? t("The voice runtime is not ready.");
+      const message = result.errorMessage ?? l("The voice runtime is not ready.");
       if (result.missing === undefined || opts.consented) return startFailure(message);
       // A start that may not install runs for a reply, which must never open the first-run dialog.
       if (opts.install && opts.askConsent) this.emit("firstRunRequired", { reason: result.missing === "runtime" ? "missing-runtime" : "missing-models" });
@@ -509,20 +509,20 @@ export class VoiceService extends EventEmitter<VoiceServiceEvents> {
     }
     if (startError !== null) {
       log("[VoiceService] start failed:", startError);
-      return startFailure(startError instanceof Error ? startError.message : String(startError));
+      return startFailure(errorTextOf(startError));
     }
     started = true;
     return null;
   }
 
   /** The normalized phrase in wake mode and null outside it; `invalid`, after reporting it, when the stored phrase is invalid. */
-  private wakePhraseFor(wakeWordEnabled: boolean): { phrase: string | null } | { invalid: string } {
+  private wakePhraseFor(wakeWordEnabled: boolean): { phrase: string | null } | { invalid: LocalizedText } {
     if (!wakeWordEnabled) return { phrase: null };
     const setting = this.platform.settings.get<string>("damocles.voice.wakeWord", DEFAULT_WAKE_PHRASE);
     const words = parseWakePhrase(setting);
     if (words !== null) return { phrase: words.join(" ") };
-    const message = t("The damocles.voice.wakeWord setting is not a valid wake phrase: \"{0}\". Use 1 to 4 English words of letters only, such as \"hey jarvis\".", setting);
-    log(`[VoiceService] ${message}`);
+    const message = l("The damocles.voice.wakeWord setting is not a valid wake phrase: \"{0}\". Use 1 to 4 English words of letters only, such as \"hey jarvis\".", setting);
+    log(`[VoiceService] ${englishText(message)}`);
     this.emit("status", { kind: "error", code: "fatal", message });
     return { invalid: message };
   }

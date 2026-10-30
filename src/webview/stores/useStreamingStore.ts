@@ -3,6 +3,7 @@ import { defineStore } from "pinia";
 import type { ChatMessage, ToolAbandonReason, ToolCall, QueuedMessage } from "@shared/types/session";
 import type { ContentBlock, ImageBlock, UserContentBlock } from "@shared/types/content";
 import type { ChatAttachmentInfo } from "@shared/types/chat-attachment";
+import type { LocalizedText } from "@shared/localized-text";
 import { replacesToolStatus, resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from "./tool-cancelled-status";
 
 export interface ToolStatusEntry {
@@ -145,6 +146,7 @@ export const useStreamingStore = defineStore("streaming", () => {
     if (updates.isThinkingPhase !== undefined) result.isThinkingPhase = updates.isThinkingPhase;
     if (updates.thinkingDuration !== undefined) result.thinkingDuration = updates.thinkingDuration;
     if (updates.sdkMessageId !== undefined) result.sdkMessageId = updates.sdkMessageId;
+    if (updates.effort !== undefined) result.effort = updates.effort;
 
     return result;
   }
@@ -440,12 +442,22 @@ export const useStreamingStore = defineStore("streaming", () => {
     return msg;
   }
 
-  function addErrorMessage(error: string): ChatMessage {
+  /** An error row of core's text, which the row renders in the view's language. */
+  function addErrorMessage(error: LocalizedText): ChatMessage {
+    return addError({ content: "", error });
+  }
+
+  /** An error row of the view's own words, such as a slash command's usage. */
+  function addViewErrorMessage(content: string): ChatMessage {
+    return addError({ content });
+  }
+
+  function addError(text: Pick<ChatMessage, "content" | "error">): ChatMessage {
     flushReplayQueue();
     const msg: ChatMessage = {
       id: generateId(),
       role: "error",
-      content: error,
+      ...text,
       timestamp: Date.now(),
     };
     messages.value = [...messages.value, msg];
@@ -739,6 +751,7 @@ export const useStreamingStore = defineStore("streaming", () => {
     extractThinkingContent,
     addUserMessage,
     addErrorMessage,
+    addViewErrorMessage,
     addSteerChip,
     addRefusalMessage,
     prependMessages,

@@ -11,12 +11,15 @@ import { createGitRunner, type GitCloner, type GitRunner } from '../../core/scm/
 import type { Repository } from '../../core/scm/repository';
 import { ScmService, type CommitVariant, type RepoSnapshot, type ScmEvent } from '../../core/scm/scm-service';
 import { folderKey } from '../../core/workspace-folders/folder-key';
+import { verbatim } from '../../core/l10n';
+import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import type { Disposable } from '../../platform/disposable';
 import type { LogSink } from '../../platform/log-sink';
-import { INVALID, parseScmProjects, type RepositoryCall, type ScmCall, type ScmRepositoryEntry } from '../core-protocol';
+import { INVALID, MAX_MESSAGE_CHARS, parseScmProjects, type RepositoryCall, type ScmCall, type ScmCommitOutcome, type ScmRepositoryEntry } from '../core-protocol';
 import { credentialPrompt } from './askpass-prompt';
 import { backgroundCompletion } from './commit-message-completion';
 import type { CorePlatform } from './platform';
+import { createAskProxy } from './platform/proxied';
 
 export interface CoreScm extends Disposable {
   readonly service: ScmService;
@@ -68,9 +71,13 @@ function repositoryRead(repo: Repository, method: RepositoryCall, args: readonly
   }
 }
 
+// A commit's failure as main shows it: core's refusal as its text, else git's own words, cut to what main's parse of the result takes.
+function commitErrorText(err: unknown): LocalizedText {
+  return err instanceof LocalizedError ? err.text : verbatim(gitErrorText(err).slice(0, MAX_MESSAGE_CHARS));
+}
+
 export function startCoreScm(platform: CorePlatform, gitLog: LogSink, log: (line: string) => void): CoreScm {
   const { endpoint, init } = platform;
-  const t = (message: string, ...args: Array<string | number>): string => platform.localization.t(message, ...args);
   // a daemon's core relays git credentials to the acting client; the target's own helpers are reported for the consent, and
   // an erase reaches the client only when it names the password the relay answered
   const relayedPasswords = createRelayedPasswords();
@@ -165,13 +172,12 @@ export function startCoreScm(platform: CorePlatform, gitLog: LogSink, log: (line
     watchers: platform.fileWatchers,
     settings: platform.settings,
     globalState: platform.state.global,
-    ask: (question) => endpoint.request('dialogs.ask', question),
-    notify: (message, ...actions) => platform.notifications.info(message, ...actions),
+    ask: createAskProxy(endpoint),
+    notify: (message, actions) => platform.notifications.info(message, actions),
     // a daemon's core has no trash: it deletes permanently after the question says so, and never asks for shell.trash
     ...(init.remote
       ? { trash: (absolutePath: string) => fs.rm(absolutePath, { recursive: true }), deletesPermanently: true }
       : { trash: (absolutePath: string) => endpoint.request('shell.trash', { path: absolutePath }) }),
-    t,
     log,
   });
 
@@ -251,12 +257,13 @@ export function startCoreScm(platform: CorePlatform, gitLog: LogSink, log: (line
     }
     return (calls[method] as (...callArgs: unknown[]) => unknown).apply(service, [...args]);
   });
-  endpoint.serve('scm.commit', async ({ repoId, message, variant, saved, branchName }) => {
+  endpoint.serve('scm.commit', async ({ repoId, message, variant, saved, branchName }): Promise<ScmCommitOutcome> => {
     const outcome = await service.commit(repoId, message, variant as CommitVariant, {
       saved,
       ...(branchName !== undefined ? { branchName: () => endpoint.request('scm.branchName', { token: branchName }) } : {}),
     });
-    return outcome.ok || outcome.error === undefined ? outcome : { ...outcome, error: gitErrorText(outcome.error) };
+    if (outcome.ok) return { ok: true };
+    return outcome.reason === 'failed' ? { ok: false, reason: 'failed', error: commitErrorText(outcome.error) } : { ok: false, reason: outcome.reason };
   });
   endpoint.serve('scm.ignoredIn', async ({ projectKey, relativeDir, entries }) => [...(await service.ignoredIn(projectKey, relativeDir, entries))]);
   endpoint.serve('scm.commitBlob', ({ repoId, commit, path }) => service.commitBlob(repoId, commit, path));

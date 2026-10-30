@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runProcess } from "../../process-launcher";
 import { findOnAbsolutePathAsync } from "../../system-tools";
+import { l, withDetail } from "../../l10n";
+import { LocalizedError, type LocalizedText } from "../../../shared/localized-text";
 
 /**
  * texterrors (a transitive dep of nemo-toolkit[asr]) is source-only on Linux
@@ -28,9 +30,9 @@ import { findOnAbsolutePathAsync } from "../../system-tools";
  * commands rather than letting pip emit the inscrutable texterrors traceback.
  */
 
-export class MissingCxxToolchainError extends Error {
-  constructor(message: string) {
-    super(message);
+export class MissingCxxToolchainError extends LocalizedError {
+  constructor(text: LocalizedText) {
+    super(text);
     this.name = "MissingCxxToolchainError";
   }
 }
@@ -54,20 +56,23 @@ export function getCxxCandidates(platform: NodeJS.Platform): readonly CxxToolcha
   ];
 }
 
-export function getCxxInstallInstructions(platform: NodeJS.Platform): string {
+export function getCxxInstallInstructions(platform: NodeJS.Platform): LocalizedText {
   if (platform === "darwin") {
-    return (
-      "Voice runtime needs a C++ compiler to build texterrors (no prebuilt wheel " +
-      "for macOS + Python 3.11). Install Xcode Command Line Tools:\n" +
-      "  xcode-select --install"
+    return withDetail(
+      l("The voice runtime needs a C++ compiler to build texterrors, which has no prebuilt package for macOS with Python 3.11."),
+      l("Install the Xcode Command Line Tools:\n{0}", "  xcode-select --install"),
     );
   }
-  return (
-    "Voice runtime needs a C++ compiler to build texterrors (no prebuilt wheel " +
-    "for Linux + Python 3.11). Install your distro's build toolchain:\n" +
-    "  Debian / Ubuntu / WSL:  sudo apt update && sudo apt install build-essential\n" +
-    "  Fedora / RHEL:          sudo dnf install gcc-c++ make\n" +
-    "  Arch:                   sudo pacman -S --needed base-devel"
+  return withDetail(
+    l("The voice runtime needs a C++ compiler to build texterrors, which has no prebuilt package for Linux with Python 3.11."),
+    l(
+      "Install your distribution's build tools:\n{0}",
+      [
+        "  Debian / Ubuntu / WSL:  sudo apt update && sudo apt install build-essential",
+        "  Fedora / RHEL:          sudo dnf install gcc-c++ make",
+        "  Arch:                   sudo pacman -S --needed base-devel",
+      ].join("\n"),
+    ),
   );
 }
 

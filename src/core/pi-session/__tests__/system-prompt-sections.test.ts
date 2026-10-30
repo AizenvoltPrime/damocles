@@ -14,7 +14,7 @@ const env: SystemPromptEnv = {
   isGitRepo: true,
   platform: 'win32',
   shell: 'pwsh',
-  osVersion: '10.0.26100',
+  osVersion: 'Windows 11',
   compassEnabled: false,
   thinkingDisabled: false,
 };
@@ -31,6 +31,7 @@ function inputs(over: Partial<DamoclesSystemPromptInputs> = {}): DamoclesSystemP
     contextFiles: [{ path: 'AGENTS.md', content: 'house rules' }],
     skills: [],
     skillFileReadTool: 'read',
+    earlierModels: [],
     ...over,
   };
 }
@@ -170,7 +171,7 @@ describe('system prompt sections — each runtime input moves only its own secti
   });
 
   it('a platform, shell or OS change changes only damocles_environment', () => {
-    for (const over of [{ platform: 'linux' }, { shell: '/bin/zsh' }, { osVersion: 'Linux 6.8' }]) {
+    for (const over of [{ platform: 'linux' }, { shell: '/bin/zsh' }, { osVersion: 'Ubuntu 26.04' }]) {
       expectOnly(withEnv({}), withEnv(over), { ...none, changed: ['damocles_environment'] });
     }
   });
@@ -181,7 +182,7 @@ describe('system prompt sections — the preamble depends on no runtime input', 
     const preambles = new Set<string>();
     const flags = [false, true];
     for (const model of ['claude-opus-5-5', 'claude-haiku-5-5', 'gpt-6-astra', 'unknown-model']) {
-      for (const place of [{}, { cwd: '/other', isGitRepo: false, platform: 'darwin', shell: '/bin/zsh', osVersion: 'Darwin 25' }]) {
+      for (const place of [{}, { cwd: '/other', isGitRepo: false, platform: 'darwin', shell: '/bin/zsh', osVersion: 'macOS 26' }]) {
         for (const thinkingDisabled of flags) {
           for (const compassEnabled of flags) {
             for (const webSearchEnabled of flags) {

@@ -151,6 +151,23 @@ describe("VoiceSidecarManager CPU fallback", () => {
     expect(spawnCalls[spawnCalls.length - 1]?.runtimeMode).toBe("cpu");
   });
 
+  it("words a second out-of-memory exit for the user, and keeps the developer detail in English for the log", async () => {
+    const { VoiceSidecarManager } = await loadManager();
+    const manager = new VoiceSidecarManager({ ...baseConfig, runtimeMode: "cuda" });
+    const errors: Array<{ message: string }> = [];
+    manager.on("error", (e) => errors.push(e));
+
+    void manager.start().catch(() => {});
+    await vi.waitFor(() => expect(spawnedChildren.length).toBe(1));
+    spawnedChildren[0]!.exit(7, null);
+    await vi.waitFor(() => expect(spawnedChildren.length).toBe(2));
+    spawnedChildren[1]!.exit(7, null);
+
+    await vi.waitFor(() => expect(manager.getStatus().kind).toBe("error"));
+    expect(manager.getStatus()).toMatchObject({ message: { message: "The voice helper process ran out of memory on the GPU and then on the CPU too, so voice cannot run." } });
+    expect(errors.map((e) => e.message)).toEqual(["CPU-mode sidecar also OOM'd; voice runtime cannot recover."]);
+  });
+
   it("respects forced CPU runtime mode at boot", async () => {
     const { VoiceSidecarManager } = await loadManager();
     const manager = new VoiceSidecarManager({ ...baseConfig, runtimeMode: "cpu" });

@@ -4,7 +4,7 @@ import { joinResultText, resultImageCount } from '../pi-session/tool-result-text
 import { toImageBlocks } from '../pi-session/branch-text';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../pi-session/tool-normalization';
 import type { PersistedAgentMessage } from '../pi-session/agent-records';
-import { nestedCallError } from '../pi-session/nested-call-failures';
+import { nestedCallError, nestedCallFailure } from '../pi-session/nested-call-failures';
 import { abandonReasonOf, skippedToolCalls } from '../pi-session/abandoned-tool-calls';
 
 /**
@@ -89,13 +89,15 @@ const NONE_WOUND_DOWN: ReadonlySet<PersistedAgentMessage> = new Set();
 /**
  * One card message per pi message with an entry id, in session order. `stoppedToolCallIds`: the calls the
  * member file's turn-stopped entries name (`AgentFile.stoppedToolCallIds`). `windDown`: the error stops that
- * were an abort's wind-down (`AgentFile.windDownMessages`), mapped as aborted stops.
+ * were an abort's wind-down (`AgentFile.windDownMessages`), mapped as aborted stops. `liveToolCallIds`: the calls a running
+ * member still owns (its transcript read from memory); one with no result is marked `live`.
  */
 export function memberHistoryMessages(
   messages: readonly PersistedAgentMessage[],
   entryIds: ReadonlyMap<PersistedAgentMessage, string>,
   stoppedToolCallIds: ReadonlySet<string> = NONE_SKIPPED,
   windDown: ReadonlySet<PersistedAgentMessage> = NONE_WOUND_DOWN,
+  liveToolCallIds: ReadonlySet<string> = NONE_SKIPPED,
 ): TeamAgentHistoryMessage[] {
   const out: TeamAgentHistoryMessage[] = [];
   const answered = new Set(messages.flatMap((m) => (m.role === 'toolResult' && typeof m['toolCallId'] === 'string' ? [m['toolCallId']] : [])));
@@ -118,14 +120,15 @@ export function memberHistoryMessages(
         const cut = out[batch.index];
         if (cut && skipped.size > 0) out[batch.index] = { ...cut, content: assistantContentBlocks(batch.content, undefined, new Set([...skipped, ...unexecuted])) };
       }
-      const blocks = assistantContentBlocks(content, abandoned, unexecuted);
+      const blocks = assistantContentBlocks(content, abandoned, unexecuted)
+        .map((block) => (block.type === 'tool_use' && !block.abandoned && !answered.has(block.id) && liveToolCallIds.has(block.id) ? { ...block, live: true as const } : block));
       batch = null;
       if (blocks.length > 0) {
         out.push({ id, role: 'assistant', content: blocks });
         batch = { index: out.length - 1, content };
       }
       // The file reader drops a call pi re-ran, so every error stop here is one pi did not recover.
-      if (failed) out.push({ id: `${id}:error`, role: 'error', content: [{ type: 'text', text: nestedCallError(message, 'user') }] });
+      if (failed) out.push({ id: `${id}:error`, role: 'error', content: [{ type: 'text', text: nestedCallError(message) }], error: nestedCallFailure(message) });
     } else if (message.role === 'toolResult' && typeof message['toolCallId'] === 'string' && !unexecuted.has(message['toolCallId'])) {
       out.push({ id, role: 'toolResult', content: [toolResultBlock(message['toolCallId'], message, message['isError'] === true)] });
     }

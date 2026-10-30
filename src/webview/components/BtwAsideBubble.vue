@@ -5,6 +5,7 @@ import { Ban, MessageSquare, MessagesSquare, SendHorizontal } from 'lucide-vue-n
 import type { BtwAside } from '@/stores/useBtwStore';
 import { useBtwAsk } from '@/composables/useBtwAsk';
 import AuthFailureNotice from './AuthFailureNotice.vue';
+import { renderText } from '@/composables/useLocalizedText';
 import LoadingSpinner from './LoadingSpinner.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
@@ -73,13 +74,13 @@ function ask(): void {
         <AuthFailureNotice
           v-if="aside.authFailure"
           :failure="aside.authFailure"
-          :details="aside.error ?? ''"
+          :details="aside.error ? renderText(aside.error) : ''"
         />
         <div
-          v-else
+          v-else-if="aside.error"
           class="px-1 text-13 text-(--d-danger)"
         >
-          {{ aside.error }}
+          {{ renderText(aside.error) }}
         </div>
       </div>
       <div

@@ -3,7 +3,7 @@ import path from 'node:path';
 
 export const TOKEN_HEADER = 'x-smoke-token';
 
-/** Profile, screenshots and the controller's token live here; SMOKE_DIR overrides it. */
+/** The hermetic run folder, screenshots, the last run's logs and the controller's token live here; SMOKE_DIR overrides it. */
 export const smokeDir = () => path.resolve(process.env.SMOKE_DIR ?? path.join(os.tmpdir(), 'damocles-smoke'));
 
 export const smokePort = () => Number(process.env.SMOKE_PORT ?? 9555);

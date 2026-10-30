@@ -268,6 +268,16 @@ export function parseAgentLaunchData(value: unknown): AgentLaunchData | null {
   return isAgentLaunchShape(value) ? withKnownEffort(value) : null;
 }
 
+/** The first valid launch entry among an agent session's entries, the one `parseAgentEntries` reads; null when there is none. */
+export function agentLaunchOf(entries: readonly unknown[]): AgentLaunchData | null {
+  for (const entry of entries) {
+    if (!isRecord(entry) || entry['type'] !== 'custom' || entry['customType'] !== DAMOCLES_AGENT_LAUNCH_ENTRY) continue;
+    const launch = parseAgentLaunchData(entry['data']);
+    if (launch) return launch;
+  }
+  return null;
+}
+
 function isAgentSegmentShape(value: unknown): value is AgentSegmentData {
   return (
     isRecord(value) &&

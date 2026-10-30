@@ -14,7 +14,7 @@ import {
   type SessionWriteRefusal,
 } from "../pi-session/session-store/session-lease";
 import { log } from "../logger";
-import { t } from "../l10n";
+import { l } from "../l10n";
 
 // The wait counts its own polls, not wall-clock time, so a system suspend never cuts it short.
 const HANDOFF_POLL_MS = 250;
@@ -34,7 +34,7 @@ export function findStoredSessionHolder(
 
 /** Tell the user why a request to open a stored conversation revealed another panel instead. */
 export function announceHeldElsewhere(notifications: NotificationService): void {
-  void notifications.info(t("This conversation is already open in another panel."));
+  void notifications.info(l("This conversation is already open in another panel."));
 }
 
 /** Why this process cannot take a stored conversation's lease now; `unreadable` when the lease itself failed. */
@@ -65,33 +65,32 @@ function secondsUntil(epochMs: number): number {
 export function announceLeaseRefusal(notifications: NotificationService, refusal: LeaseRefusal, options: LeaseRefusalOptions = {}): void {
   switch (refusal.kind) {
     case "writing":
-      void notifications.info(t("This conversation is being deleted or changed. Try again in a moment."));
+      void notifications.info(l("This conversation is being deleted or changed. Try again in a moment."));
       return;
     case "unreadable":
-      void notifications.error(t("This conversation could not be opened: {0}", refusal.reason));
+      void notifications.error(l("This conversation could not be opened: {0}", refusal.reason));
       return;
     case "panel":
-      void notifications.info(t("This conversation is opening or closing in a panel. Try again in a moment."));
+      void notifications.info(l("This conversation is opening or closing in a panel. Try again in a moment."));
       return;
     case "other-process":
       if (refusal.heldUntilMs === undefined) {
         // A holder that wrote no owner record (an older Damocles) cannot be asked, so nothing is offered.
         if (options.takeover && readSessionLeaseOwner(options.takeover.sessionId)) offerTakeover(notifications, options.takeover);
-        else void notifications.info(t("This conversation is open in another Damocles window."));
+        else void notifications.info(l("This conversation is open in another Damocles window."));
       } else if (options.retryScheduled) {
-        void notifications.info(t("The Damocles window that had this conversation open stopped responding. It opens here in about {0} seconds.", secondsUntil(refusal.heldUntilMs)));
+        void notifications.info(l("The Damocles window that had this conversation open stopped responding. It opens here in about {0} seconds.", secondsUntil(refusal.heldUntilMs)));
       } else {
-        void notifications.info(t("The Damocles window that had this conversation open stopped responding. Try again in {0} seconds.", secondsUntil(refusal.heldUntilMs)));
+        void notifications.info(l("The Damocles window that had this conversation open stopped responding. Try again in {0} seconds.", secondsUntil(refusal.heldUntilMs)));
       }
       return;
   }
 }
 
 function offerTakeover(notifications: NotificationService, takeover: LeaseTakeover): void {
-  const openHere = t("Open here");
   notifications
-    .info(t("This conversation is open in another Damocles window. Opening it here closes it there and stops any turn running in it."), openHere)
-    .then((choice) => (choice === openHere ? takeOverSession(notifications, takeover) : undefined))
+    .info(l("This conversation is open in another Damocles window. Opening it here closes it there and stops any turn running in it."), [l("Open here")])
+    .then((choice) => (choice === 0 ? takeOverSession(notifications, takeover) : undefined))
     .catch((err: unknown) => log("[session-ownership] opening session %s here failed: %O", takeover.sessionId, err));
 }
 
@@ -108,7 +107,7 @@ async function takeOverSession(notifications: NotificationService, takeover: Lea
       return;
     }
     if ((await requestSessionHandoff(sessionId, owner.nonce)) === "timeout") {
-      void notifications.info(t("The other Damocles window did not close this conversation. Close it there, then open it here."));
+      void notifications.info(l("The other Damocles window did not close this conversation. Close it there, then open it here."));
       return;
     }
     if (!takeover.canOpen()) return;

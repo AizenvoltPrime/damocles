@@ -7,7 +7,7 @@ import { assignServerToolNames, createMcpToolName, legacyMcpToolName, legacyServ
 import { READ_MCP_RESOURCE } from '../../permission-handler/mcp-resource-rule';
 import { matchesMcpRule, mcpRuleSplits } from '../../permission-handler/managers/evaluator-manager';
 import { matchesToolPattern } from './exposure';
-import { t } from '../../l10n';
+import { l, verbatim } from '../../l10n';
 import { parseHooksFile } from '../hooks/config';
 import { compileMatch } from '../hooks/dispatch';
 import {
@@ -480,11 +480,11 @@ export async function migrateRenamedToolRules(
     if (existing) existing.rules.push(...fresh.filter((rule) => !existing.rules.some((shown) => shown.old === rule.old)));
     else notices.push({ ...location, rules: fresh });
   };
-  const collect = (file: string, find: Finder): Promise<void> => collectAt({ path: file, displayPath: collapseHome(file) }, find);
+  const collect = (file: string, find: Finder): Promise<void> => collectAt({ path: file, displayPath: verbatim(collapseHome(file)) }, find);
   const collectList = (list: ToolNameList, entries: (set: RenameSet) => ReadonlyMap<string, string>): Promise<void> => {
     const find = (set: RenameSet) => nameListRenames(list.names, entries(set));
     if ('path' in list) return collect(list.path, find);
-    const displayPath = list.scope === 'user' ? t('{0} in user settings', list.setting) : t('{0} in workspace settings', list.setting);
+    const displayPath = list.scope === 'user' ? l('{0} in user settings', list.setting) : l('{0} in workspace settings', list.setting);
     return collectAt({ setting: list.setting, ...(list.scope ? { scope: list.scope } : {}), displayPath }, find);
   };
 

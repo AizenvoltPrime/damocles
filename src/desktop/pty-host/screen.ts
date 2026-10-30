@@ -3,8 +3,8 @@
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { Terminal, type IMarker } from '@xterm/headless';
-import { MAX_TERMINAL_SCREEN_CHARS, MAX_TERMINAL_SCREEN_MARKS } from '../preload/terminal-channels';
-import type { ScreenMark } from './protocol';
+import { MAX_KEPT_SHELL_SEQUENCE_CHARS, MAX_KEPT_SHELL_SEQUENCES, MAX_SHELL_SEQUENCE_CHARS, MAX_TERMINAL_SCREEN_CHARS, MAX_TERMINAL_SCREEN_MARKS } from '../preload/terminal-channels';
+import { KEPT_SHELL_SEQUENCE, type KeptShellSequence, type ScreenMark } from './protocol';
 
 // The OSC 633 types whose line main's command marks need: prompt start, command start, executed and finished.
 const MARKED_SEQUENCE = /^[ABCD](?:;|$)/;
@@ -19,6 +19,10 @@ export interface ScreenSnapshot {
   readonly marks: readonly ScreenMark[];
   // the OSC 633 sequences the screen parsed, which is the index of the next one
   readonly sequences: number;
+  // the latest payloads of the types main parses, oldest first; memory only, and never checked for a nonce here
+  readonly shellSequences: readonly KeptShellSequence[];
+  // Date.now() when the snapshot was taken, the clock each kept payload's time is on
+  readonly now: number;
 }
 
 export interface PtyScreen {
@@ -59,6 +63,8 @@ export function createPtyScreen(options: PtyScreenOptions): PtyScreen {
   xterm.loadAddon(serializer);
   let sequences = 0;
   let marks: Array<{ readonly index: number; readonly marker: IMarker }> = [];
+  const kept: KeptShellSequence[] = [];
+  let keptChars = 0;
   // false leaves the sequence to xterm's default, which ignores it
   xterm.parser.registerOscHandler(633, (data) => {
     const index = sequences++;
@@ -68,10 +74,15 @@ export function createPtyScreen(options: PtyScreenOptions): PtyScreen {
       marks.push({ index, marker });
       for (const evicted of marks.splice(0, marks.length - MAX_TERMINAL_SCREEN_MARKS)) evicted.marker.dispose();
     }
+    if (data.length <= MAX_SHELL_SEQUENCE_CHARS && KEPT_SHELL_SEQUENCE.test(data)) {
+      kept.push({ index, body: data, time: Date.now() });
+      keptChars += data.length;
+      while (kept.length > MAX_KEPT_SHELL_SEQUENCES || keptChars > MAX_KEPT_SHELL_SEQUENCE_CHARS) keptChars -= kept.shift()!.body.length;
+    }
     return false;
   });
 
-  const blank = (): ScreenSnapshot => ({ data: '', cols: xterm.cols, rows: xterm.rows, marks: [], sequences });
+  const blank = (): ScreenSnapshot => ({ data: '', cols: xterm.cols, rows: xterm.rows, marks: [], sequences, shellSequences: [...kept], now: Date.now() });
 
   // Runs inside a write callback: xterm parses the next queued chunk right after it returns. The scrollback is cut to what
   // fits MAX_TERMINAL_SCREEN_CHARS at the longest a cell serializes, so no string past it is built.
@@ -85,8 +96,8 @@ export function createPtyScreen(options: PtyScreenOptions): PtyScreen {
     if (data.length > MAX_TERMINAL_SCREEN_CHARS) return blank();
     // the restored buffer starts at the first row serialized, so a mark's line moves up by the rows left out
     const first = Math.max(0, xterm.buffer.normal.length - scrollback - rows);
-    const kept = marks.filter(({ marker }) => marker.line >= first).map(({ index, marker }) => ({ index, line: marker.line - first }));
-    return { data, cols, rows, marks: kept, sequences };
+    const shown = marks.filter(({ marker }) => marker.line >= first).map(({ index, marker }) => ({ index, line: marker.line - first }));
+    return { data, cols, rows, marks: shown, sequences, shellSequences: [...kept], now: Date.now() };
   };
 
   // xterm still parses a write queued before its dispose and calls the write's callback

@@ -543,8 +543,9 @@ function barePrograms(expr: ts.Expression, bindings: Bindings, depth = 0): strin
 
 /** Every spawner call in one source text whose program can be a name that is not an absolute path. */
 function bareNameSpawnsIn(file: string, text: string): string[] {
-  // A file naming neither seed of `fileSpawners` has no spawner, so it is not parsed.
-  if (!/child_process|exec['"`]|launch\(|runProcess\(|\brun\(/.test(text)) return [];
+  // A file with no seed of `fileSpawners` and no launcher start (`launchedFile` reads only an object literal) has no spawn,
+  // so it is not parsed.
+  if (!/child_process|exec['"`]|\b(?:launch|runProcess|run)\(\s*\{/.test(text)) return [];
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const spawners = fileSpawners(source);
   const constants = new Map<string, ts.Expression>();
@@ -582,7 +583,8 @@ function sourceFiles(dir: string): string[] {
 }
 
 describe('process spawns', () => {
-  it('name an absolute program everywhere in src outside tests, never a bare name a relative PATH entry could plant', () => {
+  // parses every source file that starts a process with the TypeScript compiler, a cost that grows with src (about 1 s alone)
+  it('name an absolute program everywhere in src outside tests, never a bare name a relative PATH entry could plant', { timeout: 20_000 }, () => {
     const found = sourceFiles(SRC).flatMap((file) => bareNameSpawnsIn(path.relative(SRC, file).replace(/\\/g, '/'), fs.readFileSync(file, 'utf8')));
     expect(found).toEqual([]);
   });
@@ -600,6 +602,7 @@ describe('process spawns', () => {
     ['a fallback', "import { spawn } from 'child_process'; declare const found: string | undefined; spawn(found ?? 'bash');", 'bash'],
     ['a checkpoint exec helper', "import { execSafe } from '../checkpoints/exec'; execSafe('git', ['status']);", 'git'],
     ['a launcher start', "processLauncher().launch({ file: 'rg', args: [] });", 'rg'],
+    ['a launcher start whose spec opens on the next line', "runProcess(\n  { file: 'rg', args: [] },\n);", 'rg'],
     ['a collected launcher start', "const SMI = 'nvidia-smi'; runProcess({ file: SMI, args: [] });", 'nvidia-smi'],
     ['a launcher start naming its file by shorthand', "const file = 'npm'; launcher.launch({ file, args: [] });", 'npm'],
     ['a wrapper whose parameter is a launcher start\'s file', "function run(cmd: string) { return processLauncher().launch({ file: cmd, args: [] }); } run('ldconfig');", 'ldconfig'],

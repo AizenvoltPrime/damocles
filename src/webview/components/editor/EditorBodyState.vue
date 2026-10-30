@@ -11,12 +11,13 @@ const props = defineProps<{
 const { t } = useI18n();
 const MIB = 1024 * 1024;
 
-const testId = computed(() => ({ tooLarge: 'editor-body-too-large', binary: 'editor-body-binary', unreadable: 'editor-body-unreadable' })[props.body.kind]);
+const testId = computed(() => ({ tooLarge: 'editor-body-too-large', binary: 'editor-body-binary', notAFile: 'editor-body-not-a-file', unreadable: 'editor-body-unreadable' })[props.body.kind]);
 
 const message = computed(() => {
   const body = props.body;
   if (body.kind === 'tooLarge') return t('editor.body.tooLarge', { size: (body.bytes / MIB).toFixed(1), limit: Number((body.limitBytes / MIB).toFixed(1)) });
   if (body.kind === 'binary') return t('editor.body.binary');
+  if (body.kind === 'notAFile') return t('editor.body.notAFile');
   return t('editor.body.unreadable', { error: body.error });
 });
 </script>

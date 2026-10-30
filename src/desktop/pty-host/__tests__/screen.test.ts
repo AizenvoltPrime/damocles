@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { Terminal } from '@xterm/headless';
-import { MAX_TERMINAL_SCREEN_CHARS } from '../../preload/terminal-channels';
-import type { HostMessage, HostRequest } from '../protocol';
+import { MAX_KEPT_SHELL_SEQUENCE_CHARS, MAX_KEPT_SHELL_SEQUENCES, MAX_SHELL_SEQUENCE_CHARS, MAX_TERMINAL_SCREEN_CHARS } from '../../preload/terminal-channels';
+import { parseHostMessage, type HostMessage, type HostRequest } from '../protocol';
 import { createPtyScreen, type ScreenSnapshot } from '../screen';
 import { createPtySessions, type Pty } from '../sessions';
 
@@ -183,11 +183,91 @@ describe('the pty screen', () => {
     }
   });
 
+  it('a screen carries the kept payloads with their indexes, bounded, and only the types main parses', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1234);
+    try {
+      const screen = createPtyScreen({ cols: 40, rows: 4, scrollback: 100 });
+      // 0 A, 1 an unknown type, 2 B, 3 E, 4 a field-less 633 (xterm hands it over empty), 5 C (on the alternate screen, kept
+      // though it gets no mark), 6 an E past MAX_SHELL_SEQUENCE_CHARS, 7 D, 8 P, 9 a forged P: the screen checks no nonce
+      screen.write(`${osc(`A;${NONCE}`)}${osc('X;whatever')}$ ${osc(`B;${NONCE}`)}ls${osc(`E;ls;${NONCE}`)}\x1b]633\x07\r\n`);
+      screen.write(`\x1b[?1049h${osc(`C;${NONCE}`)}\x1b[?1049l${osc(`E;${'x'.repeat(MAX_SHELL_SEQUENCE_CHARS)};${NONCE}`)}${osc(`D;0;${NONCE}`)}${osc(`P;Cwd=/x;${NONCE}`)}${osc('P;Cwd=/etc;forged')}`);
+      const snapshot = await screen.serialize();
+      expect(snapshot.sequences).toBe(10);
+      expect(snapshot.shellSequences).toEqual([
+        { index: 0, body: `A;${NONCE}`, time: 1234 },
+        { index: 2, body: `B;${NONCE}`, time: 1234 },
+        { index: 3, body: `E;ls;${NONCE}`, time: 1234 },
+        { index: 5, body: `C;${NONCE}`, time: 1234 },
+        { index: 7, body: `D;0;${NONCE}`, time: 1234 },
+        { index: 8, body: `P;Cwd=/x;${NONCE}`, time: 1234 },
+        { index: 9, body: 'P;Cwd=/etc;forged', time: 1234 },
+      ]);
+      expect(screen.blank().shellSequences).toEqual(snapshot.shellSequences);
+
+      // the oldest leave first: past the count, then past the characters
+      screen.write(osc(`A;${NONCE}`).repeat(MAX_KEPT_SHELL_SEQUENCES));
+      const counted = (await screen.serialize()).shellSequences;
+      expect(counted).toHaveLength(MAX_KEPT_SHELL_SEQUENCES);
+      expect(counted[0]!.index).toBe(10);
+      expect(counted.at(-1)!.index).toBe(9 + MAX_KEPT_SHELL_SEQUENCES);
+      const long = `E;${'y'.repeat(MAX_SHELL_SEQUENCE_CHARS - 2)}`;
+      const fit = Math.floor(MAX_KEPT_SHELL_SEQUENCE_CHARS / long.length);
+      screen.write(osc(long).repeat(fit + 1));
+      const sized = (await screen.serialize()).shellSequences;
+      expect(sized.every(({ body }) => body === long)).toBe(true);
+      expect(sized).toHaveLength(fit);
+      expect(sized.at(-1)!.index).toBe(9 + MAX_KEPT_SHELL_SEQUENCES + fit + 1);
+      // what a screen carries the host's message parser takes whole
+      expect(parseHostMessage({ type: 'screen', id: 'term-1', ...(await screen.serialize()) })).toMatchObject({ shellSequences: sized });
+      screen.dispose();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it('counts the OSC 633 sequences it parsed, so the next one\'s index follows the screen', async () => {
     const screen = createPtyScreen({ cols: 20, rows: 4, scrollback: 10 });
     screen.write(`${osc(`A;${NONCE}`)}$ ${osc('P;Cwd=/x')}${osc(`B;${NONCE}`)}`);
     expect((await screen.serialize()).sequences).toBe(3);
     screen.dispose();
+  });
+
+  it('a screen carries the host\'s clock at its serialize, against which main reads each kept payload\'s time', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
+    try {
+      const screen = createPtyScreen({ cols: 20, rows: 4, scrollback: 10 });
+      screen.write(osc(`C;${NONCE}`));
+      await screen.serialize();
+      now.mockReturnValue(61_000);
+      expect(await screen.serialize()).toMatchObject({ now: 61_000, shellSequences: [{ index: 0, body: `C;${NONCE}`, time: 1000 }] });
+      now.mockReturnValue(62_000);
+      expect(screen.blank()).toMatchObject({ now: 62_000, shellSequences: [{ index: 0, time: 1000 }] });
+      expect(parseHostMessage({ type: 'screen', id: 'term-1', ...screen.blank() })).toMatchObject({ now: 62_000 });
+      screen.dispose();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('drops only the optional field of a screen that breaks the contract, names it, and keeps the screen', () => {
+    const screen = { type: 'screen', id: 'term-1', data: 'x', cols: 20, rows: 4, marks: [], sequences: 2 } as const;
+    const kept = [{ index: 0, body: `A;${NONCE}`, time: 5 }, { index: 1, body: `B;${NONCE}`, time: 6 }];
+    const parse = (raw: Record<string, unknown>): { message: HostMessage | undefined; dropped: string[] } => {
+      const dropped: string[] = [];
+      return { message: parseHostMessage({ ...screen, ...raw }, (field) => dropped.push(field)), dropped };
+    };
+    expect(parse({ shellSequences: kept, processName: 'sh', now: 7 })).toEqual({ message: { ...screen, shellSequences: kept, processName: 'sh', now: 7 }, dropped: [] });
+    // out of order, past the screen's count, a foreign type, too many
+    expect(parse({ shellSequences: [...kept].reverse(), processName: 'sh' })).toEqual({ message: { ...screen, processName: 'sh' }, dropped: ['shellSequences'] });
+    expect(parse({ shellSequences: [{ index: 2, body: `A;${NONCE}`, time: 5 }] })).toEqual({ message: screen, dropped: ['shellSequences'] });
+    expect(parse({ shellSequences: [{ index: 0, body: 'X;y', time: 5 }] })).toEqual({ message: screen, dropped: ['shellSequences'] });
+    const counted = MAX_KEPT_SHELL_SEQUENCES + 1;
+    const tooMany = Array.from({ length: counted }, (_, index) => ({ index, body: `A;${NONCE}`, time: 5 }));
+    expect(parse({ sequences: counted, shellSequences: tooMany })).toEqual({ message: { ...screen, sequences: counted }, dropped: ['shellSequences'] });
+    expect(parse({ sequences: counted, shellSequences: tooMany.slice(1) }).dropped).toEqual([]);
+    expect(parse({ shellSequences: kept, processName: 'x'.repeat(257), now: -1 })).toEqual({ message: { ...screen, shellSequences: kept }, dropped: ['processName', 'now'] });
+    // a required field still refuses the whole message
+    expect(parse({ sequences: -1 }).message).toBeUndefined();
   });
 
   it('clears after the output written before the Clear, as the shell\'s view cleared it', async () => {
@@ -271,7 +351,7 @@ describe('the pty host sessions with screens', () => {
     } finally {
       thrown.mockRestore();
     }
-    expect(posted.find((message) => message.type === 'screen')).toEqual({ type: 'screen', id: 'term-1', data: '', cols: 20, rows: 4, marks: [], sequences: 1 });
+    expect(posted.find((message) => message.type === 'screen')).toEqual({ type: 'screen', id: 'term-1', data: '', cols: 20, rows: 4, marks: [], sequences: 1, shellSequences: [{ index: 0, body: `A;${NONCE}`, time: expect.any(Number) }], now: expect.any(Number) });
     expect(logs).toEqual(['the screen of term-1 could not be serialized: Invalid string length']);
     pty.print('after');
     await new Promise((resolve) => setTimeout(resolve, 20));

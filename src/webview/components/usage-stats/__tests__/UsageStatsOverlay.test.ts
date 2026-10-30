@@ -4,7 +4,8 @@ import { nextTick } from 'vue';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import UsageStatsOverlay from '../UsageStatsOverlay.vue';
-import { i18n } from '@/i18n';
+import { applyLocale, i18n } from '@/i18n';
+import { inGreek } from '../../../../__mocks__/greek-locale';
 import { useUsageStatsStore } from '@/stores/useUsageStatsStore';
 import type { WebviewToExtensionMessage } from '@shared/types/messages';
 import type { UsageStatsReport } from '@shared/types/usage-stats';
@@ -52,8 +53,9 @@ beforeEach(() => {
   document.body.innerHTML = '';
 });
 
-afterEach(() => {
+afterEach(async () => {
   while (mounted.length) mounted.pop()?.unmount();
+  await applyLocale('en');
 });
 
 describe('UsageStatsOverlay', () => {
@@ -119,7 +121,7 @@ describe('UsageStatsOverlay', () => {
 
   it('shows the error with a Retry that sends a new request', async () => {
     const { store, wrapper } = await open();
-    store.handleResult({ type: 'usageStats', requestId: latestId(), final: true, report: null, error: 'worker exited' });
+    store.handleResult({ type: 'usageStats', requestId: latestId(), final: true, report: null, error: { message: 'worker exited' } });
     await nextTick();
     expect(wrapper.text()).toContain('worker exited');
 
@@ -128,6 +130,18 @@ describe('UsageStatsOverlay', () => {
     await retry!.trigger('click');
     expect(posted.length).toBe(before + 1);
     expect(store.status).toBe('loading');
+  });
+
+  it("renders core's error in the language the view switches to", async () => {
+    const coreText = { message: 'Could not open file: {0}', args: ['index.db'] };
+    const { store, wrapper } = await open();
+    store.handleResult({ type: 'usageStats', requestId: latestId(), final: true, report: null, error: coreText });
+    await nextTick();
+    expect(wrapper.text()).toContain('Could not open file: index.db');
+
+    await applyLocale('el');
+    await nextTick();
+    expect(wrapper.text()).toContain(inGreek(coreText));
   });
 
   it('lists projects by folder name with the full path as the title, and the null project as No project', async () => {

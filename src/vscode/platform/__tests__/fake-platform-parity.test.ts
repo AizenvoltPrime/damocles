@@ -4,8 +4,11 @@ import * as vscode from 'vscode';
 import { __trustEmitter } from 'vscode';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { createVsCodeTrustService } from '../trust-service';
-import { createVsCodeLocalizationService } from '../localization-service';
-import { formatMessage } from '../../../desktop/local-services/localization-service';
+import { readFileSync } from 'node:fs';
+import { renderLocalizedText, type LocalizedText } from '../../../shared/localized-text';
+import { createDesktopLocalizationService } from '../../../desktop/local-services/localization-service';
+import { REPO_ROOT } from '../../../__mocks__/source-tree';
+import { renderVsCode } from '../localization-service';
 import { VSCODE_HOST_CAPABILITIES } from '../../../shared/types/messages';
 
 // Tests of core code trust the fake to deliver what the VS Code host delivers.
@@ -82,12 +85,35 @@ describe('isTrusted parity', () => {
 });
 
 describe('localization parity', () => {
-  it('the fake, VS Code and desktop all leave a placeholder with no argument as written', () => {
-    const message = '{0} of {1}';
-    const expected = 'one of {1}';
-    expect(createFakePlatform().localization.t(message, 'one')).toBe(expected);
-    expect(createVsCodeLocalizationService().t(message, 'one')).toBe(expected);
-    expect(formatMessage(message, ['one'])).toBe(expected);
+  // each form LocalizedText takes, in the bundle and outside it
+  const TEXTS: readonly LocalizedText[] = [
+    { message: 'Back' },
+    { message: 'Agent: {0}', args: ['reviewer'] },
+    { message: 'Agent: {0}' },
+    { message: '{0} files changed on {1} while you were offline. Your saves are kept in the merge editor.', args: [{ number: 12345.5 }, 'prod-1'] },
+    { message: 'Could not delete the worktree "{0}": {1}', args: ['wt', { message: 'Files were added to it after you confirmed.' }] },
+    { message: 'Could not delete the worktree "{0}": {1}', args: ['{1}', 7] },
+    { message: 'A message in no bundle: {0} {1}', args: [{ number: 0.5 }] },
+  ];
+  const GREEK = JSON.parse(readFileSync(path.join(REPO_ROOT, 'l10n', 'bundle.l10n.el.json'), 'utf8')) as Record<string, string>;
+
+  afterEach(() => {
+    vscode.__setL10nBundle(undefined);
+    vscode.__setLanguage('en');
+  });
+
+  it.each([['en', undefined], ['el', GREEK]] as const)('VS Code renders core\'s text as the views and desktop main do, in %s', (language, bundle) => {
+    vscode.__setL10nBundle(bundle);
+    vscode.__setLanguage(language);
+    const translate = (key: string): string | undefined => (bundle !== undefined && Object.hasOwn(bundle, key) ? bundle[key] : undefined);
+    const desktop = createDesktopLocalizationService(REPO_ROOT, language, () => undefined);
+    for (const text of TEXTS) {
+      const views = renderLocalizedText(text, translate, language);
+      expect([renderVsCode(text), desktop.render(text)]).toEqual([views, views]);
+    }
+    expect(renderVsCode(TEXTS[3]!)).toMatch(language === 'el' ? /^12\.345,5 / : /^12,345\.5 /);
+    // an argument holding {1} is not filled again
+    expect(renderVsCode(TEXTS[5]!)).toMatch(/\{1\}.*: 7$/);
   });
 });
 

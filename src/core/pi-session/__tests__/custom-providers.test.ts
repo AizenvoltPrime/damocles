@@ -222,11 +222,11 @@ function sweepMarker(swept = true): string {
   return marker;
 }
 
-type LocalDeps = Omit<SyncCustomProvidersDeps, 'agentDir' | 'preferApiKey' | 'sweepMarkerPath'> & Partial<SyncCustomProvidersDeps>;
+type LocalDeps = Omit<SyncCustomProvidersDeps, 'agentDir' | 'preferApiKey' | 'sweepMarkerPath' | 'ownAuthFileChange'> & Partial<SyncCustomProvidersDeps>;
 
-/** A local core's sync with no auth.json, every prefer flag off, and the legacy sweep already run. */
+/** A local core's sync with no auth.json, every prefer flag off, the legacy sweep already run, and no auth.json watch to tell of its own writes. */
 function sync(deps: LocalDeps): Promise<SyncCustomProvidersResult> {
-  return syncCustomProviders({ agentDir: NO_AUTH_FILE, preferApiKey: () => false, sweepMarkerPath: SWEPT, ...deps });
+  return syncCustomProviders({ agentDir: NO_AUTH_FILE, preferApiKey: () => false, sweepMarkerPath: SWEPT, ownAuthFileChange: (_providers, op) => op(), ...deps });
 }
 
 const NO_AUTH_FILE = agentDirWith();
@@ -563,6 +563,32 @@ describe('syncCustomProviders', () => {
     expect(result.changed).toEqual(['deepseek']);
     expect(fs.existsSync(marker)).toBe(true);
     expect(logLines.join('\n')).not.toContain(SENTINEL);
+  });
+
+  it('runs each sweep logout as an own change of that provider\'s auth.json entry', async () => {
+    const marker = sweepMarker(false);
+    const agentDir = agentDirWith({ deepseek: { type: 'api_key', key: 'legacy' }, openrouter: { type: 'api_key', key: 'legacy' } });
+    const { runtime, asModelRuntime, runtimeKeys } = makeRuntime();
+    const owning: string[][] = [];
+    const ownedAtLogout: Array<[string, string[]]> = [];
+    const logout = logoutFrom(agentDir, runtimeKeys);
+    runtime.logout.mockImplementation(async (provider) => {
+      ownedAtLogout.push([provider, owning.flat()]);
+      await logout(provider);
+    });
+    const ownAuthFileChange = vi.fn(async (providers: readonly string[], op: () => Promise<void>) => {
+      owning.push([...providers]);
+      try {
+        await op();
+      } finally {
+        owning.pop();
+      }
+    });
+
+    await sync({ modelRuntime: asModelRuntime, getSecret: secrets({}), agentDir, sweepMarkerPath: marker, ownAuthFileChange });
+
+    expect(ownedAtLogout).toEqual([['deepseek', ['deepseek']], ['openrouter', ['openrouter']]]);
+    expect(ownAuthFileChange).toHaveBeenCalledTimes(2);
   });
 
   // A marker that cannot be written must not re-run the logouts: a key the user stores with pi afterwards is theirs.

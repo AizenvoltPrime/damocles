@@ -1,5 +1,6 @@
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PromptOwner } from '../../shared/types/permissions';
+import { englishText, type LocalizedText } from '../../shared/localized-text';
 
 /** Derived from the message so the derivation can never drift from what the webview reads. */
 export type SessionState = Extract<ExtensionToWebviewMessage, { type: 'sessionStateChanged' }>['state'];
@@ -13,8 +14,8 @@ export interface PendingPrompt {
   readonly id: string;
   readonly kind: PendingKind;
   readonly owner: PromptOwner;
-  /** One line describing the prompt, capped at `PROMPT_SUMMARY_MAX_CHARS`, e.g. "edit src/a.ts (+7 −2)" or the question. */
-  readonly summary?: string;
+  /** One line describing the prompt, each untrusted part capped at `PROMPT_SUMMARY_MAX_CHARS`, e.g. "edit src/a.ts (+7 −2)" or the question. */
+  readonly summary?: LocalizedText;
 }
 
 /** An unanswered prompt as its holder keeps it: the message it was posted with. */
@@ -36,7 +37,7 @@ export interface ChatActivity {
 
 export type TurnOutcome =
   | { readonly kind: 'completed'; readonly durationMs?: number }
-  | { readonly kind: 'error'; readonly message?: string }
+  | { readonly kind: 'error'; readonly message?: LocalizedText }
   | { readonly kind: 'budget' }
   /** The window fields name the full subscription window a usage refresh found after the error (D55), and are absent when it found none. */
   | {
@@ -44,7 +45,7 @@ export type TurnOutcome =
       /** As `UsageThresholdCrossing.windowId`. */
       readonly windowId?: string;
       /** As `UsageThresholdCrossing.windowLabel`, e.g. "Session (5hr)" or "Weekly". */
-      readonly windowLabel?: string;
+      readonly windowLabel?: LocalizedText;
       /** Epoch ms. */
       readonly resetsAt?: number;
     }
@@ -69,6 +70,6 @@ export function deriveSessionState(turn: TurnState, pendingPrompts: boolean): Se
 const RATE_LIMIT_ERROR = /rate.?limit|too many requests|\b429\b|usage.?limit/i;
 
 /** How a turn that ended on the provider or prompt error `message` settled. */
-export function turnOutcomeOfError(message: string): TurnOutcome {
-  return RATE_LIMIT_ERROR.test(message) ? { kind: 'rateLimit' } : { kind: 'error', message };
+export function turnOutcomeOfError(message: LocalizedText): TurnOutcome {
+  return RATE_LIMIT_ERROR.test(englishText(message)) ? { kind: 'rateLimit' } : { kind: 'error', message };
 }

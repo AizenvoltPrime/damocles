@@ -58,32 +58,29 @@ describe.each(KEY_PROVIDER_IDS)("%s key handlers", (provider) => {
     ]);
   });
 
-  it("rejects an empty key with a localized error and stores nothing", async () => {
+  it("rejects an empty key with an error the view renders and stores nothing", async () => {
     const { platform, posted, send } = setup();
-    vi.spyOn(platform.localization, "t").mockImplementation((message: string) => `[el] ${message}`);
     await send({ type: "setProviderApiKey", provider, key: "   ", requestId: "r1" });
-    expect(posted).toEqual([{ type: "setProviderApiKeyAck", provider, requestId: "r1", ok: false, error: "[el] API key cannot be empty" }]);
+    expect(posted).toEqual([{ type: "setProviderApiKeyAck", provider, requestId: "r1", ok: false, error: { message: "API key cannot be empty" } }]);
     expect(await platform.secrets.get(secretName)).toBeUndefined();
   });
 
-  it("acknowledges a failed save with the localized message, never the store's error text", async () => {
+  it("acknowledges a failed save with Damocles' message, never the store's error text", async () => {
     const { platform, posted, send } = setup();
-    vi.spyOn(platform.localization, "t").mockImplementation((message: string) => `[el] ${message}`);
     vi.spyOn(platform.secrets, "store").mockRejectedValue(new Error("keyring locked at /run/user/1000/keyring"));
 
     await send({ type: "setProviderApiKey", provider, key: "k", requestId: "r1" });
 
-    expect(posted.at(-1)).toEqual({ type: "setProviderApiKeyAck", provider, requestId: "r1", ok: false, error: "[el] Failed to store API key" });
+    expect(posted.at(-1)).toEqual({ type: "setProviderApiKeyAck", provider, requestId: "r1", ok: false, error: { message: "Failed to store API key" } });
   });
 
-  it("acknowledges a failed clear with the localized message, never the store's error text", async () => {
+  it("acknowledges a failed clear with Damocles' message, never the store's error text", async () => {
     const { platform, posted, send } = setup();
-    vi.spyOn(platform.localization, "t").mockImplementation((message: string) => `[el] ${message}`);
     vi.spyOn(platform.secrets, "delete").mockRejectedValue(new Error("keyring locked at /run/user/1000/keyring"));
 
     await send({ type: "clearProviderApiKey", provider, requestId: "r2" });
 
-    expect(posted.at(-1)).toEqual({ type: "clearProviderApiKeyAck", provider, requestId: "r2", ok: false, error: "[el] Failed to clear API key" });
+    expect(posted.at(-1)).toEqual({ type: "clearProviderApiKeyAck", provider, requestId: "r2", ok: false, error: { message: "Failed to clear API key" } });
   });
 });
 
@@ -112,6 +109,6 @@ describe("the Prefer API key toggle", () => {
     posted.length = 0;
     apply.mockRejectedValueOnce(new Error("pi failed to load"));
     await send({ type: "setProviderPreferApiKey", provider: "xai", preferApiKey: false, requestId: "r2" });
-    expect(posted).toEqual([{ type: "setProviderPreferApiKeyAck", provider: "xai", requestId: "r2", ok: false, error: "Failed to apply the preference" }]);
+    expect(posted).toEqual([{ type: "setProviderPreferApiKeyAck", provider: "xai", requestId: "r2", ok: false, error: { message: "Failed to apply the preference" } }]);
   });
 });

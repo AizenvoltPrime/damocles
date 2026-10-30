@@ -30,7 +30,8 @@ import type { SettingSource } from "../../../../shared/types/messages";
 import { readContributedConfiguration } from "../../../config/read-contributed-configuration";
 import { CHAT_SETTING_KEYS } from "../../../config/chat-settings";
 import { MODEL_PICKER_SETTING, isModelVendor } from "../../../../shared/model-vendor";
-import { t } from "../../../l10n";
+import { l } from "../../../l10n";
+import { LocalizedError } from "../../../../shared/localized-text";
 import { forEachDevice } from "../../device-hosts";
 
 // A hundred years; the bound keeps a typed number from overflowing the retention arithmetic.
@@ -38,7 +39,7 @@ const MAX_RETENTION_DAYS = 36500;
 
 // A setter's value arrives from a renderer, and a truthy non-boolean in a settings file reads as on.
 function assertBoolean(value: unknown): asserts value is boolean {
-  if (typeof value !== "boolean") throw new Error(t("A switch setting must be true or false"));
+  if (typeof value !== "boolean") throw new LocalizedError(l("A switch setting must be true or false"));
 }
 
 export class ConfigManager {
@@ -67,7 +68,7 @@ export class ConfigManager {
 
   // Workspace section (D37): saved for the chat's folder in its personal file; a chat with no folder saves to user settings.
   private workspaceScope(folder: SettingsFolder | undefined): { home: "local" | "user"; folder: SettingsFolder | undefined } {
-    if (!this.workspaceWritable(folder)) throw new Error(t("This folder is not trusted, so its workspace settings cannot be saved. Trust the folder to save them."));
+    if (!this.workspaceWritable(folder)) throw new LocalizedError(l("This folder is not trusted, so its workspace settings cannot be saved. Trust the folder to save them."));
     return { home: folder === undefined ? "user" : "local", folder };
   }
 
@@ -205,7 +206,7 @@ export class ConfigManager {
 
   async handleSetTeamRoleModel(role: TeamRole, model: string, folder: SettingsFolder | undefined): Promise<SettingWrite> {
     if (model !== '' && !DEFAULT_MODELS.some(m => m.value === model)) {
-      throw new Error(t("Model \"{0}\" is not a known model", model));
+      throw new LocalizedError(l("Model \"{0}\" is not a known model", model));
     }
     const written = await updateConfigAtEffectiveScope(this.platform, `damocles.team.${role}Model`, model, { folder });
 
@@ -231,7 +232,7 @@ export class ConfigManager {
   /** Background work spans every workspace, so its settings are user-level only (application scope). */
   async handleSetBackgroundModel(model: string): Promise<SettingWrite> {
     if (model !== "" && !DEFAULT_MODELS.some(m => m.value === model)) {
-      throw new Error(t("Model \"{0}\" is not a known model", model));
+      throw new LocalizedError(l("Model \"{0}\" is not a known model", model));
     }
     const config = this.platform.settings;
     await config.update(BACKGROUND_MODEL_SETTING, model === "" ? undefined : model, "user");
@@ -245,7 +246,7 @@ export class ConfigManager {
 
   async handleSetBackgroundEffort(effort: EffortLevel | null): Promise<SettingWrite> {
     const model = migrateLegacyModelValue(this.platform.settings.get<string>(BACKGROUND_MODEL_SETTING, ""));
-    if (effort !== null && model === "") throw new Error(t("Automatic sets the effort of each job itself. Choose a model to set one."));
+    if (effort !== null && model === "") throw new LocalizedError(l("Automatic sets the effort of each job itself. Choose a model to set one."));
     assertRoleEffortSupported(model, effort);
     await this.platform.settings.update(BACKGROUND_EFFORT_SETTING, effort ?? undefined, "user");
     return { key: BACKGROUND_EFFORT_SETTING, home: "user" };
@@ -254,7 +255,7 @@ export class ConfigManager {
   /** The Memory judge spans every workspace, so its settings are user-level only (application scope). */
   async handleSetMemoryJudge(choice: string): Promise<SettingWrite> {
     if (!isKnownMemoryJudgeChoice(choice)) {
-      throw new Error(t("\"{0}\" is not a known memory judge", choice));
+      throw new LocalizedError(l("\"{0}\" is not a known memory judge", choice));
     }
     const config = this.platform.settings;
     await config.update(MEMORY_JUDGE_SETTING, choice === "" ? undefined : choice, "user");
@@ -269,7 +270,7 @@ export class ConfigManager {
   async handleSetMemoryJudgeEffort(effort: EffortLevel | null): Promise<SettingWrite> {
     const choice = migrateLegacyModelValue(this.platform.settings.get<string>(MEMORY_JUDGE_SETTING, ""));
     if (effort !== null && !DEFAULT_MODELS.some(m => m.value === choice)) {
-      throw new Error(t("Only a model chosen as the memory judge takes an effort. Choose a model to set one."));
+      throw new LocalizedError(l("Only a model chosen as the memory judge takes an effort. Choose a model to set one."));
     }
     assertRoleEffortSupported(choice, effort);
     await this.platform.settings.update(MEMORY_JUDGE_EFFORT_SETTING, effort ?? undefined, "user");
@@ -290,7 +291,7 @@ export class ConfigManager {
 
   async handleSetSubagentsMaxConcurrent(count: number, folder: SettingsFolder | undefined): Promise<SettingWrite> {
     if (!Number.isInteger(count) || count < SUBAGENT_CONCURRENCY_MIN || count > SUBAGENT_CONCURRENCY_MAX) {
-      throw new Error(t("Subagents at once must be a whole number from {0} to {1}", SUBAGENT_CONCURRENCY_MIN, SUBAGENT_CONCURRENCY_MAX));
+      throw new LocalizedError(l("Subagents at once must be a whole number from {0} to {1}", SUBAGENT_CONCURRENCY_MIN, SUBAGENT_CONCURRENCY_MAX));
     }
     return updateConfigAtEffectiveScope(this.platform, "damocles.subagents.maxConcurrent", count, this.workspaceScope(folder));
   }
@@ -344,10 +345,10 @@ export class ConfigManager {
     return updateConfigAtEffectiveScope(this.platform, "damocles.ideContext.enabled", enabled);
   }
 
-  /** The precedence also orders the user's own `~/.claude` and `~/.codex` assets and MCP servers, so it is user-level only (application scope). */
+  /** The precedence also orders the user's own `~/.claude` and `~/.codex` assets and MCP servers, so it is user-level only (machine scope). */
   async handleSetAssetSourcePrecedence(precedence: string): Promise<SettingWrite> {
     if (!(ASSET_SOURCE_PRECEDENCES as readonly string[]).includes(precedence)) {
-      throw new Error(t("\"{0}\" is not a skill and command source", precedence));
+      throw new LocalizedError(l("\"{0}\" is not a skill and command source", precedence));
     }
     await this.platform.settings.update("damocles.assetSourcePrecedence", precedence, "user");
     return { key: "damocles.assetSourcePrecedence", home: "user" };
@@ -355,7 +356,7 @@ export class ConfigManager {
 
   /** Merges one vendor's switch into the user's object; a caller serializes it with every other read-and-write setter. */
   async handleSetModelPickerProvider(provider: string, shown: boolean): Promise<SettingWrite> {
-    if (!isModelVendor(provider)) throw new Error(t("\"{0}\" is not a model provider", provider));
+    if (!isModelVendor(provider)) throw new LocalizedError(l("\"{0}\" is not a model provider", provider));
     assertBoolean(shown);
     const stored = this.platform.settings.inspect<unknown>(MODEL_PICKER_SETTING).userValue;
     const current = typeof stored === "object" && stored !== null && !Array.isArray(stored) ? stored : {};

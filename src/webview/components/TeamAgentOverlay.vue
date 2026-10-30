@@ -21,6 +21,7 @@ import ThinkingIndicator from './ThinkingIndicator.vue';
 import ToolCallCard from './ToolCallCard.vue';
 import TranscriptNotice from './TranscriptNotice.vue';
 import ErrorMessageText from './ErrorMessageText.vue';
+import { errorRowText } from '@/composables/useLocalizedText';
 import StopTeamConfirm from './StopTeamConfirm.vue';
 import { useTeamStore, type AgentChatMessage } from '@/stores/useTeamStore';
 import { useSessionStore } from '@/stores/useSessionStore';
@@ -340,7 +341,7 @@ watch(() => selectedAgent.value?.status, (newStatus, oldStatus) => {
           >
             <ErrorMessageText
               class="text-12.5 wrap-break-word whitespace-pre-wrap text-(--d-text)"
-              :text="msg.content"
+              :text="errorRowText(msg)"
             />
           </TranscriptNotice>
 

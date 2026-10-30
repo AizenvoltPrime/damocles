@@ -336,7 +336,13 @@ describe('ContextUsageOverlay — deferred categories are a saving, never a spen
       'Tools',
       'Tools (deferred)',
     ]);
-    expect(at(rows, 3).text).toContain('4.0k');
+    expect(at(rows, 3).text).toContain('4.0K');
+  });
+
+  it('writes token counts with the decimal separator of the UI locale', async () => {
+    await applyLocale('el');
+    const wrapper = mountWithData(make(DEFERRED_FIXTURE));
+    expect(at(legendRows(wrapper), 3).text).toContain('4,0K');
   });
 
   it('keeps the bar reconciled with the headline total despite the deferred row', () => {

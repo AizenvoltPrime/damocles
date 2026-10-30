@@ -3,6 +3,7 @@ import type { PanelGateContext, PreToolUseHookGate } from './permission-gate';
 import { runPermissionGate, gateErrorFallback } from './permission-gate';
 import { buildAgentStartResult, buildPlanModeNoticeResult } from './agent-start';
 import { log } from '../logger';
+import { l } from '../l10n';
 import type { CheckpointService } from './checkpoint-service';
 import { mapPiToolName, normalizeToolInput } from './tool-normalization';
 import {
@@ -17,7 +18,7 @@ import { dispatchToolCall, type DispatchDeps } from './hooks/dispatch';
 import type { HookCommon } from './hooks/payload';
 import { registerTurnEndImagePruning, registerAgentStartImageReconcile } from './context-image-pruning';
 import { registerStoppedToolResultMarker, registerWindDownErrorRecord } from './stopped-tool-result';
-import { registerModelSwitchPromptFold } from './model-switch-prompt';
+import { registerIdentityPromptFold } from './identity-prompt-fold';
 import { createToolSearchTool } from './tools/tool-search-tool';
 
 /**
@@ -53,13 +54,13 @@ function buildPreToolUseGate(
       log('[Hooks] PreToolUse %s%s for %s%s', decision, terminate ? ' (terminate)' : '', toolName, reason ? `: ${reason}` : '');
       // A terminating block is the only one the user gets no other signal about: the run settles
       // normally, so without this line the panel just goes idle mid-task.
-      const blocked = terminate
-        ? `A hook blocked ${toolName} and ended the turn`
-        : `A hook blocked ${toolName}`;
+      const what = decision === 'allow'
+        ? l('A hook force-allowed {0}', toolName)
+        : terminate ? l('A hook blocked {0} and ended the turn', toolName) : l('A hook blocked {0}', toolName);
       panel.postMessage({
         type: 'notification',
         notificationType: decision === 'allow' || terminate ? 'warning' : 'info',
-        message: (decision === 'allow' ? `A hook force-allowed ${toolName}` : blocked) + (reason ? `: ${reason}` : ''),
+        message: reason ? l('{0}: {1}', what, reason) : what,
       });
     },
     notify: (messages) => postHookSystemMessages((m) => panel.postMessage(m), messages),
@@ -115,7 +116,7 @@ export function createDamoclesExtensionFactory(
     registerStoppedToolResultMarker(pi);
     registerWindDownErrorRecord(pi);
     // Only the main chat's transcript carries `MODEL_SECTION`; an agent inherits the parent's prompt without it (`inheritedParentPrompt`).
-    registerModelSwitchPromptFold(pi);
+    registerIdentityPromptFold(pi);
 
     // The always-active ToolSearch tool: the sole path that activates this session's deferred tools
     // (browser, compass, web, MCP). Registered here rather than in `buildCustomTools` because

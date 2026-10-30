@@ -7,6 +7,7 @@ import { mcpServerNamespaceKey } from '../../../shared/types/mcp';
 import { stripControlChars } from '../untrusted-text';
 import { BUILTIN_DEFERRED_GROUPS, resolveToolSearchEntries, userScopeToolNames } from './deferred-tools';
 import { browserUnavailableReason, userScopeRemote } from '../../user-scope';
+import { englishText } from '../../../shared/localized-text';
 
 /** One MCP tool's ToolSearch menu facts, taken from its descriptor. */
 export interface McpToolMenuEntry {
@@ -333,7 +334,7 @@ export function createToolSearchTool(port: ToolActivationPort): ToolDefinition {
       // Without this, an inert group is indistinguishable from a no-op: the description is built from
       // the static catalog (one process-wide extension, no session identity), so it lists groups whose
       // subsystem may be off in THIS session. Naming the cause stops the model retrying the same call.
-      if (unavailable.length > 0) lines.push(`Not available: ${names([...new Set(unavailable)])}. ${browserUnavailableReason()}`);
+      if (unavailable.length > 0) lines.push(`Not available: ${names([...new Set(unavailable)])}. ${englishText(browserUnavailableReason())}`);
       if (inertGroups.length > 0) {
         lines.push(`Not available in this session: ${inertGroups.join(', ')} — the subsystem is disabled or every tool in it is turned off, so it cannot be loaded here.`);
       }

@@ -23,6 +23,7 @@ import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { dollarBilled, subscriptionProvider } from '../account-billing';
 import { DEFAULT_MODELS } from '../../../shared/types/constants';
 import type { HeldAuthEntry } from '../../../shared/remote-user';
+import { LocalizedError } from '../../../shared/localized-text';
 
 /** Lets a test make pi-ai fail to load; every other test loads the real module. */
 const piAiLoad = vi.hoisted(() => ({ fail: false }));
@@ -862,7 +863,8 @@ describe('subscription plugin migration', () => {
     // pi records the load error once per load, so the second attempt is the one a drained error would let through.
     for (const allowance of [false, false, true]) {
       const failure = await toggle(h, allowance).then(() => null, (err: unknown) => err);
-      expect(failure).toEqual(new Error(unreadable));
+      expect(failure).toEqual(new LocalizedError({ message: 'Damocles could not read {0}, so pi cannot save this change to it. Fix or delete the file, then try again.', args: [path.join(h.runtime.agentDir, 'settings.json')] }));
+      expect((failure as Error).message).toBe(unreadable);
     }
 
     expect(reloads(h)).toEqual([]);
@@ -1669,8 +1671,7 @@ describe('PiRuntime.syncCustomProviders', () => {
       throw new Error('auth.json is locked');
     });
     attach(runtime, fakeModelRuntime({ getAvailable }));
-    (runtime as unknown as { _authWatch: { dispose(): void } })._authWatch = { dispose: () => undefined };
-    const openai = vi.spyOn(runtime, 'syncOpenAIRuntimeKey').mockResolvedValue();
+    const openai = vi.spyOn(runtime as unknown as { _syncOpenAIRuntimeKeyNow: () => Promise<void> }, '_syncOpenAIRuntimeKeyNow').mockResolvedValue();
     let synced!: () => void;
     const customSynced = new Promise<void>((resolve) => {
       synced = resolve;
@@ -1680,7 +1681,8 @@ describe('PiRuntime.syncCustomProviders', () => {
       return { wired: [], notWired: [], timedOut: false };
     });
 
-    (PiRuntime as unknown as { _authFileChanged(agentDir: string): void })._authFileChanged(runtime.agentDir);
+    // what the watch runs for a change no flow of this process publishes
+    void (runtime as unknown as { _applyAuthFileChange(): Promise<void> })._applyAuthFileChange();
     await customSynced;
 
     expect(getAvailable).toHaveBeenCalledWith();

@@ -651,7 +651,7 @@ describe("the main chat's Stop while a handler pi awaits holds its run's wind-do
 
     const accepted = vi.fn();
     await within(panel.compact(undefined, accepted, held.session.sessionId), 10_000, 'the refused compaction');
-    expect(emitted).toContainEqual({ type: 'notification', message: 'Finish or stop the current turn before compacting.', notificationType: 'warning' });
+    expect(emitted).toContainEqual({ type: 'notification', message: { message: 'Finish or stop the current turn before compacting.' }, notificationType: 'warning' });
     expect(accepted).not.toHaveBeenCalled();
 
     beforeSettle.release();

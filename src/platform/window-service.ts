@@ -1,5 +1,5 @@
 import type { Disposable } from './disposable';
-import type { PageSpec } from '../shared/panel-html';
+import type { ErrorPageStrings, PageSpec } from '../shared/panel-html';
 import type { SettingsAccountId, SettingsSectionId } from '../shared/settings-sections';
 
 export interface PanelHost {
@@ -16,8 +16,10 @@ export interface PanelHost {
   // CSS text that fills the --d-* design tokens (desktop palettes and fonts); '' where tokens.css maps the host's own theme variables.
   themeCssSource(): string;
   setHtml(html: string): void;
-  // A host that builds the page itself from what it is told to show (desktop: main); core then sends no HTML.
+  // A host that builds the page itself from what it is told to show (desktop main, VS Code's browser panel); core then sends no HTML.
   showPage?(page: PageSpec): void;
+  // The error page's words in the host's language, which a host without showPage must give: core builds that page for it.
+  errorPageStrings?(): ErrorPageStrings;
   postMessage(message: unknown): Promise<boolean>;
   // A host whose posts can back up toward the page (a remote client): settles once they are back within its flow window.
   drained?(): Promise<void>;
@@ -73,6 +75,12 @@ export interface WindowService {
   // windowLayout true is asked.
   toggleTerminal(): void;
   // Whether the window shows its terminal pane, and Toggle Terminal's display shortcut, for the chat header's toggle; asked only
-  // when windowLayout is true.
-  terminalToggle(): { readonly shown: boolean; readonly shortcut: string };
+  // when windowLayout is true. clientId names the device on a daemon's core, whose devices each have their own window; a host
+  // with one window ignores it.
+  terminalToggle(clientId?: string): TerminalToggle;
+}
+
+export interface TerminalToggle {
+  readonly shown: boolean;
+  readonly shortcut: string;
 }

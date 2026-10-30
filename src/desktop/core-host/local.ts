@@ -13,7 +13,6 @@ import { desktopHostCapabilities, remoteHostCapabilities } from '../local-servic
 import { Emitter } from '../local-services/emitter';
 import { createDesktopFileConfinement } from '../local-services/file-confinement';
 import { DesktopFileWatcherFactory } from '../local-services/file-watcher-factory';
-import { createDesktopLocalizationService, type DesktopLocalizationService } from '../local-services/localization-service';
 import type { DesktopLogSinkFactory } from '../local-services/log-sink';
 import { DesktopSettingsStore, type DesktopSettingsStoreDeps } from '../local-services/settings-store';
 import type { SettingsObject } from '../../core/config/settings-file';
@@ -36,7 +35,6 @@ export interface ChatFolderSource {
 export interface CoreLocal extends CoreLocalServices, Disposable {
   readonly settings: DesktopSettingsStore;
   readonly fileWatchers: DesktopFileWatcherFactory;
-  readonly localization: DesktopLocalizationService;
   readonly chatFolders: ChatFolderSource;
   // e2e.setPlatform: the platform capabilities read; undefined reads process.platform
   setPlatform(platform: NodeJS.Platform | undefined): void;
@@ -60,7 +58,6 @@ export function remoteSettings(remote: RemoteHost): NonNullable<DesktopSettingsS
 export function createCoreLocal(shared: CoreShared, logSinks: DesktopLogSinkFactory, log: (line: string) => void): CoreLocal {
   const { init } = shared;
   const paths = coreAppPaths(init);
-  const localization = createDesktopLocalizationService(paths.resourceRoot, init.mirrors.language.language, log);
   const windowsTree = createWorkerTreeHost(() => new Worker(init.paths.watchWorker), log);
   const fileWatchers = new DesktopFileWatcherFactory(shared.workspaceFolders, log, windowsTree);
   let chatFolders: () => readonly SettingsFolder[] = () => [];
@@ -73,7 +70,6 @@ export function createCoreLocal(shared: CoreShared, logSinks: DesktopLogSinkFact
     trust: shared.trust,
     chatFolders: { folders: () => chatFolders(), onDidChange: (cb) => chatFoldersChanged.add(cb) },
     notifications: shared.notifications,
-    localization,
     log,
     ...(shared.remote
       ? { remote: remoteSettings(shared.remote) }
@@ -84,7 +80,6 @@ export function createCoreLocal(shared: CoreShared, logSinks: DesktopLogSinkFact
           },
         }),
   });
-  const language = shared.endpoint.onMirror('language', (patch) => localization.setLanguage(patch.language));
   let platform: NodeJS.Platform | undefined;
   return {
     capabilities: () => {
@@ -94,7 +89,6 @@ export function createCoreLocal(shared: CoreShared, logSinks: DesktopLogSinkFact
     settings,
     fileWatchers,
     confinement: createDesktopFileConfinement(),
-    localization,
     logSinks,
     paths,
     chatFolders: {
@@ -108,7 +102,6 @@ export function createCoreLocal(shared: CoreShared, logSinks: DesktopLogSinkFact
       platform = next;
     },
     dispose: () => {
-      language.dispose();
       chatFoldersChanged.clear();
       settings.dispose();
     },

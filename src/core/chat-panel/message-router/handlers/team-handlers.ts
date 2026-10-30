@@ -1,5 +1,5 @@
 import { log } from '../../../logger';
-import { loadTeamFromHistory, loadAgentConversation, findTeamIdByToolUse } from '../../../team/history';
+import { loadTeamFromHistory, loadAgentConversation, loadAgentAttempts, findTeamIdByToolUse } from '../../../team/history';
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import type { ChatSession } from '../../../chat-session';
 import type { TeamState } from '../../../../shared/types/team';
@@ -62,6 +62,21 @@ export function createTeamHandlers(deps: HandlerDependencies): Partial<HandlerRe
       if (msg.type !== "requestTeamAgentData") return;
       const sessionId = ctx.session.persistenceSessionId;
       try {
+        // A running member's file is still being written, and its open message and running calls are in no file.
+        const live = ctx.session.teamService?.liveMember(msg.teamId, msg.agentId);
+        if (live && sessionId) {
+          const earlier = await loadAgentAttempts(ctx.folder.fsPath, sessionId, msg.teamId, msg.agentId, live.attempt);
+          // Read and posted in one synchronous step, so every later live message follows the transcript.
+          const now = live.read();
+          if (now) {
+            postMessage(ctx.reply, { type: "teamAgentDataLoaded", teamId: msg.teamId, agentId: msg.agentId, messages: [...earlier, ...now.messages], ...(now.streaming ? { streaming: now.streaming } : {}) });
+            for (const { toolUseId, output, outputTruncated } of now.outputs) {
+              postMessage(ctx.reply, { type: "teamAgentToolProgress", teamId: msg.teamId, agentId: msg.agentId, toolUseId, output, outputTruncated });
+            }
+            for (const result of now.results) postMessage(ctx.reply, result);
+            return;
+          }
+        }
         const messages = sessionId
           ? await loadAgentConversation(ctx.folder.fsPath, sessionId, msg.teamId, msg.agentId)
           : [];

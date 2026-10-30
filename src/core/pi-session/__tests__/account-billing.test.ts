@@ -280,6 +280,7 @@ describe('piModelDollarBilled', () => {
         agentDir,
         preferApiKey: () => preferApiKey,
         sweepMarkerPath,
+        ownAuthFileChange: (_providers, op) => op(),
       });
       expect(result.wired.includes(provider)).toBe(preferApiKey);
       const flat = flatFeeKeyProviders(runtime);

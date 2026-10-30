@@ -1,15 +1,23 @@
 import { vi } from 'vitest';
+import type { ActiveEditorContext } from '../platform/editor-service';
 import type { ClientSnapshots, ClientTopic, RemoteHost } from '../platform/remote-host';
-import type { PanelHost } from '../platform/window-service';
+import type { PanelHost, TerminalToggle } from '../platform/window-service';
 import type { BrokerAnswer, ClientPolicy, ClientUser, HeldAuth } from '../shared/remote-user';
 
-type Change = { readonly topic: ClientTopic; readonly clientId?: string; readonly before?: unknown };
+type Change = { readonly topic: ClientTopic; readonly clientId?: string; readonly before?: unknown; readonly detached?: true };
 
 /** A daemon's core's RemoteHost over in-memory per-client mirrors, as core-host/platform/clients.ts keeps them. */
 export function createFakeRemoteHost(answer: (provider: string, clientId: string) => Promise<BrokerAnswer> = async () => ({ type: 'none' })) {
   // the acting client is attached with no sign-in, as clients.ts seeds it from core's init
   let acting: string | undefined = 'client-a';
-  const maps = { clientAuth: new Map<string, HeldAuth>([['client-a', { providers: {} }]]), clientUser: new Map<string, ClientUser>(), clientPolicy: new Map<string, ClientPolicy>() };
+  const maps = {
+    clientAuth: new Map<string, HeldAuth>([['client-a', { providers: {} }]]),
+    clientUser: new Map<string, ClientUser>(),
+    clientPolicy: new Map<string, ClientPolicy>(),
+    clientEditor: new Map<string, { readonly context?: ActiveEditorContext }>(),
+    clientTerminal: new Map<string, TerminalToggle>(),
+    clientLanguage: new Map<string, { readonly language: 'en' | 'el' }>(),
+  };
   const listeners = new Set<(change: Change) => void>();
   const attached = new Set<string>(['client-a']);
   let actor: string | undefined;
@@ -23,6 +31,9 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
     auth: (id) => maps.clientAuth.get(id),
     user: (id) => maps.clientUser.get(id),
     policy: (id) => maps.clientPolicy.get(id),
+    editor: (id) => maps.clientEditor.get(id)?.context,
+    terminal: (id) => maps.clientTerminal.get(id),
+    language: (id) => maps.clientLanguage.get(id)?.language,
     onDidChange: (cb) => {
       listeners.add(cb);
       return { dispose: () => { listeners.delete(cb); } };
@@ -46,7 +57,7 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
     // a detached client's clientAuth stays, as clients.ts keeps it
     if (value !== undefined) map.set(clientId, value);
     else if (topic !== 'clientAuth') map.delete(clientId);
-    fire({ topic, clientId, before });
+    fire({ topic, clientId, before, ...(value === undefined ? { detached: true as const } : {}) });
   };
   return {
     remote,

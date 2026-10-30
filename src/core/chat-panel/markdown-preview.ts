@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { log } from '../logger';
+import { l } from '../l10n';
 
 function slugify(name: string): string {
   return name.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'document';
@@ -20,6 +21,6 @@ export async function openMarkdownPreview(platform: Pick<Platform, 'editor' | 'n
     await platform.editor.showMarkdownPreview(file, { panelId, content });
   } catch (err) {
     log('[markdownPreview] failed to open preview for %s: %O', slug, err);
-    void platform.notifications.error('Damocles: could not open the document preview.');
+    void platform.notifications.error(l('Damocles: could not open the document preview.'));
   }
 }

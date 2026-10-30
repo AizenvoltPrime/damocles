@@ -207,10 +207,19 @@ function quarantined(): string[] {
 }
 
 function recoveredNotice(memories: number): unknown {
-  return { level: 'warn', message: expect.stringContaining(`${memories} memories were recovered`) as string, actions: [] };
+  return {
+    level: 'warn',
+    message: expect.stringContaining(`${memories} memories were recovered`) as string,
+    text: {
+      message: 'Damocles memory database was corrupt; {0} memories were recovered into a rebuilt store (original set aside as {1}).',
+      args: [memories, expect.stringMatching(/^memory\.v3\.db\.corrupt-\d+$/)],
+    },
+    actions: [],
+  };
 }
 
-const damagedNotice = { level: 'warn', message: 'Damocles found damage in the memory database. It is repaired the next time Damocles starts.', actions: [] };
+const DAMAGED = 'Damocles found damage in the memory database. It is repaired the next time Damocles starts.';
+const damagedNotice = { level: 'warn', message: DAMAGED, text: { message: DAMAGED }, actions: [] };
 
 describe('memory integrity check on a worker', () => {
   it('rebuilds a damaged full-text index online; the write queued meanwhile then succeeds', async () => {
@@ -301,7 +310,7 @@ describe('memory integrity check on a worker', () => {
     expect(requests).toEqual([]);
     expect(existsSync(repairMarkerPath(dbPath))).toBe(false);
     expect(fake.notifications.calls).toEqual([
-      { level: 'warn', message: expect.stringContaining('newer version') as string, actions: [] },
+      { level: 'warn', message: expect.stringContaining('newer version') as string, text: expect.objectContaining({ message: expect.stringContaining('newer version') }), actions: [] },
     ]);
   });
 
@@ -524,7 +533,7 @@ describe('repair coordination', () => {
 
     await expect(s.addNote('after the move')).rejects.toThrow(/moved or replaced/);
     expect(fake.notifications.calls).toEqual([
-      { level: 'warn', message: expect.stringContaining('moved or replaced') as string, actions: [] },
+      { level: 'warn', message: expect.stringContaining('moved or replaced') as string, text: { message: expect.stringContaining('moved or replaced') }, actions: [] },
     ]);
     expect(count('SELECT COUNT(*) AS n FROM memories')).toBe(0);
   });

@@ -9,10 +9,11 @@ import type { StoredSession } from '../../shared/types/session';
 import type { ChatPlace, ExtensionToWebviewMessage, PromptReturnReason, WebviewToExtensionMessage, WorktreeAction, WorktreeFinishAction } from '../../shared/types/messages';
 import { log } from '../logger';
 import { visibleLines, visibleText } from '../../shared/visible-text';
-import { t } from '../l10n';
+import { l } from '../l10n';
+import { englishText, LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import { folderKey } from '../workspace-folders/folder-key';
 import type { FolderTarget, WorkspaceFolderRegistry } from '../workspace-folders/folder-registry';
-import { approveSetup, createChatWorktree, discardChatWorktree, gitMessage, isSetupApproved, readSetupCommands, worktreeOptions } from '../worktrees/create';
+import { approveSetup, createChatWorktree, discardChatWorktree, gitFailureText, isSetupApproved, readSetupCommands, worktreeOptions } from '../worktrees/create';
 import { worktreeEnvironment } from '../worktrees/environment';
 import { filesToMove, HandOffMoveError, moveFilesToWorktree, readLatestWorktreeEntry } from '../worktrees/hand-off';
 import type { PlatformWithWorktrees, SetupStep, WorktreeHostServices } from '../worktrees/host';
@@ -239,11 +240,11 @@ export class PanelWorktrees implements Disposable {
     if (!host || !instance) throw new Error('Worktree chats are not available here');
     if (instance.folder.ownerKey !== undefined || instance.session.hasConversation()) throw new Error('Only a new chat in a project folder can opt in');
     const runner = host.git();
-    if (!runner || !this.deps.platform.trust.isTrusted(instance.folder.fsPath)) throw new Error(t('Trust this folder to use worktrees'));
+    if (!runner || !this.deps.platform.trust.isTrusted(instance.folder.fsPath)) throw new LocalizedError(l('Trust this folder to use worktrees'));
     // D9 and D30: worktrees are offered where source control has the project's repository open.
-    if (host.projectRepository(instance.folder.fsPath) === undefined) throw new Error(t("This folder isn't in a git repository"));
+    if (host.projectRepository(instance.folder.fsPath) === undefined) throw new LocalizedError(l("This folder isn't in a git repository"));
     const options = await worktreeOptions(runner, instance.folder.fsPath);
-    if (!options.available) throw new Error(options.reason === 'notGit' ? t("This folder isn't in a git repository") : t('This repository has no commits yet'));
+    if (!options.available) throw new LocalizedError(options.reason === 'notGit' ? l("This folder isn't in a git repository") : l('This repository has no commits yet'));
     const start = options.branches.find((b) => b.ref === optIn.startRef);
     if (!start) throw new Error(`Unknown start ref ${optIn.startRef}`);
     const bring = optIn.bringChanges && start.current && options.uncommittedCount > 0;
@@ -358,7 +359,7 @@ export class PanelWorktrees implements Disposable {
     this.publish(panelId);
     let record: ChatWorktreeRecord | undefined;
     try {
-      if (!this.deps.platform.trust.isTrusted(project.fsPath)) throw new Error(t('Trust this folder to use worktrees'));
+      if (!this.deps.platform.trust.isTrusted(project.fsPath)) throw new LocalizedError(l('Trust this folder to use worktrees'));
       // Read before anything is created, so a malformed file leaves no worktree behind, and the array the dialog shows is the
       // array that runs.
       const commands = await readSetupCommands(project.fsPath);
@@ -377,7 +378,7 @@ export class PanelWorktrees implements Disposable {
         await this.discardUnused(record);
         return undefined;
       }
-      if (!moved || moved.folder.key !== folderKey(record.workingFolder)) throw new Error(t('Damocles could not start a session in the worktree'));
+      if (!moved || moved.folder.key !== folderKey(record.workingFolder)) throw new LocalizedError(l('Damocles could not start a session in the worktree'));
     } catch (err) {
       log('[PanelWorktrees] creating the worktree of %s failed: %O', panelId, err);
       // A worktree the chat never landed in goes with the failure, so a Retry never leaves one behind.
@@ -387,7 +388,7 @@ export class PanelWorktrees implements Disposable {
       }
       if (this.optIns.get(panelId) !== state) return undefined;
       delete state.worktreeId;
-      state.view = { phase: 'createFailed', ...(state.view.branch !== undefined ? { branch: state.view.branch } : {}), ...(state.view.heldPrompt ? { heldPrompt: state.view.heldPrompt } : {}), error: gitMessage(err) };
+      state.view = { phase: 'createFailed', ...(state.view.branch !== undefined ? { branch: state.view.branch } : {}), ...(state.view.heldPrompt ? { heldPrompt: state.view.heldPrompt } : {}), error: gitFailureText(err) };
       this.publish(panelId);
       return undefined;
     }
@@ -406,14 +407,14 @@ export class PanelWorktrees implements Disposable {
     await discardChatWorktree(runner, host.registry, record);
   }
 
-  private warn(message: string): void {
-    this.deps.platform.notifications.warn(message).catch((err: unknown) => log('[PanelWorktrees] the notice "%s" failed: %O', message, err));
+  private warn(message: LocalizedText): void {
+    this.deps.platform.notifications.warn(message).catch((err: unknown) => log('[PanelWorktrees] the notice "%s" failed: %O', englishText(message), err));
   }
 
   private reportSkippedLinks(links: readonly string[]): void {
     if (links.length === 0) return;
     this.deps.platform.notifications
-      .warn(t('Windows needs Developer Mode to create symbolic links, so these links were not copied to the worktree: {0}', links.map(visibleText).join(', ')))
+      .warn(l('Windows needs Developer Mode to create symbolic links, so these links were not copied to the worktree: {0}', links.map(visibleText).join(', ')))
       .catch((err: unknown) => log('[PanelWorktrees] the skipped-links notice failed: %O', err));
   }
 
@@ -465,7 +466,7 @@ export class PanelWorktrees implements Disposable {
     }
     // The commands are repository-authored (D32), and trust can be revoked before a Retry or Restart.
     if (!this.deps.platform.trust.isTrusted(record.projectPath)) {
-      this.warn(t('Trust this folder to use worktrees'));
+      this.warn(l('Trust this folder to use worktrees'));
       this.updateHolding(worktreeId, (view) => ({ phase: 'setupFailed', exitCode: -1, ...keptFields(view) }));
       return;
     }
@@ -561,11 +562,11 @@ export class PanelWorktrees implements Disposable {
     if (!host) throw new Error('Worktree chats are not available here');
     const project = this.deps.folderRegistry.resolve(projectKey);
     if (!project || project.ownerKey !== undefined || !project.projectScope) throw new Error(`The project ${projectKey} is not open`);
-    if (!this.deps.platform.trust.isTrusted(project.fsPath)) throw new Error(t('Trust this folder to use worktrees'));
+    if (!this.deps.platform.trust.isTrusted(project.fsPath)) throw new LocalizedError(l('Trust this folder to use worktrees'));
     const record = host.registry.get(worktreeId);
     if (record?.kind !== 'chat' || record.deletedAt !== undefined || folderKey(record.projectPath) !== project.key) throw new Error(`${worktreeId} is not a live chat worktree of ${project.fsPath}`);
-    if (!fs.existsSync(record.workingFolder)) throw new Error(t("This chat's worktree was deleted"));
-    if (this.finishing.has(record.id)) throw new Error(t('Apply, Merge, Update or Delete is running on this worktree. Try again when it ends.'));
+    if (!fs.existsSync(record.workingFolder)) throw new LocalizedError(l("This chat's worktree was deleted"));
+    if (this.finishing.has(record.id)) throw new LocalizedError(l('Apply, Merge, Update or Delete is running on this worktree. Try again when it ends.'));
     const key = folderKey(record.workingFolder);
     this.setHold(panelId, key, this.acquire(record.workingFolder, project.key));
     const target = this.deps.folderRegistry.resolve(key);
@@ -618,15 +619,15 @@ export class PanelWorktrees implements Disposable {
     const sessionId = session.storedSessionId;
     const existing = worktree.record();
     if (this.movingPanels.has(panelId) || (existing !== undefined && this.movingWorktrees.has(existing.id))) {
-      this.warn(t('This chat is already moving. Try again when the move ends.'));
+      this.warn(l('This chat is already moving. Try again when the move ends.'));
       return;
     }
-    // Why the chat cannot move now: '' once the panel holds another chat, which needs no notice.
-    const refusal = (): string | undefined => {
-      if (this.deps.panels().get(panelId) !== instance || instance.session !== session) return '';
-      if (worktree.readOnly()) return t("This chat's worktree was deleted");
-      if (this.isFinishing(worktree.record()?.id)) return t('Apply, Merge, Update or Delete is running on this worktree. Try again when it ends.');
-      if (sessionId === null || !session.hasConversation() || worktree.busy() || this.optIns.has(panelId)) return t('The chat can move only while it is idle and has a conversation, so it was not moved.');
+    // Why the chat cannot move now: null once the panel holds another chat, which needs no notice.
+    const refusal = (): LocalizedText | null | undefined => {
+      if (this.deps.panels().get(panelId) !== instance || instance.session !== session) return null;
+      if (worktree.readOnly()) return l("This chat's worktree was deleted");
+      if (this.isFinishing(worktree.record()?.id)) return l('Apply, Merge, Update or Delete is running on this worktree. Try again when it ends.');
+      if (sessionId === null || !session.hasConversation() || worktree.busy() || this.optIns.has(panelId)) return l('The chat can move only while it is idle and has a conversation, so it was not moved.');
       return undefined;
     };
     const refused = (): boolean => {
@@ -637,16 +638,16 @@ export class PanelWorktrees implements Disposable {
     if (refused() || sessionId === null) return;
     const projectTarget = this.deps.folderRegistry.projectOf(instance.folder.key);
     if (!projectTarget || !this.deps.platform.trust.isTrusted(projectTarget.fsPath)) {
-      this.warn(t('Trust this folder to use worktrees'));
+      this.warn(l('Trust this folder to use worktrees'));
       return;
     }
     if (sessionLeaseBlocker(sessionId)) {
-      this.warn(t('This conversation is being written elsewhere, so it was not moved.'));
+      this.warn(l('This conversation is being written elsewhere, so it was not moved.'));
       return;
     }
     const reusable = existing && existing.deletedAt === undefined && fs.existsSync(existing.workingFolder) ? existing : undefined;
     if (to === 'project' && !reusable) {
-      this.warn(t("This chat's worktree was deleted"));
+      this.warn(l("This chat's worktree was deleted"));
       return;
     }
     const marked: WorktreeId[] = [];
@@ -693,7 +694,7 @@ export class PanelWorktrees implements Disposable {
       if (!record) {
         const options = await worktreeOptions(runner, projectTarget.fsPath);
         if (!options.available) {
-          this.warn(options.reason === 'notGit' ? t("This folder isn't in a git repository") : t('This repository has no commits yet'));
+          this.warn(options.reason === 'notGit' ? l("This folder isn't in a git repository") : l('This repository has no commits yet'));
           return undefined;
         }
         // D61: from the current branch's HEAD, or from HEAD's commit on a detached HEAD.
@@ -711,7 +712,7 @@ export class PanelWorktrees implements Disposable {
         // Once the project folder's copies may have changed, the worktree holds files that may exist nowhere else.
         if (err instanceof HandOffMoveError && err.sourcesChanged) {
           this.markUsed(record.id);
-          await this.deps.platform.notifications.warn(t('The files could not all be moved, so the chat stays in the project folder. Check the files there and in {0}. {1}', visibleText(record.workingFolder), visibleLines(err.message)));
+          await this.deps.platform.notifications.warn(l('The files could not all be moved, so the chat stays in the project folder. Check the files there and in {0}. {1}', visibleText(record.workingFolder), visibleLines(err.message)));
           return undefined;
         }
         if (created) {
@@ -732,7 +733,7 @@ export class PanelWorktrees implements Disposable {
         log('[PanelWorktrees] moving %s to its worktree failed: %O', panelId, err);
       }
       if (!resumed) {
-        await this.recoverMove(panelId, sessionId, projectTarget, t('The chat could not move to its worktree, so it stays in the project folder. The moved files are in {0}.', visibleText(live.workingFolder)));
+        await this.recoverMove(panelId, sessionId, projectTarget, l('The chat could not move to its worktree, so it stays in the project folder. The moved files are in {0}.', visibleText(live.workingFolder)));
         return undefined;
       }
       return setupCommands.length > 0 ? { record: live, commands: setupCommands } : undefined;
@@ -776,7 +777,7 @@ export class PanelWorktrees implements Disposable {
         log('[PanelWorktrees] moving %s to its project folder failed: %O', panelId, err);
       }
       if (!resumed) {
-        await this.recoverMove(panelId, sessionId, reusable, t('The chat could not move to the project folder, so it stays in its worktree. Its changes were applied to {0}.', visibleText(projectTarget.fsPath)));
+        await this.recoverMove(panelId, sessionId, reusable, l('The chat could not move to the project folder, so it stays in its worktree. Its changes were applied to {0}.', visibleText(projectTarget.fsPath)));
       } else if (moved && moved.folder.key === projectTarget.key) {
         this.dropHold(panelId);
       }
@@ -790,7 +791,7 @@ export class PanelWorktrees implements Disposable {
   private claimForMove(sessionId: string): { release(): void } | undefined {
     const holder: SessionLeaseHolder = { onSessionLeaseLost: () => log('[PanelWorktrees] lost the lease of %s while moving it', sessionId) };
     if (!acquireSessionLease(sessionId, holder)) {
-      this.warn(t('This conversation is being written elsewhere, so it was not moved.'));
+      this.warn(l('This conversation is being written elsewhere, so it was not moved.'));
       return undefined;
     }
     return { release: () => releaseSessionLease(sessionId, holder) };
@@ -800,7 +801,7 @@ export class PanelWorktrees implements Disposable {
    * A move whose resume failed puts the conversation back where it was. A switch that failed before it landed already
    * resumed it there (recoverSession); one that landed with an empty session moves back and resumes there.
    */
-  private async recoverMove(panelId: string, sessionId: string, back: FolderTarget | ChatWorktreeRecord, message: string): Promise<void> {
+  private async recoverMove(panelId: string, sessionId: string, back: FolderTarget | ChatWorktreeRecord, message: LocalizedText): Promise<void> {
     const instance = this.deps.panels().get(panelId);
     const backKey = 'kind' in back ? folderKey(back.workingFolder) : back.key;
     if (instance && instance.folder.key !== backKey) {

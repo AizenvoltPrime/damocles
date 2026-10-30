@@ -1,237 +1,27 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, ref } from 'vue';
-import { createPinia, setActivePinia } from 'pinia';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
-import { PiStreamAdapter } from '../pi-stream-adapter';
+import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { TOOL_OUTPUT_COALESCE_MS } from '../tool-output-coalescer';
-import { replayLiveBranch } from '../session-store/history-loader';
+import { AgentManager, type SubagentEngine } from '../subagents/agent-manager';
+import { AgentRegistry } from '../subagents/agent-types';
+import { buildNestedMcpToolset } from '../tools/mcp-tools';
+import { ShellCancelStore } from '../tools/shell-cancel-registry';
+import type { PiCodingAgentModule } from '../pi-loader';
+import type { McpResourceRuleFilter } from '../../permission-handler/mcp-resource-rule';
+import { HistoryManager } from '../../chat-panel/history-manager';
+import { FakeSession } from '../../team/__tests__/fake-session';
+import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
-import type { ToolCall } from '../../../shared/types/session';
-import { i18n } from '@/i18n';
-import { createMessageDispatcher } from '@/composables/message-handler';
-import { createHandlerRegistry } from '@/composables/message-handler/handler-registry';
-import type { HandlerContext, HandlerRegistry, StoreContext } from '@/composables/message-handler/types';
-import { useUIStore } from '@/stores/useUIStore';
-import { useSettingsStore } from '@/stores/useSettingsStore';
-import { useSessionStore } from '@/stores/useSessionStore';
-import { usePermissionStore } from '@/stores/usePermissionStore';
-import { useStreamingStore } from '@/stores/useStreamingStore';
-import { useSubagentStore } from '@/stores/useSubagentStore';
-import { useQuestionStore } from '@/stores/useQuestionStore';
-import { useFormStore } from '@/stores/useFormStore';
-import { usePlanViewStore } from '@/stores/usePlanViewStore';
-import { useMemoryStore } from '@/stores/useMemoryStore';
-import { useContextInjectionStore } from '@/stores/useContextInjectionStore';
-import { useContextUsageStore } from '@/stores/useContextUsageStore';
-import { useSubscriptionUsageStore } from '@/stores/useSubscriptionUsageStore';
-import { useElicitationStore } from '@/stores/useElicitationStore';
-import { useBtwStore } from '@/stores/useBtwStore';
-import { useBackgroundTaskStore } from '@/stores/useBackgroundTaskStore';
-import { useCompassStore } from '@/stores/useCompassStore';
-import { useTeamStore } from '@/stores/useTeamStore';
-import { useVoiceJarvisStore } from '@/stores/useVoiceJarvisStore';
-import { usePromptNavigatorStore } from '@/stores/usePromptNavigatorStore';
-import { useConsolidationStore } from '@/stores/useConsolidationStore';
-import { useMemoryAuditStore } from '@/stores/useMemoryAuditStore';
-import { useExtensionUiStore } from '@/stores/useExtensionUiStore';
+import { AT_GATE, BASH, cardsOf, chatPage, fakeSession, joinMessages, liveChatSession, makeAdapter, promptEntryIds, PROMPT, TURN, watching, type FakeSession as ChatFakeSession, type Shown, type Turn } from './live-chat-page';
 
 vi.mock('../../logger', () => ({ log: vi.fn() }));
-// The chat page's stores select their host bridge on first use (`usePlatformBridge`).
-(globalThis as unknown as { acquireVsCodeApi: () => unknown }).acquireVsCodeApi = () => ({ postMessage: () => undefined, getState: () => undefined, setState: () => undefined });
-
-const PROMPT = { type: 'userMessage', content: 'hi', correlationId: 'c', promptIndex: 0 } as const;
-const BASH = { type: 'toolCall', id: 'b1', name: 'bash', arguments: { command: 'npm test' } };
-const READ = { type: 'toolCall', id: 'r1', name: 'read', arguments: { path: 'a.ts' } };
-const BASH_RESULT = { content: [{ type: 'text', text: 'line 1\nline 2\ndone' }], details: {} };
-const READ_RESULT = { content: [{ type: 'text', text: 'not found' }], details: { path: 'a.ts' } };
-
-// One turn: the prompt, an answer that calls a streaming shell tool and a read in parallel (the read ends first and fails, and
-// pi stores both results only once both ended), a retry wait, then a second answer.
-const TURN: unknown[] = [
-  { type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
-  { type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
-  { type: 'message_start', message: { role: 'assistant', content: [] } },
-  { type: 'message_update', assistantMessageEvent: { type: 'thinking_start', contentIndex: 0 } },
-  { type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'Plan' } },
-  { type: 'message_update', assistantMessageEvent: { type: 'thinking_end', content: 'Plan' } },
-  { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Run' } },
-  { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'ning' } },
-  { type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', toolCall: BASH } },
-  { type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', toolCall: READ } },
-  { type: 'message_end', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Plan' }, { type: 'text', text: 'Running' }, BASH, READ], stopReason: 'toolUse' } },
-  { type: 'tool_execution_start', toolCallId: 'b1', toolName: 'bash', args: BASH.arguments },
-  { type: 'tool_execution_start', toolCallId: 'r1', toolName: 'read', args: READ.arguments },
-  { type: 'tool_execution_update', toolCallId: 'b1', toolName: 'bash', args: {}, partialResult: { content: [{ type: 'text', text: 'line 1\n' }], details: {} } },
-  { type: 'tool_execution_end', toolCallId: 'r1', toolName: 'read', result: READ_RESULT, isError: true, durationMs: 5 },
-  { type: 'tool_execution_update', toolCallId: 'b1', toolName: 'bash', args: {}, partialResult: { content: [{ type: 'text', text: 'line 1\nline 2\n' }], details: {} } },
-  { type: 'tool_execution_end', toolCallId: 'b1', toolName: 'bash', result: BASH_RESULT, isError: false, durationMs: 1200 },
-  { type: 'message_start', message: { role: 'toolResult', toolCallId: 'b1', toolName: 'bash', ...BASH_RESULT, isError: false } },
-  { type: 'message_end', message: { role: 'toolResult', toolCallId: 'b1', toolName: 'bash', ...BASH_RESULT, isError: false } },
-  { type: 'message_start', message: { role: 'toolResult', toolCallId: 'r1', toolName: 'read', ...READ_RESULT, isError: true } },
-  { type: 'message_end', message: { role: 'toolResult', toolCallId: 'r1', toolName: 'read', ...READ_RESULT, isError: true } },
-  { type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: 'overloaded' },
-  { type: 'message_start', message: { role: 'assistant', content: [] } },
-  { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'All' } },
-  { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: ' good' } },
-  { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'All good' }], stopReason: 'stop' } },
-  { type: 'agent_settled' },
-];
-// pi has started the shell call, where the gate runs.
-const AT_GATE = TURN.findIndex((event) => (event as { type: string; toolCallId?: string }).type === 'tool_execution_start') + 1;
-
-/** A pi session whose branch gains each message right after its `message_end` reached the listeners, as pi stores it. */
-function fakeSession(stored: SessionEntry[] = []) {
-  let listener: ((e: unknown) => void) | undefined;
-  const branch = [...stored];
-  const sessionManager = { getLeafId: () => branch.at(-1)?.id ?? null, getBranch: () => branch, getEntries: () => branch, getHeader: () => null };
-  return {
-    sessionId: 'SID',
-    branch,
-    sessionManager,
-    modelRuntime: { getModel: () => undefined },
-    subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; },
-    getLastAssistantText: () => 'All good',
-    getContextUsage: () => undefined,
-    emit: (e: unknown) => {
-      listener?.(e);
-      const { type, message } = e as { type: string; message?: { role: string } };
-      if (type !== 'message_end' || !message) return;
-      const id = message.role === 'user' && !branch.some((entry) => entry.id === 'u-entry') ? 'u-entry' : `e${branch.length}`;
-      branch.push({ type: 'message', id, parentId: branch.at(-1)?.id ?? null, timestamp: '2026-01-01T00:00:00.000Z', message } as unknown as SessionEntry);
-    },
-  };
-}
-type FakeSession = ReturnType<typeof fakeSession>;
-
-/** The session's turn state, which the adapter moves through `onTurnStateChanged` and the session's own Stop or give-back ends. */
-interface Turn { running: boolean }
-
-function makeAdapter(out: ExtensionToWebviewMessage[], queued: (text: string) => boolean = () => false, turn: Turn = { running: false }): PiStreamAdapter {
-  return new PiStreamAdapter({
-    onMessage: (m) => out.push(m),
-    cwd: '/cwd',
-    sessionId: () => 'SID',
-    modelValue: () => 'claude-opus-4-8',
-    supportedModels: () => [],
-    permissionMode: () => 'default',
-    budgetLimit: () => null,
-    sessionCost: () => 0,
-    showCacheMissNotices: () => false,
-    showThinkingDroppedNotices: () => true,
-    onBudgetStop: () => undefined,
-    onUserMessageDelivered: (text) => queued(text),
-    onMidStreamEntryCommitted: () => undefined,
-    promptEntryId: () => 'u-entry',
-    onTurnStateChanged: (...[state]) => {
-      turn.running = state === 'running';
-    },
-    turnRunning: () => turn.running,
-  });
-}
-
-/**
- * What a views.join posts (`createViewJoin`): the replay of the branch pi holds and the adapter's snapshot, captured at one
- * moment, then `sessionStarted`. The live events after the snapshot's `seq` follow it.
- */
-async function joinMessages(adapter: PiStreamAdapter, session: FakeSession): Promise<{ seq: number; messages: ExtensionToWebviewMessage[] }> {
-  const snapshot = adapter.liveSnapshot();
-  const branch = [...session.branch];
-  const messages: ExtensionToWebviewMessage[] = [];
-  await replayLiveBranch({ reasons: undefined, isContextOverflow: undefined }, '/cwd', 'SID', session.sessionManager, branch, (m) => messages.push(m), false, snapshot.liveToolCallIds);
-  messages.push(...snapshot.messages, { type: 'sessionStarted', sessionId: 'SID', stored: true });
-  return { seq: snapshot.seq, messages };
-}
-
-function handlerRegistry(): HandlerRegistry {
-  let registry!: HandlerRegistry;
-  const app = createApp({ setup: () => { registry = createHandlerRegistry(); return () => null; } });
-  app.use(i18n);
-  app.mount(document.createElement('div'));
-  app.unmount();
-  return registry;
-}
-
-interface Card { id: string; name: string; status: ToolCall['status']; output?: string; outcome?: string; metadata?: Record<string, unknown>; abandonReason?: string }
-interface Shown {
-  processing: boolean;
-  retry: unknown;
-  prompts: string[];
-  teams: Array<{ toolUseId: string | undefined; status: string }>;
-  transcript: Array<{ role: string; content: string; thinking?: string; cards?: Card[] }>;
-}
-
-// A live card keeps a failure as its error and a replayed one as its result; both render the same text.
-function card(tool: ToolCall): Card {
-  const outcome = tool.errorMessage ?? tool.result;
-  return {
-    id: tool.id,
-    name: tool.name,
-    status: tool.status,
-    ...(tool.liveOutput !== undefined ? { output: tool.liveOutput } : {}),
-    ...(outcome !== undefined ? { outcome } : {}),
-    ...(tool.metadata && Object.keys(tool.metadata).length > 0 ? { metadata: tool.metadata } : {}),
-    ...(tool.abandonReason !== undefined ? { abandonReason: tool.abandonReason } : {}),
-  };
-}
-
-/** A chat page: its own Pinia stores, fed through the real message dispatcher and handlers. */
-function chatPage() {
-  const pinia = createPinia();
-  setActivePinia(pinia);
-  const stores: StoreContext = {
-    uiStore: useUIStore(), settingsStore: useSettingsStore(), sessionStore: useSessionStore(), permissionStore: usePermissionStore(),
-    streamingStore: useStreamingStore(), subagentStore: useSubagentStore(), questionStore: useQuestionStore(), formStore: useFormStore(),
-    planViewStore: usePlanViewStore(), memoryStore: useMemoryStore(), contextInjectionStore: useContextInjectionStore(),
-    contextUsageStore: useContextUsageStore(), subscriptionUsageStore: useSubscriptionUsageStore(), elicitationStore: useElicitationStore(),
-    btwStore: useBtwStore(), backgroundTaskStore: useBackgroundTaskStore(), compassStore: useCompassStore(), teamStore: useTeamStore(),
-    voiceJarvisStore: useVoiceJarvisStore(), promptNavigatorStore: usePromptNavigatorStore(), consolidationStore: useConsolidationStore(),
-    memoryAuditStore: useMemoryAuditStore(), extensionUiStore: useExtensionUiStore(),
-  };
-  let state: unknown;
-  const context: HandlerContext = {
-    stores,
-    refs: { chatInputRef: ref(null) },
-    bridge: { postMessage: () => undefined, getState: <T>() => state as T | undefined, setState: (next) => { state = next; } },
-  };
-  const dispatch = createMessageDispatcher(handlerRegistry(), context, () => undefined);
-  return {
-    deliver(messages: readonly ExtensionToWebviewMessage[]): void {
-      setActivePinia(pinia);
-      for (const message of messages) dispatch(message);
-    },
-    shown(): Shown {
-      stores.streamingStore.flushReplayQueue();
-      return {
-        processing: stores.uiStore.isProcessing,
-        retry: stores.uiStore.retryStatus,
-        prompts: Object.keys(stores.permissionStore.pendingPermissions),
-        teams: Object.values(stores.teamStore.teams).map((team) => ({ toolUseId: team.toolUseId, status: team.status })),
-        transcript: stores.streamingStore.messages.map((m) => ({
-          role: m.role,
-          content: m.content,
-          ...(m.thinking ? { thinking: m.thinking } : {}),
-          ...(m.toolCalls?.length ? { cards: m.toolCalls.map(card) } : {}),
-        })),
-      };
-    },
-  };
-}
-type ChatPage = ReturnType<typeof chatPage>;
-
-function watching(messages: readonly ExtensionToWebviewMessage[]): ChatPage {
-  const page = chatPage();
-  page.deliver(messages);
-  return page;
-}
-
-const cardsOf = (shown: Shown): Card[] => shown.transcript.flatMap((m) => m.cards ?? []);
 
 describe('PiStreamAdapter.liveSnapshot', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  const play = (session: FakeSession, events: readonly unknown[]): void => {
+  const play = (session: ChatFakeSession, events: readonly unknown[]): void => {
     for (const event of events) {
       session.emit(event);
       vi.advanceTimersByTime(TOOL_OUTPUT_COALESCE_MS);
@@ -278,6 +68,7 @@ describe('PiStreamAdapter.liveSnapshot', () => {
         delivered = out.length;
         expect(page.shown(), `joined after event ${joinAt}, at event ${next + 1}`).toEqual(watched[next + 1]);
       }
+      expect(promptEntryIds(page), `joined after event ${joinAt}`).toEqual(['u-entry']);
     }
   });
 
@@ -293,10 +84,13 @@ describe('PiStreamAdapter.liveSnapshot', () => {
       return page.shown();
     };
     const readEnded = TURN.findIndex((event) => (event as { type: string; toolCallId?: string }).type === 'tool_execution_end') + 1;
-    expect(cardsOf(await shownAt(TURN.slice(0, readEnded + 1)))).toEqual([
+    const midShell = await shownAt(TURN.slice(0, readEnded + 1));
+    expect(cardsOf(midShell)).toEqual([
       { id: 'b1', name: 'Bash', status: 'running', output: 'line 1\nline 2\n' },
       { id: 'r1', name: 'Read', status: 'failed', outcome: 'not found', metadata: { path: 'a.ts' } },
     ]);
+    // the status bar names the shell call and counts from the turn's start, one coalescing step per event played
+    expect(midShell.statusBar).toEqual({ tool: 'Bash', turnElapsedMs: (readEnded + 1) * TOOL_OUTPUT_COALESCE_MS });
     const answering = TURN.length - 2;
     expect((await shownAt(TURN.slice(0, answering))).transcript.at(-1)).toEqual({ role: 'assistant', content: 'All good' });
   });
@@ -368,11 +162,11 @@ describe('PiStreamAdapter.liveSnapshot', () => {
     const adapter = makeAdapter(out);
     const session = fakeSession();
     adapter.subscribe(session as never);
-    expect(adapter.liveSnapshot()).toEqual({ seq: 0, messages: [], liveToolCallIds: new Set() });
+    expect(adapter.liveSnapshot()).toEqual({ seq: 0, messages: [], liveToolCallIds: new Set(), liveFailedCalls: new Set() });
     adapter.beginTurn('c', { message: PROMPT, text: null });
     play(session, TURN);
     expect(adapter.eventSeq).toBe(out.length);
-    expect(adapter.liveSnapshot()).toEqual({ seq: out.length, messages: [], liveToolCallIds: new Set() });
+    expect(adapter.liveSnapshot()).toEqual({ seq: out.length, messages: [], liveToolCallIds: new Set(), liveFailedCalls: new Set() });
   });
 
   it('shows a prompt or a cancel note pi accepted until pi delivers it, whatever pi delivers before it', () => {
@@ -433,5 +227,194 @@ describe('PiStreamAdapter.liveSnapshot', () => {
     const page = chatPage();
     page.deliver((await joinMessages(adapter, session)).messages);
     expect(page.shown()).toEqual(watching(out).shown());
+  });
+});
+
+describe('a joining view of a running subagent', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const AGENT = { type: 'toolCall', id: 'a1', name: 'Agent', arguments: { description: 'Survey', prompt: 'Look around.', subagent_type: 'general-purpose' } };
+  const NESTED_BASH = { type: 'toolCall', id: 'nb1', name: 'bash', arguments: { command: 'ls' } };
+  const NESTED_RESULT = { content: [{ type: 'text', text: 'a.ts\nb.ts' }], details: {} };
+  // The parent turn up to the running Agent call.
+  const PARENT: unknown[] = [
+    { type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+    { type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+    { type: 'message_start', message: { role: 'assistant', content: [] } },
+    { type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', toolCall: AGENT } },
+    { type: 'message_end', message: { role: 'assistant', content: [AGENT], stopReason: 'toolUse' } },
+    { type: 'tool_execution_start', toolCallId: 'a1', toolName: 'Agent', args: AGENT.arguments },
+  ];
+  const SECOND = { type: 'toolCall', id: 'a2', name: 'Agent', arguments: { description: 'Tests', prompt: 'And the tests.', subagent_type: 'general-purpose', run_in_background: true } };
+  // The parent turn with a second `Agent` call beside the first, run in parallel.
+  const PARENT_TWO: unknown[] = [
+    ...PARENT.slice(0, 3),
+    { type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', toolCall: AGENT } },
+    { type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', toolCall: SECOND } },
+    { type: 'message_end', message: { role: 'assistant', content: [AGENT, SECOND], stopReason: 'toolUse' } },
+    { type: 'tool_execution_start', toolCallId: 'a1', toolName: 'Agent', args: AGENT.arguments },
+    { type: 'tool_execution_start', toolCallId: 'a2', toolName: 'Agent', args: SECOND.arguments },
+  ];
+  const LAUNCHED = { content: [{ type: 'text', text: JSON.stringify({ status: 'async_launched', agentId: 'pending' }) }], details: {} };
+  // A background spawn's call returns at once, and the parent's turn ends while the subagent runs.
+  const PARENT_AFTER_BACKGROUND_SPAWN: unknown[] = [
+    { type: 'tool_execution_end', toolCallId: 'a1', toolName: 'Agent', result: LAUNCHED, isError: false, durationMs: 1 },
+    { type: 'message_start', message: { role: 'toolResult', toolCallId: 'a1', toolName: 'Agent', ...LAUNCHED, isError: false } },
+    { type: 'message_end', message: { role: 'toolResult', toolCallId: 'a1', toolName: 'Agent', ...LAUNCHED, isError: false } },
+    { type: 'message_start', message: { role: 'assistant', content: [] } },
+    { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Started it.' } },
+    { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Started it.' }], stopReason: 'stop' } },
+    { type: 'agent_settled' },
+  ];
+  // The subagent's model call, once pi committed its task: it streams text, runs a shell tool that streams output, then answers.
+  const NESTED: unknown[] = [
+    { type: 'message_start', message: { role: 'assistant', content: [] } },
+    { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Look' } },
+    { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'ing' } },
+    { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Looking' }, NESTED_BASH], stopReason: 'toolUse' } },
+    { type: 'tool_execution_start', toolCallId: 'nb1', toolName: 'bash', args: NESTED_BASH.arguments },
+    { type: 'tool_execution_update', toolCallId: 'nb1', toolName: 'bash', args: {}, partialResult: { content: [{ type: 'text', text: 'a.ts\n' }], details: {} } },
+    { type: 'tool_execution_update', toolCallId: 'nb1', toolName: 'bash', args: {}, partialResult: { content: [{ type: 'text', text: 'a.ts\nb.ts\n' }], details: {} } },
+    { type: 'tool_execution_end', toolCallId: 'nb1', toolName: 'bash', result: NESTED_RESULT, isError: false, durationMs: 30 },
+    { type: 'message_start', message: { role: 'toolResult', toolCallId: 'nb1', toolName: 'bash', ...NESTED_RESULT, isError: false } },
+    { type: 'message_end', message: { role: 'toolResult', toolCallId: 'nb1', toolName: 'bash', ...NESTED_RESULT, isError: false } },
+    { type: 'message_start', message: { role: 'assistant', content: [] } },
+    { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Two files' } },
+  ];
+  const SHELL_RUNNING = NESTED.findIndex((event) => (event as { type: string }).type === 'tool_execution_update') + 1;
+
+  const NO_RESOURCE_RULES = async (): Promise<McpResourceRuleFilter> => ({ serverCovered: () => false, resourceDenied: () => false, resourceDenyRule: () => undefined, contentCovered: () => false });
+  const piStub = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
+  const managers: AgentManager[] = [];
+  afterEach(() => {
+    for (const manager of managers.splice(0)) manager.dispose();
+  });
+
+  /**
+   * A panel's chat session whose parent turn runs an `Agent` call, a real `AgentManager` that runs the subagent on a pi session
+   * fake, and a page that watched from the start. A join is `HistoryManager.replayLive` of the session's `liveConversation()`.
+   */
+  async function runningSubagent(background: boolean, maxConcurrent = 2, parentTurn: readonly unknown[] = PARENT) {
+    const out: ExtensionToWebviewMessage[] = [];
+    const watcher = chatPage();
+    const post = (message: ExtensionToWebviewMessage): void => {
+      out.push(message);
+      watcher.deliver([message]);
+    };
+    const chat = liveChatSession(post, { agents: () => manager.liveSnapshot() });
+    chat.turn.running = true;
+    chat.adapter.beginTurn('c', { message: PROMPT, text: null });
+    const nested = new FakeSession();
+    const engine: SubagentEngine = {
+      cwd: '/cwd',
+      trust: createFakePlatform().trust,
+      registry: new AgentRegistry(),
+      createSession: async () => nested as unknown as AgentSession,
+      forgetSession: () => undefined,
+      permissionHandler: {} as never,
+      isPlanMode: () => false,
+      shellCancelFor: () => new ShellCancelStore().forContext(() => undefined),
+      postMessage: post,
+      getParentSystemPrompt: () => '',
+      getParentSessionId: () => 'SID',
+      subagentStoreDir: () => '/cwd/subagents',
+      recordInvocation: (data) => {
+        chat.pi.branch.push({ type: 'custom', customType: 'damocles-agent-invocation', id: `inv-${chat.pi.branch.length}`, parentId: null, timestamp: '2026-01-01T00:00:00.000Z', data } as unknown as SessionEntry);
+      },
+      parentBranch: () => chat.pi.branch,
+      assertResumableModel: () => undefined,
+      parentFullToolNames: () => [],
+      buildAgentToolset: () => ({ customTools: [], mcp: buildNestedMcpToolset(piStub, null, { eligible: new Set(), disabledEntries: [], resourceRuleFilter: NO_RESOURCE_RULES }) }),
+      disposeBrowserScope: () => undefined,
+      cancelAgentDialogs: () => undefined,
+      resolveModel: () => ({ modelLabel: 'claude-haiku-5-5' }),
+      modelDollarBilled: () => true,
+      onSubagentCost: () => undefined,
+      onRunsChanged: () => undefined,
+    };
+    const manager = new AgentManager(engine, maxConcurrent);
+    managers.push(manager);
+    const playParent = (events: readonly unknown[]): void => {
+      for (const event of events) {
+        chat.pi.emit(event);
+        vi.advanceTimersByTime(TOOL_OUTPUT_COALESCE_MS);
+      }
+    };
+    playParent(parentTurn);
+    manager.spawn({ kind: 'spawn', type: 'general-purpose', prompt: 'Look around.', description: 'Survey', toolCallId: 'a1', runInBackground: background });
+    // pi committed the task and asks the model
+    await nested.whenModelCalled(1);
+    if (background) {
+      playParent(PARENT_AFTER_BACKGROUND_SPAWN);
+      chat.turn.running = false;
+    }
+    const playNested = (events: readonly unknown[]): void => {
+      for (const event of events) {
+        nested.emit(event);
+        vi.advanceTimersByTime(TOOL_OUTPUT_COALESCE_MS);
+      }
+    };
+    /** What a joining view is posted, captured at one moment as `replayLiveConversation` captures it. */
+    const join = async (): Promise<ExtensionToWebviewMessage[]> => {
+      const messages: ExtensionToWebviewMessage[] = [];
+      const history = new HistoryManager({ postMessage: () => undefined, maxCheckpointFileSizeBytes: () => 0 });
+      await history.replayLive({ reasons: undefined, isContextOverflow: undefined }, '/cwd', chat as never, {} as never, (m) => messages.push(m), chat.liveConversation() as never);
+      return messages;
+    };
+    return { out, watcher, chat, nested, manager, playNested, join };
+  }
+
+  for (const background of [false, true]) {
+    it(`a view that joins while a ${background ? 'background' : 'foreground'} subagent streams text and runs a shell tool ends with the stores of one that watched, its running call pending, never unrecorded`, async () => {
+      for (let joinAt = 0; joinAt <= NESTED.length; joinAt++) {
+        const { out, watcher, playNested, join } = await runningSubagent(background);
+        playNested(NESTED.slice(0, joinAt));
+        const page = chatPage();
+        page.deliver(await join());
+        expect(page.shown(), `joined after nested event ${joinAt}`).toEqual(watcher.shown());
+        for (let next = joinAt; next < NESTED.length; next++) {
+          const from = out.length;
+          playNested([NESTED[next]]);
+          page.deliver(out.slice(from));
+          expect(page.shown(), `joined after nested event ${joinAt}, at nested event ${next + 1}`).toEqual(watcher.shown());
+        }
+      }
+      // joined while the shell call runs: its card is running with its output, as the watcher's is
+      const { watcher, playNested, join } = await runningSubagent(background);
+      playNested(NESTED.slice(0, SHELL_RUNNING + 1));
+      const page = chatPage();
+      page.deliver(await join());
+      const shown = page.shown();
+      const sub = shown.subagents.find((s) => s.id === 'a1');
+      expect(sub?.status).toBe('running');
+      expect(sub?.header).toMatchObject({ description: 'Survey', model: 'claude-haiku-5-5', isBackground: background });
+      expect(sub?.transcript.flatMap((m) => m.cards ?? []).find((c) => c.id === 'nb1')).toEqual({ id: 'nb1', name: 'Bash', status: 'running', output: 'a.ts\nb.ts\n' });
+      // a background subagent's tool is never the turn's, and its Background Tasks row is shown
+      expect(shown.statusBar.tool).toBe(background ? null : 'Bash');
+      expect(shown.backgroundTasks).toEqual(background ? [expect.objectContaining({ toolUseId: 'a1', description: 'Survey', status: 'running' })] : []);
+      expect(shown).toEqual(watcher.shown());
+    });
+  }
+
+  it('a view that joins while a subagent waits for a free slot shows it queued, as one that watched', async () => {
+    const { watcher, manager, playNested, join } = await runningSubagent(false, 1, PARENT_TWO);
+    playNested(NESTED.slice(0, SHELL_RUNNING + 1));
+    manager.spawn({ kind: 'spawn', type: 'general-purpose', prompt: 'And the tests.', description: 'Tests', toolCallId: 'a2', runInBackground: true });
+    const page = chatPage();
+    page.deliver(await join());
+    expect(page.shown()).toEqual(watcher.shown());
+    expect(page.shown().subagents.find((s) => s.id === 'a2')?.header).toMatchObject({ queued: true, isBackground: true });
+  });
+
+  it("shows the subagent's whole run after pi compacted its context, as the file replay would, not the kept tail", async () => {
+    const { watcher, nested, playNested, join } = await runningSubagent(false);
+    playNested(NESTED.slice(0, SHELL_RUNNING + 1));
+    // pi's compaction replaces the context it sends with a summary and the kept messages (`_refreshFinalizedContext`)
+    Object.defineProperty(nested, 'messages', { get: () => [{ role: 'compactionSummary', summary: 'Looked around.' }] });
+    const page = chatPage();
+    page.deliver(await join());
+    expect(page.shown().subagents).toEqual(watcher.shown().subagents);
+    expect(page.shown().subagents[0]?.transcript.some((m) => m.content === 'Looking')).toBe(true);
   });
 });

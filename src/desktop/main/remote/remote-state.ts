@@ -47,6 +47,8 @@ interface AuthorityState {
   readonly awayEpoch: string | null;
   // the core epoch the chats were open under; the same epoch at the next attach rejoins them, another restores them
   readonly coreEpoch: string | null;
+  // the stored chat last viewed in each of the authority's projects, one entry per project; no session once it is gone (LastChats)
+  readonly lastChats: readonly RemoteSelection[];
 }
 
 // The selected project and chat when they are remote, which panels.json (read by older versions) never names; cleared when a
@@ -78,7 +80,9 @@ interface StateFile {
   readonly offlineQueue: ReadonlyMap<string, QueuedPanel>;
 }
 
-const EMPTY_AUTHORITY: AuthorityState = { terminals: [], chats: [], away: [], awayEpoch: null, coreEpoch: null };
+const EMPTY_AUTHORITY: AuthorityState = { terminals: [], chats: [], away: [], awayEpoch: null, coreEpoch: null, lastChats: [] };
+const isEmptyAuthority = (state: AuthorityState): boolean =>
+  state.terminals.length === 0 && state.chats.length === 0 && state.away.length === 0 && state.awayEpoch === null && state.coreEpoch === null && state.lastChats.length === 0;
 // a chat title as the run registry clamps it (MAX_RUN_TITLE_CHARS)
 const MAX_AWAY_TITLE = 1024;
 
@@ -141,6 +145,17 @@ function parseSelection(value: unknown): RemoteSelection | undefined {
   return { projectKey, ...(sessionId !== undefined ? { sessionId: sessionId as string } : {}) };
 }
 
+function parseLastChats(value: unknown, authority: string): RemoteSelection[] {
+  if (!Array.isArray(value)) return [];
+  const entries: RemoteSelection[] = [];
+  for (const entry of value) {
+    const parsed = parseSelection(entry);
+    if (parsed === undefined || authorityKeyOfProject(parsed.projectKey) !== authority || entries.some((kept) => kept.projectKey === parsed.projectKey)) continue;
+    entries.push(parsed);
+  }
+  return entries;
+}
+
 const ENTRY_ID = /^[0-9a-f-]{36}$/i;
 
 /** A message's content as a page or the file gives it: text, or text and image blocks with no other field; undefined otherwise. */
@@ -201,6 +216,7 @@ function parseStateFile(text: string): StateFile {
       away: Array.isArray(away) ? away.flatMap((entry) => parseAway(entry) ?? []) : [],
       awayEpoch: typeof awayEpoch === 'string' && CORE_EPOCH.test(awayEpoch) ? awayEpoch : null,
       coreEpoch: typeof coreEpoch === 'string' && CORE_EPOCH.test(coreEpoch) ? coreEpoch : null,
+      lastChats: parseLastChats(own(record, 'lastChats'), key),
     });
   }
   return { authorities, selected: parseSelection(parsed.selected), offlineQueue: parseQueue(parsed.offlineQueue) };
@@ -215,10 +231,12 @@ const EMPTY_FILE: StateFile = { authorities: new Map(), selected: undefined, off
 export class RemoteState {
   readonly filePath: string;
   private file: StateFile;
-  // a closing window seals the selection, as panels.json's, so the chats closing under a quit never replace it
+  // a closing window seals the selection and the last chats, as panels.json's, so the chats closing under a quit never replace them
   private selectionSealed = false;
   // why the file did not parse at launch (a hand edit, a newer version's schema); while set, every write is refused
   private readonly readError: string | undefined;
+  // the batch under way: the writes made inside it, which land as one write at its end
+  private batching: { readonly applies: Array<(file: StateFile) => StateFile>; readonly written: Promise<void> } | undefined;
 
   private constructor(filePath: string, file: StateFile, readError?: string) {
     this.filePath = filePath;
@@ -308,6 +326,17 @@ export class RemoteState {
     await this.write((file) => ({ ...file, selected: selection }));
   }
 
+  /** The stored chat last viewed in each of the authority's projects. */
+  lastChats(authorityKey: string): readonly RemoteSelection[] {
+    return this.file.authorities.get(authorityKey)?.lastChats ?? [];
+  }
+
+  /** Replaces the authority's last chats; nothing while sealed. */
+  async setLastChats(authorityKey: string, lastChats: readonly RemoteSelection[]): Promise<void> {
+    if (this.selectionSealed) return;
+    await this.change(authorityKey, { lastChats: lastChats.map(({ projectKey, sessionId }) => ({ projectKey, ...(sessionId !== undefined ? { sessionId } : {}) })) });
+  }
+
   seal(): void {
     this.selectionSealed = true;
   }
@@ -326,7 +355,7 @@ export class RemoteState {
     return this.change(authorityKey, { chats: [...chats], coreEpoch });
   }
 
-  /** Forget host: the authority's terminals, chats and away list, its pages' held messages, and a selection on it. */
+  /** Forget host: the authority's terminals, chats, away list and last chats, its pages' held messages, and a selection on it. */
   forgetAuthority(authorityKey: string): Promise<void> {
     return this.write((file) => {
       const authorities = new Map(file.authorities);
@@ -337,11 +366,39 @@ export class RemoteState {
     });
   }
 
+  // An authority holding nothing has no entry, so a write after Forget host leaves none behind.
   private change(authorityKey: string, patch: Partial<AuthorityState>): Promise<void> {
-    return this.write((file) => ({ ...file, authorities: new Map(file.authorities).set(authorityKey, { ...(file.authorities.get(authorityKey) ?? EMPTY_AUTHORITY), ...patch }) }));
+    return this.write((file) => {
+      const authorities = new Map(file.authorities);
+      const next = { ...(file.authorities.get(authorityKey) ?? EMPTY_AUTHORITY), ...patch };
+      if (isEmptyAuthority(next)) authorities.delete(authorityKey);
+      else authorities.set(authorityKey, next);
+      return { ...file, authorities };
+    });
+  }
+
+  /** Runs change, landing every write it makes as one write of the file; each of those writes settles with that one. */
+  batch(change: () => void): void {
+    if (this.batching) return change();
+    let land: (written: Promise<void>) => void = () => undefined;
+    const written = new Promise<void>((resolve) => {
+      land = resolve;
+    });
+    const applies: Array<(file: StateFile) => StateFile> = [];
+    this.batching = { applies, written };
+    try {
+      change();
+    } finally {
+      this.batching = undefined;
+      land(applies.length > 0 ? this.write((file) => applies.reduce((next, apply) => apply(next), file)) : Promise.resolve());
+    }
   }
 
   private async write(apply: (file: StateFile) => StateFile): Promise<void> {
+    if (this.batching) {
+      this.batching.applies.push(apply);
+      return this.batching.written;
+    }
     if (this.readError !== undefined) throw new Error(`${this.filePath} could not be read, so it is not changed: ${this.readError}`);
     let next = this.file;
     await writeJsonConfig(this.filePath, () => {

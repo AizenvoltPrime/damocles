@@ -63,8 +63,8 @@ function emitStatus(status: IndexStatus): void {
 	send({ type: 'status', status });
 }
 
-function emitProgress(phase: 'build' | 'postprocess' | 'serialize', current: number, total: number, label?: string): void {
-	send({ type: 'progress', phase, current, total, ...(label ? { label } : {}) });
+function emitProgress(phase: 'build' | 'postprocess' | 'serialize', current: number, total: number): void {
+	send({ type: 'progress', phase, current, total });
 }
 
 function workerLog(message: string): void {

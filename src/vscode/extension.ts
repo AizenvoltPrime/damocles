@@ -3,7 +3,7 @@ import { ChatPanelProvider, flushCoreWrites } from "../core/chat-panel";
 import { SidebarViewProvider } from "./panels/sidebar-view-provider";
 import { restoredWorkspaceFolderKey } from "../shared/restored-folder-key";
 import { installLogSink, log, showLog } from "../core/logger";
-import { t } from "../core/l10n";
+import { errorTextOf, l } from "../core/l10n";
 import { installPlatform } from "../core/platform-host";
 import { createLauncherPool, installProcessLauncher, lockThreadSpawns } from "../core/process-launcher";
 import { createVsCodePlatform } from "./platform";
@@ -149,18 +149,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("damocles.pickBrowserElement", async () => {
       const browserService = chatPanelProvider?.getBrowserService();
       if (!browserService?.isConnected()) {
-        void platform.notifications.warn(t("Damocles: No browser session active. Open a browser first."));
+        void platform.notifications.warn(l("Damocles: No browser session active. Open a browser first."));
         return;
       }
       try {
         const element = await browserService.pickElement();
         const delivered = chatPanelProvider?.getPanelManager().postToActivePanel({ type: "browserElementPicked", element }) ?? false;
         if (!delivered) {
-          void platform.notifications.warn(t("Damocles: No chat panel is open. Open one to receive picked elements."));
+          void platform.notifications.warn(l("Damocles: No chat panel is open. Open one to receive picked elements."));
         }
       } catch (err) {
         if (err instanceof Error && err.message.includes("cancelled")) return;
-        void platform.notifications.error(t("Damocles: Element pick failed: {0}", err instanceof Error ? err.message : String(err)));
+        void platform.notifications.error(l("Damocles: Element pick failed: {0}", errorTextOf(err)));
       }
     })
   );

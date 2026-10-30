@@ -262,7 +262,7 @@ describe('SessionCatalog delete', () => {
   it('removes nothing when a holder cannot let go', async () => {
     panels.set('p1', { session: { holdsSession: () => true, detachFromDeletedSession: async () => { throw new Error('replacement cancelled'); } } } as unknown as HostInstance);
 
-    expect(await catalog.delete(ID_NEW)).toEqual({ ok: false, reason: 'failed', message: 'replacement cancelled' });
+    expect(await catalog.delete(ID_NEW)).toEqual({ ok: false, reason: 'failed', message: { message: '{0}', args: ['replacement cancelled'] } });
     expect(deletePiSession).not.toHaveBeenCalled();
     expect(fs.existsSync(newFile)).toBe(true);
   });

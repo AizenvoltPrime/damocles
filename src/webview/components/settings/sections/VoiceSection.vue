@@ -8,6 +8,7 @@ import type { WebviewToExtensionMessage } from '@shared/types/messages';
 import { AlertDialog, AlertDialogContent } from '@/components/ui/alert-dialog';
 import { Progress } from '@/components/ui/progress';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { renderText } from '@/composables/useLocalizedText';
 import { useOpenerFocus } from '@/composables/useOpenerFocus';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import ConfirmDialogLayout from '@/components/ConfirmDialogLayout.vue';
@@ -82,7 +83,7 @@ function setProvider(provider: VoiceProvider): void {
   update('damocles.voice.provider', { type: 'setVoiceProvider', provider }, { provider });
 }
 
-const runtimeUnsupported = computed(() => (voiceRuntimeStatus.value.kind === 'unsupported' ? voiceRuntimeStatus.value.message : null));
+const runtimeUnsupported = computed(() => (voiceRuntimeStatus.value.kind === 'unsupported' ? renderText(voiceRuntimeStatus.value.message) : null));
 const runtimeStarting = computed(() => (voiceRuntimeStatus.value.kind === 'starting' ? voiceRuntimeStatus.value : null));
 
 const runtimeText = computed(() => {
@@ -90,7 +91,7 @@ const runtimeText = computed(() => {
   switch (status.kind) {
     case 'starting': return t(`settings.voice.runtime.stage.${status.stage}`);
     case 'needs-install':
-    case 'failed': return status.message;
+    case 'failed': return renderText(status.message);
     case 'idle':
     case 'ready':
     case 'cancelled': return t(`settings.voice.runtime.${status.kind}`);

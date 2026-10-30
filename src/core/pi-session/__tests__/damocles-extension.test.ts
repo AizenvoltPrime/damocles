@@ -73,7 +73,7 @@ function fakePiAll(): { pi: unknown; run: (event: string, e: unknown, ctx: unkno
 }
 
 function ctxFor(sessionId: string): unknown {
-  return { sessionManager: { getSessionId: () => sessionId, buildSessionProjection: () => ({ messages: [] }) }, signal: undefined };
+  return { sessionManager: { getSessionId: () => sessionId, buildSessionProjection: () => ({ messages: [] }), getBranch: () => [] }, signal: undefined };
 }
 
 function panel(evaluate: 'allow' | 'deny', plan = false): PanelGateContext {
@@ -207,7 +207,7 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
       { role: 'user', content: [] },
       { role: 'custom', customType: 'damocles-plan-mode-change', content: 'x', display: false, details: { planMode: true } },
     ];
-    const ctx = { sessionManager: { getSessionId: () => 'A', buildSessionProjection: () => ({ messages: history }) }, signal: undefined };
+    const ctx = { sessionManager: { getSessionId: () => 'A', buildSessionProjection: () => ({ messages: history }), getBranch: () => [] }, signal: undefined };
     const eventFor = () => ({ type: 'before_agent_start', messageType: 'user', prompt: 'hi', systemPrompt: '', systemPromptOptions: { cwd: '/repo', selectedTools: [], sections: {} } });
 
     expect((await run('before_agent_start', eventFor(), ctx)).at(-1)).toMatchObject({
@@ -218,7 +218,7 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
   });
 });
 
-describe('context_with_system: a model switch reaches the provider in the leading system message', () => {
+describe('context_with_system: an identity change reaches the provider in the leading system message', () => {
   it('folds every system message up to the latest model change into the first, leaving the rest in place', async () => {
     const { pi, run } = fakePiAll();
     createDamoclesExtensionFactory(reader(), noCheckpoints())(pi as never);

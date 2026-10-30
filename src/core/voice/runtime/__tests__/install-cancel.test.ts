@@ -91,7 +91,7 @@ describe("cancelling a repair of the installed runtime", () => {
 
     const result = await install(new AbortController().signal);
 
-    expect(result).toMatchObject({ ok: false, errorMessage: "network blocked in unit test" });
+    expect(result).toMatchObject({ ok: false, errorMessage: { message: "{0}", args: ["network blocked in unit test"] } });
     expect(await stat(runtimeFile).then(() => true, () => false)).toBe(false);
   });
 });

@@ -202,8 +202,8 @@ test('bundled assets resolve: first window, overlay, fonts, pi chat, shell, ripg
     if (process.platform !== 'darwin') {
       await postFromWebview(tab, { type: 'voiceFreeDiskSpace' });
       await expect
-        .poll(async () => (await hostMessages(tab, 'voiceSidecarStatus')).map((m) => `${String(m.state)}: ${String(m.message)}`), { timeout: 30_000 })
-        .toContainEqual(expect.stringMatching(/^stopped: Removed \d+ old model directories/));
+        .poll(async () => (await hostMessages(tab, 'voiceSidecarStatus')).map((m) => ({ state: m.state, message: m.message })), { timeout: 30_000 })
+        .toContainEqual({ state: 'stopped', message: { message: 'Removed {0} old model directories ({1} MB freed).', args: [expect.any(Number), expect.any(String)] } });
     }
 
     // Data lives in the shared ~/.damocles; userData holds only the desktop's own state beside Chromium's.

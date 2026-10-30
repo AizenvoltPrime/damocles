@@ -38,9 +38,9 @@ function parseAuth(text: string, authPath: string): Record<string, unknown> {
  * pending deletion, which fails pi's next `mkdir` of it with EPERM, and pi's writers retry EPERM only 5 times
  * (pi-coding-agent 1.4.0 `core/auth-storage.js:14-17`, `:104-106`). Undefined when there is no file. Text that does not parse is re-read a
  * few times; if it still does not parse, returns the last content this process parsed, or throws when there
- * is none.
+ * is none or `lastGood` is false.
  */
-export function readAuthFile(agentDir: string): Record<string, unknown> | undefined {
+export function readAuthFile(agentDir: string, { lastGood = true }: { readonly lastGood?: boolean } = {}): Record<string, unknown> | undefined {
   const remote = installedPlatform()?.remote;
   if (remote) return clientAuthFile(remote);
   const authPath = path.resolve(agentDir, 'auth.json');
@@ -68,7 +68,7 @@ export function readAuthFile(agentDir: string): Record<string, unknown> | undefi
         continue;
       }
       settledBadText.set(authPath, text);
-      if (lastRead.has(authPath)) return lastRead.get(authPath);
+      if (lastGood && lastRead.has(authPath)) return lastRead.get(authPath);
       throw err;
     }
   }

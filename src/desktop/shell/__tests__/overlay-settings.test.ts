@@ -12,6 +12,7 @@ import { createOverlaySettingsBridge } from '../overlay/settings/overlay-bridge'
 import { addSettingsMessages } from '../overlay/settings/settings-messages';
 import { shellI18n } from '../i18n';
 import { FakeResizeObserver, fakeOverlayApi, opened } from './fakes';
+import { inGreek } from '../../../__mocks__/greek-locale';
 
 // One overlay page per file, as in the app: the bridge is installed before anything uses it.
 const api = fakeOverlayApi();
@@ -281,6 +282,28 @@ describe('overlay settings', () => {
     await flushPromises();
     expect(motion.getAttribute('aria-checked')).toBe('false');
     expect(document.querySelector('[data-testid="settings-row-damocles.desktop.reduceMotion"] [data-testid="setting-error"]')!.textContent!.trim()).toBe('Damocles could not save this setting.');
+  });
+
+  it("renders core's and its own setting errors in the language main's state switches to", async () => {
+    const coreText = { message: 'Could not open file: {0}', args: ['settings.json'] };
+    await openSettings(1, 'appearance');
+    await flushPromises();
+    vi.mocked(api.setPref).mockRejectedValueOnce(new Error('Rejected'));
+    document.querySelector<HTMLElement>('[data-testid="settings-row-damocles.desktop.reduceMotion"] [role="switch"]')!.click();
+    await flushPromises();
+    api.settingsMessage({ type: 'settingWriteResult', key: 'damocles.desktop.theme', ok: false, error: coreText });
+    await flushPromises();
+    const error = (key: string): string | undefined => document.querySelector(`[data-testid="settings-row-${key}"] [data-testid="setting-error"]`)?.textContent?.trim();
+
+    try {
+      api.pushState({ locale: 'el', platform: 'win32', remoteEnabled: true });
+      await flushPromises();
+      expect(error('damocles.desktop.reduceMotion')).toBe(shellI18n.global.t('settingsHost.prefWriteFailed', {}, { locale: 'el' }));
+      expect(error('damocles.desktop.theme')).toBe(inGreek(coreText));
+    } finally {
+      api.pushState({ locale: 'en', platform: 'win32', remoteEnabled: true });
+      await flushPromises();
+    }
   });
 
   it('says the default layout is back, or that it could not be restored, never with the invoke error', async () => {

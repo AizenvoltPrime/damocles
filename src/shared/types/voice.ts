@@ -1,3 +1,5 @@
+import type { LocalizedText } from "../localized-text";
+
 export type VoiceProvider = "openai-whisper" | "deepgram" | "google-cloud-stt";
 
 export type VoiceMode = "off" | "push-to-talk" | "wake-word";
@@ -65,12 +67,12 @@ export type VoiceRuntimeStage =
  */
 export type VoiceRuntimeStatus =
   | { kind: "not-needed" }
-  | { kind: "unsupported"; message: string }
+  | { kind: "unsupported"; message: LocalizedText }
   | { kind: "idle" }
   | { kind: "starting"; stage: VoiceRuntimeStage; pct: number; installing: boolean }
   | { kind: "ready" }
-  | { kind: "needs-install"; message: string; consentRequired: boolean }
-  | { kind: "failed"; message: string }
+  | { kind: "needs-install"; message: LocalizedText; consentRequired: boolean }
+  | { kind: "failed"; message: LocalizedText }
   | { kind: "cancelled" };
 
 export type VoiceStatus = "idle" | "starting" | "recording" | "transcribing" | "error";

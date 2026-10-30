@@ -2,6 +2,7 @@ import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../ty
 import type { BrowserService } from "../../../browser";
 import { log } from "../../../logger";
 import { browserUnavailableReason, userScopeRemote } from "../../../user-scope";
+import { errorTextOf, l } from "../../../l10n";
 
 export function createBrowserHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, platform } = deps;
@@ -24,7 +25,7 @@ export function createBrowserHandlers(deps: HandlerDependencies): Partial<Handle
       if (!browserService?.isConnected()) {
         postMessage(ctx.reply, {
           type: "notification",
-          message: "No browser session active. Open a browser first.",
+          message: l("No browser session active. Open a browser first."),
           notificationType: "warning",
         });
         return;
@@ -37,7 +38,7 @@ export function createBrowserHandlers(deps: HandlerDependencies): Partial<Handle
         log("[BrowserHandlers] Element pick failed:", err);
         postMessage(ctx.reply, {
           type: "notification",
-          message: `Element pick failed: ${err instanceof Error ? err.message : String(err)}`,
+          message: l("Element pick failed: {0}", errorTextOf(err)),
           notificationType: "error",
         });
       }
@@ -58,7 +59,7 @@ export function createBrowserHandlers(deps: HandlerDependencies): Partial<Handle
       if (!browserService) {
         postMessage(ctx.reply, {
           type: "notification",
-          message: "Browser service not available.",
+          message: l("Browser service not available."),
           notificationType: "error",
         });
         return;
@@ -70,7 +71,7 @@ export function createBrowserHandlers(deps: HandlerDependencies): Partial<Handle
         log("[BrowserHandlers] Open browser failed:", err);
         postMessage(ctx.reply, {
           type: "notification",
-          message: `Failed to open browser: ${err instanceof Error ? err.message : String(err)}`,
+          message: l("Failed to open browser: {0}", errorTextOf(err)),
           notificationType: "error",
         });
       }

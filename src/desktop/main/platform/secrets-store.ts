@@ -1,8 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { safeStorage } from 'electron';
-import type { LocalizationService } from '../../../platform/localization-service';
-import type { NotificationService } from '../../../platform/notification-service';
+import type { DesktopLocalizationService } from '../../local-services/localization-service';
+import type { TextNotifications } from './notification-service';
 import type { SecretsStore } from '../../../platform/secrets-store';
 import { jsonConfigWritesSettled, writeJsonConfig } from '../../../core/config/json-config-write';
 import { Emitter } from '../../local-services/emitter';
@@ -68,8 +68,8 @@ export interface DesktopSecretsStore extends SecretsStore {
 /** safeStorage-encrypted secrets in a user-only file under userData; memory only when encryption is unusable. */
 export function createDesktopSecretsStore(
   userDataDir: string,
-  notifications: NotificationService,
-  t: LocalizationService['t'],
+  notifications: TextNotifications,
+  t: DesktopLocalizationService['t'],
   log: (line: string) => void,
 ): DesktopSecretsStore {
   const filePath = path.join(userDataDir, SECRETS_FILE);

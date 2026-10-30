@@ -61,6 +61,7 @@ import {
 import { DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_AGENT_SEGMENT_ENTRY, DAMOCLES_AGENT_STATUS_ENTRY } from '../session-store/constants';
 import { createSubagentExtensionFactory } from './subagent-extension-factory';
 import { SubagentStreamBridge, buildAgentResultJson } from './subagent-stream-bridge';
+import type { HistoryAgentMessage } from '../../../shared/types/content';
 import { runSubagent } from './subagent-runner';
 import { noticeWindDown } from '../wind-down-notice';
 import { trackRunLifecycle } from '../run-lifecycle';
@@ -900,29 +901,46 @@ export class AgentManager {
   private postWindDown(record: AgentRecord, windDown: AgentWindDown | null): void {
     record.shownWindDown = windDown ?? undefined;
     if (this.disposed || this.agents.get(record.id) !== record) return;
-    this.engine.postMessage({ type: 'statusUpdate', status: 'windingDown', windDown, parentToolUseId: record.toolCallId });
+    this.engine.postMessage(windDownMessage(record, windDown));
   }
 
-  /** The one writer of a card's queue wait: on at the cap, off when its run starts, and again at a webview reload. */
+  /** The one writer of a card's queue wait: on at the cap, off when its run starts, and again in a live snapshot. */
   private postQueued(record: AgentRecord, queued: boolean): void {
     if (this.disposed || this.agents.get(record.id) !== record) return;
-    this.engine.postMessage({ type: 'statusUpdate', status: 'queued', queued, parentToolUseId: record.toolCallId });
+    this.engine.postMessage(queuedMessage(record, queued));
   }
 
   /**
-   * A reloaded webview rebuilt the bound session's cards from their files, which end a run that has not settled. Each such
-   * run's card is running again, with its Background Tasks row and the wind-down it shows, until the run's own outcome.
+   * Each unsettled run as a view that watched it holds it: its card running again, with its Background Tasks row or queue
+   * wait and the wind-down it shows, then its bridge's snapshot (the open message, the running calls, the usage), and its
+   * transcript from the entries pi stored. Read in one synchronous step, so a view replayed from it misses no later event.
+   */
+  liveSnapshot(): AgentsLiveSnapshot {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const transcripts = new Map<string, HistoryAgentMessage[]>();
+    if (this.disposed) return { messages, transcripts };
+    for (const [id, record] of this.agents) {
+      if (!this.doneResolvers.has(record)) continue;
+      messages.push({ type: 'taskStarted', taskId: record.id, toolUseId: record.toolCallId, description: record.description, taskType: record.type, isBackground: record.background === true });
+      // A queued run has no row until it starts (`startRecord`).
+      if (record.status === 'queued') messages.push(queuedMessage(record, true));
+      else if (record.background) messages.push(backgroundTaskStartedMessage(record));
+      if (record.shownWindDown) messages.push(windDownMessage(record, record.shownWindDown));
+      const bridge = this.bridges.get(id)?.liveSnapshot();
+      if (!bridge) continue;
+      messages.push(...bridge.messages);
+      if (bridge.transcript) transcripts.set(record.toolCallId, bridge.transcript);
+    }
+    return { messages, transcripts };
+  }
+
+  /**
+   * A file replay of the bound session rebuilt its cards, which end a run that has not settled: this posts each card running
+   * again with its bridge's state. The nested calls that replay finalized as unrecorded stay so, since no later message revives
+   * one; only a live replay (`liveSnapshot` at its capture) shows them as the watching view does.
    */
   replayLive(): void {
-    if (this.disposed) return;
-    for (const record of this.agents.values()) {
-      if (!this.doneResolvers.has(record)) continue;
-      this.engine.postMessage({ type: 'taskStarted', taskId: record.id, toolUseId: record.toolCallId, description: record.description, taskType: record.type, isBackground: record.background === true });
-      // A queued run has no row until it starts (`startRecord`).
-      if (record.status === 'queued') this.postQueued(record, true);
-      else if (record.background) this.emitBackgroundTaskStarted(record);
-      if (record.shownWindDown) this.postWindDown(record, record.shownWindDown);
-    }
+    for (const message of this.liveSnapshot().messages) this.engine.postMessage(message);
   }
 
   /** Roll this run's cost delta into the parent budget meter, from the reading its bridge published. */
@@ -1057,15 +1075,7 @@ export class AgentManager {
 
   /** Surface a started background subagent in the Background Tasks panel + the active-task chip. */
   private emitBackgroundTaskStarted(record: AgentRecord): void {
-    this.engine.postMessage({
-      type: 'backgroundTaskStarted',
-      task: {
-        taskId: record.id,
-        toolUseId: record.toolCallId,
-        description: record.description,
-        status: 'running',
-      },
-    });
+    this.engine.postMessage(backgroundTaskStartedMessage(record));
   }
 
   /** Resolve the background subagent's Background Tasks panel entry. */
@@ -1192,4 +1202,22 @@ export class AgentManager {
     this.agents.clear();
     this.bridges.clear();
   }
+}
+
+/** The unsettled runs' live state (`AgentManager.liveSnapshot`); `transcripts` by the spawning `Agent` call id. */
+export interface AgentsLiveSnapshot {
+  readonly messages: readonly ExtensionToWebviewMessage[];
+  readonly transcripts: ReadonlyMap<string, HistoryAgentMessage[]>;
+}
+
+function windDownMessage(record: AgentRecord, windDown: AgentWindDown | null): ExtensionToWebviewMessage {
+  return { type: 'statusUpdate', status: 'windingDown', windDown, parentToolUseId: record.toolCallId };
+}
+
+function queuedMessage(record: AgentRecord, queued: boolean): ExtensionToWebviewMessage {
+  return { type: 'statusUpdate', status: 'queued', queued, parentToolUseId: record.toolCallId };
+}
+
+function backgroundTaskStartedMessage(record: AgentRecord): ExtensionToWebviewMessage {
+  return { type: 'backgroundTaskStarted', task: { taskId: record.id, toolUseId: record.toolCallId, description: record.description, status: 'running' } };
 }

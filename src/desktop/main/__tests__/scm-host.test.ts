@@ -18,6 +18,8 @@ import type { DocumentService } from '../documents/document-service';
 import type { MessageQuestion } from '../message-dialog';
 import { ScmHost, type ScmHostDeps } from '../scm/scm-host';
 import { visibleText } from '../../../shared/visible-text';
+import { englishText } from '../../../shared/localized-text';
+import { createDesktopLocalizationService } from '../../local-services/localization-service';
 
 const projectPath = path.resolve('/work/project');
 const nestedRoot = path.join(projectPath, 'nested');
@@ -67,7 +69,8 @@ function fakeRepo(root: string, repoStatus: RepositoryStatus = status, show: Rep
 }
 
 interface SetupOptions {
-  commit?: ScmService['commit'];
+  render?: ScmHostDeps['render'];
+  commit?: ScmServiceClient['commit'];
   commitInput?: ScmService['commitInput'];
   generate?: ScmServiceClient['generateMessage'];
   settings?: Record<string, unknown>;
@@ -260,6 +263,7 @@ function setup(overrides: SetupOptions = {}) {
   const revealed: string[] = [];
   const mentioned: unknown[] = [];
   const host = new ScmHost({
+    render: overrides.render ?? englishText,
     service,
     // the target's project: /srv/app on a POSIX host
     remoteFileRef: (authority, targetPath) => (authority === 'ssh+h1' && targetPath.startsWith('/srv/app/') && !targetPath.includes('..') ? { projectKey: 'ssh+h1|/srv/app', relativePath: targetPath.slice('/srv/app/'.length) } : undefined),
@@ -402,9 +406,16 @@ describe('source control host', () => {
     expect(await nothing.host.commit({ repoId: 'repo-1', message: 'x', variant: PLAIN })).toEqual({ ok: false, reason: 'nothingToCommit' });
     expect(nothing.notices).toEqual([]);
     expect(nothing.setInputs).toEqual([]);
-    const failed = setup({ commit: async () => ({ ok: false, reason: 'failed', error: new Error('hook said no') }) });
+    const failed = setup({ commit: async () => ({ ok: false, reason: 'failed', error: { message: '{0}', args: ['hook said no'] } }) });
     expect(await failed.host.commit({ repoId: 'repo-1', message: 'x', variant: PLAIN })).toEqual({ ok: false, reason: 'failed' });
     expect(failed.notices).toEqual([{ severity: 'error', message: 'hook said no', actions: ['Show Git Output'] }]);
+  });
+
+  it('shows core\'s commit refusal in main\'s language', async () => {
+    const el = createDesktopLocalizationService(process.cwd(), 'el', () => undefined);
+    const refused = setup({ render: el.render, commit: async () => ({ ok: false, reason: 'failed', error: { message: 'Invalid branch name' } }) });
+    expect(await refused.host.commit({ repoId: 'repo-1', message: 'x', variant: PLAIN })).toEqual({ ok: false, reason: 'failed' });
+    expect(refused.notices).toEqual([{ severity: 'error', message: 'Μη έγκυρο όνομα κλάδου', actions: ['Show Git Output'] }]);
   });
 
   it('refuses a commit without a well-formed variant before anything runs', async () => {
@@ -1777,7 +1788,7 @@ describe('source control host: flows after a write, refusals and kept stashes', 
 
   it('tells where a stash the engine kept is, beside the operation\'s own failure or conflict, and offers View Stash', async () => {
     const failed = setup({ artifacts: { stashes } });
-    vi.mocked(failed.service.pull).mockRejectedValueOnce(new StashKeptError('kept', 'failed', HASH_B, new Error('fatal: unable to access the remote')));
+    vi.mocked(failed.service.pull).mockRejectedValueOnce(new StashKeptError({ message: 'kept' }, 'failed', HASH_B, new Error('fatal: unable to access the remote')));
     expect(await failed.host.run({ op: 'pull', repoId: 'repo-1', rebase: false })).toEqual({ ok: false, reason: 'failed' });
     await vi.waitFor(() => expect(failed.notices).toHaveLength(2));
     expect(failed.notices).toEqual([
@@ -1785,18 +1796,18 @@ describe('source control host: flows after a write, refusals and kept stashes', 
       { severity: 'warn', message: 'Your changes were stashed for this operation and could not be applied back, so they are kept in the stash list as stash #0: On main: wip.', actions: ['View Stash'] },
     ]);
     const cancelled = setup({ artifacts: { stashes } });
-    vi.mocked(cancelled.service.pull).mockRejectedValueOnce(new StashKeptError('kept', 'cancelled', HASH_B));
+    vi.mocked(cancelled.service.pull).mockRejectedValueOnce(new StashKeptError({ message: 'kept' }, 'cancelled', HASH_B));
     await cancelled.host.run({ op: 'pull', repoId: 'repo-1', rebase: false });
     await vi.waitFor(() => expect(cancelled.notices).toHaveLength(1));
     expect(cancelled.notices[0]!.actions).toEqual(['View Stash']);
     const conflict = setup({ artifacts: { branches, stashes }, picks: ['0'] });
-    vi.mocked(conflict.service.integrate).mockRejectedValueOnce(new StashKeptError('kept', 'conflict', HASH_B));
+    vi.mocked(conflict.service.integrate).mockRejectedValueOnce(new StashKeptError({ message: 'kept' }, 'conflict', HASH_B));
     await conflict.host.run({ op: 'merge', repoId: 'repo-1' });
     await vi.waitFor(() => expect(conflict.notices).toHaveLength(2));
     expect(conflict.notices[0]!.message).toBe('There are merge conflicts. Please resolve them before committing your changes.');
     // a stash no longer listed is named by the engine's own words
     const gone = setup();
-    vi.mocked(gone.service.sync).mockRejectedValueOnce(new StashKeptError('Your changes are kept in the stash list.', 'ok', 'd'.repeat(40)));
+    vi.mocked(gone.service.sync).mockRejectedValueOnce(new StashKeptError({ message: 'Your changes are kept in the stash list.' }, 'ok', 'd'.repeat(40)));
     await gone.host.run({ op: 'sync', repoId: 'repo-1', rebase: false });
     await vi.waitFor(() => expect(gone.notices).toEqual([{ severity: 'warn', message: 'Your changes are kept in the stash list.', actions: [] }]));
   });
@@ -1804,7 +1815,7 @@ describe('source control host: flows after a write, refusals and kept stashes', 
   it('opens View Stash on the kept stash when its action is taken', async () => {
     const h = setup({ artifacts: { stashes } });
     Object.assign(h.host.deps.notify, { warn: async (_message: string, ...actions: string[]) => actions[0] });
-    vi.mocked(h.service.pull).mockRejectedValueOnce(new StashKeptError('kept', 'ok', HASH_B));
+    vi.mocked(h.service.pull).mockRejectedValueOnce(new StashKeptError({ message: 'kept' }, 'ok', HASH_B));
     await h.host.run({ op: 'pull', repoId: 'repo-1', rebase: false });
     await vi.waitFor(() => expect(h.service.diffStash).toHaveBeenCalledWith('repo-1', HASH_B));
   });
@@ -1812,9 +1823,9 @@ describe('source control host: flows after a write, refusals and kept stashes', 
   it('names the confirmed and the current branch when a sync stops because HEAD moved', async () => {
     const h = setup();
     const confirmed = { branch: 'main', remote: 'origin', upstreamBranch: 'main' };
-    vi.mocked(h.service.sync).mockRejectedValueOnce(new SyncBranchChangedError('changed', 'pull', confirmed, { branch: 'feat', remote: 'origin', upstreamBranch: 'feat' }));
+    vi.mocked(h.service.sync).mockRejectedValueOnce(new SyncBranchChangedError({ message: 'changed' }, 'pull', confirmed, { branch: 'feat', remote: 'origin', upstreamBranch: 'feat' }));
     expect(await h.host.run({ op: 'sync', repoId: 'repo-1', rebase: false })).toEqual({ ok: false, reason: 'failed' });
-    vi.mocked(h.service.sync).mockRejectedValueOnce(new SyncBranchChangedError('changed', 'push', confirmed, null));
+    vi.mocked(h.service.sync).mockRejectedValueOnce(new SyncBranchChangedError({ message: 'changed' }, 'push', confirmed, null));
     await h.host.run({ op: 'sync', repoId: 'repo-1', rebase: false });
     expect(h.notices).toEqual([
       { severity: 'warn', message: 'The sync was confirmed for "main" tracking "origin/main", but the repository is now on "feat" tracking "origin/feat", so nothing was pulled or pushed.', actions: [] },
@@ -2110,11 +2121,11 @@ describe('source control host: repository text in questions and notices', () => 
       return deleteLinked(h);
     }, notice],
     ['a stash the engine kept', {}, (h) => {
-      vi.mocked(h.service.pull).mockRejectedValueOnce(new StashKeptError('kept', 'ok', HASH_B));
+      vi.mocked(h.service.pull).mockRejectedValueOnce(new StashKeptError({ message: 'kept' }, 'ok', HASH_B));
       return h.host.run({ op: 'pull', repoId: 'repo-1', rebase: false });
     }, notice],
     ['a sync whose branch changed', {}, (h) => {
-      vi.mocked(h.service.sync).mockRejectedValueOnce(new SyncBranchChangedError('changed', 'pull', { branch: `ma${R}in`, remote: `ori${R}gin`, upstreamBranch: 'main' }, null));
+      vi.mocked(h.service.sync).mockRejectedValueOnce(new SyncBranchChangedError({ message: 'changed' }, 'pull', { branch: `ma${R}in`, remote: `ori${R}gin`, upstreamBranch: 'main' }, null));
       return h.host.run({ op: 'sync', repoId: 'repo-1', rebase: false });
     }, notice],
     ['a copied ref no longer listed', {}, (h) => h.host.copy({ repoId: 'repo-1', kind: 'branchName', value: `refs/heads/gone${R}x` }), notice],
@@ -2203,4 +2214,3 @@ describe('source control host: a remote project', () => {
     expect(h.folderRequests).toEqual([]);
   });
 });
-

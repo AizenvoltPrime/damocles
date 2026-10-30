@@ -4,7 +4,6 @@ import type { AppPaths } from '../../../platform/app-paths';
 import type { DialogService } from '../../../platform/dialog-service';
 import type { FileConfinement } from '../../../platform/file-confinement';
 import type { FileWatcherFactory } from '../../../platform/file-watcher';
-import type { LocalizationService } from '../../../platform/localization-service';
 import type { LogSinkFactory } from '../../../platform/log-sink';
 import type { NotificationService } from '../../../platform/notification-service';
 import type { RemoteHost } from '../../../platform/remote-host';
@@ -15,6 +14,7 @@ import type { HostCapabilities } from '../../../shared/types/messages';
 import { createCoreEndpoint, processActor, type CoreEndpoint, type CoreInit, type CoreProtocolError, type CoreTransport } from '../../core-protocol';
 import { createClientSnapshots, createRemoteHost } from './clients';
 import { createEditorProxy } from './editor';
+import { createLanguageMirror } from './language';
 import { createFoldersMirror, createStateMirror, createTrustMirror, type StateMirror } from './mirrored';
 import { createCorePanels, type CorePanels } from './panels';
 import { createClipboardProxy, createDialogsProxy, createLifecycleProxy, createNotificationsProxy, createSecretsProxy, createShellProxy, type ChatPrompts } from './proxied';
@@ -27,7 +27,6 @@ export interface CoreLocalServices {
   readonly settings: SettingsStore;
   readonly fileWatchers: FileWatcherFactory;
   readonly confinement: FileConfinement;
-  readonly localization: LocalizationService;
   readonly logSinks: LogSinkFactory;
   readonly paths: AppPaths;
 }
@@ -84,10 +83,11 @@ export function createCorePlatform(
   const local = createLocal({ endpoint, init, workspaceFolders, trust, state, notifications, remote });
   const panels = createCorePanels({ endpoint, resourceRoot: local.paths.resourceRoot });
   const secrets = createSecretsProxy(endpoint, init);
-  const editor = createEditorProxy(endpoint, init);
-  const window = createWindowProxy(endpoint, init, panels);
+  const editor = createEditorProxy(endpoint, init, remote?.clients);
+  const window = createWindowProxy(endpoint, init, panels, remote?.clients);
+  const localization = createLanguageMirror(endpoint, init);
   let prompts: ChatPrompts | undefined;
-  const owned = [panels, trust, state, workspaceFolders, secrets, editor, window, clients, ...(remote ? [remote] : [])];
+  const owned = [panels, trust, state, workspaceFolders, secrets, editor, window, clients, localization, ...(remote ? [remote] : [])];
   return {
     get capabilities() {
       return local.capabilities();
@@ -103,7 +103,7 @@ export function createCorePlatform(
     paths: local.paths,
     appInfo: init.appInfo,
     ...(remote ? { remote } : {}),
-    localization: local.localization,
+    localization,
     clipboard: createClipboardProxy(endpoint),
     shell: createShellProxy(endpoint),
     dialogs: createDialogsProxy(endpoint, () => prompts),

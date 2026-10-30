@@ -3,8 +3,11 @@ import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ExternalLink, Mic } from "lucide-vue-next";
 import OverlayShell from "./OverlayShell.vue";
+import { useLocalizedText } from "@/composables/useLocalizedText";
+import type { LocalizedText } from "@shared/localized-text";
 
 const { t } = useI18n();
+const { rt } = useLocalizedText();
 
 export type ModelDownloadStatus = "downloading" | "verifying" | "done" | "error";
 
@@ -12,7 +15,7 @@ export interface ModelDownloadEntry {
   bytesReceived: number;
   bytesTotal: number;
   status: ModelDownloadStatus;
-  message?: string;
+  message?: LocalizedText;
   licenseUrl?: string;
   licenseName?: string;
   displayName?: string;
@@ -160,7 +163,7 @@ function handleOpenLicense(url: string): void {
           class="text-xs text-(--d-danger)"
           role="alert"
         >
-          {{ entry.message }}
+          {{ rt(entry.message) }}
         </p>
         <button
           v-if="entry.licenseUrl"

@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n';
 import { Button } from '@/components/ui/button';
 import { usePermissionStore } from '@/stores/usePermissionStore';
 import type { EditorView } from '@/stores/useEditorStore';
+import { useLocalizedText } from '@/composables/useLocalizedText';
 import EditorOverlayFrame from './EditorOverlayFrame.vue';
 import EditorBodyState from './EditorBodyState.vue';
 import MonacoDiffView from './MonacoDiffView.vue';
@@ -16,6 +17,7 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
+const { rt } = useLocalizedText();
 const permissionStore = usePermissionStore();
 
 // Decision buttons exist only while the inline prompt for this id is pending, and decide through the same App handler it uses.
@@ -30,7 +32,7 @@ function decide(approved: boolean): void {
 
 <template>
   <EditorOverlayFrame
-    :title="view.title"
+    :title="rt(view.title)"
     :subtitle="subtitle"
     close-test-id="editor-overlay-close"
     data-testid="editor-overlay"

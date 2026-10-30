@@ -104,7 +104,7 @@ function echoThroughPty(root: string): Promise<string> {
 }
 
 async function startCore(root: string, version: string, log: (line: string) => void): Promise<string> {
-  const state: DaemonState = { snapshot: () => ({}), update: async () => undefined, applyClient: () => false, flush: async () => undefined };
+  const state: DaemonState = { snapshot: () => ({}), update: async () => undefined, flush: async () => undefined };
   const core = createRemoteCoreHost({
     root,
     paths: await localRunPaths(),
@@ -123,7 +123,6 @@ async function startCore(root: string, version: string, log: (line: string) => v
     secretsPersistent: false,
     chatBrowserPane: false,
     mirrors: {
-      state: { global: {}, workspace: {} },
       trust: { keys: [] },
       folders: { folders: [] },
       editor: {},

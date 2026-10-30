@@ -13,6 +13,7 @@ import { searchRegExp } from '../../../shared/text-search';
 import { resolveRgPath } from '../../../core/chat-panel/ripgrep';
 import type { RecordedMatch, RecordedSearch } from '../../workspace/search/types';
 import { SearchService } from '../search/search-service';
+import { englishText } from '../../../shared/localized-text';
 
 let root: string;
 let project: Project;
@@ -24,6 +25,7 @@ beforeEach(() => {
   project = { key: folderKey(root), fsPath: root, name: 'proj' };
   notices = [];
   documents = new DocumentService({
+    render: englishText,
     hostLabel: (authority) => ({ hostId: authority, name: authority }),
     uploadsConflicted: () => undefined,
     warn: () => undefined,

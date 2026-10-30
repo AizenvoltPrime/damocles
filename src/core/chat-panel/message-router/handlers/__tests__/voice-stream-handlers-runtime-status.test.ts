@@ -10,7 +10,7 @@ function setup() {
   const platform = installFakePlatform({ settings: { user: { "damocles.voice.mode": "off", "damocles.voice.tts.enabled": true } } });
   const calls: string[] = [];
   const voiceService = Object.assign(new EventEmitter(), {
-    runtimeStatus: (): VoiceRuntimeStatus => ({ kind: "needs-install", message: "The voice runtime is not installed.", consentRequired: true }),
+    runtimeStatus: (): VoiceRuntimeStatus => ({ kind: "needs-install", message: { message: "The voice runtime is not installed." }, consentRequired: true }),
     install: vi.fn(async () => {}),
     cancelStart: vi.fn(),
     calls,
@@ -54,7 +54,7 @@ describe("voice runtime status", () => {
   it("posts the current status to a panel that loads", () => {
     const { deps, hosts, posted } = setup();
     postVoiceRuntimeStatus(deps, hosts[1]!);
-    expect(posted).toEqual([{ host: hosts[1], message: { type: "voiceRuntimeStatus", status: { kind: "needs-install", message: "The voice runtime is not installed.", consentRequired: true } } }]);
+    expect(posted).toEqual([{ host: hosts[1], message: { type: "voiceRuntimeStatus", status: { kind: "needs-install", message: { message: "The voice runtime is not installed." }, consentRequired: true } } }]);
   });
 
   it("installs and cancels on request, and shows a failed install in the chat input", async () => {

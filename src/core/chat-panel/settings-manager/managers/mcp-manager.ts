@@ -45,6 +45,7 @@ import { stripControlChars } from "../../../pi-session/untrusted-text";
 import { ASSET_SOURCE_PRECEDENCE_SETTING, getAssetSourcePrecedence } from "../../../asset-sources";
 import { serializeSettingWrite } from "../../../settings-write-chain";
 import { log } from "../../../logger";
+import { verbatim } from "../../../l10n";
 
 /** workspaceState key for the disabled user-scope server names, window-wide. */
 export const MCP_DISABLED_SERVERS_KEY = "damocles.mcp.disabledServers";
@@ -860,7 +861,7 @@ export class McpManager {
     if (entry.source) info.source = entry.source;
     if (entry.readonly !== undefined) info.readonly = entry.readonly;
     if (entry.error) {
-      info.error = entry.error.message;
+      info.error = verbatim(entry.error.message);
       info.errorInfo = entry.error.errorInfo;
     }
     const description = serverDescriptionLine(entry.config?.description);

@@ -18,7 +18,9 @@ import { withSettingsViewScope } from "../settings-view-scope";
 import { deviceHost } from "../device-hosts";
 import { MEMORY_MESSAGE_TYPES, MEMORY_MESSAGE_SOURCES } from "./handlers/memory-handlers";
 import { log } from "../../logger";
-import { visibleLines } from "../../../shared/visible-text";
+import { visibleArgs } from "../../../shared/visible-text";
+import { LocalizedError } from "../../../shared/localized-text";
+import { l, verbatim } from "../../l10n";
 import { LANGUAGE_PREFERENCE_KEY } from "../../../shared/language-preference";
 import { VOICE_VIEW_MESSAGES } from "../../../shared/remote-user";
 
@@ -51,6 +53,7 @@ export interface MessageRouterConfig {
   postWorkspaceFolderState: HandlerDependencies["postWorkspaceFolderState"];
   restoreRetryChanged: HandlerDependencies["restoreRetryChanged"];
   webviewPrompts: HandlerDependencies["webviewPrompts"];
+  withViewGate: HandlerDependencies["withViewGate"];
   worktrees: HandlerDependencies["worktrees"];
   broadcastAccountState: HandlerDependencies["broadcastAccountState"];
 }
@@ -78,7 +81,7 @@ export class MessageRouter {
       workspaceManager: config.workspaceManager,
       platform: config.platform,
       subscriptions: config.subscriptions,
-      getLanguagePreference: () => this.getLanguagePreference(config.platform),
+      getLanguagePreference: (clientId) => this.languagePreference(clientId),
       setLanguagePreference: (locale: string) => this.setLanguagePreference(config.platform, locale),
       memoryService: config.memoryService,
       ...(config.browserService ? { browserService: config.browserService } : {}),
@@ -90,11 +93,22 @@ export class MessageRouter {
       postWorkspaceFolderState: config.postWorkspaceFolderState,
       restoreRetryChanged: config.restoreRetryChanged,
       webviewPrompts: config.webviewPrompts,
+      withViewGate: config.withViewGate,
       worktrees: config.worktrees,
       broadcastAccountState: config.broadcastAccountState,
     };
     ({ handlers: this.handlers, viewHandlers: this.viewHandlers } = createHandlerRegistry(deps));
     this.viewJoin = createViewJoin(deps);
+    // each device's views render core's text in that device's language
+    const remote = config.platform.remote;
+    if (remote) {
+      config.subscriptions.push(remote.clients.onDidChange(({ topic, clientId }) => {
+        if (topic !== "clientLanguage" || clientId === undefined) return;
+        const locale = remote.clients.language(clientId);
+        if (locale === undefined) return;
+        for (const instance of this.getPanels().values()) this.postMessage(deviceHost(instance.host, clientId), { type: "languageChange", locale });
+      }));
+    }
   }
 
   /** A view joins the panel's chat (views.join) on its own host; the panel's own posts wait behind `gate` while the join replays it. */
@@ -113,16 +127,19 @@ export class MessageRouter {
     }, gate);
   }
 
-  /** The language the user picked for Damocles, else the host's. */
-  languagePreference(): string {
-    return this.getLanguagePreference(this.platform);
-  }
-
-  private getLanguagePreference(platform: Platform): string {
-    return platform.state.global.get<string>(LANGUAGE_PREFERENCE_KEY) ?? platform.localization.language;
+  /**
+   * The language a device's views render core's text in: on a daemon's core that device's (else the acting one's), elsewhere
+   * the language the user picked for Damocles, else the host's.
+   */
+  languagePreference(clientId?: string): string {
+    const remote = this.platform.remote;
+    if (remote) return remote.clients.language(clientId ?? remote.clients.acting() ?? "") ?? "en";
+    return this.platform.state.global.get<string>(LANGUAGE_PREFERENCE_KEY) ?? this.platform.localization.language;
   }
 
   private async setLanguagePreference(platform: Platform, locale: string): Promise<void> {
+    // a device's language is set on that device
+    if (platform.remote) throw new Error("The language is set on the client");
     await platform.state.global.update(LANGUAGE_PREFERENCE_KEY, locale);
   }
 
@@ -165,8 +182,8 @@ export class MessageRouter {
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
         log("[MessageRouter] Handler for", message.type, "threw:", detail);
-        // A failure can quote repository text (git's error, a path), so its hidden characters show as escapes.
-        const failure = `Failed to handle ${message.type}: ${visibleLines(detail)}`;
+        // A failure can quote repository text (git's error, a path) in any string argument, so every one shows its hidden characters as escapes.
+        const failure = visibleArgs(l("Failed to handle {0}: {1}", message.type, err instanceof LocalizedError ? err.text : verbatim(detail)));
         if (MEMORY_MESSAGE_TYPES.has(message.type)) {
           const source = MEMORY_MESSAGE_SOURCES.get(message.type);
           this.postMessage(reply, {

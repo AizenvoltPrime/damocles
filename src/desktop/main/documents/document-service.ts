@@ -6,6 +6,7 @@ import { EDITOR_MAX_DOCUMENT_BYTES, type SettingsFileScope } from '../../../shar
 import type { SettingsFileSaveOutcome } from '../../../core/chat-panel/settings-file-editor';
 import { parseSettingsText, settingsFileVersion } from '../../../core/config/settings-file';
 import type { EditorConflictResult, EditorEditReport, EditorReadOnlyReason, EditorSaveResult, FilesMutationResult, NotDisplayedReason, SearchEditorConfig, SearchEditorMessage, ShellDocumentContent } from '../../preload/shell-channels';
+import type { ScmMergeLabels } from '../../preload/scm-channels';
 import {
   DEFAULT_SEARCH_EDITOR_CONFIG,
   parseSearchEditor,
@@ -25,7 +26,8 @@ import type { FileBytes } from '../../local-services/file-bytes';
 import { WriteRefusedError, type WatchEvent, type WorkspaceFileSystem, type WriteRefusal } from '../../workspace/file-system';
 import type { ClosedFileRead, ClosedFileWrite, DiskState, TextEncoding } from '../../workspace/search/types';
 import { NotConnectedError, type Workspaces } from '../workspace/workspaces';
-import { mergeWithMarkers } from '../../../shared/scm/merge-markers';
+import { markerNames, mergeWithMarkers } from '../../../shared/scm/merge-markers';
+import type { LocalizedText } from '../../../shared/localized-text';
 
 // Images preview from a data: URL of at most this many bytes; a larger one is not displayed.
 export const MAX_IMAGE_BYTES: number = 10 * 1024 * 1024;
@@ -61,6 +63,7 @@ type FileContent =
 function fileContentOf(name: string, read: FileBytes | { readonly kind: 'outside' }): FileContent {
   if (read.kind === 'tooLarge') return { kind: 'tooLarge', bytes: read.bytes };
   if (read.kind === 'unreadable') return { kind: 'unreadable', error: read.error };
+  if (read.kind === 'notAFile') return { kind: 'unreadable', error: 'it is not a file' };
   if (read.kind === 'outside') return { kind: 'unreadable', error: 'it leads outside the file it names' };
   const mime = imageMimeOf(name);
   if (mime && read.kind === 'bytes') return { kind: 'image', mime, bytes: read.bytes };
@@ -222,6 +225,8 @@ export interface DocumentServiceDeps {
   // the OS whose path rules an authority's paths follow: this computer's, or the target's
   readonly authorityOs: (authority: string) => NodeJS.Platform;
   readonly ask: AskMessage;
+  // core's text in main's language
+  readonly render: (text: LocalizedText) => string;
   readonly t: (message: string, ...args: Array<string | number>) => string;
   readonly log: (line: string) => void;
   // the native Save As dialog; undefined when cancelled
@@ -1291,7 +1296,7 @@ export class DocumentService {
     }
     document.uploadConflict = { base, current, incoming };
     const labels = uploadMergeLabels(this.deps.hostLabel(this.authorityOf(location)).name, this.deps.t);
-    const merged = mergeWithMarkers(base, current, incoming, { current: labels.current.detail, incoming: labels.incoming.detail, base: labels.base.title }, document.eol);
+    const merged = mergeWithMarkers(base, current, incoming, markerNames(labels), document.eol);
     if (merged === null) this.deps.log(`[documents] ${location.path} is too long to merge line by line; its Result starts as the editor's text`);
     else if (merged !== document.text) this.replaceText(document, merged);
     this.deps.backups.changed(document, true);
@@ -1465,7 +1470,7 @@ export class DocumentService {
       this.deps.log(`[documents] ${location.path} now resolves outside the file the editor opened; the buffer keeps its text`);
       return false;
     }
-    if (read.kind === 'tooLarge' || read.kind === 'unreadable') {
+    if (read.kind === 'tooLarge' || read.kind === 'notAFile' || read.kind === 'unreadable') {
       this.deps.log(`[documents] ${location.path} changed into something the editor cannot show; the buffer keeps its text`);
       return false;
     }
@@ -1603,7 +1608,7 @@ export class DocumentService {
     const result = await this.deps.settings.save(scope, document.location!.path, raw, baseVersion);
     if (!result.ok) {
       if (result.conflict) return this.refuseConflict(document);
-      return { ok: false, reason: 'failed', message: result.cause === undefined ? result.error : this.saveFailure(document.location!, this.errnoReason(errnoCode(result.cause))) };
+      return { ok: false, reason: 'failed', message: result.cause === undefined ? this.deps.render(result.error) : this.saveFailure(document.location!, this.errnoReason(errnoCode(result.cause))) };
     }
     // The writer reports the sha256 of the bytes it wrote; the mtime only orders Search's results.
     document.disk = { exists: true, mtimeMs: Date.now(), size: Buffer.byteLength(raw, 'utf8'), sha256: result.version };
@@ -1671,10 +1676,11 @@ export class DocumentService {
     const unparsed = read.kind === 'bytes' && location.host !== undefined ? settingsParseError(read.bytes.toString('utf8'), location.path) : undefined;
     if (unparsed !== undefined) return { ok: false, reason: 'failed', message: this.deps.t('{0} does not parse, so it was not overwritten: {1}', location.path, unparsed) };
     if (read.kind === 'bytes') return { ok: true, disk: { exists: true, mtimeMs: read.mtimeMs, size: read.bytes.length, sha256: sha256(read.bytes) } };
-    this.deps.log(`[documents] cannot read ${location.path} before saving it: ${read.kind === 'unreadable' ? read.error : read.kind}`);
+    this.deps.log(`[documents] cannot read ${location.path} before saving it: ${read.kind === 'unreadable' ? read.error : read.kind === 'notAFile' ? 'it is not a file' : read.kind}`);
     const reason = read.kind === 'tooLarge'
       ? this.deps.t('The file on disk is too large for the editor.')
-      : read.kind === 'outside' ? this.deps.t('Its path now leads outside the file the editor opened.') : this.errnoReason(read.code);
+      : read.kind === 'outside' ? this.deps.t('Its path now leads outside the file the editor opened.')
+        : read.kind === 'notAFile' ? this.notAFileReason(read.folder) : this.errnoReason(read.code);
     return { ok: false, reason: 'failed', message: this.saveFailure(location, reason) };
   }
 
@@ -1699,6 +1705,10 @@ export class DocumentService {
       case 'notAFile': return t('The path is not a file.');
       case 'diskFull': return t('The disk stopped accepting data.');
     }
+  }
+
+  private notAFileReason(folder: boolean): string {
+    return folder ? this.deps.t('The path is a folder.') : this.deps.t('The path is not a file.');
   }
 
   private errnoReason(code: string | undefined): string {
@@ -1768,9 +1778,11 @@ export class DocumentService {
   }
 }
 
-/** The upload merge's sides: Current is the target's, Incoming the text saved on this computer; details name the markers. */
-export function uploadMergeLabels(hostName: string, t: (message: string, ...args: Array<string | number>) => string): { readonly current: { readonly title: string; readonly detail: string }; readonly incoming: { readonly title: string; readonly detail: string }; readonly base: { readonly title: string } } {
-  return { current: { title: t('Current'), detail: hostName }, incoming: { title: t('Incoming'), detail: t('Saved on this computer') }, base: { title: t('Base') } };
+/** The upload merge's sides: Current is the target's, Incoming the text saved on this computer; each marker names its detail, the base its title. */
+export function uploadMergeLabels(hostName: string, t: (message: string, ...args: Array<string | number>) => string): ScmMergeLabels {
+  const saved = t('Saved on this computer');
+  const base = t('Base');
+  return { current: { title: t('Current'), detail: hostName, marker: hostName }, incoming: { title: t('Incoming'), detail: saved, marker: saved }, base: { title: base, marker: base } };
 }
 
 // The content decides: a touch that keeps the bytes is no change, and a rewrite with the same mtime is one.

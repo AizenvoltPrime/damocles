@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installFakePlatform } from "../../../../__mocks__/fake-platform";
+import { englishText } from "../../../../shared/localized-text";
 import type { ModelEntry } from "../../models";
 import type { VoiceModels } from "../../models/provision";
 import type { RuntimeProgress } from "../index";
@@ -93,7 +94,7 @@ describe("VoiceRuntimeInstaller.installAll and the voice models", () => {
     const download = vi.fn();
     const result = await install(models([model("asr", 100)], download), false);
 
-    expect(result).toMatchObject({ ok: false, errorMessage: "The voice models are not downloaded (asr).", missing: "models" });
+    expect(result).toMatchObject({ ok: false, errorMessage: { message: "The voice models are not downloaded ({0}).", args: ["asr"] }, missing: "models" });
     expect(download).not.toHaveBeenCalled();
   });
 
@@ -106,7 +107,7 @@ describe("VoiceRuntimeInstaller.installAll and the voice models", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(result.errorMessage).toContain("damocles.voice.runtimePath");
+    expect(englishText(result.errorMessage!)).toContain("damocles.voice.runtimePath");
     expect(result.missing).toBeUndefined();
     expect(calls.runImportSmokeCheck).not.toHaveBeenCalled();
     expect(download).not.toHaveBeenCalled();

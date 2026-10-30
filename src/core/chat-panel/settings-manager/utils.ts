@@ -6,7 +6,8 @@ import { log } from "../../logger";
 import { personalConfigRoot } from "../../worktrees/personal-config";
 import { writeJsonConfig } from "../../config/json-config-write";
 import { parseSettingsText } from "../../config/settings-file";
-import { t } from "../../l10n";
+import { errorTextOf, l } from "../../l10n";
+import { LocalizedError, type LocalizedText } from "../../../shared/localized-text";
 import { settingsViewWriteScope } from "../settings-view-scope";
 import type { PermissionUpdate, PermissionRuleValue, PermissionUpdateDestination } from "../../../shared/types/permissions";
 import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW, ROLE_EFFORT_LEVELS, thinkingDisableApplies } from "../../../shared/types/constants";
@@ -24,14 +25,14 @@ export function assertEffortSupported(model: string, effort: EffortLevel | null)
   if (effort === null) return;
   const modelInfo = DEFAULT_MODELS.find(m => m.value === model);
   if (!modelInfo?.supportedEffortLevels?.includes(effort)) {
-    throw new Error(t("Effort \"{0}\" is not supported by model \"{1}\"", effort, model));
+    throw new LocalizedError(l("Effort \"{0}\" is not supported by model \"{1}\"", effort, model));
   }
 }
 
 /** {@link assertEffortSupported} for a team role, Explore, Background or memory-judge effort, which refuses `none` too. */
 export function assertRoleEffortSupported(model: string, effort: EffortLevel | null): void {
   if (effort !== null && !ROLE_EFFORT_LEVELS.includes(effort)) {
-    throw new Error(t("Effort \"{0}\" is not supported for a team role, Explore, Background or the memory judge", effort));
+    throw new LocalizedError(l("Effort \"{0}\" is not supported for a team role, Explore, Background or the memory judge", effort));
   }
   assertEffortSupported(model, effort);
 }
@@ -163,7 +164,7 @@ function getSettingsDestination(
   }
 }
 
-class UnparseableSettingsFile extends Error {}
+class UnparseableSettingsFile extends LocalizedError {}
 
 /**
  * Writes each rule into its destination settings file. Resolves to one message for the user per destination that
@@ -172,8 +173,8 @@ class UnparseableSettingsFile extends Error {}
 export async function syncPermissionRulesToSettings(
   updates: PermissionUpdate[],
   workspacePath: string | null
-): Promise<string[]> {
-  const failures: string[] = [];
+): Promise<LocalizedText[]> {
+  const failures: LocalizedText[] = [];
   for (const update of updates) {
     if (update.type !== 'addRules') continue;
 
@@ -197,7 +198,7 @@ export async function syncPermissionRulesToSettings(
           settings = content === undefined ? {} : parseSettingsText(content, settingsPath);
         } catch (err) {
           // The file also holds the user's other settings, which rewriting it from nothing would lose.
-          throw new UnparseableSettingsFile(t('{0} does not parse, so it was not overwritten: {1}', settingsPath, err instanceof Error ? err.message : String(err)));
+          throw new UnparseableSettingsFile(l('{0} does not parse, so it was not overwritten: {1}', settingsPath, errorTextOf(err)));
         }
 
         if (!settings['permissions'] || typeof settings['permissions'] !== 'object') {
@@ -224,9 +225,8 @@ export async function syncPermissionRulesToSettings(
       }, destination.confineTo !== undefined ? { confineTo: destination.confineTo } : {});
       log(`[PermissionSettings] Wrote permissions to ${settingsPath}`);
     } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      log(`[PermissionSettings] Failed to write ${settingsPath}: ${reason}`);
-      failures.push(t('The permission rule was not saved. {0}', err instanceof UnparseableSettingsFile ? reason : t('Could not save {0}: {1}', settingsPath, reason)));
+      log(`[PermissionSettings] Failed to write ${settingsPath}: ${err instanceof Error ? err.message : String(err)}`);
+      failures.push(l('The permission rule was not saved. {0}', err instanceof UnparseableSettingsFile ? err.text : l('Could not save {0}: {1}', settingsPath, errorTextOf(err))));
     }
   }
   return failures;

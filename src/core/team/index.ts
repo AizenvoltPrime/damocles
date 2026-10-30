@@ -3,7 +3,7 @@ import { platform } from '../platform-host';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { TeamRunner } from './team-runner';
 import { TeamPersistence } from './persistence';
-import type { AgentFailure, AgentFailureKind, TeamConfig, AgentSpec, TeamPermissionMode, TeamEngine, ResolvedTeamModel, TeamRole, TeamRunResult, TeamEventLog, TeamStop } from './types';
+import type { AgentFailure, AgentFailureKind, TeamConfig, AgentSpec, TeamPermissionMode, TeamEngine, ResolvedTeamModel, TeamRole, TeamRunResult, TeamEventLog, TeamStop, MemberTranscript } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { SteerTargetInfo } from '../../shared/types/subagents';
 import type { ImageBlock } from '../../shared/types/content';
@@ -341,6 +341,24 @@ export class TeamService {
       return this.activeRunner.getTeamStatus();
     }
     return null;
+  }
+
+  /**
+   * A member of the team running in this panel whose run is subscribed: the attempt its run holds and a reader of its
+   * transcript from the messages pi holds, which a caller reads in the same synchronous step as it posts them. The reader
+   * gives undefined once no run of that attempt is subscribed. Null otherwise.
+   */
+  liveMember(teamId: string, agentId: string): { readonly attempt: number; read: () => MemberTranscript | undefined } | null {
+    const runner = this.activeTeamId === teamId ? this.activeRunner : null;
+    const source = runner?.memberTranscript(agentId);
+    if (!runner || !source) return null;
+    return {
+      attempt: source.attempt,
+      read: () => {
+        const now = this.activeRunner === runner ? runner.memberTranscript(agentId) : undefined;
+        return now?.attempt === source.attempt ? now.read() : undefined;
+      },
+    };
   }
 
   /** The card of the team running in this panel, or null when `teamId` is not it. */

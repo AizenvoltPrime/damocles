@@ -815,7 +815,7 @@ describe('McpStatusPanel — error rows', () => {
   const errorRow = (): string => document.body.querySelector('[data-testid="mcp-server-error"]')?.textContent?.trim() ?? '';
 
   it('translates an SSE entry\u2019s error by code instead of showing the English fallback', async () => {
-    mountPanel([failed({ error: 'english fallback', errorInfo: { code: 'sseUnsupported' } })]);
+    mountPanel([failed({ error: { message: 'english fallback' }, errorInfo: { code: 'sseUnsupported' } })]);
     await nextTick();
     expect(errorRow()).toBe("Legacy SSE transport is not supported. Use the server's streamable HTTP URL.");
   });
@@ -850,7 +850,7 @@ describe('McpStatusPanel — error rows', () => {
   });
 
   it('falls back to the error string on a failed row without errorInfo', async () => {
-    mountPanel([failed({ error: 'spawn ENOENT' })]);
+    mountPanel([failed({ error: { message: 'spawn ENOENT' } })]);
     await nextTick();
     expect(errorRow()).toBe('spawn ENOENT');
   });
@@ -865,7 +865,7 @@ describe('McpStatusPanel — error rows', () => {
   });
 
   it('keeps the stderr tail collapsed behind a button, and renders it as text', async () => {
-    mountPanel([failed({ error: 'exited', stderrTail: 'boom <b>x</b>' })]);
+    mountPanel([failed({ error: { message: 'exited' }, stderrTail: 'boom <b>x</b>' })]);
     await nextTick();
     const toggle = document.body.querySelector<HTMLButtonElement>('[data-testid="mcp-server-stderr-toggle"]')!;
     const tail = document.body.querySelector<HTMLElement>('[data-testid="mcp-server-stderr"]')!;

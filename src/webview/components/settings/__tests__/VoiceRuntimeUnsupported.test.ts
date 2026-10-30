@@ -25,7 +25,7 @@ async function openVoice(mode: VoiceMode, unsupported: string | null): Promise<v
     ctx,
   );
   settingsViewHandlers.voiceRuntimeStatus(
-    { type: 'voiceRuntimeStatus', status: unsupported === null ? { kind: 'idle' } : { kind: 'unsupported', message: unsupported } },
+    { type: 'voiceRuntimeStatus', status: unsupported === null ? { kind: 'idle' } : { kind: 'unsupported', message: { message: unsupported } } },
     ctx,
   );
   wrapper = mount(SettingsModal, {

@@ -1,6 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { __webviewPanels, type FakeWebviewPanel } from 'vscode';
+import { REPO_ROOT } from '../../../__mocks__/source-tree';
 import { wrapBrowserPanel, wrapChatPanel, wrapSidebarView } from '../webview-hosts';
 
 function makePanel(): FakeWebviewPanel {
@@ -108,6 +111,22 @@ describe('wrapBrowserPanel', () => {
     expect(panel.reveal).toHaveBeenCalledWith(vscode.ViewColumn.Active, true);
   });
 
+  it('reads visibility, focus and column live from the panel, not as they were at the wrap', () => {
+    const panel = makePanel();
+    const host = wrapBrowserPanel(asPanel(panel));
+    const live = panel as unknown as { viewColumn: number; active: boolean };
+
+    panel.setVisible(false);
+    live.active = false;
+    live.viewColumn = 2;
+    panel.webview.cspSource = 'later-csp';
+
+    expect(host.visible).toBe(false);
+    expect(host.active).toBe(false);
+    expect(host.column).toBe(2);
+    expect(host.cspSource).toBe('later-csp');
+  });
+
   it('clears the tab icon for undefined and sets the title', () => {
     const panel = makePanel();
     const host = wrapBrowserPanel(asPanel(panel));
@@ -160,5 +179,22 @@ describe('wrapSidebarView', () => {
 
     expect(view.show).toHaveBeenCalledTimes(1);
     expect(states).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Core builds a VS Code chat's error page (setHtml), so its words come from the host, in VS Code's display language.
+describe('the error page words of a VS Code chat host', () => {
+  const GREEK = JSON.parse(readFileSync(path.join(REPO_ROOT, 'l10n', 'bundle.l10n.el.json'), 'utf8')) as Record<string, string>;
+  afterEach(() => {
+    vscode.__setL10nBundle(undefined);
+  });
+
+  it('are in Greek for a panel and for the sidebar view', () => {
+    vscode.__setL10nBundle(GREEK);
+    const greek = { title: 'Η επαναφορά της συνεδρίας απέτυχε', detail: 'Κλείστε αυτή την καρτέλα και ανοίξτε νέο πάνελ του Damocles.' };
+    expect(wrapChatPanel(asPanel(makePanel())).errorPageStrings?.()).toEqual(greek);
+    const panel = makePanel();
+    const view = { webview: panel.webview, visible: true, onDidDispose: panel.onDidDispose, onDidChangeVisibility: () => ({ dispose: () => undefined }), show: vi.fn() };
+    expect(wrapSidebarView(view as unknown as vscode.WebviewView).errorPageStrings?.()).toEqual(greek);
   });
 });

@@ -19,6 +19,7 @@ import { setupArgs, type SetupShell } from './setup-terminal';
 import type { AskWorktreeDialog, WorktreeDialogOf } from './worktree-dialogs';
 import { boundWorktreeDialog } from '../overlay';
 import { visibleLines, visibleText } from '../../../shared/visible-text';
+import type { LocalizedText } from '../../../shared/localized-text';
 
 // A loaded chat that uses a worktree, as core last reported it.
 export interface WorktreeChatUse {
@@ -48,6 +49,8 @@ export interface WorktreeControllerDeps {
     error(message: string, ...actions: string[]): Promise<string | undefined>;
   };
   readonly t: (message: string, ...args: Array<string | number>) => string;
+  // core's text in main's language
+  readonly render: (text: LocalizedText) => string;
   readonly log: (line: string) => void;
   // the Setup tab (rule 23)
   readonly setupShell: () => SetupShell | undefined;
@@ -332,7 +335,7 @@ export class WorktreeController {
         await this.deps.openConflicts(record.projectPath, outcome.files);
         return;
       case 'refused':
-        void this.deps.notify.error(visibleLines(outcome.message));
+        void this.deps.notify.error(visibleLines(this.deps.render(outcome.message)));
         return;
     }
   }
@@ -402,7 +405,7 @@ export class WorktreeController {
         await this.deps.openConflicts(record.workingFolder, outcome.files);
         return false;
       case 'refused':
-        void this.deps.notify.error(visibleLines(outcome.message));
+        void this.deps.notify.error(visibleLines(this.deps.render(outcome.message)));
         return false;
     }
   }

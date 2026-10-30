@@ -6,15 +6,16 @@ import { keyProviderOfSecret } from '../../core/pi-session/custom-providers';
 import { OPENAI_API_KEY_SECRET } from '../../core/pi-session/openai-auth';
 import { folderKey } from '../../core/workspace-folders/folder-key';
 import type { Disposable } from '../../platform/disposable';
+import type { TerminalToggle } from '../../platform/window-service';
 import type { OpenFolder } from '../../platform/workspace-folders';
 import { createCoreEndpoint, processActor, type CoreEndpoint, type CoreTransport, type MainEndpoint } from '../core-protocol';
-import { CLIENT_STATE_KEYS, MAX_ITEMS } from '../core-protocol/messages';
+import { MAX_ITEMS } from '../core-protocol/messages';
 import { confineExisting, projectOfPath } from '../local-services/confine';
 import { readFileBytes } from '../local-services/file-bytes';
 import { CREDENTIAL_CLIENT_ABSENT } from '../../shared/remote-user';
 import { CodecError } from '../../remote/codec';
-import type { Call, ChatEntry, ClientAuth, ClientPolicy, ClientUser, CoreEvents, CoreMirrorTopics, CorePanelOps, CoreRequests, MainEvents, MainPanelOps, MainRequests, MirrorTopics, StateScope } from '../core-protocol/messages';
-import { isClientStateKey, type DaemonState } from './daemon-state';
+import type { Call, ChatEntry, ClientAuth, ClientPolicy, ClientUser, CoreEvents, CoreMirrorTopics, CorePanelOps, CoreRequests, EditorMirror, MainEvents, MainPanelOps, MainRequests, MirrorTopics } from '../core-protocol/messages';
+import type { DaemonState } from './daemon-state';
 import { createPanelRetention, type PanelRetention } from './panel-retention';
 import type { RunRegistry } from './run-registry';
 import { createViewKeys, joinView } from './views-join';
@@ -52,6 +53,7 @@ async function readConfinedText(target: string, folders: readonly OpenFolder[]):
   const read = await readFileBytes(confined.path);
   if (read.kind === 'missing') throw Object.assign(new Error(`ENOENT: no such file, open '${target}'`), { code: 'ENOENT' });
   if (read.kind === 'tooLarge') throw new Error(`${target} is ${read.bytes} bytes, over the document limit`);
+  if (read.kind === 'notAFile') throw new Error(`${target} is not a file`);
   if (read.kind === 'unreadable') throw new Error(read.error);
   if (read.bytes.includes(0)) throw new Error(`${target} is a binary file`);
   try {
@@ -254,24 +256,27 @@ export const MAIN_EVENT_ROUTES: Readonly<Record<keyof MainEvents, 'core' | 'host
 };
 
 /**
- * clientState: only CLIENT_STATE_KEYS; union: every client's grants for the daemon's life; folders: the attached clients'
- * projects, a busy one kept; panel: per panel, by the client's view; lastSender: the client that sent one last;
- * lastAttached: the most recently attached client's; perClient: keyed by the sending client's id, dropped when it detaches;
- * daemonOwned: the daemon publishes it, a client's delta is dropped.
+ * union: every client's grants for the daemon's life; folders: the attached clients' projects, a busy one kept; panel: per
+ * panel, by the client's view; perClient: keyed by the sending client's id (editor, terminal and language as clientEditor,
+ * clientTerminal and clientLanguage), dropped when it detaches; daemonOwned: the daemon publishes it, a client's delta is
+ * dropped (state: core's key-value state is the daemon's own).
  */
-export const MIRROR_TOPIC_ROUTES: Readonly<Record<keyof MirrorTopics, 'clientState' | 'union' | 'folders' | 'panel' | 'lastSender' | 'lastAttached' | 'perClient' | 'daemonOwned'>> = {
-  state: 'clientState',
+export const MIRROR_TOPIC_ROUTES: Readonly<Record<keyof MirrorTopics, 'union' | 'folders' | 'panel' | 'perClient' | 'daemonOwned'>> = {
+  state: 'daemonOwned',
   trust: 'union',
   folders: 'folders',
   panel: 'panel',
-  editor: 'lastSender',
-  terminal: 'lastSender',
-  language: 'lastAttached',
+  editor: 'perClient',
+  terminal: 'perClient',
+  language: 'perClient',
   clientAuth: 'perClient',
   clientUser: 'perClient',
   clientPolicy: 'perClient',
   actingClient: 'daemonOwned',
   hostSockets: 'daemonOwned',
+  clientEditor: 'daemonOwned',
+  clientTerminal: 'daemonOwned',
+  clientLanguage: 'daemonOwned',
 };
 
 // daemon: the daemon sends it itself, and a client's is dropped
@@ -287,13 +292,13 @@ export interface ClientMirrors {
   // each attached client's folders; the set core sees is in `folders`
   readonly clientFolders: Map<string, readonly OpenFolder[]>;
   folders: readonly OpenFolder[];
-  editor: MirrorTopics['editor'];
-  terminal: MirrorTopics['terminal'];
-  language: MirrorTopics['language'];
   // by client id, the attached clients' only
   readonly clientAuth: Map<string, ClientAuth>;
   readonly clientUser: Map<string, ClientUser>;
   readonly clientPolicy: Map<string, ClientPolicy>;
+  readonly clientEditor: Map<string, EditorMirror>;
+  readonly clientTerminal: Map<string, TerminalToggle>;
+  readonly clientLanguage: Map<string, MirrorTopics['language']>;
   actingClient: MirrorTopics['actingClient'];
 }
 
@@ -302,18 +307,19 @@ export function createClientMirrors(): ClientMirrors {
     trust: new Set(),
     clientFolders: new Map(),
     folders: [],
-    editor: {},
-    terminal: { shown: false, shortcut: '' },
-    language: { language: 'en' },
     clientAuth: new Map(),
     clientUser: new Map(),
     clientPolicy: new Map(),
+    clientEditor: new Map(),
+    clientTerminal: new Map(),
+    clientLanguage: new Map(),
     actingClient: {},
   };
 }
 
-type PerClientTopic = 'clientAuth' | 'clientUser' | 'clientPolicy';
-const PER_CLIENT_TOPICS: readonly PerClientTopic[] = ['clientAuth', 'clientUser', 'clientPolicy'];
+type PerClientTopic = 'clientAuth' | 'clientUser' | 'clientPolicy' | 'clientEditor' | 'clientTerminal' | 'clientLanguage';
+type PerClientValue = ClientAuth | ClientUser | ClientPolicy | EditorMirror | TerminalToggle | MirrorTopics['language'];
+const PER_CLIENT_TOPICS: readonly PerClientTopic[] = ['clientAuth', 'clientUser', 'clientPolicy', 'clientEditor', 'clientTerminal', 'clientLanguage'];
 
 /** What the router learns of a client's connection besides its channel. */
 export interface ClientLink {
@@ -335,7 +341,7 @@ export interface RouterClient extends ClientLink {
   readonly hostId: string;
   // the attach generation's transport (attached-transport framing already removed)
   readonly transport: CoreTransport;
-  readonly mirrors: { readonly state: { readonly global: Readonly<Record<string, unknown>>; readonly workspace: Readonly<Record<string, unknown>> } } & Pick<ClientMirrors, 'editor' | 'terminal' | 'language'> & {
+  readonly mirrors: Pick<MirrorTopics, 'editor' | 'terminal' | 'language'> & {
     readonly trust: { readonly keys: readonly string[] };
     readonly folders: MirrorTopics['folders'];
     readonly clientAuth: ClientAuth;
@@ -375,10 +381,6 @@ interface Session {
   readonly chats: Set<string>;
   // the client's settings attachment -> the daemon's
   readonly attachments: Map<number, number>;
-  // its CLIENT_STATE_KEYS values; core sees the acting client's
-  readonly clientState: Record<StateScope, Map<string, unknown>>;
-  // core sees the last attached client's
-  language: MirrorTopics['language'];
   // its listeners on its own endpoint, disposed when it detaches
   readonly disposables: Disposable[];
   closed: boolean;
@@ -393,7 +395,6 @@ interface Viewer {
 }
 
 const NAMESPACE = (hostId: string): string => `remote/${hostId}/`;
-const STATE_SCOPES: readonly StateScope[] = ['global', 'workspace'];
 
 // A provider's key reaches a daemon's core only through the token broker, never as a secret.
 function isProviderKey(key: string): boolean {
@@ -422,9 +423,6 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   let nextAttachment = 0;
   const commitTokens = new Map<string, Session>();
   let acting: Session | undefined;
-  let lastAttached: Session | undefined;
-  // the client whose CLIENT_STATE_KEYS values core has
-  let stateOwner: Session | undefined;
   const disposables: Disposable[] = [];
   // core ended: nothing more is asked of it
   let ended = false;
@@ -457,34 +455,13 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   const liveViewers = (viewId: string): Viewer[] => [...(viewers.get(viewId)?.values() ?? [])].filter((viewer) => live(viewer.session));
   const viewerOf = (session: Session, viewId: string): Viewer | undefined => liveViewers(viewId).find((viewer) => viewer.session === session);
   // core reads the acting client from this mirror, so it is published before the message that made the client act
-  // core reads CLIENT_STATE_KEYS from the state mirror: the acting client's values, the last ones while none is attached
-  const publishClientState = (): void => {
-    const session = actingPresent();
-    if (ended || !session || session === stateOwner) return;
-    stateOwner = session;
-    for (const scope of STATE_SCOPES) {
-      for (const key of CLIENT_STATE_KEYS) {
-        const value = session.clientState[scope].get(key);
-        if (Object.is(deps.state.snapshot(scope)[key], value)) continue;
-        deps.state.applyClient(scope, key, value);
-        core.publish('state', { scope, key, value });
-      }
-    }
-  };
   const publishActing = (): void => {
-    publishClientState();
     const clientId = actingPresent()?.client.clientId;
     if (ended || deps.mirrors.actingClient.clientId === clientId) return;
     deps.mirrors.actingClient = clientId === undefined ? {} : { clientId };
     core.publish('actingClient', deps.mirrors.actingClient);
   };
-  // the last attached client's language, which a client that attached earlier gets back once the later ones detach
-  const publishLanguage = (): void => {
-    if (ended || !live(lastAttached) || deps.mirrors.language.language === lastAttached.language.language) return;
-    deps.mirrors.language = lastAttached.language;
-    core.publish('language', deps.mirrors.language);
-  };
-  const publishClientValue = (topic: PerClientTopic, clientId: string, value: ClientAuth | ClientUser | ClientPolicy | undefined): void => {
+  const publishClientValue = (topic: PerClientTopic, clientId: string, value: PerClientValue | undefined): void => {
     const map = deps.mirrors[topic] as Map<string, unknown>;
     if (value === undefined) map.delete(clientId);
     else map.set(clientId, value);
@@ -858,16 +835,6 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     if (deps.mirrors.trust.size !== before || granted.length > 0) core.publish('trust', { keys: [...deps.mirrors.trust], granted });
   };
 
-  const recordClientState = (session: Session, scope: StateScope, key: string, value: unknown): boolean => {
-    if (!isClientStateKey(key)) {
-      log(`[core-host] refused ${session.client.id}'s ${scope} state ${key}, which is this host's`);
-      return false;
-    }
-    if (value === undefined) session.clientState[scope].delete(key);
-    else session.clientState[scope].set(key, value);
-    return true;
-  };
-
   const serveClient = (session: Session): void => {
     const { endpoint, client } = session;
     // what the client sends runs as that client, so what the daemon forwards to core names it as the actor
@@ -999,14 +966,6 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     for (const topic of Object.keys(MIRROR_TOPIC_ROUTES) as Array<keyof MirrorTopics>) {
       session.disposables.push(endpoint.onMirror(topic, touch((patch: unknown) => {
         switch (topic) {
-          case 'state': {
-            const { scope, key, value } = patch as MirrorTopics['state'];
-            // touch made this client the acting one, whose values core has
-            if (!recordClientState(session, scope, key, value) || session !== stateOwner) return;
-            deps.state.applyClient(scope, key, value);
-            core.publish('state', { scope, key, value });
-            return;
-          }
           case 'trust': {
             const { keys: granted, granted: folders } = patch as MirrorTopics['trust'];
             grantTrust(granted, folders);
@@ -1023,16 +982,13 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
             return;
           }
           case 'editor':
-            deps.mirrors.editor = patch as MirrorTopics['editor'];
-            core.publish('editor', deps.mirrors.editor);
+            publishClientValue('clientEditor', client.clientId, patch as EditorMirror);
             return;
           case 'terminal':
-            deps.mirrors.terminal = patch as MirrorTopics['terminal'];
-            core.publish('terminal', deps.mirrors.terminal);
+            publishClientValue('clientTerminal', client.clientId, patch as TerminalToggle);
             return;
           case 'language':
-            session.language = patch as MirrorTopics['language'];
-            publishLanguage();
+            publishClientValue('clientLanguage', client.clientId, patch as MirrorTopics['language']);
             return;
           case 'clientAuth':
           case 'clientUser':
@@ -1045,8 +1001,12 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
             publishClientValue(topic, client.clientId, value);
             return;
           }
+          case 'state':
           case 'actingClient':
           case 'hostSockets':
+          case 'clientEditor':
+          case 'clientTerminal':
+          case 'clientLanguage':
             log(`[core-host] dropped ${client.id}'s ${topic}, which the daemon publishes`);
             return;
         }
@@ -1101,12 +1061,9 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     if (sessions.size > 0 && !ended) publishFolders();
     for (const [token, owner] of commitTokens) if (owner === session) commitTokens.delete(token);
     if (acting === session) acting = undefined;
-    if (stateOwner === session) stateOwner = undefined;
-    if (lastAttached === session) lastAttached = [...sessions.values()].at(-1);
     // a core that ended keeps its clients' values for the next core's init; the connection drops them when it closes
     if (!ended) for (const topic of PER_CLIENT_TOPICS) publishClientValue(topic, session.client.clientId, undefined);
     publishActing();
-    publishLanguage();
   };
 
   return {
@@ -1121,16 +1078,15 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
         viewKeys: new Map(),
         chats: new Set(),
         attachments: new Map(),
-        clientState: { global: new Map(), workspace: new Map() },
-        language: client.mirrors.language,
         disposables: [],
         closed: false,
       };
-      for (const scope of STATE_SCOPES) for (const [key, value] of Object.entries(client.mirrors.state[scope])) recordClientState(session, scope, key, value);
       sessions.set(client.clientId, session);
-      lastAttached = session;
       acting = session;
-      for (const topic of PER_CLIENT_TOPICS) publishClientValue(topic, client.clientId, client.mirrors[topic]);
+      for (const topic of ['clientAuth', 'clientUser', 'clientPolicy'] as const) publishClientValue(topic, client.clientId, client.mirrors[topic]);
+      publishClientValue('clientEditor', client.clientId, client.mirrors.editor);
+      publishClientValue('clientTerminal', client.clientId, client.mirrors.terminal);
+      publishClientValue('clientLanguage', client.clientId, client.mirrors.language);
       // core reads a lost client as detached, so a turn pinned to it waits visibly and asks it again once it resumed; the mirror
       // leaves it out meanwhile, so a core started then does not list it as attached
       let heldAuth: ClientAuth | undefined;
@@ -1150,12 +1106,6 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       grantTrust(client.mirrors.trust.keys, []);
       deps.mirrors.clientFolders.set(client.clientId, client.mirrors.folders.folders);
       publishFolders();
-      deps.mirrors.editor = client.mirrors.editor;
-      deps.mirrors.terminal = client.mirrors.terminal;
-      deps.mirrors.language = client.mirrors.language;
-      core.publish('editor', deps.mirrors.editor);
-      core.publish('terminal', deps.mirrors.terminal);
-      core.publish('language', deps.mirrors.language);
       // last, so a snapshot the wire refuses detaches a session already whole
       snapshot(session);
       return { dispose: () => detach(session, 'the client detached') };

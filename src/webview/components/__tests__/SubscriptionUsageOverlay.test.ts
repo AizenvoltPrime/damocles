@@ -96,7 +96,7 @@ describe('SubscriptionUsageOverlay account profile', () => {
     const wrapper = mountWith({
       status: 'ok',
       bars: [{ id: 'five_hour', utilization: 40, resetsAt: null }],
-      profileError: 'HTTP 500',
+      profileError: { message: 'HTTP 500' },
     });
     await nextTick();
 

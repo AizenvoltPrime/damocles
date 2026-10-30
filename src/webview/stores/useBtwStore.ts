@@ -1,13 +1,14 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { AuthFailure } from '@/stores/useUIStore';
+import type { LocalizedText } from '@shared/localized-text';
 
 export interface BtwAside {
   id: string;
   question: string;
   text: string;
   isStreaming: boolean;
-  error?: string;
+  error?: LocalizedText;
   /** The aside failed on this account's credential; `error` is then the provider's text, or for `missing` pi's, never shown. */
   authFailure?: AuthFailure;
 }
@@ -36,7 +37,7 @@ export const useBtwStore = defineStore('btw', () => {
     }
   }
 
-  function setError(id: string, message: string, authFailure?: AuthFailure): void {
+  function setError(id: string, message: LocalizedText, authFailure?: AuthFailure): void {
     if (aside.value?.id === id) {
       aside.value.isStreaming = false;
       aside.value.error = message;

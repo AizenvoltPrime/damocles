@@ -7,10 +7,12 @@ import OverlayHeaderAction from './OverlayHeaderAction.vue';
 import ProviderLogo from '@/components/icons/ProviderLogo.vue';
 import { useSubscriptionUsageStore } from '@/stores/useSubscriptionUsageStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { useLocalizedText } from '@/composables/useLocalizedText';
 import { formatResetTime } from '@/utils/clock';
 import type { ProviderUsage, UsageSpend, UsageWindowBar } from '@shared/types/usage';
 
 const { t, te, locale } = useI18n();
+const { rt } = useLocalizedText();
 const store = useSubscriptionUsageStore();
 const { postMessage } = usePlatformBridge();
 
@@ -250,7 +252,7 @@ function refresh(): void {
           class="text-xs text-(--d-danger)"
         >
           {{ t('usage.fetchError') }}<template v-if="provider.usage.error">
-            {{ `: ${provider.usage.error}` }}
+            {{ `: ${rt(provider.usage.error)}` }}
           </template>
         </p>
         <div

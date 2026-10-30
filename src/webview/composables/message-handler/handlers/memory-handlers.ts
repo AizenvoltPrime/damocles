@@ -2,6 +2,8 @@ import { toast } from "vue-sonner";
 import { i18n } from "@/i18n";
 import type { HandlerRegistry } from "../types";
 import { auditResultText } from "@/components/memory-audit/audit-result-text";
+import { englishText } from "@shared/localized-text";
+import { renderText } from "@/composables/useLocalizedText";
 
 export function createMemoryHandlers(): Partial<HandlerRegistry> {
   return {
@@ -83,7 +85,7 @@ export function createMemoryHandlers(): Partial<HandlerRegistry> {
     profileSectionError: (msg, ctx) => {
       // Signal the failed section so the panel clears its pending flag (keeping the draft).
       ctx.stores.memoryStore.setProfileSectionError(msg.scope, msg.section);
-      toast.error(msg.message);
+      toast.error(renderText(msg.message));
     },
 
     memoryAuditState: (msg, ctx) => {
@@ -114,7 +116,7 @@ export function createMemoryHandlers(): Partial<HandlerRegistry> {
       // The audit overlay shows its own errors; panel and search state are not involved.
       if (msg.source === "audit") {
         const code = msg.code ?? "request-failed";
-        console.warn(`[MemoryAudit] ${code}: ${msg.message}`);
+        console.warn(`[MemoryAudit] ${code}: ${englishText(msg.message)}`);
         const audit = ctx.stores.memoryAuditStore;
         if (audit.handleError(code) && !audit.isOverlayOpen) toast.error(i18n.global.t(`memoryAudit.error.${code}`));
         return;
@@ -133,7 +135,7 @@ export function createMemoryHandlers(): Partial<HandlerRegistry> {
       // optimistic stepper spins forever and "Run now" stays disabled. abortRun() settles the phase
       // machine to idle, re-enabling "Run now".
       if (msg.source === "consolidation") ctx.stores.consolidationStore.abortRun();
-      toast.error(msg.message);
+      toast.error(renderText(msg.message));
     },
   };
 }

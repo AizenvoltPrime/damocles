@@ -32,24 +32,59 @@ import type { MessageHandlerOptions, HandlerContext, HandlerRegistry, StoreConte
 
 export type { MessageHandlerOptions } from "./types";
 
+export interface MessageDispatcher {
+  (message: ExtensionToWebviewMessage): void;
+  /** Resolves once every message dispatched so far has been handled. */
+  settled(): Promise<void>;
+}
+
 /**
- * Runs each host message through `registry`. The transcript follows its own growth
- * (`useStickToBottom`); a handler only asks it to follow again, for another session's transcript.
+ * Runs each host message through `registry` in arrival order. A handler's `holdUntil` holds every later message until it
+ * settles, then they run synchronously in order, so each is handled in the language in effect when the host sent it.
+ * The transcript follows its own growth (`useStickToBottom`); a handler only asks it to follow again, for another session's transcript.
  */
 export function createMessageDispatcher(
   registry: HandlerRegistry,
   context: HandlerContext,
   followTranscript: () => void,
-): (message: ExtensionToWebviewMessage) => void {
+): MessageDispatcher {
   const { streamingStore } = context.stores;
+  const held: ExtensionToWebviewMessage[] = [];
+  let hold: Promise<unknown> | undefined;
 
-  return (message) => {
+  function handle(message: ExtensionToWebviewMessage): void {
     // Handlers that read or truncate the transcript must see every replay item that arrived before them.
     if (!QUEUED_REPLAY_TYPES.has(message.type)) streamingStore.flushReplayQueue();
     const handler = registry[message.type];
     const result = handler?.(message as never, context);
     if (result?.forceScrollToBottom) followTranscript();
+    if (result?.holdUntil) hold = Promise.resolve(result.holdUntil).finally(release);
+  }
+
+  function release(): void {
+    hold = undefined;
+    while (hold === undefined && held.length > 0) {
+      const next = held.shift()!;
+      try {
+        handle(next);
+      } catch (err) {
+        // Rethrown apart, so a failing handler does not strand the messages held behind it.
+        queueMicrotask(() => {
+          throw err;
+        });
+      }
+    }
+  }
+
+  const dispatch = (message: ExtensionToWebviewMessage): void => {
+    if (hold === undefined) handle(message);
+    else held.push(message);
   };
+  return Object.assign(dispatch, {
+    async settled(): Promise<void> {
+      while (hold !== undefined) await hold;
+    },
+  });
 }
 
 /**

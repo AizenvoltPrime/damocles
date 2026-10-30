@@ -85,6 +85,36 @@ describe('usePlatformBridge host selection', () => {
     expect(() => usePlatformBridge()).toThrow(/No host bridge/);
   });
 
+  it('hands a page core\'s LocalizedText only once it parses, on either host, dropping a malformed message with an error', async () => {
+    const good = { type: 'notification', message: { message: 'Your prompt was blocked by a hook.' }, notificationType: 'warning' };
+    const bad = { type: 'notification', message: 'Your prompt was blocked by a hook.', notificationType: 'warning' };
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const api = { postMessage: vi.fn(), getState: vi.fn(), setState: vi.fn() };
+    g.acquireVsCodeApi = vi.fn(() => api);
+    const vscodePage = await import('../usePlatformBridge');
+    const received: unknown[] = [];
+    const off = vscodePage.usePlatformBridge().onMessage((m) => received.push(m));
+    window.dispatchEvent(new MessageEvent('message', { data: bad }));
+    window.dispatchEvent(new MessageEvent('message', { data: good }));
+    off();
+
+    vi.resetModules();
+    delete g.acquireVsCodeApi;
+    let listener: ((m: unknown) => void) | undefined;
+    window.damoclesBridge = { postMessage: vi.fn(), onMessage: vi.fn((l: (m: unknown) => void) => { listener = l; return () => {}; }), getState: vi.fn(), setState: vi.fn(), getHost: vi.fn(), onHost: vi.fn(() => () => {}), getOffline: vi.fn(), hostAction: vi.fn(), getConnection: vi.fn(), onConnection: vi.fn(() => () => {}), queueAction: vi.fn() };
+    const desktopPage = await import('../usePlatformBridge');
+    desktopPage.usePlatformBridge().onMessage((m) => received.push(m));
+    listener?.(bad);
+    listener?.(good);
+
+    expect(received).toEqual([good, good]);
+    expect(errors.mock.calls.map(([line]) => line)).toEqual([
+      '[bridge] dropped a notification message: its .message is not LocalizedText',
+      '[bridge] dropped a notification message: its .message is not LocalizedText',
+    ]);
+    errors.mockRestore();
+  });
+
   it('uses a bridge the page installs before first use, such as the desktop overlay, and refuses a second one', async () => {
     delete g.acquireVsCodeApi;
     const page = { host: 'overlay' as const, postMessage: vi.fn(), onMessage: vi.fn(() => () => {}), getState: vi.fn(), setState: vi.fn() };

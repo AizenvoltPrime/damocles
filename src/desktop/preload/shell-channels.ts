@@ -689,8 +689,6 @@ export interface ShellEditorTab {
   readonly diff?: {
     readonly originalId: string;
     readonly modifiedId: string;
-    readonly added: number;
-    readonly removed: number;
     readonly conflictCompare?: true;
     readonly sides?: { readonly original: ShellDiffSide; readonly modified: ShellDiffSide };
     // a diff of a source control change, set while its repository is open: workingTree's original is the index side and its
@@ -1428,7 +1426,8 @@ export interface DamoclesShellApi {
   onState(listener: (state: ShellState) => void): () => void;
   addProject(): Promise<void>;
   removeProject(key: string): Promise<RemoveProjectResult>;
-  // selects the project's last viewed chat, or a new chat in it
+  // selects the project's last viewed chat while it exists, once it is gone the top of its Chats list, else a new chat; a new
+  // chat in a project never viewed
   selectProject(key: string): Promise<void>;
   grantTrust(key: string): Promise<void>;
   // stateRevision: the ShellState the key came from. null: the project has left main's list since that state, and main has

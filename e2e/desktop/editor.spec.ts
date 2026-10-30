@@ -429,7 +429,7 @@ test('an agent openFile and a showDiff without approvalId open pane tabs without
 
   await app.evaluate(async (_electron, target) => {
     const hooks = (globalThis as unknown as { __damoclesE2e: { editor: { showDiff(request: object): Promise<unknown> } } }).__damoclesE2e;
-    await hooks.editor.showDiff({ title: (name: string) => `${name} (changes)`, filePath: target, left: { name: 'agent.ts', content: "export const agent = 'before';\n" }, right: { path: target }, purpose: 'checkpoint', preserveFocus: true });
+    await hooks.editor.showDiff({ title: (name: string) => ({ message: '{0} (changes)', args: [name] }), filePath: target, left: { name: 'agent.ts', content: "export const agent = 'before';\n" }, right: { path: target }, purpose: 'checkpoint', preserveFocus: true });
   }, file);
   await expect.poll(async () => (await activeTab(app))?.kind).toBe('diff');
   await expect(diffEditor(shell)).toHaveAttribute('data-monaco-ready', 'true');
@@ -449,7 +449,7 @@ test('a diff tab of the agent\'s takes its file\'s new name and path after a Fil
   const shell = await shellPage(app);
   await app.evaluate(async (_electron, target) => {
     const hooks = (globalThis as unknown as { __damoclesE2e: { editor: { showDiff(request: object): Promise<unknown> } } }).__damoclesE2e;
-    await hooks.editor.showDiff({ title: (name: string) => `${name} (At checkpoint ↔ Current)`, filePath: target, left: { name: 'cp-agent.ts', content: "export const agent = 'checkpoint';\n" }, right: { path: target }, purpose: 'checkpoint', preserveFocus: true });
+    await hooks.editor.showDiff({ title: (name: string) => ({ message: '{0} (At checkpoint ↔ Current)', args: [name] }), filePath: target, left: { name: 'cp-agent.ts', content: "export const agent = 'checkpoint';\n" }, right: { path: target }, purpose: 'checkpoint', preserveFocus: true });
   }, file);
   await expect(editorTab(shell, 'agent.ts (At checkpoint ↔ Current)')).toBeVisible();
   await expect(diffEditor(shell)).toHaveAttribute('data-monaco-ready', 'true');

@@ -3,11 +3,10 @@
 // computer's editor shows of another host (docs/invariants.md "Remote daemon and wire").
 import type { Disposable } from '../../../platform/disposable';
 import type { Memento } from '../../../platform/key-value-state';
-import type { NotificationService } from '../../../platform/notification-service';
+import { localizedNotifications, type DesktopNotifications } from '../platform/notification-service';
 import type { OpenFolder } from '../../../platform/workspace-folders';
 import type { SecretsStore } from '../../../platform/secrets-store';
 import type { Project } from '../../local-services/confine';
-import { CLIENT_STATE_KEYS, type StateScope } from '../../core-protocol';
 import { VOICE_VIEW_POSTS } from '../../../shared/remote-user';
 import type { ProjectWorkspace } from '../../workspace/project-workspace';
 import type { HostPlatform, HostServicesDeps, HostState, HostTrust, HostUi, HostUser } from '../core-services/host-services';
@@ -24,7 +23,6 @@ export interface RemoteServicesDeps {
   readonly hostName: () => string;
   // main's own platform, whose services the allowed requests use
   readonly platform: HostPlatform;
-  readonly state: HostState;
   // the authority's projects, their paths native to the target
   readonly projects: () => readonly Project[];
   // the roots a target path may name a file in: the projects and their live chat worktrees, keyed as main's roots
@@ -50,10 +48,10 @@ export interface RemoteServicesDeps {
   // worktrees: the host's worktree controller, whose Setup terminal runs on the host's pty host
   readonly ui: Pick<HostUi, 'ask' | 'askpass' | 'worktrees'>;
   // main's notices, each shown with the host's name from this computer's host store, never one the core sent
-  readonly notices: NotificationService;
+  readonly notices: DesktopNotifications;
   // this computer's credentials and speech, which only a remote core is relayed
   readonly user: HostUser;
-  readonly base: Pick<HostServicesDeps, 'terminalToggle' | 'createView' | 'git' | 'e2eHooks' | 'paths' | 'logs' | 'language' | 'divert' | 'log'>;
+  readonly base: Pick<HostServicesDeps, 'terminalToggle' | 'createView' | 'git' | 'e2eHooks' | 'paths' | 'logs' | 'language' | 'divert' | 'render' | 'log'>;
   readonly t: (message: string, ...args: string[]) => string;
 }
 
@@ -91,27 +89,20 @@ export function namespacedSecrets(secrets: SecretsStore, hostId: string, log: (l
   };
 }
 
-const CLIENT_KEYS: ReadonlySet<string> = new Set(CLIENT_STATE_KEYS);
-
 const NO_CONTEXT: ActiveEditorContext = { filePath: undefined, selection: undefined };
 
-const readOnly = (memento: Memento): Memento => ({
-  get: ((key: string, defaultValue?: unknown) => (CLIENT_KEYS.has(key) ? memento.get(key, defaultValue) : defaultValue)) as Memento['get'],
+const noState: Memento = {
+  get: ((_key: string, defaultValue?: unknown) => defaultValue) as Memento['get'],
   update: () => refused('A state write'),
-});
+};
 
-/** The client's state as a remote core sees it: only CLIENT_STATE_KEYS, never written from the target. */
-export function clientState(state: HostState): HostState {
-  const pick = (scope: StateScope): Readonly<Record<string, unknown>> => Object.fromEntries(Object.entries(state.snapshot(scope)).filter(([key]) => CLIENT_KEYS.has(key)));
-  return {
-    global: readOnly(state.global),
-    workspace: readOnly(state.workspace),
-    snapshot: pick,
-    onDidUpdate: (listener) => state.onDidUpdate((scope, key) => {
-      if (CLIENT_KEYS.has(key)) listener(scope, key);
-    }),
-  };
-}
+/** A remote core's key-value state is its daemon's own, so this computer publishes none to it and takes no write from it. */
+export const NO_CLIENT_STATE: HostState = {
+  global: noState,
+  workspace: noState,
+  snapshot: () => ({}),
+  onDidUpdate: () => ({ dispose: () => undefined }),
+};
 
 export function remoteServices(deps: RemoteServicesDeps): Omit<HostServicesDeps, 'endpoint'> {
   const { platform, t } = deps;
@@ -155,7 +146,7 @@ export function remoteServices(deps: RemoteServicesDeps): Omit<HostServicesDeps,
   const remotePlatform: HostPlatform = {
     appInfo: platform.appInfo,
     secrets: namespacedSecrets(platform.secrets, deps.hostId, deps.base.log),
-    notifications: deps.notices,
+    notifications: localizedNotifications(deps.notices, deps.base.render),
     clipboard: { writeText: () => refused('A clipboard write') },
     shell: {
       // The user sees the address and the host before anything opens.
@@ -174,9 +165,9 @@ export function remoteServices(deps: RemoteServicesDeps): Omit<HostServicesDeps,
     lifecycle: { reload: () => refused('A reload') },
     workspaceFolders: folders,
     dialogs: {
-      pickFolder: ({ title, defaultPath, buttonLabel }) => deps.pick('folder', { ...(title !== undefined ? { title } : {}), ...(defaultPath !== undefined ? { defaultPath } : {}), ...(buttonLabel !== undefined ? { buttonLabel } : {}) }),
+      pickFolder: ({ title, defaultPath, buttonLabel }) => deps.pick('folder', { ...(title !== undefined ? { title: deps.base.render(title) } : {}), ...(defaultPath !== undefined ? { defaultPath } : {}), ...(buttonLabel !== undefined ? { buttonLabel: deps.base.render(buttonLabel) } : {}) }),
       pickFile: ({ title, defaultPath, filters }) => deps.pick('file', {
-        ...(title !== undefined ? { title } : {}),
+        ...(title !== undefined ? { title: deps.base.render(title) } : {}),
         ...(defaultPath !== undefined ? { defaultPath } : {}),
         ...(filters !== undefined ? { extensions: Object.values(filters).flat() } : {}),
       }),
@@ -194,7 +185,7 @@ export function remoteServices(deps: RemoteServicesDeps): Omit<HostServicesDeps,
     ...deps.base,
     platform: remotePlatform,
     trust: deps.trust,
-    state: clientState(deps.state),
+    state: NO_CLIENT_STATE,
     resolveProxy: () => refused('A proxy lookup'),
     endedCores: [],
     worktreeRecords: [],

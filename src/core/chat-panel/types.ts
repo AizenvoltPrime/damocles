@@ -64,13 +64,14 @@ export interface AttachedView {
 export type SettingsViewScope = 'user' | 'machine' | 'project';
 
 /**
- * A view joining a panel (views.join): what the join posts goes to the view at once; from `hold` on the panel's own posts wait,
- * and `release` delivers them after the join's posts, except live events at or below the snapshot's sequence.
+ * A view joining a panel (views.join): what the join posts goes to the view at once. `hold` names the session whose live
+ * snapshot the join captures in the same synchronous step; from then on the panel's own posts wait, and `release` delivers them
+ * after the join's posts, except that session's live events numbered at or below its count at the hold.
  */
 export interface ViewJoinGate {
   post(message: ExtensionToWebviewMessage): void;
-  hold(): void;
-  release(snapshotSeq: number): void;
+  hold(session: ChatSession): void;
+  release(): void;
 }
 
 export type { StoredSession, HistoryMessage, RewindHistoryItem, McpServerConfig };

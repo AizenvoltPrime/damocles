@@ -72,7 +72,7 @@ describe("createMemoryHandlers — setProfileSection (T10 boolean contract)", ()
         type: "profileSectionError",
         scope: "project",
         section: "static",
-        message: "Failed to save profile section.",
+        message: { message: "Failed to save profile section." },
       });
       expect(h.sent.some((m) => m.type === "profileData")).toBe(false);
       // No re-read on failure — the panel keeps its dirty draft.
@@ -94,7 +94,7 @@ describe("createMemoryHandlers — setProfileSection (T10 boolean contract)", ()
       ctx,
     );
 
-    expect(sent).toEqual([{ type: "memoryError", message: "Memory system is not available" }]);
+    expect(sent).toEqual([{ type: "memoryError", message: { message: "Memory system is not available" } }]);
   });
 });
 
@@ -162,7 +162,7 @@ describe("createMemoryHandlers — createMemory (T5 + kind)", () => {
   it("posts memoryError(source:'panel') and NO memoryCreated when saveMemory returns null", async () => {
     const h = makeCrudHarness({ saveMemory: vi.fn(async () => null) });
     await h.handlers.createMemory!({ type: "createMemory", tier: "project", content: "c" }, h.ctx);
-    expect(h.sent).toContainEqual({ type: "memoryError", source: "panel", message: "Failed to create memory." });
+    expect(h.sent).toContainEqual({ type: "memoryError", source: "panel", message: { message: "Failed to create memory." } });
     expect(h.sent.some((m) => m.type === "memoryCreated")).toBe(false);
   });
 
@@ -177,7 +177,7 @@ describe("createMemoryHandlers — createMemory (T5 + kind)", () => {
 
     await handlers.createMemory!({ type: "createMemory", tier: "project", content: "c" }, ctx);
 
-    expect(sent).toEqual([{ type: "memoryError", source: "panel", message: "Memory system is not available" }]);
+    expect(sent).toEqual([{ type: "memoryError", source: "panel", message: { message: "Memory system is not available" } }]);
     expect(sent.some((m) => m.type === "memoryCreated")).toBe(false);
   });
 });
@@ -186,7 +186,7 @@ describe("createMemoryHandlers — deleteMemory (T1)", () => {
   it("posts memoryError(source:'panel') when the delete returns false", async () => {
     const h = makeCrudHarness({ deleteMemory: vi.fn(async () => false) });
     await h.handlers.deleteMemory!({ type: "deleteMemory", id: "m1" }, h.ctx);
-    expect(h.sent).toContainEqual({ type: "memoryError", source: "panel", message: "Failed to delete memory." });
+    expect(h.sent).toContainEqual({ type: "memoryError", source: "panel", message: { message: "Failed to delete memory." } });
     expect(h.sent.some((m) => m.type === "memoryDeleted")).toBe(false);
   });
 });
@@ -209,7 +209,7 @@ describe("createMemoryHandlers — updateMemory (T3 memoryUpdated)", () => {
   it("posts memoryError(source:'panel') and NO memoryUpdated when updateMemory returns null", async () => {
     const h = makeCrudHarness({ updateMemory: vi.fn(async () => null) });
     await h.handlers.updateMemory!({ type: "updateMemory", id: "m1", content: "c" }, h.ctx);
-    expect(h.sent).toContainEqual({ type: "memoryError", source: "panel", message: "Failed to update memory." });
+    expect(h.sent).toContainEqual({ type: "memoryError", source: "panel", message: { message: "Failed to update memory." } });
     expect(h.sent.some((m) => m.type === "memoryUpdated")).toBe(false);
   });
 });
@@ -224,7 +224,7 @@ describe("createMemoryHandlers — correlation ids + guards", () => {
   it("echoes requestId on the failure memoryError too", async () => {
     const h = makeCrudHarness({ saveMemory: vi.fn(async () => null) });
     await h.handlers.createMemory!({ type: "createMemory", tier: "project", content: "c", requestId: "req-9" }, h.ctx);
-    expect(h.sent).toContainEqual({ type: "memoryError", source: "panel", message: "Failed to create memory.", requestId: "req-9" });
+    expect(h.sent).toContainEqual({ type: "memoryError", source: "panel", message: { message: "Failed to create memory." }, requestId: "req-9" });
   });
 
   it("forgetMemory passes exactId=true so the panel never content-matches a stale id", async () => {
@@ -265,13 +265,13 @@ describe("createMemoryHandlers — pin/unpin/forget/unforget (T3 no rebroadcast,
   it("forget with count=0 posts memoryError(source:'panel'), not memoryForgotten", async () => {
     const h = makeCrudHarness({ forgetMemory: vi.fn(async () => ({ forgotten: 0 })) });
     await h.handlers.forgetMemory!({ type: "forgetMemory", id: "m1" }, h.ctx);
-    expect(h.sent).toEqual([{ type: "memoryError", source: "panel", message: "No matching memory found to forget." }]);
+    expect(h.sent).toEqual([{ type: "memoryError", source: "panel", message: { message: "No matching memory found to forget." } }]);
   });
 
   it("unforget with count=0 posts memoryError(source:'panel'), not memoryUnforgotten", async () => {
     const h = makeCrudHarness({ unforgetMemory: vi.fn(async () => ({ restored: 0 })) });
     await h.handlers.unforgetMemory!({ type: "unforgetMemory", id: "m1" }, h.ctx);
-    expect(h.sent).toEqual([{ type: "memoryError", source: "panel", message: "No matching memory found to unforget." }]);
+    expect(h.sent).toEqual([{ type: "memoryError", source: "panel", message: { message: "No matching memory found to unforget." } }]);
   });
 });
 

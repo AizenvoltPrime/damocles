@@ -55,7 +55,7 @@ describe('OpenAI API key migration', () => {
   }
 
   function migrate(platform: FakePlatform, modelRuntime = fakeRuntime(), host: AppHost = 'vscode') {
-    return { modelRuntime, run: () => migrateOpenAIApiKey({ modelRuntime, secrets: platform.secrets, agentDir, markerPath, host }) };
+    return { modelRuntime, run: () => migrateOpenAIApiKey({ modelRuntime, secrets: platform.secrets, agentDir, markerPath, host, ownAuthFileChange: (op) => op() }) };
   }
 
   it('copies the key, reads it back, deletes the auth.json copy and writes a secret-free marker', async () => {
@@ -118,13 +118,55 @@ describe('OpenAI API key migration', () => {
     expect(readAuth()).toEqual({});
   });
 
+  it('deletes the auth.json copy as an own change of auth.json, and nothing else inside it', async () => {
+    writeAuth({ openai: { type: 'api_key', key: 'sk-plain' } });
+    const platform = createFakePlatform();
+    const modelRuntime = fakeRuntime();
+    let owning = false;
+    const ownedAtLogout: boolean[] = [];
+    const logout = modelRuntime.logout.getMockImplementation()!;
+    modelRuntime.logout.mockImplementation(async (provider: string) => {
+      ownedAtLogout.push(owning);
+      await logout(provider);
+    });
+    const ownAuthFileChange = vi.fn(async (op: () => Promise<void>) => {
+      owning = true;
+      try {
+        await op();
+      } finally {
+        owning = false;
+      }
+    });
+
+    expect(await migrateOpenAIApiKey({ modelRuntime, secrets: platform.secrets, agentDir, markerPath, host: 'vscode', ownAuthFileChange })).toBe(true);
+
+    expect(ownedAtLogout).toEqual([true]);
+    expect(ownAuthFileChange).toHaveBeenCalledOnce();
+  });
+
+  it('counts a delete pi committed before its snapshot sync failed as moved', async () => {
+    writeAuth({ openai: { type: 'api_key', key: 'sk-plain' } });
+    const platform = createFakePlatform();
+    const modelRuntime = fakeRuntime();
+    const logout = modelRuntime.logout.getMockImplementation()!;
+    modelRuntime.logout.mockImplementation(async (provider: string) => {
+      await logout(provider);
+      throw Object.assign(new Error('failed to synchronize credential state'), { name: 'CredentialSynchronizationError' });
+    });
+
+    expect(await migrate(platform, modelRuntime).run()).toBe(true);
+
+    expect(readAuth()).toEqual({});
+    expect(platform.secrets.entries.get(OPENAI_API_KEY_SECRET)).toBe('sk-plain');
+  });
+
   it('deletes nothing when the key does not read back', async () => {
     writeAuth({ openai: { type: 'api_key', key: 'sk-plain' } });
     const platform = createFakePlatform();
     const secrets = { ...platform.secrets, get: vi.fn(async () => undefined) };
     const modelRuntime = fakeRuntime();
 
-    await expect(migrateOpenAIApiKey({ modelRuntime, secrets, agentDir, markerPath, host: 'vscode' })).rejects.toThrow('did not read back');
+    await expect(migrateOpenAIApiKey({ modelRuntime, secrets, agentDir, markerPath, host: 'vscode', ownAuthFileChange: (op) => op() })).rejects.toThrow('did not read back');
 
     expect(modelRuntime.logout).not.toHaveBeenCalled();
     expect(readAuth()).toEqual({ openai: { type: 'api_key', key: 'sk-plain' } });

@@ -914,8 +914,8 @@ function parseNotificationsAnswer(raw: Record<string, unknown>): OverlayAnswer |
   const entryId = field(raw, 'entryId');
   if (!isNonEmptyText(entryId, MAX_OVERLAY_ID_LENGTH)) return undefined;
   if (action === 'open') return { kind: 'notifications', action: 'open', entryId };
-  const label = field(raw, 'label');
-  return action === 'answer' && isNonEmptyText(label, MAX_OVERLAY_LABEL_LENGTH) ? { kind: 'notifications', action: 'answer', entryId, label } : undefined;
+  const index = field(raw, 'index');
+  return action === 'answer' && typeof index === 'number' && Number.isInteger(index) && index >= 0 ? { kind: 'notifications', action: 'answer', entryId, index } : undefined;
 }
 
 function parseQuickOpenAnswer(raw: Record<string, unknown>): OverlayAnswer | undefined {

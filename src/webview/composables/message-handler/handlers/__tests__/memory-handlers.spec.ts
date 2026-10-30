@@ -5,6 +5,7 @@ import { createMemoryHandlers } from '../memory-handlers';
 import { useMemoryStore } from '@/stores/useMemoryStore';
 import { useContextInjectionStore } from '@/stores/useContextInjectionStore';
 import { useUIStore } from '@/stores/useUIStore';
+import { useMemoryAuditStore } from '@/stores/useMemoryAuditStore';
 import type { HandlerContext } from '../../types';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import type { MemoryEntry } from '@shared/types/memory';
@@ -17,7 +18,7 @@ vi.mock('vue-sonner', () => {
 
 function deliver(msg: ExtensionToWebviewMessage): void {
   const ctx = {
-    stores: { memoryStore: useMemoryStore(), contextInjectionStore: useContextInjectionStore(), uiStore: useUIStore() },
+    stores: { memoryStore: useMemoryStore(), contextInjectionStore: useContextInjectionStore(), uiStore: useUIStore(), memoryAuditStore: useMemoryAuditStore() },
   } as unknown as HandlerContext;
   const handler = createMemoryHandlers()[msg.type] as ((m: ExtensionToWebviewMessage, c: HandlerContext) => void) | undefined;
   handler!(msg, ctx);
@@ -47,6 +48,17 @@ describe('memory toasts', () => {
     deliver({ type: 'memoryPinned', id: 'm1' });
     deliver({ type: 'memoryForgotten', id: 'm1', count: 2 });
     expect(toasts).toEqual(['Η καθολική μνήμη αποθηκεύτηκε', 'Η μνήμη καρφιτσώθηκε', 'Ξεχάστηκαν 2 μνήμες']);
+  });
+
+  it('logs an audit error in English whatever the view language', () => {
+    i18n.global.locale.value = 'el';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      deliver({ type: 'memoryError', source: 'audit', code: 'unavailable', message: { message: 'Memory system is not available' } });
+      expect(warn).toHaveBeenCalledWith('[MemoryAudit] unavailable: Memory system is not available');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('opens the memory panel without asking for the list, which the panel requests itself', () => {

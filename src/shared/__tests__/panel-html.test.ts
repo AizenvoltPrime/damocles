@@ -32,6 +32,7 @@ const STRINGS: BrowserPageStrings = {
 describe('desktop page CSPs, pinned to core at 6dd3c95d', () => {
   it('chat page', () => {
     const html = chatPageHtml({
+      lang: 'en',
       cspSource: ORIGIN,
       workerSrc: `${ORIGIN}/webview/assets/`,
       nonce: 'NONCE',
@@ -71,7 +72,7 @@ describe('page strings', () => {
 
   it('escapes every value it puts into a chat or error page attribute', () => {
     const hostile = 'x" onerror="y';
-    const chat = chatPageHtml({ cspSource: hostile, workerSrc: hostile, nonce: hostile, scriptUri: hostile, styleUri: hostile, logoUri: hostile, themeCss: '' });
+    const chat = chatPageHtml({ lang: hostile, cspSource: hostile, workerSrc: hostile, nonce: hostile, scriptUri: hostile, styleUri: hostile, logoUri: hostile, themeCss: '' });
     const error = errorPageHtml({ cspSource: hostile, logoUri: hostile, themeCss: '', strings: ERROR_PAGE_STRINGS });
     for (const html of [chat, error]) {
       expect(html).not.toContain('onerror="y');
@@ -80,7 +81,12 @@ describe('page strings', () => {
   });
 
   it('omits worker-src for a host that gives none', () => {
-    const html = chatPageHtml({ cspSource: ORIGIN, nonce: 'n', scriptUri: 's', styleUri: 'c', logoUri: 'l', themeCss: '' });
+    const html = chatPageHtml({ lang: 'en', cspSource: ORIGIN, nonce: 'n', scriptUri: 's', styleUri: 'c', logoUri: 'l', themeCss: '' });
     expect(cspOf(html)).not.toContain('worker-src');
+  });
+
+  it('names the language the view starts in on the page', () => {
+    const html = chatPageHtml({ lang: 'el', cspSource: ORIGIN, nonce: 'n', scriptUri: 's', styleUri: 'c', logoUri: 'l', themeCss: '' });
+    expect(html).toContain('<html lang="el">');
   });
 });

@@ -1,6 +1,7 @@
 import type { AuthEvent, AuthInteraction, AuthPrompt } from "@earendil-works/pi-ai";
 import type { Platform } from "../../../../platform/platform";
 import { log } from "../../../logger";
+import { l } from "../../../l10n";
 
 export interface AuthInteractionOptions {
   /** Flow-level abort signal — pi aborts the whole login when it fires. */
@@ -74,9 +75,7 @@ export function buildAuthInteraction(opts: AuthInteractionOptions): AuthInteract
             opts.deviceCode(event);
             return;
           }
-          void opts.platform.notifications.info(
-            `Enter code ${event.userCode} at ${event.verificationUri} to finish signing in.`,
-          );
+          void opts.platform.notifications.info(l("Enter code {0} at {1} to finish signing in.", event.userCode, event.verificationUri));
           return;
         // the type only: pi's text can name a loopback callback URL (openrouter.js:124)
         case "info":

@@ -7,7 +7,7 @@ import { CODE_EXTENSIONS } from './types';
 import { createWatcherFileFilter } from './detect';
 import { folderKey } from '../workspace-folders/folder-key';
 import { notifySchemaAhead } from '../schema-skew';
-import { t } from '../l10n';
+import { l } from '../l10n';
 import type { CompassWorkerData, WorkerEvent, WorkerProgressEvent } from './worker-protocol';
 import { releaseSpawnLockOnExit, spawnLock } from '../process-launcher/spawn-lock';
 import { LIGHT_REQUEST_TYPES, TIMEOUTS, TIMEOUTS_BY_TYPE } from './worker-protocol';
@@ -356,7 +356,7 @@ export class CompassService implements ICompassService {
 		await this.ensureInitialized();
 		if (this._cachedStatus.readOnly) {
 			this._platform.notifications
-				.warn(t('The Compass index of {0} is read only: another Damocles app has updated it to a newer version. Update this Damocles to rebuild it.', this._workspacePath))
+				.warn(l('The Compass index of {0} is read only: another Damocles app has updated it to a newer version. Update this Damocles to rebuild it.', this._workspacePath))
 				.catch((err: unknown) => log('[CompassService] Read-only rebuild notice failed: %O', err));
 			return;
 		}

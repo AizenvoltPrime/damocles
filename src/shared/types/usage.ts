@@ -1,3 +1,5 @@
+import type { LocalizedText } from '../localized-text';
+
 export interface UsageWindowBar {
   /** Raw window id: 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_fable' | 'codex_primary' | 'codex_secondary' | future keys. */
   id: string;
@@ -33,11 +35,11 @@ export interface ProviderUsage {
   bars: UsageWindowBar[];
   planType?: string;
   spend?: UsageSpend;
-  /** Human-readable; NEVER contains token text. */
-  error?: string;
+  /** NEVER contains token text. */
+  error?: LocalizedText;
   profile?: ClaudeAccountProfile;
-  /** Human-readable; NEVER contains token or profile text. */
-  profileError?: string;
+  /** NEVER contains token or profile text. */
+  profileError?: LocalizedText;
   /** Set when the endpoint rejects the credential's token; the overlay links here instead of showing bars. */
   usageUrl?: string;
 }

@@ -3,11 +3,8 @@ import { setFlagsFromString } from 'node:v8';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GitError } from '../../../core/scm/errors';
 import { createCoreEndpoint, createLoopback, createMainEndpoint, processActor, type MainEndpoint } from '../../core-protocol';
-import { CLIENT_STATE_KEYS, CORE_TO_MAIN, MAIN_TO_CORE, type ChatEntry, type StateScope } from '../../core-protocol/messages';
+import { CORE_TO_MAIN, MAIN_TO_CORE, type ChatEntry, type StateScope } from '../../core-protocol/messages';
 import { LANGUAGE_PREFERENCE_KEY } from '../../../shared/language-preference';
-import { OPENAI_PREFER_API_KEY_STATE } from '../../../core/pi-session/openai-auth';
-import { providerPreferApiKeyState } from '../../../core/pi-session/provider-auth';
-import { KEY_PROVIDER_IDS } from '../../../shared/settings-sections';
 import {
   CORE_EVENT_ROUTES,
   CORE_MIRROR_ROUTES,
@@ -31,25 +28,17 @@ const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 
 
 function memoryState(): DaemonState & { readonly writes: Array<[StateScope, string, unknown]> } {
   const writes: Array<[StateScope, string, unknown]> = [];
-  const client: Record<StateScope, Map<string, unknown>> = { global: new Map(), workspace: new Map() };
   return {
     writes,
-    snapshot: (scope) => Object.fromEntries(client[scope]),
+    snapshot: () => ({}),
     update: async (scope, key, value) => {
-      if (CLIENT_STATE_KEYS.includes(key)) throw new Error(`${key} is set on the client`);
       writes.push([scope, key, value]);
-    },
-    applyClient: (scope, key, value) => {
-      if (!CLIENT_STATE_KEYS.includes(key)) return false;
-      client[scope].set(key, value);
-      return true;
     },
     flush: async () => undefined,
   };
 }
 
 const emptyMirrors = {
-  state: { global: {}, workspace: {} },
   trust: { keys: [] },
   folders: { folders: [] },
   editor: {},
@@ -142,12 +131,6 @@ describe('core routes', () => {
     expect(keys(MAIN_PANEL_OP_ROUTES)).toEqual(keys(MAIN_TO_CORE.panelOps));
   });
 
-  it('name the client state keys by the constants core reads them with', () => {
-    expect([...CLIENT_STATE_KEYS].sort()).toEqual([LANGUAGE_PREFERENCE_KEY, OPENAI_PREFER_API_KEY_STATE, ...KEY_PROVIDER_IDS.map(providerPreferApiKeyState)].sort());
-    expect(CLIENT_STATE_KEYS).toContain('damocles.kimi-coding.preferApiKey');
-    expect(CLIENT_STATE_KEYS).not.toContain('damocles.github-copilot.preferApiKey');
-  });
-
   it('refuse core\'s clipboard.writeText and shell.trash without asking a client', async () => {
     const h = setUp();
     const client = h.client('c1');
@@ -161,17 +144,18 @@ describe('core routes', () => {
 
   it('send core\'s client requests to the acting client, and answer them itself with none attached', async () => {
     const h = setUp();
-    expect(await h.core.request('notifications.show', { severity: 'info', message: 'hi', actions: [] })).toBeUndefined();
+    const notice = { severity: 'info', message: { message: 'hi' }, actions: [{ message: 'First' }, { message: 'Second' }] } as const;
+    expect(await h.core.request('notifications.show', notice)).toBeUndefined();
     expect(await h.core.request('askpass.prompt', { kind: 'password', text: 'pw?' })).toEqual({ cancelled: true });
     await expect(h.core.request('worktrees.runSetup', { worktreeId: 'w', cwd: '/x', commands: [], env: {} })).rejects.toThrow('No client');
     const first = h.client('c1');
     const second = h.client('c2');
-    first.main.serve('notifications.show', () => 'first');
-    second.main.serve('notifications.show', () => 'second');
-    expect(await h.core.request('notifications.show', { severity: 'info', message: 'hi', actions: [] })).toBe('second');
+    first.main.serve('notifications.show', () => 0);
+    second.main.serve('notifications.show', () => 1);
+    expect(await h.core.request('notifications.show', notice)).toBe(1);
     // a client's message makes it the acting one
     await first.main.request('catalog.list', { projectKey: '/srv/app', complete: false }).catch(() => undefined);
-    expect(await h.core.request('notifications.show', { severity: 'info', message: 'hi', actions: [] })).toBe('first');
+    expect(await h.core.request('notifications.show', notice)).toBe(0);
   });
 
   it('publish a client that attached fresh after a drop as the acting client before its first message, so core refreshes for it', async () => {
@@ -193,18 +177,18 @@ describe('core routes', () => {
     await expect(h.core.request('editor.readText', { path: process.execPath })).rejects.toThrow('outside the open projects');
   });
 
-  it('refuse a CLIENT_STATE_KEYS write from core, and a client\'s write of any other key', async () => {
+  // core's key-value state is the daemon's own: a client's language is its clientLanguage, never a state key
+  it('store core\'s state writes, and drop every state delta a client publishes', async () => {
     const h = setUp();
     const deltas: unknown[] = [];
     h.core.onMirror('state', (patch) => deltas.push(patch));
-    await expect(h.core.request('state.update', { scope: 'global', key: LANGUAGE_PREFERENCE_KEY, value: 'el' })).rejects.toThrow('set on the client');
     await h.core.request('state.update', { scope: 'global', key: 'damocles.other', value: 1 });
     expect(h.state.writes).toEqual([['global', 'damocles.other', 1]]);
     expect(deltas).toEqual([{ scope: 'global', key: 'damocles.other', value: 1 }]);
     const client = h.client('c1');
     client.main.publish('state', { scope: 'global', key: 'damocles.other', value: 2 });
     client.main.publish('state', { scope: 'global', key: LANGUAGE_PREFERENCE_KEY, value: 'el' });
-    expect(deltas.slice(1)).toEqual([{ scope: 'global', key: LANGUAGE_PREFERENCE_KEY, value: 'el' }]);
+    expect(deltas).toHaveLength(1);
   });
 
   it('refuse core.shutdown, browser pages and the e2e hooks from a client, and drop power events', async () => {
@@ -340,24 +324,56 @@ describe('core routes', () => {
     expect(published.at(-1)).toEqual({ folders: [x] });
   });
 
-  it('give core the acting client\'s client state, and the last attached client\'s language once a later one detaches', async () => {
+  // each device's views render core's text in that device's own language, whichever device acts or attached last
+  it('publish each client\'s language under its id on clientLanguage, and clear it when it detaches', async () => {
     const h = setUp();
-    const state: unknown[] = [];
+    const published: unknown[] = [];
     const language: unknown[] = [];
-    h.core.onMirror('state', (patch) => state.push(patch));
+    h.core.onMirror('clientLanguage', (patch) => published.push(patch));
     h.core.onMirror('language', (patch) => language.push(patch));
     const first = h.client('c1');
-    first.main.publish('state', { scope: 'global', key: LANGUAGE_PREFERENCE_KEY, value: 'el' });
     first.main.publish('language', { language: 'el' });
     const second = h.client('c2');
-    second.main.publish('state', { scope: 'global', key: LANGUAGE_PREFERENCE_KEY, value: 'en' });
-    expect(state.at(-1)).toEqual({ scope: 'global', key: LANGUAGE_PREFERENCE_KEY, value: 'en' });
-    expect(language.at(-1)).toEqual({ language: 'en' });
-    // c1 acts: core has its value before its message
     await first.main.request('catalog.list', { projectKey: '/srv/app', complete: false }).catch(() => undefined);
-    expect(state.at(-1)).toEqual({ scope: 'global', key: LANGUAGE_PREFERENCE_KEY, value: 'el' });
     second.detach();
-    expect(language.at(-1)).toEqual({ language: 'el' });
+    expect(published).toEqual([
+      { clientId: 'c1', value: { language: 'en' } },
+      { clientId: 'c1', value: { language: 'el' } },
+      { clientId: 'c2', value: { language: 'en' } },
+      { clientId: 'c2' },
+    ]);
+    expect(h.mirrors.clientLanguage).toEqual(new Map([['c1', { language: 'el' }]]));
+    // a daemon's core never reads the language mirror, which only a local core's one client publishes
+    expect(language).toEqual([]);
+  });
+
+  it('publish each client\'s editor and terminal patch under its id on clientEditor and clientTerminal, and clear both when it detaches', async () => {
+    const h = setUp();
+    const published: Array<[string, unknown]> = [];
+    for (const topic of ['editor', 'terminal', 'clientEditor', 'clientTerminal'] as const) h.core.onMirror(topic, (patch) => published.push([topic, patch]));
+    const a = h.client('device-a');
+    const b = h.client('device-b');
+    const file = { context: { filePath: '/srv/app/a.ts', selection: { startLine: 1, endLine: 2, text: 'x' } } };
+    const toggle = { shown: true, shortcut: 'Ctrl+`' };
+    a.main.publish('editor', file);
+    b.main.publish('terminal', toggle);
+    // only the daemon names a client
+    a.main.publish('clientEditor', { clientId: 'device-b', value: file });
+    a.main.publish('clientTerminal', { clientId: 'device-b', value: toggle });
+    await flush();
+    b.detach();
+    const none = { shown: false, shortcut: '' };
+    expect(published).toEqual([
+      ['clientEditor', { clientId: 'device-a', value: {} }],
+      ['clientTerminal', { clientId: 'device-a', value: none }],
+      ['clientEditor', { clientId: 'device-b', value: {} }],
+      ['clientTerminal', { clientId: 'device-b', value: none }],
+      ['clientEditor', { clientId: 'device-a', value: file }],
+      ['clientTerminal', { clientId: 'device-b', value: toggle }],
+      ['clientEditor', { clientId: 'device-b' }],
+      ['clientTerminal', { clientId: 'device-b' }],
+    ]);
+    expect([[...h.mirrors.clientEditor], [...h.mirrors.clientTerminal]]).toEqual([[['device-a', file]], [['device-a', none]]]);
   });
 
   it('let a detached client go, its listeners included', async () => {
@@ -382,11 +398,11 @@ describe('core routes', () => {
     const h = setUp();
     const bad = h.client('bad');
     const good = h.client('good');
-    good.main.serve('notifications.show', () => 'ok');
+    good.main.serve('notifications.show', () => 0);
     expect(() => bad.raw.post({ kind: 'request', id: 'x' })).not.toThrow();
     expect(bad.close).toHaveBeenCalled();
     expect(good.close).not.toHaveBeenCalled();
-    expect(await h.core.request('notifications.show', { severity: 'info', message: 'hi', actions: [] })).toBe('ok');
+    expect(await h.core.request('notifications.show', { severity: 'info', message: { message: 'hi' }, actions: [] })).toBe(0);
   });
 
   it('answer views.drained once the viewing client\'s core channel drained, and at once for a view no client shows', async () => {
@@ -571,8 +587,8 @@ describe('a client the wire refuses a message for', () => {
     const next = { kind: 'view' as const, projectKey: '/srv/app', view: { state: 'ready' } };
     h.core.publish('scm', oversized);
     h.core.publish('scm', next);
-    h.core.emit('chat.turnSettled', { panelId: 'panel-1', outcome: 'done' });
-    expect(seen['c2']).toEqual([oversized, next, { panelId: 'panel-1', outcome: 'done' }]);
+    h.core.emit('chat.turnSettled', { panelId: 'panel-1', outcome: { kind: 'completed' } });
+    expect(seen['c2']).toEqual([oversized, next, { panelId: 'panel-1', outcome: { kind: 'completed' } }]);
     expect(seen['c1']).toEqual([]);
     expect(bounded.close).toHaveBeenCalledExactlyOnceWith('a message over the bound');
     expect(other.close).not.toHaveBeenCalled();
@@ -584,8 +600,8 @@ describe('a client the wire refuses a message for', () => {
     const other = h.client('c2');
     const events: unknown[] = [];
     other.main.onEvent('chat.turnSettled', (payload) => events.push(payload));
-    h.core.emit('chat.turnSettled', { panelId: OVERSIZED, outcome: 'done' });
-    expect(events).toEqual([{ panelId: OVERSIZED, outcome: 'done' }]);
+    h.core.emit('chat.turnSettled', { panelId: OVERSIZED, outcome: { kind: 'completed' } });
+    expect(events).toEqual([{ panelId: OVERSIZED, outcome: { kind: 'completed' } }]);
     expect(bounded.close).toHaveBeenCalledOnce();
   });
 
@@ -914,12 +930,12 @@ describe('a client inside its reconnection grace', () => {
     const h = setUp();
     const a = h.client('c1');
     const b = h.client('c2');
-    a.main.serve('notifications.show', () => 'a');
-    b.main.serve('notifications.show', () => 'b');
-    const ask = (): Promise<unknown> => processActor.run('c1', () => h.core.request('notifications.show', { severity: 'info', message: 'hi', actions: [] }));
-    expect(await ask()).toBe('a');
+    a.main.serve('notifications.show', () => 0);
+    b.main.serve('notifications.show', () => 1);
+    const ask = (): Promise<unknown> => processActor.run('c1', () => h.core.request('notifications.show', { severity: 'info', message: { message: 'hi' }, actions: [] }));
+    expect(await ask()).toBe(0);
     a.lose();
-    expect(await ask()).toBe('b');
+    expect(await ask()).toBe(1);
     b.lose();
     expect(await ask()).toBeUndefined();
   });

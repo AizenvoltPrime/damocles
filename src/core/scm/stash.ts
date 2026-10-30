@@ -5,6 +5,7 @@ import { gitAtLeast, type GitVersion } from './git-runner';
 import { failed, hasUnmerged } from './branches';
 import { isObjectName } from './artifacts';
 import { checkRepoPath, type Repository } from './repository';
+import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 
 export type StashScope = 'default' | 'includeUntracked' | 'staged';
 
@@ -53,10 +54,10 @@ const stashRef = (index: number): string => {
  * no longer names the commit (pop only). Refused with conflicted as the message while the index has unmerged entries, which
  * git cannot write, so any found after the apply are its own; `--quiet` prints no CONFLICT line to read instead.
  */
-export function stashApply(repo: Repository, target: StashTarget, pop: boolean, conflicted: string): Promise<'ok' | 'conflict' | 'moved'> {
+export function stashApply(repo: Repository, target: StashTarget, pop: boolean, conflicted: LocalizedText): Promise<'ok' | 'conflict' | 'moved'> {
   if (!isObjectName(target.hash)) throw new Error('A stash is named by its full object name');
   return repo.mutate(async (git) => {
-    if (await hasUnmerged(git)) throw new Error(conflicted);
+    if (await hasUnmerged(git)) throw new LocalizedError(conflicted);
     if (pop && !(await names(git, target))) return 'moved';
     // --quiet: otherwise git runs a status that enters every submodule, a declined project's included
     const args = ['stash', pop ? 'pop' : 'apply', '--quiet', ...repo.endOfOptions(), pop ? stashRef(target.index) : target.hash];

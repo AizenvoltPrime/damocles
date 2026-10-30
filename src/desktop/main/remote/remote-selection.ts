@@ -18,7 +18,7 @@ export interface RemoteSelectionDeps<C extends AuthorityChat, V extends Authorit
   readonly host: (authority: string) => SelectionHost<C> | undefined;
   // moves Files, Search, Quick Open and new terminals to the project and connects its authority; opens no chat
   readonly showProject: (key: string) => void;
-  // the project's last viewed chat while it exists, else a new chat in it
+  // the project's last viewed chat while it exists, once it is gone the top of its Chats list, else a new chat; never viewed: a new chat
   readonly selectChatOf: (core: C, key: string) => Promise<void>;
 }
 

@@ -208,6 +208,8 @@ export const MAIN_CORE_IMPORTS = [
   'config/retired-secrets',
   'config/settings-file',
   'executable-path',
+  // l() and verbatim(): text main hands a chat page, which renders it in its own language
+  'l10n',
   'logger',
   'paths',
   'pi-session/chat-changes',

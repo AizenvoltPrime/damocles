@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Disposable } from '../../platform/disposable';
 import type { LocalizationService } from '../../platform/localization-service';
+import { fillMessage, renderLocalizedText, type LocalizedText } from '../../shared/localized-text';
 import { Emitter } from './emitter';
 import { LANGUAGE_SETTING, parseDesktopLanguage, type DesktopLanguageSetting } from './desktop-configuration';
 import { parseSettingsText } from '../../core/config/settings-file';
@@ -11,6 +12,10 @@ export type DesktopLanguage = 'en' | 'el';
 
 export interface DesktopLocalizationService extends LocalizationService {
   readonly language: DesktopLanguage;
+  // {0}, {1}, ... in message are replaced by args, as vscode.l10n.t does
+  t(message: string, ...args: Array<string | number | boolean>): string;
+  // core's text in this process's language
+  render(text: LocalizedText): string;
   // package.nls(.el).json string by key, e.g. 'command.openChat.title'
   packageString(key: string): string;
   setLanguage(language: DesktopLanguage): void;
@@ -53,14 +58,6 @@ export function launchLanguage(setting: DesktopLanguageSetting, stored: string |
   return setting === 'system' ? normalizeLanguage(stored ?? osLocale) : setting;
 }
 
-// {0}, {1}, ... are replaced by the positional args; an index with no arg stays as written, as vscode.l10n.t does.
-export function formatMessage(template: string, args: ReadonlyArray<string | number | boolean>): string {
-  return template.replace(/\{(\d+)\}/g, (match, index: string) => {
-    const arg = args[Number(index)];
-    return arg === undefined ? match : String(arg);
-  });
-}
-
 // A Map, so a message such as 'constructor' never resolves to an Object.prototype member.
 function readStringTable(filePath: string): ReadonlyMap<string, string> {
   const parsed: unknown = JSON.parse(readFileSync(filePath, 'utf8'));
@@ -95,7 +92,8 @@ export function createDesktopLocalizationService(resourceRoot: string, initial: 
     get language() {
       return language;
     },
-    t: (message, ...args) => formatMessage(tables.messages.get(message) ?? message, args),
+    t: (message, ...args) => fillMessage(tables.messages.get(message) ?? message, args),
+    render: (text) => renderLocalizedText(text, (key) => tables.messages.get(key), language),
     packageString: (key) => {
       const value = tables.packageStrings.get(key) ?? english.packageStrings.get(key);
       if (value === undefined) throw new Error(`No package.nls string for ${key}`);

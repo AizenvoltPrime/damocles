@@ -46,6 +46,8 @@ import type { HandlerDependencies, HandlerContext } from "../../types";
 import type { ExtensionToWebviewMessage } from "../../../../../shared/types/messages";
 import { installFakePlatform, type FakePlatform } from "../../../../../__mocks__/fake-platform";
 import { createFakeRemoteHost } from "../../../../../__mocks__/fake-remote-host";
+import { englishText, type LocalizedText } from "../../../../../shared/localized-text";
+import { installLogSink } from "../../../../logger";
 
 interface AuthPrompt {
   type: "text" | "secret" | "manual_code" | "select";
@@ -196,7 +198,7 @@ describe("createOpenAIHandlers", () => {
     expect(platform.secrets.entries.has(OPENAI_API_KEY_SECRET)).toBe(false);
     const ack = sent.find((m) => m.type === "setOpenAIApiKeyAck");
     expect(ack).toMatchObject({ type: "setOpenAIApiKeyAck", requestId: "r2", ok: false });
-    expect((ack as { error?: string }).error).toContain("rejected");
+    expect(englishText((ack as { error: LocalizedText }).error)).toContain("rejected");
     expect(sent.some((m) => m.type === "openaiAuthStatusChanged")).toBe(false);
   });
 
@@ -260,7 +262,7 @@ describe("createOpenAIHandlers", () => {
 
     await handlers.startChatGPTOAuth!({ type: "startChatGPTOAuth" }, ctx);
 
-    expect(sent.find((m) => m.type === "openaiChatGPTAuthFailed")).toEqual({ type: "openaiChatGPTAuthFailed", error: "Sign-in cancelled." });
+    expect(sent.find((m) => m.type === "openaiChatGPTAuthFailed")).toEqual({ type: "openaiChatGPTAuthFailed", error: { message: "Sign-in cancelled." } });
   });
 
   it("startChatGPTOAuth completes when pi aborts the paste prompt after the callback wins", async () => {
@@ -283,11 +285,26 @@ describe("createOpenAIHandlers", () => {
     expect(sent.some((m) => m.type === "openaiChatGPTAuthFailed")).toBe(false);
   });
 
+  it("startChatGPTOAuth shows a failure pi's text quotes the OAuth response in as its class and status alone, and logs neither", async () => {
+    const lines: string[] = [];
+    installLogSink({ appendLine: (line) => void lines.push(line), show: () => undefined, dispose: () => undefined });
+    mock.modelRuntime.login.mockRejectedValueOnce(new Error('OpenAI OAuth token request failed (400): {"access_token":"tok-secret"}'));
+
+    await handlers.startChatGPTOAuth!({ type: "startChatGPTOAuth" }, ctx);
+
+    expect(sent.find((m) => m.type === "openaiChatGPTAuthFailed")).toEqual({
+      type: "openaiChatGPTAuthFailed",
+      error: { message: "The provider could not complete the sign-in (HTTP {0}).", args: [400] },
+    });
+    expect(lines.some((line) => line.includes("ChatGPT sign-in failed: provider (Error) (HTTP 400)"))).toBe(true);
+    expect(JSON.stringify([sent, lines])).not.toContain("tok-secret");
+  });
+
   it("startChatGPTOAuth surfaces a login failure and resets busy for the next attempt", async () => {
     mock.modelRuntime.login.mockRejectedValueOnce(new Error("token exchange failed"));
 
     await handlers.startChatGPTOAuth!({ type: "startChatGPTOAuth" }, ctx);
-    expect(sent.find((m) => m.type === "openaiChatGPTAuthFailed")).toEqual({ type: "openaiChatGPTAuthFailed", error: "token exchange failed" });
+    expect(sent.find((m) => m.type === "openaiChatGPTAuthFailed")).toEqual({ type: "openaiChatGPTAuthFailed", error: { message: "The provider could not complete the sign-in." } });
 
     sent.length = 0;
     await handlers.startChatGPTOAuth!({ type: "startChatGPTOAuth" }, ctx);
@@ -316,7 +333,7 @@ describe("createOpenAIHandlers", () => {
       await handlers[signOut]!({ type: signOut }, ctx);
       await signInPromise;
 
-      expect(sent.find((m) => m.type === "openaiChatGPTAuthFailed")).toEqual({ type: "openaiChatGPTAuthFailed", error: "Sign-in cancelled." });
+      expect(sent.find((m) => m.type === "openaiChatGPTAuthFailed")).toEqual({ type: "openaiChatGPTAuthFailed", error: { message: "Sign-in cancelled." } });
       await handlers.startChatGPTOAuth!({ type: "startChatGPTOAuth" }, ctx);
       expect(mock.modelRuntime.login).toHaveBeenCalledTimes(2);
     },
@@ -347,7 +364,7 @@ describe("createOpenAIHandlers", () => {
     await signInPromise;
 
     expect(sent.find((m) => m.type === ackType)).toMatchObject({ ok: true });
-    expect(sent.find((m) => m.type === "openaiChatGPTAuthFailed")).toEqual({ type: "openaiChatGPTAuthFailed", error: "Sign-in cancelled." });
+    expect(sent.find((m) => m.type === "openaiChatGPTAuthFailed")).toEqual({ type: "openaiChatGPTAuthFailed", error: { message: "Sign-in cancelled." } });
   });
 
   it("acks a key save that pi committed before a CredentialSynchronizationError as saved", async () => {
@@ -575,7 +592,7 @@ describe("createOpenAIHandlers", () => {
       sent.length = 0;
       vi.spyOn(PiRuntime.get(), "applyOpenAIPreferApiKey").mockRejectedValueOnce(new Error("sync failed"));
       await handlers.setOpenAIPreferApiKey!({ type: "setOpenAIPreferApiKey", preferApiKey: false, requestId: "r2" }, ctx);
-      expect(sent).toContainEqual({ type: "setOpenAIPreferApiKeyAck", requestId: "r2", ok: false, error: "Failed to apply the preference" });
+      expect(sent).toContainEqual({ type: "setOpenAIPreferApiKeyAck", requestId: "r2", ok: false, error: { message: "Failed to apply the preference" } });
       expect(sent).not.toContainEqual(cleared);
     });
   });
@@ -635,7 +652,7 @@ describe("createOpenAIHandlers", () => {
     const flow = (viewKey: string) => toView.get(viewKey)!.filter((m) => m.type.startsWith("openaiChatGPTAuth"));
     expect(flow("view-b")).toEqual([
       { type: "openaiChatGPTAuthStarted" },
-      { type: "openaiChatGPTAuthFailed", error: "Sign-ins change only in the User tab on your computer." },
+      { type: "openaiChatGPTAuthFailed", error: { message: "Sign-ins change only in the User tab on your computer." } },
     ]);
     expect(flow("view-a")).toEqual([]);
     expect(mock.modelRuntime.login).not.toHaveBeenCalled();

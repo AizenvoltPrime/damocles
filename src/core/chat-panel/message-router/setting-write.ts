@@ -4,6 +4,8 @@ import { settingsFolderOf } from "../../workspace-folders/folder-registry";
 import { effectiveScope, type SettingWrite } from "../settings-manager/utils";
 import { settingsViewWriteScope } from "../settings-view-scope";
 import { log } from "../../logger";
+import { errorTextOf } from "../../l10n";
+import type { LocalizedText } from "../../../shared/localized-text";
 
 /**
  * Runs one settings write for the panel and reports it under `key`, the row's key, as `settingWriteResult` (M7). On
@@ -15,7 +17,7 @@ export async function writeSetting(
   deps: Pick<HandlerDependencies, "postMessage" | "platform">,
   ctx: HandlerContext,
   key: string,
-  failure: (detail: string) => string,
+  failure: (detail: LocalizedText) => LocalizedText,
   write: () => Promise<SettingWrite>,
 ): Promise<boolean> {
   const { postMessage, platform } = deps;
@@ -23,8 +25,8 @@ export async function writeSetting(
   try {
     written = await write();
   } catch (err) {
-    const detail = err instanceof Error ? err.message : "Unknown error";
-    log("[MessageRouter] Error saving %s: %s", key, detail);
+    const detail = errorTextOf(err);
+    log("[MessageRouter] Error saving %s: %s", key, err instanceof Error ? err.message : String(err));
     postMessage(ctx.reply, { type: "notification", message: failure(detail), notificationType: "error" });
     postMessage(ctx.reply, { type: "settingWriteResult", key, ok: false, error: detail });
     return false;

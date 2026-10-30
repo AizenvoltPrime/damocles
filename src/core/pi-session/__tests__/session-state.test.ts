@@ -5,6 +5,7 @@ import type { CanUseToolContext } from '../../permission-handler/types';
 import type { FinishTurn } from '@earendil-works/pi-agent-core';
 import { readFileSync } from 'node:fs';
 import { backendSourceFiles } from '../../../__mocks__/source-tree';
+import { verbatim } from '../../l10n';
 
 /**
  * Session state (`sessionStateChanged`), end to end through the real publisher.
@@ -837,7 +838,7 @@ describe('panel activity, from the same publisher', () => {
       return { promise, resolve };
     }
 
-    const SESSION_WINDOW = { windowId: 'five_hour', windowLabel: 'Session (5hr)', resetsAt: Date.parse('2026-03-01T15:00:00Z') };
+    const SESSION_WINDOW = { windowId: 'five_hour', windowLabel: { message: 'Session (5hr)' }, resetsAt: Date.parse('2026-03-01T15:00:00Z') };
 
     it('goes idle at once, and its outcome waits for the refresh to name the full window', async () => {
       const { session, messages } = await startPanel();
@@ -912,10 +913,10 @@ describe('panel activity, from the same publisher', () => {
 
     const last = activity[activity.length - 1]!;
     expect(last.pendingPrompts).toEqual([
-      { id: 't1', kind: 'approval', owner: { kind: 'main' }, summary: 'run `npm test`' },
-      { id: 'q1', kind: 'question', owner: { kind: 'main' }, summary: 'Which store?' },
-      { id: 't2', kind: 'approval', owner: { kind: 'main' }, summary: 'run `echo hi`' },
-      { id: lastUiRequest(messages).requestId, kind: 'input', owner: { kind: 'main' }, summary: 'Which path?' },
+      { id: 't1', kind: 'approval', owner: { kind: 'main' }, summary: { message: 'run `{0}`', args: ['npm test'] } },
+      { id: 'q1', kind: 'question', owner: { kind: 'main' }, summary: { message: '{0}', args: ['Which store?'] } },
+      { id: 't2', kind: 'approval', owner: { kind: 'main' }, summary: { message: 'run `{0}`', args: ['echo hi'] } },
+      { id: lastUiRequest(messages).requestId, kind: 'input', owner: { kind: 'main' }, summary: { message: '{0}', args: ['Which path?'] } },
     ]);
     expect(activity.map((a) => a.pendingPrompts.length)).toEqual([0, 0, 1, 2, 3, 4]);
     for (const a of activity) expect(a.pendingKinds).toEqual([...new Set(a.pendingPrompts.map((p) => p.kind))].sort());
@@ -1005,15 +1006,15 @@ describe('panel activity, from the same publisher', () => {
   });
 
   it('classifies a provider rate or usage limit apart from any other error', () => {
-    expect(turnOutcomeOfError('429 {"type":"rate_limit_error"}')).toEqual({ kind: 'rateLimit' });
-    expect(turnOutcomeOfError('Too Many Requests')).toEqual({ kind: 'rateLimit' });
-    expect(turnOutcomeOfError('subscription_sharing_usage_limit_exceeded')).toEqual({ kind: 'rateLimit' });
+    expect(turnOutcomeOfError(verbatim('429 {"type":"rate_limit_error"}'))).toEqual({ kind: 'rateLimit' });
+    expect(turnOutcomeOfError(verbatim('Too Many Requests'))).toEqual({ kind: 'rateLimit' });
+    expect(turnOutcomeOfError(verbatim('subscription_sharing_usage_limit_exceeded'))).toEqual({ kind: 'rateLimit' });
     // pi 1.4.0 appends its workspace hint to a ChatGPT Business per-user limit and does not retry it.
-    expect(turnOutcomeOfError(
+    expect(turnOutcomeOfError(verbatim(
       'OpenAI API error: subscription_sharing_workplace_individual_usage_limit_exceeded\n' +
         "You've reached your ChatGPT workspace's usage limit. Ask your workspace admin to increase it at admin.openai.com → Workspace → Usage limits.",
-    )).toEqual({ kind: 'rateLimit' });
-    expect(turnOutcomeOfError('invalid x-api-key')).toEqual({ kind: 'error', message: 'invalid x-api-key' });
+    ))).toEqual({ kind: 'rateLimit' });
+    expect(turnOutcomeOfError(verbatim('invalid x-api-key'))).toEqual({ kind: 'error', message: verbatim('invalid x-api-key') });
   });
 });
 

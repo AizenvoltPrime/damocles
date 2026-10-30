@@ -1,9 +1,6 @@
-import { randomBytes } from 'crypto';
 import type { Disposable } from '../../platform/disposable';
 import type { PanelHost, WindowService } from '../../platform/window-service';
-import { browserPageHtml, type BrowserPageStrings } from '../../shared/browser-page-html';
 import { isNotSecurePage } from '../../shared/typed-address';
-import { t } from '../l10n';
 import type { ElementOverlayInfo } from './types';
 
 export class BrowserPanel {
@@ -100,27 +97,10 @@ export class BrowserPanel {
     this.panel?.reveal();
   }
 
+  // each host builds the page with its own strings in its own language
   private showPage(panel: PanelHost): void {
-    const toolbar = !this.window.chatBrowserPane;
-    if (panel.showPage) {
-      panel.showPage({ kind: 'browser', toolbar });
-      return;
-    }
-    // Built here rather than at module load so the strings are resolved per panel construction, at a
-    // point where the l10n bundle for the active display language is guaranteed loaded.
-    const strings: BrowserPageStrings = {
-      back: t('Back'),
-      forward: t('Forward'),
-      reload: t('Reload'),
-      pickElement: t('Pick Element'),
-      devTools: t('Open Developer Tools (F12)'),
-      newTab: t('New Tab'),
-      urlPlaceholder: t('Enter URL...'),
-      notSecure: t('Not secure'),
-      notSecureDetail: t('The connection to this site is not encrypted, so others on the network can read and change what it sends.'),
-      waiting: t('Waiting for browser frames...'),
-    };
-    panel.setHtml(browserPageHtml({ nonce: randomBytes(16).toString('base64'), strings, toolbar, themeCss: panel.themeCssSource() }));
+    if (!panel.showPage) throw new Error('This host cannot show a browser page');
+    panel.showPage({ kind: 'browser', toolbar: !this.window.chatBrowserPane });
   }
 
   private initPanel(): void {

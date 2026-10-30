@@ -61,9 +61,10 @@ describe("the browser on a daemon's core", () => {
     const ctx = { host: chat } as unknown as HandlerContext;
     await handlers.openBrowser!({ type: 'openBrowser' } as WebviewToExtensionMessage, ctx);
     await handlers.pickBrowserElement!({ type: 'pickBrowserElement' } as WebviewToExtensionMessage, ctx);
+    const BROWSER_REFUSAL = { message: '{0} is not available in a chat on a remote host yet: it runs on your computer ({1}).', args: [{ message: 'The browser' }, USER_SCOPE_UNAVAILABLE] };
     expect(posted).toEqual([
-      { type: 'notification', message: expect.stringContaining(USER_SCOPE_UNAVAILABLE), notificationType: 'warning' },
-      { type: 'notification', message: expect.stringContaining(USER_SCOPE_UNAVAILABLE), notificationType: 'warning' },
+      { type: 'notification', message: BROWSER_REFUSAL, notificationType: 'warning' },
+      { type: 'notification', message: BROWSER_REFUSAL, notificationType: 'warning' },
     ]);
     expect(browserService.showForChat).not.toHaveBeenCalled();
     expect(browserService.pickElement).not.toHaveBeenCalled();

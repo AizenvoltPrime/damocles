@@ -5,8 +5,9 @@ import { logBeforeQuit, mainLog } from './support/app';
 import { activeChat, expect, test } from './support/fixtures';
 import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
+import { answerConfirm } from './support/overlay';
 import { shellState } from './support/shell';
-import { clickSectionAction, listChats, readyShell } from './support/shell-ui';
+import { chatRow, clickChat, clickRowAction, clickSectionAction, listChats, projectRow, readyShell } from './support/shell-ui';
 import { addProject, answerDialogs, answerOpenDialog, chatInput, clickMenu, hostMessages, postFromWebview, recordHostMessages, sendAndAwaitEcho, TRUST_PROMPT } from './support/ui';
 
 // AD8 keeps the selected chat and three idle ones, so four stored chats are all still loaded at quit.
@@ -95,6 +96,122 @@ test('AD8: a relaunch keeps every saved idle chat loaded and saved, and lists ea
     expect((await shellState(app)).selected).toEqual({ projectKey, chatId: ids.at(-1) });
     await desktop.close();
     expect.soft(logBeforeQuit(home).slice(logBefore), 'no saved chat is unloaded at launch').not.toContain('[chats] unloading chat');
+  } finally {
+    await stub.close();
+  }
+});
+
+// Sends a prompt in the selected chat, a new one from the New button unless the selected chat is new already, and returns the
+// chat's session id once its first write gave it one.
+async function storedChat(app: ElectronApplication, shell: Page, prompt: string): Promise<string> {
+  const before = (await shellState(app)).selected.chatId;
+  if (!before?.startsWith('new:')) {
+    await clickSectionAction(shell, 'new-chat');
+    await expect.poll(async () => {
+      const id = (await shellState(app)).selected.chatId;
+      return id !== before && id?.startsWith('new:');
+    }).toBe(true);
+  }
+  const page = await activeChat(app);
+  await expect(chatInput(page)).toBeVisible();
+  await sendAndAwaitEcho(page, prompt);
+  await expect.poll(async () => (await shellState(app)).selected.chatId?.startsWith('new:')).toBe(false);
+  return (await shellState(app)).selected.chatId!;
+}
+
+test('after a relaunch, selecting a project shows the chat last viewed in it', async ({ foreground: _foreground, home, launch }) => {
+  test.setTimeout(240_000);
+  const stub = await startOpenAIStub();
+  try {
+    seedStubModel(home, stub.baseUrl);
+    const other = path.join(path.dirname(home.project), 'other');
+    fs.mkdirSync(other, { recursive: true });
+    let desktop = await launch();
+    let app = desktop.app;
+    await expect(chatInput(await activeChat(app))).toBeVisible();
+    await addProject(app, home.project, true);
+    let shell = await readyShell(app);
+    const p = (await shellState(app)).selected.projectKey!;
+    // B before A, so the top of P's Chats list (stored chats newest first) is A, never the chat last viewed
+    const b = await storedChat(app, shell, 'chat b');
+    const a = await storedChat(app, shell, 'chat a');
+    await clickChat(shell, b);
+    await expect.poll(async () => (await shellState(app)).selected).toEqual({ projectKey: p, chatId: b });
+    await addProject(app, other, true);
+    const q = (await shellState(app)).selected.projectKey!;
+    const qChat = await storedChat(app, shell, 'chat q');
+    await expect.poll(async () => (await listChats(app, p)).chats[0]?.id).toBe(a);
+    await desktop.close();
+
+    desktop = await launch();
+    app = desktop.app;
+    shell = await readyShell(app);
+    await expect.poll(async () => (await shellState(app)).selected).toEqual({ projectKey: q, chatId: qChat });
+    await projectRow(shell, p).click();
+    await expect.poll(async () => (await shellState(app)).selected).toEqual({ projectKey: p, chatId: b });
+    await expect((await activeChat(app)).getByText('Echo: chat b', { exact: true })).toBeVisible();
+  } finally {
+    await stub.close();
+  }
+});
+
+test('deleting the chat being viewed selects the top of its project\'s Chats list, never a new chat', async ({ foreground: _foreground, home, launch }) => {
+  test.setTimeout(180_000);
+  const stub = await startOpenAIStub();
+  try {
+    seedStubModel(home, stub.baseUrl);
+    const { app } = await launch();
+    await expect(chatInput(await activeChat(app))).toBeVisible();
+    await addProject(app, home.project, true);
+    const shell = await readyShell(app);
+    const p = (await shellState(app)).selected.projectKey!;
+    // A before B, so B tops P's Chats list (stored chats newest first) while A is the chat viewed
+    const a = await storedChat(app, shell, 'chat a');
+    const b = await storedChat(app, shell, 'chat b');
+    await clickChat(shell, a);
+    await expect.poll(async () => (await shellState(app)).selected).toEqual({ projectKey: p, chatId: a });
+    await expect.poll(async () => (await listChats(app, p)).chats[0]?.id).toBe(b);
+    await clickRowAction(shell, a, 'delete');
+    await answerConfirm(app, true);
+    await expect(chatRow(shell, a)).toHaveCount(0);
+    await expect.poll(async () => (await shellState(app)).selected).toEqual({ projectKey: p, chatId: b });
+    await expect((await activeChat(app)).getByText('Echo: chat b', { exact: true })).toBeVisible();
+  } finally {
+    await stub.close();
+  }
+});
+
+test('a loaded chat moved to another project leaves the first one\'s memory, so selecting the first shows the top of its list', async ({ foreground: _foreground, home, launch }) => {
+  test.setTimeout(180_000);
+  const stub = await startOpenAIStub();
+  try {
+    seedStubModel(home, stub.baseUrl);
+    const other = path.join(path.dirname(home.project), 'other');
+    fs.mkdirSync(other, { recursive: true });
+    const { app } = await launch();
+    await expect(chatInput(await activeChat(app))).toBeVisible();
+    await addProject(app, home.project, true);
+    const shell = await readyShell(app);
+    const p = (await shellState(app)).selected.projectKey!;
+    const a = await storedChat(app, shell, 'chat a');
+    await addProject(app, other, true);
+    const q = (await shellState(app)).selected.projectKey!;
+    await projectRow(shell, p).click();
+    await expect.poll(async () => (await shellState(app)).selected).toEqual({ projectKey: p, chatId: a });
+    // a new chat in P becomes P's last viewed chat, then moves to Q as the settings view's working folder picker moves it
+    await clickSectionAction(shell, 'new-chat');
+    let moved: string | undefined;
+    await expect.poll(async () => {
+      moved = (await shellState(app)).selected.chatId;
+      return moved !== a && moved?.startsWith('new:');
+    }).toBe(true);
+    const page = await activeChat(app);
+    await expect(chatInput(page)).toBeVisible();
+    await postFromWebview(page, { type: 'setPanelWorkspaceFolder', folderKey: q });
+    await expect.poll(async () => (await shellState(app)).selected).toEqual({ projectKey: q, chatId: moved });
+    await projectRow(shell, p).click();
+    await expect.poll(async () => (await shellState(app)).selected).toEqual({ projectKey: p, chatId: a });
+    await expect((await activeChat(app)).getByText('Echo: chat a', { exact: true })).toBeVisible();
   } finally {
     await stub.close();
   }

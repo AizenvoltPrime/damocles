@@ -20,6 +20,7 @@
     "body": {
       "tooLarge": "Too large to display ({size} MiB, limit {limit} MiB)",
       "binary": "Binary file not shown",
+      "notAFile": "This path is not a file.",
       "unreadable": "Could not read the file: {error}"
     }
   },
@@ -1581,7 +1582,6 @@
     "rewindFiles": "Files rewound successfully",
     "rewindFailed": "Rewind failed: {message}",
     "noSessionToBindPlan": "Start a conversation before binding a plan file",
-    "authError": "Authentication error: {error}",
     "configChange": {
       "user": "User settings updated",
       "project": "Project settings updated",
@@ -1602,6 +1602,10 @@
       "modelSignInRequired": "Sign in to a model provider in Models & accounts to send messages. Your message is back in the input.",
       "modelUnavailable": "Pick a model this chat can run. Your message is back in the input.",
       "promptRejected": "Your message could not be sent, so it is back in the input. The chat says why.",
+      "sendInProgress": "This chat started working on something else before your message arrived, so your message is back in the input.",
+      "queueRunEnded": "The agent finished before your message could join its turn, so your message is back in the input.",
+      "queueBudgetStopped": "The budget limit stopped this turn before your message could join it, so your message is back in the input.",
+      "queueNoRuntime": "This chat's agent is not running, so your message is back in the input. Send it again to start it.",
       "providerSignIn": "Sign in to {provider} to send messages with this chat's model. Your message is back in the input."
     }
   },

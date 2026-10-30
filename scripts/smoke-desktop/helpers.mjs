@@ -22,9 +22,15 @@ async function poll(fn, timeout = 30_000, every = 250) {
   throw new Error(`poll timed out: ${last instanceof Error ? last.message : JSON.stringify(last)}`);
 }
 
-/** The helpers every step receives as `h`. `getApp` returns the running ElectronApplication. */
-export function createHelpers(getApp, dir) {
+/** The helpers every step receives as `h`. `getApp` returns the running ElectronApplication, `getHome` its hermetic home. */
+export function createHelpers(getApp, dir, getHome) {
   const app = () => getApp();
+  /** The launched app's home folder (its `~`), which `--quit` deletes. */
+  const home = () => {
+    const h = getHome();
+    if (!h) throw new Error('The app has not been launched; post --launch first.');
+    return h.home;
+  };
   const pageBy = (url) => app().windows().find((p) => !p.isClosed() && p.url() === url);
   const shell = () => poll(() => pageBy(SHELL_URL));
   const overlay = () => poll(() => pageBy(OVERLAY_URL));
@@ -196,7 +202,7 @@ export function createHelpers(getApp, dir) {
   }
 
   return {
-    sleep, poll, app, dir, fs, path, pageBy, shell, overlay, popup, state, chatPages, findChat, active, runMenuItem,
+    sleep, poll, app, dir, home, fs, path, pageBy, shell, overlay, popup, state, chatPages, findChat, active, runMenuItem,
     input, prompt, modeBtn, yoloBtn, modelBtn, send, slash, running, tail, shot,
     setMode, setYolo, setModel, prepare, newChat, goTo, addProject, answerQuestion, waitCard,
   };

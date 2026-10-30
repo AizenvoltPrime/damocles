@@ -1,10 +1,11 @@
 import { ref, onUnmounted } from "vue";
 import type { VoiceStatus } from "@shared/types/voice";
+import type { LocalizedText } from "@shared/localized-text";
 import { usePlatformBridge } from "./usePlatformBridge";
 
 export function useVoiceInput() {
   const status = ref<VoiceStatus>("idle");
-  const errorMessage = ref<string | null>(null);
+  const errorMessage = ref<LocalizedText | null>(null);
   const { postMessage } = usePlatformBridge();
 
   function startRecording(): void {
@@ -34,7 +35,7 @@ export function useVoiceInput() {
     errorMessage.value = null;
   }
 
-  function setError(msg: string): void {
+  function setError(msg: LocalizedText): void {
     status.value = "error";
     errorMessage.value = msg;
     setTimeout(() => {

@@ -323,22 +323,28 @@ describe('PiRuntime OpenAI auth', () => {
     expect(rt.preferOpenAIApiKey()).toBe(true);
 
     await vi.waitFor(() => expect(mock.modelRuntime.runtimeKeys.get('openai')).toBe('sk-test'));
-    await vi.waitFor(() => expect(session.publishAccountInfo).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(session.publishAccountInfo).toHaveBeenCalledTimes(1));
     rt.preferOpenAIApiKey();
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(session.publishAccountInfo).toHaveBeenCalledTimes(2);
+    expect(session.publishAccountInfo).toHaveBeenCalledTimes(1);
   });
 
-  it('re-syncs when another window changes the key secret', async () => {
+  it('re-syncs and republishes once when another window changes the key secret', async () => {
     const rt = PiRuntime.get(agentDir);
     await rt.init();
+    const session = { publishAccountInfo: vi.fn(), publishAvailableModels: vi.fn() };
+    rt.registerSessionMutator('s1', session as never);
     await platform.secrets.store(OPENAI_API_KEY_SECRET, 'sk-other-window');
     await vi.waitFor(() => expect(mock.modelRuntime.runtimeKeys.get('openai')).toBe('sk-other-window'));
     expect(rt.getOpenAIAuthStatus().apiKey).toBe(true);
+    await vi.waitFor(() => expect(session.publishAccountInfo).toHaveBeenCalledTimes(1));
 
     await platform.secrets.delete(OPENAI_API_KEY_SECRET);
     await vi.waitFor(() => expect(mock.modelRuntime.runtimeKeys.has('openai')).toBe(false));
     expect(rt.getOpenAIAuthStatus().apiKey).toBe(false);
+    await vi.waitFor(() => expect(session.publishAccountInfo).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(session.publishAccountInfo).toHaveBeenCalledTimes(2);
   });
 
   it('a flow abort ends a sign-in that holds the credential chain, and a sign-out queued behind it then runs', async () => {
@@ -355,7 +361,9 @@ describe('PiRuntime OpenAI auth', () => {
     await expect(rt.signOutChatGPT()).resolves.toEqual({ apiKey: false, chatgpt: false, codex: false });
   });
 
-  it('republishes the account state on a key secret change while a pending sign-in holds the chain', async () => {
+  // The key presence the account state reads is the sync's, so a publication before it would restate the old state. The sign-in's
+  // own resync reads the new key first, and its caller publishes what that resync applied.
+  it('applies a key secret change once a pending sign-in frees the chain, publishing nothing before', async () => {
     const rt = PiRuntime.get(agentDir);
     await rt.init();
     const session = { publishAccountInfo: vi.fn(), publishAvailableModels: vi.fn() };
@@ -368,12 +376,15 @@ describe('PiRuntime OpenAI auth', () => {
     await vi.waitFor(() => expect(mock.modelRuntime.login).toHaveBeenCalled());
 
     await platform.secrets.store(OPENAI_API_KEY_SECRET, 'sk-other-window');
-    await vi.waitFor(() => expect(session.publishAccountInfo).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(session.publishAccountInfo).not.toHaveBeenCalled();
 
     abort.abort();
     await expect(signIn).rejects.toThrow('Login cancelled');
-    await vi.waitFor(() => expect(session.publishAccountInfo).toHaveBeenCalledTimes(2));
-    expect(mock.modelRuntime.runtimeKeys.get('openai')).toBe('sk-other-window');
+    await vi.waitFor(() => expect(mock.modelRuntime.runtimeKeys.get('openai')).toBe('sk-other-window'));
+    expect(rt.getOpenAIAuthStatus().apiKey).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(session.publishAccountInfo).not.toHaveBeenCalled();
   });
 
   it('reports a sign-in that pi stored before a CredentialSynchronizationError as signed in', async () => {

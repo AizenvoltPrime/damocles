@@ -17,6 +17,7 @@ import {
   type NotificationCenterDeps,
 } from '../notification-center';
 import { fakeHandleWhileOpen } from './fake-popup-channels';
+import { englishText } from '../../../shared/localized-text';
 
 const CHAT: ChatRef = { panelId: 'view-1', sessionId: 's1', project: { key: 'acme', name: 'acme' }, title: 'Fix login' };
 
@@ -36,6 +37,7 @@ let changes: number;
 
 function center(overrides: Partial<NotificationCenterDeps> = {}): NotificationCenter {
   return new NotificationCenter({
+    render: englishText,
     doNotDisturb: () => dnd,
     setDoNotDisturb: async (on) => {
       dnd = on;
@@ -60,7 +62,7 @@ function center(overrides: Partial<NotificationCenterDeps> = {}): NotificationCe
 }
 
 function prompt(id: string, kind: PendingPrompt['kind'], owner: PendingPrompt['owner'] = { kind: 'main' }, summary?: string): PendingPrompt {
-  return { id, kind, owner, ...(summary ? { summary } : {}) };
+  return { id, kind, owner, ...(summary ? { summary: { message: summary } } : {}) };
 }
 
 function activity(...prompts: PendingPrompt[]): ChatActivity {
@@ -213,7 +215,7 @@ describe('notification center: settled turns and usage', () => {
   it('maps an error and a rate limit to error, a budget stop to limit, and ignores a cancel', async () => {
     const notifications = center();
     selected = 'host-1';
-    notifications.turnSettled('host-1', { kind: 'error', message: 'Overloaded' });
+    notifications.turnSettled('host-1', { kind: 'error', message: { message: 'Overloaded' } });
     notifications.turnSettled('host-1', { kind: 'rateLimit', resetsAt: 1_700_000_000_000 });
     notifications.turnSettled('host-1', { kind: 'budget' });
     notifications.turnSettled('host-1', { kind: 'cancelled' });
@@ -230,8 +232,8 @@ describe('notification center: settled turns and usage', () => {
 
   it('names the full window a rate limit waits on and its reset, and no window when core found none (D55)', async () => {
     const notifications = center();
-    notifications.turnSettled('host-1', { kind: 'rateLimit', windowId: 'seven_day', windowLabel: '  Weekly  ', resetsAt: 1_700_000_000_000 });
-    notifications.turnSettled('host-1', { kind: 'rateLimit', windowId: 'five_hour', windowLabel: ' ' });
+    notifications.turnSettled('host-1', { kind: 'rateLimit', windowId: 'seven_day', windowLabel: { message: '  Weekly  ' }, resetsAt: 1_700_000_000_000 });
+    notifications.turnSettled('host-1', { kind: 'rateLimit', windowId: 'five_hour', windowLabel: { message: ' ' } });
     await settle();
     expect(notifications.state().entries.map((entry) => entry.body).reverse()).toEqual([
       { kind: 'error', chat: { project: CHAT.project, title: 'Fix login' }, reason: 'rateLimit', windowLabel: 'Weekly', resetsAt: 1_700_000_000_000 },
@@ -245,8 +247,8 @@ describe('notification center: settled turns and usage', () => {
       usageWarningShown: (crossing) => crossing.windowId === 'five_hour',
       recordUsageWarning: (crossing) => recorded.push(crossing),
     });
-    const fiveHour: UsageThresholdCrossing = { provider: 'anthropic', windowId: 'five_hour', windowLabel: 'Session (5hr)', threshold: 80, utilization: 82, resetsAt: 1_700_000_000_000 };
-    const weekly: UsageThresholdCrossing = { provider: 'anthropic', windowId: 'seven_day', windowLabel: 'Weekly', threshold: 95, utilization: 96, resetsAt: 1_700_500_000_000 };
+    const fiveHour: UsageThresholdCrossing = { provider: 'anthropic', windowId: 'five_hour', windowLabel: { message: 'Session (5hr)' }, threshold: 80, utilization: 82, resetsAt: 1_700_000_000_000 };
+    const weekly: UsageThresholdCrossing = { provider: 'anthropic', windowId: 'seven_day', windowLabel: { message: 'Weekly' }, threshold: 95, utilization: 96, resetsAt: 1_700_500_000_000 };
     notifications.usageThreshold(fiveHour);
     expect(notifications.state().entries).toEqual([]);
     expect(shown).toEqual([]);
@@ -261,7 +263,7 @@ describe('notification center: settled turns and usage', () => {
 
   it('raises a usage crossing as limit for the selected chat\'s usage', () => {
     const notifications = center();
-    notifications.usageThreshold({ provider: 'anthropic', windowId: 'five_hour', windowLabel: '5-hour window', threshold: 80, utilization: 85.4, resetsAt: 1_700_000_000_000, planName: 'Max 20x' });
+    notifications.usageThreshold({ provider: 'anthropic', windowId: 'five_hour', windowLabel: { message: '5-hour window' }, threshold: 80, utilization: 85.4, resetsAt: 1_700_000_000_000, planName: 'Max 20x' });
     expect(notifications.state().entries[0]!.body).toEqual({ kind: 'limit', reason: 'usage', windowLabel: '5-hour window', threshold: 80, utilization: 85, resetsAt: 1_700_000_000_000, planName: 'Max 20x' });
     notifications.open(notifications.state().entries[0]!.id);
     expect(ran).toEqual([{ kind: 'usage' }]);
@@ -271,7 +273,7 @@ describe('notification center: settled turns and usage', () => {
 describe('notification center: lives, overflow and the log', () => {
   it('times each kind out after its life, keeping the entry', () => {
     const notifications = center();
-    notifications.usageThreshold({ provider: 'anthropic', windowId: 'seven_day', windowLabel: 'Weekly', threshold: 95, utilization: 96 });
+    notifications.usageThreshold({ provider: 'anthropic', windowId: 'seven_day', windowLabel: { message: 'Weekly' }, threshold: 95, utilization: 96 });
     vi.advanceTimersByTime(KIND_LIFE_MS.limit - 1);
     expect(dismissed).toEqual([]);
     vi.advanceTimersByTime(1);
@@ -281,7 +283,7 @@ describe('notification center: lives, overflow and the log', () => {
 
   it('pauses a held toast\'s life and resumes it with what was left', () => {
     const notifications = center();
-    notifications.usageThreshold({ provider: 'anthropic', windowId: 'seven_day', windowLabel: 'Weekly', threshold: 80, utilization: 81 });
+    notifications.usageThreshold({ provider: 'anthropic', windowId: 'seven_day', windowLabel: { message: 'Weekly' }, threshold: 80, utilization: 81 });
     const id = shown[0]!.id;
     vi.advanceTimersByTime(4000);
     notifications.holdToast(id, true);
@@ -296,7 +298,7 @@ describe('notification center: lives, overflow and the log', () => {
 
   it('restarts a held toast\'s life when its popup page reloads, since the new page holds nothing', () => {
     const notifications = center();
-    notifications.usageThreshold({ provider: 'anthropic', windowId: 'seven_day', windowLabel: 'Weekly', threshold: 80, utilization: 81 });
+    notifications.usageThreshold({ provider: 'anthropic', windowId: 'seven_day', windowLabel: { message: 'Weekly' }, threshold: 80, utilization: 81 });
     const id = shown[0]!.id;
     vi.advanceTimersByTime(4000);
     notifications.holdToast(id, true);
@@ -311,7 +313,7 @@ describe('notification center: lives, overflow and the log', () => {
 
   it(`keeps the newest ${MAX_ENTRIES} entries of the run`, () => {
     const notifications = center();
-    for (let index = 0; index <= MAX_ENTRIES; index++) notifications.usageThreshold({ provider: 'openai', windowId: `w${index}`, windowLabel: `w${index}`, threshold: 80, utilization: 80 });
+    for (let index = 0; index <= MAX_ENTRIES; index++) notifications.usageThreshold({ provider: 'openai', windowId: `w${index}`, windowLabel: { message: `w${index}` }, threshold: 80, utilization: 80 });
     const entries = notifications.state().entries;
     expect(entries).toHaveLength(MAX_ENTRIES);
     expect(entries[0]!.body).toMatchObject({ windowLabel: `w${MAX_ENTRIES}` });
@@ -320,8 +322,8 @@ describe('notification center: lives, overflow and the log', () => {
 
   it('counts unseen entries for the bell until the center opens, and marks a chosen entry read', () => {
     const notifications = center();
-    notifications.usageThreshold({ provider: 'openai', windowId: 'codex_secondary', windowLabel: 'Weekly', threshold: 80, utilization: 80 });
-    notifications.usageThreshold({ provider: 'openai', windowId: 'codex_secondary', windowLabel: 'Weekly', threshold: 95, utilization: 95 });
+    notifications.usageThreshold({ provider: 'openai', windowId: 'codex_secondary', windowLabel: { message: 'Weekly' }, threshold: 80, utilization: 80 });
+    notifications.usageThreshold({ provider: 'openai', windowId: 'codex_secondary', windowLabel: { message: 'Weekly' }, threshold: 95, utilization: 95 });
     expect(notifications.bell()).toMatchObject({ unseen: 2 });
     notifications.markSeen();
     expect(notifications.bell()).toMatchObject({ unseen: 0 });
@@ -403,7 +405,7 @@ describe('notification center: Do not disturb and the popup policy', () => {
   it('shows every toast in the popup window while the main window is focused; its action runs the entry and reads it', async () => {
     const notifications = center();
     notifications.activity('host-1', activity(prompt('a', 'approval', { kind: 'main' }, 'run `npm test`')));
-    notifications.turnSettled('host-2', { kind: 'error', message: 'Overloaded' });
+    notifications.turnSettled('host-2', { kind: 'error', message: { message: 'Overloaded' } });
     void notifications.notice('info', 'Saved', []);
     await settle();
     expect(shown.map((toast) => toast.body.kind)).toEqual(['notice', 'approval', 'error']);
@@ -467,8 +469,8 @@ describe('notification center: Do not disturb and the popup policy', () => {
     popupReady = true;
     notifications.windowOpened();
     expect(shown).toEqual([expect.objectContaining({ body: expect.objectContaining({ kind: 'notice' }), remainingMs: NOTICE_LIFE_MS.withActions })]);
-    notifications.resolveToast(shown[0]!.id, 'Restart Now');
-    await expect(answer).resolves.toBe('Restart Now');
+    notifications.resolveToast(shown[0]!.id, 0);
+    await expect(answer).resolves.toBe(0);
   });
 
   it('replays the toasts still showing to a popup page that loads, and starts their lives then', async () => {
@@ -491,7 +493,7 @@ describe('notification center: read rules, flash (D52)', () => {
     const notifications = center({ describeChat: async (id) => (id === 'host-2' ? other : CHAT) });
     notifications.activity('host-1', activity(prompt('a', 'approval')));
     notifications.turnSettled('host-2', { kind: 'completed' });
-    notifications.usageThreshold({ provider: 'openai', windowId: 'codex_secondary', windowLabel: 'Weekly', threshold: 80, utilization: 80 });
+    notifications.usageThreshold({ provider: 'openai', windowId: 'codex_secondary', windowLabel: { message: 'Weekly' }, threshold: 80, utilization: 80 });
     await settle();
     expect(notifications.bell().unseen).toBe(3);
 
@@ -527,7 +529,7 @@ describe('notification center: read rules, flash (D52)', () => {
     focused = false;
     notifications.turnSettled('host-2', { kind: 'completed' });
     notifications.turnSettled('host-2', { kind: 'error' });
-    notifications.usageThreshold({ provider: 'openai', windowId: 'codex_secondary', windowLabel: 'Weekly', threshold: 80, utilization: 80 });
+    notifications.usageThreshold({ provider: 'openai', windowId: 'codex_secondary', windowLabel: { message: 'Weekly' }, threshold: 80, utilization: 80 });
     void notifications.notice('error', 'Failed', []);
     await settle();
     expect(flashes).toEqual([]);
@@ -581,18 +583,27 @@ describe('notification center: read rules, flash (D52)', () => {
 });
 
 describe('notification center: core notices', () => {
-  it('resolves a notice with the chosen action, undefined on dismissal, and ignores an action it never offered', async () => {
+  it('resolves a notice with the chosen action\'s index, undefined on dismissal, and ignores an action it never offered', async () => {
     const notifications = center();
     const answer = notifications.notice('error', 'Failed', ['Retry']);
-    notifications.resolveToast(shown[0]!.id, 'Delete everything');
+    notifications.resolveToast(shown[0]!.id, 1);
+    notifications.resolveToast(shown[0]!.id, -1);
+    notifications.resolveToast(shown[0]!.id, 0.5);
     notifications.resolveToast(shown[0]!.id, TOAST_OPEN_ACTION);
     expect(notifications.pendingToasts()).toHaveLength(1);
-    notifications.resolveToast(shown[0]!.id, 'Retry');
-    await expect(answer).resolves.toBe('Retry');
+    notifications.resolveToast(shown[0]!.id, 0);
+    await expect(answer).resolves.toBe(0);
     const dismissedAnswer = notifications.notice('info', 'Saved', []);
     notifications.resolveToast(shown[1]!.id, undefined);
     await expect(dismissedAnswer).resolves.toBeUndefined();
     expect(notifications.state().entries.map((entry) => entry.body.kind)).toEqual(['notice', 'notice']);
+  });
+
+  it('tells apart two actions that read alike, since the answer names the action by its index', async () => {
+    const notifications = center();
+    const answer = notifications.notice('warning', 'Open which chat?', ['Fix tests', 'Fix tests']);
+    notifications.resolveToast(shown[0]!.id, 1);
+    await expect(answer).resolves.toBe(1);
   });
 
   it('times a notice out in main, longer when it asks for a choice', async () => {
@@ -624,8 +635,8 @@ describe('notification center: core notices', () => {
 });
 
 describe('notification center: sticky notices', () => {
-  const outcome = async (answer: Promise<string | undefined>): Promise<string | undefined | 'pending'> => {
-    let settled: string | undefined | 'pending' = 'pending';
+  const outcome = async (answer: Promise<number | undefined>): Promise<number | undefined | 'pending'> => {
+    let settled: number | undefined | 'pending' = 'pending';
     void answer.then((value) => {
       settled = value;
     });
@@ -647,10 +658,10 @@ describe('notification center: sticky notices', () => {
     expect(await outcome(notice.answer)).toBe('pending');
     expect(notifications.state().entries).toEqual([expect.objectContaining({ id, awaitingAnswer: true })]);
 
-    notifications.answer(id, 'Delete everything');
+    notifications.answer(id, 1);
     expect(await outcome(notice.answer)).toBe('pending');
-    notifications.answer(id, 'Restart');
-    await expect(notice.answer).resolves.toBe('Restart');
+    notifications.answer(id, 0);
+    await expect(notice.answer).resolves.toBe(0);
     expect(notifications.state().entries).toEqual([expect.objectContaining({ id, read: true })]);
     expect(notifications.state().entries[0]).not.toHaveProperty('awaitingAnswer');
   });
@@ -658,10 +669,10 @@ describe('notification center: sticky notices', () => {
   it('answers from its toast, which also stops its row offering the action', async () => {
     const notifications = center();
     const notice = notifications.stickyNotice('error', 'The engine stopped.', ['Restart']);
-    notifications.resolveToast(shown[0]!.id, 'Restart');
-    await expect(notice.answer).resolves.toBe('Restart');
+    notifications.resolveToast(shown[0]!.id, 0);
+    await expect(notice.answer).resolves.toBe(0);
     expect(notifications.state().entries[0]).not.toHaveProperty('awaitingAnswer');
-    notifications.answer(shown[0]!.id, 'Restart');
+    notifications.answer(shown[0]!.id, 0);
   });
 
   it('withdraws: its toast goes, its entry stays without its actions, and its answer is undefined', async () => {

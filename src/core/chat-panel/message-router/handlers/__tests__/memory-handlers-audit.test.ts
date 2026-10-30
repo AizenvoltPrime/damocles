@@ -63,7 +63,7 @@ describe("createMemoryHandlers — quality audit", () => {
   it("requestMemoryAudit reports an unavailable store as a coded audit error, never silence", async () => {
     const h = makeHarness({ getAuditState: vi.fn(() => null) });
     await h.handlers.requestMemoryAudit!({ type: "requestMemoryAudit" }, h.ctx);
-    expect(h.to("panel-1")).toEqual([{ type: "memoryError", source: "audit", code: "unavailable", message: "Memory system is not available" }]);
+    expect(h.to("panel-1")).toEqual([{ type: "memoryError", source: "audit", code: "unavailable", message: { message: "Memory system is not available" } }]);
   });
 
   it("requestMemoryAuditSummary answers with counts, and with null when memory is off", async () => {
@@ -91,6 +91,19 @@ describe("createMemoryHandlers — quality audit", () => {
       await h.handlers.startMemoryAudit!({ type: "startMemoryAudit" }, h.ctx);
       expect(h.sent).toEqual([{ host: "panel-1", message: expect.objectContaining({ type: "memoryError", source: "audit", code: reason }) }]);
     }
+  });
+
+  it("words each refusal in Damocles' own text, which the view translates", async () => {
+    const texts = [];
+    for (const reason of ["busy", "no-model"] as const) {
+      const h = makeHarness({ startAudit: vi.fn(async () => ({ started: false, reason })) });
+      await h.handlers.startMemoryAudit!({ type: "startMemoryAudit" }, h.ctx);
+      texts.push((h.sent[0]!.message as Extract<ExtensionToWebviewMessage, { type: "memoryError" }>).message);
+    }
+    expect(texts).toEqual([
+      { message: "A quality audit is already running in this or another window." },
+      { message: "No model with a configured credential is available for memory sub-calls, so the audit cannot run." },
+    ]);
   });
 
   it("cancelMemoryAudit broadcasts the settled state, then tells the asking panel how the cancel ended", async () => {

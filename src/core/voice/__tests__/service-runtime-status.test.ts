@@ -4,8 +4,10 @@ import { installFakePlatform } from "../../../__mocks__/fake-platform";
 import type { RuntimeProgress } from "../runtime";
 import type { SidecarManagerStatus } from "../sidecar";
 import type { VoiceRuntimeStatus } from "../../../shared/types/voice";
+import { englishText, type LocalizedText } from "../../../shared/localized-text";
+import { verbatim } from "../../l10n";
 
-type InstallResult = { ok: boolean; pythonExe: string; errorMessage?: string; missing?: "runtime" | "models" };
+type InstallResult = { ok: boolean; pythonExe: string; errorMessage?: LocalizedText; missing?: "runtime" | "models" };
 type InstallOpts = { allowInstall: boolean; signal: AbortSignal; onProgress: (p: RuntimeProgress) => void };
 
 const consent = vi.hoisted(() => ({ given: true }));
@@ -39,7 +41,7 @@ vi.mock("../runtime", () => ({
       const script = runtime.script;
       runtime.script = null;
       if (script) await script(opts);
-      if (opts.signal.aborted) return { ok: false, pythonExe: "/fake/voice/python", errorMessage: "The operation was cancelled." };
+      if (opts.signal.aborted) return { ok: false, pythonExe: "/fake/voice/python", errorMessage: verbatim("The operation was cancelled.") };
       return runtime.results.shift() ?? { ok: true, pythonExe: "/fake/voice/python" };
     }
   },
@@ -70,8 +72,10 @@ vi.mock("../sidecar", () => ({
 
 const { VoiceService } = await import("../service");
 
-const failed = (errorMessage: string): InstallResult => ({ ok: false, pythonExe: "/fake/voice/python", errorMessage });
-const notInstalled = (missing: "runtime" | "models" = "runtime"): InstallResult => ({ ...failed("The voice runtime is not installed."), missing });
+// the texts the installer answers with: its own refusal, and an install step's error as written
+const NOT_INSTALLED: LocalizedText = { message: "The voice runtime is not installed." };
+const failed = (errorMessage: LocalizedText): InstallResult => ({ ok: false, pythonExe: "/fake/voice/python", errorMessage });
+const notInstalled = (missing: "runtime" | "models" = "runtime"): InstallResult => ({ ...failed(NOT_INSTALLED), missing });
 
 function ttsService(settings: Record<string, unknown> = { "damocles.voice.mode": "off", "damocles.voice.tts.enabled": true }) {
   const platform = installFakePlatform({ settings: { user: settings } });
@@ -79,7 +83,7 @@ function ttsService(settings: Record<string, unknown> = { "damocles.voice.mode":
   const statuses: VoiceRuntimeStatus[] = [];
   service.on("runtimeStatus", (status) => statuses.push(status));
   const notices: { reason: string; origin: string }[] = [];
-  service.on("replyNotSpoken", (notice) => notices.push(notice));
+  service.on("replyNotSpoken", ({ reason, origin }) => notices.push({ reason: englishText(reason), origin }));
   return { platform, service, statuses, notices };
 }
 
@@ -105,14 +109,21 @@ describe("VoiceService runtime status", () => {
     expect(ttsService().service.runtimeStatus()).toEqual({ kind: "idle" });
   });
 
+  it("logs why a start failed in English", async () => {
+    const { service } = ttsService();
+    runtime.results.push(failed(NOT_INSTALLED));
+    await service.install();
+    expect(logged.filter((line) => line.includes("start failed"))).toEqual([expect.stringMatching(/start failed.*: The voice runtime is not installed\.$/)]);
+  });
+
   it("reports each install stage, then ready", async () => {
     const { service, statuses } = ttsService();
     runtime.script = async ({ onProgress }) => {
-      onProgress({ stage: "detecting", pct: 0, message: "" });
-      onProgress({ stage: "downloading-python", pct: 30, message: "" });
-      onProgress({ stage: "extracting-python", pct: 65, message: "" });
-      onProgress({ stage: "installing-pip", pct: 80, message: "" });
-      onProgress({ stage: "done", pct: 100, message: "" });
+      onProgress({ stage: "detecting", pct: 0, message: { message: "" } });
+      onProgress({ stage: "downloading-python", pct: 30, message: { message: "" } });
+      onProgress({ stage: "extracting-python", pct: 65, message: { message: "" } });
+      onProgress({ stage: "installing-pip", pct: 80, message: { message: "" } });
+      onProgress({ stage: "done", pct: 100, message: { message: "" } });
     };
     await service.install();
     expect(statuses).toEqual([
@@ -133,7 +144,7 @@ describe("VoiceService runtime status", () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => (release = resolve));
     runtime.script = async ({ onProgress }) => {
-      for (let pct = 1; pct <= 50; pct++) onProgress({ stage: "downloading-python", pct, message: "" });
+      for (let pct = 1; pct <= 50; pct++) onProgress({ stage: "downloading-python", pct, message: { message: "" } });
       await held;
     };
     const start = service.install();
@@ -151,11 +162,11 @@ describe("VoiceService runtime status", () => {
 
   it("gives needs-install for a failed start that could not install, and failed for one that could", async () => {
     const { service } = ttsService();
-    runtime.results.push(failed("The voice runtime is not installed."), failed("pip install failed"));
+    runtime.results.push(failed(NOT_INSTALLED), failed(verbatim("pip install failed")));
     await service.ensureStarted({ install: false });
-    expect(service.runtimeStatus()).toEqual({ kind: "needs-install", message: "The voice runtime is not installed.", consentRequired: false });
+    expect(service.runtimeStatus()).toEqual({ kind: "needs-install", message: NOT_INSTALLED, consentRequired: false });
     await service.install();
-    expect(service.runtimeStatus()).toEqual({ kind: "failed", message: "pip install failed" });
+    expect(service.runtimeStatus()).toEqual({ kind: "failed", message: verbatim("pip install failed") });
     await service.install();
     expect(service.runtimeStatus()).toEqual({ kind: "ready" });
   });
@@ -164,7 +175,7 @@ describe("VoiceService runtime status", () => {
     it("gives cancelled, records no failure, and starts nothing more until an install", async () => {
       const { service, statuses } = ttsService();
       runtime.script = async ({ onProgress, signal }) => {
-        onProgress({ stage: "downloading-python", pct: 12, message: "" });
+        onProgress({ stage: "downloading-python", pct: 12, message: { message: "" } });
         await untilAborted(signal);
       };
       const start = service.install();
@@ -195,8 +206,8 @@ describe("VoiceService runtime status", () => {
   it("shows no progress bar for a start that installs nothing", async () => {
     const { service, statuses } = ttsService();
     runtime.script = async ({ onProgress }) => {
-      onProgress({ stage: "detecting", pct: 0, message: "" });
-      onProgress({ stage: "smoke-check", pct: 10, message: "" });
+      onProgress({ stage: "detecting", pct: 0, message: { message: "" } });
+      onProgress({ stage: "smoke-check", pct: 10, message: { message: "" } });
     };
     await service.ensureStarted({ install: true });
     expect(statuses.filter((s) => s.kind === "starting").every((s) => s.kind === "starting" && !s.installing)).toBe(true);
@@ -207,10 +218,10 @@ describe("VoiceService runtime status", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const { service } = ttsService();
     runtime.script = async ({ onProgress }) => {
-      for (let line = 0; line < 500; line++) onProgress({ stage: "installing-pip", pct: 85, message: `Downloading torch ${line}` });
+      for (let line = 0; line < 500; line++) onProgress({ stage: "installing-pip", pct: 85, message: { message: `Downloading torch ${line}` } });
       vi.advanceTimersByTime(1000);
-      onProgress({ stage: "installing-pip", pct: 85, message: "Installing collected packages" });
-      for (const model of ["asr", "asr", "vad", "vad"]) onProgress({ stage: "downloading-models", pct: 50, message: `Downloading the ${model} model...` });
+      onProgress({ stage: "installing-pip", pct: 85, message: { message: "Installing collected packages" } });
+      for (const model of ["asr", "asr", "vad", "vad"]) onProgress({ stage: "downloading-models", pct: 50, message: { message: `Downloading the ${model} model...` } });
     };
     await service.install();
     expect(logged.filter((line) => line.includes("runtime installing-pip"))).toEqual([
@@ -235,7 +246,7 @@ describe("VoiceService runtime status", () => {
 
       expect(runtime.calls).toEqual([{ allowInstall: false }]);
       expect(asked).toEqual(["missing-models"]);
-      expect(service.runtimeStatus()).toEqual({ kind: "needs-install", message: "The voice runtime is not installed.", consentRequired: true });
+      expect(service.runtimeStatus()).toEqual({ kind: "needs-install", message: NOT_INSTALLED, consentRequired: true });
     });
 
     it("installs once the consent is recorded", async () => {
@@ -269,7 +280,7 @@ describe("VoiceService runtime status", () => {
       const { service } = ttsService();
       const asked: string[] = [];
       service.on("firstRunRequired", ({ reason }) => asked.push(reason));
-      runtime.results.push(notInstalled(), notInstalled(), failed("Voice GPU is set to \"cuda\" but no GPU was found."));
+      runtime.results.push(notInstalled(), notInstalled(), failed(verbatim("Voice GPU is set to \"cuda\" but no GPU was found.")));
 
       await service.speakReply("hello", "chat-1");
       await service.install();
@@ -277,7 +288,7 @@ describe("VoiceService runtime status", () => {
 
       expect(asked).toEqual([]);
       expect(runtime.calls).toEqual([{ allowInstall: false }, { allowInstall: false }, { allowInstall: false }]);
-      expect(service.runtimeStatus()).toEqual({ kind: "needs-install", message: "Voice GPU is set to \"cuda\" but no GPU was found.", consentRequired: false });
+      expect(service.runtimeStatus()).toEqual({ kind: "needs-install", message: verbatim("Voice GPU is set to \"cuda\" but no GPU was found."), consentRequired: false });
     });
   });
 
@@ -285,7 +296,7 @@ describe("VoiceService runtime status", () => {
     it("shows its own progress and reports its own failure, once", async () => {
       const { service, notices } = ttsService();
       runtime.script = async ({ onProgress, signal }) => {
-        onProgress({ stage: "downloading-python", pct: 12, message: "" });
+        onProgress({ stage: "downloading-python", pct: 12, message: { message: "" } });
         await untilAborted(signal);
       };
       const cancelled = service.install();
@@ -297,16 +308,16 @@ describe("VoiceService runtime status", () => {
 
       let release!: () => void;
       runtime.script = async ({ onProgress }) => {
-        onProgress({ stage: "installing-pip", pct: 80, message: "" });
+        onProgress({ stage: "installing-pip", pct: 80, message: { message: "" } });
         await new Promise<void>((resolve) => (release = resolve));
       };
-      runtime.results.push(failed("pip install failed"));
+      runtime.results.push(failed(verbatim("pip install failed")));
       const retried = service.ensureStarted({ install: true, retry: true });
       await vi.waitFor(() => expect(service.runtimeStatus()).toEqual({ kind: "starting", stage: "installing-pip", pct: 80, installing: true }));
       release();
       await retried;
 
-      expect(service.runtimeStatus()).toEqual({ kind: "failed", message: "pip install failed" });
+      expect(service.runtimeStatus()).toEqual({ kind: "failed", message: verbatim("pip install failed") });
       await service.speakReply("after the retry", "chat-1");
       expect(notices).toEqual([
         { reason: "Starting the voice runtime was cancelled.", origin: "chat-1" },
@@ -318,7 +329,7 @@ describe("VoiceService runtime status", () => {
   describe("a reply that cannot be spoken", () => {
     it("is reported once across five failed replies, and again after a settings change", async () => {
       const { platform, service, notices } = ttsService();
-      runtime.results.push(failed("The voice runtime is not installed."), failed("The voice runtime is not installed."));
+      runtime.results.push(failed(NOT_INSTALLED), failed(NOT_INSTALLED));
       for (let reply = 0; reply < 5; reply++) await service.speakReply(`reply ${reply}`, "chat-1");
       expect(notices).toEqual([{ reason: "The voice runtime is not installed.", origin: "chat-1" }]);
       expect(runtime.calls).toEqual([{ allowInstall: false }]);
@@ -334,13 +345,13 @@ describe("VoiceService runtime status", () => {
 
     it("is reported again for a failure after the runtime was ready", async () => {
       const { service, notices } = ttsService();
-      runtime.results.push(failed("The voice runtime is not installed."));
+      runtime.results.push(failed(NOT_INSTALLED));
       await service.speakReply("first", "chat-1");
       await service.install();
       await service.speakReply("spoken", "chat-1");
       expect(notices).toHaveLength(1);
 
-      runtime.results.push(failed("smoke check failed"));
+      runtime.results.push(failed(verbatim("smoke check failed")));
       await service.stop();
       await service.install();
       await service.speakReply("second", "chat-1");

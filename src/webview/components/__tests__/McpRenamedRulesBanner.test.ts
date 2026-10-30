@@ -23,7 +23,7 @@ afterEach(() => {
 
 const projectNotice = {
   path: 'C:\\Users\\someone\\repo\\.damocles\\settings.json',
-  displayPath: '~/repo/.damocles/settings.json',
+  displayPath: { message: '~/repo/.damocles/settings.json' },
   rules: [
     { old: 'mcp__context7__resolve-library-id', new: 'mcp__context7__resolve_library_id' },
     { old: 'mcp__docs__get-page(<b>x</b>)', new: 'mcp__docs__get_page(<b>x</b>)' },
@@ -32,7 +32,7 @@ const projectNotice = {
 
 const workspaceNotice = {
   setting: 'damocles.tools.disabled',
-  displayPath: 'damocles.tools.disabled in workspace settings',
+  displayPath: { message: 'damocles.tools.disabled in workspace settings' },
   rules: [{ old: 'mcp__secret__get_passwords', new: 'mcp__secret__read_mcp_resource(secret://passwords)' }],
 } satisfies McpRenamedToolRuleNotice;
 
@@ -102,7 +102,7 @@ describe('settings store: renamed-rule notices', () => {
   it('merges notices by file, adding only rules not already listed', () => {
     const store = useSettingsStore();
     store.addMcpRenamedToolRules([{ ...projectNotice, rules: [projectNotice.rules[0]!] }]);
-    store.addMcpRenamedToolRules([projectNotice, { path: '/h/.claude/settings.json', displayPath: '~/.claude/settings.json', rules: [{ old: 'a', new: 'b' }] }]);
+    store.addMcpRenamedToolRules([projectNotice, { path: '/h/.claude/settings.json', displayPath: { message: '~/.claude/settings.json' }, rules: [{ old: 'a', new: 'b' }] }]);
 
     expect(store.mcpRenamedToolRules.map(renamedRuleNoticeKey)).toEqual([projectNotice.path, '/h/.claude/settings.json']);
     expect(store.mcpRenamedToolRules[0]!.rules).toEqual(projectNotice.rules);
@@ -120,7 +120,7 @@ describe('settings store: renamed-rule notices', () => {
   it('merges a setting notice by its setting, apart from a file that holds the same rule', () => {
     const store = useSettingsStore();
     store.addMcpRenamedToolRules([workspaceNotice]);
-    store.addMcpRenamedToolRules([workspaceNotice, { path: '/repo/.damocles/settings.json', displayPath: '.damocles/settings.json', rules: workspaceNotice.rules }]);
+    store.addMcpRenamedToolRules([workspaceNotice, { path: '/repo/.damocles/settings.json', displayPath: { message: '.damocles/settings.json' }, rules: workspaceNotice.rules }]);
 
     expect(store.mcpRenamedToolRules.map(renamedRuleNoticeKey)).toEqual(['setting:damocles.tools.disabled', '/repo/.damocles/settings.json']);
     expect(store.mcpRenamedToolRules[0]!.rules).toEqual(workspaceNotice.rules);

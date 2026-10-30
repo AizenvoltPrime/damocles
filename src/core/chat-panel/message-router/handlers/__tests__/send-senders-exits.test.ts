@@ -15,6 +15,7 @@ function setUp(session: Record<string, unknown>) {
     postMessage: vi.fn(),
     storageManager: { broadcastPromptHistoryEntry: vi.fn() },
     worktrees: () => ({ interceptSend: () => false }),
+    platform: {},
   } as unknown as HandlerDependencies;
   const ctx = {
     host: panel,

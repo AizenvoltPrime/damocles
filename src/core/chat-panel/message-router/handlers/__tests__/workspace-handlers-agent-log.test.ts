@@ -34,7 +34,7 @@ describe('openAgentLog', () => {
     await openAgentLog();
 
     expect(platform.notifications.calls).toEqual([
-      { level: 'info', message: "This agent has no log file. A log is written once the agent receives its task.", actions: [] },
+      { level: 'info', message: "This agent has no log file. A log is written once the agent receives its task.", text: { message: "This agent has no log file. A log is written once the agent receives its task." }, actions: [] },
     ]);
     expect(platform.editor.openedFiles).toEqual([]);
   });

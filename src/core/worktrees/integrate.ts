@@ -4,7 +4,8 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { MAX_CLI_LENGTH, revision, splitInChunks, type GitRunner } from '../scm/git-runner';
 import { compassIndexPath } from '../compass/util';
-import { t } from '../l10n';
+import { l, verbatim } from '../l10n';
+import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import { log } from '../logger';
 import { folderIdFor, getFolderRepoDir } from '../pi-session/checkpoints/resolver';
 import { currentBranchRef, gitMessage, nulList, projectGit, uncommittedFiles as statusFiles, withPatchFile, withTempFolder, type ProjectGit, type WorktreeFile } from './create';
@@ -21,14 +22,14 @@ export type MergeOutcome =
   | { kind: 'detached' }
   | { kind: 'rewritten'; branch: string }
   | { kind: 'conflicts'; files: string[] }
-  | { kind: 'refused'; message: string };
+  | { kind: 'refused'; message: LocalizedText };
 
 export type UpdateOutcome =
   | { kind: 'ok' }
   | { kind: 'detached' }
   | { kind: 'rewritten'; branch: string }
   | { kind: 'conflicts'; files: string[] }
-  | { kind: 'refused'; message: string };
+  | { kind: 'refused'; message: LocalizedText };
 
 function gitOf(record: ChatWorktreeRecord, runner: GitRunner): ProjectGit {
   return projectGit(runner, record.projectPath);
@@ -63,12 +64,12 @@ async function operationInProgress(git: ProjectGit, cwd: string): Promise<boolea
   return false;
 }
 
-function operationRefusal(folder: string): { kind: 'refused'; message: string } {
-  return { kind: 'refused', message: t('{0} has an unfinished merge, rebase, cherry pick or revert. Finish or abort it, then try again.', folder) };
+function operationRefusal(folder: string): { kind: 'refused'; message: LocalizedText } {
+  return { kind: 'refused', message: l('{0} has an unfinished merge, rebase, cherry pick or revert. Finish or abort it, then try again.', folder) };
 }
 
-function gitRefusal(result: { stderr: string; stdout: Buffer }): { kind: 'refused'; message: string } {
-  return { kind: 'refused', message: (result.stderr.trim() || result.stdout.toString('utf8').trim()).slice(0, 2000) };
+function gitRefusal(result: { stderr: string; stdout: Buffer }): { kind: 'refused'; message: LocalizedText } {
+  return { kind: 'refused', message: verbatim((result.stderr.trim() || result.stdout.toString('utf8').trim()).slice(0, 2000)) };
 }
 
 /**
@@ -189,8 +190,9 @@ export async function apply(record: ChatWorktreeRecord, runner: GitRunner, regis
   // Only a touched path this Apply left unmerged is its conflict; an older unmerged path is someone else's.
   const conflicts = (await unmergedPaths(git, settled.repositoryRoot)).filter((p) => touched.includes(p) && !unmergedBefore.has(p));
   if (result !== undefined && 'applied' in result && result.applied.exitCode !== 0 && conflicts.length === 0) {
-    const failure = result.applied.stderr.trim() || 'git apply failed';
-    throw new Error(copied.length > 0 ? t('{0} These binary files were already copied to the project folder: {1}', failure, copied.map((entry) => entry.path).join(', ')) : failure);
+    const stderr = result.applied.stderr.trim();
+    const failure = stderr ? verbatim(stderr) : l('{0} failed with exit code {1}.', 'git apply', String(result.applied.exitCode));
+    throw new LocalizedError(copied.length > 0 ? l('{0} These binary files were already copied to the project folder: {1}', failure, copied.map((entry) => entry.path).join(', ')) : failure);
   }
   await registry.update(settled.id, { lastAppliedTree: tree });
   // --3way stages what it applies cleanly; those files are left as plain uncommitted changes, the conflicted ones unmerged.
@@ -307,7 +309,7 @@ async function copyObjects(git: ProjectGit, repositoryRoot: string, tree: string
   });
   if (result.exitCode === 0) return;
   const written = await writtenCopies(git, repositoryRoot, tree, copied);
-  throw new Error(t('The binary files could not all be copied to the project folder ({0}). Already copied: {1}', result.stderr.trim() || `git restore exited with ${result.exitCode}`, written.length > 0 ? written.join(', ') : t('none')));
+  throw new LocalizedError(l('The binary files could not all be copied to the project folder ({0}). Already copied: {1}', result.stderr.trim() || l('{0} failed with exit code {1}.', 'git restore', String(result.exitCode)), written.length > 0 ? written.join(', ') : l('none')));
 }
 
 // The copied paths whose file in the project folder now holds the snapshot's version (or is gone where the snapshot lacks it).
@@ -404,7 +406,7 @@ async function finishOperation(
   git: ProjectGit,
   result: { exitCode: number; stderr: string; stdout: Buffer },
   base: PendingBase,
-): Promise<{ kind: 'ok' } | { kind: 'conflicts'; files: string[] } | { kind: 'refused'; message: string }> {
+): Promise<{ kind: 'ok' } | { kind: 'conflicts'; files: string[] } | { kind: 'refused'; message: LocalizedText }> {
   if (result.exitCode === 0) {
     await registry.update(record.id, { baseCommit: base.commit, lastAppliedTree: undefined, pendingBase: undefined });
     return { kind: 'ok' };

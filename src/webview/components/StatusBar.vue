@@ -12,6 +12,8 @@ const props = defineProps<{
   // The store getter owns the comparison against the published session state, so the bar never repeats it.
   awaitingUserAction: boolean;
   currentToolName?: string | undefined;
+  /** When the processing turn began, by this page's clock; a reloaded or joining view gets it from core. */
+  turnStartedAt?: number | undefined;
   statusOverride?: string | undefined;
   activeHooks?: Map<string, { hookName: string; hookEvent: string }> | undefined;
   /** What the main chat's stopped run still waits for, as core published it. */
@@ -49,18 +51,19 @@ const formattedTime = computed(() => {
   return `${m}:${sec.toString().padStart(2, "0")}`;
 });
 
-// Tracks the bar, not the turn, so the clock keeps counting while a prompt holds the run past the turn.
+// Core measures the turn on its own clock, which can step back.
+function tick(): void {
+  elapsedSeconds.value = startTime.value === null ? 0 : Math.max(0, Math.floor((Date.now() - startTime.value) / 1000));
+}
+
+// Tracks the bar, not the turn, so the clock keeps counting while a prompt holds the run past the turn; it starts at the turn's start when one is known.
 watch(
   isVisible,
   (visible) => {
     if (visible) {
-      startTime.value = Date.now();
-      elapsedSeconds.value = 0;
-      timerInterval = setInterval(() => {
-        if (startTime.value) {
-          elapsedSeconds.value = Math.floor((Date.now() - startTime.value) / 1000);
-        }
-      }, 1000);
+      startTime.value = props.turnStartedAt ?? Date.now();
+      tick();
+      timerInterval = setInterval(tick, 1000);
     } else {
       if (timerInterval) {
         clearInterval(timerInterval);
@@ -70,6 +73,16 @@ watch(
     }
   },
   { immediate: true }
+);
+
+// A turn start that arrives while the bar is up moves the clock; a cleared one leaves it counting through a prompt.
+watch(
+  () => props.turnStartedAt,
+  (at) => {
+    if (at === undefined || !isVisible.value) return;
+    startTime.value = at;
+    tick();
+  },
 );
 
 onUnmounted(() => {

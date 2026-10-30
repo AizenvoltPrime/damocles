@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { installProcessLauncher, type Launcher, type OutputStream, type ProcessExit } from "../../../process-launcher";
 import { CAPTURE_TAIL_LENGTH, CancelledError, createVenv, installPipRequirements } from "../python-installer";
+import { englishText, type LocalizedText } from "../../../../shared/localized-text";
 
 // Every start prints `output` and exits with `code`.
 function scriptedLauncher(output: Array<[OutputStream, string | Buffer]>, code: number): Launcher {
@@ -53,13 +54,13 @@ describe("pip output capture", () => {
 
     const failure = await createVenv({ pythonExe: "python", venvDir: "venv-not-created" }).then(
       () => null,
-      (err: Error) => err.message,
+      (err: unknown) => (err as { text?: LocalizedText }).text,
     );
 
-    const prefix = "python -m venv failed (1): ";
-    expect(failure?.startsWith(prefix)).toBe(true);
-    expect(failure!.length - prefix.length).toBeLessThanOrEqual(CAPTURE_TAIL_LENGTH);
-    expect(failure!.endsWith("\rError: venv failed\n")).toBe(true);
+    const [step, output] = failure?.args ?? [];
+    expect(step).toEqual({ message: "Creating the Python virtualenv failed with exit code {0}.", args: ["1"] });
+    expect(typeof output === "string" && output.length).toBeLessThanOrEqual(CAPTURE_TAIL_LENGTH);
+    expect(typeof output === "string" && output.endsWith("\rError: venv failed\n")).toBe(true);
   });
 
   it("reports each carriage-return progress update as its own line", async () => {
@@ -71,7 +72,7 @@ describe("pip output capture", () => {
         venvPython: "python",
         requirementsFile: "requirements.txt",
         gpuKind: "cpu",
-        onProgress: (p) => messages.push(p.message),
+        onProgress: (p) => messages.push(englishText(p.message)),
       }),
     ).resolves.toBeUndefined();
 
@@ -87,7 +88,7 @@ describe("pip output capture", () => {
     ], 0));
     const messages: string[] = [];
 
-    await installPipRequirements({ venvPython: "python", requirementsFile: "requirements.txt", gpuKind: "cpu", onProgress: (p) => messages.push(p.message) });
+    await installPipRequirements({ venvPython: "python", requirementsFile: "requirements.txt", gpuKind: "cpu", onProgress: (p) => messages.push(englishText(p.message)) });
 
     expect(messages[1]).toBe("café done \uFFFD");
   });
@@ -102,16 +103,19 @@ describe("pip output capture", () => {
     ).rejects.toBeInstanceOf(CancelledError);
   });
 
-  it("shows the last 30 lines of a failed pip run", async () => {
+  it("shows the last 30 lines of a failed pip run under Damocles' own words for the step", async () => {
     const lines = Array.from({ length: 50 }, (_, i) => `line ${i + 1}`);
     const breaks = ["\r\n", "\r", "\n"];
     useLauncher(scriptedLauncher([["stdout", lines.map((line, i) => line + breaks[i % 3]).join("")]], 2));
 
     const failure = await installPipRequirements({ venvPython: "python", requirementsFile: "requirements.txt", gpuKind: "cpu" }).then(
       () => null,
-      (err: Error) => err.message,
+      (err: unknown) => (err as { text?: unknown }).text,
     );
 
-    expect(failure).toBe(`pip bootstrap failed (exit 2):\n${lines.slice(-30).join("\n")}`);
+    expect(failure).toEqual({
+      message: "{0}\n{1}",
+      args: [{ message: "Pinning the build tools (pip, setuptools, wheel) failed with exit code {0}.", args: ["2"] }, lines.slice(-30).join("\n")],
+    });
   });
 });

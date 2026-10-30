@@ -99,6 +99,10 @@ export const MAX_TERMINAL_SCREEN_CHARS: number = 32 * 1024 * 1024;
 export const MAX_TRACKED_COMMANDS = 100;
 // Command marks a screen carries: prompt start, command start, executed and finished for each tracked command.
 export const MAX_TERMINAL_SCREEN_MARKS: number = 4 * MAX_TRACKED_COMMANDS;
+// OSC 633 payloads a screen carries for main to replay: A, B, C, D, E and P for each tracked command; the oldest leaves first.
+export const MAX_KEPT_SHELL_SEQUENCES: number = 6 * MAX_TRACKED_COMMANDS;
+// Characters of those payloads together, which WORKSPACE_MAX_MESSAGE_BYTES makes room for; the oldest leaves first.
+export const MAX_KEPT_SHELL_SEQUENCE_CHARS: number = 1024 * 1024;
 
 // Flow control (VS Code's FlowControlConstants): the host pauses a pty once more than TERMINAL_HIGH_WATERMARK_CHARS of its
 // output are unacknowledged and resumes it below TERMINAL_LOW_WATERMARK_CHARS; the shell acks every TERMINAL_ACK_CHARS.
@@ -334,7 +338,8 @@ export interface TerminalShellEventAt {
 }
 
 // OSC 633 A, B, C (with the last E's command line, '' without one) and D. commandId: issued by main per terminal from 1, never
-// reused; null on a D without a C. time: main's clock when the sequence arrived. commandLine may hold \n and \t.
+// reused; null on a D without a C. time: on main's clock, when the sequence arrived or, replayed from a host's screen, when
+// the host parsed it. commandLine may hold \n and \t.
 export type TerminalShellEvent =
   | { readonly kind: 'promptStart' }
   | { readonly kind: 'commandStart' }

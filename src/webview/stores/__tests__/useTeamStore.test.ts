@@ -4,6 +4,7 @@ import type { ToolCall } from '@shared/types/session';
 import { CANCELLED_TOOL_DETAIL_KEY } from '@shared/types/session';
 import type { TeamAgentContentBlock, TeamAgentHistoryMessage } from '@shared/types/team';
 import { wrapSteerMessage } from '@shared/steer';
+import { englishText } from '@shared/localized-text';
 import type { ImageBlock } from '@shared/types/content';
 import { useTeamStore } from '../useTeamStore';
 
@@ -703,7 +704,7 @@ describe('useTeamStore failed model calls', () => {
   it('restores a persisted error as the error message the live card showed, and keeps one copy when both exist', () => {
     const store = useTeamStore();
     store.handleAgentAssistant(AGENT, 'live-1', [{ type: 'text', text: 'Now I will' }], 1);
-    store.handleAgentError(AGENT, '529 overloaded_error');
+    store.handleAgentError(AGENT, { message: '{0}', args: ['529 overloaded_error'] });
 
     store.handleAgentDataLoaded(AGENT, [
       userTurn('do the task'),
@@ -711,7 +712,7 @@ describe('useTeamStore failed model calls', () => {
       { id: 'e-2:error', role: 'error', content: [{ type: 'text', text: '529 overloaded_error' }] },
     ]);
 
-    expect((store.agentMessages[AGENT] ?? []).map((m) => [m.role, m.content])).toEqual([
+    expect((store.agentMessages[AGENT] ?? []).map((m) => [m.role, m.error ? englishText(m.error) : m.content])).toEqual([
       ['user', 'do the task'],
       ['assistant', 'Now I will'],
       ['error', '529 overloaded_error'],

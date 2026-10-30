@@ -2,7 +2,6 @@ import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { BrowserWindow } from 'electron';
 import type { LogSinkFactory } from '../../../platform/log-sink';
-import type { NotificationService } from '../../../platform/notification-service';
 import type { WindowService } from '../../../platform/window-service';
 import { readContributedConfiguration } from '../../../core/config/read-contributed-configuration';
 import { DAMOCLES_HOME_DIR } from '../../../core/paths';
@@ -14,7 +13,8 @@ import { createDesktopAppInfo } from './app-info';
 import { createDesktopAppPaths, watchWorkerPath, type DesktopLayout } from './app-paths';
 import { desktopHostCapabilities } from '../../local-services/capabilities';
 import { createDesktopClipboardService } from './clipboard-service';
-import { createDesktopDialogService } from './dialog-service';
+import { createDesktopDialogService, createNativeDialogs, type NativeDialogs } from './dialog-service';
+import { localizedNotifications, type DesktopNotifications } from './notification-service';
 import { createDesktopEditorService, type ChatTabMessenger, type DesktopEditorService } from './editor-service';
 import type { EditorService } from '../../../platform/editor-service';
 import type { Platform } from '../../../platform/platform';
@@ -38,7 +38,8 @@ export interface DesktopPlatformDeps {
   readonly logSinks: LogSinkFactory;
   readonly localization: DesktopLocalizationService;
   readonly state: DesktopKeyValueState;
-  readonly notifications: NotificationService;
+  // main's own notices; core's go through the platform's, which renders them in main's language
+  readonly notifications: DesktopNotifications;
   readonly projects: ProjectList;
   readonly trust: TrustStore;
   readonly window: () => BrowserWindow | undefined;
@@ -65,6 +66,8 @@ export interface DesktopPlatform extends Platform {
   readonly state: DesktopKeyValueState;
   readonly fileWatchers: DesktopFileWatcherFactory;
   readonly localization: DesktopLocalizationService;
+  // main's own folder and file pickers, whose titles main renders
+  readonly nativeDialogs: NativeDialogs;
   // Settles once the settings and secrets stores' writes, one queued meanwhile included, have landed or failed; a quit awaits it.
   flush(): Promise<void>;
 }
@@ -77,8 +80,9 @@ export function createDesktopPlatform(deps: DesktopPlatformDeps): DesktopPlatfor
   const fileWatchers = new DesktopFileWatcherFactory(workspaceFolders, deps.log, windowsTree);
   const shell = createDesktopShellService(deps.log);
   const trust = createDesktopTrustService(deps.trust);
-  const { state, notifications } = deps;
-  const secrets = createDesktopSecretsStore(deps.userDataDir, notifications, deps.localization.t, deps.log);
+  const { state } = deps;
+  const notifications = localizedNotifications(deps.notifications, (text) => deps.localization.render(text));
+  const secrets = createDesktopSecretsStore(deps.userDataDir, deps.notifications, deps.localization.t, deps.log);
   const settings = new DesktopSettingsStore({
     userFile: path.join(DAMOCLES_HOME_DIR, 'settings.json'),
     contributed: readContributedConfiguration(paths.resourceRoot),
@@ -92,7 +96,6 @@ export function createDesktopPlatform(deps: DesktopPlatformDeps): DesktopPlatfor
     chatFolders: deps.chatFolders,
     // Core's store reports a file that stops parsing: it reads every folder a loaded chat uses, main's only those main reads.
     notifications: undefined,
-    localization: deps.localization,
     log: deps.log,
   });
   return {
@@ -111,8 +114,9 @@ export function createDesktopPlatform(deps: DesktopPlatformDeps): DesktopPlatfor
     localization: deps.localization,
     clipboard: createDesktopClipboardService(),
     shell,
-    dialogs: createDesktopDialogService(deps.window),
-    editor: createDesktopEditorService(deps.chatTabs, deps.editorPane, deps.openAppSettings, deps.showChatReview),
+    dialogs: createDesktopDialogService(deps.window, (text) => deps.localization.render(text)),
+    nativeDialogs: createNativeDialogs(deps.window),
+    editor: createDesktopEditorService(deps.chatTabs, deps.editorPane, deps.openAppSettings, deps.showChatReview, (text) => deps.localization.render(text)),
     window: createDesktopWindowService(deps.openAppSettings, deps.toggleTerminal, deps.terminalToggle),
     lifecycle: createDesktopHostLifecycle(deps.reload),
     logSinks: deps.logSinks,

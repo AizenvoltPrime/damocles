@@ -228,6 +228,22 @@ describe('toolCompleted for an Agent card', () => {
     expect(subagentStore.getSubagent('tc-live')?.status).toBe(expected);
     expect(subagentStore.getSubagent('tc-reload')?.status).toBe(expected);
   });
+
+  // The status bar names the newest call that has not ended, so an Agent call left running would name it after it returned.
+  it.each([
+    ['a foreground agent', agentResult('completed')],
+    ['a background launch', { status: 'async_launched', agentId: 'agent-1' }],
+  ])("%s's own call ends when its result arrives, as a replay of that result shows it", (_label, result) => {
+    const ctx = agentContext();
+    const { streamingStore, subagentStore } = ctx.stores;
+    subagentStore.registerAgentTool('tc-1', { subagent_type: 'Explore', description: 'find', prompt: 'go' });
+    streamingStore.addToolCall({ id: 'tc-1', name: 'Agent', input: {} });
+    streamingStore.updateToolStatus('tc-1', 'running');
+
+    complete(ctx, 'tc-1', result);
+
+    expect(streamingStore.messages.flatMap((m) => m.toolCalls ?? []).map((t) => t.status)).toEqual(['completed']);
+  });
 });
 
 describe('toolCompleted image count', () => {

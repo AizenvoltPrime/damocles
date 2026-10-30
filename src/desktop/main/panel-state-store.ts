@@ -42,9 +42,10 @@ const PANEL_ID = /^[A-Za-z0-9-]+$/;
 interface ParsedPanels {
   readonly chats: PersistedChat[];
   readonly selected: PersistedSelection | undefined;
+  readonly lastChats: PersistedSelection[];
 }
 
-const EMPTY: ParsedPanels = { chats: [], selected: undefined };
+const EMPTY: ParsedPanels = { chats: [], selected: undefined, lastChats: [] };
 
 type Log = (line: string) => void;
 
@@ -118,21 +119,42 @@ function stateString(state: unknown, key: string): string | undefined {
   return isKey(value) ? value : undefined;
 }
 
-function parseSelection(raw: unknown, chats: readonly PersistedChat[], log: Log): PersistedSelection | undefined {
+// noun names the entry in log lines, adjective its chat
+const SELECTION = { noun: 'selection', adjective: 'selected' };
+const LAST_CHAT = { noun: 'last chat', adjective: 'last viewed' };
+
+function parseSelection(raw: unknown, chats: readonly PersistedChat[], log: Log, names = SELECTION): PersistedSelection | undefined {
   if (raw === undefined) return undefined;
   if (!isRecord(raw) || !isKey(field(raw, 'projectKey'))) {
-    log('[panels] ignoring a malformed selection');
+    log(`[panels] ignoring a malformed ${names.noun}`);
     return undefined;
   }
   const sessionId = field(raw, 'sessionId');
   const panelId = field(raw, 'panelId');
-  if (sessionId !== undefined && !isKey(sessionId)) log('[panels] ignoring a malformed selected session id');
-  if (panelId !== undefined && !(isKey(panelId) && chats.some((chat) => chat.panelId === panelId))) log('[panels] ignoring a selected chat that is not saved');
+  if (sessionId !== undefined && !isKey(sessionId)) log(`[panels] ignoring a malformed ${names.adjective} session id`);
+  if (panelId !== undefined && !(isKey(panelId) && chats.some((chat) => chat.panelId === panelId))) log(`[panels] ignoring a ${names.adjective} chat that is not saved`);
   return {
     projectKey: field(raw, 'projectKey') as string,
     ...(isKey(sessionId) ? { sessionId } : {}),
     ...(isKey(panelId) && chats.some((chat) => chat.panelId === panelId) ? { panelId } : {}),
   };
+}
+
+// One entry per project, naming a session, a saved chat, or neither once its last viewed chat is gone (LastChats). A version
+// 2 field, never a bump: v3.7.0 ignores the key, and would ignore a version 3 file whole, every saved chat with it.
+function parseLastChats(raw: unknown, chats: readonly PersistedChat[], log: Log): PersistedSelection[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    log('[panels] ignoring malformed last chats');
+    return [];
+  }
+  const entries: PersistedSelection[] = [];
+  for (const entry of raw as unknown[]) {
+    const parsed = parseSelection(entry, chats, log, LAST_CHAT);
+    if (!parsed || entries.some((kept) => kept.projectKey === parsed.projectKey)) continue;
+    entries.push(parsed);
+  }
+  return entries;
 }
 
 function parseV2(file: Record<string, unknown>, log: Log): ParsedPanels {
@@ -155,7 +177,7 @@ function parseV2(file: Record<string, unknown>, log: Log): ParsedPanels {
     if (rawHeld !== undefined && !heldPrompt) log(`[panels] chat ${panelId}: dropping a malformed held prompt`);
     chats.push(chatEntry(panelId, parseState(field(entry, 'state'), panelId, log), pages, heldPrompt));
   }
-  return { chats, selected: parseSelection(field(file, 'selected'), chats, log) };
+  return { chats, selected: parseSelection(field(file, 'selected'), chats, log), lastChats: parseLastChats(field(file, 'lastChats'), chats, log) };
 }
 
 // v1 held chat tabs in strip order and the selected tab; tabs become chats and the selected tab the selected chat.
@@ -191,7 +213,7 @@ function parseV1(file: Record<string, unknown>, log: Log): ParsedPanels {
     ? { projectKey, panelId: selectedChat.panelId, ...(sessionId !== undefined ? { sessionId } : {}) }
     : undefined;
   log(`[panels] migrated ${PANEL_STATE_FILE} from version ${LEGACY_SCHEMA_VERSION} (${chats.length} chats)`);
-  return { chats, selected };
+  return { chats, selected, lastChats: [] };
 }
 
 export function parsePanels(text: string, log: Log): ParsedPanels {
@@ -203,12 +225,16 @@ export function parsePanels(text: string, log: Log): ParsedPanels {
   return EMPTY;
 }
 
-// Loaded chats with each one's webview state and browser pages, and the selection, under userData; a relaunch restores them.
+// Loaded chats with each one's webview state and browser pages, the selection and each local project's last chat, under
+// userData; a relaunch restores them.
 export class PanelStateStore {
   private readonly filePath: string;
   private readonly chats = new Map<string, PersistedChat>();
   private selection: PersistedSelection | undefined;
+  private lastChatEntries: readonly PersistedSelection[] = [];
   private sealed = false;
+  // the batch under way, which writes once at its end when anything inside it changed
+  private batching: { changed: boolean } | undefined;
   private readonly log: Log;
 
   constructor(userDataDir: string, log: Log) {
@@ -225,6 +251,7 @@ export class PanelStateStore {
       const parsed = parsePanels(text, log);
       for (const chat of parsed.chats) this.chats.set(chat.panelId, chat);
       this.selection = parsed.selected;
+      this.lastChatEntries = parsed.lastChats;
     } catch (err) {
       log(`[panels] ignoring unreadable ${this.filePath}: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -240,6 +267,21 @@ export class PanelStateStore {
 
   selected(): PersistedSelection | undefined {
     return this.selection;
+  }
+
+  /** The chat last viewed in each local project, as the last write gave them. */
+  lastChats(): readonly PersistedSelection[] {
+    return this.lastChatEntries;
+  }
+
+  /** Replaces every project's last chat; a panel id the store does not hold is dropped, as a read drops it. */
+  setLastChats(entries: readonly PersistedSelection[]): void {
+    if (this.sealed) return;
+    this.lastChatEntries = entries.map(({ projectKey, sessionId, panelId }) => {
+      const saved = panelId !== undefined && this.chats.has(panelId) ? panelId : undefined;
+      return { projectKey, ...(sessionId !== undefined ? { sessionId } : {}), ...(saved !== undefined ? { panelId: saved } : {}) };
+    });
+    this.persist();
   }
 
   /**
@@ -290,6 +332,10 @@ export class PanelStateStore {
       const { projectKey, sessionId } = this.selection;
       this.selection = { projectKey, ...(sessionId !== undefined ? { sessionId } : {}) };
     }
+    this.lastChatEntries = this.lastChatEntries.map((entry) => {
+      if (entry.panelId !== panelId) return entry;
+      return { projectKey: entry.projectKey, ...(entry.sessionId !== undefined ? { sessionId: entry.sessionId } : {}) };
+    });
     this.persist();
   }
 
@@ -305,15 +351,33 @@ export class PanelStateStore {
     this.persist();
   }
 
+  /** Runs change, landing every change it makes in one write of the file, since each write holds every chat's state. */
+  batch(change: () => void): void {
+    if (this.batching) return change();
+    const batching = { changed: false };
+    this.batching = batching;
+    try {
+      change();
+    } finally {
+      this.batching = undefined;
+      if (batching.changed) this.persist();
+    }
+  }
+
   /** Settles once every write to the file, one queued meanwhile included, has landed or failed; a quit awaits it. */
   flush(): Promise<void> {
     return jsonConfigWritesSettled(this.filePath);
   }
 
   private persist(): void {
+    if (this.batching) {
+      this.batching.changed = true;
+      return;
+    }
     const snapshot = {
       version: SCHEMA_VERSION,
       ...(this.selection !== undefined ? { selected: this.selection } : {}),
+      ...(this.lastChatEntries.length > 0 ? { lastChats: this.lastChatEntries } : {}),
       chats: this.list().map((chat) => ({
         panelId: chat.panelId,
         state: chat.state,

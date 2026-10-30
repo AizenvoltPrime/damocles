@@ -169,7 +169,7 @@ describe('the conversation a send names before its session starts', () => {
 
     dispatch({ type: 'sessionCleared', sessionId: 's-saved' }, ctx);
     dispatch({ type: 'sessionCleared' }, ctx);
-    dispatch({ type: 'errorReplay', content: "This conversation's file could not be found." }, ctx);
+    dispatch({ type: 'errorReplay', content: { message: "This conversation's file could not be found." } }, ctx);
     dispatch({ type: 'done', data: { type: 'result', session_id: 's-saved', is_done: true } }, ctx);
 
     expect(ctx.stores.sessionStore.sendTargetSessionId).toBeNull();

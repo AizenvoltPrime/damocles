@@ -1,11 +1,12 @@
 import type { StoreContext } from "../types";
 import type { AgentWindDown } from "@shared/types/wind-down";
+import type { LocalizedText } from "@shared/localized-text";
 
 type Retry = { attempt: number; maxAttempts: number };
 
 /** The transcript and status line of the nested agent a failed-call or status message names. */
 export interface NestedTranscript {
-  addError: (message: string) => void;
+  addError: (message: LocalizedText) => void;
   retract: (messageId: string) => void;
   setRetry: (retry: Retry | null) => void;
   setWindDown: (windDown: AgentWindDown | null) => void;

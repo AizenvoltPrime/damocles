@@ -9,6 +9,7 @@ import type { Project } from '../../local-services/confine';
 import { DocumentService, isDocumentDirty, type Backups, type TextDocument } from '../documents/document-service';
 import { NotConnectedError } from '../workspace/workspaces';
 import { testRemote, testWorkspaces, type TestRemote } from './test-workspaces';
+import { englishText } from '../../../shared/localized-text';
 
 // Offline saves (D13): a remote file saved while its host is away is kept in its backup and uploads on reconnect, written
 // only while the target still holds the disk state it was saved over; a changed target opens the three-way merge instead.
@@ -54,6 +55,7 @@ function host(opts: { backupLands?: boolean } = {}) {
   const warnings: string[] = [];
   const reopened: TextDocument[] = [];
   const documents = new DocumentService({
+    render: englishText,
     projects: () => [away],
     authorityOs: () => process.platform,
     ask: async () => 0,

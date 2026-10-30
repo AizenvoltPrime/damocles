@@ -9,6 +9,7 @@ import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { HOOK_CONTEXT_CUSTOM_TYPE, registerConfiguredHooks, type DispatchDeps } from '../hooks';
 import type { PiSession } from '../pi-session';
 import { bindPanel, blockingShell, callPowerShell, panelSession, realPiSessions, wire } from './real-pi-fixtures';
+import { englishText } from '../../../shared/localized-text';
 
 /** Damocles' UserPromptSubmit hook against pi's real prompt path, with a scripted model and real hook processes. */
 
@@ -34,7 +35,7 @@ function readyToSend(panel: PiSession): void {
 }
 
 const notices = (emitted: readonly ExtensionToWebviewMessage[]): string[] =>
-  emitted.flatMap((m) => (m.type === 'notification' ? [m.message] : []));
+  emitted.flatMap((m) => (m.type === 'notification' ? [englishText(m.message)] : []));
 
 const userTexts = (session: AgentSession): string[] =>
   session.sessionManager.getBranch().flatMap((e) => {

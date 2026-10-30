@@ -5,6 +5,7 @@ import type { ResultMessage, ToolAbandonReason } from '../../shared/types/sessio
 import { CANCELLED_TOOL_DETAIL_KEY } from '../../shared/types/session';
 import type { ContentBlock } from '../../shared/types/content';
 import type { ModelInfo } from '../../shared/types/settings';
+import type { LocalizedText } from '../../shared/localized-text';
 import { TOOL_READ, TOOL_GREP, TOOL_GLOB, TOOL_LS, LIVE_OUTPUT_TOOLS } from '../../shared/tool-names';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from './tool-normalization';
 import { detectCacheMiss, isCacheMissSignificant } from './cache-stats';
@@ -19,8 +20,9 @@ import { contextSnapshotOf, emptyContextSnapshot, type ContextSnapshot } from '.
 import { failedCallError } from './nested-call-failures';
 import { skippedToolCalls } from './abandoned-tool-calls';
 import { windDownRecorded } from './session-store/turn-stopped';
+import type { LiveRunClaims } from './session-store/history-loader';
 import { effortBadgeApplies } from './pi-models';
-import { failureCard } from './provider-account';
+import { failureCard, failureText } from './provider-account';
 
 /** A message as pi emits and persists it; the mid-stream marker matches entries to deliveries by its identity. */
 type PiMessage = Extract<AgentSessionEvent, { type: 'message_end' }>['message'];
@@ -93,11 +95,20 @@ export interface UserEcho {
 }
 
 /** What a view that joins mid-turn needs beyond the stored branch, as of the adapter's event `seq` (views.join). */
-export interface LiveSnapshot {
+export interface LiveSnapshot extends LiveRunClaims {
   readonly seq: number;
   readonly messages: readonly ExtensionToWebviewMessage[];
-  /** The calls whose outcome the live run still owns, which the branch replay leaves to `messages` and the live events. */
-  readonly liveToolCallIds: ReadonlySet<string>;
+  /** When the open turn began, by this process's clock; `snapshotMessageAtPost` turns it into the duration a view reads. */
+  readonly turnStartedAt?: number;
+}
+
+/**
+ * A snapshot message as it goes out. The turn's elapsed time is read at the post, because the branch replay before it can take
+ * seconds, and sent as a duration, because the view may run on another machine.
+ */
+export function snapshotMessageAtPost(snapshot: LiveSnapshot, message: ExtensionToWebviewMessage): ExtensionToWebviewMessage {
+  if (message.type !== 'processing' || !message.isProcessing || snapshot.turnStartedAt === undefined) return message;
+  return { ...message, elapsedMs: Date.now() - snapshot.turnStartedAt };
 }
 
 /**
@@ -207,6 +218,8 @@ export class PiStreamAdapter {
   private _eventSeq = 0;
   /** A turn's live content is shown: from `beginTurn` until this adapter lowers the spinner; the session's turn can end first (`turnRunning`). */
   private _turnOpen = false;
+  /** When the open turn began, by this process's clock; read only while `_turnOpen`. */
+  private _turnStartedAt = 0;
   /** An assistant message streams: from its `message_start` until its `message_end`, after which pi has stored it. */
   private _assistantOpen = false;
   private _turnSeq = 0;
@@ -220,6 +233,9 @@ export class PiStreamAdapter {
   /** An error stop no Stop preceded, decided at its `turn_end` by the wind-down record (`decideErrorStop`), with the
    *  calls of the batch before it pi left without a result. */
   private _undecidedError: { message: AssistantMessage; skipped: Array<{ id: string; name: string }>; shownId: string | undefined } | null = null;
+  /** The turn's failed calls whose card the live view does not show (held for pi's retry decision, or withdrawn by it), each
+   *  with the message it sealed while the view still shows that; a joining view's replay leaves them to the snapshot. */
+  private readonly _failedCalls = new Map<AssistantMessage, ExtensionToWebviewMessage | null>();
   private readonly _answered = new Set<string>();
   private _currentAssistantId: string | null = null;
   private _streamingText = '';
@@ -239,10 +255,10 @@ export class PiStreamAdapter {
    *  `beginTurn`, and at turn end once spend is back below the limit. */
   private _budgetExceededEmitted = false;
   /** The error the turn's latest assistant message ended on; a retry that succeeds clears it. */
-  private _lastAssistantError: string | null = null;
+  private _lastAssistantError: LocalizedText | null = null;
   /** A failed call's card, held until pi either re-runs the call (no card) or moves past it (see `holdFailure`).
    *  `shownId` is the webview id of what the call streamed, which a re-run takes back. */
-  private _pendingFailure: { message: string; provider: string | undefined; model: string | undefined; shownId: string | undefined } | null = null;
+  private _pendingFailure: { call: AssistantMessage; message: string; provider: string | undefined; model: string | undefined; shownId: string | undefined } | null = null;
   /** pi is waiting out a retry backoff; the retried call's assistant `message_start` ends the wait. */
   private _retrying = false;
   /** The current turn's correlation id, held until the real pi user entry id is known (FR-3). */
@@ -297,8 +313,10 @@ export class PiStreamAdapter {
     // a lowered spinner ends a retry wait, as `emit` records it
     if (this._status && (running || this._status.status !== 'retrying')) messages.push(this._status);
     if (this._turnOpen) {
+      for (const sealed of this._failedCalls.values()) if (sealed) messages.push(sealed);
       if (this._assistantOpen) {
-        const thinking = this._thinkingStart !== null && this._thinkingDuration === null && this._streamingText === '';
+        // a Stop ends the turn the view shows, which stops its thinking indicator while pi winds the call down
+        const thinking = running && this._thinkingStart !== null && this._thinkingDuration === null && this._streamingText === '';
         if (this._streamingThinking !== '' || this._streamingText !== '') {
           this.snapshotPartial(messages, {
             ...(this._streamingThinking !== '' ? { streamingThinking: this._streamingThinking } : {}),
@@ -323,7 +341,8 @@ export class PiStreamAdapter {
       }
     }
     const liveToolCallIds = new Set(this._turnOpen ? [...this._tools.keys(), ...this._unstoredResults.keys()] : []);
-    return { seq: this._eventSeq, messages, liveToolCallIds };
+    const liveFailedCalls = new Set<object>(this._turnOpen ? this._failedCalls.keys() : []);
+    return { seq: this._eventSeq, messages, liveToolCallIds, liveFailedCalls, ...(this._turnOpen ? { turnStartedAt: this._turnStartedAt } : {}) };
   }
 
   private snapshotPartial(into: ExtensionToWebviewMessage[], extra: { streamingText?: string; streamingThinking?: string; isThinking?: boolean; thinkingDuration?: number }): void {
@@ -402,9 +421,9 @@ export class PiStreamAdapter {
 
   /**
    * Mark the start of a user turn: reset streaming state, show the message that opens it, arm processing/running, emit the
-   * once-per-session init payloads, and correlate the user message.
+   * once-per-session init payloads, and correlate the user message. `startedAt` is when the sending view's clock started.
    */
-  beginTurn(correlationId?: string, echo?: UserEcho): void {
+  beginTurn(correlationId?: string, echo?: UserEcho, startedAt: number = Date.now()): void {
     this._turnSeq += 1;
     this._assistantSeq = 0;
     this._aborted = false;
@@ -428,6 +447,7 @@ export class PiStreamAdapter {
     this._batch = [];
     this._answered.clear();
     this._undecidedError = null;
+    this._failedCalls.clear();
     // A tool that reached neither tool_execution_end nor markAborted (a session replaced under it, or a
     // turn settled without an agent run) can still hold a frame; emitting it now would repaint a card the
     // webview has already terminalized. Clearing after `_tools` also keeps a held thunk from reading an
@@ -438,6 +458,7 @@ export class PiStreamAdapter {
 
     this._agentRunObserved = false;
     this._turnOpen = true;
+    this._turnStartedAt = startedAt;
     this._assistantOpen = false;
     this._userEchoes = [];
     if (echo) this.echoUser(echo);
@@ -549,11 +570,6 @@ export class PiStreamAdapter {
     return reported;
   }
 
-  /** A `sendMessage` arriving while a turn is active (mirrors the SDK in-flight guard). */
-  emitAlreadyInProgress(): void {
-    this.emit({ type: 'error', message: 'A request is already in progress' });
-  }
-
   /**
    * Mark the turn aborted. A call pi has not started gets no end from pi, so its card is abandoned now. A
    * started call keeps running until pi ends it under the aborted signal: `onToolEnd` shows the result of
@@ -654,8 +670,8 @@ export class PiStreamAdapter {
         if (event.message.role === 'assistant') {
           this._assistantOpen = false;
           const { stopReason } = event.message;
-          this._lastAssistantError = stopReason === 'error' ? failedCallError(event.message.errorMessage) : null;
-          const shown = this.emitAssistantMessage(event.message.content, publishedEffort(event.message.thinkingLevel, effortBadgeApplies(session.model)));
+          this._lastAssistantError = stopReason === 'error' ? failureText(event.message.provider, event.message.model, failedCallError(event.message.errorMessage)) : null;
+          const sealed = this.emitAssistantMessage(event.message.content, publishedEffort(event.message.thinkingLevel, effortBadgeApplies(session.model)));
           this.emitContextSnapshot(contextSnapshotOf(event.message));
           this.logRawStopReason(event.message);
           this.maybeEmitCacheMissNotice(session, event.message);
@@ -672,7 +688,8 @@ export class PiStreamAdapter {
               this.abandonToolCalls(event.message.content, 'stopped');
             } else {
               const skipped = skippedToolCalls(this._batch, (id) => this._answered.has(id));
-              this._undecidedError = { message: event.message, skipped, shownId: shown ? this._currentAssistantId ?? undefined : undefined };
+              this._undecidedError = { message: event.message, skipped, shownId: sealed ? this._currentAssistantId ?? undefined : undefined };
+              this._failedCalls.set(event.message, sealed ?? null);
             }
           }
           this._batch = event.message.content.flatMap((block) => (block.type === 'toolCall' ? [{ id: block.id, name: block.name }] : []));
@@ -779,7 +796,7 @@ export class PiStreamAdapter {
       case 'compaction_end': {
         const trigger = event.reason;
         // pi's report that it could not recover the overflowed call explains that call's failure, so it replaces the card.
-        if (trigger === 'overflow' && event.errorMessage && !event.aborted) this._pendingFailure = null;
+        if (trigger === 'overflow' && event.errorMessage && !event.aborted) this.replacePendingFailure();
         else this.showPendingFailure();
         if (event.aborted) {
           // An abort clears both banners, so without this the user sees compaction start, stop, and
@@ -930,7 +947,7 @@ export class PiStreamAdapter {
     if (isError && metadata?.[CANCELLED_TOOL_DETAIL_KEY] !== true) {
       // An error result keeps the details a tool returned with it (a thrown error's are empty), and a reload shows them.
       return [
-        { type: 'toolFailed', toolUseId, toolName, error: joinResultText(result) || 'Tool failed', ...duration },
+        { type: 'toolFailed', toolUseId, toolName, error: joinResultText(result), ...duration },
         ...(metadata && Object.keys(metadata).length > 0 ? [{ type: 'toolMetadata' as const, toolUseId, metadata }] : []),
       ];
     }
@@ -947,13 +964,13 @@ export class PiStreamAdapter {
    * `contentBlocks`/`flattenContentBlocks` render path instead of the partial-only fallback — which
    * is why a streamed answer (notably from thinking-heavy models) now renders its text reliably. The
    * webview filters thinking out of `contentBlocks` and reads it via the streamed `thinking` buffer.
-   * Returns whether the message has anything to show.
+   * Returns the message it sent, or undefined when it has nothing to show.
    */
   private emitAssistantMessage(
     content: ReadonlyArray<{ type: string; text?: string; thinking?: string; thinkingSignature?: string; id?: string; name?: string; arguments?: Record<string, unknown> }> | undefined,
     effort?: EffortBadgeLevel,
-  ): boolean {
-    if (!content) return false;
+  ): ExtensionToWebviewMessage | undefined {
+    if (!content) return undefined;
     const blocks: ContentBlock[] = [];
     for (const c of content) {
       if (c.type === 'text' && c.text) {
@@ -964,8 +981,8 @@ export class PiStreamAdapter {
         blocks.push({ type: 'tool_use', id: c.id, name: mapPiToolName(c.name), input: normalizeToolInput(c.name, c.arguments ?? {}) });
       }
     }
-    if (blocks.length === 0) return false;
-    this.emit({
+    if (blocks.length === 0) return undefined;
+    const sealed: ExtensionToWebviewMessage = {
       type: 'assistant',
       data: {
         type: 'assistant',
@@ -979,8 +996,9 @@ export class PiStreamAdapter {
         },
         session_id: this.deps.sessionId(),
       },
-    });
-    return true;
+    };
+    this.emit(sealed);
+    return sealed;
   }
 
   /** The context meter's last-request snapshot. Billing totals travel only in `sessionUsage`. */
@@ -1188,13 +1206,14 @@ export class PiStreamAdapter {
     this._undecidedError = null;
     const { message } = pending;
     if (windDownRecorded(session.sessionManager.getBranch(), message)) {
+      this._failedCalls.delete(message);
       for (const call of pending.skipped) this.abandonTool(call.id, call.name, 'stopped');
       this.abandonToolCalls(message.content, 'stopped');
       this.onAssistantAborted();
       return;
     }
     this.abandonToolCalls(message.content, 'failed');
-    this.holdFailure(failedCallError(message.errorMessage), message.provider, message.model, pending.shownId);
+    this.holdFailure(message, failedCallError(message.errorMessage), pending.shownId);
   }
 
   /**
@@ -1204,8 +1223,8 @@ export class PiStreamAdapter {
    * (`showPendingFailure`). Both recoveries omit the call from model context, which is how a reload
    * tells them apart (`history-loader.ts`). Settling here would also flash idle in the middle of a retry.
    */
-  private holdFailure(message: string, provider: string | undefined, model: string | undefined, shownId: string | undefined): void {
-    this._pendingFailure = { message, provider, model, shownId };
+  private holdFailure(call: AssistantMessage, message: string, shownId: string | undefined): void {
+    this._pendingFailure = { call, message, provider: call.provider, model: call.model, shownId };
   }
 
   /**
@@ -1220,9 +1239,17 @@ export class PiStreamAdapter {
 
   /** pi re-runs the held call: it shows no card, and what it streamed goes, as a reload omits it. */
   private withdrawFailure(): void {
-    const shownId = this._pendingFailure?.shownId;
+    const failure = this._pendingFailure;
+    if (!failure) return;
     this._pendingFailure = null;
-    if (shownId) this.emit({ type: 'assistantRetracted', messageId: shownId });
+    this._failedCalls.set(failure.call, null);
+    if (failure.shownId) this.emit({ type: 'assistantRetracted', messageId: failure.shownId });
+  }
+
+  /** pi's report that it could not recover an overflowed call replaces that call's card, which a replay then shows as a reload does. */
+  private replacePendingFailure(): void {
+    if (this._pendingFailure) this._failedCalls.delete(this._pendingFailure.call);
+    this._pendingFailure = null;
   }
 
   /** pi sends nothing when a retry backoff ends, so the status holds until the retried call starts or the retry ends. */
@@ -1241,6 +1268,7 @@ export class PiStreamAdapter {
     const failure = this._pendingFailure;
     if (!failure) return;
     this._pendingFailure = null;
+    this._failedCalls.delete(failure.call);
     this.emit(failureCard(failure.provider, failure.model, failure.message));
   }
 

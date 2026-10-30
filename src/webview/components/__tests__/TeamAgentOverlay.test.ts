@@ -13,8 +13,13 @@ import { useExpandedTool } from '@/composables/useExpandedTool';
 import { useUIStore } from '@/stores/useUIStore';
 import { useDiffStore } from '@/stores/useDiffStore';
 import { useTeamStore, type AgentChatMessage } from '@/stores/useTeamStore';
-import { i18n } from '@/i18n';
+import { applyLocale, i18n } from '@/i18n';
 import { at, defined } from '@/__tests__/helpers';
+import { useSubagentStore } from '@/stores/useSubagentStore';
+import { createStreamingHandlers } from '@/composables/message-handler/handlers/streaming-handlers';
+import { createUIHandlers } from '@/composables/message-handler/handlers/ui-handlers';
+import type { HandlerContext } from '@/composables/message-handler/types';
+import { inGreek } from '../../../__mocks__/greek-locale';
 
 const posted: WebviewToExtensionMessage[] = [];
 vi.mock('@/composables/usePlatformBridge', () => ({
@@ -315,6 +320,25 @@ describe('a failed model call in the team agent overlay', () => {
     const notice = wrapper.get('[data-testid="agent-error"]');
     expect(notice.text()).toContain(i18n.global.t('common.error'));
     expect(notice.text()).toContain('529 overloaded_error');
+  });
+
+  it('keeps one row for a live error the loaded transcript repeats after a language switch, in the new language', async () => {
+    const coreText = { message: 'Could not open file: {0}', args: ['member.jsonl'] };
+    const wrapper = openWith([]);
+    const ctx = { stores: { subagentStore: useSubagentStore(), teamStore: useTeamStore() } } as unknown as HandlerContext;
+    createStreamingHandlers().error!({ type: 'error', message: coreText, parentToolUseId: AGENT_ID }, ctx);
+    try {
+      createUIHandlers().languageChange!({ type: 'languageChange', locale: 'el' }, ctx);
+      useTeamStore().handleAgentDataLoaded(AGENT_ID, [
+        { id: '0:e1', role: 'error', content: [{ type: 'text', text: 'Could not open file: member.jsonl' }], error: coreText },
+      ]);
+      await nextTick();
+      const notices = wrapper.findAll('[data-testid="agent-error"]');
+      expect(notices).toHaveLength(1);
+      expect(notices[0]!.text()).toContain(inGreek(coreText));
+    } finally {
+      await applyLocale('en');
+    }
   });
 
   it('names the retry on the working line while pi waits to re-send the call', () => {

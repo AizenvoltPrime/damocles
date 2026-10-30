@@ -11,9 +11,10 @@ import { OVERLAY_ACK_TIMEOUT_MS, OVERLAY_CHANNELS, type OverlayRequest, type Ove
 import { createMessageAsker } from '../message-dialog';
 import { NotificationCenter } from '../notification-center';
 import { OverlayHost } from '../overlay';
-import { createDesktopNotificationService } from '../platform/notification-service';
+import { createDesktopNotificationService, localizedNotifications } from '../platform/notification-service';
 import { OVERLAY_PAGE_URL } from '../protocol';
 import { fakeOverlayWindow, type FakeOverlayView } from './fake-overlay-electron';
+import { englishText } from '../../../shared/localized-text';
 
 let host: OverlayHost | undefined;
 let lines: string[];
@@ -58,7 +59,7 @@ function service(): ReturnType<typeof createDesktopNotificationService> {
   return createDesktopNotificationService({
     notice: async (severity, message, actions) => {
       notices.push([severity, message, actions]);
-      return actions[0];
+      return actions.length > 0 ? 0 : undefined;
     },
     ask: createMessageAsker({ overlay: () => host, window: () => parent as never, focused: () => undefined, closing: () => false, log: (line) => lines.push(line) }),
     t: (message) => message,
@@ -90,6 +91,7 @@ describe('desktop notifications', () => {
     loaded();
     const popup: OverlayToast[] = [];
     const center = new NotificationCenter({
+      render: englishText,
       doNotDisturb: () => false,
       setDoNotDisturb: async () => undefined,
       popupsEnabled: () => true,
@@ -114,10 +116,51 @@ describe('desktop notifications', () => {
     });
     const answer = notifications.warn('Reload the window to apply the change?', 'Reload', 'Later');
     expect(popup.map((toast) => toast.body)).toEqual([{ kind: 'notice', severity: 'warning', message: 'Reload the window to apply the change?', actions: ['Reload', 'Later'] }]);
-    center.resolveToast(popup[0]!.id, 'Later');
+    center.resolveToast(popup[0]!.id, 1);
     await expect(answer).resolves.toBe('Later');
     expect(view().webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_CHANNELS.toast)).toEqual([]);
     expect(H.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it('answers a core notice by the chosen action\'s index when two of its actions render alike, as a toast and as a dialog', async () => {
+    loaded();
+    const popup: OverlayToast[] = [];
+    const center = new NotificationCenter({
+      render: englishText,
+      doNotDisturb: () => false,
+      setDoNotDisturb: async () => undefined,
+      popupsEnabled: () => true,
+      windowFocused: () => true,
+      chatSelected: () => true,
+      viewedChat: () => undefined,
+      flash: () => undefined,
+      describeChat: async () => undefined,
+      popups: () => ({ show: (toast) => popup.push(toast), dismiss: () => undefined }),
+      chime: () => undefined,
+      usageWarningShown: () => false,
+      recordUsageWarning: () => undefined,
+      run: () => undefined,
+      changed: () => undefined,
+      log: () => undefined,
+    });
+    const notifications = createDesktopNotificationService({
+      notice: (severity, message, actions) => center.notice(severity, message, actions),
+      ask: createMessageAsker({ overlay: () => host, window: () => parent as never, focused: () => undefined, closing: () => false, log: (line) => lines.push(line) }),
+      t: (message) => message,
+      log: () => undefined,
+    });
+    // two English labels that share one translation in main's language
+    const core = localizedNotifications(notifications, (text) => (text.message === 'Open' || text.message === 'Show' ? 'Άνοιγμα' : text.message));
+    const actions = [{ message: 'Open' }, { message: 'Show' }];
+
+    const toast = core.warn({ message: 'Pick one' }, actions);
+    expect(popup[0]!.body).toEqual({ kind: 'notice', severity: 'warning', message: 'Pick one', actions: ['Άνοιγμα', 'Άνοιγμα'] });
+    center.resolveToast(popup[0]!.id, 1);
+    await expect(toast).resolves.toBe(1);
+
+    const dialog = core.warn({ message: 'Pick one' }, actions, { modal: true });
+    answerFromOverlay({ kind: 'message', action: 1 });
+    await expect(dialog).resolves.toBe(1);
   });
 
   it('asks a modal notification as the overlay message dialog and answers the chosen action', async () => {

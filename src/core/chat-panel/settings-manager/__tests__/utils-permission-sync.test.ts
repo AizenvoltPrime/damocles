@@ -23,6 +23,7 @@ vi.mock('os', async (importOriginal) => {
 
 import type { PermissionUpdate } from '../../../../shared/types/permissions';
 import { syncPermissionRulesToSettings } from '../utils';
+import { englishText } from '../../../../shared/localized-text';
 
 const addPushRule = (destination: PermissionUpdate['destination']): PermissionUpdate => ({
   type: 'addRules',
@@ -125,7 +126,7 @@ describe('syncPermissionRulesToSettings — hostile and malformed input', () => 
 
     expect(fs.readFileSync(localPath, 'utf-8')).toBe('null');
     expect(failures).toHaveLength(1);
-    expect(failures[0]).toContain(`${localPath} does not parse, so it was not overwritten`);
+    expect(englishText(failures[0]!)).toContain(`${localPath} does not parse, so it was not overwritten`);
   });
 
   // The file also holds every other setting; rewriting it from an empty object would lose them all.
@@ -136,7 +137,7 @@ describe('syncPermissionRulesToSettings — hostile and malformed input', () => 
     const failures = await syncPermissionRulesToSettings([addPushRule('localSettings')], fakeWorkspace);
 
     expect(fs.readFileSync(localPath, 'utf-8')).toBe(text);
-    expect(failures).toEqual([expect.stringContaining('The permission rule was not saved.')]);
+    expect(failures.map(englishText)).toEqual([expect.stringContaining('The permission rule was not saved.')]);
   });
 
   it('writes into a settings file that starts with a BOM', async () => {

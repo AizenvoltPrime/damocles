@@ -397,14 +397,14 @@ describe('settingWriteResult', () => {
     const deps = { platform, postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message) };
     await expect(writeSetting(deps, ctx(targetA), 'damocles.explore.model', (d) => d, () => explore.setModel('nowhere'))).resolves.toBe(false);
     expect(posted.filter((m) => m.type === 'settingWriteResult')).toStrictEqual([
-      { type: 'settingWriteResult', key: 'damocles.explore.model', ok: false, error: 'Model "nowhere" is not a known model' },
+      { type: 'settingWriteResult', key: 'damocles.explore.model', ok: false, error: { message: 'Model "{0}" is not a known model', args: ['nowhere'] } },
     ]);
   });
 
   it('reports a failed write with its reason and tells the chat', async () => {
     const { platform, manager, posted } = setup();
     const deps = { platform, postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message) };
-    const saved = await writeSetting(deps, ctx(targetA), 'damocles.checkpoints.retentionDays', (d) => `failed: ${d}`, () => manager.handleSetCheckpointRetentionDays(-1));
+    const saved = await writeSetting(deps, ctx(targetA), 'damocles.checkpoints.retentionDays', (d) => ({ message: 'failed: {0}', args: [d] }), () => manager.handleSetCheckpointRetentionDays(-1));
     expect(saved).toBe(false);
     expect(posted).toContainEqual(expect.objectContaining({ type: 'settingWriteResult', key: 'damocles.checkpoints.retentionDays', ok: false }));
     expect(posted).toContainEqual(expect.objectContaining({ type: 'notification', notificationType: 'error' }));

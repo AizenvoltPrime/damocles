@@ -1,7 +1,7 @@
 import { createApp } from 'vue';
 import { createPinia } from 'pinia';
 import App from './App.vue';
-import { i18n } from './i18n';
+import { i18n, mountInInitialLocale } from './i18n';
 import './style.css';
 import { logBootResources } from './utils/perf';
 import { mirrorVsCodeReduceMotion } from './utils/reducedMotion';
@@ -14,5 +14,7 @@ const pinia = createPinia();
 
 app.use(pinia);
 app.use(i18n);
-app.mount('#app');
-logBootResources();
+void mountInInitialLocale(() => {
+  app.mount('#app');
+  logBootResources();
+});

@@ -1610,6 +1610,24 @@ describe('shell integration', () => {
     expect(ackedByMain(h) + forwarded).toBe(running.length + finished.length);
   });
 
+  it('a page reload replays nothing', async () => {
+    const { h, nonce, emit } = await integrated();
+    await emit(`${osc(`A;${nonce}`)}PS> ${osc(`B;${nonce}`)}npm test\r\n${osc(`E;npm test;${nonce}`)}${osc(`C;${nonce}`)}FAIL\r\n${osc(`D;1;${nonce}`)}${osc(`A;${nonce}`)}PS> `);
+    h.service.shellLoaded();
+    await settle(50);
+    // the screen kept every payload, all of them output main already parsed
+    expect(h.screens.at(-1)!.marks.map(({ event }) => event)).toEqual([
+      { kind: 'promptStart' },
+      { kind: 'commandStart' },
+      { kind: 'commandExecuted', commandId: 1, commandLine: 'npm test', time: 1000 },
+      { kind: 'commandFinished', commandId: 1, exitCode: 1, time: 1000 },
+      { kind: 'promptStart' },
+    ]);
+    expect(h.service.commandFacts('term-1', 1)).toEqual({ commandLine: 'npm test', exitCode: 1 });
+    expect(h.service.commandFacts('term-1', 2)).toBeUndefined();
+    expect(lastState(h).terminals[0]).toMatchObject({ running: null, integrated: true, restoring: false });
+  });
+
   it('changes nothing for a forged sequence without the nonce, with a wrong one or with a wrong field count', async () => {
     const { h, nonce, emit } = await integrated();
     await emit(`out${osc('E;rm -rf ~')}${osc('C')}${osc('P;Cwd=C:\\x5cwork\\x5cbeta')}${osc('E;x;0123456789abcdef0123456789abcdef')}${osc(`C;${nonce};extra`)}${osc(`D;${nonce}`)}${osc(`A;${nonce.slice(1)}`)}end`);

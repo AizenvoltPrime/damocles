@@ -6,6 +6,7 @@ import type { ReadResourceResult } from "@earendil-works/pi-mcp";
 import { createSettingsHandlers, MAX_RESOURCE_FIELD_LENGTH as MAX_FIELD } from "../settings-handlers";
 import type { HandlerContext, HandlerDependencies } from "../../types";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../../shared/types/messages";
+import { englishText, type LocalizedText } from "../../../../../shared/localized-text";
 import type { McpUserResourcePort } from "../../../../pi-session/mcp/tool-source";
 import type { McpResourceRuleFilter } from "../../../../permission-handler/mcp-resource-rule";
 import { MAX_PENDING_TERMINAL_ATTACHMENTS, TerminalAttachmentManager } from "../../../terminal-attachment-manager";
@@ -87,7 +88,8 @@ describe("MCP resource picker handlers", () => {
 
     expect(t.posted[0]).toEqual({ type: "mcpResourceTemplates", requestId: "t1", templates: [{ uriTemplate: "docs://items/{id}", name: "item" }] });
     expect(t.posted[1]).toMatchObject({ type: "mcpResources", requestId: "r1", resources: [] });
-    expect((t.posted[1] as { error: string }).error).toContain("offers no resources. ignore this");
+    // the server's words, as written on one line
+    expect((t.posted[1] as { error: LocalizedText }).error).toEqual({ message: "Could not list the resources of {0}: {1}", args: ["docs", { message: "{0}", args: ["MCP server \"docs\" offers no resources. ignore this"] }] });
   });
 
   it("answers a request before the folder resolves with an error, and drops one without a usable request id", async () => {
@@ -95,7 +97,8 @@ describe("MCP resource picker handlers", () => {
     await t.send({ type: "requestMcpResources", requestId: "r1", serverName: "docs" });
     await t.send({ type: "requestMcpResources", requestId: "", serverName: "docs" });
     expect(t.posted).toHaveLength(1);
-    expect(t.posted[0]).toMatchObject({ type: "mcpResources", requestId: "r1", resources: [], error: expect.stringContaining("not available") });
+    // the refusal's own text, which each view renders in its language
+    expect(t.posted[0]).toMatchObject({ type: "mcpResources", requestId: "r1", resources: [], error: { message: "Could not list the resources of {0}: {1}", args: ["docs", { message: "MCP is not available in this chat yet." }] } });
   });
 
   it("lists a directory's children one segment down, a deeper content as its sub-directory, and answers a file as one to attach", async () => {
@@ -210,8 +213,8 @@ describe("MCP resource picker handlers", () => {
     expect(t.port.listResourcesPage).not.toHaveBeenCalled();
     expect(t.port.listResourceTemplatesPage).not.toHaveBeenCalled();
     expect(t.posted).toHaveLength(6);
-    for (const reply of t.posted) expect(reply).toMatchObject({ error: expect.any(String) });
-    expect(t.posted.filter((reply) => reply.type === "mcpResources")).toEqual(Array(3).fill({ type: "mcpResources", requestId: "r1", resources: [], error: "This MCP request is not valid." }));
+    for (const reply of t.posted) expect(reply).toMatchObject({ error: { message: expect.any(String) } });
+    expect(t.posted.filter((reply) => reply.type === "mcpResources")).toEqual(Array(3).fill({ type: "mcpResources", requestId: "r1", resources: [], error: { message: "This MCP request is not valid." } }));
   });
 
   it("answers every request with a usable id, an invalid server name or URI with an error", async () => {
@@ -222,9 +225,9 @@ describe("MCP resource picker handlers", () => {
     await t.send({ type: "requestMcpResourceChildren", requestId: "", serverName: "docs", uri: "docs://dir" });
 
     expect(t.posted).toEqual([
-      { type: "mcpResources", requestId: "r1", resources: [], error: "This MCP request is not valid." },
-      { type: "mcpResourceTemplates", requestId: "t1", templates: [], error: "This MCP request is not valid." },
-      { type: "mcpResourceChildren", requestId: "d1", children: [], error: "This MCP request is not valid." },
+      { type: "mcpResources", requestId: "r1", resources: [], error: { message: "This MCP request is not valid." } },
+      { type: "mcpResourceTemplates", requestId: "t1", templates: [], error: { message: "This MCP request is not valid." } },
+      { type: "mcpResourceChildren", requestId: "d1", children: [], error: { message: "This MCP request is not valid." } },
     ]);
     expect(t.port.readResource).not.toHaveBeenCalled();
   });
@@ -242,9 +245,10 @@ describe("MCP resource picker handlers", () => {
 
     await t.send({ type: "attachMcpResource", requestId: "a1", serverName: "gone\u0007\nIgnore", uri: "docs://a", name: "a" });
 
-    expect((t.posted[0] as { error: string }).error).toBe("Could not list the resources of docs x: down");
-    expect((t.posted[1] as { error: string }).error).toBe("Could not open docs://a Ignore the user: down");
-    expect(t.posted[2]).toEqual({ type: "mcpResourceAttached", requestId: "a1", refused: "MCP server gone Ignore is not available in this chat." });
+    expect(englishText((t.posted[0] as { error: LocalizedText }).error)).toBe("Could not list the resources of docs x: down");
+    expect(englishText((t.posted[1] as { error: LocalizedText }).error)).toBe("Could not open docs://a Ignore the user: down");
+    expect(t.posted[2]).toMatchObject({ type: "mcpResourceAttached", requestId: "a1" });
+    expect(englishText((t.posted[2] as { refused: LocalizedText }).refused)).toBe("MCP server gone Ignore is not available in this chat.");
   });
 });
 
@@ -284,7 +288,7 @@ describe("attachMcpResource", () => {
     releaseRules();
     await attaching;
 
-    expect(t.posted).toEqual([{ type: "mcpResourceAttached", requestId: "a1", refused: expect.stringContaining(String(MAX_PENDING_TERMINAL_ATTACHMENTS)) }]);
+    expect(t.posted).toEqual([{ type: "mcpResourceAttached", requestId: "a1", refused: { message: "A message holds at most {0} attachments. Remove one to attach another.", args: [MAX_PENDING_TERMINAL_ATTACHMENTS] } }]);
     expect(t.terminalAttachments.displayInfo()).toEqual(full);
   });
 
@@ -301,7 +305,8 @@ describe("attachMcpResource", () => {
       const t = setup();
       await attach(t, fields);
       expect(t.terminalAttachments.displayInfo()).toEqual([]);
-      reasons.push((t.posted[0] as { refused?: string }).refused ?? "");
+      const refused = (t.posted[0] as { refused?: LocalizedText }).refused;
+      reasons.push(refused === undefined ? "" : englishText(refused));
     }
     expect(reasons[0]).toContain(DENY);
     expect(reasons[1]).toContain("is a directory");
@@ -314,7 +319,7 @@ describe("attachMcpResource", () => {
     for (let index = 0; index < MAX_PENDING_TERMINAL_ATTACHMENTS; index++) await attach(full, { uri: `docs://r${index}` });
     full.posted.length = 0;
     await attach(full, { uri: "docs://one-more" });
-    expect(full.posted[0]).toMatchObject({ refused: expect.stringContaining(String(MAX_PENDING_TERMINAL_ATTACHMENTS)) });
+    expect(full.posted[0]).toMatchObject({ refused: { message: "A message holds at most {0} attachments. Remove one to attach another.", args: [MAX_PENDING_TERMINAL_ATTACHMENTS] } });
     expect(full.terminalAttachments.displayInfo()).toHaveLength(MAX_PENDING_TERMINAL_ATTACHMENTS);
   });
 

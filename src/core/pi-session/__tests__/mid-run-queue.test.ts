@@ -13,6 +13,7 @@ import { workingFolderNote, type PiSession } from '../pi-session';
 import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_INTERRUPTION_NOTICE, DAMOCLES_MID_STREAM_ENTRY } from '../session-store/constants';
 import { SUBAGENT_RESULTS_CUSTOM_TYPE } from '../subagents/background-results';
 import { bindPanel, blockingShell, callPowerShell, panelSession, realPiSessions, wire } from './real-pi-fixtures';
+import { englishText } from '../../../shared/localized-text';
 
 /** Queued typed input and cancel notes against pi's real queue and agent loop, with a scripted model. */
 
@@ -49,7 +50,7 @@ const userContent = (session: AgentSession, text: string): unknown =>
     .find((content) => Array.isArray(content) && content.some((p) => p.type === 'text' && p.text === text));
 
 const notices = (emitted: readonly ExtensionToWebviewMessage[]): string[] =>
-  emitted.flatMap((m) => (m.type === 'notification' ? [m.message] : []));
+  emitted.flatMap((m) => (m.type === 'notification' ? [englishText(m.message)] : []));
 
 const userTexts = (session: AgentSession): string[] =>
   session.sessionManager.getBranch().flatMap((e) => {

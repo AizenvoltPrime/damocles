@@ -46,7 +46,7 @@ describe('the wrong-copy guard of a worktree chat (AD12)', () => {
       expect(await resolveMention(deps, { projectKey: folderKey(project), relativePath: 'src/deep/a.ts' }, worktree)).toEqual({ ok: false, reason: 'projectCopy' });
       const warn = vi.fn(async () => undefined);
       await mentionInChat({ ...deps, notifications: { warn } as never, post: () => undefined }, { projectKey: folderKey(project), relativePath: 'src/deep/a.ts' }, worktree);
-      expect(warn).toHaveBeenCalledWith('This file is in the project folder. This chat works in its worktree.');
+      expect(warn).toHaveBeenCalledWith({ message: 'This file is in the project folder. This chat works in its worktree.' });
     } finally {
       installed.dispose();
     }
@@ -121,6 +121,6 @@ describe('mentionInChat', () => {
     expect(await mentionInChat(deps, { projectKey: folderKey(other), relativePath: 'b.ts' }, project)).toBe(false);
 
     expect(posted).toEqual([{ type: 'insertMention', path: path.join(project, 'src', 'deep', 'a.ts'), display: 'src/deep/a.ts' }]);
-    expect(platform.notifications.calls).toEqual([{ level: 'warn', message: "This file is outside this chat's project", actions: [] }]);
+    expect(platform.notifications.calls).toEqual([{ level: 'warn', message: "This file is outside this chat's project", text: { message: "This file is outside this chat's project" }, actions: [] }]);
   });
 });

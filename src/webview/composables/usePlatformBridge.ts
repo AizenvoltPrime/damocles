@@ -1,5 +1,6 @@
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from '@shared/types/messages';
 import type { DamoclesBridge } from '@shared/damocles-bridge';
+import { malformedWebviewText } from '@shared/localized-paths';
 
 export interface PlatformBridge {
   // the page's host, known before the first render: a VS Code webview, a desktop chat page, or the desktop overlay
@@ -10,13 +11,29 @@ export interface PlatformBridge {
   setState<T>(state: T): void;
 }
 
+/**
+ * Every bridge hands its pages only messages whose LocalizedText parses, so renderText never meets a malformed core's text;
+ * such a message is dropped with an error naming it.
+ */
+export function withParsedText(handler: (message: ExtensionToWebviewMessage) => void): (message: unknown) => void {
+  return (message) => {
+    const malformed = malformedWebviewText(message);
+    if (malformed === undefined) {
+      handler(message as ExtensionToWebviewMessage);
+      return;
+    }
+    console.error(`[bridge] dropped a ${(message as { readonly type: string }).type} message: its ${malformed} is not LocalizedText`);
+  };
+}
+
 function vscodeBridge(api: VsCodeApi): PlatformBridge {
   return {
     host: 'vscode',
     postMessage: (message) => api.postMessage(message),
     onMessage: (handler) => {
+      const checked = withParsedText(handler);
       const wrappedHandler = (event: MessageEvent) => {
-        handler(event.data as ExtensionToWebviewMessage);
+        checked(event.data);
       };
       window.addEventListener('message', wrappedHandler);
       return () => window.removeEventListener('message', wrappedHandler);
@@ -30,7 +47,7 @@ function desktopBridge(bridge: DamoclesBridge): PlatformBridge {
   return {
     host: 'desktop',
     postMessage: (message) => bridge.postMessage(message),
-    onMessage: (handler) => bridge.onMessage((message) => handler(message as ExtensionToWebviewMessage)),
+    onMessage: (handler) => bridge.onMessage(withParsedText(handler)),
     getState: <T>() => bridge.getState() as T | undefined,
     setState: (state) => bridge.setState(state),
   };

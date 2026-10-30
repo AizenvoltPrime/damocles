@@ -44,7 +44,7 @@ async function joiningChat() {
   const session = h.sessions[0]!;
   session.panelToken = TOKEN;
   const seqs = new WeakMap<object, number>();
-  const snapshot: LiveSnapshot = { seq: 5, messages: [{ type: 'processing', isProcessing: true }, { type: 'partial', data: { type: 'partial', content: [], session_id: 'S1', messageId: 'S1:a:1:1', streamingText: 'Hel' } }], liveToolCallIds: new Set() };
+  const snapshot: LiveSnapshot = { seq: 5, messages: [{ type: 'processing', isProcessing: true }, { type: 'partial', data: { type: 'partial', content: [], session_id: 'S1', messageId: 'S1:a:1:1', streamingText: 'Hel' } }], liveToolCallIds: new Set(), liveFailedCalls: new Set() };
   const live = (seq: number | undefined, message: ExtensionToWebviewMessage): void => {
     if (seq !== undefined) seqs.set(message, seq);
     h.manager.postMessage(host, message);
@@ -61,8 +61,11 @@ async function joiningChat() {
     replayLiveAgents: vi.fn(),
     fileCheckpoints: true,
   });
+  const repost = vi.fn();
   const historyManager = {
     liveReplayContext: async () => ({ reasons: undefined, isContextOverflow: undefined }),
+    // no file replay runs to the panel
+    replayReaching: () => undefined,
     replayLive: async (_context: unknown, _cwd: string, _session: unknown, _host: unknown, post: (m: ExtensionToWebviewMessage) => void, captured: { snapshot: LiveSnapshot }) => {
       post({ type: 'sessionCleared', sessionId: 'S1' });
       post({ type: 'userReplay', content: 'hi', isSynthetic: false, sdkMessageId: 'u1' });
@@ -73,6 +76,7 @@ async function joiningChat() {
   };
   const deps = {
     postMessage: (target: typeof host, message: ExtensionToWebviewMessage) => h.manager.postMessage(target, message),
+    getPanels: () => h.manager.getPanels(),
     platform: h.platform,
     settingsManager: {
       sendCurrentSettings: async () => undefined,
@@ -89,7 +93,7 @@ async function joiningChat() {
     historyManager,
     getLanguagePreference: () => 'en',
     postWorkspaceFolderState: () => undefined,
-    webviewPrompts: { repost: vi.fn() },
+    webviewPrompts: { repost },
   } as unknown as HandlerDependencies;
   const viewJoin = createViewJoin(deps);
   joins.run = (id, gate) => viewJoin({
@@ -102,7 +106,7 @@ async function joiningChat() {
     panelId: id,
     folder: instance.folder,
   }, gate);
-  return { h, host, panelId, instance, session, settled, replaying, order, live };
+  return { h, host, panelId, instance, session, settled, replaying, order, live, repost };
 }
 
 describe('views.join in core', () => {
@@ -174,8 +178,8 @@ describe('views.join in core', () => {
     expect(types.slice(started + 1).filter((type) => type.startsWith('partial:'))).toHaveLength(2);
   });
 
-  it('delivers everything it held when the join fails', async () => {
-    const { h, host, settled, live, session } = await joiningChat();
+  it('delivers everything it held when the join fails, and still posts the view its prompts and state', async () => {
+    const { h, host, panelId, settled, live, session, repost } = await joiningChat();
     settled.resolve();
     (session as unknown as { liveConversation: () => unknown }).liveConversation = () => {
       throw new Error('no branch');
@@ -184,5 +188,7 @@ describe('views.join in core', () => {
     await expect(h.manager.joinView(host, TOKEN)).rejects.toThrow('no branch');
     live(9, { type: 'processing', isProcessing: false });
     expect(host.posted.at(-1)).toEqual({ type: 'processing', isProcessing: false });
+    expect((session as unknown as { onWebviewReady: ReturnType<typeof vi.fn> }).onWebviewReady).toHaveBeenCalledTimes(1);
+    expect(repost).toHaveBeenCalledWith(panelId);
   });
 });

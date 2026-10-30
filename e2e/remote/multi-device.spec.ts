@@ -4,10 +4,10 @@ import { writeUserSettings } from '../desktop/support/hermetic';
 import { cleanUp } from '../desktop/support/loopback';
 import { mergeJson, sendPrompt } from '../desktop/support/loopback-agent';
 import { STUB_MODEL_ID, type OpenAIStub, type RecordedRequest } from '../desktop/support/openai-stub';
-import { shellPage, shellState } from '../desktop/support/shell';
+import { recordedToasts, recordToasts, shellPage, shellState } from '../desktop/support/shell';
 import { listChats } from '../desktop/support/shell-ui';
 import { activeTerminal, openTerminal, runInTerminal, waitForOutputLine } from '../desktop/support/terminal';
-import { awaitTurnEnd } from '../desktop/support/ui';
+import { awaitTurnEnd, postFromWebview } from '../desktop/support/ui';
 import { openConnect } from './support/connect-ui';
 import { shutdownHostDaemon } from './support/daemon-teardown';
 import { addHost, control, expect, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
@@ -216,6 +216,43 @@ test('a terminal on the host streams to both devices and takes input from either
     for (const shell of [againShell, firstShell]) await expect(activeTerminal(shell)).toHaveAttribute('data-status', 'exited', { timeout: 30_000 });
     await expect(card.getByTestId('host-run')).toHaveCount(0, { timeout: 30_000 });
     await again.close();
+    await shutdownHostDaemon(first, hostId, fixture);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    await cleanUp(testInfo, failure, () => other.dispose(testInfo, failure !== undefined));
+  }
+});
+
+test('two devices on one target, one in English and one in Greek: core\'s notice to each device shows in that device\'s language', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }, testInfo) => {
+  test.setTimeout(300_000);
+  const fixture = await sshd('prod-1');
+  const other = await secondDevice(fixture, 'prod-1', mirror);
+  let failure: unknown;
+  try {
+    writeUserSettings(home, { 'damocles.desktop.language': 'en' });
+    writeUserSettings(other.home, { 'damocles.desktop.language': 'el' });
+    const first = (await launch({ env: remoteEnv(ssh, mirror) })).app;
+    const { hostId, key } = await connect(first);
+    const secondDesktop = await other.launch();
+    const second = secondDesktop.app;
+    const { key: secondKey } = await connect(second);
+    const english = await newRemoteChat(first, key);
+    const greek = await newRemoteChat(second, secondKey);
+    for (const app of [first, second]) await recordToasts(app);
+    const notices = async (app: ElectronApplication): Promise<string[]> => (await recordedToasts(app)).map((toast) => toast.message);
+
+    // A file the target lacks: the daemon's core says so to the device that asked, whose main words it in its own language.
+    await postFromWebview(greek, { type: 'openFile', filePath: 'missing.png' });
+    await expect.poll(() => notices(second), { timeout: 60_000 }).toContainEqual(expect.stringContaining('Δεν ήταν δυνατό το άνοιγμα του αρχείου: missing.png'));
+    await postFromWebview(english, { type: 'openFile', filePath: 'missing.png' });
+    await expect.poll(() => notices(first), { timeout: 60_000 }).toContainEqual(expect.stringContaining('Could not open file: missing.png'));
+
+    // Each notice reached its own device alone, in that device's language only.
+    expect((await notices(first)).filter((text) => text.includes('missing.png'))).toEqual([expect.stringContaining('Could not open file: missing.png')]);
+    expect((await notices(second)).filter((text) => text.includes('missing.png'))).toEqual([expect.stringContaining('Δεν ήταν δυνατό το άνοιγμα του αρχείου: missing.png')]);
+    await secondDesktop.close();
     await shutdownHostDaemon(first, hostId, fixture);
   } catch (error) {
     failure = error;

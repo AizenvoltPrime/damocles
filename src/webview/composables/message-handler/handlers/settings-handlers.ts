@@ -7,6 +7,7 @@ import type { ExtensionToWebviewMessage } from "@shared/types/messages";
 import type { SettingsViewMessageType, SettingsViewPromptType } from "@shared/settings-view-messages";
 import type { SettingsTarget } from "@shared/settings-sections";
 import type { HandlerRegistry, StoreContext } from "../types";
+import { renderText } from "@/composables/useLocalizedText";
 
 /** What the settings view's handlers reach; the desktop overlay builds it from its own stores. */
 export interface SettingsHandlerContext {
@@ -99,7 +100,7 @@ export const settingsViewHandlers: SettingsViewHandlers = {
   openaiChatGPTAuthFailed: (msg, ctx) => {
     ctx.stores.settingsStore.setChatGPTAuthInFlight(false);
     ctx.stores.settingsStore.setChatGPTAuthError(msg.error);
-    toast.error(t("openai.toast.signInFailed", { error: msg.error }));
+    toast.error(t("openai.toast.signInFailed", { error: renderText(msg.error) }));
   },
   claudeAuthStatusChanged: (msg, ctx) => {
     ctx.stores.settingsStore.setClaudeAuthMode(msg.mode);
@@ -114,7 +115,7 @@ export const settingsViewHandlers: SettingsViewHandlers = {
   claudeAuthError: (msg, ctx) => {
     ctx.stores.settingsStore.setClaudeAuthBusy(false);
     ctx.stores.settingsStore.setClaudeAuthError(msg.error);
-    toast.error(t("claudeAuth.toast.error", { error: msg.error }));
+    toast.error(t("claudeAuth.toast.error", { error: renderText(msg.error) }));
   },
   claudeSignInWaiting: (msg, ctx) => {
     ctx.stores.settingsStore.setClaudeSignInWaiting(msg.waiting);
@@ -210,14 +211,6 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
 
     autoCompactComplete: (_msg, ctx) => {
       ctx.stores.settingsStore.clearAutoCompactTriggered();
-    },
-
-    authStatusUpdate: (msg, ctx) => {
-      ctx.stores.settingsStore.setAuthStatus({
-        isAuthenticating: msg.isAuthenticating,
-        ...(msg.error !== undefined ? { error: msg.error } : {}),
-      });
-      if (msg.error) toast.error(t("toast.authError", { error: msg.error }));
     },
 
     openaiAuthRequired: (_msg, ctx) => {

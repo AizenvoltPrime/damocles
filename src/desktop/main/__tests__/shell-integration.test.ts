@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Terminal } from '@xterm/headless';
 import { createPtyScreen } from '../../pty-host/screen';
 import { MAX_SHELL_SEQUENCE_CHARS, MAX_TERMINAL_CWD_CHARS, MAX_TERMINAL_TITLE_CHARS } from '../../preload/terminal-channels';
-import { cwdFolderName, deserializeShellValue, newShellNonce, Osc633Stream, parseShellCwd, parseShellSequence, sanitizeTitle } from '../terminal/shell-integration';
+import { cwdFolderName, deserializeShellValue, holdsRawControl, newShellNonce, Osc633Stream, parseShellCwd, parseShellSequence, sanitizeTitle } from '../terminal/shell-integration';
 
 const NONCE = '0123456789abcdef0123456789abcdef';
 
@@ -66,8 +66,8 @@ describe('Osc633Stream', () => {
     expect(run(`\x1b]633;E;evil\x1aafter`)).toMatchObject({ data: 'after', fields: [] });
   });
 
-  it('drops a sequence holding a raw C0 control or DEL, which the scripts always escape, and cancels one at any other C1 control', () => {
-    expect(run(`\x1b]633;E;a\rb;${NONCE}\x07ok`)).toMatchObject({ data: 'ok', fields: [] });
+  it('leaves a raw C0 control out of a body as xterm does, drops one holding DEL, which the scripts always escape, and cancels one at any other C1 control', () => {
+    expect(run(`\x1b]633;E;a\rb;${NONCE}\x07ok`)).toMatchObject({ data: 'ok', fields: [['E', 'ab', NONCE]] });
     expect(run(`\x1b]633;E;a\x7fb;${NONCE}\x07ok`)).toMatchObject({ data: 'ok', fields: [] });
     expect(run(`\x1b]633;P;Cwd=/a\x85b;x\x07ok`)).toMatchObject({ data: '\x85b;x\x07ok', fields: [] });
     expect(parseShellSequence(['P', 'Cwd=/a\\x85b', NONCE], NONCE, 'posix')).toEqual({ type: 'cwd', cwd: null });
@@ -153,11 +153,26 @@ describe('the stream against xterm\'s own parser', () => {
     ['leading zeros past the held digits, then another number', `a\x1b]${'0'.repeat(20)}634;A\x07b`],
     ['leading zeros past the held digits, then an abort', `a\x1b]${'0'.repeat(20)}633x;A\x07b\x1b]${'0'.repeat(20)}63\x1b\\c`],
     ['a body past the bound', `a\x1b]633;E;${'x'.repeat(MAX_SHELL_SEQUENCE_CHARS + 5)}\x07b`],
+    ['C0 controls inside a body, left out of its payload', `a\x1b]633;E;l\rs\t-\x01a;${NONCE}\x07b`],
+    ['DEL inside a body, kept in its payload', `a\x1b]633;P;Cwd=/a\x7fb;${NONCE}\x07b`],
   ])('counts and strips as xterm does: %s', async (_name, output) => {
     const { handled, next, sequences, rows: [raw, forwarded] } = await compare(output);
     expect(next).toBe(handled.length);
     for (const [index, data] of sequences) expect(data).toBe(handled[index]);
     expect(forwarded).toEqual(raw);
+  });
+
+  it('takes a body live exactly where a replay takes the payload the pty host\'s screen kept of it', async () => {
+    const bodies = [`E;l\rs;${NONCE}`, `E;a\tb\x1fc;${NONCE}`, `P;Cwd=/a\x7fb;${NONCE}`, `D;\x010;${NONCE}`, `A;${NONCE}`, `E;\x7f;${NONCE}`];
+    const output = bodies.map((body) => `\x1b]633;${body}\x07$ `).join('');
+    const live = new Map(new Osc633Stream().push(output).sequences.map(({ index, fields }) => [index, fields.join(';')]));
+    const screen = createPtyScreen({ cols: 40, rows: 4, scrollback: 10 });
+    screen.write(output);
+    const { shellSequences } = await screen.serialize();
+    screen.dispose();
+    const replayed = new Map(shellSequences.filter(({ body }) => !holdsRawControl(body)).map(({ index, body }) => [index, body]));
+    expect(replayed).toEqual(live);
+    expect([...live.keys()]).toEqual([0, 1, 3, 4]);
   });
 
   it('leaves a payload past xterm\'s limit uncounted, as its handler never sees it', () => {

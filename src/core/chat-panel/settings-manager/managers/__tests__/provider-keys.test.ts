@@ -40,6 +40,10 @@ function startedRuntime(classify: () => Record<string, unknown>) {
   return { runtime, fake };
 }
 
+/** The key sync a started runtime's secrets listener runs on the change a store or delete raises. */
+const syncOnSecretChange = (runtime: PiRuntime, platform: ReturnType<typeof installFakePlatform>) =>
+  runtime.syncCustomProviders((key) => platform.secrets.get(key));
+
 const REQ = {
   state: { a: 'b' },
   questions: { q: { type: 'bool' as const, instructions: 'i', criteria: { true: 't', false: 'f' } } },
@@ -73,15 +77,18 @@ describe('provider keys', () => {
 
   it('marks a credential pi holds that Damocles did not apply, never the key Damocles applied', async () => {
     const platform = installFakePlatform();
-    const { fake } = startedRuntime(() => ({}));
+    const { runtime, fake } = startedRuntime(() => ({}));
     const base = { type: 'providerAuthStatusChanged', provider: 'minimax', signedIn: false, preferApiKey: false };
     await storeProviderKey(platform, 'minimax', 'sk-cp-x');
+    await syncOnSecretChange(runtime, platform);
+    expect(fake.setRuntimeApiKey).toHaveBeenCalledWith('minimax', 'sk-cp-x', expect.anything());
     expect(await providerAuthStatus(platform, 'minimax')).toEqual({ ...base, configured: true, external: null, active: 'apiKey' });
 
     // pi reports its runtime key ahead of an environment key (model-runtime.js:441-450), so the environment shows once the stored key is gone.
     const runtimeStatus = fake.getProviderAuthStatus;
     fake.getProviderAuthStatus = (p: string) => (p === 'minimax' && !runtimeStatus(p).configured ? { configured: true, source: 'environment' } : runtimeStatus(p));
     await deleteProviderKey(platform, 'minimax');
+    await syncOnSecretChange(runtime, platform);
     expect(await providerAuthStatus(platform, 'minimax')).toEqual({ ...base, configured: false, external: 'environment', active: 'external' });
   });
 
@@ -124,8 +131,9 @@ describe('provider keys', () => {
 
     it('reads the sign-in from auth.json, and the sign-in is active until prefer is on', async () => {
       const platform = installFakePlatform();
-      const { fake } = startedRuntime(() => ({}));
+      const { runtime, fake } = startedRuntime(() => ({}));
       await storeProviderKey(platform, 'xai', 'xai-key');
+      await syncOnSecretChange(runtime, platform);
       expect(fake.setRuntimeApiKey).not.toHaveBeenCalled();
       const signedIn = { type: 'providerAuthStatusChanged', provider: 'xai', configured: true, external: null, signedIn: true, signedInExpiresAt: 7_000 };
       expect(await providerAuthStatus(platform, 'xai')).toEqual({ ...signedIn, preferApiKey: false, active: 'signIn' });
@@ -161,9 +169,11 @@ describe('provider keys', () => {
 
     it('leaves the sign-in in auth.json when the key is deleted', async () => {
       const platform = installFakePlatform();
-      const { fake } = startedRuntime(() => ({}));
+      const { runtime, fake } = startedRuntime(() => ({}));
       await storeProviderKey(platform, 'xai', 'xai-key');
+      await syncOnSecretChange(runtime, platform);
       await deleteProviderKey(platform, 'xai');
+      await syncOnSecretChange(runtime, platform);
       expect(fake.logout).not.toHaveBeenCalled();
       expect(JSON.parse(fs.readFileSync(authPath, 'utf8')).xai.type).toBe('oauth');
     });
@@ -175,29 +185,19 @@ describe('provider keys', () => {
     expect(await providerAuthStatus(platform, 'deepseek')).toBeUndefined();
   });
 
-  it.each(KEY_PROVIDER_IDS)('resolves a %s store and delete only after the resync', async (provider) => {
+  // The secret's change event runs the runtime's key sync; one here too would sync every save and clear twice.
+  it.each(KEY_PROVIDER_IDS)('starts no key sync of its own for a %s store or delete', async (provider) => {
     const platform = installFakePlatform();
     const runtime = PiRuntime.get();
-    let finishSync = (): void => {};
-    vi.spyOn(runtime, 'syncCustomProviders').mockImplementation(
-      () => new Promise((resolve) => { finishSync = () => resolve({ wired: [], notWired: [], timedOut: false }); }),
-    );
-    for (const run of [() => storeProviderKey(platform, provider, 'k'), () => deleteProviderKey(platform, provider)]) {
-      let settled = false;
-      const done = run().then(() => { settled = true; });
-      await vi.waitFor(() => expect(runtime.syncCustomProviders).toHaveBeenCalled());
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(settled).toBe(false);
-      finishSync();
-      await done;
-      vi.mocked(runtime.syncCustomProviders).mockClear();
-    }
+    const sync = vi.spyOn(runtime, 'syncCustomProviders').mockResolvedValue({ wired: [], notWired: [], timedOut: false });
+    await storeProviderKey(platform, provider, 'k');
+    await deleteProviderKey(platform, provider);
+    expect(sync).not.toHaveBeenCalled();
   });
 
   it.each(KEY_PROVIDER_IDS)('resets the %s classifier breaker on every save, the same key included', async (provider) => {
     const platform = installFakePlatform();
     const runtime = PiRuntime.get();
-    vi.spyOn(runtime, 'syncCustomProviders').mockResolvedValue({ wired: [], notWired: [], timedOut: false });
     const reset = vi.spyOn(runtime, 'resetClassifierBreaker');
     await storeProviderKey(platform, provider, 'k');
     await storeProviderKey(platform, provider, 'k');
@@ -208,6 +208,7 @@ describe('provider keys', () => {
     const platform = installFakePlatform();
     const { runtime } = startedRuntime(() => ({ stopReason: 'error', errorMessage: 'System One API error (402): {}' }));
     await storeProviderKey(platform, 'typesafe', 'ts-key');
+    await syncOnSecretChange(runtime, platform);
     expect(runtime.hasClassifier()).toBe(true);
     await runtime.runClassification(REQ);
     expect(runtime.hasClassifier()).toBe(false);

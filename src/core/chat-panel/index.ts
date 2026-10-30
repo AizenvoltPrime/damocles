@@ -21,7 +21,7 @@ import { UsageStatsService } from "../usage-stats";
 import { OPENAI_KEY_MOVED_MARKER_PATH, SESSION_META_CACHE_DIR, SUBCALL_USAGE_LEDGER_PATH, USAGE_INDEX_DB_PATH } from "../paths";
 import { showOpenAIKeyMovedNotice } from "../pi-session/openai-key-migration";
 import { PI_AGENT_DIR } from "../pi-session/agent-dir";
-import { OPENAI_API_KEY_SECRET, readPreferOpenAIApiKey } from "../pi-session/openai-auth";
+import { OPENAI_API_KEY_SECRET, OPENAI_API_PROVIDER, readPreferOpenAIApiKey } from "../pi-session/openai-auth";
 import { MEMORY_JUDGE_EFFORT_SETTING, MEMORY_JUDGE_SETTING } from "../../shared/memory-judge";
 import { PiRuntime } from "../pi-session/pi-runtime";
 import { effortBadgeApplies } from "../pi-session/pi-models";
@@ -30,7 +30,8 @@ import { providerAuthStatus } from "./settings-manager/managers/provider-keys";
 import { keyProviderOfSecret, TYPESAFE_SECRET_KEY } from "../pi-session/custom-providers";
 import { ACCOUNT_PROVIDER_IDS, type AccountProviderId } from "../../shared/settings-sections";
 import { broadcastImageGenerationState } from "./message-router/handlers/settings-handlers";
-import { republishAccountInfo } from "./message-router/handlers/account-info";
+import { publishPanelsAccountInfo, publishUnstartedPanelsAccountInfo, republishAccountInfo } from "./message-router/handlers/account-info";
+import { openaiAuthStatusMessage } from "./message-router/handlers/openai-handlers";
 import { MODEL_PICKER_SETTING } from "../../shared/model-vendor";
 import { PROVIDER_SECRET_KEYS } from "../pi-session/explore-providers";
 import { SessionMetaIndex } from "../pi-session/session-store";
@@ -39,7 +40,8 @@ import type { FolderTarget } from "../workspace-folders/folder-registry";
 import type { CompassViewsHandle, CompassViewsOptions } from "./types";
 import type { ChatSession } from "../chat-session";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../shared/types/messages";
-import { t } from "../l10n";
+import { headlineOf, l } from "../l10n";
+import type { LocalizedText } from "../../shared/localized-text";
 import { log } from "../logger";
 import { perfSpan } from "../perf";
 import { checkpointMaxFileSizeBytes } from "../pi-session/checkpoint-service";
@@ -47,7 +49,7 @@ import { allJsonConfigWritesSettled } from "../config/json-config-write";
 import { installWorktreeProjectLookup } from "../worktrees/personal-config";
 import { openAppSettingsFor } from "./open-app-settings";
 import { openTranscriptView } from "./transcript-view";
-import { asClient } from "../client-snapshots";
+import { asClient, clientPrefersApiKey } from "../client-snapshots";
 import { deviceHost, forEachDevice, hostForChange } from "./device-hosts";
 
 /**
@@ -151,15 +153,22 @@ export class ChatPanelProvider {
     const stopJudgeUpdates = PiRuntime.onMemoryJudgeChange((clientId) => this.broadcastMemoryJudge(clientId));
     this.subscriptions.push({ dispose: stopJudgeUpdates });
     // A sign-in or sign-out in another app or the pi CLI lands only in auth.json, which the account rows read themselves.
-    const stopAuthUpdates = PiRuntime.onAuthFileChange(() => this.accountInputsChanged());
+    const stopAuthUpdates = PiRuntime.onAuthFileChange((keySynced) => this.accountInputsChanged(keySynced ? "keySync" : "judge"));
     this.subscriptions.push({ dispose: stopAuthUpdates });
+    // Another window's OpenAI key or prefer flag, or init's move of the key: the runtime published the sessions it holds and the judge status.
+    const stopOpenAIKeyUpdates = PiRuntime.onOpenAICredentialChange(() => {
+      void this.broadcastAccountState("the OpenAI auth status", "openai", () => openaiAuthStatusMessage(platform));
+      publishUnstartedPanelsAccountInfo(() => this.panelManager.getPanels());
+    });
+    this.subscriptions.push({ dispose: stopOpenAIKeyUpdates });
     // Outside a run, a daemon's core reads the acting client's credentials and prefer flags, its auth.json in effect.
     const remote = platform.remote;
     if (remote) {
       this.subscriptions.push(remote.clients.onDidChange((change) => {
-        if (change.topic === "clientAuth") this.accountInputsChanged();
-        // with a runtime, an acting client change republishes once pi's snapshot holds that client's credentials
-        if (change.topic === "actingClient" && !PiRuntime.exists) this.accountInputsChanged();
+        // once the runtime observes clientAuth, its credentialsChanged publishes each delta that changes a provider, and one that changes none changes no row
+        if (change.topic === "clientAuth" && !PiRuntime.observesClientAuth) this.accountInputsChanged("nothing");
+        // once the runtime observes it, an acting client change republishes when pi's snapshot holds that client's credentials
+        if (change.topic === "actingClient" && !PiRuntime.observesActingClient) this.accountInputsChanged("nothing");
         // a host's Allow YOLO switch changed on that client: its views show or hide the YOLO control at once
         if (change.topic === "clientPolicy" && change.clientId !== undefined) {
           const clientId = change.clientId;
@@ -171,7 +180,7 @@ export class ChatPanelProvider {
           }
         }
       }));
-      const stopActing = PiRuntime.onActingClientRefreshed(() => this.accountInputsChanged());
+      const stopActing = PiRuntime.onActingClientRefreshed(() => this.accountInputsChanged("nothing"));
       this.subscriptions.push({ dispose: stopActing });
     }
     // Before pi starts, the judge and the Anthropic row read auth.json directly; the runtime shares this watch once it exists.
@@ -182,19 +191,28 @@ export class ChatPanelProvider {
     this.subscriptions.push(platform.secrets.onDidChange((key) => {
       const provider = keyProviderOfSecret(key);
       if (provider) this.broadcastProviderAuthStatus(provider);
-      // Before pi starts, the judge status is read from these secrets and the judge setting alone, so their changes are an input too.
-      if (key === TYPESAFE_SECRET_KEY || key === PROVIDER_SECRET_KEYS.openrouter || key === OPENAI_API_KEY_SECRET) this.broadcastMemoryJudge();
+      // Until the runtime hears a secret itself, the judge status and the OpenAI row are read from these secrets and the judge setting
+      // alone; from then on the runtime is the one publisher, so this one would post them a second time. On this computer's core it
+      // hears the OpenAI key from its construction, before any account state is published, and the classifier keys from init.
+      if (key === OPENAI_API_KEY_SECRET) {
+        if (PiRuntime.observesOpenAIKey || PiRuntime.observesSecrets) return;
+        void this.broadcastAccountState("the OpenAI auth status", "openai", () => openaiAuthStatusMessage(platform));
+        this.broadcastMemoryJudge();
+        return;
+      }
+      if (PiRuntime.observesSecrets) return;
+      if (key === TYPESAFE_SECRET_KEY || key === PROVIDER_SECRET_KEYS.openrouter) this.broadcastMemoryJudge();
     }));
     // Image settings, Tools status and the key statuses' environment flag read the credentials pi holds, which only a finished sync reflects.
     const stopSyncUpdates = PiRuntime.onCustomProvidersSynced(({ accountChanged }) => {
       const getPanels = () => this.panelManager.getPanels();
       broadcastImageGenerationState({ getPanels, settingsManager: this.settingsManager });
       for (const provider of ACCOUNT_PROVIDER_IDS) this.broadcastProviderAuthStatus(provider);
-      // The runtime republishes only started sessions; a panel showing a conversation it has not started needs it too.
-      if (accountChanged) republishAccountInfo(getPanels);
+      if (accountChanged) publishUnstartedPanelsAccountInfo(getPanels);
     });
     this.subscriptions.push({ dispose: stopSyncUpdates });
-    this.subscriptions.push(platform.settings.onDidChange(MODEL_PICKER_SETTING, (change) => republishAccountInfo(() => this.panelManager.getPanels(), change.clientId)));
+    // the judge status reads no picker setting, so this tells it nothing
+    this.subscriptions.push(platform.settings.onDidChange(MODEL_PICKER_SETTING, (change) => publishPanelsAccountInfo(() => this.panelManager.getPanels(), change.clientId)));
     this.subscriptions.push(platform.settings.onDidChange("damocles.memory", (change) => {
       if (change.affects(MEMORY_JUDGE_SETTING) || change.affects(MEMORY_JUDGE_EFFORT_SETTING)) this.broadcastMemoryJudge(change.clientId);
     }));
@@ -203,7 +221,7 @@ export class ChatPanelProvider {
     this.browserService = new BrowserService(platform);
     this.voiceService = new VoiceService({ platform });
     this.voiceService.registerWithExtension(this.subscriptions);
-    const onReplyNotSpoken = ({ reason, origin }: { reason: string; origin: string }): void => this.noticeReplyNotSpoken(reason, origin);
+    const onReplyNotSpoken = ({ reason, origin }: { reason: LocalizedText; origin: string }): void => this.noticeReplyNotSpoken(reason, origin);
     this.voiceService.on("replyNotSpoken", onReplyNotSpoken);
     this.subscriptions.push({ dispose: () => this.voiceService.off("replyNotSpoken", onReplyNotSpoken) });
 
@@ -222,7 +240,6 @@ export class ChatPanelProvider {
         current: event.current,
         total: event.total,
         phase: event.phase,
-        ...(event.label ? { label: event.label } : {}),
       });
     });
     this.compassViews = hostDeps.createCompassViews({
@@ -240,7 +257,7 @@ export class ChatPanelProvider {
       const delivered = chat === undefined ? this.panelManager.postToActivePanel(message) : this.postToChat(chat, message);
       if (!delivered) {
         platform.notifications
-          .warn(t("Damocles: No chat panel is open. Open one to receive picked elements."))
+          .warn(l("Damocles: No chat panel is open. Open one to receive picked elements."))
           .catch((err: unknown) => log("[ChatPanelProvider] Could not show the no-panel notice:", err));
       }
     });
@@ -250,7 +267,12 @@ export class ChatPanelProvider {
       getMcpConfigLoaded: () => this.settingsManager.getMcpConfigLoaded(),
       loadMcpConfig: () => this.settingsManager.loadMcpConfig(),
       getConfiguredModelForPanel: (panelId) => this.settingsManager.getConfiguredModelForPanel(panelId),
-      getPreferOpenAIApiKey: () => (PiRuntime.exists ? PiRuntime.get().preferOpenAIApiKey() : readPreferOpenAIApiKey(this.platform.state)),
+      getPreferOpenAIApiKey: () => {
+        if (PiRuntime.exists) return PiRuntime.get().preferOpenAIApiKey();
+        // a daemon's core: the pinned (else acting) client's own flag, from its clientAuth
+        const remote = this.platform.remote;
+        return remote ? clientPrefersApiKey(remote, OPENAI_API_PROVIDER) : readPreferOpenAIApiKey(this.platform.state);
+      },
       resolveThinkingForPanel: (panelId, model, folder) => {
         const settings = this.platform.settings;
         return {
@@ -300,12 +322,14 @@ export class ChatPanelProvider {
       postWorkspaceFolderState: (panelId) => this.panelManager.postWorkspaceFolderState(panelId),
       restoreRetryChanged: (panelId) => this.panelManager.restoreRetryChanged(panelId),
       webviewPrompts: this.webviewPrompts,
+      withViewGate: (host, joining, run) => this.panelManager.withViewGate(host, joining, run),
       worktrees: () => this.panelManager.worktrees,
       broadcastAccountState: (what, row, read) => this.broadcastAccountState(what, row, read),
     });
 
     this.panelManager = new PanelManager({
       platform: this.platform,
+      languagePreference: (clientId) => this.messageRouter.languagePreference(clientId),
       folderRegistry: this.folderRegistry,
       createSessionForPanel: async (host, permissionHandler, panelId, folder, forkContext) => {
         const onSpawnFork = (args: import("../../shared/types/session").ForkSpawnArgs) =>
@@ -380,7 +404,7 @@ export class ChatPanelProvider {
       }));
       const announceUnreadable = (error: string): void => {
         platform.notifications
-          .warn(t("Damocles can't read {0}, so worktree chats can't be created, moved or finished until it is fixed: {1}", registry.file, error))
+          .warn(l("Damocles can't read {0}, so worktree chats can't be created, moved or finished until it is fixed: {1}", registry.file, error))
           .catch((err: unknown) => log("[ChatPanelProvider] Could not show the registry notice: %O", err));
       };
       this.subscriptions.push(registry.onDidBecomeUnreadable(announceUnreadable));
@@ -550,11 +574,19 @@ export class ChatPanelProvider {
     void this.broadcastAccountState("the memory judge status", "memoryJudge", () => memoryJudgeStatus(this.platform), clientId);
   }
 
-  /** The runtime republishes only started sessions; a panel showing a conversation it has not started needs the account state too. */
-  private accountInputsChanged(): void {
+  /**
+   * An account input changed outside a flow of this process: posts the Claude and OpenAI rows, which no key sync posts, and
+   * what the runtime did not publish for the change. `keySync`: its key sync publishes the judge status, every key provider's
+   * row and the account state of started sessions and every other panel; `judge`: it told the judge status alone.
+   */
+  private accountInputsChanged(runtimePublished: "nothing" | "judge" | "keySync"): void {
     void this.broadcastAccountState("the Claude auth mode", undefined, async () => ({ type: "claudeAuthStatusChanged", mode: PiRuntime.claudeAuthStatus(this.platform.remote).mode }));
+    void this.broadcastAccountState("the OpenAI auth status", "openai", () => openaiAuthStatusMessage(this.platform));
+    if (runtimePublished === "keySync") return;
     for (const provider of ACCOUNT_PROVIDER_IDS) this.broadcastProviderAuthStatus(provider);
-    republishAccountInfo(() => this.panelManager.getPanels());
+    const getPanels = () => this.panelManager.getPanels();
+    if (runtimePublished === "judge") publishPanelsAccountInfo(getPanels);
+    else republishAccountInfo(getPanels);
   }
 
   private broadcastProviderAuthStatus(provider: AccountProviderId): void {
@@ -639,14 +671,12 @@ export class ChatPanelProvider {
     return this.messageRouter.dispatchForeign(host, message);
   }
 
-  private noticeReplyNotSpoken(reason: string, panelId: string): void {
-    const action = t("Voice settings");
-    // A pip or smoke-check failure runs to 30 lines; Settings > Voice shows them all.
-    const firstLine = reason.split(/\r?\n/, 1)[0] ?? reason;
+  private noticeReplyNotSpoken(reason: LocalizedText, panelId: string): void {
+    // A failure with detail lines (a pip, import-check or install-instructions failure) runs to 30 lines; Settings > Voice shows them all.
     this.platform.notifications
-      .warn(t("A reply could not be spoken: {0}", firstLine), action)
+      .warn(l("A reply could not be spoken: {0}", headlineOf(reason)), [l("Voice settings")])
       .then((choice) => {
-        if (choice !== action) return;
+        if (choice !== 0) return;
         const host = this.panelManager.getPanels().get(panelId)?.host ?? this.panelManager.activePanelHost();
         openAppSettingsFor(this.platform, (target, message) => this.panelManager.postMessage(target, message), host, "voice");
       })

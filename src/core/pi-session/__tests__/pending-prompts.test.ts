@@ -8,6 +8,7 @@ import { pendingPromptDescriber, promptOwnerOf, PROMPT_SUMMARY_MAX_CHARS, type P
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { PromptOwner } from '../../../shared/types/permissions';
 import type { PendingKind, RaisedPrompt } from '../session-state';
+import { englishText } from '../../../shared/localized-text';
 
 vi.mock('diff', async (importOriginal) => {
   const actual = await importOriginal<typeof import('diff')>();
@@ -18,7 +19,8 @@ const CWD = path.resolve('/work/project');
 const MAIN: PromptOwner = { kind: 'main' };
 
 function summaryOf(request: ExtensionToWebviewMessage, kind: PendingKind = 'approval'): string | undefined {
-  return pendingPromptDescriber(CWD)([{ id: 'p1', kind, request }])[0]!.summary;
+  const summary = pendingPromptDescriber(CWD)([{ id: 'p1', kind, request }])[0]!.summary;
+  return summary && englishText(summary);
 }
 
 const permission = (fields: Partial<Extract<ExtensionToWebviewMessage, { type: 'requestPermission' }>>): ExtensionToWebviewMessage => ({
@@ -80,6 +82,22 @@ describe('pending prompt summaries', () => {
     expect([...long]).toHaveLength(PROMPT_SUMMARY_MAX_CHARS);
     expect(long.endsWith('😀…')).toBe(true);
   });
+
+  // Only the untrusted part is capped, so a summary is its own words plus at most PROMPT_SUMMARY_MAX_CHARS of it.
+  it('flattens and caps a file path, a command line and a tool name on their own, keeping the words around them', () => {
+    const outside = path.resolve('/elsewhere');
+    expect(summaryOf(permission({ toolName: 'Write', filePath: path.join(outside, 'a\u202e.ts\nrm -rf'), toolInput: { content: 'x\n' } }))).toBe(`create ${path.join(outside, 'a.ts rm -rf')} (+1)`);
+    expect(summaryOf(permission({ toolName: 'Bash', command: 'echo \u2066safe\u2069\u2028rm -rf /\nls' }))).toBe('run `echo safe rm -rf /`');
+    expect(summaryOf(permission({ toolName: 'mcp__evil\n__tool\u202e' }))).toBe('use mcp__evil __tool');
+
+    const longCommand = summaryOf(permission({ toolName: 'Bash', command: `echo ${'x'.repeat(300)}` }))!;
+    expect(longCommand).toBe(`run \`echo ${'x'.repeat(PROMPT_SUMMARY_MAX_CHARS - 6)}…\``);
+    expect(longCommand.length).toBeGreaterThan(PROMPT_SUMMARY_MAX_CHARS);
+    const longPath = summaryOf(permission({ toolName: 'Write', filePath: path.join(outside, 'd'.repeat(300)), toolInput: { content: '' } }))!;
+    expect(longPath.startsWith(`create ${outside}`)).toBe(true);
+    expect(longPath.endsWith('… (+0)')).toBe(true);
+    expect([...longPath.slice('create '.length, -' (+0)'.length)]).toHaveLength(PROMPT_SUMMARY_MAX_CHARS);
+  });
 });
 
 describe('the pending prompt describer', () => {
@@ -103,7 +121,10 @@ describe('the pending prompt describer', () => {
     describePrompts([first]);
     describePrompts([first]);
     expect(parsePatch).toHaveBeenCalledTimes(1);
-    expect(describePrompts([first, edit('t2')]).map((prompt) => prompt.summary)).toEqual([`edit ${path.join('src', 'a.ts')} (+1 −1)`, `edit ${path.join('src', 'a.ts')} (+1 −1)`]);
+    expect(describePrompts([first, edit('t2')]).map((prompt) => prompt.summary)).toEqual([
+      { message: 'edit {0} ({1})', args: [path.join('src', 'a.ts'), '+1 −1'] },
+      { message: 'edit {0} ({1})', args: [path.join('src', 'a.ts'), '+1 −1'] },
+    ]);
     expect(parsePatch).toHaveBeenCalledTimes(2);
 
     describePrompts([]);
@@ -122,7 +143,7 @@ describe('the pending prompt describer', () => {
 
     expect(pendingPromptDescriber(CWD)([broken, question])).toEqual([
       { id: 't1', kind: 'approval', owner: { kind: 'main' } },
-      { id: 'q1', kind: 'question', owner: { kind: 'main' }, summary: 'Which store?' },
+      { id: 'q1', kind: 'question', owner: { kind: 'main' }, summary: { message: '{0}', args: ['Which store?'] } },
     ]);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('t1');

@@ -76,7 +76,7 @@ function ctxFor(sessionId: string): unknown {
   return {
     cwd: '/repo',
     signal: undefined,
-    sessionManager: { getSessionId: () => sessionId, getSessionFile: () => '/t.jsonl' },
+    sessionManager: { getSessionId: () => sessionId, getSessionFile: () => '/t.jsonl', getBranch: () => [] },
   };
 }
 
@@ -390,7 +390,7 @@ describe('the per-subagent extension instance', () => {
     expect(pi.liveEvents()).not.toContain('session_shutdown');
   });
 
-  it('registers no model-switch fold, since a subagent or team member never switches models', () => {
+  it('registers no identity fold, since a subagent or team member never switches models or folders', () => {
     expect(buildSubagentExtension().liveEvents()).not.toContain('context_with_system');
   });
 

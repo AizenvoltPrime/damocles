@@ -117,8 +117,8 @@ describe('registerConfiguredHooks — UserPromptSubmit', () => {
     expect(verdict?.block).toBe(true);
     postUserPromptVerdict(post, verdict!);
     expect(post.mock.calls.map(([message]) => message)).toEqual([
-      { type: 'notification', notificationType: 'warning', message: 'prompt note' },
-      { type: 'notification', notificationType: 'warning', message: 'blocked!' },
+      { type: 'notification', notificationType: 'warning', message: { message: '{0}', args: ['prompt note'] } },
+      { type: 'notification', notificationType: 'warning', message: { message: '{0}', args: ['blocked!'] } },
     ]);
   });
 
@@ -242,7 +242,7 @@ describe('registerConfiguredHooks — PostToolUse', () => {
     const { deps, postMessage } = mkDeps({ tool_result: [nodeEntry('process.stdout.write(JSON.stringify({system_message:"fyi"}))')] });
     registerConfiguredHooks(pi as never, deps);
     await dispatch('tool_result', resultEvent(), fakeCtx());
-    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'notification', message: 'fyi' }));
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'notification', message: { message: '{0}', args: ['fyi'] } }));
   });
 });
 

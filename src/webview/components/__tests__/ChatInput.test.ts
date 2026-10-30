@@ -3,7 +3,12 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import ChatInput from '../ChatInput.vue';
-import { i18n } from '@/i18n';
+import { applyLocale, i18n } from '@/i18n';
+import { useVoiceJarvisStore } from '@/stores/useVoiceJarvisStore';
+import { createVoiceStreamHandlers } from '@/composables/message-handler/handlers/voice-stream-handlers';
+import type { HandlerContext } from '@/composables/message-handler/types';
+import { VSCODE_HOST_CAPABILITIES } from '@shared/types/messages';
+import { inGreek } from '../../../__mocks__/greek-locale';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useStreamingStore } from '@/stores/useStreamingStore';
 import { elementAttachmentBus } from '@/composables/useElementAttachments';
@@ -596,5 +601,27 @@ describe('the composer box size', () => {
     expect(textarea.value).toBe('');
     expect(textarea.getAttribute('style') ?? '').toBe('');
     wrapper.unmount();
+  });
+});
+
+describe('the voice button after a language switch', () => {
+  it("titles the wake-word mic with core's sidecar error in the new language", async () => {
+    const coreText = { message: 'Could not open file: {0}', args: ['sidecar.py'] };
+    const settings = useSettingsStore();
+    settings.setHostCapabilities({ ...VSCODE_HOST_CAPABILITIES, voice: true });
+    settings.voiceConfig = { ...settings.voiceConfig, mode: 'wake-word' };
+    const ctx = { stores: { voiceJarvisStore: useVoiceJarvisStore() } } as unknown as HandlerContext;
+    createVoiceStreamHandlers().voiceSidecarStatus!({ type: 'voiceSidecarStatus', state: 'error', message: coreText }, ctx);
+    const wrapper = composer();
+    try {
+      expect(wrapper.get('[data-testid="composer-voice"]').attributes('title')).toBe('Could not open file: sidecar.py');
+
+      await applyLocale('el');
+      await wrapper.vm.$nextTick();
+      expect(wrapper.get('[data-testid="composer-voice"]').attributes('title')).toBe(inGreek(coreText));
+    } finally {
+      await applyLocale('en');
+      wrapper.unmount();
+    }
   });
 });

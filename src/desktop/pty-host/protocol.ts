@@ -1,6 +1,9 @@
 // The pty host's messages, shared by main and the host; no electron import.
 
 import {
+  MAX_KEPT_SHELL_SEQUENCE_CHARS,
+  MAX_KEPT_SHELL_SEQUENCES,
+  MAX_SHELL_SEQUENCE_CHARS,
   MAX_TERMINAL_ACK_CHARS,
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ID_LENGTH,
@@ -84,14 +87,39 @@ export interface ScreenMark {
   readonly line: number;
 }
 
+// An OSC 633 payload of a type main parses (KEPT_SHELL_SEQUENCE), as the screen parsed it: its index since the spawn, its text
+// after `633;` and the host's clock in ms when it was parsed. Untrusted: main applies one only after its own nonce check.
+export interface KeptShellSequence {
+  readonly index: number;
+  readonly body: string;
+  readonly time: number;
+}
+
+// The payload types parseShellSequence reads: prompt start, command start, executed, finished, command line and property.
+export const KEPT_SHELL_SEQUENCE: RegExp = /^[ABCDEP](?:;|$)/;
+
 /**
  * host → main. error: the pty could not start; exitCode is the process's. process: node-pty's foreground process name changed
- * (macOS and Linux). screen: the answer to serialize; sequences is the index the next OSC 633 sequence after it gets.
+ * (macOS and Linux). screen: the answer to serialize; sequences is the index the next OSC 633 sequence after it gets,
+ * shellSequences the latest kept payloads in index order and processName the last process name posted (feature
+ * terminals.screenShellState), now the host's clock at the serialize, which each kept time is read against (feature
+ * terminals.screenHostClock).
  */
 export type HostMessage =
   | { readonly type: 'ready'; readonly id: string; readonly pid: number }
   | { readonly type: 'data'; readonly id: string; readonly data: string }
-  | { readonly type: 'screen'; readonly id: string; readonly data: string; readonly cols: number; readonly rows: number; readonly marks: readonly ScreenMark[]; readonly sequences: number }
+  | {
+      readonly type: 'screen';
+      readonly id: string;
+      readonly data: string;
+      readonly cols: number;
+      readonly rows: number;
+      readonly marks: readonly ScreenMark[];
+      readonly sequences: number;
+      readonly shellSequences?: readonly KeptShellSequence[];
+      readonly processName?: string;
+      readonly now?: number;
+    }
   | { readonly type: 'process'; readonly id: string; readonly name: string }
   | { readonly type: 'exit'; readonly id: string; readonly exitCode: number }
   | { readonly type: 'error'; readonly id: string; readonly message: string };
@@ -214,8 +242,33 @@ function parseMarks(raw: unknown): ScreenMark[] | undefined {
   return marks;
 }
 
-/** A message from the host as main reads it: anything outside the contract is undefined. */
-export function parseHostMessage(raw: unknown): HostMessage | undefined {
+// Strictly ascending indexes below the screen's count, within both kept bounds.
+function parseShellSequences(raw: unknown, sequences: number): KeptShellSequence[] | undefined {
+  if (!Array.isArray(raw) || raw.length > MAX_KEPT_SHELL_SEQUENCES) return undefined;
+  const kept: KeptShellSequence[] = [];
+  let chars = 0;
+  let next = 0;
+  for (const entry of raw as unknown[]) {
+    const value = record(entry);
+    const index = value && own(value, 'index');
+    const body = value && own(value, 'body');
+    const time = value && own(value, 'time');
+    if (!isInteger(index, next, sequences - 1) || !isText(body, MAX_SHELL_SEQUENCE_CHARS) || !KEPT_SHELL_SEQUENCE.test(body) || !isInteger(time, 0, Number.MAX_SAFE_INTEGER)) return undefined;
+    chars += body.length;
+    if (chars > MAX_KEPT_SHELL_SEQUENCE_CHARS) return undefined;
+    next = index + 1;
+    kept.push({ index, body, time });
+  }
+  return kept;
+}
+
+export type ScreenOptionalField = 'shellSequences' | 'processName' | 'now';
+
+/**
+ * A message from the host as main reads it: anything outside the contract is undefined, except that a screen's optional
+ * field outside it is left out and named to dropped, so it costs that field and never the host with every terminal.
+ */
+export function parseHostMessage(raw: unknown, dropped?: (field: ScreenOptionalField, id: string) => void): HostMessage | undefined {
   const value = record(raw);
   if (!value) return undefined;
   const type = own(value, 'type');
@@ -241,7 +294,17 @@ export function parseHostMessage(raw: unknown): HostMessage | undefined {
       const marks = parseMarks(own(value, 'marks'));
       const sequences = own(value, 'sequences');
       if (!isText(data, MAX_TERMINAL_SCREEN_CHARS) || !isInteger(cols, 1, MAX_TERMINAL_COLS) || !isInteger(rows, 1, MAX_TERMINAL_ROWS) || !marks || !isInteger(sequences, 0, Number.MAX_SAFE_INTEGER)) return undefined;
-      return { type, id, data, cols, rows, marks, sequences };
+      const optional = <T>(field: ScreenOptionalField, parse: (raw: unknown) => T | undefined): T | undefined => {
+        const rawField = own(value, field);
+        if (rawField === undefined) return undefined;
+        const parsed = parse(rawField);
+        if (parsed === undefined) dropped?.(field, id);
+        return parsed;
+      };
+      const shellSequences = optional('shellSequences', (rawField) => parseShellSequences(rawField, sequences));
+      const processName = optional('processName', (rawField) => (isText(rawField, MAX_HOST_PROCESS_NAME_CHARS) ? rawField : undefined));
+      const now = optional('now', (rawField) => (isInteger(rawField, 0, Number.MAX_SAFE_INTEGER) ? rawField : undefined));
+      return { type, id, data, cols, rows, marks, sequences, ...(shellSequences ? { shellSequences } : {}), ...(processName !== undefined ? { processName } : {}), ...(now !== undefined ? { now } : {}) };
     }
     case 'exit': {
       const exitCode = own(value, 'exitCode');

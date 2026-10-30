@@ -35,7 +35,8 @@ export const useUIStore = defineStore('ui', () => {
   const settingsTarget = shallowRef<SettingsTarget | null>(null);
   const showMcpPanel = ref(false);
   const showToolsPanel = ref(false);
-  const currentRunningTool = ref<string | null>(null);
+  // When the processing turn began, by this page's clock; null while not processing.
+  const turnStartedAt = ref<number | null>(null);
   const showRewindTypeModal = ref(false);
   const showRewindBrowser = ref(false);
   const rewindHistoryItems = ref<RewindHistoryItem[]>([]);
@@ -65,7 +66,6 @@ export const useUIStore = defineStore('ui', () => {
   // Set while pi waits to re-send a failed model call; the status bar names the attempt.
   const retryStatus = ref<{ attempt: number; maxAttempts: number } | null>(null);
   const activeHooks = ref<Map<string, { hookName: string; hookEvent: string }>>(new Map());
-  const lastCheckpointTime = ref<number | null>(null);
   const authFailure = shallowRef<AuthFailure | null>(null);
   // The desktop window's terminal pane, for the chat header's Terminal toggle (terminalShown); its shortcut's display label.
   const terminalShown = ref(false);
@@ -85,16 +85,15 @@ export const useUIStore = defineStore('ui', () => {
   const offlineTranscript = chatOffline() !== undefined;
   const historyReadOnly = computed(() => offlineTranscript || worktree.value?.phase === 'deleted');
 
-  function setProcessing(value: boolean) {
+  /** `elapsedMs`: how long core says the turn has run, which a joining or reloaded view gets from the live snapshot. */
+  function setProcessing(value: boolean, elapsedMs?: number) {
+    if (!value) turnStartedAt.value = null;
+    else if (elapsedMs !== undefined || !isProcessing.value) turnStartedAt.value = Date.now() - (elapsedMs ?? 0);
     isProcessing.value = value;
     if (!value) {
       activeHooks.value = new Map();
       retryStatus.value = null;
     }
-  }
-
-  function setCurrentRunningTool(name: string | null) {
-    currentRunningTool.value = name;
   }
 
   function openSettingsModal(target: SettingsTarget = {}) {
@@ -287,10 +286,6 @@ export const useUIStore = defineStore('ui', () => {
     activeHooks.value = updated;
   }
 
-  function setLastCheckpointTime(time: number) {
-    lastCheckpointTime.value = time;
-  }
-
   function setAuthFailure(failure: AuthFailure) {
     authFailure.value = { account: failure.account, reason: failure.reason };
   }
@@ -314,7 +309,7 @@ export const useUIStore = defineStore('ui', () => {
     memoryPanelFocus.value = null;
     expandedToolId.value = null;
     expandedToolSource.value = null;
-    currentRunningTool.value = null;
+    turnStartedAt.value = null;
     showRewindTypeModal.value = false;
     showRewindBrowser.value = false;
     rewindHistoryItems.value = [];
@@ -331,7 +326,6 @@ export const useUIStore = defineStore('ui', () => {
     isCompacting.value = false;
     retryStatus.value = null;
     activeHooks.value = new Map();
-    lastCheckpointTime.value = null;
     authFailure.value = null;
   }
 
@@ -348,7 +342,7 @@ export const useUIStore = defineStore('ui', () => {
     showSettingsModal,
     settingsTarget,
     showMcpPanel,
-    currentRunningTool,
+    turnStartedAt,
     showRewindTypeModal,
     showRewindBrowser,
     rewindHistoryItems,
@@ -364,7 +358,6 @@ export const useUIStore = defineStore('ui', () => {
     startDirectRewind,
     startDirectCompactionRewind,
     setProcessing,
-    setCurrentRunningTool,
     openSettingsModal,
     closeSettingsModal,
     openMcpPanel,
@@ -399,14 +392,12 @@ export const useUIStore = defineStore('ui', () => {
     setTerminalAttachments,
     isCompacting,
     activeHooks,
-    lastCheckpointTime,
     authFailure,
     setCompacting,
     retryStatus,
     setRetryStatus,
     setHookActive,
     removeHook,
-    setLastCheckpointTime,
     setAuthFailure,
     dismissAuthFailure,
     clearAuthFailure,

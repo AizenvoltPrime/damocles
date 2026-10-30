@@ -7,6 +7,7 @@ import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ModelInfo } from '../../../shared/types/settings';
 import type { TurnState } from '../session-state';
 import type { TurnOutcome } from '../session-state';
+import { englishText } from '../../../shared/localized-text';
 
 vi.mock('../../logger', () => ({ log: vi.fn() }));
 
@@ -242,8 +243,12 @@ describe('PiStreamAdapter turn outcome', () => {
 
   it('the last assistant message of the turn decides it: completed, an error, or a rate limit', () => {
     expect(settle({ stopReason: 'stop' })).toEqual({ kind: 'completed' });
-    expect(settle({ stopReason: 'error', errorMessage: 'invalid x-api-key' })).toEqual({ kind: 'error', message: 'invalid x-api-key' });
+    expect(settle({ stopReason: 'error', errorMessage: 'invalid x-api-key' })).toEqual({ kind: 'error', message: { message: '{0}', args: ['invalid x-api-key'] } });
     expect(settle({ stopReason: 'error', errorMessage: '429 rate_limit_error' })).toEqual({ kind: 'rateLimit' });
+  });
+
+  it('names an error stop pi recorded without a message in Damocles\' own words, which each view translates', () => {
+    expect(settle({ stopReason: 'error' })).toEqual({ kind: 'error', message: { message: 'Unknown error' } });
   });
 });
 
@@ -924,6 +929,21 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     expect(JSON.stringify(out)).not.toContain('AAAA');
   });
 
+  // The card words a failure with no text itself, as a reload does.
+  it("gives a failed call's card the tool's own words, and none when its result has no text", () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    let listener: ((e: unknown) => void) | undefined;
+    const session = { sessionId: 'SID', subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; } };
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-silent');
+    for (const id of ['said', 'silent']) listener!({ type: 'tool_execution_start', toolCallId: id, toolName: 'read', args: { path: '/a' } });
+    listener!({ type: 'tool_execution_end', toolCallId: 'said', toolName: 'read', result: { content: [{ type: 'text', text: 'boom' }] }, isError: true });
+    listener!({ type: 'tool_execution_end', toolCallId: 'silent', toolName: 'read', result: { content: [] }, isError: true });
+
+    expect(out.flatMap((m) => (m.type === 'toolFailed' ? [[m.toolUseId, m.error]] : []))).toEqual([['said', 'boom'], ['silent', '']]);
+  });
+
   it('carries the details of an error result, as a reload does, and nothing for a thrown error\'s empty details', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out);
@@ -968,7 +988,7 @@ describe('PiStreamAdapter terminal assistant errors', () => {
   });
 
   it('shows a provider with no Accounts row the error card', () => {
-    expect(run('google', rejected)).toEqual([{ type: 'error', message: rejected }]);
+    expect(run('google', rejected)).toEqual([{ type: 'error', message: { message: '{0}', args: [rejected] } }]);
   });
 
   // pi's text for a call whose provider has no credential (pinned against pi in provider-account.test.ts).
@@ -979,7 +999,7 @@ describe('PiStreamAdapter terminal assistant errors', () => {
 
   it('names a provider with no Accounts row and the model when the call had no credential, in Damocles\' words', () => {
     expect(run('cerebras', 'Provider is not configured: cerebras', 'gpt-oss-120b')).toEqual([
-      { type: 'error', message: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.' },
+      { type: 'error', message: { message: 'No credential is set up for {0}, so {1} could not run. Pick a model from a provider you are signed in to.', args: ['cerebras', 'gpt-oss-120b'] } },
     ]);
   });
 
@@ -992,9 +1012,9 @@ describe('PiStreamAdapter terminal assistant errors', () => {
 
   it('leaves a 402 of another provider, and a 402-shaped body without that status, as an error card', () => {
     const deepseek = 'deepseek API error (402): Insufficient Balance';
-    expect(run('deepseek', deepseek)).toEqual([{ type: 'error', message: deepseek }]);
+    expect(run('deepseek', deepseek)).toEqual([{ type: 'error', message: { message: '{0}', args: [deepseek] } }]);
     const bodyOnly = 'xai API error (400): personal-team-blocked:spending-limit 402';
-    expect(run('xai', bodyOnly)).toEqual([{ type: 'error', message: bodyOnly }]);
+    expect(run('xai', bodyOnly)).toEqual([{ type: 'error', message: { message: '{0}', args: [bodyOnly] } }]);
   });
 });
 
@@ -1022,10 +1042,10 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
   it('a non-retryable failure shows one error card before the result, and the turn ends on it', () => {
     const { out, outcomes } = run(playing([...failedCall('400 invalid_request_error: bad tool schema', false), { type: 'agent_settled', aborted: false }]));
 
-    expect(cards(out)).toEqual([{ type: 'error', message: '400 invalid_request_error: bad tool schema' }]);
+    expect(cards(out)).toEqual([{ type: 'error', message: { message: '{0}', args: ['400 invalid_request_error: bad tool schema'] } }]);
     expect(out.findIndex((m) => m.type === 'error')).toBeLessThan(out.findIndex((m) => m.type === 'done'));
     expect(statuses(out)).toEqual([]);
-    expect(outcomes).toEqual([{ kind: 'error', message: '400 invalid_request_error: bad tool schema' }]);
+    expect(outcomes).toEqual([{ kind: 'error', message: { message: '{0}', args: ['400 invalid_request_error: bad tool schema'] } }]);
   });
 
   // agent_end{willRetry:true} (:753), auto_retry_start (:3102), the retried call, then auto_retry_end{success:true} at its message_end (:780).
@@ -1073,10 +1093,10 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
       { type: 'agent_settled', aborted: false },
     ]));
 
-    expect(cards(out)).toEqual([{ type: 'error', message: '529 overloaded (4)' }]);
+    expect(cards(out)).toEqual([{ type: 'error', message: { message: '{0}', args: ['529 overloaded (4)'] } }]);
     // Each retried call ends its backoff status as it starts; the final auto_retry_end has nothing left to end.
     expect(statuses(out).map((m) => (m.status === 'retrying' ? m.attempt : m.status))).toEqual([1, 'ready', 2, 'ready', 3, 'ready']);
-    expect(outcomes).toEqual([{ kind: 'error', message: '529 overloaded (4)' }]);
+    expect(outcomes).toEqual([{ kind: 'error', message: { message: '{0}', args: ['529 overloaded (4)'] } }]);
   });
 
   // abort() cancels the backoff (:1971-1980), _prepareRetry's sleep rejects into auto_retry_end{finalError:'Retry cancelled'} (:3074, :3116), then agent_settled{aborted:true}.
@@ -1099,7 +1119,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
   it('a retryable failure with retries disabled shows one error card and no retry status', () => {
     const { out, outcomes } = run(playing([...failedCall('429 rate_limit_error', false), { type: 'agent_settled', aborted: false }]));
 
-    expect(cards(out)).toEqual([{ type: 'error', message: '429 rate_limit_error' }]);
+    expect(cards(out)).toEqual([{ type: 'error', message: { message: '{0}', args: ['429 rate_limit_error'] } }]);
     expect(statuses(out)).toEqual([]);
     expect(outcomes).toEqual([{ kind: 'rateLimit' }]);
   });
@@ -1125,7 +1145,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
       { type: 'agent_settled', aborted: false },
     ]));
 
-    expect(cards(out)).toEqual([{ type: 'error', message: 'prompt is too long: 210000 tokens > 200000 maximum' }]);
+    expect(cards(out)).toEqual([{ type: 'error', message: { message: '{0}', args: ['prompt is too long: 210000 tokens > 200000 maximum'] } }]);
   });
 
   // The recovered call overflowed again: _checkCompaction reports a compaction_end with no compaction_start and keeps the call in context (:2445-2461).
@@ -1141,8 +1161,8 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
       { type: 'agent_settled', aborted: false },
     ]));
 
-    expect(cards(out)).toEqual([{ type: 'error', message: recoveryFailed }]);
-    expect(outcomes).toEqual([{ kind: 'error', message: 'prompt is too long: 201000 tokens > 200000 maximum' }]);
+    expect(cards(out)).toEqual([{ type: 'error', message: { message: '{0}', args: [recoveryFailed] } }]);
+    expect(outcomes).toEqual([{ kind: 'error', message: { message: '{0}', args: ['prompt is too long: 201000 tokens > 200000 maximum'] } }]);
   });
 
   // A dropped connection ends the call with the streamed text in its content (agent-loop.js:292-325); pi then omits it and re-runs it (:3102-3110).
@@ -1179,7 +1199,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
     ]));
 
     expect(out.some((m) => m.type === 'assistantRetracted')).toBe(false);
-    expect(cards(out)).toEqual([{ type: 'error', message: 'terminated' }]);
+    expect(cards(out)).toEqual([{ type: 'error', message: { message: '{0}', args: ['terminated'] } }]);
   });
 
   // pi returns from the turn before executing any tool of an errored message (agent-loop.js:148-157).
@@ -1488,9 +1508,9 @@ describe('PiStreamAdapter abort wind-down errors', () => {
     t.cutBatchThen(failure);
     t.settle(failure, false);
 
-    expect(cards(t.out)).toEqual([{ type: 'error', message: '529 overloaded_error' }]);
+    expect(cards(t.out)).toEqual([{ type: 'error', message: { message: '{0}', args: ['529 overloaded_error'] } }]);
     expect(abandoned(t.out)).toEqual([]);
-    expect(t.outcomes).toEqual([{ kind: 'error', message: '529 overloaded_error' }]);
+    expect(t.outcomes).toEqual([{ kind: 'error', message: { message: '{0}', args: ['529 overloaded_error'] } }]);
   });
 
   // A reload shows the card too: the error entry precedes the leaf at Stop, and the record pass saw a live signal.
@@ -1501,7 +1521,7 @@ describe('PiStreamAdapter abort wind-down errors', () => {
     t.adapter.markAborted();
     t.settle(failure, true);
 
-    expect(cards(t.out)).toEqual([{ type: 'error', message: '529 overloaded_error' }]);
+    expect(cards(t.out)).toEqual([{ type: 'error', message: { message: '{0}', args: ['529 overloaded_error'] } }]);
   });
 });
 
@@ -1521,7 +1541,7 @@ describe('PiStreamAdapter refusals (US-023)', () => {
     session.play();
 
     const error = out.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'error' }> => m.type === 'error');
-    expect(error?.message).toContain("can't help");
+    expect(englishText(error!.message)).toContain("can't help");
     expect(out.some((m) => m.type === 'authFailure')).toBe(false);
     // Turn ends clean: processing stops and the session returns to idle.
     expect(out.some((m) => m.type === 'processing' && m.isProcessing === false)).toBe(true);
@@ -1615,7 +1635,7 @@ describe('PiStreamAdapter compaction no-op classification', () => {
     session.play();
 
     expect(out.filter((m) => m.type === 'error' || m.type === 'authFailure')).toEqual([
-      { type: 'error', message: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.' },
+      { type: 'error', message: { message: 'No credential is set up for {0}, so {1} could not run. Pick a model from a provider you are signed in to.', args: ['cerebras', 'gpt-oss-120b'] } },
     ]);
   });
 

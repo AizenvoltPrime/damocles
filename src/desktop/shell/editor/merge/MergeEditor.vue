@@ -14,7 +14,7 @@ import { EDITOR_STORE, type EditorTargetCommand } from '../editor-store';
 import { lineEdits } from '../format-edits';
 import { attachConflictLens, type ConflictLens } from './code-lens';
 import { containsConflict, parseConflicts, type ConflictChoice } from './conflict-parser';
-import { matchRegions, mergeProgress, type ConflictRegion } from './merge-model';
+import { markerNames, matchRegions, mergeProgress, type ConflictRegion } from './merge-model';
 import { createMergeWorker } from './merge-worker';
 import MergeRegionActions from './MergeRegionActions.vue';
 import LoadFailedNotice from '../LoadFailedNotice.vue';
@@ -277,15 +277,14 @@ async function computeWithGit(diff3: boolean): Promise<void> {
   }
 }
 
-// Rebuilt from the inputs in the worker, its markers named as git's merge-file names them; past the alignment's line cap, or
-// with no worker, git's own merge rebuilds it.
+// Rebuilt from the inputs in the worker, its markers named by each label's marker, the names core gives git's merge-file; past
+// the alignment's line cap, or with no worker, git's own merge rebuilds it.
 async function resetResult(): Promise<void> {
   const merged = inputs.value;
   const model = resultModel();
   if (!merged || !model) return;
   busy.value = 'compute';
-  const labels = { current: labelName(merged.labels.current) ?? merged.labels.current.title, incoming: labelName(merged.labels.incoming) ?? merged.labels.incoming.title, base: merged.labels.base.title };
-  const text = await mergeWorker.markers(merged.base, merged.current, merged.incoming, labels, model.getEOL()).catch(() => null);
+  const text = await mergeWorker.markers(merged.base, merged.current, merged.incoming, markerNames(merged.labels), model.getEOL()).catch(() => null);
   busy.value = null;
   if (unmounted) return;
   if (text === null) {

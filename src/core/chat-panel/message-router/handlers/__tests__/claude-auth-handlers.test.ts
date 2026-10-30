@@ -24,6 +24,8 @@ const H = vi.hoisted(() => {
     setSubscriptionBilling: vi.fn(async (_cwd: string, _useAllowance: boolean): Promise<ClaudeAuthStatus> => ({ mode: "extra" })),
     setAnthropicApiKey: vi.fn(async (): Promise<ClaudeAuthStatus> => ({ mode: "apikey" })),
     signOutAnthropic: vi.fn(async (): Promise<ClaudeAuthStatus> => ({ mode: "none" })),
+    // runs the change and settles as it does; the watcher bookkeeping around it is pi-runtime's own
+    ownAuthFileChange: vi.fn(<T>(_providers: readonly string[], _failurePublished: boolean, op: () => Promise<T>): Promise<T> => op()),
   };
   return { runtime };
 });
@@ -31,7 +33,7 @@ type AuthInteractionLike = Parameters<typeof H.runtime.signInSubscription>[2];
 
 vi.mock("../../../../pi-session/pi-runtime", () => ({
   PiRuntime: { get: () => H.runtime, exists: true, notifyMemoryJudgeChange: () => {}, claudeAuthStatus: (): ClaudeAuthStatus => ({ mode: "none" }) },
-  remoteSignInRefusal: () => "Sign-ins change only in the User tab on your computer.",
+  remoteSignInRefusal: () => ({ message: "Sign-ins change only in the User tab on your computer." }),
 }));
 
 vi.mock("../../../../pi-session/agent-dir", () => ({
@@ -44,6 +46,7 @@ import { createFakePlatform, type FakePlatform } from "../../../../../__mocks__/
 import { createFakeRemoteHost } from "../../../../../__mocks__/fake-remote-host";
 import type { HandlerDependencies, HandlerContext } from "../../types";
 import type { ExtensionToWebviewMessage } from "../../../../../shared/types/messages";
+import { installLogSink } from "../../../../logger";
 
 /** A sign-in parked on pi's paste prompt, the way pi races it against the loopback callback for the whole browser wait. */
 function parkOnPastePrompt(withdraw?: AbortSignal): { pasted: Promise<string> } {
@@ -118,7 +121,7 @@ describe("createClaudeAuthHandlers", () => {
 
     expect(sent).toEqual([
       { type: "claudeAuthBusy", busy: true },
-      { type: "claudeAuthError", error: 'Sign-in asked a question Damocles cannot answer: "Select an organization:"' },
+      { type: "claudeAuthError", error: { message: "The provider could not complete the sign-in." } },
       { type: "claudeAuthBusy", busy: false },
     ]);
     expect(platform.dialogs.inputBoxCalls).toHaveLength(0);
@@ -252,13 +255,28 @@ describe("createClaudeAuthHandlers", () => {
     expect(sent.some((m) => m.type === "claudeAuthStatusChanged")).toBe(true);
   });
 
+  it("claudeSignIn shows a failure pi's text quotes the OAuth response in as its class and status alone, and logs neither", async () => {
+    const lines: string[] = [];
+    installLogSink({ appendLine: (line) => void lines.push(line), show: () => undefined, dispose: () => undefined });
+    H.runtime.signInSubscription.mockRejectedValueOnce(new Error('HTTP request failed. status=400; url=https://platform.claude.com/v1/oauth/token; body={"access_token":"tok-secret"}'));
+
+    await handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
+
+    expect(sent.find((m) => m.type === "claudeAuthError")).toEqual({
+      type: "claudeAuthError",
+      error: { message: "The provider could not complete the sign-in (HTTP {0}).", args: [400] },
+    });
+    expect(lines.some((line) => line.includes("sign-in failed: provider (Error) (HTTP 400)"))).toBe(true);
+    expect(JSON.stringify([sent, lines])).not.toContain("tok-secret");
+  });
+
   it("claudeSignIn surfaces a generic failure and releases the busy guard", async () => {
     H.runtime.signInSubscription.mockRejectedValueOnce(new Error("token exchange failed"));
 
     await handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
     expect(sent.find((m) => m.type === "claudeAuthError")).toEqual({
       type: "claudeAuthError",
-      error: "token exchange failed",
+      error: { message: "The provider could not complete the sign-in." },
     });
 
     // busy released — the next operation runs instead of bouncing.
@@ -280,7 +298,7 @@ describe("createClaudeAuthHandlers", () => {
 
     expect(sent.find((m) => m.type === "claudeAuthError")).toEqual({
       type: "claudeAuthError",
-      error: "A Claude auth operation is already in progress.",
+      error: { message: "A Claude auth operation is already in progress." },
     });
     expect(H.runtime.setSubscriptionBilling).not.toHaveBeenCalled();
 
@@ -296,7 +314,7 @@ describe("createClaudeAuthHandlers", () => {
     await handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: false }, ctx);
     expect(H.runtime.signInSubscription).toHaveBeenCalledTimes(1);
     expect(sent.filter((m) => m.type === "claudeAuthError")).toEqual([
-      { type: "claudeAuthError", error: "A Claude auth operation is already in progress." },
+      { type: "claudeAuthError", error: { message: "A Claude auth operation is already in progress." } },
     ]);
 
     await handlers.claudeSignInCancel!({ type: "claudeSignInCancel" }, ctx);
@@ -382,7 +400,7 @@ describe("createClaudeAuthHandlers", () => {
 describe("a refused Claude operation on a daemon's core chat two devices show", () => {
   it("reaches the asking device's views only, before any busy state or pi call", async () => {
     vi.clearAllMocks();
-    const refusal = "Sign-ins change only in the User tab on your computer.";
+    const refusal = { message: "Sign-ins change only in the User tab on your computer." };
     const toView = new Map<string, ExtensionToWebviewMessage[]>([["view-a", []], ["view-b", []]]);
     const viewHost = (viewKey: string) => ({
       clientId: viewKey === "view-a" ? "device-a" : "device-b",

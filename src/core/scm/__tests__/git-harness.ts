@@ -14,6 +14,7 @@ import type { AskpassServer } from '../askpass/askpass-server';
 import { createGitRunner, type GitCloner, type GitRunner } from '../git-runner';
 import { parseGitVersion } from '../git-version';
 import { ScmService, type ScmQuestion } from '../scm-service';
+import { englishText } from '../../../shared/localized-text';
 
 // Real git in temp folders for the source control engine tests: the sandbox, fakes of the platform services and a harness.
 
@@ -123,6 +124,24 @@ export class MapMemento implements Memento {
 const inertWatcher: FileWatcher = { ready: Promise.resolve(), onDidCreate: () => ({ dispose: () => undefined }), onDidChange: () => ({ dispose: () => undefined }), onDidDelete: () => ({ dispose: () => undefined }), dispose: () => undefined };
 export const watchers: FileWatcherFactory = { watch: () => inertWatcher, watchWorkspace: () => inertWatcher, onDidRenameFiles: () => ({ dispose: () => undefined }) };
 
+/** A question as an English host renders it. */
+export type RenderedQuestion = Omit<ScmQuestion, 'message' | 'detail' | 'actions' | 'cancelLabel'> & {
+  readonly message: string;
+  readonly detail?: string;
+  readonly actions: readonly string[];
+  readonly cancelLabel?: string;
+};
+
+function rendered({ message, detail, actions, cancelLabel, ...question }: ScmQuestion): RenderedQuestion {
+  return {
+    ...question,
+    message: englishText(message),
+    ...(detail !== undefined ? { detail: englishText(detail) } : {}),
+    actions: actions.map(englishText),
+    ...(cancelLabel !== undefined ? { cancelLabel: englishText(cancelLabel) } : {}),
+  };
+}
+
 export interface Harness {
   readonly service: ScmService;
   readonly trust: FakeTrust;
@@ -131,7 +150,8 @@ export interface Harness {
   readonly log: string[];
   // the service's own log lines
   readonly serviceLog: string[];
-  readonly questions: ScmQuestion[];
+  // as an English host shows them
+  readonly questions: RenderedQuestion[];
   readonly notices: string[];
   noticeAnswers: Array<string | undefined>;
   // every path handed to the trash, in order
@@ -170,12 +190,13 @@ export function harness(opts: { trusted?: readonly string[]; state?: MapMemento;
     settings,
     globalState: state,
     ask: async (question) => {
-      h.questions.push(question);
+      h.questions.push(rendered(question));
       return h.answers.shift();
     },
-    notify: async (message) => {
-      h.notices.push(message);
-      return h.noticeAnswers.shift();
+    notify: async (message, actions) => {
+      h.notices.push(englishText(message));
+      const answer = h.noticeAnswers.shift();
+      return answer === undefined ? undefined : actions.map(englishText).indexOf(answer);
     },
     trash: async (absolute) => {
       h.trashed.push(absolute);
@@ -184,7 +205,6 @@ export function harness(opts: { trusted?: readonly string[]; state?: MapMemento;
       fs.renameSync(absolute, kept);
       h.bin.push(kept);
     },
-    t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)])),
     log: (line) => h.serviceLog.push(line),
     ...(opts.realpath ? { realpath: opts.realpath } : {}),
     ...(opts.askpass ? { askpass: opts.askpass } : {}),

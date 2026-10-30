@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
+import { inGreek } from '../../../__mocks__/greek-locale';
 import { installPlatform, platform } from '../../platform-host';
 import { installLogSink } from '../../logger';
 import { asClient, runPinnedTurn } from '../../client-snapshots';
@@ -139,11 +140,11 @@ describe('subscription usage on a daemon\'s core', () => {
     expect([usage.claude.status, usage.gpt.status]).toEqual(['error', 'error']);
   });
 
-  it('says why in the user\'s language', async () => {
+  it('says why in text the view renders in its own language', async () => {
     remoteCore();
-    vi.spyOn(platform().localization, 't').mockImplementation((message) => `el:${message}`);
     const usage = await fetchSubscriptionUsage({} as never);
-    expect(usage.claude.error).toBe('el:Subscription usage is read on your computer, not on a remote host');
+    expect(usage.claude.error).toEqual({ message: 'Subscription usage is read on your computer, not on a remote host' });
+    expect(inGreek(usage.claude.error!)).not.toBe(usage.claude.error!.message);
   });
 });
 

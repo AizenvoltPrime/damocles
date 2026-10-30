@@ -92,6 +92,9 @@ export interface NotificationBell {
 // The answer a toast of the seven kinds gives when its action is chosen.
 export const TOAST_OPEN_ACTION = 'open';
 
+// A toast's answer: the index of the notice action chosen, or TOAST_OPEN_ACTION for a kind's own action.
+export type ToastAnswer = number | typeof TOAST_OPEN_ACTION;
+
 // The sound a desktop popup plays (D52): a prompt waiting on the user, a chat done or informed, a chat stopped or warned.
 export type ChimeTone = 'attention' | 'done' | 'warning';
 // A burst of popups plays its most urgent tone, in the popup page and in the tone main holds until that page loads.

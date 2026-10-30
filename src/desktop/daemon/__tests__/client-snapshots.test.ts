@@ -15,7 +15,7 @@ import { createRunRegistry } from '../run-registry';
 const quiet = (): void => undefined;
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
-const state: DaemonState = { snapshot: () => ({}), update: async () => undefined, applyClient: () => false, flush: async () => undefined };
+const state: DaemonState = { snapshot: () => ({}), update: async () => undefined, flush: async () => undefined };
 
 const values = (name: string, allowBypass = false): { clientAuth: ClientAuth; clientUser: ClientUser; clientPolicy: ClientPolicy } => ({
   clientAuth: { providers: { anthropic: { type: 'oauth', expiresIn: 1, hasKey: false, flatFee: false } } },
@@ -40,7 +40,7 @@ function setUp() {
       clientId: id,
       hostId: 'h1',
       transport: loop.core,
-      mirrors: { state: { global: {}, workspace: {} }, trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' }, ...mirrors },
+      mirrors: { trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' }, ...mirrors },
       close: vi.fn(),
       drained: () => Promise.resolve(), lost: () => false, onLostChange: () => ({ dispose: () => undefined }),
     });
@@ -197,7 +197,7 @@ describe('a pin names a device across its connections', () => {
         clientId: device,
         hostId: 'h1',
         transport: loop.core,
-        mirrors: { state: { global: {}, workspace: {} }, trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' }, ...values(name) },
+        mirrors: { trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' }, ...values(name) },
         close: vi.fn(),
         drained: () => Promise.resolve(), lost: () => false, onLostChange: () => ({ dispose: () => undefined }),
       });
@@ -244,7 +244,7 @@ describe('a pin names a device across its connections', () => {
       clientId: 'device-a',
       hostId: 'h1',
       transport: loop.core,
-      mirrors: { state: { global: {}, workspace: {} }, trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' }, ...values('a') },
+      mirrors: { trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' }, ...values('a') },
       close: vi.fn(),
       drained: () => Promise.resolve(),
       lost: () => lost,

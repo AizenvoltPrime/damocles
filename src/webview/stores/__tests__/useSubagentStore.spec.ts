@@ -680,7 +680,7 @@ describe('useSubagentStore failed model calls', () => {
   it('seals an error entry as the error message the live card showed', () => {
     const store = useSubagentStore();
     store.registerAgentTool('tc-f', { subagent_type: 'Explore', description: 'find', prompt: 'p' });
-    store.addSubagentError('tc-f', '529 overloaded_error');
+    store.addSubagentError('tc-f', { message: '{0}', args: ['529 overloaded_error'] });
 
     store.replaceSubagentMessages('tc-f', [
       { role: 'user', contentBlocks: [{ type: 'text', text: 'p' }] },

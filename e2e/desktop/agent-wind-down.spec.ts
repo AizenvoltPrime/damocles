@@ -241,7 +241,8 @@ test('a stopped subagent still winding down when the chat view reloads keeps its
     await expect(line).toHaveText(text);
 
     await tab.reload();
-    await expect(chatInput(tab)).toBeVisible();
+    // The main turn still waits on the subagent, so the reloaded composer queues.
+    await expect(tab.getByRole('textbox', { name: 'Message Damocles' })).toHaveAttribute('placeholder', 'Type to queue your next message…');
     await expect(card.getByTestId('subagent-status')).toHaveText('Running');
     await expect(line).toHaveText(text);
 

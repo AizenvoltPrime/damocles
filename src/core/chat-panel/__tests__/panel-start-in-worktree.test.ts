@@ -77,7 +77,7 @@ describe('a chat that moves into its working folder (AD12 wrong-copy guard)', ()
     h.platform.editor.setActiveContext({ filePath: path.join(project, 'a.ts'), selection: undefined });
     const host = makeFakeHost();
     const panelId = await h.manager.initializeHost(host);
-    const ide = () => h.instance(panelId).ideContextManager.getDisplayInfo();
+    const ide = () => h.instance(panelId).ideContextManager.getDisplayInfo(undefined);
     expect(ide()).toMatchObject({ filePath: path.join(project, 'a.ts') });
     const hold = h.registry.acquireOwned(record.workingFolder, folderKey(project));
     await h.manager.switchPanelFolder(panelId, folderKey(record.workingFolder), 'chatMove');

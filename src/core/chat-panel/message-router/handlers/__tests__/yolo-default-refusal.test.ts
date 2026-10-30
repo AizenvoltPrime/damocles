@@ -21,7 +21,7 @@ describe("the default YOLO switch on a host whose policy refuses YOLO", () => {
     const ctx = { host: {}, panelId: "p1" } as unknown as HandlerContext;
     await createSettingsHandlers(deps).setDefaultDangerouslySkipPermissions!({ type: "setDefaultDangerouslySkipPermissions", enabled: true }, ctx);
     expect(posted).toContainEqual({ type: "permissionModeRefused", mode: "dangerouslySkipPermissions", reason: "remote-host" });
-    expect(posted).toContainEqual({ type: "settingWriteResult", key: "damocles.dangerouslySkipPermissions", ok: false, error: "YOLO is off for your turns on this host." });
+    expect(posted).toContainEqual({ type: "settingWriteResult", key: "damocles.dangerouslySkipPermissions", ok: false, error: { message: "YOLO is off for your turns on this host." } });
     expect(update).not.toHaveBeenCalled();
   });
 });

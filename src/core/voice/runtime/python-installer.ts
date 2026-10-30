@@ -9,6 +9,8 @@ import { VOICE_EXTRACT_WORKER_MARKER, type ExtractEvent, type ExtractWorkerData 
 import type { GpuDetection } from "./gpu-detect";
 import { requireVoiceRuntimePlatform, type PbsTriple } from "./supported-platforms";
 import tarballChecksums from "./tarball-checksums.json";
+import { l, verbatim, withDetail } from "../../l10n";
+import { LocalizedError, type LocalizedText } from "../../../shared/localized-text";
 
 /** Auth env vars that must never leak into a Damocles-spawned subprocess (they belong to the Claude CLI). */
 const STRIPPED_ENV_KEYS: readonly string[] = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"];
@@ -45,7 +47,7 @@ export type RuntimeInstallStage =
 export type RuntimeInstallProgress = {
   stage: RuntimeInstallStage;
   pct: number;
-  message: string;
+  message: LocalizedText;
   bytesReceived?: number;
   bytesTotal?: number;
 };
@@ -207,7 +209,7 @@ export async function downloadWithResumeAndVerify(opts: DownloadOptions): Promis
         const args: RuntimeInstallProgress = {
           stage: "downloading-python",
           pct,
-          message: `Downloaded ${formatMb(totalReceived)} MB of ${formatMb(totalBytes)} MB`,
+          message: l("Downloaded {0} MB of {1} MB", megabytes(totalReceived), megabytes(totalBytes)),
           bytesReceived: totalReceived,
           bytesTotal: totalBytes,
         };
@@ -229,8 +231,9 @@ export async function downloadWithResumeAndVerify(opts: DownloadOptions): Promis
   await fs.rename(partialFile, opts.destFile);
 }
 
-function formatMb(bytes: number): string {
-  return (bytes / 1024 / 1024).toFixed(1);
+// Megabytes to a tenth, which the renderer formats in its locale.
+function megabytes(bytes: number): { number: number } {
+  return { number: Math.round((bytes / 1024 / 1024) * 10) / 10 };
 }
 
 async function sha256OfFile(path: string): Promise<string> {
@@ -350,7 +353,7 @@ export async function downloadAndExtractPython(
   const tarballPath = join(opts.targetDir, `python-${chosen.release}.tar.gz`);
 
   if (opts.onProgress !== undefined) {
-    opts.onProgress({ stage: "extracting-python", pct: 65, message: "Extracting Python runtime..." });
+    opts.onProgress({ stage: "extracting-python", pct: 65, message: l("Extracting Python runtime...") });
   }
 
   try {
@@ -431,7 +434,7 @@ export type CreateVenvOptions = {
 
 export async function createVenv(opts: CreateVenvOptions): Promise<string> {
   if (opts.onProgress !== undefined) {
-    opts.onProgress({ stage: "creating-venv", pct: 75, message: "Creating Python virtualenv..." });
+    opts.onProgress({ stage: "creating-venv", pct: 75, message: l("Creating Python virtualenv...") });
   }
   await fs.mkdir(dirname(opts.venvDir), { recursive: true });
   const venvResult = await spawnAndCapture(
@@ -442,7 +445,7 @@ export async function createVenv(opts: CreateVenvOptions): Promise<string> {
     },
   );
   if (venvResult.exitCode !== 0) {
-    throw new Error(`python -m venv failed (${venvResult.exitCode}): ${venvResult.stderr}`);
+    throw stepFailure(l("Creating the Python virtualenv failed with exit code {0}.", exitCodeOf(venvResult)), venvResult.stderr);
   }
   const venvPython = process.platform === "win32"
     ? join(opts.venvDir, "Scripts", "python.exe")
@@ -457,7 +460,7 @@ export async function createVenv(opts: CreateVenvOptions): Promise<string> {
     },
   );
   if (ensurepip.exitCode !== 0) {
-    throw new Error(`ensurepip failed (${ensurepip.exitCode}): ${ensurepip.stderr}`);
+    throw stepFailure(l("Installing pip into the Python virtualenv failed with exit code {0}.", exitCodeOf(ensurepip)), ensurepip.stderr);
   }
   return venvPython;
 }
@@ -504,7 +507,7 @@ async function runPip(
     signal?: AbortSignal;
     onProgress?: RuntimeInstallProgressCallback;
     pct: number;
-    message: string;
+    message: LocalizedText;
     envOverride?: Record<string, string>;
   },
 ): Promise<SpawnCaptureResult> {
@@ -516,18 +519,26 @@ async function runPip(
     ...(opts.envOverride !== undefined ? { envOverride: opts.envOverride } : {}),
     onLine: (line) => {
       if (opts.onProgress === undefined) return;
-      opts.onProgress({ stage: "installing-pip", pct: opts.pct, message: line.slice(0, 240) });
+      opts.onProgress({ stage: "installing-pip", pct: opts.pct, message: verbatim(line.slice(0, 240)) });
     },
   });
 }
 
-function pipFailureMessage(result: SpawnCaptureResult, label: string): string {
-  const lines = `${result.stdout}\n${result.stderr}`
-    .split(LINE_BREAK)
-    .filter((l) => l.trim().length > 0);
-  const tail = lines.slice(-30).join("\n");
-  return `${label} failed (exit ${result.exitCode}):\n${tail}`;
+/** A failed Python step: `headline` names the step, over what it wrote. */
+function stepFailure(headline: LocalizedText, output: string): LocalizedError {
+  return new LocalizedError(withDetail(headline, output));
 }
+
+function lastLines(result: SpawnCaptureResult): string {
+  return `${result.stdout}\n${result.stderr}`
+    .split(LINE_BREAK)
+    .filter((line) => line.trim().length > 0)
+    .slice(-30)
+    .join("\n");
+}
+
+// An exit code is the process's own, never a quantity, so it is passed as written.
+const exitCodeOf = (result: SpawnCaptureResult): string => String(result.exitCode);
 
 export async function installPipRequirements(opts: InstallPipOptions): Promise<void> {
   const channel = pickTorchWheelChannel(opts.gpuKind, opts.torchWheelChannel === "cpu" ? undefined : opts.torchWheelChannel);
@@ -542,11 +553,11 @@ export async function installPipRequirements(opts: InstallPipOptions): Promise<v
       ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
       ...(envOverride !== undefined ? { envOverride } : {}),
       pct: 78,
-      message: "Pinning build tools (pip, setuptools, wheel)...",
+      message: l("Pinning build tools (pip, setuptools, wheel)..."),
     },
   );
   if (bootstrap.exitCode !== 0) {
-    throw new Error(pipFailureMessage(bootstrap, "pip bootstrap"));
+    throw stepFailure(l("Pinning the build tools (pip, setuptools, wheel) failed with exit code {0}.", exitCodeOf(bootstrap)), lastLines(bootstrap));
   }
 
   const torchInstall = await runPip(
@@ -569,11 +580,11 @@ export async function installPipRequirements(opts: InstallPipOptions): Promise<v
       ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
       ...(envOverride !== undefined ? { envOverride } : {}),
       pct: 82,
-      message: `Installing torch family from ${channel} channel...`,
+      message: l("Installing torch family from {0} channel...", channel),
     },
   );
   if (torchInstall.exitCode !== 0) {
-    throw new Error(pipFailureMessage(torchInstall, "torch install"));
+    throw stepFailure(l("Installing the torch packages failed with exit code {0}.", exitCodeOf(torchInstall)), lastLines(torchInstall));
   }
 
   if (channel === "cu121") {
@@ -594,11 +605,11 @@ export async function installPipRequirements(opts: InstallPipOptions): Promise<v
         ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
         ...(envOverride !== undefined ? { envOverride } : {}),
         pct: 84,
-        message: "Installing cuda-python (NeMo CUDA-graph decoder)...",
+        message: l("Installing cuda-python (NeMo CUDA-graph decoder)..."),
       },
     );
     if (cudaPython.exitCode !== 0) {
-      throw new Error(pipFailureMessage(cudaPython, "cuda-python install"));
+      throw stepFailure(l("Installing cuda-python failed with exit code {0}.", exitCodeOf(cudaPython)), lastLines(cudaPython));
     }
   }
 
@@ -614,10 +625,10 @@ export async function installPipRequirements(opts: InstallPipOptions): Promise<v
       ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
       ...(envOverride !== undefined ? { envOverride } : {}),
       pct: 85,
-      message: "Installing Python packages...",
+      message: l("Installing Python packages..."),
     },
   );
   if (result.exitCode !== 0) {
-    throw new Error(pipFailureMessage(result, "pip install"));
+    throw stepFailure(l("Installing the Python packages failed with exit code {0}.", exitCodeOf(result)), lastLines(result));
   }
 }

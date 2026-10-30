@@ -12,6 +12,7 @@ import { DocumentService, type TextDocument } from '../documents/document-servic
 import { EditorPane } from '../editor-pane';
 import { SEARCH_MODE_SETTING, SEARCH_EDITOR_CONTEXT_LINES_SETTING } from '../../local-services/desktop-configuration';
 import { SearchHost, searchBuffers } from '../search/search-host';
+import { englishText } from '../../../shared/localized-text';
 
 let root: string;
 let projectDir: string;
@@ -53,6 +54,7 @@ beforeEach(() => {
   copied = [];
   const t = (message: string, ...args: Array<string | number>): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]));
   documents = new DocumentService({
+    render: englishText,
     hostLabel: (authority) => ({ hostId: authority, name: authority }),
     uploadsConflicted: () => undefined,
     warn: () => undefined,
@@ -65,7 +67,7 @@ beforeEach(() => {
     log: () => undefined,
     pickSavePath: async () => undefined,
     backups: { changed: () => undefined, writeNow: async () => true, remove: () => undefined },
-    settings: { locate: () => path.join(root, 'settings.json'), save: async () => ({ ok: false, error: 'unused', conflict: false }) },
+    settings: { locate: () => path.join(root, 'settings.json'), save: async () => ({ ok: false, error: { message: 'unused' }, conflict: false }) },
   });
   pane = new EditorPane({
     authorityOs: () => process.platform,

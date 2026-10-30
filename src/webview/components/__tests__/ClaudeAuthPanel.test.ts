@@ -4,7 +4,10 @@ import { mount, type VueWrapper } from '@vue/test-utils';
 import { nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import ClaudeAuthPanel from '../ClaudeAuthPanel.vue';
-import { i18n } from '@/i18n';
+import { applyLocale, i18n } from '@/i18n';
+import { createSettingsHandlers } from '@/composables/message-handler/handlers/settings-handlers';
+import type { HandlerContext } from '@/composables/message-handler/types';
+import { inGreek } from '../../../__mocks__/greek-locale';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import type { WebviewToExtensionMessage } from '@shared/types/messages';
 
@@ -124,5 +127,22 @@ describe('ClaudeAuthPanel waiting for the browser', () => {
     await nextTick();
 
     expect(wrapper.find('input[type="text"]').exists()).toBe(false);
+  });
+});
+
+describe('ClaudeAuthPanel after a language switch', () => {
+  afterEach(() => applyLocale('en'));
+
+  it("renders core's sign-in error in the new language", async () => {
+    const coreText = { message: 'Could not open file: {0}', args: ['auth.json'] };
+    const wrapper = mountPanel();
+    const ctx = { stores: { settingsStore: useSettingsStore() } } as unknown as HandlerContext;
+    createSettingsHandlers().claudeAuthError!({ type: 'claudeAuthError', error: coreText }, ctx);
+    await nextTick();
+    expect(wrapper.get('[role="alert"]').text()).toBe('Could not open file: auth.json');
+
+    await applyLocale('el');
+    await nextTick();
+    expect(wrapper.get('[role="alert"]').text()).toBe(inGreek(coreText));
   });
 });

@@ -3,6 +3,7 @@ import type { SettingsStore } from "../../platform/settings-store";
 import type { VoiceService } from "../../core/voice/service";
 import type { SidecarManagerStatus, SidecarOutbound } from "../../core/voice/sidecar";
 import { log } from "../../core/logger";
+import { renderVsCode } from "../platform/localization-service";
 
 const TOGGLE_MUTE_COMMAND = "damocles.voice.toggleMute";
 const STATUS_BAR_PRIORITY = 100;
@@ -21,8 +22,6 @@ export function createVoiceStatusBarItem(
 ): VoiceStatusBarController {
   const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, STATUS_BAR_PRIORITY);
   item.command = TOGGLE_MUTE_COMMAND;
-  item.text = "$(mic)";
-  item.tooltip = "Damocles voice (off)";
 
   let muted = false;
   let lastStatus: SidecarManagerStatus = { kind: "stopped" };
@@ -36,44 +35,44 @@ export function createVoiceStatusBarItem(
     }
 
     if (lastStatus.kind === "stopped") {
-      item.text = "$(circle-slash) Voice off";
-      item.tooltip = "Damocles voice mode is stopped";
+      item.text = `$(circle-slash) ${vscode.l10n.t("Voice off")}`;
+      item.tooltip = vscode.l10n.t("Damocles voice mode is stopped");
       item.show();
       return;
     }
     if (lastStatus.kind === "loading") {
-      item.text = "$(loading~spin) Voice loading";
-      item.tooltip = lastStatus.message ?? "Loading voice models";
+      item.text = `$(loading~spin) ${vscode.l10n.t("Voice loading")}`;
+      item.tooltip = renderVsCode(lastStatus.message);
       item.show();
       return;
     }
     if (lastStatus.kind === "restarting") {
-      item.text = "$(sync~spin) Voice restarting";
-      item.tooltip = `Restart attempt ${lastStatus.attempt}`;
+      item.text = `$(sync~spin) ${vscode.l10n.t("Voice restarting")}`;
+      item.tooltip = vscode.l10n.t("Restart attempt {0}", lastStatus.attempt);
       item.show();
       return;
     }
     if (lastStatus.kind === "error") {
-      item.text = "$(error) Voice error";
-      item.tooltip = `Voice error: ${lastStatus.message}`;
+      item.text = `$(error) ${vscode.l10n.t("Voice error")}`;
+      item.tooltip = vscode.l10n.t("Voice error: {0}", renderVsCode(lastStatus.message));
       item.show();
       return;
     }
     if (muted) {
-      item.text = "$(mic) Muted";
-      item.tooltip = "Damocles voice muted — click to unmute";
+      item.text = `$(mic) ${vscode.l10n.t("Muted")}`;
+      item.tooltip = vscode.l10n.t("Damocles voice is muted. Click to unmute.");
       item.show();
       return;
     }
     if (lastStatus.kind === "ready") {
-      const deviceLabel = lastDevice === "cpu" ? " (CPU)" : "";
-      item.text = `$(mic-filled) Listening${deviceLabel}`;
-      item.tooltip = `Damocles wake-word listening${deviceLabel ? " on CPU" : ""} — click to mute`;
+      const onCpu = lastDevice === "cpu";
+      item.text = `$(mic-filled) ${onCpu ? vscode.l10n.t("Listening (CPU)") : vscode.l10n.t("Listening")}`;
+      item.tooltip = onCpu ? vscode.l10n.t("Damocles is listening for the wake word on the CPU. Click to mute.") : vscode.l10n.t("Damocles is listening for the wake word. Click to mute.");
       item.show();
       return;
     }
     item.text = "$(mic)";
-    item.tooltip = "Damocles voice";
+    item.tooltip = vscode.l10n.t("Damocles voice");
     item.show();
   }
 
@@ -91,8 +90,8 @@ export function createVoiceStatusBarItem(
 
   function onMessage(msg: SidecarOutbound): void {
     if (msg.type === "wake_detected") {
-      item.text = "$(circle-filled) Recording";
-      item.tooltip = "Wake word detected — recording";
+      item.text = `$(circle-filled) ${vscode.l10n.t("Recording")}`;
+      item.tooltip = vscode.l10n.t("Wake word detected, recording");
       item.show();
       if (recordingResetTimer !== null) clearTimeout(recordingResetTimer);
       recordingResetTimer = setTimeout(() => {

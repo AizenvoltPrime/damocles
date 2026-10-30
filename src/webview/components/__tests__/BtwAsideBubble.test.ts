@@ -6,7 +6,9 @@ import BtwAsideBubble from '../BtwAsideBubble.vue';
 import { useBtwStore } from '@/stores/useBtwStore';
 import { createBtwHandlers } from '@/composables/message-handler/handlers/btw-handlers';
 import { defined } from '@/__tests__/helpers';
-import { i18n } from '@/i18n';
+import { nextTick } from 'vue';
+import { applyLocale, i18n } from '@/i18n';
+import { inGreek } from '../../../__mocks__/greek-locale';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import type { HandlerContext } from '@/composables/message-handler/types';
 
@@ -33,7 +35,7 @@ function failedAside(msg: Omit<Extract<ExtensionToWebviewMessage, { type: 'btwEr
 describe('BtwAsideBubble, an aside that failed', () => {
   it("shows a credential failure as the transcript's notice for that account, keeping pi's text out", () => {
     const raw = 'No API key found for deepseek.\n\nUse /login to log into a provider via OAuth or API key. See:\n  /x/providers.md\n  /x/models.md';
-    failedAside({ message: raw, authFailure: { account: 'deepseek', reason: 'missing' } });
+    failedAside({ message: { message: raw }, authFailure: { account: 'deepseek', reason: 'missing' } });
 
     expect(document.body.textContent).toContain('No DeepSeek credential is saved. Add one in settings to continue.');
     expect(document.body.textContent).not.toContain('/login');
@@ -41,7 +43,7 @@ describe('BtwAsideBubble, an aside that failed', () => {
 
   it("keeps a refused credential's provider text behind the notice's Details", async () => {
     const raw = '401 {"error":{"message":"Authentication Fails, Your api key: ****0000 is invalid"}}';
-    const wrapper = failedAside({ message: raw, authFailure: { account: 'deepseek', reason: 'rejected' } });
+    const wrapper = failedAside({ message: { message: raw }, authFailure: { account: 'deepseek', reason: 'rejected' } });
 
     expect(document.body.textContent).toContain('DeepSeek authentication required');
     expect(document.body.textContent).not.toContain('Authentication Fails');
@@ -50,20 +52,34 @@ describe('BtwAsideBubble, an aside that failed', () => {
   });
 
   it('shows any other failure as its text', () => {
-    failedAside({ message: 'socket hang up' });
+    failedAside({ message: { message: 'socket hang up' } });
 
     expect(document.body.textContent).toContain('socket hang up');
   });
 
   it('announces the failure politely, a notice or plain text alike', () => {
-    const notice = failedAside({ message: 'Provider is not configured: deepseek', authFailure: { account: 'deepseek', reason: 'missing' } });
+    const notice = failedAside({ message: { message: 'Provider is not configured: deepseek' }, authFailure: { account: 'deepseek', reason: 'missing' } });
     expect(notice.find('[data-testid="btw-error"]').attributes('role')).toBe('status');
     expect(notice.find('[data-testid="btw-error"]').text()).toContain('No DeepSeek credential is saved.');
     notice.unmount();
     mounted.pop();
 
-    const plain = failedAside({ message: 'socket hang up' });
+    const plain = failedAside({ message: { message: 'socket hang up' } });
     expect(plain.find('[data-testid="btw-error"]').attributes('role')).toBe('status');
     expect(plain.find('[data-testid="btw-error"]').text()).toBe('socket hang up');
+  });
+});
+
+describe('BtwAsideBubble after a language switch', () => {
+  afterEach(() => applyLocale('en'));
+
+  it("renders core's failure text in the new language", async () => {
+    const coreText = { message: 'Could not open file: {0}', args: ['aside.md'] };
+    const wrapper = failedAside({ message: coreText });
+    expect(wrapper.get('[data-testid="btw-error"]').text()).toContain('Could not open file: aside.md');
+
+    await applyLocale('el');
+    await nextTick();
+    expect(wrapper.get('[data-testid="btw-error"]').text()).toContain(inGreek(coreText));
   });
 });

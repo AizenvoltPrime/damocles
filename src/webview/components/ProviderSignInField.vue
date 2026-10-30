@@ -8,6 +8,7 @@ import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@shar
 import type { ProviderSignInState } from '@shared/types/settings';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { useLocalizedText } from '@/composables/useLocalizedText';
 import SettingButton from '@/components/settings/controls/SettingButton.vue';
 import SettingInput, { type InputParse } from '@/components/settings/controls/SettingInput.vue';
 
@@ -17,6 +18,7 @@ const props = defineProps<{ provider: SignInProviderId }>();
 const COPIED_FEEDBACK_MS = 2000;
 
 const { t } = useI18n();
+const { rt } = useLocalizedText();
 const settingsStore = useSettingsStore();
 const { providerSignInState, keyProviderStatus } = storeToRefs(settingsStore);
 const { postMessage, onMessage } = usePlatformBridge();
@@ -157,7 +159,19 @@ const parsePaste: InputParse<string> = (raw) => {
 // Blank means github.com.
 const parseDomain: InputParse<string> = (raw) => ({ ok: true, value: raw.trim() });
 
+// The pending answer disables the field, which drops its focus; a refusal gives it back unless the user moved it meanwhile.
+let answeredFromField = false;
+watch(state, async () => {
+  const refocus = answeredFromField;
+  answeredFromField = false;
+  if (!refocus || answerRefusal.value === null) return;
+  await nextTick();
+  if (focusIsOurs()) answerField.value?.querySelector('input')?.focus();
+});
+
 function answer(input: string): void {
+  if (pending.value) return;
+  answeredFromField = root.value?.contains(document.activeElement) === true;
   request({ type: 'providerSignInAnswer', provider: props.provider, input });
 }
 </script>
@@ -272,7 +286,7 @@ function answer(input: string): void {
     <div
       v-if="answerShown"
       ref="answerField"
-      class="sm-field-row"
+      class="sm-field-row sm-field-row-start"
     >
       <label
         :for="answerId"
@@ -289,8 +303,9 @@ function answer(input: string): void {
         :placeholder="state.phase === 'prompt' ? t('providerSignIn.enterpriseDomain.placeholder') : undefined"
         :commit-on-blur="false"
         :disabled="pending"
-        :refusal="answerRefusal"
+        :refusal="pending ? null : answerRefusal"
         wide
+        inline
         @commit="answer"
       />
       <SettingButton
@@ -329,7 +344,7 @@ function answer(input: string): void {
       role="alert"
       data-testid="provider-sign-in-error"
     >
-      {{ error.message }}
+      {{ rt(error.message) }}
     </p>
   </div>
 </template>

@@ -52,10 +52,10 @@ describe('a replayed credential refusal', () => {
 
   it('keeps the account and reason the live card named, with the provider text', () => {
     const raw = '401 {"error":{"message":"Authentication Fails","type":"authentication_error"}}';
-    dispatch({ type: 'errorReplay', content: raw, authFailure: { account: 'deepseek', reason: 'rejected' } }, context());
+    dispatch({ type: 'errorReplay', content: { message: raw }, authFailure: { account: 'deepseek', reason: 'rejected' } }, context());
     useStreamingStore().flushReplayQueue();
 
-    expect(useStreamingStore().messages.at(-1)).toMatchObject({ role: 'error', content: raw, isReplay: true, authFailure: { account: 'deepseek', reason: 'rejected' } });
+    expect(useStreamingStore().messages.at(-1)).toMatchObject({ role: 'error', error: { message: raw }, isReplay: true, authFailure: { account: 'deepseek', reason: 'rejected' } });
   });
 });
 
@@ -249,7 +249,7 @@ describe('replay ingest count', () => {
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
 
     beginReplayIngest();
-    dispatch({ type: 'errorReplay', content: 'Failed to load session' }, context());
+    dispatch({ type: 'errorReplay', content: { message: 'Failed to load session' } }, context());
     endReplayIngest();
 
     expect(debug).not.toHaveBeenCalled();

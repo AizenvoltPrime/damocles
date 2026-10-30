@@ -4,13 +4,15 @@ import { useI18n } from 'vue-i18n';
 import { ChevronRight, Folder, FolderTree, Lock } from 'lucide-vue-next';
 import { visibleText } from '@shared/visible-text';
 import type { TabPlace } from './editor-place';
+import type { DiffStats } from './editor-store';
 import type { ShellEditorTab } from '../../preload/shell-channels';
 import { isBlankPage, pageHost } from './browser-page';
 
 defineOptions({ name: 'EditorBreadcrumbs' });
 
 // place: the first crumb, so a worktree's copy of a file and the project folder's never read alike
-const props = defineProps<{ tab: ShellEditorTab; projectName?: string | undefined; place?: TabPlace }>();
+// diffStats: a diff tab's line counts once its editor computed the diff; a side that is not text has none
+const props = defineProps<{ tab: ShellEditorTab; projectName?: string | undefined; place?: TabPlace; diffStats?: DiffStats | undefined }>();
 const { t } = useI18n();
 
 // The project, then each folder and the file; a file outside every project, each folder of its path and the file, as VS
@@ -113,15 +115,14 @@ const placeLabel = computed(() => {
         class="size-2.75"
       />{{ t('editor.tab.readOnly') }}
     </span>
-    <!-- A side that is not text has no lines to count. -->
     <span
-      v-if="tab.diff && !tab.diff.sides"
+      v-if="diffStats"
       data-testid="editor-diff-stats"
       class="flex shrink-0 gap-2.5 font-mono"
-      :aria-label="t('editor.diffStats', { added: tab.diff.added, removed: tab.diff.removed })"
+      :aria-label="t('editor.diffStats', { added: diffStats.added, removed: diffStats.removed })"
     >
-      <span class="text-(--d-success-text)">+{{ tab.diff.added }}</span>
-      <span class="text-(--d-danger-text)">−{{ tab.diff.removed }}</span>
+      <span class="text-(--d-success-text)">+{{ diffStats.added }}</span>
+      <span class="text-(--d-danger-text)">−{{ diffStats.removed }}</span>
     </span>
     <!-- The pane's status for the tab, such as Formatting…, right of the path where it never covers the text. -->
     <slot />

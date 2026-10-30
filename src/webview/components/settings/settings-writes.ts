@@ -2,13 +2,14 @@ import { defineStore } from 'pinia';
 import { shallowRef } from 'vue';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@shared/types/messages';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import type { ViewText } from '@/composables/useLocalizedText';
 
 type SettingWriteResult = Extract<ExtensionToWebviewMessage, { type: 'settingWriteResult' }>;
 
 /** `seq` grows with every result, so a row replays its feedback even when two writes report the same file. */
 export type SettingWriteFeedback =
   | { readonly kind: 'saved'; readonly seq: number; readonly file: string | undefined; readonly scope: string }
-  | { readonly kind: 'error'; readonly seq: number; readonly error: string };
+  | { readonly kind: 'error'; readonly seq: number; readonly error: ViewText };
 
 /**
  * The outcome of each setting write, keyed by its damocles.* key. A control updates its value before the host
@@ -30,17 +31,27 @@ export const useSettingWritesStore = defineStore('settingWrites', () => {
   }
 
   function settle(result: SettingWriteResult): void {
+    if (result.ok) finish(result.key, { kind: 'saved', file: result.file, scope: result.scope });
+    else finish(result.key, { kind: 'error', error: result.error });
+  }
+
+  /** A failed write whose reason the host already worded. */
+  function settleError(key: string, error: ViewText): void {
+    finish(key, { kind: 'error', error });
+  }
+
+  function finish(key: string, outcome: { readonly kind: 'saved'; readonly file: string | undefined; readonly scope: string } | { readonly kind: 'error'; readonly error: ViewText }): void {
     seq += 1;
-    const [revert, ...later] = inFlight.get(result.key) ?? [];
-    if (later.length > 0) inFlight.set(result.key, later);
-    else inFlight.delete(result.key);
-    if (result.ok) {
-      feedback.value = { ...feedback.value, [result.key]: { kind: 'saved', seq, file: result.file, scope: result.scope } };
+    const [revert, ...later] = inFlight.get(key) ?? [];
+    if (later.length > 0) inFlight.set(key, later);
+    else inFlight.delete(key);
+    if (outcome.kind === 'saved') {
+      feedback.value = { ...feedback.value, [key]: { ...outcome, seq } };
       return;
     }
     if (revert && later.length > 0) later[0] = revert;
     else revert?.();
-    feedback.value = { ...feedback.value, [result.key]: { kind: 'error', seq, error: result.error } };
+    feedback.value = { ...feedback.value, [key]: { ...outcome, seq } };
   }
 
   /** The newest result among `keys`; a row backed by several keys shows whichever settled last. */
@@ -58,7 +69,7 @@ export const useSettingWritesStore = defineStore('settingWrites', () => {
     inFlight.clear();
   }
 
-  return { feedback, begin, settle, latest, $reset };
+  return { feedback, begin, settle, settleError, latest, $reset };
 });
 
 /**

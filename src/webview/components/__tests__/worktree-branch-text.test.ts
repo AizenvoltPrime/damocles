@@ -113,7 +113,7 @@ describe('git branch names in the chat page show their hidden characters', () =>
   });
 
   it('in the failed creation card\'s error, keeping its lines', () => {
-    const error = `fatal: '${BIDI}' is not a valid branch\u0007\nsecond line`;
+    const error = { message: '{0}', args: [`fatal: '${BIDI}' is not a valid branch\u0007\nsecond line`] };
     const wrapper = mount(WorktreeComposerStatus, { props: { state: { phase: 'createFailed', place: 'project', canHandOff: false, error, projectName: 'app' } }, global: { plugins: [i18n] } });
     mounted.push(wrapper);
     expect(wrapper.get('[data-testid="worktree-status-error"]').element.textContent?.trim()).toBe(`fatal: '${SHOWN}' is not a valid branch\\u{7}\nsecond line`);

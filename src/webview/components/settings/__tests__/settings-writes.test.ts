@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { useSettingWritesStore } from '../settings-writes';
 
 const saved = (key: string) => ({ type: 'settingWriteResult', key, ok: true, scope: 'user', file: '/home/u/.damocles/settings.json' } as const);
-const failed = (key: string) => ({ type: 'settingWriteResult', key, ok: false, error: 'EACCES' } as const);
+const failed = (key: string) => ({ type: 'settingWriteResult', key, ok: false, error: { message: 'EACCES' } } as const);
 
 beforeEach(() => setActivePinia(createPinia()));
 
@@ -21,7 +21,7 @@ describe('setting writes', () => {
     expect(revertB).toHaveBeenCalledOnce();
     expect(revertA).not.toHaveBeenCalled();
     expect(writes.latest(['damocles.a'])).toMatchObject({ kind: 'saved', scope: 'user' });
-    expect(writes.latest(['damocles.b'])).toMatchObject({ kind: 'error', error: 'EACCES' });
+    expect(writes.latest(['damocles.b'])).toMatchObject({ kind: 'error', error: { message: 'EACCES' } });
   });
 
   it('clears a key\'s error when the next write to it starts', () => {
@@ -42,6 +42,22 @@ describe('setting writes', () => {
     writes.settle(failed('damocles.team.leadModel'));
 
     expect(writes.latest(['damocles.team.leadModel', 'damocles.team.leadEffort'])).toMatchObject({ kind: 'error' });
+  });
+
+  it('settles a failure the host already worded as a failed result does: the revert runs and the row shows the reason', () => {
+    const writes = useSettingWritesStore();
+    const revert = vi.fn();
+    const later = vi.fn();
+    writes.begin('damocles.a', revert);
+    writes.begin('damocles.b', later);
+
+    writes.settleError('damocles.a', { key: 'settingsHost.prefWriteFailed' });
+
+    expect(revert).toHaveBeenCalledOnce();
+    expect(later).not.toHaveBeenCalled();
+    expect(writes.latest(['damocles.a'])).toMatchObject({ kind: 'error', error: { key: 'settingsHost.prefWriteFailed' } });
+    writes.begin('damocles.a', () => {});
+    expect(writes.latest(['damocles.a'])).toBeUndefined();
   });
 
   it('records a result that arrives with no write in flight without reverting anything', () => {

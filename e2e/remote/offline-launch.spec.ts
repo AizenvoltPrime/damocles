@@ -57,6 +57,11 @@ test('a launch with the host unreachable connects only hosts with restored views
     await runInTerminal(terminalShell, 'echo before-the-outage-7c');
     await waitForOutputLine(terminalShell, 'before-the-outage-7c');
     const tab = await newRemoteChat(first.app, key);
+    // the chat shows the open draft.md as its IDE context; leave it out, so the reply echoes the prompt alone
+    const ideChip = tab.getByRole('button', { name: 'draft.md' });
+    await expect(ideChip).toHaveAttribute('aria-pressed', 'true');
+    await ideChip.click();
+    await expect(ideChip).toHaveAttribute('aria-pressed', 'false');
     await sendPrompt(tab, 'Remember this turn');
     await expect(tab.getByText('Echo: Remember this turn', { exact: true })).toBeVisible({ timeout: 60_000 });
     await awaitTurnEnd(tab);

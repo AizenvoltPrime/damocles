@@ -158,7 +158,7 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
 
     processing: (msg, ctx) => {
       const { uiStore, streamingStore, sessionStore } = ctx.stores;
-      uiStore.setProcessing(msg.isProcessing);
+      uiStore.setProcessing(msg.isProcessing, msg.elapsedMs);
       if (msg.isProcessing) {
         sessionStore.clearContextStats();
       }

@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import { useI18n } from 'vue-i18n';
 import { X } from 'lucide-vue-next';
 import type { DamoclesOverlayApi, OverlayRect, OverlayToast, OverlayToastArea } from '../../../preload/overlay-channels';
-import { TOAST_OPEN_ACTION } from '../../../preload/notifications';
+import { TOAST_OPEN_ACTION, type ToastAnswer } from '../../../preload/notifications';
 import { trapTab } from '../focus-trap';
 import { notificationView, relativeTime, TONE_CLASSES, type NotificationView } from '../notification-view';
 import NotificationAvatar from './NotificationAvatar.vue';
@@ -107,7 +107,7 @@ function drop(id: string): void {
 
 // Main owns each toast's life; the page only reports the user's answer, undefined meaning dismissed. The answer goes
 // before focus leaves the stack, so main runs the action (a chat reloading, a chat selected) before it places focus.
-function resolve(id: string, action?: string): void {
+function resolve(id: string, action?: ToastAnswer): void {
   props.api.resolveToast(id, action);
   drop(id);
 }
@@ -435,7 +435,7 @@ onBeforeUnmount(() => {
               :class="index === 0
                 ? [TONE_CLASSES[shown.tone].pill, TONE_CLASSES[shown.tone].pillText, 'font-semibold hover:brightness-115']
                 : 'border border-(--d-border2) text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text)'"
-              @click.stop="resolve(toast.id, action)"
+              @click.stop="resolve(toast.id, index)"
             >
               {{ action }}
             </button>

@@ -44,10 +44,16 @@
     // The Vue shell app and its tests, checked by vue-tsc through tsconfig.webview.json.
     "src/desktop/shell",
     "src/core/browser/__tests__",
+    "src/vscode/panels/__tests__/browser-page-strings.test.ts",
     "src/core/pi-session/__tests__/nested-mcp-elicitation.test.ts",
     "src/core/pi-session/__tests__/live-snapshot.test.ts",
+    "src/core/pi-session/__tests__/live-chat-page.ts",
+    "src/core/chat-panel/message-router/handlers/__tests__/session-handlers-ready.test.ts",
+    "src/desktop/core-host/__tests__/panel-views.test.ts",
     "src/core/team/__tests__/redispatch-parity.test.ts",
+    "src/core/team/__tests__/member-live-transcript.test.ts",
     "src/core/chat-panel/message-router/handlers/__tests__/consolidation-replay-parity.test.ts",
+    "src/core/chat-panel/__tests__/per-device-language.test.ts",
     // Parser input, not project code: multi-language sample files read off disk as text by the
     // compass extraction suites, several of which import modules that intentionally do not exist.
     "src/core/compass/__tests__/fixtures"

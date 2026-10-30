@@ -100,7 +100,6 @@ function harness(opts: { trusted?: readonly string[]; projects?: readonly string
       },
     },
     notifications: opts.reportsBroken === false ? undefined : fake.notifications,
-    localization: fake.localization,
     log: (line) => lines.push(line),
   });
   return {
@@ -645,6 +644,14 @@ describe('readContributedConfiguration', () => {
     expect(read.userOnlyKeys).toContain('damocles.voice.runtimePath');
     expect(read.defaults.get('damocles.browser.devToolsPort')).toBe(false);
     expect(read.keys.length).toBeGreaterThan(20);
+  });
+
+  it('splits the machine scoped keys into those of client code (voice) and the host\'s own', () => {
+    const read = readContributedConfiguration(process.cwd());
+    expect([...read.clientMachineKeys].sort()).toEqual(['damocles.voice.runtimePath', 'damocles.voice.wakeWord']);
+    expect([...read.hostKeys]).toEqual(['damocles.assetSourcePrecedence']);
+    expect(read.clientOnlyKeys).not.toContain('damocles.assetSourcePrecedence');
+    expect(read.clientOnlyKeys).toContain('damocles.voice.wakeWord');
   });
 
   it('flush waits for a write in flight and for one queued while it waits, across the user and project files', async () => {

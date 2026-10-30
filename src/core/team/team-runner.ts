@@ -56,6 +56,7 @@ import type {
   NoteSink,
   ReviewStamp,
   ReviewVerdictInput,
+  MemberTranscriptSource,
 } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type {
@@ -315,6 +316,8 @@ export class TeamRunner {
   private readonly operatorSteers: OperatorSteer[] = [];
   // Each live run's undelivered-message taker and peeker, keyed by agentId; same ownership rule as noteSinks.
   private undeliveredHooks = new Map<string, { take: () => UndeliveredMessage[]; peek: () => UndeliveredMessage[] }>();
+  /** Each running member's transcript reader, by agent id, while its run's session is subscribed. */
+  private transcriptReaders = new Map<string, MemberTranscriptSource>();
   // Each open member session's hold on its file, which outlives this run's end while a stopped run is still held.
   private memberFileOwners = new Map<AgentSession, AgentFileOwner>();
   // By agent id, the wind-down each card shows now; in memory only, so a reloaded card is sent it with the team.
@@ -572,6 +575,7 @@ export class TeamRunner {
       messageBus: this.messageBus,
       bindNoteDelivery: (deliver) => this.bindNoteDelivery(leadAgent.agentId, deliver),
       bindTakeUndelivered: (take, peek) => this.bindTakeUndelivered(leadAgent.agentId, take, peek),
+      bindTranscript: (source) => this.bindTranscript(leadAgent.agentId, source),
       onStateBoundary: () => this.scheduleCheckpoint(),
       onMessage: this.onMessage,
       onWindDown: (windDown) => this.publishWindDown(leadAgent.agentId, windDown),
@@ -1052,6 +1056,7 @@ export class TeamRunner {
       messageBus: this.messageBus,
       bindNoteDelivery: (deliver) => this.bindNoteDelivery(agent.agentId, deliver),
       bindTakeUndelivered: (take, peek) => this.bindTakeUndelivered(agent.agentId, take, peek),
+      bindTranscript: (source) => this.bindTranscript(agent.agentId, source),
       onStateBoundary: () => this.scheduleCheckpoint(),
       onMessage: this.onMessage,
       onWindDown: (windDown) => this.publishWindDown(agent.agentId, windDown),
@@ -2729,6 +2734,18 @@ export class TeamRunner {
     return () => {
       if (this.undeliveredHooks.get(agentId) === hooks) this.undeliveredHooks.delete(agentId);
     };
+  }
+
+  private bindTranscript(agentId: string, source: MemberTranscriptSource): () => void {
+    this.transcriptReaders.set(agentId, source);
+    return () => {
+      if (this.transcriptReaders.get(agentId) === source) this.transcriptReaders.delete(agentId);
+    };
+  }
+
+  /** The transcript reader of a running member, from the messages pi holds; undefined when no run of it is subscribed. */
+  memberTranscript(agentId: string): MemberTranscriptSource | undefined {
+    return this.transcriptReaders.get(agentId);
   }
 
   private browserScopeId(agent: TeamAgent): string {

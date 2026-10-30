@@ -4,7 +4,11 @@ import { mount, type VueWrapper } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import VoiceModelDownloadModal from '../VoiceModelDownloadModal.vue';
 import { useVoiceJarvisStore } from '@/stores/useVoiceJarvisStore';
-import { i18n } from '@/i18n';
+import { nextTick } from 'vue';
+import { applyLocale, i18n } from '@/i18n';
+import { createVoiceStreamHandlers } from '@/composables/message-handler/handlers/voice-stream-handlers';
+import type { HandlerContext } from '@/composables/message-handler/types';
+import { inGreek } from '../../../__mocks__/greek-locale';
 
 const mounted: VueWrapper[] = [];
 
@@ -44,6 +48,24 @@ describe('VoiceModelDownloadModal', () => {
     expect(wrapper.get('[data-testid="voice-model-download-cancel"]').text()).toBe('Cancel download');
     expect(wrapper.emitted('cancel')).toEqual([[]]);
     expect(wrapper.emitted('hide')).toBeUndefined();
+  });
+});
+
+describe('VoiceModelDownloadModal after a language switch', () => {
+  afterEach(() => applyLocale('en'));
+
+  it("renders a failed download's reason in the new language", async () => {
+    const coreText = { message: 'Could not open file: {0}', args: ['whisper.bin'] };
+    const store = useVoiceJarvisStore();
+    const ctx = { stores: { voiceJarvisStore: store } } as unknown as HandlerContext;
+    createVoiceStreamHandlers().voiceModelDownloadProgress!({ type: 'voiceModelDownloadProgress', modelId: 'whisper-small', bytesReceived: 1, bytesTotal: 10, status: 'error', message: coreText }, ctx);
+    const wrapper = mount(VoiceModelDownloadModal, { props: { downloads: store.modelDownload }, global: { plugins: [i18n] }, attachTo: document.body });
+    mounted.push(wrapper as VueWrapper);
+    expect(wrapper.get('[role="alert"]').text()).toBe('Could not open file: whisper.bin');
+
+    await applyLocale('el');
+    await nextTick();
+    expect(wrapper.get('[role="alert"]').text()).toBe(inGreek(coreText));
   });
 });
 

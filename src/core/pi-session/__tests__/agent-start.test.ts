@@ -231,6 +231,7 @@ function inputs(over: Partial<DamoclesSystemPromptInputs> = {}): DamoclesSystemP
     contextFiles: [],
     skills: [],
     skillFileReadTool: 'read',
+    earlierModels: [],
     ...over,
   };
 }
@@ -385,6 +386,18 @@ describe('buildAgentStartResult — system prompt (US-007)', () => {
       'damocles_model',
       'damocles_tone',
     ]);
+  });
+
+  it("names the models that wrote the branch's replies before the latest switch in the model section", async () => {
+    const reply = (model: string): SessionEntry =>
+      ({ id: model, type: 'message', message: { role: 'assistant', provider: 'anthropic', model, stopReason: 'stop', content: [] } }) as unknown as SessionEntry;
+    const branch = [userEntry('u0'), reply('claude-sonnet-5-5'), userEntry('u1'), reply('claude-opus-4-8')];
+    const ev = event();
+
+    // The panel's model is claude-opus-4-8, so its own trailing reply is no earlier run.
+    await runAgentStart(ev, makePanel({}).panel, 'sess-1', projectionOf([], branch));
+
+    expect(ev.systemPromptOptions.sections.damocles_model).toContain('replies in this conversation came from Sonnet 5.5 (claude-sonnet-5-5); replies since then are yours.');
   });
 
   it('drops a section that this build did not produce rather than emptying it', async () => {
@@ -821,7 +834,8 @@ describe('buildAgentStartResult — injection (US-005)', () => {
     const result = await runAgentStart(ev, makePanel({}).panel, 'sess-1', { buildSessionProjection, getBranch } as unknown as ProjectionReader);
     expect(result?.message).toBeUndefined();
     expect(buildSessionProjection).not.toHaveBeenCalled();
-    expect(getBranch).not.toHaveBeenCalled();
+    // Only the model section reads the branch, for the models that wrote earlier replies.
+    expect(getBranch).toHaveBeenCalledTimes(1);
     expect(ev.systemPromptOptions.customPrompt).toBeTruthy();
   });
 });

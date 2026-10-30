@@ -1,14 +1,14 @@
-// node scripts/smoke-desktop/post.mjs <step.js | --launch | --log | --quit> [timeout seconds, default 55]
+// node scripts/smoke-desktop/post.mjs <step.js | --launch | --relaunch | --log | --quit> [timeout seconds, default 55]
 import fs from 'node:fs';
 import { smokeDir, smokePort, TOKEN_HEADER, tokenFile } from './paths.mjs';
 
 const [target, seconds = '55'] = process.argv.slice(2);
 if (!target) {
-  console.error('usage: post.mjs <step.js | --launch | --log | --quit> [timeout seconds]');
+  console.error('usage: post.mjs <step.js | --launch | --relaunch | --log | --quit> [timeout seconds]');
   process.exit(2);
 }
 
-const endpoint = { '--launch': '/launch', '--log': '/log', '--quit': '/quit' }[target] ?? '/run';
+const endpoint = { '--launch': '/launch', '--relaunch': '/relaunch', '--log': '/log', '--quit': '/quit' }[target] ?? '/run';
 const body = endpoint === '/run' ? fs.readFileSync(target, 'utf8') : '';
 if (endpoint === '/run') {
   // Fails here on a syntax error instead of inside the app.

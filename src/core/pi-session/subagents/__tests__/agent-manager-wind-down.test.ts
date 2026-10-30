@@ -110,6 +110,9 @@ describe("a subagent's Stop while a pi extension holds its run's wind-down", () 
       { type: 'taskStarted', taskId: id, toolUseId: 'tc-1', description: 'dig', taskType: 'general-purpose', isBackground: true },
       { type: 'backgroundTaskStarted', task: { taskId: id, toolUseId: 'tc-1', description: 'dig', status: 'running' } },
       { type: 'statusUpdate', status: 'windingDown', windDown: shown, parentToolUseId: 'tc-1' },
+      // the effort and usage the card's bridge last sent
+      { type: 'subagentModelUpdate', agentToolId: 'tc-1', effort: 'low' },
+      expect.objectContaining({ type: 'subagentUsageUpdate', agentToolId: 'tc-1' }),
     ]);
 
     settle.release();

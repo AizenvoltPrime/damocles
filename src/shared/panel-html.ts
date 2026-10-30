@@ -1,11 +1,13 @@
 // The chat and error pages' HTML. Desktop main builds every page with them (showPage); core builds the VS Code host's page
-// with them through setHtml.
+// with them through setHtml, its error page in the host's words (PanelHost.errorPageStrings).
 import { HOST_THEME_STYLE_ID } from './host-theme';
 
 /** The page a panel shows; main builds it, so no HTML a core produced is ever loaded. */
 export type PageSpec = { readonly kind: 'chat' } | { readonly kind: 'error' } | { readonly kind: 'browser'; readonly toolbar: boolean };
 
 export interface ChatPageParts {
+  // the language the view renders before its first languageChange, which it mounts in once that language's catalogs loaded
+  readonly lang: string;
   readonly cspSource: string;
   // undefined omits worker-src (the VS Code hosts never set it, so their CSP is unchanged)
   readonly workerSrc?: string;
@@ -22,6 +24,7 @@ export interface ErrorPageStrings {
   readonly detail: string;
 }
 
+// The English source each host translates (desktop main's t, VS Code's l10n.t); no page shows it untranslated.
 export const ERROR_PAGE_STRINGS: ErrorPageStrings = {
   title: 'Session failed to restore',
   detail: 'Close this tab and open a new Damocles panel.',
@@ -45,6 +48,7 @@ export function escapeHtml(value: string): string {
 
 // Every value goes into an attribute escaped, whoever built it.
 export function chatPageHtml(parts: ChatPageParts): string {
+  const lang = escapeHtml(parts.lang);
   const cspSource = escapeHtml(parts.cspSource);
   const nonce = escapeHtml(parts.nonce);
   // style-src allows 'unsafe-inline', so the element needs no nonce.
@@ -57,7 +61,7 @@ export function chatPageHtml(parts: ChatPageParts): string {
   // standard posture for chat webviews that render web content, and the web tools are opt-in.
   // form-action does not fall back to default-src, so it is named; every form in the webview handles submit in script.
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">

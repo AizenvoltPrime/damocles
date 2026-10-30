@@ -44,7 +44,7 @@ test('Claude sign-in starts from its button and waits inline, with paste and can
   await expect(field).toBeFocused();
   await field.fill('http://localhost:53692/callback?code=e2e-code&state=not-this-sign-in');
   await field.press('Enter');
-  await expect(panel().getByRole('alert')).toHaveText('OAuth state mismatch');
+  await expect(panel().getByRole('alert')).toHaveText('That link is from another sign-in. Paste the link this sign-in opened, or start again.');
   await expect(waiting()).toBeHidden();
 
   // Cancel ends the next sign-in with no error and offers the button again.

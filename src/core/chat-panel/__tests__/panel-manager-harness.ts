@@ -2,6 +2,7 @@ import * as path from 'path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { vi } from 'vitest';
 import { PanelManager } from '../panel-manager';
+import { ERROR_PAGE_STRINGS } from '../../../shared/panel-html';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
 import { WorkspaceFolderRegistry } from '../../workspace-folders/folder-registry';
 import type { FolderTarget } from '../../workspace-folders/folder-registry';
@@ -116,6 +117,7 @@ export function makeFakeHost(): FakeHost {
     cspSource: '',
     themeCssSource: () => '',
     setHtml: () => undefined,
+    errorPageStrings: () => ERROR_PAGE_STRINGS,
     postMessage: (m) => {
       host.posted.push(m as ExtensionToWebviewMessage);
       return Promise.resolve(true);
@@ -184,9 +186,13 @@ export interface HarnessOptions {
   readonly loadHistory?: (cwd: string, sessionId: string, host: PanelHost, session: ChatSession) => Promise<string[] | null>;
   /** The router's views.join; the default posts nothing. */
   readonly joinView?: (panelId: string, gate: ViewJoinGate, host: PanelHost) => Promise<void>;
+  /** The router's handling of each message, after it is recorded in `routed`; the default handles none. */
+  readonly handleWebviewMessage?: (message: WebviewToExtensionMessage, panelId: string, view?: AttachedView, viewKey?: string) => Promise<void>;
   /** The settings manager's sends of a panel's settings and thinking state; the defaults post nothing. */
   readonly sendCurrentSettings?: (host: PanelHost) => Promise<void>;
   readonly sendThinkingForPanel?: (host: PanelHost, panelId: string) => void;
+  /** The router's language for a device's views; English by default. */
+  readonly languagePreference?: (clientId?: string) => string;
 }
 
 export function createHarness(initial: ReturnType<typeof folderEntry>[], options: HarnessOptions = {}): Harness {
@@ -207,6 +213,7 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[], options
   const activePanelChanges = { count: 0 };
   const manager: PanelManager = new PanelManager({
     platform,
+    languagePreference: options.languagePreference ?? (() => 'en'),
     folderRegistry: registry,
     createSessionForPanel: async (_host, _ph, _panelId, folder) => {
       if (holdCreation.gate) await holdCreation.gate;
@@ -248,6 +255,7 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[], options
       const context = handlingContext.getStore();
       routed.push({ message, panelId, session: manager.getPanels().get(panelId)?.session, ...(view ? { view } : {}), ...(viewKey !== undefined ? { viewKey } : {}), ...(context !== undefined ? { context } : {}) });
       if (message.type === 'ready' && holdReady.gate) await holdReady.gate;
+      await options.handleWebviewMessage?.(message, panelId, view, viewKey);
     },
     joinView: options.joinView ?? (async () => undefined),
     sendCurrentSettings: options.sendCurrentSettings ?? (async () => undefined),

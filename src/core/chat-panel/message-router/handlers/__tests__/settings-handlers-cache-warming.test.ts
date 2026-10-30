@@ -93,7 +93,7 @@ describe("createSettingsHandlers — setCacheWarming", () => {
 
     expect(postMessage).toHaveBeenCalledWith({}, {
       type: "notification",
-      message: "Failed to save cache warming setting: boom",
+      message: { message: "Failed to save cache warming setting: {0}", args: [{ message: "{0}", args: ["boom"] }] },
       notificationType: "error",
     });
     expect(settingsManager.sendCurrentSettings).toHaveBeenCalledOnce();

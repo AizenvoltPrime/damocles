@@ -46,7 +46,7 @@ export function refProblem(ref, root = ROOT) {
   const commit = spawnSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: root, encoding: 'utf8' });
   if (commit.status === 0) return undefined;
   if (ref !== REFERENCE_TAG) return `${ref} names no commit in this clone`;
-  return `the tag ${REFERENCE_TAG} is not in this clone. The owner creates and pushes it once: git tag ${REFERENCE_TAG} ${REFERENCE_COMMIT} && git push origin ${REFERENCE_TAG}. A CI checkout needs fetch-depth: 0 to get tags.`;
+  return `the tag ${REFERENCE_TAG} is not in this clone. The owner creates and pushes it: git tag ${REFERENCE_TAG} ${REFERENCE_COMMIT} && git push origin ${REFERENCE_TAG}. A CI checkout needs fetch-depth: 0 to get tags.`;
 }
 
 /**

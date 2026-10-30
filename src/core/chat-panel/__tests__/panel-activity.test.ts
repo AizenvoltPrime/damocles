@@ -71,7 +71,7 @@ describe('PanelManager activity', () => {
     h = createHarness([folderEntry(A)]);
     const seen: UsageThresholdCrossing[] = [];
     h.manager.onUsageThreshold((crossing) => seen.push(crossing));
-    const crossing: UsageThresholdCrossing = { provider: 'anthropic', windowId: 'five_hour', windowLabel: 'Session (5hr)', threshold: 95, utilization: 96 };
+    const crossing: UsageThresholdCrossing = { provider: 'anthropic', windowId: 'five_hour', windowLabel: { message: 'Session (5hr)' }, threshold: 95, utilization: 96 };
 
     h.manager.usageThresholdCrossed(crossing);
 

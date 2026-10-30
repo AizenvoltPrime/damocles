@@ -1,5 +1,4 @@
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
@@ -17,6 +16,7 @@ import { awaitTurnEnd, chatInput, clickMenu, hostMessages, postFromWebview, reco
 import { openTerminal } from './support/terminal';
 import { optIn, setupReview } from './support/worktree-chat';
 import { FILE_DRAG_MIME } from '../../src/shared/file-drag';
+import { loadOsName } from '../../src/core/pi-session/os-name';
 
 // A loopback chat's agent runs in the daemon's core.
 const PROMPT_REGION = 'Permission request';
@@ -164,7 +164,7 @@ test('a loopback chat\'s bash, Write, Read and Edit run in the daemon\'s core wi
     expect(system).toContain(`Primary working directory: ${folder}`);
     expect(system).toContain(`Platform: ${process.platform}`);
     expect(system).toMatch(/Shell: \S+/);
-    expect(system).toContain(`OS Version: ${os.type()} ${os.release()}`);
+    expect(system).toContain(`OS Version: ${await loadOsName()}`);
 
     // One credential request for openai served the five model calls, and a second turn while the key holds asks none.
     expect(chatRequests(stub).length).toBeGreaterThanOrEqual(5);

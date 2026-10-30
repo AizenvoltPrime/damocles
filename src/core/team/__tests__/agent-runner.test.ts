@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { AgentRunner } from '../agent-runner';
 import { loadFormatNoApiKeyFoundMessage } from '../../../__mocks__/pi-auth-guidance';
-import { useGreekLocale } from '../../../__mocks__/greek-locale';
+import { inGreek } from '../../../__mocks__/greek-locale';
 import { MessageBus } from '../message-bus';
 import type { AgentRunConfig, NoteSink, UndeliveredMessage } from '../types';
 import type { ImageBlock } from '../../../shared/types/content';
@@ -2009,13 +2009,12 @@ describe('AgentRunner provider failures', () => {
     const result = await new AgentRunner().startAgent(config);
 
     const words = 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.';
-    expect(sentOf(config).filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: words, parentToolUseId: 'a1' }]);
+    expect(sentOf(config).filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: { message: 'No credential is set up for {0}, so {1} could not run. Pick a model from a provider you are signed in to.', args: ['cerebras', 'gpt-oss-120b'] }, parentToolUseId: 'a1' }]);
     expect(result.failure).toEqual({ kind: 'model', message: words });
   });
 
   // The failure reaches the lead's bus broadcast and the team's results, so it stays English; only the member's card is translated.
-  it('gives the lead a failed call in English and the card the UI language', async () => {
-    useGreekLocale();
+  it('gives the lead a failed call in English and the card text each view renders', async () => {
     const fake = Object.assign(new FakeSession({ maxRetries: 0, onModelCall: (_c, s) => s.failCall('Provider is not configured: anthropic') }), { model: { provider: 'anthropic', id: 'claude-sonnet-5-5' } });
     const messageBus = new MessageBus('team-1');
     const broadcasts: string[] = [];
@@ -2027,9 +2026,9 @@ describe('AgentRunner provider failures', () => {
     const english = 'No Anthropic credential is saved, so Sonnet 5.5 could not run. Sign in or add an API key in Settings › Models & accounts.';
     expect(result).toMatchObject({ status: 'failed', failure: { kind: 'model', message: english }, finalResponse: english });
     expect(broadcasts).toEqual([`Agent "worker" failed: ${english}`]);
-    expect(sentOf(config).filter((m) => m.type === 'error')).toEqual([
-      { type: 'error', message: 'Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το Anthropic, οπότε το Sonnet 5.5 δεν μπόρεσε να εκτελεστεί. Συνδεθείτε ή προσθέστε ένα κλειδί API στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.', parentToolUseId: 'a1' },
-    ]);
+    const [card] = sentOf(config).filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'error' }> => m.type === 'error');
+    expect(card).toEqual({ type: 'error', message: expect.anything(), parentToolUseId: 'a1' });
+    expect(inGreek(card!.message)).toBe('Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το Anthropic, οπότε το Sonnet 5.5 δεν μπόρεσε να εκτελεστεί. Συνδεθείτε ή προσθέστε ένα κλειδί API στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.');
   });
 
   it('shows the failure in the transcript once, at the boundary after the call, never at its message_end', async () => {
@@ -2042,7 +2041,7 @@ describe('AgentRunner provider failures', () => {
 
     const sent = sentOf(config);
     expect(sent.slice(0, sentAtAgentEnd).some((m) => m.type === 'error')).toBe(false);
-    expect(sent.filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: '529 overloaded_error', parentToolUseId: 'a1' }]);
+    expect(sent.filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: { message: '{0}', args: ['529 overloaded_error'] }, parentToolUseId: 'a1' }]);
     // The failed call's text stays, as a reload shows it (`memberHistoryMessages`).
     expect(sent.some((m) => m.type === 'assistantRetracted')).toBe(false);
   });
@@ -2092,7 +2091,7 @@ describe('AgentRunner provider failures', () => {
     const result = await new AgentRunner().startAgent(config);
 
     expect(result).toMatchObject({ status: 'failed', failure: { kind: 'model', message: '529 overloaded (second)' }, finalResponse: '529 overloaded (second)' });
-    expect(sentOf(config).filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: '529 overloaded (second)', parentToolUseId: 'a1' }]);
+    expect(sentOf(config).filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: { message: '{0}', args: ['529 overloaded (second)'] }, parentToolUseId: 'a1' }]);
   });
 
   it('ends a parked agent failed when the call of a later wake fails', async () => {
@@ -2172,7 +2171,7 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
   it("shows the failed call's text and then its error, as the live card did", () => {
     expect(memberHistoryMessages([failed], new Map([[failed, 'e7']]))).toEqual([
       { id: 'e7', role: 'assistant', content: [{ type: 'text', text: 'Now I will' }] },
-      { id: 'e7:error', role: 'error', content: [{ type: 'text', text: '529 overloaded_error' }] },
+      { id: 'e7:error', role: 'error', content: [{ type: 'text', text: '529 overloaded_error' }], error: { message: '{0}', args: ['529 overloaded_error'] } },
     ]);
   });
 
@@ -2180,16 +2179,15 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
   it("names the provider and model of a call that had no credential in Damocles' words, never pi's", () => {
     const missing = { role: 'assistant', content: [], provider: 'cerebras', model: 'gpt-oss-120b', stopReason: 'error', errorMessage: 'Provider is not configured: cerebras' } as unknown as PersistedAgentMessage;
     expect(memberHistoryMessages([missing], new Map([[missing, 'e9']]))).toEqual([
-      { id: 'e9:error', role: 'error', content: [{ type: 'text', text: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.' }] },
+      { id: 'e9:error', role: 'error', content: [{ type: 'text', text: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.' }], error: { message: 'No credential is set up for {0}, so {1} could not run. Pick a model from a provider you are signed in to.', args: ['cerebras', 'gpt-oss-120b'] } },
     ]);
   });
 
-  it("replays a row's missing credential in the UI language, as the live card showed it", () => {
-    useGreekLocale();
+  it("replays a row's missing credential as text each view renders, as the live card showed it", () => {
     const missing = { role: 'assistant', content: [], provider: 'anthropic', model: 'claude-sonnet-5-5', stopReason: 'error', errorMessage: 'Provider is not configured: anthropic' } as unknown as PersistedAgentMessage;
-    expect(memberHistoryMessages([missing], new Map([[missing, 'e9']]))).toEqual([
-      { id: 'e9:error', role: 'error', content: [{ type: 'text', text: 'Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το Anthropic, οπότε το Sonnet 5.5 δεν μπόρεσε να εκτελεστεί. Συνδεθείτε ή προσθέστε ένα κλειδί API στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.' }] },
-    ]);
+    const [replayed] = memberHistoryMessages([missing], new Map([[missing, 'e9']]));
+    expect(replayed).toEqual({ id: 'e9:error', role: 'error', content: [{ type: 'text', text: 'No Anthropic credential is saved, so Sonnet 5.5 could not run. Sign in or add an API key in Settings › Models & accounts.' }], error: expect.anything() });
+    expect(inGreek(replayed!.error!)).toBe('Δεν υπάρχει αποθηκευμένο διαπιστευτήριο για το Anthropic, οπότε το Sonnet 5.5 δεν μπόρεσε να εκτελεστεί. Συνδεθείτε ή προσθέστε ένα κλειδί API στις Ρυθμίσεις › Μοντέλα και λογαριασμοί.');
   });
 
   // pi returns from the turn before executing any tool of an errored message (agent-loop.js:148-157).
@@ -2359,7 +2357,7 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
   it('shows the error of a failed call that streamed nothing', () => {
     const empty = { ...failed, content: [] } as unknown as PersistedAgentMessage;
     expect(memberHistoryMessages([empty], new Map([[empty, 'e8']]))).toEqual([
-      { id: 'e8:error', role: 'error', content: [{ type: 'text', text: '529 overloaded_error' }] },
+      { id: 'e8:error', role: 'error', content: [{ type: 'text', text: '529 overloaded_error' }], error: { message: '{0}', args: ['529 overloaded_error'] } },
     ]);
   });
 });
@@ -2432,7 +2430,7 @@ describe('AgentRunner wind-down error of a cancelled run', () => {
     await new AgentRunner().startAgent(config);
 
     const sent = vi.mocked(config.onMessage).mock.calls.map(([m]) => m);
-    expect(sent.filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: 'This operation was aborted', parentToolUseId: 'a1' }]);
+    expect(sent.filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: { message: '{0}', args: ['This operation was aborted'] }, parentToolUseId: 'a1' }]);
     const sealed = sent.flatMap((m) => (m.type === 'teamAgentAssistant' ? [m] : []));
     const persisted = afterPrompt(fake);
     const reloaded = memberHistoryMessages(persisted, new Map(persisted.map((m, i) => [m, `e${i}`])));
@@ -2452,7 +2450,7 @@ describe('AgentRunner wind-down error of a cancelled run', () => {
 
     expect(result.status).toBe('failed');
     const sent = vi.mocked(config.onMessage).mock.calls.map(([m]) => m);
-    expect(sent.filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: '529 overloaded_error', parentToolUseId: 'a1' }]);
+    expect(sent.filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: { message: '{0}', args: ['529 overloaded_error'] }, parentToolUseId: 'a1' }]);
   });
 });
 
@@ -2706,8 +2704,7 @@ describe('AgentRunner keeps every message a failed run did not deliver', () => {
     expect(result).toMatchObject({ status: 'failed', failure: { kind: 'run', message: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.' } });
   });
 
-  it('gives the lead a run pi refused in English while the UI is in Greek', async () => {
-    useGreekLocale();
+  it('gives the lead a run pi refused in English', async () => {
     const formatNoApiKeyFoundMessage = await loadFormatNoApiKeyFoundMessage();
     const fake = Object.assign(new FakeSession(), { model: { provider: 'anthropic', id: 'claude-sonnet-5-5' } });
     fake.prompt = async () => { throw new Error(formatNoApiKeyFoundMessage('anthropic')); };

@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
-import { diffLines } from 'diff';
 import type { Disposable } from '../../platform/disposable';
 import type { ActiveEditorContext, DiffSide } from '../../platform/editor-service';
 import type { SettingsStore } from '../../platform/settings-store';
@@ -68,8 +67,6 @@ function isLocalLocation(location: { readonly projectKey?: string; readonly host
 
 // Recent files Quick Open lists first, most recent first.
 export const MAX_RECENT_FILES = 50;
-// diff counts are skipped (shown as 0) past this many edited lines, so a huge diff never blocks main.
-const MAX_DIFF_EDIT_LENGTH = 5000;
 // The log tab re-reads its file at most this often while it grows.
 const LOG_RELOAD_MS = 1000;
 // The shell must answer editor:flush within this; a dead or hung page leaves main with its last mirrored text.
@@ -127,8 +124,6 @@ interface Tab {
   diff?: {
     readonly originalId: string;
     readonly modifiedId: string;
-    readonly added: number;
-    readonly removed: number;
     readonly title: (fileName: string) => string;
     subject: DiffSubject;
     readonly conflictCompare?: true;
@@ -277,18 +272,6 @@ export function settingLine(text: string, key: string): number {
   if (found >= 0) return found + 1;
   for (let index = lines.length - 1; index >= 0; index--) if (lines[index]!.includes('}')) return index + 1;
   return Math.max(1, lines.length);
-}
-
-function diffCounts(original: string, modified: string): { added: number; removed: number } {
-  const changes = diffLines(original, modified, { maxEditLength: MAX_DIFF_EDIT_LENGTH });
-  if (!changes) return { added: 0, removed: 0 };
-  let added = 0;
-  let removed = 0;
-  for (const change of changes) {
-    if (change.added) added += change.count;
-    else if (change.removed) removed += change.count;
-  }
-  return { added, removed };
 }
 
 function fileRefOf(document: Document): FileRef | undefined {
@@ -1366,8 +1349,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     subject: DiffSubject,
     flags: { readonly conflictCompare?: true; readonly replacePreview?: true; readonly scmRepoId?: string; readonly scmGit?: Omit<ShellDiffGit, 'repoId'> } = {},
   ): Tab {
-    const counts = original.kind === 'text' && modified.kind === 'text' ? diffCounts(original.text, modified.text) : { added: 0, removed: 0 };
-    return this.addTab({ id: randomUUID(), kind: 'diff', diff: { originalId: original.id, modifiedId: modified.id, title, subject, ...counts, ...flags } });
+    return this.addTab({ id: randomUUID(), kind: 'diff', diff: { originalId: original.id, modifiedId: modified.id, title, subject, ...flags } });
   }
 
   // A file outside every project has a path only.
@@ -1646,13 +1628,13 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     if (tab.diff) {
       const original = this.deps.documents.get(tab.diff.originalId);
       const modified = this.deps.documents.get(tab.diff.modifiedId);
-      const { originalId, modifiedId, added, removed, conflictCompare, subject, scmGit, scmRepoId } = tab.diff;
+      const { originalId, modifiedId, conflictCompare, subject, scmGit, scmRepoId } = tab.diff;
       const sides = { original: diffSide(original, false), modified: diffSide(modified, true) };
       const git = scmGit && scmRepoId !== undefined ? { git: { repoId: scmRepoId, ...scmGit } } : {};
       return {
         id: tab.id,
         kind: 'diff',
-        diff: { originalId, modifiedId, added, removed, ...(conflictCompare ? { conflictCompare } : {}), ...(sides.original.kind === 'text' && sides.modified.kind === 'text' ? {} : { sides }), ...git },
+        diff: { originalId, modifiedId, ...(conflictCompare ? { conflictCompare } : {}), ...(sides.original.kind === 'text' && sides.modified.kind === 'text' ? {} : { sides }), ...git },
         title: tab.diff.title(this.subjectName(subject)),
         ...('place' in subject ? this.withBranch(placeFields(subject.place)) : this.placeOf(this.deps.documents.get(subject.documentId))),
         dirty: modified !== undefined && isDocumentDirty(modified),

@@ -90,4 +90,10 @@ declare module 'vscode' {
 
   /** Every argument passed to `env.openExternal`, newest last. */
   const __openedExternal: unknown[];
+
+  /** The bundle `l10n.t` reads, as VS Code loads the display language's; undefined is VS Code's default language. */
+  function __setL10nBundle(bundle: Readonly<Record<string, string>> | undefined): void;
+
+  /** Sets what `env.language` reports; the real property is readonly. */
+  function __setLanguage(language: string): void;
 }

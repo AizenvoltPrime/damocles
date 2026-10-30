@@ -4,7 +4,7 @@ import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { fetchSubscriptionUsage } from "../../../pi-session/subscription-usage";
 import { describeAuthError } from "../../../pi-session/describe-error";
 import { log } from "../../../logger";
-import { t } from "../../../l10n";
+import { l } from "../../../l10n";
 
 /**
  * Subscription usage overlay. Bypasses ctx.session entirely so the overlay opens mid-stream, and
@@ -18,7 +18,7 @@ export function createUsageHandlers(deps: HandlerDependencies): Partial<HandlerR
         data = await fetchSubscriptionUsage(PiRuntime.get());
       } catch (err) {
         log("[UsageHandlers] subscription usage fetch failed: %s", describeAuthError(err));
-        const error = t("Could not load subscription usage.");
+        const error = l("Could not load subscription usage.");
         data = {
           claude: { status: 'error', bars: [], error },
           gpt: { status: 'error', bars: [], error },

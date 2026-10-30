@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { englishText } from "../../../../shared/localized-text";
 import {
   cxxToolchainEnv,
   ensureCxxToolchain,
@@ -33,11 +34,11 @@ describe("getCxxCandidates", () => {
 
 describe("getCxxInstallInstructions", () => {
   it("names xcode-select on macOS", () => {
-    expect(getCxxInstallInstructions("darwin")).toContain("xcode-select --install");
+    expect(englishText(getCxxInstallInstructions("darwin"))).toContain("xcode-select --install");
   });
 
   it("names build-essential, gcc-c++ and base-devel on Linux", () => {
-    const msg = getCxxInstallInstructions("linux");
+    const msg = englishText(getCxxInstallInstructions("linux"));
     expect(msg).toContain("build-essential");
     expect(msg).toContain("gcc-c++");
     expect(msg).toContain("base-devel");

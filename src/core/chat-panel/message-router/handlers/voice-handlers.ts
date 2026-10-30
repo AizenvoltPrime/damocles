@@ -7,7 +7,7 @@ import {
 } from "../../../voice/recorder";
 import { transcribe } from "../../../voice/transcription";
 import { log } from "../../../logger";
-import { t } from "../../../l10n";
+import { errorTextOf, l } from "../../../l10n";
 import { writeSetting } from "../setting-write";
 
 const MAX_RECORDING_MS = 120_000;
@@ -45,7 +45,7 @@ export function createVoiceHandlers(
       if (!apiKey) {
         postMessage(host, {
           type: "transcriptionError",
-          message: "No API key configured for " + config.provider,
+          message: l("No API key configured for {0}", config.provider),
         });
         return;
       }
@@ -64,7 +64,7 @@ export function createVoiceHandlers(
       log("[VoiceHandlers] Stop/transcribe failed:", err);
       postMessage(host, {
         type: "transcriptionError",
-        message: err instanceof Error ? err.message : "Transcription failed",
+        message: err instanceof Error ? errorTextOf(err) : l("Transcription failed"),
       });
     }
   }
@@ -88,8 +88,7 @@ export function createVoiceHandlers(
         log("[VoiceHandlers] Failed to start recording:", err);
         postMessage(ctx.host, {
           type: "transcriptionError",
-          message:
-            err instanceof Error ? err.message : "Failed to start recording",
+          message: err instanceof Error ? errorTextOf(err) : l("Failed to start recording"),
         });
       }
     },
@@ -122,14 +121,14 @@ export function createVoiceHandlers(
 
     setVoiceProvider: async (msg, ctx) => {
       if (msg.type !== "setVoiceProvider") return;
-      await writeSetting(deps, ctx, "damocles.voice.provider", (detail) => t("Failed to save the voice setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.voice.provider", (detail) => l("Failed to save the voice setting: {0}", detail), () =>
         settingsManager.setVoiceProvider(msg.provider));
       await settingsManager.sendVoiceConfig(ctx.host);
     },
 
     setVoiceLanguage: async (msg, ctx) => {
       if (msg.type !== "setVoiceLanguage") return;
-      await writeSetting(deps, ctx, "damocles.voice.language", (detail) => t("Failed to save the voice setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.voice.language", (detail) => l("Failed to save the voice setting: {0}", detail), () =>
         settingsManager.setVoiceLanguage(msg.language));
       await settingsManager.sendVoiceConfig(ctx.host);
     },
@@ -148,63 +147,63 @@ export function createVoiceHandlers(
 
     setVoiceMode: async (msg, ctx) => {
       if (msg.type !== "setVoiceMode") return;
-      await writeSetting(deps, ctx, "damocles.voice.mode", (detail) => t("Failed to save the voice setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.voice.mode", (detail) => l("Failed to save the voice setting: {0}", detail), () =>
         settingsManager.setVoiceMode(msg.mode));
       await settingsManager.sendVoiceConfig(ctx.host);
     },
 
     setVoiceWakeWord: async (msg, ctx) => {
       if (msg.type !== "setVoiceWakeWord") return;
-      await writeSetting(deps, ctx, "damocles.voice.wakeWord", (detail) => t("Failed to save the voice setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.voice.wakeWord", (detail) => l("Failed to save the voice setting: {0}", detail), () =>
         settingsManager.setVoiceWakeWord(msg.wakeWord));
       await settingsManager.sendVoiceConfig(ctx.host);
     },
 
     setVoiceWakeWordSensitivity: async (msg, ctx) => {
       if (msg.type !== "setVoiceWakeWordSensitivity") return;
-      await writeSetting(deps, ctx, "damocles.voice.wakeWordSensitivity", (detail) => t("Failed to save the voice setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.voice.wakeWordSensitivity", (detail) => l("Failed to save the voice setting: {0}", detail), () =>
         settingsManager.setVoiceWakeWordSensitivity(msg.sensitivity));
       await settingsManager.sendVoiceConfig(ctx.host);
     },
 
     setVoiceTtsEnabled: async (msg, ctx) => {
       if (msg.type !== "setVoiceTtsEnabled") return;
-      await writeSetting(deps, ctx, "damocles.voice.tts.enabled", (detail) => t("Failed to save the voice setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.voice.tts.enabled", (detail) => l("Failed to save the voice setting: {0}", detail), () =>
         settingsManager.setVoiceTtsEnabled(msg.enabled));
       await settingsManager.sendVoiceConfig(ctx.host);
     },
 
     setVoiceLocalGpu: async (msg, ctx) => {
       if (msg.type !== "setVoiceLocalGpu") return;
-      await writeSetting(deps, ctx, "damocles.voice.localGpu", (detail) => t("Failed to save the voice setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.voice.localGpu", (detail) => l("Failed to save the voice setting: {0}", detail), () =>
         settingsManager.setVoiceLocalGpu(msg.preference));
       await settingsManager.sendVoiceConfig(ctx.host);
     },
 
     setVoiceEndOfTurnSilenceMs: async (msg, ctx) => {
       if (msg.type !== "setVoiceEndOfTurnSilenceMs") return;
-      await writeSetting(deps, ctx, "damocles.voice.endOfTurnSilenceMs", (detail) => t("Failed to save the voice setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.voice.endOfTurnSilenceMs", (detail) => l("Failed to save the voice setting: {0}", detail), () =>
         settingsManager.setVoiceEndOfTurnSilenceMs(msg.ms));
       await settingsManager.sendVoiceConfig(ctx.host);
     },
 
     setVoiceMaxUtteranceMs: async (msg, ctx) => {
       if (msg.type !== "setVoiceMaxUtteranceMs") return;
-      await writeSetting(deps, ctx, "damocles.voice.maxUtteranceMs", (detail) => t("Failed to save the voice setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.voice.maxUtteranceMs", (detail) => l("Failed to save the voice setting: {0}", detail), () =>
         settingsManager.setVoiceMaxUtteranceMs(msg.ms));
       await settingsManager.sendVoiceConfig(ctx.host);
     },
 
     setVoiceAutoSubmit: async (msg, ctx) => {
       if (msg.type !== "setVoiceAutoSubmit") return;
-      await writeSetting(deps, ctx, "damocles.voice.autoSubmit", (detail) => t("Failed to save the voice setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.voice.autoSubmit", (detail) => l("Failed to save the voice setting: {0}", detail), () =>
         settingsManager.setVoiceAutoSubmit(msg.autoSubmit));
       await settingsManager.sendVoiceConfig(ctx.host);
     },
 
     setVoiceDiagnostics: async (msg, ctx) => {
       if (msg.type !== "setVoiceDiagnostics") return;
-      await writeSetting(deps, ctx, "damocles.voice.diagnostics", (detail) => t("Failed to save the voice setting: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.voice.diagnostics", (detail) => l("Failed to save the voice setting: {0}", detail), () =>
         settingsManager.setVoiceDiagnostics(msg.diagnostics));
       await settingsManager.sendVoiceConfig(ctx.host);
     },

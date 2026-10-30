@@ -9,6 +9,7 @@ import { replacesToolStatus, resolveCancelledStatus, TERMINAL_TOOL_STATUSES } fr
 import { extractDenialFeedback, refusedStatus } from '@/composables/message-handler/utils';
 import { windDownText } from '@/utils/windDownText';
 import type { AgentWindDown } from '@shared/types/wind-down';
+import type { LocalizedText } from '@shared/localized-text';
 
 export interface StreamingSubagentMessage {
   sdkMessageId: string;
@@ -59,6 +60,8 @@ export function endedSubagentStatus(agentStatus: string): EndedSubagentStatus {
 }
 
 function restoredSubagentStatus(tool: HistoryToolCall): SubagentState['status'] {
+  // A joining view's replay of a run that has not ended; the live messages after it end the card.
+  if (tool.live === true) return 'running';
   // A refused call ran no agent, and a refused resume writes no invocation entry to carry a status.
   if (tool.isError) return 'failed';
   // Transcripts that predate the persisted status offer only the presence of a result.
@@ -87,8 +90,9 @@ function buildChatMessagesFromHistory(
   return agentMessages.map((msg, idx): ChatMessage => {
     const id = `${idPrefix}-msg-${idx}`;
     if (msg.role === 'error') {
-      const text = msg.contentBlocks.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('');
-      return { id, role: 'error', content: text, timestamp: startTime + idx };
+      // A transcript written before errors carried LocalizedText holds the text alone, as written.
+      if (msg.error) return { id, role: 'error', content: '', error: msg.error, timestamp: startTime + idx };
+      return { id, role: 'error', content: msg.contentBlocks.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join(''), timestamp: startTime + idx };
     }
     const contentBlocks: ContentBlock[] = [];
     const toolCalls: ToolCall[] = [];
@@ -107,13 +111,15 @@ function buildChatMessagesFromHistory(
         const imageCount = existing?.result !== undefined ? existing.imageCount : block.imageCount;
         const errorMessage = existing?.errorMessage ?? (block.isError ? block.result : undefined);
         const denial = block.isError && block.result !== undefined ? extractDenialFeedback(block.result) : undefined;
-        // Both callers hand this a transcript whose run is over, so a block with no recorded result
-        // never reached an outcome and a tracked pre-terminal status would spin for the session's life.
-        const recorded: ToolCall['status'] = block.abandoned
-          ? 'abandoned'
-          : block.isError
-            ? denial !== undefined ? refusedStatus(denial) : 'failed'
-            : block.result === undefined ? 'unrecorded' : 'completed';
+        // A block with no recorded result never reached an outcome, unless a joining view's replay marks it `live`:
+        // the run still owns it, and the live messages after the replay set it.
+        const recorded: ToolCall['status'] = block.live
+          ? 'pending'
+          : block.abandoned
+            ? 'abandoned'
+            : block.isError
+              ? denial !== undefined ? refusedStatus(denial) : 'failed'
+              : block.result === undefined ? 'unrecorded' : 'completed';
         const feedback = denial?.text;
         const tracked = existing?.status;
         const status = resolveCancelledStatus(
@@ -386,12 +392,12 @@ export const useSubagentStore = defineStore('subagent', () => {
   }
 
   /** A failed model call pi will not re-run. Its streamed text, if it sealed none, ends with it. */
-  function addSubagentError(toolUseId: string, message: string): void {
+  function addSubagentError(toolUseId: string, message: LocalizedText): void {
     const subagent = subagents.value[toolUseId];
     if (!subagent || subagent.messagesSealed) return;
     const { [toolUseId]: _, ...restStreaming } = streamingMessages.value;
     streamingMessages.value = restStreaming;
-    const error: ChatMessage = { id: `${toolUseId}-error-${Date.now()}-${Math.random().toString(36).slice(2)}`, role: 'error', content: message, timestamp: Date.now() };
+    const error: ChatMessage = { id: `${toolUseId}-error-${Date.now()}-${Math.random().toString(36).slice(2)}`, role: 'error', content: '', error: message, timestamp: Date.now() };
     subagents.value = { ...subagents.value, [toolUseId]: { ...subagent, messages: [...subagent.messages, error] } };
   }
 
@@ -762,7 +768,6 @@ export const useSubagentStore = defineStore('subagent', () => {
 
     const restoredAgentId = tool.sdkAgentId || result?.sdkAgentId;
     const startTime = tool.agentStartTimestamp ?? Date.now();
-    const endTime = tool.agentEndTimestamp ?? Date.now();
     const messages = stripLeadingUserMessage(buildChatMessagesFromHistory(tool.agentMessages || [], tool.id, startTime));
 
     subagents.value = {
@@ -774,7 +779,8 @@ export const useSubagentStore = defineStore('subagent', () => {
         prompt,
         status,
         startTime,
-        endTime,
+        // A card's clock stops at its end time, so a running one has none.
+        ...(status === 'running' ? {} : { endTime: tool.agentEndTimestamp ?? Date.now() }),
         messages,
         toolCalls: [],
         ...(result !== undefined && { result }),

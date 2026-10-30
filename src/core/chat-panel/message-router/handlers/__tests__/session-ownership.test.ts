@@ -13,6 +13,10 @@ import type { HostInstance } from "../../../types";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../../shared/types/messages";
 import { SESSION_LEASE_DIR, SESSION_LEASE_STALE_MS, releaseSessionLease, sessionLeasePath, sessionLeasesOf, type SessionLeaseHolder } from "../../../../pi-session/session-store/session-lease";
 import { TerminalAttachmentManager } from "../../../terminal-attachment-manager";
+import { IdeContextManager } from "../../../ide-context-manager";
+
+// a panel's IDE context over an editor with no file open
+const ideContext = (): IdeContextManager => new IdeContextManager(createFakePlatform().editor, () => undefined);
 
 vi.mock("../../../../pi-session/session-store", () => ({ renamePiSession: vi.fn(), deletePiSession: vi.fn(), tagPiSession: vi.fn(), resolvePiSessionFile: vi.fn(async (_cwd: string, id: string) => `/sessions/${id}.jsonl`) }));
 vi.mock("../../../../pi-session/pi-runtime", () => ({ PiRuntime: { liveSessionMutator: () => undefined } }));
@@ -42,6 +46,8 @@ function makeSession(holding: string | null) {
     initializeEarly: vi.fn(async () => undefined),
     onWebviewReady: () => undefined,
     getToolStatus: () => ({}),
+    // no runtime: the conversation is a stored target
+    holdsLiveConversation: (_id: string | undefined) => false,
     seedCheckpoints: vi.fn(),
     target: () => resumeTarget,
   };
@@ -54,7 +60,7 @@ function makePanel(panelId: string, holding: string | null) {
   const session = makeSession(holding);
   const host = { id: panelId, reveal: vi.fn() };
   const instance = { host, session, folder: FOLDER_A } as unknown as HostInstance;
-  const ctx = { host, reply: host, session, panelId, permissionHandler: {}, terminalAttachments: new TerminalAttachmentManager(() => {}), folder: FOLDER_A } as unknown as HandlerContext;
+  const ctx = { host, reply: host, session, panelId, permissionHandler: {}, ideContextManager: ideContext(), terminalAttachments: new TerminalAttachmentManager(() => {}), folder: FOLDER_A } as unknown as HandlerContext;
   return { panelId, session, host, instance, ctx, target: () => session.target() };
 }
 
@@ -203,6 +209,22 @@ describe("one panel per stored conversation: history open", () => {
     expect(h.loadSessionHistory).toHaveBeenCalledTimes(1);
     expect(other.host.reveal).not.toHaveBeenCalled();
     expect(infos()).toEqual([]);
+  });
+
+  it("resuming the held conversation posts no resumeAccepted and no replay", async () => {
+    const mine = makePanel("host-1", "sess-x");
+    // its runtime holds the conversation, with the running turn its file does not hold yet
+    mine.session.holdsLiveConversation = (id) => id === "sess-x";
+    const h = harness(mine, makePanel("host-2", "sess-y"));
+
+    await h.chat.resumeSession!(resume("sess-x"), mine.ctx);
+
+    expect(mine.host.reveal).toHaveBeenCalledTimes(1);
+    expect(mine.session.setResumeSession).not.toHaveBeenCalled();
+    expect(mine.session.openResumeTarget).not.toHaveBeenCalled();
+    expect(h.switchPanelFolder).not.toHaveBeenCalled();
+    expect(h.loadSessionHistory).not.toHaveBeenCalled();
+    expect(h.sent.get(mine.host)).toEqual([]);
   });
 
   it("a conversation no panel holds is bound, and the webview hears resumeAccepted before the replay", async () => {
@@ -632,16 +654,16 @@ describe("restoring a conversation another live Damocles process holds", () => {
     const h = harness(mine);
     heldByAnotherWindow("sess-z");
     ownedBy("sess-z", TOKEN);
-    let choose!: (choice: string) => void;
-    const chosen = new Promise<string>((resolve) => { choose = resolve; });
-    const info = vi.spyOn(platform.notifications, "info").mockReturnValueOnce(chosen as Promise<string | undefined>);
+    let choose!: (choice: number) => void;
+    const chosen = new Promise<number>((resolve) => { choose = resolve; });
+    const info = vi.spyOn(platform.notifications, "info").mockReturnValueOnce(chosen as Promise<number | undefined>);
 
     await h.session.ready!(readyAs("sess-z", OTHER_TOKEN), mine.ctx);
     (h.deps as unknown as { getPanels: () => Map<string, HostInstance> }).getPanels = () => new Map();
-    choose(OPEN_HERE);
+    choose(0);
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(info).toHaveBeenCalledWith(expect.any(String), OPEN_HERE);
+    expect(info).toHaveBeenCalledWith(expect.anything(), [{ message: OPEN_HERE }]);
     expect(fs.existsSync(requestFile("sess-z"))).toBe(false);
   });
 });

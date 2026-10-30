@@ -14,15 +14,23 @@
   // test API) only take effect when they are root files of the program.
   "include": [
     "src/core/browser/__tests__/**/*",
+    "src/vscode/panels/__tests__/browser-page-strings.test.ts",
     // Joins the extension's UI bridge to the webview handler that answers it, so it links webview
     // modules that need the DOM globals.
     "src/core/pi-session/__tests__/nested-mcp-elicitation.test.ts",
     // Same reason: it feeds a joining view's replay and live snapshot to the real chat page stores.
     "src/core/pi-session/__tests__/live-snapshot.test.ts",
+    // Same reason: the chat page they compare against, and the reloaded pages that join it.
+    "src/core/pi-session/__tests__/live-chat-page.ts",
+    "src/core/chat-panel/message-router/handlers/__tests__/session-handlers-ready.test.ts",
+    "src/desktop/core-host/__tests__/panel-views.test.ts",
     // Same reason: it drives the runner and feeds its webview messages to the real team store.
     "src/core/team/__tests__/redispatch-parity.test.ts",
+    "src/core/team/__tests__/member-live-transcript.test.ts",
     // Same reason: it feeds the memory handler's overlay replay to the real consolidation store.
     "src/core/chat-panel/message-router/handlers/__tests__/consolidation-replay-parity.test.ts",
+    // Same reason: it feeds what core sends each device's views to that device's real chat page.
+    "src/core/chat-panel/__tests__/per-device-language.test.ts",
     "src/__mocks__/**/*",
     "src/**/*.d.ts"
   ],

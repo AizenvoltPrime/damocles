@@ -195,9 +195,9 @@ describe('useUsageStatsStore replies', () => {
     const store = useUsageStatsStore();
     store.openOverlay();
     const failed = lastRequest();
-    store.handleResult({ type: 'usageStats', requestId: failed.requestId, final: true, report: null, error: 'worker exited' });
+    store.handleResult({ type: 'usageStats', requestId: failed.requestId, final: true, report: null, error: { message: 'worker exited' } });
     expect(store.status).toBe('error');
-    expect(store.error).toBe('worker exited');
+    expect(store.error).toEqual({ message: 'worker exited' });
 
     store.retry();
     const retried = lastRequest();
@@ -216,7 +216,7 @@ describe('useUsageStatsStore replies', () => {
     store.openOverlay();
     settle(store);
     store.setCompare(false);
-    store.handleResult({ type: 'usageStats', requestId: lastRequest().requestId, final: true, report: null, error: 'bad query' });
+    store.handleResult({ type: 'usageStats', requestId: lastRequest().requestId, final: true, report: null, error: { message: 'bad query' } });
     store.retry();
     expect(lastRequest().query.scan).toBe(false);
   });

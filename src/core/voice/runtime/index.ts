@@ -15,7 +15,8 @@ import {
   pickTorchWheelChannel,
 } from "./python-installer";
 import { executablePathForm } from "../../executable-path";
-import { t } from "../../l10n";
+import { errorTextOf, l, withDetail } from "../../l10n";
+import type { LocalizedText } from "../../../shared/localized-text";
 import type { ExtractWorkerFactory, RuntimeInstallProgressCallback } from "./python-installer";
 import {
   cxxToolchainEnv,
@@ -45,7 +46,7 @@ export type RuntimeStage =
 export type RuntimeProgress = {
   stage: RuntimeStage;
   pct: number;
-  message: string;
+  message: LocalizedText;
 };
 
 export type RuntimeProgressCallback = (p: RuntimeProgress) => void;
@@ -98,7 +99,7 @@ export type InstallAllResult = {
   ok: boolean;
   pythonExe: string;
   device: GpuDetection;
-  errorMessage?: string;
+  errorMessage?: LocalizedText;
   /** Set when the start may not install and a download would fix the failure: the runtime, or only the models. */
   missing?: "runtime" | "models";
 };
@@ -168,21 +169,21 @@ export class VoiceRuntimeInstaller {
       onProgress({ stage: "error", pct: 100, message: missingModels });
       return { ...runtime, ok: false, errorMessage: missingModels, missing: "models" };
     }
-    onProgress({ stage: "done", pct: 100, message: "Voice runtime ready." });
+    onProgress({ stage: "done", pct: 100, message: l("Voice runtime ready.") });
     return runtime;
   }
 
   /** Downloads the missing models; verify-only, it names them instead. Null once every one is on disk. */
-  private async ensureModels(opts: InstallAllOptions, onProgress: RuntimeProgressCallback): Promise<string | null> {
+  private async ensureModels(opts: InstallAllOptions, onProgress: RuntimeProgressCallback): Promise<LocalizedText | null> {
     const missing = await this.models.missing();
     if (missing.length === 0) return null;
-    if (!opts.allowInstall) return t("The voice models are not downloaded ({0}).", missing.map((entry) => entry.id).join(", "));
+    if (!opts.allowInstall) return l("The voice models are not downloaded ({0}).", missing.map((entry) => entry.id).join(", "));
     const total = missing.reduce((sum, entry) => sum + modelBytes(entry), 0);
     let done = 0;
     for (const entry of missing) {
       const report = (received: number): void => {
         const pct = total > 0 ? Math.min(99, Math.floor(((done + received) / total) * 100)) : 0;
-        onProgress({ stage: "downloading-models", pct, message: `Downloading the ${entry.id} model...` });
+        onProgress({ stage: "downloading-models", pct, message: l("Downloading the {0} model...", entry.id) });
       };
       report(0);
       await this.models.download(entry, opts.signal, report);
@@ -198,7 +199,7 @@ export class VoiceRuntimeInstaller {
     const onProgress = opts.onProgress ?? ((): void => {});
     const requestedMode: RuntimeMode = opts.runtimeMode ?? "auto";
 
-    onProgress({ stage: "detecting", pct: 0, message: "Detecting GPU..." });
+    onProgress({ stage: "detecting", pct: 0, message: l("Detecting GPU...") });
     const detection = await this.detectDevice();
 
     const compat = checkRuntimeModeCompatibility(detection, requestedMode);
@@ -223,24 +224,24 @@ export class VoiceRuntimeInstaller {
     if (opts.userSpecifiedPython !== undefined && opts.userSpecifiedPython.length > 0) {
       // A relative path would resolve against the working folder of whatever starts it, a repository included.
       if (executablePathForm(opts.userSpecifiedPython, process.platform).kind !== "absolute") {
-        const msg = t("damocles.voice.runtimePath must be the absolute path of a Python executable on this computer: \"{0}\".", opts.userSpecifiedPython);
+        const msg = l("damocles.voice.runtimePath must be the absolute path of a Python executable on this computer: \"{0}\".", opts.userSpecifiedPython);
         onProgress({ stage: "error", pct: 90, message: msg });
         return { ok: false, pythonExe: opts.userSpecifiedPython, device: effective, errorMessage: msg };
       }
-      onProgress({ stage: "smoke-check", pct: 90, message: "Verifying user-supplied Python..." });
+      onProgress({ stage: "smoke-check", pct: 90, message: l("Verifying user-supplied Python...") });
       const smoke = await runImportSmokeCheck(opts.userSpecifiedPython, smokeOpts);
       if (!smoke.ok) {
-        const msg = formatSmokeError(smoke);
+        const msg = smokeFailureText(smoke);
         onProgress({ stage: "error", pct: 90, message: msg });
         return { ok: false, pythonExe: opts.userSpecifiedPython, device: effective, errorMessage: msg };
       }
-      onProgress({ stage: "done", pct: 100, message: "Voice runtime ready." });
+      onProgress({ stage: "done", pct: 100, message: l("Voice runtime ready.") });
       return { ok: true, pythonExe: opts.userSpecifiedPython, device: effective };
     }
 
     if (!opts.allowInstall) return this.verifyInstalled(effective, smokeOpts, onProgress);
 
-    onProgress({ stage: "detecting", pct: 3, message: "Checking C++ toolchain..." });
+    onProgress({ stage: "detecting", pct: 3, message: l("Checking C++ toolchain...") });
     let cxxEnv: Record<string, string> | undefined;
     try {
       const toolchain = await ensureCxxToolchain(
@@ -249,29 +250,29 @@ export class VoiceRuntimeInstaller {
       if (toolchain !== null) cxxEnv = cxxToolchainEnv(toolchain);
     } catch (err) {
       if (err instanceof MissingCxxToolchainError) {
-        onProgress({ stage: "error", pct: 3, message: err.message });
-        return { ok: false, pythonExe: this.paths.pythonExe, device: effective, errorMessage: err.message };
+        onProgress({ stage: "error", pct: 3, message: err.text });
+        return { ok: false, pythonExe: this.paths.pythonExe, device: effective, errorMessage: err.text };
       }
       throw err;
     }
 
-    onProgress({ stage: "detecting", pct: 4, message: "Checking system libraries (PortAudio)..." });
+    onProgress({ stage: "detecting", pct: 4, message: l("Checking system libraries (PortAudio)...") });
     try {
       await ensurePortAudio(opts.signal !== undefined ? { signal: opts.signal } : {});
     } catch (err) {
       if (err instanceof MissingSystemLibraryError) {
-        onProgress({ stage: "error", pct: 4, message: err.message });
-        return { ok: false, pythonExe: this.paths.pythonExe, device: effective, errorMessage: err.message };
+        onProgress({ stage: "error", pct: 4, message: err.text });
+        return { ok: false, pythonExe: this.paths.pythonExe, device: effective, errorMessage: err.text };
       }
       throw err;
     }
 
-    onProgress({ stage: "checking-disk", pct: 5, message: "Checking disk space..." });
+    onProgress({ stage: "checking-disk", pct: 5, message: l("Checking disk space...") });
     const disk = await this.checkDisk(installSize);
     if (!disk.ok) {
-      const need = formatGb(disk.requiredBytes);
-      const have = formatGb(disk.freeBytes);
-      const msg = t("The voice runtime needs about {0} GB free on the disk holding {1}, and {2} GB is free. Free disk space and try again.", need, this.paths.rootDir, have);
+      const need = gigabytes(disk.requiredBytes);
+      const have = gigabytes(disk.freeBytes);
+      const msg = l("The voice runtime needs about {0} GB free on the disk holding {1}, and {2} GB is free. Free disk space and try again.", need, this.paths.rootDir, have);
       onProgress({ stage: "error", pct: 5, message: msg });
       return { ok: false, pythonExe: this.paths.pythonExe, device: effective, errorMessage: msg };
     }
@@ -287,30 +288,28 @@ export class VoiceRuntimeInstaller {
         onProgress({
           stage: "detecting",
           pct: 8,
-          message:
-            `Installed torch wheel is ${installedChannel} but ${expectedChannel} is required ` +
-            `(GPU detection: ${detection.kind}, user setting: ${requestedMode}); reinstalling...`,
+          message: l("Installed torch wheel is {0} but {1} is required (GPU detection: {2}, user setting: {3}); reinstalling...", installedChannel, expectedChannel, detection.kind, requestedMode),
         });
         await this.wipeRuntime(opts.signal);
       } else {
-        onProgress({ stage: "smoke-check", pct: 10, message: "Verifying existing runtime..." });
+        onProgress({ stage: "smoke-check", pct: 10, message: l("Verifying existing runtime...") });
         const initial = await runImportSmokeCheck(this.paths.pythonExe, smokeOpts);
         if (initial.ok) {
-          onProgress({ stage: "done", pct: 100, message: "Voice runtime ready." });
+          onProgress({ stage: "done", pct: 100, message: l("Voice runtime ready.") });
           return { ok: true, pythonExe: this.paths.pythonExe, device: effective };
         }
         const repaired = await this.tryRepairRequirements(effective, opts, onProgress, cxxEnv);
         if (repaired) {
           const recheck = await runImportSmokeCheck(this.paths.pythonExe, smokeOpts);
           if (recheck.ok) {
-            onProgress({ stage: "done", pct: 100, message: "Voice runtime ready." });
+            onProgress({ stage: "done", pct: 100, message: l("Voice runtime ready.") });
             return { ok: true, pythonExe: this.paths.pythonExe, device: effective };
           }
         }
         onProgress({
           stage: "detecting",
           pct: 10,
-          message: "Existing runtime is incomplete; reinstalling...",
+          message: l("Existing runtime is incomplete; reinstalling..."),
         });
         await this.wipeRuntime(opts.signal);
       }
@@ -321,15 +320,15 @@ export class VoiceRuntimeInstaller {
       return { ok: false, pythonExe: this.paths.pythonExe, device: effective, errorMessage: installResult.errorMessage };
     }
 
-    onProgress({ stage: "smoke-check", pct: 90, message: "Verifying installed runtime..." });
+    onProgress({ stage: "smoke-check", pct: 90, message: l("Verifying installed runtime...") });
     const smoke = await runImportSmokeCheck(this.paths.pythonExe, smokeOpts);
     if (!smoke.ok) {
-      const msg = formatSmokeError(smoke);
+      const msg = smokeFailureText(smoke);
       onProgress({ stage: "error", pct: 90, message: msg });
       return { ok: false, pythonExe: this.paths.pythonExe, device: effective, errorMessage: msg };
     }
 
-    onProgress({ stage: "done", pct: 100, message: "Voice runtime ready." });
+    onProgress({ stage: "done", pct: 100, message: l("Voice runtime ready.") });
     return { ok: true, pythonExe: this.paths.pythonExe, device: effective };
   }
 
@@ -339,20 +338,20 @@ export class VoiceRuntimeInstaller {
     smokeOpts: SmokeCheckOptions,
     onProgress: RuntimeProgressCallback,
   ): Promise<InstallAllResult> {
-    const fail = (errorMessage: string): InstallAllResult => {
+    const fail = (errorMessage: LocalizedText): InstallAllResult => {
       onProgress({ stage: "error", pct: 10, message: errorMessage });
       return { ok: false, pythonExe: this.paths.pythonExe, device: effective, errorMessage, missing: "runtime" };
     };
-    if (!(await detectInstalledRuntime(this.paths)).present) return fail(t("The voice runtime is not installed."));
+    if (!(await detectInstalledRuntime(this.paths)).present) return fail(l("The voice runtime is not installed."));
     const expectedChannel = expectedTorchChannel(effective);
     const installedChannel = await detectInstalledTorchChannel(this.paths.pythonExe);
     if ((installedChannel === "cu121" || installedChannel === "cu118" || installedChannel === "cpu") && installedChannel !== expectedChannel) {
-      return fail(t("The installed torch wheel is {0} but {1} is required; reinstall the voice runtime.", installedChannel, expectedChannel));
+      return fail(l("The installed torch wheel is {0} but {1} is required; reinstall the voice runtime.", installedChannel, expectedChannel));
     }
-    onProgress({ stage: "smoke-check", pct: 10, message: "Verifying existing runtime..." });
+    onProgress({ stage: "smoke-check", pct: 10, message: l("Verifying existing runtime...") });
     const smoke = await runImportSmokeCheck(this.paths.pythonExe, smokeOpts);
-    if (!smoke.ok) return fail(formatSmokeError(smoke));
-    onProgress({ stage: "done", pct: 100, message: "Voice runtime ready." });
+    if (!smoke.ok) return fail(smokeFailureText(smoke));
+    onProgress({ stage: "done", pct: 100, message: l("Voice runtime ready.") });
     return { ok: true, pythonExe: this.paths.pythonExe, device: effective };
   }
 
@@ -361,13 +360,13 @@ export class VoiceRuntimeInstaller {
     opts: InstallAllOptions,
     onProgress: RuntimeProgressCallback,
     cxxEnv: Record<string, string> | undefined,
-  ): Promise<{ ok: true } | { ok: false; errorMessage: string }> {
+  ): Promise<{ ok: true } | { ok: false; errorMessage: LocalizedText }> {
     try {
       await this.runFullInstall(detection, opts, onProgress, cxxEnv);
       return { ok: true };
     } catch (err) {
       if (opts.signal?.aborted === true) throw err;
-      const errorMessage = err instanceof Error ? err.message : String(err);
+      const errorMessage = errorTextOf(err);
       onProgress({ stage: "error", pct: 80, message: errorMessage });
       return { ok: false, errorMessage };
     }
@@ -396,7 +395,7 @@ export class VoiceRuntimeInstaller {
     onProgress({
       stage: "installing-pip",
       pct: 20,
-      message: "Existing runtime missing packages; running pip install -r requirements.txt...",
+      message: l("Existing runtime missing packages; running pip install -r requirements.txt..."),
     });
     const torchChannel = detection.kind === "cuda"
       ? pickTorchWheelChannel(detection.kind, detection.torchWheelChannel)
@@ -417,7 +416,7 @@ export class VoiceRuntimeInstaller {
       onProgress({
         stage: "installing-pip",
         pct: 20,
-        message: `Repair install failed: ${err instanceof Error ? err.message : String(err)}`,
+        message: l("Repair install failed: {0}", errorTextOf(err)),
       });
       return false;
     }
@@ -508,25 +507,27 @@ function pickInstallSize(detection: GpuDetection): number {
 export function checkRuntimeModeCompatibility(
   detection: GpuDetection,
   requested: RuntimeMode,
-): { ok: true } | { ok: false; message: string } {
+): { ok: true } | { ok: false; message: LocalizedText } {
   if (requested !== "cuda") return { ok: true };
   if (detection.kind === "cuda") return { ok: true };
   return { ok: false, message: formatCudaUnavailableMessage(detection) };
 }
 
-function formatCudaUnavailableMessage(detection: CpuInfo): string {
-  const reason: Record<CpuInfo["reason"], string> = {
-    "no-smi": "nvidia-smi was not found on PATH and not at /usr/lib/wsl/lib/nvidia-smi",
-    "driver-too-old": "your NVIDIA driver is older than 525.x (minimum for the cu118 torch wheel)",
-    "parse-failed": "nvidia-smi output could not be parsed for a driver version",
-    "macos": "macOS does not support CUDA",
-    "no-gpu": "nvidia-smi reported no GPUs",
-    "user-opted-out": "you set Voice GPU to 'cpu' (this branch should not be reachable)",
-  };
-  return (
-    `Voice GPU is set to "cuda" but ${reason[detection.reason]}. ` +
-    `Either install/update NVIDIA drivers (and ensure nvidia-smi is reachable) ` +
-    `or change the Damocles setting "voice.localGpu" to "auto" (recommended) or "cpu".`
+function cudaUnavailableReason(reason: CpuInfo["reason"]): LocalizedText {
+  switch (reason) {
+    case "no-smi": return l("nvidia-smi was not found on PATH or at /usr/lib/wsl/lib/nvidia-smi.");
+    case "driver-too-old": return l("The NVIDIA driver is older than 525.x, the minimum for the cu118 torch package.");
+    case "parse-failed": return l("The driver version could not be read from the output of nvidia-smi.");
+    case "macos": return l("macOS does not support CUDA.");
+    case "no-gpu": return l("nvidia-smi reported no GPU.");
+    case "user-opted-out": return l("Voice was set to run on the CPU.");
+  }
+}
+
+function formatCudaUnavailableMessage(detection: CpuInfo): LocalizedText {
+  return l(
+    "The GPU preference for voice is \"cuda\", but CUDA cannot be used here. {0} Install or update the NVIDIA driver and make sure nvidia-smi can be found, or set the GPU preference (damocles.voice.localGpu) to \"auto\" (recommended) or \"cpu\".",
+    cudaUnavailableReason(detection.reason),
   );
 }
 
@@ -550,21 +551,18 @@ export function expectedTorchChannel(detection: GpuDetection): TorchChannel {
   return "cpu";
 }
 
-function formatGb(bytes: number): string {
-  return (bytes / 1024 / 1024 / 1024).toFixed(1);
+// Gigabytes to a tenth, which the renderer formats in its locale.
+function gigabytes(bytes: number): { number: number } {
+  return { number: Math.round((bytes / 1024 / 1024 / 1024) * 10) / 10 };
 }
 
-function formatSmokeError(result: SmokeCheckResult): string {
-  if (result.ok) return "";
-  const lines = result.stderr.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  const tail = lines.slice(-25).join("\n");
-  const moduleClause = result.failedModule !== undefined
-    ? ` while importing \`${result.failedModule}\``
-    : "";
-  const logClause = result.logPath !== undefined
-    ? `\nFull traceback written to: ${result.logPath}`
-    : "";
-  return `Voice runtime smoke check failed${moduleClause}.\n${tail}${logClause}`;
+/** A failed import check: Damocles' headline over the last lines Python wrote and where its whole traceback is. */
+export function smokeFailureText(result: Extract<SmokeCheckResult, { ok: false }>): LocalizedText {
+  const tail = result.stderr.split(/\r?\n/).filter((line) => line.trim().length > 0).slice(-25).join("\n");
+  const headline = result.failedModule !== undefined
+    ? l("The voice runtime check failed while importing {0}.", result.failedModule)
+    : l("The voice runtime check failed.");
+  return withDetail(headline, result.logPath !== undefined ? l("{0}\nThe full traceback was written to {1}", tail, result.logPath) : tail);
 }
 
 export { detectGpu, runImportSmokeCheck, checkDiskSpace, INSTALL_SIZE_BYTES, detectInstalledRuntime, detectInstalledTorchChannel };

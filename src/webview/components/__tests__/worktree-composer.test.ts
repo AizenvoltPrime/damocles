@@ -160,6 +160,14 @@ describe('worktree states in the composer (D30)', () => {
     expect(q('[data-testid="worktree-continue"]')?.textContent?.trim()).toBe('Συνέχεια χωρίς προετοιμασία');
   });
 
+  it("renders a failed creation's error in the view's language", async () => {
+    await mountApp();
+    await send(state({ phase: 'createFailed', error: { message: 'Trust this folder to use worktrees' }, canHandOff: false }));
+    i18n.global.locale.value = 'el';
+    await nextTick();
+    expect(q('[data-testid="worktree-status-error"]')?.textContent?.trim()).toBe('Εμπιστευτείτε αυτόν τον φάκελο για να χρησιμοποιήσετε worktrees');
+  });
+
   it('keeps the ticking clock out of what the status region announces', async () => {
     await mountApp();
     await send(state({ phase: 'creating', place: 'project', branch: 'damocles/fix-login', heldPrompt: { text: 'add a test', imageCount: 0 }, canHandOff: false }));
@@ -177,7 +185,7 @@ describe('worktree states in the composer (D30)', () => {
   it('keeps the prompt on a failed creation, with git\'s error, Retry and Run in project folder', async () => {
     await mountApp();
     const heldPrompt = { text: 'fix the login redirect', imageCount: 0 };
-    await send(state({ phase: 'createFailed', error: "fatal: 'damocles/..' is not a valid branch name", heldPrompt, canHandOff: false }));
+    await send(state({ phase: 'createFailed', error: { message: '{0}', args: ["fatal: 'damocles/..' is not a valid branch name"] }, heldPrompt, canHandOff: false }));
     expect(q('[data-testid="worktree-status-title"]')?.textContent).toContain("Couldn't create the worktree");
     expect(q('[data-testid="worktree-status-error"]')?.textContent).toContain('is not a valid branch name');
     expect(q('[data-testid="worktree-held-prompt"]')?.textContent).toContain('fix the login redirect');

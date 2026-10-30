@@ -72,7 +72,6 @@ it('relays a 28 MB conversation as JSON text that main forwards without parsing'
     settings: main.settings,
     fileWatchers: main.fileWatchers,
     confinement: main.confinement,
-    localization: main.localization,
     logSinks: main.logSinks,
     paths: main.paths,
   }));
@@ -124,7 +123,6 @@ it('drops a post type this core may not send, and relays the rest', () => {
     settings: main.settings,
     fileWatchers: main.fileWatchers,
     confinement: main.confinement,
-    localization: main.localization,
     logSinks: main.logSinks,
     paths: main.paths,
   }));

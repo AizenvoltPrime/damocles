@@ -53,6 +53,7 @@ function numberFormatsFor(locale: string): LocaleNumberFormats {
 /** `locale` is the UI locale (`useI18n().locale`), which sets the decimal separator. */
 export function formatTokenCount(num: number, locale: string): string {
   const { oneDecimal } = numberFormatsFor(locale);
+  if (num >= 1_000_000_000) return `${oneDecimal.format(num / 1_000_000_000)}B`;
   if (num >= 1_000_000) return `${oneDecimal.format(num / 1_000_000)}M`;
   if (num >= 1_000) return `${oneDecimal.format(num / 1_000)}K`;
   return num.toString();

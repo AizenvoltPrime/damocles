@@ -2,6 +2,7 @@
 // the state built from that layer to that device's views alone.
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { tmpRoot, fakeHome, fakeWorkspace } = vi.hoisted(() => {
@@ -20,9 +21,13 @@ vi.mock('node:os', async (importOriginal) => {
 });
 
 import { ChatPanelProvider } from '../../../core/chat-panel';
+import { ConfigManager } from '../../../core/chat-panel/settings-manager/managers/config-manager';
+import { withSettingsViewScope } from '../../../core/chat-panel/settings-view-scope';
+import { ASSET_SOURCE_PRECEDENCE_SETTING } from '../../../core/asset-sources';
 import { PiRuntime } from '../../../core/pi-session/pi-runtime';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { parseContributedConfiguration } from '../../../core/config/contributed-configuration';
+import { readContributedConfiguration } from '../../../core/config/read-contributed-configuration';
 import { createHarness, folderEntry, makeMultiViewHost } from '../../../core/chat-panel/__tests__/panel-manager-harness';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { installFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
@@ -72,7 +77,6 @@ function twoDevices(platform: Pick<FakePlatform, 'fileWatchers' | 'workspaceFold
     trust: trustAll,
     chatFolders: { folders: () => [], onDidChange: () => ({ dispose: () => undefined }) },
     notifications: undefined,
-    localization: platform.localization,
     log: () => undefined,
     remote: remoteSettings(remote.remote),
   });
@@ -179,4 +183,73 @@ describe('the default model, the memory judge and the account state of a chat', 
 
     expect(publishAccountInfo.mock.calls).toEqual([['device-b']]);
   });
+});
+
+describe('the skill and command source precedence of a daemon\'s core', () => {
+  const PRECEDENCE = ASSET_SOURCE_PRECEDENCE_SETTING;
+  const hostFile = path.join(tmpRoot, 'host', '.damocles', 'settings.json');
+  let platform: FakePlatform;
+
+  beforeEach(() => {
+    fs.mkdirSync(fakeWorkspace, { recursive: true });
+    fs.mkdirSync(path.dirname(hostFile), { recursive: true });
+    fs.writeFileSync(hostFile, '{}');
+    platform = installFakePlatform({ folders: [{ fsPath: fakeWorkspace, name: 'workspace' }] });
+  });
+
+  /** Two devices that both chose codex, device-a acting, over the shipped settings, and pi's runtime with one folder loaded. */
+  async function daemon() {
+    const remote = createFakeRemoteHost();
+    for (const device of ['device-a', 'device-b']) {
+      remote.set('clientAuth', device, { providers: {} });
+      remote.set('clientUser', device, { settings: { [PRECEDENCE]: 'codex' }, permissionRules: [] });
+    }
+    remote.setActing('device-a');
+    const store = new DesktopSettingsStore({
+      userFile: hostFile,
+      contributed: readContributedConfiguration(fileURLToPath(new URL('../../../../', import.meta.url))),
+      fileWatchers: platform.fileWatchers,
+      projects: platform.workspaceFolders,
+      trust: trustAll,
+      chatFolders: { folders: () => [], onDidChange: () => ({ dispose: () => undefined }) },
+      notifications: undefined,
+      log: () => undefined,
+      remote: remoteSettings(remote.remote),
+    });
+    disposables.push(store);
+    Object.assign(platform, { settings: store, remote: remote.remote });
+    const runtime = PiRuntime.get();
+    await runtime.init();
+    const reloads = vi.spyOn(await runtime.folder(fakeWorkspace), 'reloadBare');
+    const changes = vi.fn();
+    disposables.push(store.onDidChange(PRECEDENCE, changes));
+    return { remote, store, reloads, changes };
+  }
+
+  // longer than pi-runtime's folder reload debounce
+  const debounced = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 600));
+
+  it('a device\'s user change fires no change and reloads no folder', async () => {
+    const { remote, store, reloads, changes } = await daemon();
+
+    remote.set('clientUser', 'device-b', { settings: { [PRECEDENCE]: 'claude' }, permissionRules: [] });
+    remote.set('clientUser', 'device-a', { settings: { [PRECEDENCE]: 'claude' }, permissionRules: [] });
+    remote.setActing('device-b');
+    await debounced();
+
+    expect([changes.mock.calls.length, reloads.mock.calls.length, store.get(PRECEDENCE)]).toEqual([0, 0, 'claude']);
+  }, 60_000);
+
+  it('a host-tab write lands in the host file', async () => {
+    const { remote, store, reloads, changes } = await daemon();
+    const config = new ConfigManager(() => undefined, platform);
+
+    await expect(config.handleSetAssetSourcePrecedence('codex')).rejects.toThrow('only in the User tab');
+    await withSettingsViewScope('machine', () => config.handleSetAssetSourcePrecedence('codex'));
+    await debounced();
+
+    expect(JSON.parse(fs.readFileSync(hostFile, 'utf8'))).toEqual({ [PRECEDENCE]: 'codex' });
+    expect([changes.mock.calls.length, reloads.mock.calls.length]).toEqual([1, 1]);
+    expect([remote.remote.clients.user('device-a')?.settings, store.inspect(PRECEDENCE)]).toEqual([{ [PRECEDENCE]: 'codex' }, { defaultValue: 'claude', machineValue: 'codex' }]);
+  }, 60_000);
 });

@@ -12,7 +12,7 @@ import type { HistoryAgentContentBlock, HistoryAgentMessage } from '../../../sha
 import { mapPiToolName, normalizeToolDetails, normalizeToolInput } from '../tool-normalization';
 import { toImageBlocks } from '../branch-text';
 import { resultImageCount } from '../tool-result-text';
-import { nestedCallError } from '../nested-call-failures';
+import { nestedCallError, nestedCallFailure } from '../nested-call-failures';
 import { abandonReasonOf, skippedToolCalls } from '../abandoned-tool-calls';
 
 interface PiTextBlock {
@@ -57,16 +57,19 @@ function joinText(content: unknown): string {
 
 const NONE_STOPPED: ReadonlySet<string> = new Set();
 const NONE_WOUND_DOWN: ReadonlySet<unknown> = new Set();
+const NONE_LIVE: ReadonlySet<string> = new Set();
 
 /**
- * Map pi `session.messages` to the webview's `HistoryAgentMessage[]`. Pure — no session access.
+ * Map one subagent run's stored messages (its agent file's segment, `parseAgentEntries`) to the webview's `HistoryAgentMessage[]`. Pure — no session access.
  * `stoppedToolCallIds`: the calls the session's turn-stopped entries name (`AgentFile.stoppedToolCallIds`).
  * `windDown`: the error stops that were an abort's wind-down (`AgentFile.windDownMessages`), mapped as aborted stops.
+ * `liveToolCallIds`: the calls a running run still owns (`SubagentLiveSnapshot`); one with no result is marked `live`.
  */
 export function piMessagesToHistoryAgentMessages(
   messages: readonly unknown[],
   stoppedToolCallIds: ReadonlySet<string> = NONE_STOPPED,
   windDown: ReadonlySet<unknown> = NONE_WOUND_DOWN,
+  liveToolCallIds: ReadonlySet<string> = NONE_LIVE,
 ): HistoryAgentMessage[] {
   // First pass: collect tool results keyed by the tool-call id they answer.
   const resultsById = new Map<string, { text: string; isError: boolean; imageCount: number; metadata?: Record<string, unknown>; durationMs?: number }>();
@@ -133,6 +136,7 @@ export function piMessagesToHistoryAgentMessages(
           ...(result?.metadata ? { metadata: result.metadata } : {}),
           ...(result?.durationMs !== undefined ? { durationMs: result.durationMs } : {}),
           ...(reason ? { abandoned: reason } : {}),
+          ...(result === undefined && !reason && liveToolCallIds.has(block.id) ? { live: true as const } : {}),
         };
         blocks.push(toolUse);
         batch.push(toolUse);
@@ -140,7 +144,7 @@ export function piMessagesToHistoryAgentMessages(
     }
     if (blocks.length > 0) out.push({ role: 'assistant', contentBlocks: blocks });
     // A call pi re-ran is not among these messages, so every error stop here is one pi did not recover.
-    if (failed) out.push({ role: 'error', contentBlocks: [{ type: 'text', text: nestedCallError(msg, 'user') }] });
+    if (failed) out.push({ role: 'error', contentBlocks: [{ type: 'text', text: nestedCallError(msg) }], error: nestedCallFailure(msg) });
   }
   return out;
 }

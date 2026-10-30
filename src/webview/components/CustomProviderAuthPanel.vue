@@ -4,6 +4,7 @@ import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { usePlatformBridge } from "@/composables/usePlatformBridge";
+import { useLocalizedText, type ViewMessage, type ViewText } from "@/composables/useLocalizedText";
 import { Eye, EyeOff, Trash2 } from "lucide-vue-next";
 import SettingButton from "@/components/settings/controls/SettingButton.vue";
 import SettingSwitch from "@/components/settings/controls/SettingSwitch.vue";
@@ -16,6 +17,7 @@ import { isKeyProviderId, isSignInProviderId, type AccountProviderId } from "@sh
 const props = defineProps<{ provider: AccountProviderId }>();
 
 const { t } = useI18n();
+const { vt } = useLocalizedText();
 const settingsStore = useSettingsStore();
 const { keyProviderStatus, providerSignInState, memoryJudge } = storeToRefs(settingsStore);
 const { postMessage, onMessage } = usePlatformBridge();
@@ -33,7 +35,7 @@ const preferLabelId = useId();
 const preferHintId = useId();
 // The switch shows the value it sent until core acknowledges it, and core's status after.
 const preferPending = ref<{ requestId: string; value: boolean } | null>(null);
-const preferError = ref<string | null>(null);
+const preferError = ref<ViewText | null>(null);
 const preferValue = computed(() => preferPending.value?.value ?? status.value.preferApiKey);
 
 watch(showPreferSwitch, (shown) => {
@@ -64,10 +66,11 @@ const rejectedJudgeLines = computed(() => {
 const apiKeyInput = ref("");
 const showKey = ref(false);
 const saving = ref(false);
-const inlineMessage = ref<{ kind: "success" | "error"; text: string } | null>(null);
+const inlineMessage = ref<{ kind: "success" | "error"; text: ViewText } | null>(null);
 const pendingRequestId = ref<string | null>(null);
 
 const tk = (key: string): string => t(`${props.provider}.${key}`);
+const providerMessage = (key: string): ViewMessage => ({ key: `${props.provider}.${key}` });
 
 function makeRequestId(): string {
   return `${props.provider}-auth-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -107,7 +110,7 @@ function handleAck(msg: ExtensionToWebviewMessage) {
   if (msg.type === "setProviderPreferApiKeyAck") {
     if (msg.provider !== props.provider || msg.requestId !== preferPending.value?.requestId) return;
     preferPending.value = null;
-    if (!msg.ok) preferError.value = msg.error ?? t("providerAuth.preferApiKey.failed");
+    if (!msg.ok) preferError.value = msg.error ?? { key: "providerAuth.preferApiKey.failed" };
   } else if (msg.type === "setProviderApiKeyAck") {
     if (msg.provider !== props.provider || msg.requestId !== pendingRequestId.value) return;
     pendingRequestId.value = null;
@@ -115,18 +118,18 @@ function handleAck(msg: ExtensionToWebviewMessage) {
     if (msg.ok) {
       apiKeyInput.value = "";
       showKey.value = false;
-      inlineMessage.value = { kind: "success", text: tk("apiKey.saved") };
+      inlineMessage.value = { kind: "success", text: providerMessage("apiKey.saved") };
     } else {
-      inlineMessage.value = { kind: "error", text: msg.error ?? tk("apiKey.saveFailed") };
+      inlineMessage.value = { kind: "error", text: msg.error ?? providerMessage("apiKey.saveFailed") };
     }
   } else if (msg.type === "clearProviderApiKeyAck") {
     if (msg.provider !== props.provider || msg.requestId !== pendingRequestId.value) return;
     pendingRequestId.value = null;
     saving.value = false;
     if (msg.ok) {
-      inlineMessage.value = { kind: "success", text: tk("apiKey.cleared") };
+      inlineMessage.value = { kind: "success", text: providerMessage("apiKey.cleared") };
     } else {
-      inlineMessage.value = { kind: "error", text: msg.error ?? tk("apiKey.clearFailed") };
+      inlineMessage.value = { kind: "error", text: msg.error ?? providerMessage("apiKey.clearFailed") };
     }
   }
 }
@@ -240,7 +243,7 @@ const messageClass = computed(() => {
         :class="messageClass"
         :role="inlineMessage.kind === 'error' ? 'alert' : 'status'"
       >
-        {{ inlineMessage.text }}
+        {{ vt(inlineMessage.text) }}
       </p>
       <p
         v-else
@@ -298,7 +301,7 @@ const messageClass = computed(() => {
         class="sm-hint sm-hint-error"
         role="alert"
       >
-        {{ preferError }}
+        {{ vt(preferError) }}
       </p>
     </template>
   </div>

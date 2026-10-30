@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { DialogService } from '../../platform/dialog-service';
+import { renderVsCode } from './localization-service';
 
 // A CancellationTokenSource cancelled when the signal aborts; call release once the prompt settles.
 function cancellationFor(signal: AbortSignal | undefined): { token: vscode.CancellationToken; release: () => void } {
@@ -23,9 +24,9 @@ export function createVsCodeDialogService(): DialogService {
         canSelectFiles: false,
         canSelectFolders: true,
         canSelectMany: false,
-        ...(opts.title !== undefined ? { title: opts.title } : {}),
+        ...(opts.title !== undefined ? { title: renderVsCode(opts.title) } : {}),
         ...(opts.defaultPath !== undefined ? { defaultUri: vscode.Uri.file(opts.defaultPath) } : {}),
-        ...(opts.buttonLabel !== undefined ? { openLabel: opts.buttonLabel } : {}),
+        ...(opts.buttonLabel !== undefined ? { openLabel: renderVsCode(opts.buttonLabel) } : {}),
       });
       return picked?.[0]?.fsPath;
     },
@@ -35,7 +36,7 @@ export function createVsCodeDialogService(): DialogService {
         canSelectFolders: false,
         canSelectMany: false,
         ...(opts.filters ? { filters: Object.fromEntries(Object.entries(opts.filters).map(([label, exts]) => [label, [...exts]])) } : {}),
-        ...(opts.title !== undefined ? { title: opts.title } : {}),
+        ...(opts.title !== undefined ? { title: renderVsCode(opts.title) } : {}),
         ...(opts.defaultPath !== undefined ? { defaultUri: vscode.Uri.file(opts.defaultPath) } : {}),
       });
       return picked?.[0]?.fsPath;

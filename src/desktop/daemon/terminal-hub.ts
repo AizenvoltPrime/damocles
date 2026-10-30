@@ -104,7 +104,7 @@ export function createTerminalHub(deps: TerminalHubDeps): TerminalHub {
   };
 
   function receive(raw: unknown): void {
-    const message = parseHostMessage(raw);
+    const message = parseHostMessage(raw, (field, id) => deps.log(`[terminal] dropped the ${field} of ${id}'s screen, which is outside the contract`));
     if (!message) {
       deps.log('[terminal] stopping the pty host: it sent a message outside the contract');
       host?.process.kill();

@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n';
 import SettingSourceBadge from '@/components/SettingSourceBadge.vue';
 import SettingsHighlight from './SettingsHighlight';
 import { useSettingWritesStore } from './settings-writes';
+import { useLocalizedText } from '@/composables/useLocalizedText';
 import { rowMatches } from './settings-rows';
 import { ROW_STAGGER_MS, STAGGERED_ROWS, useSettingsPage } from './settings-view';
 
@@ -19,6 +20,7 @@ const props = defineProps<{
 const SAVED_HINT_MS = 1600;
 
 const { t } = useI18n();
+const { vt } = useLocalizedText();
 const page = useSettingsPage();
 const writes = useSettingWritesStore();
 
@@ -67,7 +69,7 @@ const savedText = computed(() => {
   return t('settingsModal.savedTo', { file: t(`settingsModal.scopeFile.${entry.scope}`) });
 });
 const savedPath = computed(() => (feedback.value?.kind === 'saved' ? feedback.value.file : undefined));
-const errorText = computed(() => (feedback.value?.kind === 'error' ? feedback.value.error : ''));
+const errorText = computed(() => (feedback.value?.kind === 'error' ? vt(feedback.value.error) : ''));
 const labelId = computed(() => `settings-row-label-${props.id}`);
 </script>
 

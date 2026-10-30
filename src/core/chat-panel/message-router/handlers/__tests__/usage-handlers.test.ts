@@ -59,7 +59,7 @@ describe("createUsageHandlers", () => {
     expect(posted).toHaveLength(1);
     const msg = posted[0] as Extract<ExtensionToWebviewMessage, { type: "subscriptionUsage" }>;
     expect(msg.type).toBe("subscriptionUsage");
-    const error = "Could not load subscription usage.";
+    const error = { message: "Could not load subscription usage." };
     expect(msg.data.claude).toEqual({ status: "error", bars: [], error });
     expect(msg.data.gpt).toEqual({ status: "error", bars: [], error });
     expect(typeof msg.data.fetchedAt).toBe("number");
@@ -74,6 +74,6 @@ describe("createUsageHandlers", () => {
 
     expect(posted).toHaveLength(1);
     const msg = posted[0] as Extract<ExtensionToWebviewMessage, { type: "subscriptionUsage" }>;
-    expect(msg.data.claude.error).toBe("Could not load subscription usage.");
+    expect(msg.data.claude.error).toEqual({ message: "Could not load subscription usage." });
   });
 });

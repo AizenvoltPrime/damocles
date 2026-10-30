@@ -1,6 +1,6 @@
 import { readFile } from '../../core/resource-fs';
 import type { Memento } from '../../platform/key-value-state';
-import type { NotificationService } from '../../platform/notification-service';
+import type { TextNotifications } from './platform/notification-service';
 import { MAX_RELEASE_VERSION_LENGTH, type ReleaseIndex, type ReleaseIndexEntry, type ReleaseNotes } from '../preload/updates';
 
 // Global KeyValueState: the version the last launch ran, for the after-update notice (D56).
@@ -121,7 +121,7 @@ export class ReleaseNotesSource {
 export interface InstalledVersionDeps {
   readonly version: string;
   readonly state: Memento;
-  readonly notifications: NotificationService;
+  readonly notifications: TextNotifications;
   readonly t: (message: string, ...args: Array<string | number | boolean>) => string;
   // Settings › About with the version expanded in What's new
   readonly openWhatsNew: (version: string) => void;

@@ -5,16 +5,18 @@ import { ArrowRight, CircleX, Folder, FolderTree, Image as ImageIcon, LoaderCirc
 import { Button } from '@/components/ui/button';
 import type { WorktreeAction, WorktreeStateData } from '@shared/types/messages';
 import { visibleLines, visibleText } from '@shared/visible-text';
+import { useLocalizedText } from '@/composables/useLocalizedText';
 
 /**
  * The composer's worktree states above the input (D30, D32): creating and setting up with Send now, a failed setup with Send
- * anyway and Retry, a failed creation with git's error, Retry and Run in project folder. Each state morphs into the next.
+ * anyway and Retry, a failed creation with why it failed, Retry and Run in project folder. Each state morphs into the next.
  * The held prompt and the setup step come from core's worktree state. A setup after a hand-off holds nothing until the user
  * sends, so it offers no Send now and its failure offers Continue without setup.
  */
 const props = defineProps<{ state: WorktreeStateData }>();
 const emit = defineEmits<{ action: [action: WorktreeAction] }>();
 const { t } = useI18n();
+const { rt } = useLocalizedText();
 
 const kind = computed(() => {
   const phase = props.state.phase;
@@ -179,7 +181,7 @@ const fillButton = `${button} bg-(--d-accent) font-semibold text-(--d-on-accent)
               class="mt-2 ms-5.5 max-h-24 overflow-auto rounded-7 border border-(--d-border) bg-(--d-code) px-2 py-1.5 font-mono text-11 whitespace-pre-wrap break-all text-(--d-danger-text)"
               data-testid="worktree-status-error"
             >
-              {{ visibleLines(state.error) }}
+              {{ visibleLines(rt(state.error)) }}
             </p>
             <p
               class="mt-1.5 ms-5.5 text-11.5 text-pretty text-(--d-faint-text)"

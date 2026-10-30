@@ -18,6 +18,8 @@ export interface OpenAIRuntimeKeyDeps {
   preferApiKey: boolean;
   /** Receives whether the secret is present, before pi is called, so a pi failure cannot leave it stale. */
   onKeyPresence: (present: boolean) => void;
+  /** Receives the secret as read, before pi is called; never called on a daemon's core, which reads no secret. */
+  onKeyRead?: (key: string | undefined) => void;
   /** A daemon's core: the key is the pinned client's, served by the broker, so presence comes from its clientAuth. */
   remote?: RemoteHost;
 }
@@ -38,6 +40,7 @@ export async function syncOpenAIRuntimeKey(deps: OpenAIRuntimeKeyDeps): Promise<
   const key = await deps.secrets.get(OPENAI_API_KEY_SECRET);
   const apiKey = key !== undefined && key !== '';
   deps.onKeyPresence(apiKey);
+  deps.onKeyRead?.(key);
   const { chatgpt } = readOpenAIAuthFromDisk(deps.agentDir);
   try {
     if (apiKey && openaiRuntimeKeyWanted({ apiKey, chatgpt }, deps.preferApiKey)) {

@@ -87,6 +87,7 @@ function setup(width = 1200) {
     preloadPath: 'preload-panel.js',
     resourceRoot: '/app',
     pageStrings: () => { throw new Error('no page is built here'); },
+    language: () => 'en',
     hostLabel: () => undefined,
     onHostAction: () => undefined,
     connection: () => undefined,

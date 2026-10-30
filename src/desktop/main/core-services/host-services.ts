@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Disposable } from '../../../platform/disposable';
 import type { Memento } from '../../../platform/key-value-state';
-import type { NotificationOptions } from '../../../platform/notification-service';
 import type { Platform } from '../../../platform/platform';
 import type { PanelHost } from '../../../platform/window-service';
 import type { GitCredentialAnswer } from '../../../shared/git-credential';
@@ -9,7 +8,9 @@ import type { PageSpec } from '../../../shared/panel-html';
 import { LOCAL_CLIENT_ID, type BrokerAnswer } from '../../../shared/remote-user';
 import { desktopHostCapabilities } from '../../local-services/capabilities';
 import type { DesktopEditorService, HostDiffView } from '../platform/editor-service';
-import { DIFF_TITLE_NAME, type AskQuestion, type CoreInit, type CoreRequests, type CredentialKind, type MainEndpoint, type MirrorTopics, type PanelCreate, type StateScope } from '../../core-protocol';
+import { DIFF_TITLE_NAME, type CoreInit, type CoreRequests, type CredentialKind, type MainEndpoint, type MirrorTopics, type PanelCreate, type StateScope } from '../../core-protocol';
+import type { LocalizedText } from '../../../shared/localized-text';
+import type { MessageQuestion } from '../message-dialog';
 
 export interface HostTrust {
   // the folder keys core names trusted folders by, as its own folderKey computes them
@@ -86,8 +87,8 @@ export interface HostUi {
   // logs/<name>.log as a read-only editor tab (D36)
   showLog(name: string, preserveFocus: boolean): void;
   trash(absolutePath: string): Promise<void>;
-  // signal withdraws the question, which then answers undefined
-  ask(question: AskQuestion, signal: AbortSignal): Promise<number | undefined>;
+  // signal withdraws the question, which then answers undefined; its text is rendered in main's language
+  ask(question: MessageQuestion, signal: AbortSignal): Promise<number | undefined>;
   // undefined answer with cancelled false: nothing was asked (a notice) or the prompt was withdrawn
   askpass(prompt: { readonly kind: CredentialKind; readonly text: string }, signal: AbortSignal): Promise<{ readonly answer?: string; readonly cancelled: boolean }>;
   readonly worktrees: HostWorktreeUi;
@@ -114,6 +115,8 @@ export interface HostServicesDeps {
   readonly power: { onSuspend(listener: () => void): Disposable; onResume(listener: () => void): Disposable };
   readonly ui: HostUi;
   readonly user: HostUser;
+  // core's text in main's language
+  readonly render: (text: LocalizedText) => string;
   // a chat page's message main takes instead of relaying it to core (a refused cross-authority drop, a remote chat's voice)
   readonly divert: (view: RelayView, message: unknown) => boolean;
   // the post types this core may not send its views: a remote core's voice view state, which only this computer's core feeds
@@ -250,11 +253,8 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     endpoint.serve('secrets.delete', ({ key }) => secrets.delete(key));
     endpoint.serve('secrets.keys', () => secrets.keys());
     // a modal notice is a question, which goes with its request when core ends
-    endpoint.serve('notifications.show', ({ severity, message, modal, actions }, signal) => {
-      const notifications = platform.notifications;
-      const show = notifications[severity].bind(notifications) as (message: string, ...rest: Array<NotificationOptions | string>) => Promise<string | undefined>;
-      return modal === undefined ? show(message, ...actions) : show(message, { modal, signal }, ...actions);
-    });
+    endpoint.serve('notifications.show', ({ severity, message, modal, actions }, signal) =>
+      platform.notifications[severity](message, actions, modal === undefined ? undefined : { modal, signal }));
     endpoint.serve('dialogs.pickFolder', (options) => dialogs.pickFolder(options));
     endpoint.serve('dialogs.pickFile', (options) => dialogs.pickFile(options));
     endpoint.serve('clipboard.writeText', ({ text }) => platform.clipboard.writeText(text));
@@ -265,7 +265,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     endpoint.serve('editor.openUntitled', ({ content, language, panelId }) => editor.openUntitled(content, language, panelId !== undefined ? { panelId } : undefined));
     endpoint.serve('editor.readText', ({ path }) => editor.readText(path));
     endpoint.serve('editor.showDiff', async ({ titleTemplate, ...request }) => {
-      const view = await editor.showDiff({ ...request, title: (fileName) => titleTemplate.split(DIFF_TITLE_NAME).join(fileName) });
+      const view = await editor.showDiff({ ...request, title: (fileName) => withFileName(titleTemplate, fileName) });
       const viewId = randomUUID();
       diffs.set(viewId, view);
       void view.closed.then(() => diffs.delete(viewId));
@@ -288,7 +288,13 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     const { ui } = deps;
     endpoint.serve('logs.show', ({ name, preserveFocus }) => ui.showLog(name, preserveFocus));
     endpoint.serve('shell.trash', ({ path }) => ui.trash(path));
-    endpoint.serve('dialogs.ask', (question, signal) => ui.ask(question, signal));
+    endpoint.serve('dialogs.ask', ({ message, detail, actions, cancelLabel, ...question }, signal) => ui.ask({
+      ...question,
+      message: deps.render(message),
+      ...(detail !== undefined ? { detail: deps.render(detail) } : {}),
+      actions: actions.map(deps.render),
+      ...(cancelLabel !== undefined ? { cancelLabel: deps.render(cancelLabel) } : {}),
+    }, signal));
     endpoint.serve('askpass.prompt', (prompt, signal) => ui.askpass(prompt, signal));
     endpoint.serve('worktrees.reviewSetup', (request, signal) => ui.worktrees.reviewSetup(request, signal));
     endpoint.serve('worktrees.runSetup', (request) => ui.worktrees.runSetup(request, (step) => endpoint.emit('worktrees.setupStep', { worktreeId: request.worktreeId, ...step })));
@@ -395,6 +401,12 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
       for (const view of left) view.close();
     },
   };
+}
+
+// A diff title template with the file's current name where core put DIFF_TITLE_NAME.
+function withFileName(template: LocalizedText, fileName: string): LocalizedText {
+  const args = template.args?.map((arg) => (typeof arg === 'string' ? arg.split(DIFF_TITLE_NAME).join(fileName) : typeof arg === 'number' || 'number' in arg ? arg : withFileName(arg, fileName)));
+  return args === undefined ? template : { ...template, args };
 }
 
 function editorPatch(context: ReturnType<HostPlatform['editor']['getActiveContext']>): CoreInit['mirrors']['editor'] {

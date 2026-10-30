@@ -4,10 +4,10 @@
 import { randomUUID } from 'node:crypto';
 import type { CommitMessageResult } from '../../../core/scm/commit-message';
 import type { GitVersion } from '../../../core/scm/git-runner';
-import type { ChangeGroup, CommitOutcome, RepoKind, Repository, RepositoryStatus } from '../../../core/scm/repository';
+import type { ChangeGroup, RepoKind, Repository, RepositoryStatus } from '../../../core/scm/repository';
 import type { CloneState, CommitHooks, CommitVariant, Decoration, ProjectView, RepoSnapshot, ScmEvent, ScmService } from '../../../core/scm/scm-service';
 import type { Disposable } from '../../../platform/disposable';
-import { SCM_CALLS, type RepositoryCall, type ScmCall, type ScmMirrorPatch, type ScmRepositoryEntry } from '../../core-protocol';
+import { SCM_CALLS, type RepositoryCall, type ScmCall, type ScmCommitOutcome, type ScmMirrorPatch, type ScmRepositoryEntry } from '../../core-protocol';
 import type { CoreClient } from '../core-client';
 import { authorityKeyOfProject } from '../../../shared/project-location';
 import { Emitter } from '../../local-services/emitter';
@@ -52,7 +52,7 @@ export interface ScmServiceClient extends ScmCalls {
   decorations(projectKey: string): Record<string, Decoration>;
   cloneState(): CloneState;
   gitVersion(): GitVersion | undefined;
-  commit(repoId: string, message: string, variant: CommitVariant, hooks: CommitHooks): Promise<CommitOutcome>;
+  commit(repoId: string, message: string, variant: CommitVariant, hooks: CommitHooks): Promise<ScmCommitOutcome>;
   ignoredIn(projectKey: string, relativeDir: string, entries: ReadonlyArray<{ readonly name: string; readonly dir: boolean }>): Promise<Set<string>>;
   commitBlob(repoId: string, commit: string, relativePath: string): Promise<Buffer | 'tooLarge' | undefined>;
   generateMessage(repoId: string): Promise<CommitMessageResult>;
@@ -254,7 +254,7 @@ export function createScmClient(deps: ScmClientDeps): ScmClient {
       const token = hooks.branchName ? randomUUID() : undefined;
       if (token !== undefined && hooks.branchName) branchNames.set(token, hooks.branchName);
       try {
-        return (await core(authorityOfRepo(repoId), 'scm commit', (client) => client.scmCommit(repoId, message, variant, hooks.saved ?? [], token))) as CommitOutcome;
+        return await core(authorityOfRepo(repoId), 'scm commit', (client) => client.scmCommit(repoId, message, variant, hooks.saved ?? [], token));
       } finally {
         if (token !== undefined) branchNames.delete(token);
       }

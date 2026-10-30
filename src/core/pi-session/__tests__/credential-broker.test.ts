@@ -10,6 +10,8 @@ import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { runPinnedSubcall, runPinnedTurn } from '../../client-snapshots';
 import { installPlatform } from '../../platform-host';
+import { installLogSink } from '../../logger';
+import { initPiLoader } from '../pi-loader';
 import { BrokeredCredentialStore, MIN_VALIDITY_MS, oauthAnswerOf, pinRunStarts, STATUS_ONLY_KEY } from '../credential-broker';
 import { sessionNoteDelivery } from '../note-delivery';
 import { PiRuntime } from '../pi-runtime';
@@ -30,6 +32,9 @@ function remoteHost(answer: (provider: string, clientId: string) => Promise<Brok
     auth: (id) => auth.get(id),
     user: () => undefined,
     policy: () => undefined,
+    editor: () => undefined,
+    terminal: () => undefined,
+    language: () => undefined,
     onDidChange: (cb) => {
       listeners.add(cb);
       return { dispose: () => listeners.delete(cb) };
@@ -358,6 +363,174 @@ describe('pi\'s availability refresh inside a turn', () => {
     expect(refresh).toHaveBeenCalledTimes(2);
     await Promise.all(refresh.mock.results.map((result) => result.value));
     expect(host.remote.credentials).not.toHaveBeenCalled();
+  }, 60_000);
+});
+
+describe('a disposed runtime\'s token broker', () => {
+  const dirs: string[] = [];
+  const tempDir = (prefix: string): string => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+    dirs.push(dir);
+    return dir;
+  };
+
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+    installPlatform(createFakePlatform());
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function remoteRuntime() {
+    const host = createFakeRemoteHost(async () => ({ type: 'api_key', key: 'sk-client' }));
+    host.set('clientAuth', 'client-a', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false } } });
+    installPlatform({ ...createFakePlatform(), remote: host.remote });
+    const runtime = PiRuntime.get(tempDir('damocles-broker-agent-'));
+    await runtime.init();
+    const broker = (runtime as unknown as { _broker: BrokeredCredentialStore })._broker;
+    const logged: string[] = [];
+    installLogSink({ appendLine: (line) => void logged.push(line), show: () => undefined, dispose: () => undefined });
+    return { host, runtime, broker, logged };
+  }
+
+  it('holds none of the devices\' credentials and asks no device once the runtime is disposed', async () => {
+    const { host, broker } = await remoteRuntime();
+    const read = () => runPinnedTurn(host.remote, 'p1', () => broker.read('anthropic'));
+    expect(await read()).toEqual({ type: 'api_key', key: 'sk-client' });
+    expect(await read()).toEqual({ type: 'api_key', key: 'sk-client' });
+    expect(host.remote.credentials).toHaveBeenCalledTimes(1);
+
+    await PiRuntime.disposeInstance();
+
+    const held = broker as unknown as Record<'cache' | 'asking' | 'lastAuth', Map<string, unknown>>;
+    expect([held.cache.size, held.asking.size, held.lastAuth.size]).toEqual([0, 0, 0]);
+    await expect(read()).rejects.toMatchObject({ cause: 'credential', text: { message: 'Damocles stopped on this host, so it has no sign-in for {0}.', args: ['anthropic'] } });
+    expect(host.remote.credentials).toHaveBeenCalledTimes(1);
+  }, 60_000);
+
+  it('passes no clientAuth delta to the runtime once it is disposed', async () => {
+    const { host, runtime, logged } = await remoteRuntime();
+    const credentialsChanged = vi.spyOn(runtime, 'credentialsChanged');
+    await PiRuntime.disposeInstance();
+
+    host.set('clientAuth', 'client-a', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false } } });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(credentialsChanged).not.toHaveBeenCalled();
+    expect(logged.filter((line) => line.includes('[PiRuntime]'))).toEqual([]);
+  }, 60_000);
+
+  it('ends a delta\'s handling that was under way when the runtime was disposed, with no sync, publication or failure', async () => {
+    const { host, runtime, logged } = await remoteRuntime();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const refresh = vi.spyOn(runtime.modelRuntime!, 'refresh').mockImplementation((async () => {
+      await held;
+      return { errors: new Map(), aborted: false };
+    }) as never);
+    const work = [
+      vi.spyOn(runtime as unknown as { _syncOpenAIRuntimeKeyNow: () => Promise<void> }, '_syncOpenAIRuntimeKeyNow'),
+      vi.spyOn(runtime, 'syncCustomProviders'),
+      vi.spyOn(runtime.usage, 'credentialsChanged'),
+    ];
+    let published = 0;
+    const stops = [PiRuntime.onMemoryJudgeChange(() => void published++), PiRuntime.onAuthFileChange(() => void published++), PiRuntime.onClientAuthChange(() => void published++)];
+    try {
+      host.set('clientAuth', 'client-a', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false } } });
+      await vi.waitFor(() => expect(refresh).toHaveBeenCalled());
+      await PiRuntime.disposeInstance();
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect([...work.map((spy) => spy.mock.calls.length), published]).toEqual([0, 0, 0, 0]);
+      expect(logged.filter((line) => line.includes('[PiRuntime]'))).toEqual([]);
+    } finally {
+      for (const stop of stops) stop();
+    }
+  }, 60_000);
+
+  it('ends a delta\'s handling whose key sync was running when the runtime was disposed, telling the auth-file listeners nothing', async () => {
+    const { host, runtime } = await remoteRuntime();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const keySync = vi.spyOn(runtime, 'syncCustomProviders').mockImplementationOnce(async () => {
+      await held;
+      return { wired: [], notWired: [], timedOut: false };
+    });
+    let told = 0;
+    const stop = PiRuntime.onAuthFileChange(() => void told++);
+    try {
+      host.set('clientAuth', 'client-a', { providers: { anthropic: { type: 'api_key', hasKey: true, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false } } });
+      await vi.waitFor(() => expect(keySync).toHaveBeenCalled());
+      await PiRuntime.disposeInstance();
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(told).toBe(0);
+    } finally {
+      stop();
+    }
+  }, 60_000);
+
+  it('ends a delta that waited for an init the dispose overtook, publishing nothing', async () => {
+    const host = createFakeRemoteHost(async () => ({ type: 'api_key', key: 'sk-client' }));
+    installPlatform({ ...createFakePlatform(), remote: host.remote });
+    const runtime = PiRuntime.get(tempDir('damocles-broker-agent-'));
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pi = (await initPiLoader())!;
+    const createModelRuntime = pi.ModelRuntime.create.bind(pi.ModelRuntime);
+    const create = vi.spyOn(pi.ModelRuntime, 'create').mockImplementationOnce((async (...args: Parameters<typeof createModelRuntime>) => {
+      await held;
+      return createModelRuntime(...args);
+    }) as never);
+    let published = 0;
+    const stops = [PiRuntime.onMemoryJudgeChange(() => void published++), PiRuntime.onAuthFileChange(() => void published++), PiRuntime.onClientAuthChange(() => void published++)];
+    try {
+      const init = runtime.init();
+      await vi.waitFor(() => expect(create).toHaveBeenCalled());
+      host.set('clientAuth', 'client-a', { providers: { openai: { type: 'api_key', hasKey: true, flatFee: false } } });
+      const disposed = PiRuntime.disposeInstance();
+      release();
+      await expect(init).rejects.toThrow(/disposed/);
+      await disposed;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(published).toBe(0);
+    } finally {
+      create.mockRestore();
+      for (const stop of stops) stop();
+    }
+  }, 60_000);
+
+  it('republishes nothing for an acting client change whose refresh was running when the runtime was disposed', async () => {
+    const { host, runtime } = await remoteRuntime();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const refresh = vi.spyOn(runtime.modelRuntime!, 'refresh').mockImplementation((async () => {
+      await held;
+      return { errors: new Map(), aborted: false };
+    }) as never);
+    let published = 0;
+    const stops = [PiRuntime.onActingClientRefreshed(() => void published++), PiRuntime.onClientAuthChange(() => void published++)];
+    try {
+      host.setActing('client-b');
+      await vi.waitFor(() => expect(refresh).toHaveBeenCalled());
+      await PiRuntime.disposeInstance();
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(published).toBe(0);
+    } finally {
+      for (const stop of stops) stop();
+    }
   }, 60_000);
 });
 

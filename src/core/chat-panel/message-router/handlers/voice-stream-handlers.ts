@@ -6,7 +6,6 @@ import type { PanelHost } from "../../../../platform/window-service";
 import type { CpuFallbackEvent, IncomingTtsChunk, SidecarManagerStatus, SidecarOutbound, TtsUnloadedEvent } from "../../../voice/sidecar";
 import { log } from "../../../logger";
 import { writeSetting } from "../setting-write";
-import { t } from "../../../l10n";
 import {
   cleanupOldVersions,
   downloadModel,
@@ -16,6 +15,7 @@ import type { VoiceModelManifest, ModelEntry, OutdatedModelEntry } from "../../.
 import type { VoiceRuntimeStatus } from "../../../../shared/types/voice";
 import { parseWakePhrase, stripWakePrefix } from "../../../../shared/wake-phrase";
 import { unsupportedVoicePlatformMessage } from "../../../voice/runtime/supported-platforms";
+import { errorTextOf, l, verbatim } from "../../../l10n";
 
 function totalBytes(entry: ModelEntry): number {
   return entry.files.reduce((acc, f) => acc + (f.bytes ?? 0), 0);
@@ -143,7 +143,7 @@ export function createVoiceStreamHandlers(
         bytesReceived: 0,
         bytesTotal: 0,
         status: "error",
-        message: "Voice runtime not configured",
+        message: l("Voice runtime not configured"),
       });
       return false;
     }
@@ -158,7 +158,7 @@ export function createVoiceStreamHandlers(
         bytesReceived: 0,
         bytesTotal: 0,
         status: "error",
-        message: err instanceof Error ? err.message : "Failed to load manifest",
+        message: err instanceof Error ? errorTextOf(err) : l("Failed to load manifest"),
       });
       return false;
     }
@@ -179,7 +179,7 @@ export function createVoiceStreamHandlers(
                 bytesReceived: p.bytesReceived,
                 bytesTotal: p.bytesTotal,
                 status: p.status,
-                ...(p.message !== undefined ? { message: p.message } : {}),
+                ...(p.message !== undefined ? { message: verbatim(p.message) } : {}),
               });
             },
           });
@@ -192,7 +192,7 @@ export function createVoiceStreamHandlers(
             bytesReceived: 0,
             bytesTotal: 0,
             status: "error",
-            message: err instanceof Error ? err.message : String(err),
+            message: errorTextOf(err),
           });
           return;
         }
@@ -269,7 +269,7 @@ export function createVoiceStreamHandlers(
       postMessage(host, {
         type: "voiceSidecarStatus",
         state: "error",
-        message: msg.message,
+        message: verbatim(msg.message),
       });
       return;
     }
@@ -307,7 +307,7 @@ export function createVoiceStreamHandlers(
       postMessage(activeHost, {
         type: "voiceSidecarStatus",
         state: "restarting",
-        message: `restart attempt ${status.attempt}`,
+        message: l("restart attempt {0}", status.attempt),
       });
     } else if (status.kind === "error") {
       postMessage(activeHost, {
@@ -323,7 +323,7 @@ export function createVoiceStreamHandlers(
       postMessage(activeHost, {
         type: "voiceSidecarStatus",
         state: "restarting",
-        message: "switching to CPU after CUDA OOM",
+        message: l("switching to CPU after CUDA OOM"),
       });
     }
   };
@@ -486,7 +486,7 @@ export function createVoiceStreamHandlers(
                   bytesReceived: p.bytesReceived,
                   bytesTotal: p.bytesTotal,
                   status: p.status,
-                  ...(p.message !== undefined ? { message: p.message } : {}),
+                  ...(p.message !== undefined ? { message: verbatim(p.message) } : {}),
                 });
               },
             });
@@ -498,7 +498,7 @@ export function createVoiceStreamHandlers(
               bytesReceived: 0,
               bytesTotal: 0,
               status: "error",
-              message: err instanceof Error ? err.message : String(err),
+              message: errorTextOf(err),
             });
             return;
           }
@@ -539,7 +539,7 @@ export function createVoiceStreamHandlers(
         postMessage(ctx.host, {
           type: "voiceSidecarStatus",
           state: "error",
-          message: "Voice runtime not configured",
+          message: l("Voice runtime not configured"),
         });
         return;
       }
@@ -548,7 +548,7 @@ export function createVoiceStreamHandlers(
         postMessage(ctx.host, {
           type: "voiceSidecarStatus",
           state: "error",
-          message: "Enable TTS first to test the voice.",
+          message: l("Enable TTS first to test the voice."),
         });
         return;
       }
@@ -557,7 +557,7 @@ export function createVoiceStreamHandlers(
         postMessage(ctx.host, {
           type: "voiceSidecarStatus",
           state: "error",
-          message: voiceService.failureMessage() ?? "Voice runtime did not become ready.",
+          message: voiceService.failureMessage() ?? l("Voice runtime did not become ready."),
         });
         return;
       }
@@ -571,7 +571,7 @@ export function createVoiceStreamHandlers(
       // Persist the setting first — this is the source of truth the
       // sidecar reads at next __init__ even if hot-swap fails or the
       // sidecar isn't alive.
-      const saved = await writeSetting(deps, ctx, "damocles.voice.tts.voice", (detail) => t("Failed to save the voice setting: {0}", detail), () =>
+      const saved = await writeSetting(deps, ctx, "damocles.voice.tts.voice", (detail) => l("Failed to save the voice setting: {0}", detail), () =>
         deps.settingsManager.setVoiceTtsVoice(msg.voice));
       await deps.settingsManager.sendVoiceConfig(ctx.host);
 
@@ -619,7 +619,7 @@ export function createVoiceStreamHandlers(
                 bytesReceived: p.bytesReceived,
                 bytesTotal: p.bytesTotal,
                 status: p.status,
-                ...(p.message !== undefined ? { message: p.message } : {}),
+                ...(p.message !== undefined ? { message: verbatim(p.message) } : {}),
               });
             },
           });
@@ -648,7 +648,7 @@ export function createVoiceStreamHandlers(
         postMessage(ctx.host, {
           type: "voiceSidecarStatus",
           state: "error",
-          message: err instanceof Error ? err.message : String(err),
+          message: errorTextOf(err),
         });
       }
     },
@@ -663,7 +663,7 @@ export function createVoiceStreamHandlers(
         postMessage(ctx.host, {
           type: "voiceSidecarStatus",
           state: "stopped",
-          message: `Removed ${result.removed.length} old model directories (${mb} MB freed).`,
+          message: l("Removed {0} old model directories ({1} MB freed).", result.removed.length, mb),
         });
         await emitVoiceFilesSize(postMessage, ctx.host, paths.rootDir);
       } catch (err) {
@@ -671,7 +671,7 @@ export function createVoiceStreamHandlers(
         postMessage(ctx.host, {
           type: "voiceSidecarStatus",
           state: "error",
-          message: err instanceof Error ? err.message : String(err),
+          message: errorTextOf(err),
         });
       }
     },
@@ -680,18 +680,18 @@ export function createVoiceStreamHandlers(
       if (voiceService === undefined) return;
       const paths = voiceService.getPaths();
       const confirm = await platform.notifications.warn(
-        `This will permanently delete the entire voice runtime and models directory at ${paths.rootDir}. Continue?`,
+        l("This will permanently delete the entire voice runtime and models directory at {0}. Continue?", paths.rootDir),
+        [l("Delete")],
         { modal: true },
-        "Delete",
       );
-      if (confirm !== "Delete") return;
+      if (confirm !== 0) return;
       try {
         await voiceService.stop();
         await fs.rm(paths.rootDir, { recursive: true, force: true });
         postMessage(ctx.host, {
           type: "voiceSidecarStatus",
           state: "stopped",
-          message: "Voice runtime and models removed.",
+          message: l("Voice runtime and models removed."),
         });
         postMessage(ctx.host, { type: "voiceFilesSizeUpdate", bytes: 0 });
       } catch (err) {
@@ -699,7 +699,7 @@ export function createVoiceStreamHandlers(
         postMessage(ctx.host, {
           type: "voiceSidecarStatus",
           state: "error",
-          message: err instanceof Error ? err.message : String(err),
+          message: errorTextOf(err),
         });
       }
     },

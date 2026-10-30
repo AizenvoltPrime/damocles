@@ -16,6 +16,7 @@ import { ensurePiSessionDir } from '../../pi-session/session-store/session-dir';
 import { isSessionHeldByPanelHere } from '../../pi-session/session-store/session-lease';
 import { PanelWorktrees } from '../panel-worktrees';
 import type { HostInstance } from '../types';
+import { englishText, type LocalizedText } from '../../../shared/localized-text';
 
 /** Rules 3 and 4: the opt-in, the held first prompt, setup and its review, with real git in a temp sandbox. */
 useGitSandbox();
@@ -230,7 +231,8 @@ describe.skipIf(!HAS_GIT)('panel worktrees: opt-in and first send', { timeout: 1
     await h.worktrees.setOptIn('p1', { startRef: 'refs/heads/main', bringChanges: false });
     h.worktrees.interceptSend('p1', prompt);
     await settled(() => h.worktrees.viewOf('p1')?.phase === 'createFailed');
-    expect(h.worktrees.viewOf('p1')?.error).toBeTruthy();
+    // git's own words, shown as written
+    expect(h.worktrees.viewOf('p1')?.error).toEqual({ message: '{0}', args: [expect.stringContaining('bad..prefix')] });
     expect(h.worktrees.viewOf('p1')?.heldPrompt).toEqual({ text: 'Fix the login page now', imageCount: 0 });
     expect(h.worktrees.heldPrompt('p1')).toEqual([{ type: 'text', text: 'Fix the login page now' }]);
     expect(h.registry.records()).toEqual([]);
@@ -248,6 +250,8 @@ describe.skipIf(!HAS_GIT)('panel worktrees: opt-in and first send', { timeout: 1
     await h.worktrees.action('p1', 'retry');
     await settled(() => h.worktrees.viewOf('p1')?.phase === 'createFailed');
     expect(h.registry.records()).toEqual([]);
+    // Damocles' own refusal, which each view renders in its language
+    expect(h.worktrees.viewOf('p1')?.error).toEqual({ message: '{0} is not valid JSON: {1}', args: [path.join(h.project, '.damocles', 'worktree.json'), expect.any(String)] });
   });
 
   it('discards a worktree whose chat could not move into it, so a Retry leaves none behind', async () => {
@@ -391,7 +395,7 @@ describe.skipIf(!HAS_GIT)('panel worktrees: opt-in and first send', { timeout: 1
     await h.worktrees.action('p1', 'retry');
     await h.worktrees.retrySetup(record.id);
     expect(h.host.runSetup).toHaveBeenCalledTimes(1);
-    expect(h.warn).toHaveBeenCalledWith('Trust this folder to use worktrees');
+    expect(h.warn).toHaveBeenCalledWith({ message: 'Trust this folder to use worktrees' });
     expect(h.worktrees.viewOf('p1')).toMatchObject({ phase: 'setupFailed', heldPrompt: { text: 'Fix the login page now', imageCount: 0 } });
     expect(h.dispatched).toEqual([]);
   });
@@ -492,7 +496,7 @@ describe.skipIf(!HAS_GIT)('panel worktrees: a new chat in a worktree, sharing an
     h.panels.set('p3', { folder: target(record.workingFolder, h.projectTarget.key), session: moving } as unknown as HostInstance);
     await h.worktrees.chatMove('p3', 'project');
     expect(h.host.confirmHandOff).not.toHaveBeenCalled();
-    expect(h.warn).toHaveBeenCalledWith('Apply, Merge, Update or Delete is running on this worktree. Try again when it ends.');
+    expect(h.warn).toHaveBeenCalledWith({ message: 'Apply, Merge, Update or Delete is running on this worktree. Try again when it ends.' });
     hold.dispose();
     expect(h.session.worktree.binding!.finishing(record.id)).toBeUndefined();
   });
@@ -629,7 +633,7 @@ describe.skipIf(!HAS_GIT)('panel worktrees: hand-off', { timeout: 120_000 }, () 
     await h.worktrees.chatMove('p1', 'worktree');
     expect(h.instance.folder.key).toBe(h.projectTarget.key);
     expect(h.resumeInto).toHaveBeenCalledTimes(2);
-    expect(h.warn).toHaveBeenCalledWith(expect.stringContaining('stays in the project folder'));
+    expect(h.warn).toHaveBeenCalledWith({ message: 'The chat could not move to its worktree, so it stays in the project folder. The moved files are in {0}.', args: [expect.any(String)] });
     expect(session.noteWorkingFolder).not.toHaveBeenCalled();
     // The worktree holds the moved files, so the leftover scan must never offer it as unused.
     await settled(() => h.registry.liveChatRecords(h.project)[0]?.usedAt !== undefined);
@@ -658,7 +662,7 @@ describe.skipIf(!HAS_GIT)('panel worktrees: hand-off', { timeout: 120_000 }, () 
     await settled(() => h.registry.liveChatRecords(h.project)[0]?.usedAt !== undefined);
     const record = h.registry.liveChatRecords(h.project)[0]!;
     expect(h.resumeInto).not.toHaveBeenCalled();
-    expect(h.warn).toHaveBeenCalledWith(expect.stringContaining(record.workingFolder));
+    expect(h.warn).toHaveBeenCalledWith({ message: 'The files could not all be moved, so the chat stays in the project folder. Check the files there and in {0}. {1}', args: [record.workingFolder, expect.any(String)] });
     for (const dir of [h.project, record.workingFolder]) expect(fs.readFileSync(path.join(dir, 'new.txt'), 'utf8')).toBe('chat created\n');
   });
 
@@ -680,7 +684,7 @@ describe.skipIf(!HAS_GIT)('panel worktrees: hand-off', { timeout: 120_000 }, () 
       copy.mockRestore();
       fs.rmSync(lock, { force: true });
     }
-    const notices = h.warn.mock.calls.map((call) => String((call as unknown[])[0]));
+    const notices = h.warn.mock.calls.map((call) => englishText((call as unknown[])[0] as LocalizedText));
     expect(notices.some((notice) => notice.includes('move-fails-\\u{202E}bidi'))).toBe(true);
     expect(notices.join('\n')).not.toContain('\u202E');
   });
@@ -729,7 +733,7 @@ describe.skipIf(!HAS_GIT)('panel worktrees: hand-off', { timeout: 120_000 }, () 
     expect(session.worktree.binding!.moving()).toBe(true);
     await h.worktrees.chatMove('p1', 'worktree');
     expect(h.host.confirmHandOff).toHaveBeenCalledTimes(1);
-    expect(h.warn).toHaveBeenCalledWith('This chat is already moving. Try again when the move ends.');
+    expect(h.warn).toHaveBeenCalledWith({ message: 'This chat is already moving. Try again when the move ends.' });
     expect(h.worktrees.beginFinish(record.id, 'delete')).toBeUndefined();
     confirm(true);
     await first;
@@ -759,15 +763,15 @@ describe.skipIf(!HAS_GIT)('panel worktrees: hand-off', { timeout: 120_000 }, () 
       return true;
     });
     await h.worktrees.chatMove('p1', 'worktree');
-    expect(h.warn).toHaveBeenLastCalledWith('The chat can move only while it is idle and has a conversation, so it was not moved.');
+    expect(h.warn).toHaveBeenLastCalledWith({ message: 'The chat can move only while it is idle and has a conversation, so it was not moved.' });
     session.worktree.busy = () => false;
     h.trust.trusted = false;
     await h.worktrees.chatMove('p1', 'worktree');
-    expect(h.warn).toHaveBeenLastCalledWith('Trust this folder to use worktrees');
+    expect(h.warn).toHaveBeenLastCalledWith({ message: 'Trust this folder to use worktrees' });
     h.trust.trusted = true;
     session.worktree.place = () => 'worktree';
     await h.worktrees.chatMove('p1', 'project');
-    expect(h.warn).toHaveBeenLastCalledWith("This chat's worktree was deleted");
+    expect(h.warn).toHaveBeenLastCalledWith({ message: "This chat's worktree was deleted" });
     expect(h.registry.records()).toEqual([]);
     expect(h.resumeInto).not.toHaveBeenCalled();
   });

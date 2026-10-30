@@ -13,7 +13,8 @@ import type { McpResourceRuleFilter } from '../../permission-handler/mcp-resourc
 import { MCP_RESOURCE_ATTACHMENT_TAG, splitTerminalAttachments } from '../../terminal-attachment';
 import { base64Of, IMAGE_BYTES } from '@shared/__tests__/image-bytes';
 import { McpResourceServerGoneError } from '../../pi-session/mcp/resource-errors';
-import { installFakePlatform } from '../../../__mocks__/fake-platform';
+import { englishText } from '../../../shared/localized-text';
+import { inGreek } from '../../../__mocks__/greek-locale';
 
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 
@@ -66,6 +67,7 @@ function harness() {
     workspaceManager: { findSkill: async () => undefined, findCommand: async () => undefined },
     markUserTypedDuringTurn: vi.fn(),
     worktrees: () => ({ interceptSend: () => false }),
+    platform: {},
   } as unknown as HandlerDependencies;
   const terminalAttachments = new TerminalAttachmentManager((attachments) => sent.push({ type: 'terminalAttachmentsUpdate', attachments }));
   const ctx = {
@@ -80,7 +82,11 @@ function harness() {
   const send = (content: string | UserContentBlock[] = 'summarize it') =>
     handlers.sendMessage!({ type: 'sendMessage', content, terminalAttachmentIds: pendingIds() } as WebviewToExtensionMessage, ctx);
   const sentContent = () => (sendMessage.mock.calls[0] as unknown[])[0] as Array<{ type: string; text?: string } & Partial<ImageBlock>>;
-  const returned = () => sent.find((message) => message.type === 'promptReturned') as Extract<ExtensionToWebviewMessage, { type: 'promptReturned' }> | undefined;
+  // the give-back as an English view reads it
+  const returned = () => {
+    const message = sent.find((candidate) => candidate.type === 'promptReturned') as Extract<ExtensionToWebviewMessage, { type: 'promptReturned' }> | undefined;
+    return message && { ...message, ...(message.detail !== undefined ? { detail: englishText(message.detail) } : {}) };
+  };
   return {
     store, connecting, serverIds, port, sendMessage, beginSend, stopSend, queueInput, sent, terminalAttachments, handlers, ctx, send, sentContent, returned, pendingIds,
     deny: (filter: McpResourceRuleFilter) => { rules = filter; },
@@ -285,17 +291,15 @@ describe('sendMessage with an attached MCP resource', () => {
     });
   });
 
-  it('writes the character counts of the cap refusal in the UI language', async () => {
-    installFakePlatform({ language: 'el' });
-    try {
-      const h = harness();
-      h.store['docs://guide'] = [{ uri: 'docs://guide', text: 'r'.repeat(MAX_PENDING_TERMINAL_ATTACHMENT_CHARS + 1) }];
-      h.terminalAttachments.add(resource('docs://guide'));
-      await h.send();
-      expect(h.returned()?.detail).toBe('The attachments hold 128.001 characters of text, more than the 128.000 one message can carry.');
-    } finally {
-      installFakePlatform();
-    }
+  it('sends the character counts of the cap refusal as numbers each view writes in its own locale', async () => {
+    const h = harness();
+    h.store['docs://guide'] = [{ uri: 'docs://guide', text: 'r'.repeat(MAX_PENDING_TERMINAL_ATTACHMENT_CHARS + 1) }];
+    h.terminalAttachments.add(resource('docs://guide'));
+    await h.send();
+    const detail = (h.sent.find((message) => message.type === 'promptReturned') as Extract<ExtensionToWebviewMessage, { type: 'promptReturned' }>).detail!;
+    expect(englishText(detail)).toBe('The attachments hold 128,001 characters of text, more than the 128,000 one message can carry.');
+    expect(inGreek(detail)).toContain('128.001');
+    expect(inGreek(detail)).toContain('128.000');
   });
 
   it('counts resource text with the other attachments against the pending cap', async () => {
@@ -380,7 +384,7 @@ describe('sendMessage while an attached MCP resource is read', () => {
     expect(h.terminalAttachments.displayInfo()).toEqual([...taken, ...added.slice(0, MAX_PENDING_TERMINAL_ATTACHMENTS - taken.length)]);
     expect(h.sent).toContainEqual({
       type: 'notification',
-      message: `${taken.length} attachments added while your message was being sent did not fit beside the ones it gave back, so they were removed.`,
+      message: { message: '{0} attachments added while your message was being sent did not fit beside the ones it gave back, so they were removed.', args: [taken.length] },
       notificationType: 'warning',
     });
   });

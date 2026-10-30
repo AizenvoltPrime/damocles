@@ -130,7 +130,7 @@ describe('RemoteState', () => {
     expect(fs.readFileSync(path.join(userData, PANEL_STATE_FILE), 'utf8')).toBe(panelsBefore);
     expect(layoutBefore).not.toContain('loopback|');
     expect(JSON.parse(layoutBefore).terminals.terminals[0]).toEqual({ profileId: 'pwsh', projectKey: 'c:\\work\\local', name: null, customIcon: null, color: null });
-    expect(JSON.parse(fs.readFileSync(path.join(userData, REMOTE_STATE_FILE), 'utf8'))).toEqual({ version: 1, authorities: { loopback: { terminals: [record('term-123456789012345')], chats: [], away: [], awayEpoch: null, coreEpoch: null } } });
+    expect(JSON.parse(fs.readFileSync(path.join(userData, REMOTE_STATE_FILE), 'utf8'))).toEqual({ version: 1, authorities: { loopback: { terminals: [record('term-123456789012345')], chats: [], away: [], awayEpoch: null, coreEpoch: null, lastChats: [] } } });
   });
 });
 
@@ -147,6 +147,95 @@ describe('the remote selection', () => {
     expect((await RemoteState.open(userData, () => undefined)).selected()).toBeUndefined();
     fs.writeFileSync(path.join(userData, REMOTE_STATE_FILE), JSON.stringify({ version: 1, authorities: {}, selected: { projectKey: 5 } }));
     expect((await RemoteState.open(userData, () => undefined)).selected()).toBeUndefined();
+  });
+});
+
+describe('the last chats', () => {
+  it('keeps a remote project\'s last chat under its authority, and Forget host drops it', async () => {
+    const state = await RemoteState.open(userData, () => undefined);
+    await state.setLastChats('ssh+h1', [{ projectKey: 'ssh+h1|/srv/app', sessionId: 's-1' }, { projectKey: 'ssh+h1|/srv/api', sessionId: 's-2' }]);
+    await state.setLastChats('loopback', [{ projectKey: 'loopback|c:\\work\\app', sessionId: 's-3' }]);
+    const reread = await RemoteState.open(userData, () => undefined);
+    expect(reread.lastChats('ssh+h1')).toEqual([{ projectKey: 'ssh+h1|/srv/app', sessionId: 's-1' }, { projectKey: 'ssh+h1|/srv/api', sessionId: 's-2' }]);
+    expect(reread.lastChats('loopback')).toEqual([{ projectKey: 'loopback|c:\\work\\app', sessionId: 's-3' }]);
+    expect(reread.lastChats('ssh+h2')).toEqual([]);
+
+    // a closing window keeps them as they were
+    state.seal();
+    await state.setLastChats('ssh+h1', []);
+    expect((await RemoteState.open(userData, () => undefined)).lastChats('ssh+h1')).toHaveLength(2);
+    state.unseal();
+
+    await state.forgetAuthority('ssh+h1');
+    const forgotten = await RemoteState.open(userData, () => undefined);
+    expect(forgotten.lastChats('ssh+h1')).toEqual([]);
+    expect(forgotten.lastChats('loopback')).toEqual([{ projectKey: 'loopback|c:\\work\\app', sessionId: 's-3' }]);
+  });
+
+  it('lands the writes a batch makes as one write of remote-state.json, each settling once it landed', async () => {
+    const state = await RemoteState.open(userData, () => undefined);
+    const rename = fs.promises.rename.bind(fs.promises);
+    let writes = 0;
+    const spy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (path.basename(String(to)) === REMOTE_STATE_FILE) writes++;
+      return rename(from, to);
+    });
+    try {
+      let remembered: Promise<void> | undefined;
+      let selected: Promise<void> | undefined;
+      state.batch(() => {
+        remembered = state.setLastChats('ssh+h1', [{ projectKey: 'ssh+h1|/srv/app', sessionId: 's-1' }]);
+        selected = state.select({ projectKey: 'ssh+h1|/srv/app', sessionId: 's-1' });
+      });
+      await Promise.all([remembered, selected]);
+      expect(writes).toBe(1);
+      expect(state.lastChats('ssh+h1')).toEqual([{ projectKey: 'ssh+h1|/srv/app', sessionId: 's-1' }]);
+      expect(state.selected()).toEqual({ projectKey: 'ssh+h1|/srv/app', sessionId: 's-1' });
+      const reread = await RemoteState.open(userData, () => undefined);
+      expect([reread.lastChats('ssh+h1'), reread.selected()]).toEqual([state.lastChats('ssh+h1'), state.selected()]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('fails each write of a batch whose one write is refused', async () => {
+    fs.writeFileSync(path.join(userData, REMOTE_STATE_FILE), 'not json');
+    const state = await RemoteState.open(userData, () => undefined);
+    const writes: Array<Promise<void>> = [];
+    state.batch(() => {
+      writes.push(state.setLastChats('ssh+h1', [{ projectKey: 'ssh+h1|/srv/app', sessionId: 's-1' }]));
+      writes.push(state.select({ projectKey: 'ssh+h1|/srv/app', sessionId: 's-1' }));
+    });
+    expect(writes).toHaveLength(2);
+    await Promise.all(writes.map((write) => expect(write).rejects.toThrow('could not be read')));
+    expect(fs.readFileSync(path.join(userData, REMOTE_STATE_FILE), 'utf8')).toBe('not json');
+  });
+
+  it('keeps no entry for an authority a write leaves holding nothing, as after a chat shown during Forget host', async () => {
+    const state = await RemoteState.open(userData, () => undefined);
+    await state.setTerminals('loopback', [record('term-123456789012345')]);
+    await state.forgetAuthority('ssh+h1');
+    // a remote chat shown before the host record went, then its project unlisted
+    await state.setLastChats('ssh+h1', [{ projectKey: 'ssh+h1|/srv/app', sessionId: 's-1' }]);
+    await state.setLastChats('ssh+h1', []);
+    await state.setChats('ssh+h2', [], null);
+    const written = JSON.parse(fs.readFileSync(path.join(userData, REMOTE_STATE_FILE), 'utf8')) as { authorities: Record<string, unknown> };
+    expect(Object.keys(written.authorities)).toEqual(['loopback']);
+    await state.setTerminals('loopback', []);
+    expect(JSON.parse(fs.readFileSync(path.join(userData, REMOTE_STATE_FILE), 'utf8'))).toEqual({ version: 1, authorities: {} });
+  });
+
+  // An entry without a session records that the project's last viewed chat is gone (LastChats).
+  it('drops an entry of another authority or for a project already named, and keeps one without a session', async () => {
+    const lastChats = [
+      { projectKey: 'ssh+h1|/srv/app', sessionId: 's-1' },
+      { projectKey: 'ssh+h2|/srv/app', sessionId: 's-2' },
+      { projectKey: 'ssh+h1|/srv/api' },
+      { projectKey: 'ssh+h1|/srv/app', sessionId: 's-3' },
+      { projectKey: 7, sessionId: 's-4' },
+    ];
+    fs.writeFileSync(path.join(userData, REMOTE_STATE_FILE), JSON.stringify({ version: 1, authorities: { 'ssh+h1': { lastChats } } }));
+    expect((await RemoteState.open(userData, () => undefined)).lastChats('ssh+h1')).toEqual([lastChats[0], lastChats[2]]);
   });
 });
 

@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { TERMINAL_HIGH_WATERMARK_CHARS } from '../../preload/terminal-channels';
 import { parseHostRequest, type HostMessage, type HostRequest } from '../../pty-host/protocol';
 import { INVALID } from '../../core-protocol/schema';
-import { CLIENT_TO_WORKSPACE } from '../../workspace/messages';
+import { CLIENT_TO_WORKSPACE, WORKSPACE_TO_CLIENT } from '../../workspace/messages';
 import { createPtyScreen } from '../../pty-host/screen';
-import { createPtySessions, type Pty } from '../../pty-host/sessions';
+import { createPtySessions, PROCESS_NAME_THROTTLE_MS, type Pty } from '../../pty-host/sessions';
 import type { PtyHostProcess } from '../../workspace/host-starters';
 import { createRunRegistry } from '../run-registry';
 import { createTerminalHub, type HubClient } from '../terminal-hub';
@@ -250,6 +250,57 @@ describe('terminal flow control on the daemon', () => {
     expect(received.get('c')).toEqual([]);
     expect(hub.list()).toEqual([]);
     expect(registry.isEmpty()).toBe(true);
+  });
+
+  it('forwards a screen\'s kept shell-integration payloads, process name and host clock to a client that attaches later', async () => {
+    const nonce = '0123456789abcdef0123456789abcdef';
+    const pty = new FakePty();
+    const toHost: HostRequest[] = [];
+    let fromHost: (message: unknown) => void = () => undefined;
+    // the self-acknowledging pty host's sessions, in process; its foreground process name is read and posted
+    const sessions = createPtySessions({ spawn: () => pty, post: (message) => fromHost(structuredClone(message)), throttleConpty: false, readProcessName: true, screen: createPtyScreen, selfAcknowledge: true, log: () => undefined });
+    const hub = createTerminalHub({
+      start: () => ({ postMessage: (message) => { toHost.push(message); void sessions.handle(message); }, onMessage: (listener) => { fromHost = listener; }, onExit: () => undefined, kill: () => undefined }),
+      registry: createRunRegistry(),
+      log: () => undefined,
+    });
+    const screens: HostMessage[] = [];
+    const named: HostMessage[] = [];
+    const starter: HubClient = { id: 'starter', message: (message) => { if (message.type === 'process') named.push(message); }, hostExit: () => undefined };
+    const relaunched: HubClient = { id: 'relaunched', message: (message) => { if (message.type === 'screen') screens.push(message); }, hostExit: () => undefined };
+    hub.post(starter, SPAWN, '/srv/app');
+    await vi.waitFor(() => expect(hub.list()).toHaveLength(1));
+    pty.print(`\x1b]633;A;${nonce}\x07$ \x1b]633;B;${nonce}\x07`);
+    // the process name is read a moment after output
+    await vi.waitFor(() => expect(named).toEqual([{ type: 'process', id: 'term-1', name: 'sh' }]), { timeout: PROCESS_NAME_THROTTLE_MS + 1000 });
+    hub.detach(starter);
+    hub.post(relaunched, { type: 'serialize', id: 'term-1' }, undefined);
+    await vi.waitFor(() => expect(screens).toHaveLength(1));
+    const expected = { shellSequences: [{ index: 0, body: `A;${nonce}`, time: expect.any(Number) }, { index: 1, body: `B;${nonce}`, time: expect.any(Number) }], processName: 'sh', now: expect.any(Number) };
+    expect(screens[0]).toMatchObject({ type: 'screen', id: 'term-1', sequences: 2, ...expected });
+    // and over the workspace channel to the client
+    expect(WORKSPACE_TO_CLIENT.events['terminals.message']({ message: screens[0] })).toMatchObject({ message: expected });
+  });
+
+  it('drops only the optional screen field that breaks the contract, with a log line, and keeps the pty host and its terminals', () => {
+    let fromHost: (message: unknown) => void = () => undefined;
+    let killed = false;
+    const logs: string[] = [];
+    const hub = createTerminalHub({
+      start: () => ({ postMessage: () => undefined, onMessage: (listener) => { fromHost = listener; }, onExit: () => undefined, kill: () => { killed = true; } }),
+      registry: createRunRegistry(),
+      log: (line) => logs.push(line),
+    });
+    const screens: HostMessage[] = [];
+    const client: HubClient = { id: 'a', message: (message) => { if (message.type === 'screen') screens.push(message); }, hostExit: () => undefined };
+    hub.post(client, SPAWN, '/srv/app');
+    fromHost({ type: 'ready', id: 'term-1', pid: 42 });
+    hub.post(client, { type: 'serialize', id: 'term-1' }, undefined);
+    fromHost({ type: 'screen', id: 'term-1', data: '$ ', cols: 80, rows: 24, marks: [], sequences: 1, shellSequences: [{ index: 1, body: 'A;x', time: 1 }], processName: 'sh', now: 2 });
+    expect(killed).toBe(false);
+    expect(screens).toEqual([{ type: 'screen', id: 'term-1', data: '$ ', cols: 80, rows: 24, marks: [], sequences: 1, processName: 'sh', now: 2 }]);
+    expect(logs).toContain('[terminal] dropped the shellSequences of term-1\'s screen, which is outside the contract');
+    expect(hub.list()).toHaveLength(1);
   });
 
   it('takes a spawn\'s view and a view\'s detach over the wire only within the contract', () => {

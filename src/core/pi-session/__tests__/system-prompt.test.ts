@@ -12,7 +12,7 @@ const baseOptions = {
   isGitRepo: false,
   platform: 'linux',
   shell: '/bin/bash',
-  osVersion: 'Linux 5.15.0-test',
+  osVersion: 'Ubuntu 24.04',
 };
 
 type PromptOptions = typeof baseOptions & {
@@ -37,6 +37,7 @@ function fullPrompt(options: PromptOptions): string {
       contextFiles: [],
       skills: [],
       skillFileReadTool: undefined,
+      earlierModels: [],
     }),
   );
 }
@@ -534,7 +535,7 @@ describe('the assembled system prompt — Claude 5-gen context-engineering pass'
           - Is a git repository: false
          - Platform: linux
          - Shell: bash
-         - OS Version: Linux 5.15.0-test
+         - OS Version: Ubuntu 24.04
         </damocles_environment>
 
         <damocles_model>
@@ -718,7 +719,7 @@ describe('the assembled system prompt — Claude 5-gen context-engineering pass'
           - Is a git repository: false
          - Platform: linux
          - Shell: bash
-         - OS Version: Linux 5.15.0-test
+         - OS Version: Ubuntu 24.04
         </damocles_environment>
 
         <damocles_model>
@@ -908,7 +909,7 @@ describe('the assembled system prompt — Claude 5-gen context-engineering pass'
 // Every catalog entry names itself from its own fields, so a new entry needs no row in the retired-id tables.
 describe('buildModelSection over the catalog', () => {
   it.each(DEFAULT_MODELS.map((m) => [m.value, m] as const))('names %s by its own entry', (value, entry) => {
-    const section = buildModelSection(value);
+    const section = buildModelSection(value, []);
     expect(section.split('\n')[0]).toBe(`You are powered by the model named ${entry.displayName}. The exact model ID is ${entry.piModelId ?? entry.value}.`);
     if (entry.knowledgeCutoff) expect(section).toContain(`Assistant knowledge cutoff is ${entry.knowledgeCutoff}.`);
     else expect(section).not.toContain('knowledge cutoff');
@@ -936,12 +937,12 @@ describe('buildModelSection over the catalog', () => {
   });
 
   it('names an id outside the catalog only by its id', () => {
-    expect(buildModelSection('some-new-model')).toBe(`You are powered by the model some-new-model.\n${MODEL_SWITCH_NOTE}`);
+    expect(buildModelSection('some-new-model', [])).toBe(`You are powered by the model some-new-model.\n${MODEL_SWITCH_NOTE}`);
   });
 
   // Outside the catalog, as a hand-edited setting naming a pi id is: only an exact retired version matches.
   it('names a retired version, its dated snapshot, pin and [1m] forms, and never a longer version', () => {
-    const name = (model: string) => buildModelSection(model).split('\n');
+    const name = (model: string) => buildModelSection(model, []).split('\n');
     expect(name('claude-opus-5')).toEqual(['You are powered by the model named Opus 5. The exact model ID is claude-opus-5.', 'Assistant knowledge cutoff is May 2026.', MODEL_SWITCH_NOTE]);
     expect(name('claude-haiku-4-5-20251001')[0]).toContain('named Haiku 4.5.');
     expect(name('anthropic/claude-opus-4-8')[0]).toContain('named Opus 4.8.');
@@ -949,6 +950,34 @@ describe('buildModelSection over the catalog', () => {
     expect(name('claude-opus-4-1-20250805')).toEqual(['You are powered by the model claude-opus-4-1-20250805.', 'Assistant knowledge cutoff is January 2025.', MODEL_SWITCH_NOTE]);
     for (const longer of ['claude-opus-5.5', 'claude-opus-5-5-preview', 'gpt-6-sol-mini', 'claude-sonnet-5.5']) {
       expect(name(longer), longer).toEqual([`You are powered by the model ${longer}.`, MODEL_SWITCH_NOTE]);
+    }
+  });
+});
+
+describe('buildModelSection with the models that wrote earlier replies', () => {
+  // A chat with no switch keeps the text it had before the earlier-models list existed, so its cached prefix holds.
+  it("an empty list gives today's text byte for byte", () => {
+    expect(buildModelSection('claude-opus-5-5', [])).toBe(
+      "You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.\nAssistant knowledge cutoff is June 2026.\nThe user can switch this chat's model at any time, so earlier replies in this conversation may have come from another model.",
+    );
+  });
+
+  it('a list names the models in order by display name and exact model ID', () => {
+    const section = buildModelSection('claude-haiku-5-5', ['claude-sonnet-5-5', 'github-copilot/claude-opus-5.5', 'claude-opus-5', 'some-new-model']);
+
+    expect(section.split('\n')).toEqual([
+      'You are powered by the model named Haiku 5.5. The exact model ID is claude-haiku-5-5.',
+      expect.stringMatching(/^Assistant knowledge cutoff is /),
+      "The user can switch this chat's model at any time. Before the latest switch, replies in this conversation came from Sonnet 5.5 (claude-sonnet-5-5), then Opus 5.5 (claude-opus-5.5), then Opus 5 (claude-opus-5), then some-new-model; replies since then are yours.",
+    ]);
+    expect(section).not.toContain(MODEL_SWITCH_NOTE);
+  });
+
+  // A model named one way as the current model and another as an earlier one reads as two different models.
+  it('an earlier model carries the same name and ID it had as the current model', () => {
+    for (const model of ['claude-sonnet-5-5', 'github-copilot/claude-opus-5.5', 'claude-opus-5']) {
+      const [, name, id] = /^You are powered by the model named (.+)\. The exact model ID is (.+)\.$/.exec(buildModelSection(model, []).split('\n')[0]!)!;
+      expect(buildModelSection('claude-haiku-5-5', [model]), model).toContain(`came from ${name} (${id});`);
     }
   });
 });

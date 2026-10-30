@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import type { SubagentState } from '@shared/types/subagents';
@@ -138,6 +138,27 @@ describe('a subagent card’s usage', () => {
 
     expect(restored).toContain('~$0.37 est.');
     expect(restored.replace(/\d+s/, '')).toBe(live.replace(/\d+s/, ''));
+  });
+
+  // A joining view replays a run that has not ended; its clock runs until the live messages end the card.
+  it('keeps counting the duration of a running agent a joining view restored', async () => {
+    vi.useFakeTimers();
+    try {
+      useSubagentStore().restoreSubagentFromHistory({
+        id: 'sub-1',
+        name: 'Agent',
+        input: { subagent_type: 'Explore', description: 'find' },
+        live: true,
+        agentStartTimestamp: Date.now() - 10_000,
+      });
+      expect(useSubagentStore().subagents['sub-1']?.status).toBe('running');
+
+      const wrapper = mountFromStore('sub-1');
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(wrapper.get('[data-testid="subagent-stats"]').text()).toContain('13s');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

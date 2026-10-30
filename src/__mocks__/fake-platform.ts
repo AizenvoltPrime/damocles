@@ -14,6 +14,7 @@ import type { KeyValueState, Memento } from '../platform/key-value-state';
 import type { LocalizationService } from '../platform/localization-service';
 import type { LogSink, LogSinkFactory } from '../platform/log-sink';
 import type { NotificationOptions, NotificationService } from '../platform/notification-service';
+import { englishText, type LocalizedText } from '../shared/localized-text';
 import type { Platform } from '../platform/platform';
 import type { SecretsStore } from '../platform/secrets-store';
 import type { SettingInspection, SettingsChange, SettingsFolder, SettingsScope, SettingsStore } from '../platform/settings-store';
@@ -25,6 +26,8 @@ import { installPlatform } from '../core/platform-host';
 import { mergeSettingValues } from '../core/config/settings-file';
 import { VSCODE_HOST_CAPABILITIES, type ChatReviewScope, type HostCapabilities, type SettingsFileScope } from '../shared/types/messages';
 import { createVsCodeFileConfinement } from '../vscode/platform/file-confinement';
+import { browserPageHtml, type BrowserPageStrings } from '../shared/browser-page-html';
+import { ERROR_PAGE_STRINGS, type PageSpec } from '../shared/panel-html';
 
 type SettingsLayer = Readonly<Record<string, unknown>>;
 
@@ -105,17 +108,19 @@ export interface FakeFileWatcherFactory extends FileWatcherFactory {
 
 export type NotificationLevel = 'info' | 'warn' | 'error';
 
+/** What a host showed: the text and labels rendered in English, as the fake host's language, and the text it was given. */
 export interface NotificationCall {
   readonly level: NotificationLevel;
   readonly message: string;
-  /** Present only when the caller used the options overload. */
+  readonly text: LocalizedText;
+  /** Present only when the caller passed options. */
   readonly options?: NotificationOptions;
   readonly actions: readonly string[];
 }
 
 export interface FakeNotificationService extends NotificationService {
   readonly calls: readonly NotificationCall[];
-  /** Chooses the action each later call resolves with; the default answers undefined (dismissed). */
+  /** Chooses the action, by its rendered label, each later call answers with its index; the default answers undefined (dismissed). */
   answerWith(responder: (call: NotificationCall) => string | undefined): void;
 }
 
@@ -517,18 +522,11 @@ function createFileWatcherFactory(folders: WorkspaceFolders): FakeFileWatcherFac
 function createNotificationService(): FakeNotificationService {
   const calls: NotificationCall[] = [];
   let responder: (call: NotificationCall) => string | undefined = () => undefined;
-  // A non-string second argument selects the options overload, as the interface's overloads do.
-  const notify = (level: NotificationLevel) => (
-    message: string,
-    ...rest: [NotificationOptions, ...string[]] | string[]
-  ): Promise<string | undefined> => {
-    const [first, ...others] = rest;
-    const call: NotificationCall =
-      first !== undefined && typeof first !== 'string'
-        ? { level, message, options: first, actions: others as string[] }
-        : { level, message, actions: rest as string[] };
+  const notify = (level: NotificationLevel) => (message: LocalizedText, actions: readonly LocalizedText[] = [], options?: NotificationOptions): Promise<number | undefined> => {
+    const call: NotificationCall = { level, message: englishText(message), text: message, ...(options !== undefined ? { options } : {}), actions: actions.map(englishText) };
     calls.push(call);
-    return Promise.resolve(responder(call));
+    const chosen = responder(call);
+    return Promise.resolve(chosen === undefined || !call.actions.includes(chosen) ? undefined : call.actions.indexOf(chosen));
   };
   return {
     calls,
@@ -541,14 +539,8 @@ function createNotificationService(): FakeNotificationService {
   };
 }
 
-// Mirrors vscode.l10n.t for positional args: {N} becomes String(args[N]), and an index with no arg stays as written.
 function createLocalization(language: string): LocalizationService {
-  return {
-    language,
-    t(message: string, ...args: Array<string | number | boolean>): string {
-      return args.length ? message.replace(/\{(\d+)\}/g, (match, i: string) => (args[Number(i)] === undefined ? match : String(args[Number(i)]))) : message;
-    },
-  };
+  return { language };
 }
 
 function createClipboard(): FakeClipboardService {
@@ -791,6 +783,20 @@ function createLogSinks(): FakeLogSinkFactory {
   };
 }
 
+// The page strings of a host whose language is English.
+const ENGLISH_BROWSER_PAGE: BrowserPageStrings = {
+  back: 'Back',
+  forward: 'Forward',
+  reload: 'Reload',
+  pickElement: 'Pick Element',
+  devTools: 'Open Developer Tools (F12)',
+  newTab: 'New Tab',
+  urlPlaceholder: 'Enter URL...',
+  notSecure: 'Not secure',
+  notSecureDetail: 'The connection to this site is not encrypted, so others on the network can read and change what it sends.',
+  waiting: 'Waiting for browser frames...',
+};
+
 function createFakePanelHost(options: PanelOptions, ownColumn: boolean, retainsContextWhenHidden: boolean): FakePanelHost {
   const messages = listenerSet<[unknown]>();
   const disposes = listenerSet<[]>();
@@ -840,6 +846,14 @@ function createFakePanelHost(options: PanelOptions, ownColumn: boolean, retainsC
     setHtml: (next) => {
       html = next;
     },
+    // a browser panel builds its own page in the host's language, as VS Code's does (vscode/panels/webview-hosts.ts)
+    ...(options.kind === 'browser'
+      ? { showPage: (page: PageSpec) => {
+        if (page.kind !== 'browser') throw new Error(`A browser panel shows no ${page.kind} page`);
+        html = browserPageHtml({ nonce: 'fake-nonce', strings: ENGLISH_BROWSER_PAGE, toolbar: page.toolbar, themeCss: '' });
+      } }
+      // a chat panel's error page core builds in the host's words, as VS Code's does, here in English
+      : { errorPageStrings: () => ERROR_PAGE_STRINGS }),
     // A disposed VS Code webview resolves postMessage false.
     postMessage: (message) => {
       if (disposed) return Promise.resolve(false);

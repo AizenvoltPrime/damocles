@@ -3,6 +3,7 @@ import type { ToolAbandonReason } from './session';
 import type { AgentUsageTotals } from '../usage-accounting';
 import type { EffortBadgeLevel } from '../effort-badge';
 import type { AgentWindDown } from './wind-down';
+import type { LocalizedText } from '../localized-text';
 
 export type TeamPhase = 'initializing' | 'spawning' | 'working' | 'synthesizing' | 'complete';
 export type TeamAgentStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'awaiting-review' | 'standby' | 'monitoring';
@@ -66,16 +67,18 @@ export type TeamAgentContentBlock =
   | { type: 'thinking'; thinking: string }
   | ImageBlock
   // `abandoned`: its model call failed or was aborted, or an abort skipped it in its batch, so pi never ran it.
-  | { type: 'tool_use'; id: string; name: string; input: unknown; abandoned?: ToolAbandonReason }
+  // `live`: a running member still owns its outcome (a transcript read from memory), which its live messages set.
+  | { type: 'tool_use'; id: string; name: string; input: unknown; abandoned?: ToolAbandonReason; live?: true }
   // `metadata` holds the normalized result details, the only place the user-cancelled marker is recorded.
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean; imageCount?: number; metadata?: Record<string, unknown> };
 
 /** One persisted member message. `id` comes from its pi session entry; a live message never carries it. */
 export interface TeamAgentHistoryMessage {
   id: string;
-  /** `error` carries a failed model call's error as one text block. */
+  /** `error` carries a failed model call's error as one text block, in English, and as `error`, which the view renders. */
   role: 'user' | 'assistant' | 'toolResult' | 'error';
   content: TeamAgentContentBlock[];
+  error?: LocalizedText;
 }
 
 /**

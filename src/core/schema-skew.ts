@@ -1,5 +1,6 @@
 import type { NotificationService } from '../platform/notification-service';
-import { t } from './l10n';
+import { l } from './l10n';
+import type { LocalizedText } from '../shared/localized-text';
 import { log } from './logger';
 
 export type SharedStore =
@@ -10,16 +11,16 @@ export type SharedStore =
 
 const noticed = new Set<string>();
 
-function storeName(store: SharedStore): string {
+function storeName(store: SharedStore): LocalizedText {
   switch (store.kind) {
     case 'memory':
-      return t('the memory database');
+      return l('the memory database');
     case 'memoryInjection':
-      return t('the memory injection records');
+      return l('the memory injection records');
     case 'usage':
-      return t('the usage index');
+      return l('the usage index');
     case 'compass':
-      return t('the Compass index of {0}', store.folder);
+      return l('the Compass index of {0}', store.folder);
   }
 }
 
@@ -45,6 +46,6 @@ export function notifySchemaAhead(notifications: NotificationService, store: Sha
   noticed.add(key);
   log(`[SchemaSkew] ${key} was updated by a newer Damocles; read only from now on`);
   notifications
-    .warn(t('Another Damocles app has updated {0} to a newer version. This window can read it but will not save changes to it until you update this Damocles too.', storeName(store)))
+    .warn(l('Another Damocles app has updated {0} to a newer version. This window can read it but will not save changes to it until you update this Damocles too.', storeName(store)))
     .catch((err: unknown) => log(`[SchemaSkew] Could not show the read-only notice: ${err instanceof Error ? err.message : String(err)}`));
 }

@@ -4,12 +4,14 @@ import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { usePlatformBridge } from "@/composables/usePlatformBridge";
+import { useLocalizedText } from "@/composables/useLocalizedText";
 import { LogOut } from "lucide-vue-next";
 import SettingButton from "@/components/settings/controls/SettingButton.vue";
 
 type Mode = "none" | "apikey" | "allowance" | "extra";
 
 const { t } = useI18n();
+const { rt } = useLocalizedText();
 const settingsStore = useSettingsStore();
 const { claudeAuthMode, claudeAuthBusy, claudeAuthError, claudeSignInWaiting } = storeToRefs(settingsStore);
 const { postMessage } = usePlatformBridge();
@@ -246,7 +248,7 @@ function signOut() {
       class="sm-hint sm-hint-error mt-2"
       role="alert"
     >
-      {{ claudeAuthError }}
+      {{ rt(claudeAuthError) }}
     </p>
   </div>
 </template>

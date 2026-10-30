@@ -62,7 +62,6 @@ function remoteStore(remote: RemoteSettings = {
     trust: trustAll,
     chatFolders: { folders: () => [], onDidChange: () => ({ dispose: () => undefined }) },
     notifications: undefined,
-    localization: fake.localization,
     log: () => undefined,
     remote,
   });

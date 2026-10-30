@@ -1,6 +1,6 @@
 import { SETTINGS_VIEW_REQUEST_TYPES } from '@shared/settings-view-messages';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@shared/types/messages';
-import type { PlatformBridge } from '@/composables/usePlatformBridge';
+import { withParsedText, type PlatformBridge } from '@/composables/usePlatformBridge';
 import type { DamoclesOverlayApi } from '../../../preload/overlay-channels';
 
 export interface OverlaySettingsBridge extends PlatformBridge {
@@ -27,7 +27,7 @@ export function createOverlaySettingsBridge(api: DamoclesOverlayApi): OverlaySet
       api.settingsSend(generation, message);
     },
     onMessage(handler: (message: ExtensionToWebviewMessage) => void) {
-      return api.onSettingsMessage(handler);
+      return api.onSettingsMessage(withParsedText(handler));
     },
     getState<T>() {
       return state as T | undefined;

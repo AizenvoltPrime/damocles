@@ -3,10 +3,10 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import { createMessageDispatcher } from '../index';
-import type { HandlerContext, HandlerRegistry, ScrollBehavior } from '../types';
+import type { HandlerContext, HandlerRegistry, HandlerOutcome } from '../types';
 import { buildMessage, useStreamingStore } from '@/stores/useStreamingStore';
 
-function dispatcher(handlers: Record<string, () => ScrollBehavior | void>, followTranscript: () => void = () => {}) {
+function dispatcher(handlers: Record<string, () => HandlerOutcome | void>, followTranscript: () => void = () => {}) {
   const ctx = { stores: { streamingStore: useStreamingStore() } } as unknown as HandlerContext;
   return createMessageDispatcher(handlers as unknown as HandlerRegistry, ctx, followTranscript);
 }

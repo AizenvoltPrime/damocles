@@ -9,6 +9,7 @@ import { addAgentUsage, emptyAgentUsage, subtractAgentUsage, type AgentUsageTota
 import type { EffortBadgeLevel } from '@shared/effort-badge';
 import type { Stopwatch } from '@shared/team-stopwatch';
 import type { AgentWindDown } from '@shared/types/wind-down';
+import { englishText, type LocalizedText } from '@shared/localized-text';
 
 export interface AgentStreamingState {
   thinking: string;
@@ -22,6 +23,8 @@ export interface AgentChatMessage {
   /** `error` is a failed model call pi did not re-run; its text is the provider's message. */
   role: 'user' | 'assistant' | 'error';
   content: string;
+  /** An error row's text core sent, which the view renders where it shows the row; `content` is then empty. */
+  error?: LocalizedText;
   thinking?: string;
   toolCalls?: ToolCall[];
   contentBlocks?: TeamAgentContentBlock[];
@@ -37,10 +40,12 @@ type PersistedToolResult = Extract<TeamAgentContentBlock, { type: 'tool_result' 
  * The terminal status a reloaded card carries, derived the same way the live path derives it. A call
  * of a failed or aborted model call never ran; any other call with no persisted result never recorded an outcome,
  * so it reads as `unrecorded` rather than claiming one; `pending` and `running` are pre-terminal and put
- * a spinner and a Stop control on a tool long gone.
+ * a spinner and a Stop control on a tool long gone. A running member's transcript marks a call it still owns `live`,
+ * which its live messages end.
  */
 function restoredToolStatus(call: PersistedToolUse, result: PersistedToolResult | undefined): ToolCall['status'] {
   if (call.abandoned) return 'abandoned';
+  if (call.live && !result) return 'running';
   if (!result) return 'unrecorded';
   return resolveCancelledStatus(result.is_error === true ? 'failed' : 'completed', result.metadata);
 }
@@ -48,10 +53,12 @@ function restoredToolStatus(call: PersistedToolUse, result: PersistedToolResult 
 /**
  * Live and reloaded cards build their blocks with the same host function, so equal role and blocks mean
  * the same message. A live message has no entry id to match on: pi appends it after its listeners run.
- * Images are excluded, so a live and a reloaded copy of an image steer still match.
+ * Images are excluded, so a live and a reloaded copy of an image steer still match. An error keys on its English text, never
+ * a rendering, which is also the text alone that an older transcript holds.
  */
 function messageKey(message: AgentChatMessage): string {
-  return JSON.stringify([message.role, message.contentBlocks ?? [{ type: 'text', text: message.content }]]);
+  const text = message.error ? englishText(message.error) : message.content;
+  return JSON.stringify([message.role, message.contentBlocks ?? [{ type: 'text', text }]]);
 }
 
 /**
@@ -427,10 +434,10 @@ export const useTeamStore = defineStore('team', () => {
   }
 
   /** A failed model call pi will not re-run. Its streamed text, if it sealed none, ends with it. */
-  function handleAgentError(agentId: string, message: string): void {
+  function handleAgentError(agentId: string, message: LocalizedText): void {
     const { [agentId]: _, ...rest } = agentStreaming.value;
     agentStreaming.value = rest;
-    const msg: AgentChatMessage = { id: crypto.randomUUID(), role: 'error', content: message, timestamp: Date.now() };
+    const msg: AgentChatMessage = { id: crypto.randomUUID(), role: 'error', content: '', error: message, timestamp: Date.now() };
     agentMessages.value = { ...agentMessages.value, [agentId]: [...(agentMessages.value[agentId] ?? []), msg] };
   }
 
@@ -566,7 +573,8 @@ export const useTeamStore = defineStore('team', () => {
     });
   }
 
-  function handleAgentDataLoaded(agentId: string, history: TeamAgentHistoryMessage[]): void {
+  /** `streaming`: the open message of a running member so far, read with `history`, which the deltas after it extend. */
+  function handleAgentDataLoaded(agentId: string, history: TeamAgentHistoryMessage[], streaming?: { text: string; thinking: string; isThinkingPhase: boolean }): void {
     const results = new Map<string, PersistedToolResult>();
     for (const message of history) {
       if (message.role !== 'toolResult') continue;
@@ -577,7 +585,7 @@ export const useTeamStore = defineStore('team', () => {
 
     const messages: AgentChatMessage[] = [];
     // A result renders on the card of the call it names, and any other role is not one this card shows.
-    for (const { id, role, content: turn } of history) {
+    for (const { id, role, content: turn, error } of history) {
       if (role === 'assistant') {
         const textContent = turn.filter(b => b.type === 'text').map(b => (b as { text: string }).text).join('');
         const thinkingContent = turn.filter(b => b.type === 'thinking').map(b => (b as { thinking: string }).thinking).join('\n\n');
@@ -602,13 +610,19 @@ export const useTeamStore = defineStore('team', () => {
           content: textContent,
           ...(thinkingContent ? { thinking: thinkingContent } : {}),
           ...(toolCalls.length > 0 ? { toolCalls } : {}),
-          contentBlocks: turn,
+          // the live copy of a message carries no `live` mark, and the merge matches the two by their blocks
+          contentBlocks: turn.map((block) => {
+            if (block.type !== 'tool_use' || !block.live) return block;
+            const { live: _live, ...rest } = block;
+            return rest;
+          }),
           timestamp: Date.now(),
         });
       } else if (role === 'error') {
         // No contentBlocks, the same shape `handleAgentError` builds, so the merge key matches the live copy.
+        // A transcript written before errors carried LocalizedText holds the text alone, as written.
         const text = turn.filter(b => b.type === 'text').map(b => (b as { text: string }).text).join('');
-        messages.push({ id, role: 'error', content: text, timestamp: Date.now() });
+        messages.push(error ? { id, role: 'error', content: '', error, timestamp: Date.now() } : { id, role: 'error', content: text, timestamp: Date.now() });
       } else if (role === 'user') {
         // No contentBlocks, the same shape `handleAgentUserMessage` builds, so the merge key matches the live copy.
         const userText = turn.filter(b => b.type === 'text').map(b => (b as { text: string }).text).join('');
@@ -619,6 +633,7 @@ export const useTeamStore = defineStore('team', () => {
       }
     }
     agentMessages.value = { ...agentMessages.value, [agentId]: mergeAgentHistory(messages, agentMessages.value[agentId] ?? []) };
+    if (streaming) agentStreaming.value = { ...agentStreaming.value, [agentId]: { ...streaming, messageId: null } };
     agentHistoryLoaded.value = new Set(agentHistoryLoaded.value).add(agentId);
   }
 

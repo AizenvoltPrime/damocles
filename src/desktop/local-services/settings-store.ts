@@ -2,7 +2,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Disposable } from '../../platform/disposable';
 import type { FileWatcherFactory } from '../../platform/file-watcher';
-import type { LocalizationService } from '../../platform/localization-service';
 import type { NotificationService } from '../../platform/notification-service';
 import type { SettingInspection, SettingsChange, SettingsFolder, SettingsScope, SettingsStore } from '../../platform/settings-store';
 import type { TrustService } from '../../platform/trust-service';
@@ -14,6 +13,8 @@ import { mergeSettingValues, parseSettingsText, type SettingsObject } from '../.
 import { folderKey } from '../../core/workspace-folders/folder-key';
 import { DESKTOP_CONFIGURATION } from './desktop-configuration';
 import { Emitter } from './emitter';
+import { l } from '../../core/l10n';
+import { LocalizedError } from '../../shared/localized-text';
 
 // VS Code's own search settings, which ripgrep enumeration reads; desktop answers VS Code's defaults so .gitignore stays respected.
 const HOST_DEFAULTS: Readonly<Record<string, unknown>> = {
@@ -64,14 +65,13 @@ interface StoreDeps {
   // where a file that stops parsing is reported, once until it parses again; undefined only logs it. One process of the
   // app reports, so one typo is one toast.
   readonly notifications: NotificationService | undefined;
-  readonly localization: LocalizationService;
   readonly log: (line: string) => void;
 }
 
 // The app's own core reads with no folder from the window's default project. A daemon's core has no window and every
 // client's folders open, so it takes no default project: userFile is its host's machine layer, and the user layer is the
-// acting client's clientUser settings, which it never writes. A user-scope write lands in the machine file only from the
-// settings overlay's host tab.
+// acting client's clientUser settings, which it never writes and never reads for a machine scoped key. A user-scope write
+// lands in the machine file only from the settings overlay's host tab.
 export type DesktopSettingsStoreDeps = StoreDeps & (
   | { readonly defaultProject: DefaultProject; readonly remote?: undefined }
   | { readonly remote: RemoteSettings; readonly defaultProject?: undefined }
@@ -97,6 +97,14 @@ interface FolderEntry {
 
 function affects(changedKeys: readonly string[], key: string): boolean {
   return changedKeys.some((changed) => changed === key || changed.startsWith(`${key}.`) || key.startsWith(`${changed}.`));
+}
+
+// A key that is, contains or sits under one of keys, so an object value cannot smuggle one in.
+function overlaps(key: string, keys: ReadonlySet<string>): boolean {
+  for (const other of keys) {
+    if (key === other || other.startsWith(`${key}.`) || key.startsWith(`${other}.`)) return true;
+  }
+  return false;
 }
 
 function layerValue(layer: SettingsObject | undefined, key: string): string | undefined {
@@ -126,7 +134,8 @@ export function withDesktopConfiguration(contributed: ContributedConfiguration):
     userOnlyKeys: new Set([...contributed.userOnlyKeys, ...desktop.filter(([, property]) => property.scope === 'application').map(([key]) => key)]),
     clientOnlyKeys: new Set([...contributed.clientOnlyKeys, ...desktop.filter(([, property]) => property.scope === 'application').map(([key]) => key)]),
     resourceKeys: contributed.resourceKeys,
-    machineKeys: contributed.machineKeys,
+    clientMachineKeys: contributed.clientMachineKeys,
+    hostKeys: contributed.hostKeys,
   };
 }
 
@@ -192,11 +201,13 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
     const remote = deps.remote;
     if (remote !== undefined) {
       this.notifiedClient = { ...remote.clientSettings() };
+      const clientChanged = (before: SettingsObject, after: SettingsObject): string[] =>
+        changedKeys({ user: before }, { user: after }).filter((key) => this.readsFromClient(key));
       this.subscriptions.push(remote.onDidChangeClientSettings((change) => {
         const before = this.notifiedClient;
         this.notifiedClient = { ...remote.clientSettings() };
-        if (change.clientId !== undefined) this.fire(changedKeys({ user: change.before ?? {} }, { user: change.after ?? {} }), change.clientId);
-        else this.fire(changedKeys({ user: before }, { user: this.notifiedClient }));
+        if (change.clientId !== undefined) this.fire(clientChanged(change.before ?? {}, change.after ?? {}), change.clientId);
+        else this.fire(clientChanged(before, this.notifiedClient));
       }));
     }
     const windowEntry = this.windowEntry();
@@ -218,13 +229,12 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
     const contributed = this.deps.contributed.defaults.get(key);
     const defaultValue = contributed !== undefined ? contributed : HOST_DEFAULTS[key];
     const own = Object.hasOwn(user, key);
-    if (this.deps.remote !== undefined && this.isMachineKey(key)) return defaultValue !== undefined ? { defaultValue: defaultValue as T } : {};
     // read per call, since a pinned turn reads its own client's layer whoever acts later
     const client = this.deps.remote?.clientSettings() ?? {};
     const file = this.deps.remote === undefined
       ? (own ? { userValue: user[key] as T } : {})
       : {
-          ...(Object.hasOwn(client, key) ? { userValue: client[key] as T } : {}),
+          ...(Object.hasOwn(client, key) && this.readsFromClient(key) ? { userValue: client[key] as T } : {}),
           ...(own && !this.isClientOnly(key) ? { machineValue: user[key] as T } : {}),
         };
     return {
@@ -358,31 +368,22 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
   // On a daemon's core user settings change only on the client, and a user-home setter writes this host's machine file
   // only from the host tab, for a key a host may hold.
   private checkMachineWrite(key: string): void {
-    if (!this.deps.remote?.fromHostTab()) throw new Error(this.deps.localization.t('User settings change only in the User tab on this computer, so {0} was not changed on this host.', key));
-    if (this.isClientOnly(key)) throw new Error(this.deps.localization.t('{0} applies only on this computer, so it cannot be set for this host.', key));
+    if (!this.deps.remote?.fromHostTab()) throw new LocalizedError(l('User settings change only in the User tab on this computer, so {0} was not changed on this host.', key));
+    if (this.isClientOnly(key)) throw new LocalizedError(l('{0} applies only on this computer, so it cannot be set for this host.', key));
   }
 
-  // a machine-scoped key configures voice, which runs on the client, so a daemon's core reads it from no layer
-  private isMachineKey(key: string): boolean {
-    for (const machine of this.deps.contributed.machineKeys) {
-      if (key === machine || machine.startsWith(`${key}.`) || key.startsWith(`${machine}.`)) return true;
-    }
-    return false;
+  // On a daemon's core a machine scoped key never comes from a client's user layer: a host key is read from the host's
+  // file and a client machine key from no layer.
+  private readsFromClient(key: string): boolean {
+    return !overlaps(key, this.deps.contributed.hostKeys) && !overlaps(key, this.deps.contributed.clientMachineKeys);
   }
 
   private isClientOnly(key: string): boolean {
-    for (const clientOnly of this.deps.contributed.clientOnlyKeys) {
-      if (key === clientOnly || clientOnly.startsWith(`${key}.`) || key.startsWith(`${clientOnly}.`)) return true;
-    }
-    return false;
+    return overlaps(key, this.deps.contributed.clientOnlyKeys);
   }
 
-  // A key that is, contains or sits under a user-only key, so an object value cannot smuggle one in.
   private isUserOnly(key: string): boolean {
-    for (const userOnly of this.deps.contributed.userOnlyKeys) {
-      if (key === userOnly || userOnly.startsWith(`${key}.`) || key.startsWith(`${userOnly}.`)) return true;
-    }
-    return false;
+    return overlaps(key, this.deps.contributed.userOnlyKeys);
   }
 
   private readLayer(filePath: string, acceptEmpty: boolean): SettingsObject {
@@ -413,7 +414,7 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
       const notifications = this.deps.notifications;
       if (notifications !== undefined && !this.reportedBroken.has(filePath)) {
         this.reportedBroken.add(filePath);
-        void notifications.warn(this.deps.localization.t('{0} is not valid JSON, so Damocles keeps using the settings it last read from it. Fix the file to apply it: {1}', filePath, reason));
+        void notifications.warn(l('{0} is not valid JSON, so Damocles keeps using the settings it last read from it. Fix the file to apply it: {1}', filePath, reason));
       }
       return { ...previous };
     }

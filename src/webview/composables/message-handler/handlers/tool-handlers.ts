@@ -7,10 +7,9 @@ import { endedSubagentStatus } from "@/stores/useSubagentStore";
 export function createToolHandlers(): Partial<HandlerRegistry> {
   return {
     toolStreaming: (msg, ctx) => {
-      const { uiStore, streamingStore, sessionStore, subagentStore, teamStore } = ctx.stores;
+      const { streamingStore, sessionStore, subagentStore, teamStore } = ctx.stores;
       const targetMsgId = msg.messageId;
       const parentToolUseId = msg.parentToolUseId;
-      uiStore.setCurrentRunningTool(msg.tool.name);
       const hasSubagent = parentToolUseId ? subagentStore.hasSubagent(parentToolUseId) : false;
 
       if (msg.tool.name === TOOL_AGENT) {
@@ -68,7 +67,7 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
     },
 
     toolCompleted: (msg, ctx) => {
-      const { uiStore, streamingStore, subagentStore } = ctx.stores;
+      const { streamingStore, subagentStore } = ctx.stores;
 
       if (msg.parentToolUseId && subagentStore.hasSubagent(msg.parentToolUseId) && msg.toolName !== TOOL_AGENT) {
         subagentStore.addToolCallToSubagent(msg.parentToolUseId, {
@@ -83,12 +82,14 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
       }
 
       if (msg.toolName === TOOL_AGENT && subagentStore.hasSubagent(msg.toolUseId)) {
+        // The card renders from the subagent store, but the call itself ended, as a replay of its result records it.
+        streamingStore.updateToolStatus(msg.toolUseId, "completed", {
+          result: msg.result,
+          ...(msg.durationMs !== undefined && { durationMs: msg.durationMs }),
+        });
         try {
           const parsed = JSON.parse(msg.result);
-          if (parsed.status === 'async_launched') {
-            uiStore.setCurrentRunningTool(null);
-            return;
-          }
+          if (parsed.status === 'async_launched') return;
           const agentStatus: unknown = parsed.agentStatus;
           const status = endedSubagentStatus(typeof agentStatus === "string" ? agentStatus : "completed");
           subagentStore.updateSubagentToolStatus(msg.toolUseId, status, msg.result, undefined, msg.durationMs, msg.imageCount);
@@ -121,12 +122,10 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
           });
         }
       }
-
-      uiStore.setCurrentRunningTool(null);
     },
 
     toolFailed: (msg, ctx) => {
-      const { uiStore, streamingStore, subagentStore } = ctx.stores;
+      const { streamingStore, subagentStore } = ctx.stores;
       const denial = extractDenialFeedback(msg.error);
       const status = denial !== undefined ? refusedStatus(denial) : "failed";
       const feedback = denial?.text;
@@ -157,7 +156,6 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
       if (msg.toolName === TEAM_CREATE_TOOL) {
         ctx.stores.teamStore.failPendingTeamByToolUseId(msg.toolUseId);
       }
-      uiStore.setCurrentRunningTool(null);
     },
 
     toolAbandoned: (msg, ctx) => {

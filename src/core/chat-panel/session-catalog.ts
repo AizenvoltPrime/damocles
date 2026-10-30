@@ -6,7 +6,8 @@ import type { HostInstance } from "./types";
 import type { StorageManager, StoredSessionsChange } from "./storage-manager";
 import { sessionMatchesQuery } from "./storage-manager";
 import { log } from "../logger";
-import { t } from "../l10n";
+import { errorTextOf, l } from "../l10n";
+import type { LocalizedText } from "../../shared/localized-text";
 import { deletePiSession, renamePiSession, tagPiSession } from "../pi-session/session-store";
 import { PiRuntime } from "../pi-session/pi-runtime";
 import { isSafeAgentPathId } from "../../shared/agent-path-id";
@@ -15,11 +16,11 @@ import { whileSessionLeased } from "./session-ownership";
 export const MAX_SESSION_NAME_CHARS = 200;
 export const MAX_SESSION_TAG_CHARS = 50;
 
-/** `leased` was already announced to the user; `invalid` and `failed` carry a localized reason. */
+/** `leased` was already announced to the user; `invalid` and `failed` carry the reason, which the view or main renders. */
 export type CatalogResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: "leased" | "missing" }
-  | { readonly ok: false; readonly reason: "invalid" | "failed"; readonly message: string };
+  | { readonly ok: false; readonly reason: "invalid" | "failed"; readonly message: LocalizedText };
 
 /** The stored conversations of the open folders, and the only path that renames, tags or deletes one. */
 export interface SessionCatalog {
@@ -50,7 +51,7 @@ const MISSING: CatalogResult = { ok: false, reason: "missing" };
 
 function failed(action: string, sessionId: string, err: unknown): CatalogResult {
   log("[SessionCatalog] %s of session %s failed: %O", action, sessionId, err);
-  return { ok: false, reason: "failed", message: err instanceof Error ? err.message : String(err) };
+  return { ok: false, reason: "failed", message: errorTextOf(err) };
 }
 
 /** Webview and IPC callers pass raw values, and the id names lease and session paths: anything else names no session. */
@@ -106,7 +107,7 @@ export function createSessionCatalog(deps: SessionCatalogDeps): SessionCatalog {
       if (!isSessionId(sessionId)) return MISSING;
       const newName = bounded(name, MAX_SESSION_NAME_CHARS);
       if (newName === undefined) {
-        return { ok: false, reason: "invalid", message: t("A session name must be 1 to {0} characters.", MAX_SESSION_NAME_CHARS) };
+        return { ok: false, reason: "invalid", message: l("A session name must be 1 to {0} characters.", MAX_SESSION_NAME_CHARS) };
       }
       try {
         const { result, folderKey } = await mutate(
@@ -129,7 +130,7 @@ export function createSessionCatalog(deps: SessionCatalogDeps): SessionCatalog {
       if (!isSessionId(sessionId)) return MISSING;
       const newTag = tag === null ? null : bounded(tag, MAX_SESSION_TAG_CHARS);
       if (newTag === undefined) {
-        return { ok: false, reason: "invalid", message: t("A tag must be 1 to {0} characters.", MAX_SESSION_TAG_CHARS) };
+        return { ok: false, reason: "invalid", message: l("A tag must be 1 to {0} characters.", MAX_SESSION_TAG_CHARS) };
       }
       try {
         const { result, folderKey } = await mutate(

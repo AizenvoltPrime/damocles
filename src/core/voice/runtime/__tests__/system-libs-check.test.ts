@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { englishText } from "../../../../shared/localized-text";
 import {
   ensurePortAudio,
   getPortAudioInstallInstructions,
@@ -7,7 +8,7 @@ import {
 
 describe("getPortAudioInstallInstructions", () => {
   it("names libportaudio2/portaudio across linux distros", () => {
-    const msg = getPortAudioInstallInstructions("linux");
+    const msg = englishText(getPortAudioInstallInstructions("linux"));
     expect(msg).toContain("libportaudio2");
     expect(msg).toContain("portaudio");
     expect(msg).toContain("apt");
@@ -16,7 +17,7 @@ describe("getPortAudioInstallInstructions", () => {
   });
 
   it("names brew install portaudio on darwin", () => {
-    expect(getPortAudioInstallInstructions("darwin")).toContain("brew install portaudio");
+    expect(englishText(getPortAudioInstallInstructions("darwin"))).toContain("brew install portaudio");
   });
 });
 

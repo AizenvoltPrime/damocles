@@ -1,7 +1,7 @@
 import type { AppUpdater, ProgressInfo, UpdateInfo } from 'electron-updater';
 import type { Disposable } from '../../platform/disposable';
 import type { Memento } from '../../platform/key-value-state';
-import type { NotificationService } from '../../platform/notification-service';
+import type { TextNotifications } from './platform/notification-service';
 import type { ShellService } from '../../platform/shell-service';
 import type { ShellPlatform } from '../preload/shell-channels';
 import { canCheck, type UpdateSnapshot, type UpdateState, type VersionInfo } from '../preload/updates';
@@ -31,7 +31,7 @@ export interface UpdaterDeps {
   readonly arch: string;
   // the running version
   readonly version: string;
-  readonly notifications: NotificationService;
+  readonly notifications: TextNotifications;
   readonly shell: ShellService;
   // global KeyValueState
   readonly state: Memento;

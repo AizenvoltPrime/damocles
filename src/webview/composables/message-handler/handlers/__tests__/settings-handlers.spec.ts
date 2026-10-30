@@ -124,8 +124,8 @@ describe('ChatGPT sign-in messages reaching the settings store', () => {
     const ctx = openaiContext();
     const registry = buildRegistry();
 
-    dispatch({ type: 'openaiChatGPTAuthFailed', error: 'port busy' }, ctx, registry);
-    expect(ctx.stores.settingsStore.openaiChatGPTAuthError).toBe('port busy');
+    dispatch({ type: 'openaiChatGPTAuthFailed', error: { message: 'port busy' } }, ctx, registry);
+    expect(ctx.stores.settingsStore.openaiChatGPTAuthError).toEqual({ message: 'port busy' });
 
     dispatch({ type: 'openaiChatGPTAuthStarted' }, ctx, registry);
     expect(ctx.stores.settingsStore.openaiChatGPTAuthInFlight).toBe(true);
@@ -199,7 +199,7 @@ describe('providerSignInState reaching the settings store', () => {
     dispatch({ type: 'providerSignInState', provider: 'xai', state: deviceCode }, ctx, registry);
     expect(ctx.stores.settingsStore.providerSignInState.xai).toEqual(deviceCode);
 
-    dispatch({ type: 'providerSignInState', provider: 'xai', state: { phase: 'idle', error: { kind: 'expired', message: 'Code expired' } } }, ctx, registry);
-    expect(ctx.stores.settingsStore.providerSignInState.xai).toStrictEqual({ phase: 'idle', error: { kind: 'expired', message: 'Code expired' } });
+    dispatch({ type: 'providerSignInState', provider: 'xai', state: { phase: 'idle', error: { kind: 'expired', message: { message: 'Code expired' } } } }, ctx, registry);
+    expect(ctx.stores.settingsStore.providerSignInState.xai).toStrictEqual({ phase: 'idle', error: { kind: 'expired', message: { message: 'Code expired' } } });
   });
 });

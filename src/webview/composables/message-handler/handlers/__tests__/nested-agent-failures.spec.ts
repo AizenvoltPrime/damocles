@@ -73,10 +73,10 @@ describe('a subagent failed call', () => {
     expect(useUIStore().retryStatus).toBeNull();
 
     send.status({ type: 'statusUpdate', status: 'ready', parentToolUseId: 'toolu_agent' }, ctx);
-    send.error({ type: 'error', message: '529 overloaded_error', parentToolUseId: 'toolu_agent' }, ctx);
+    send.error({ type: 'error', message: { message: '529 overloaded_error' }, parentToolUseId: 'toolu_agent' }, ctx);
 
     expect(subagents.subagents['toolu_agent']!.retry).toBeUndefined();
-    expect(subagents.subagents['toolu_agent']!.messages.map((m) => [m.role, m.content])).toEqual([['error', '529 overloaded_error']]);
+    expect(subagents.subagents['toolu_agent']!.messages.map((m) => [m.role, m.error])).toEqual([['error', { message: '529 overloaded_error' }]]);
     expect(useStreamingStore().messages).toEqual([]);
   });
 
@@ -107,10 +107,10 @@ describe('a team agent failed call', () => {
     expect(team.agentRetry['agent-1']).toEqual({ attempt: 1, maxAttempts: 3 });
 
     send.status({ type: 'statusUpdate', status: 'ready', parentToolUseId: 'agent-1' }, ctx);
-    send.error({ type: 'error', message: '529 overloaded_error', parentToolUseId: 'agent-1' }, ctx);
+    send.error({ type: 'error', message: { message: '529 overloaded_error' }, parentToolUseId: 'agent-1' }, ctx);
 
     expect(team.agentRetry['agent-1']).toBeUndefined();
-    expect(team.agentMessages['agent-1']!.map((m) => [m.role, m.content])).toEqual([['error', '529 overloaded_error']]);
+    expect(team.agentMessages['agent-1']!.map((m) => [m.role, m.error])).toEqual([['error', { message: '529 overloaded_error' }]]);
     expect(useStreamingStore().messages).toEqual([]);
     expect(useUIStore().retryStatus).toBeNull();
   });
@@ -118,7 +118,7 @@ describe('a team agent failed call', () => {
   it('drops a failure whose owner no transcript holds, rather than showing it in the main chat', () => {
     const ctx = context();
 
-    send.error({ type: 'error', message: 'stray', parentToolUseId: 'gone' }, ctx);
+    send.error({ type: 'error', message: { message: 'stray' }, parentToolUseId: 'gone' }, ctx);
     send.retracted({ type: 'assistantRetracted', messageId: 'x', parentToolUseId: 'gone' }, ctx);
 
     expect(useStreamingStore().messages).toEqual([]);

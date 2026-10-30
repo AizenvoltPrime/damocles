@@ -163,7 +163,7 @@ describe("Sign in with ChatGPT through pi's real login", () => {
     expect(storedOpenAI()).toMatchObject({ type: "oauth", access: "access-1" });
   });
 
-  it("reports pi's port-in-use error to the panel without a paste prompt when the loopback port is busy", async ({ skip }) => {
+  it("tells the panel the loopback port is busy, without a paste prompt, when pi's callback port is taken", async ({ skip }) => {
     const held = await holdPort(CALLBACK_PORT);
     // pi names only EADDRINUSE as a busy port; a reserved port fails with the raw bind error.
     if ("code" in held && held.code === "EACCES") skip(`port ${CALLBACK_PORT} is reserved (EACCES)`);
@@ -172,7 +172,7 @@ describe("Sign in with ChatGPT through pi's real login", () => {
 
       expect(sent.find((m) => m.type === "openaiChatGPTAuthFailed")).toEqual({
         type: "openaiChatGPTAuthFailed",
-        error: `Port ${CALLBACK_PORT} is in use, probably by an unfinished login in another pi session or by the Codex CLI. Cancel that login and try again.`,
+        error: { message: "Port {0} is in use, probably by an unfinished sign-in in another app or by the Codex CLI. Cancel that sign-in and try again.", args: [CALLBACK_PORT] },
       });
       expect(platform.dialogs.inputBoxCalls).toHaveLength(0);
       expect(platform.shell.openedExternal).toHaveLength(0);

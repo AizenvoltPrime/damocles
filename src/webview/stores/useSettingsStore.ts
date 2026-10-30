@@ -16,6 +16,7 @@ import { DEFAULT_WAKE_PHRASE } from '@shared/wake-phrase';
 import { DEFAULT_MODELS, DEFAULT_CACHE_WARMING, DEFAULT_SUBAGENT_CONCURRENCY } from '@shared/types/constants';
 import { ACCOUNT_PROVIDER_IDS, SIGN_IN_PROVIDER_IDS, type AccountProviderId, type ProviderCredentialActive, type SignInProviderId } from '@shared/settings-sections';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import type { LocalizedText } from '@shared/localized-text';
 
 /**
  * Placeholder held until the host's first `voiceConfigUpdate`. Mirrors the `damocles.voice.*`
@@ -161,16 +162,15 @@ export const useSettingsStore = defineStore('settings', () => {
   const voiceConfig = ref<VoiceConfig>({ ...INITIAL_VOICE_CONFIG });
   const voiceHasApiKey = ref(false);
   const voiceRuntimeStatus = ref<VoiceRuntimeStatus>({ kind: 'not-needed' });
-  const authStatus = ref<{ isAuthenticating: boolean; error?: string } | null>(null);
   const openaiAuthStatus = ref<OpenAIAuthStatusView>(signedOutOpenAIStatus());
   const openaiPreferApiKey = ref(false);
   // Undefined when core cannot tell, as a daemon's core reports it.
   const openaiActive = ref<ProviderCredentialActive | undefined>(undefined);
   const openaiChatGPTAuthInFlight = ref(false);
-  const openaiChatGPTAuthError = ref<string | null>(null);
+  const openaiChatGPTAuthError = ref<LocalizedText | null>(null);
   const claudeAuthMode = ref<"none" | "apikey" | "allowance" | "extra">("none");
   const claudeAuthBusy = ref(false);
-  const claudeAuthError = ref<string | null>(null);
+  const claudeAuthError = ref<LocalizedText | null>(null);
   const claudeSignInWaiting = ref(false);
   const keyProviderStatus = ref(noKeyProviderStatus());
   const providerSignInState = ref(idleProviderSignIns());
@@ -450,10 +450,6 @@ export const useSettingsStore = defineStore('settings', () => {
     currentSettings.value.explore = explore;
   }
 
-  function setAuthStatus(status: { isAuthenticating: boolean; error?: string } | null) {
-    authStatus.value = status;
-  }
-
   function setOpenAIAuthStatus(status: OpenAIAuthStatusView, preferApiKey: boolean, active?: ProviderCredentialActive) {
     openaiAuthStatus.value = status;
     openaiPreferApiKey.value = preferApiKey;
@@ -465,7 +461,7 @@ export const useSettingsStore = defineStore('settings', () => {
     if (value) openaiChatGPTAuthError.value = null;
   }
 
-  function setChatGPTAuthError(error: string | null) {
+  function setChatGPTAuthError(error: LocalizedText | null) {
     openaiChatGPTAuthError.value = error;
   }
 
@@ -478,7 +474,7 @@ export const useSettingsStore = defineStore('settings', () => {
     if (value) claudeAuthError.value = null;
   }
 
-  function setClaudeAuthError(error: string | null) {
+  function setClaudeAuthError(error: LocalizedText | null) {
     claudeAuthError.value = error;
   }
 
@@ -545,7 +541,6 @@ export const useSettingsStore = defineStore('settings', () => {
     voiceConfig.value = { ...INITIAL_VOICE_CONFIG };
     voiceHasApiKey.value = false;
     voiceRuntimeStatus.value = { kind: 'not-needed' };
-    authStatus.value = null;
     openaiAuthStatus.value = signedOutOpenAIStatus();
     openaiPreferApiKey.value = false;
     openaiActive.value = undefined;
@@ -645,8 +640,6 @@ export const useSettingsStore = defineStore('settings', () => {
     voiceRuntimeStatus,
     setVoiceRuntimeStatus,
     setExploreSettings,
-    authStatus,
-    setAuthStatus,
     openaiAuthStatus,
     openaiPreferApiKey,
     openaiActive,

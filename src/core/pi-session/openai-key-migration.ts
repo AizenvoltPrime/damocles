@@ -6,8 +6,9 @@ import type { Memento } from '../../platform/key-value-state';
 import type { NotificationService } from '../../platform/notification-service';
 import type { SecretsStore } from '../../platform/secrets-store';
 import { writeFileAtomic } from './checkpoints/atomic-write';
+import { describeAuthError, isCredentialSyncError } from './describe-error';
 import { OPENAI_API_KEY_SECRET, OPENAI_API_PROVIDER, readOpenAIAuthFromDisk } from './openai-auth';
-import { t } from '../l10n';
+import { l } from '../l10n';
 import { log } from '../logger';
 
 export type AppHost = 'vscode' | 'desktop';
@@ -21,6 +22,8 @@ export interface OpenAIKeyMigrationDeps {
   agentDir: string;
   markerPath: string;
   host: AppHost;
+  /** Runs the auth.json delete as this process's own change (`PiRuntime.ownAuthFileChange`), which the caller publishes once it committed. */
+  ownAuthFileChange: (op: () => Promise<void>) => Promise<void>;
 }
 
 /**
@@ -60,7 +63,15 @@ export async function migrateOpenAIApiKey(deps: OpenAIKeyMigrationDeps): Promise
   // Before the delete: the other app's notice also requires auth.json to hold no key, so an early marker shows nothing.
   await fs.promises.mkdir(path.dirname(deps.markerPath), { recursive: true });
   await writeFileAtomic(deps.markerPath, `${JSON.stringify({ movedAt: Date.now(), by: deps.host })}\n`);
-  await deps.modelRuntime.logout(OPENAI_API_PROVIDER);
+  await deps.ownAuthFileChange(async () => {
+    try {
+      await deps.modelRuntime.logout(OPENAI_API_PROVIDER);
+    } catch (err) {
+      // pi commits the logout before the snapshot sync this error wraps, so the key has moved
+      if (!isCredentialSyncError(err)) throw err;
+      log('[OpenAIKeyMigration] the auth.json key is deleted, but pi could not resynchronize its model snapshot: %s', describeAuthError(err));
+    }
+  });
   log('[OpenAIKeyMigration] moved the OpenAI API key from auth.json to the %s secret store', deps.host);
   return true;
 }
@@ -102,10 +113,9 @@ export async function showOpenAIKeyMovedNotice(deps: OpenAIKeyMovedNoticeDeps): 
   const own = await deps.secrets.get(OPENAI_API_KEY_SECRET);
   if (own !== undefined && own !== '') return;
   await deps.state.update(OPENAI_KEY_MOVED_NOTICE_SHOWN_STATE, true);
-  const action = t('Open OpenAI Sign-in');
   const choice = await deps.notifications.info(
-    t("Your OpenAI API key moved to the other Damocles app's keychain. Enter it here once."),
-    action,
+    l("Your OpenAI API key moved to the other Damocles app's keychain. Enter it here once."),
+    [l('Open OpenAI Sign-in')],
   );
-  if (choice === action) deps.openAuthPanel();
+  if (choice === 0) deps.openAuthPanel();
 }

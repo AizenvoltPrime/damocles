@@ -15,6 +15,7 @@ import { worktreeIsolationBlock, type WorktreeIsolation } from './worktree-isola
 import { GATEABLE_MODULE_NAMES } from './tools/tool-catalog';
 import { userScopeToolNames } from './tools/deferred-tools';
 import { browserUnavailableReason, userScopeRemote } from '../user-scope';
+import { englishText } from '../../shared/localized-text';
 import type { DeferrableSnapshot } from './tools/tool-search-tool';
 import type { ResourceReadReach } from './mcp/content';
 import type { ShellCancelRegistry } from './tools/shell-cancel-registry';
@@ -337,7 +338,7 @@ async function decideToolCall(
   };
 
   // a tool whose user-scope service this core cannot reach never runs, in any mode, before any hook
-  if (userScopeToolNames(!userScopeRemote()).has(event.toolName)) return { block: true, reason: formatPolicyBlockReason(browserUnavailableReason()) };
+  if (userScopeToolNames(!userScopeRemote()).has(event.toolName)) return { block: true, reason: formatPolicyBlockReason(englishText(browserUnavailableReason())) };
 
   if (preToolUse) {
     const result = await preToolUse.run(event, callSignal);

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installFakePlatform } from "../../../../__mocks__/fake-platform";
+import { englishText } from "../../../../shared/localized-text";
 
 const calls = vi.hoisted(() => ({
   detectGpu: vi.fn(),
@@ -121,7 +122,7 @@ describe("VoiceRuntimeInstaller.installAll platform gate", () => {
     it("reports a missing runtime without installing it", async () => {
       restoreHost = hostAs("win32", "x64");
       const result = await new VoiceRuntimeInstaller(getDefaultRuntimePaths(root), noExtractWorker, noModelsMissing).installAll({ extensionRoot: tmp, allowInstall: false });
-      expect(result).toMatchObject({ ok: false, errorMessage: "The voice runtime is not installed." });
+      expect(result).toMatchObject({ ok: false, errorMessage: { message: "The voice runtime is not installed." } });
       for (const step of [...installSteps, "runImportSmokeCheck"] as const) expect(calls[step], step).not.toHaveBeenCalled();
     });
 
@@ -134,7 +135,7 @@ describe("VoiceRuntimeInstaller.installAll platform gate", () => {
       calls.runImportSmokeCheck.mockResolvedValue({ ok: false, stderr: "ImportError: pyarrow requires NumPy 2.0 or newer", failedModule: "nemo.collections.asr" });
       const result = await new VoiceRuntimeInstaller(paths, noExtractWorker, noModelsMissing).installAll({ extensionRoot: tmp, allowInstall: false });
       expect(result.ok).toBe(false);
-      expect(result.errorMessage).toContain("while importing `nemo.collections.asr`");
+      expect(englishText(result.errorMessage!)).toContain("while importing nemo.collections.asr.");
       expect(calls.detectInstalledTorchChannel).toHaveBeenCalledWith(paths.pythonExe);
       for (const step of installSteps) expect(calls[step], step).not.toHaveBeenCalled();
       await expect(access(paths.pythonExe)).resolves.toBeUndefined();
@@ -156,8 +157,8 @@ describe("VoiceRuntimeInstaller.installAll platform gate", () => {
       const install = installer.installAll({ extensionRoot: tmp, allowInstall: true });
       await vi.waitFor(() => expect(calls.detectGpu).toHaveBeenCalled());
       release();
-      expect(await verify).toMatchObject({ ok: false, errorMessage: "The voice runtime is not installed." });
-      expect(await install).toMatchObject({ ok: false, errorMessage: "offline" });
+      expect(await verify).toMatchObject({ ok: false, errorMessage: { message: "The voice runtime is not installed." } });
+      expect(await install).toMatchObject({ ok: false, errorMessage: { message: "{0}", args: ["offline"] } });
       expect(calls.ensureCxxToolchain).toHaveBeenCalledTimes(1);
       expect(calls.downloadAndExtractPython).toHaveBeenCalledTimes(1);
     });

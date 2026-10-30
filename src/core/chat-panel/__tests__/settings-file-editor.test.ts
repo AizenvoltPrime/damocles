@@ -11,6 +11,7 @@ import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-p
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import type { PanelHost } from '../../../platform/window-service';
 import type { ExtensionToWebviewMessage, SettingsFileScope } from '../../../shared/types/messages';
+import { englishText } from '../../../shared/localized-text';
 
 let root: string;
 let project: string;
@@ -91,7 +92,7 @@ describe('saveSettingsFileText', () => {
     fs.writeFileSync(userFile, '{}');
     const result = await save('user', '{ "a": }', versionOf(userFile));
     expect(result).toMatchObject({ ok: false, conflict: false });
-    expect(result.ok ? '' : result.error).toMatch(/^Not saved: the text is not valid JSON\. .+/);
+    expect(result.ok ? '' : englishText(result.error)).toMatch(/^Not saved: the text is not valid JSON\. .+/);
     expect(result).not.toHaveProperty('cause');
     expect(fs.readFileSync(userFile, 'utf8')).toBe('{}');
   });
@@ -105,7 +106,7 @@ describe('saveSettingsFileText', () => {
   it('never overwrites a file on disk that does not parse', async () => {
     fs.writeFileSync(userFile, '{ broken');
     const result = await save('user', '{}', versionOf(userFile));
-    expect(result.ok ? '' : result.error).toMatch(/does not parse, so it was not overwritten/);
+    expect(result.ok ? '' : englishText(result.error)).toMatch(/does not parse, so it was not overwritten/);
     expect(fs.readFileSync(userFile, 'utf8')).toBe('{ broken');
   });
 
@@ -154,14 +155,14 @@ describe('saveSettingsFileText', () => {
     const otherFile = path.join(other, '.damocles', 'settings.json');
     platform.settings.scopeFile = (scope) => (scope === 'user' ? userFile : otherFile);
 
-    expect(await save('project', '{ "permissions": { "allow": ["Bash"] } }', '', projectFile)).toMatchObject({ ok: false, conflict: false, error: 'The default project changed since this file was opened. Reload it before saving.' });
+    expect(await save('project', '{ "permissions": { "allow": ["Bash"] } }', '', projectFile)).toMatchObject({ ok: false, conflict: false, error: { message: 'The default project changed since this file was opened. Reload it before saving.' } });
     expect(fs.existsSync(otherFile)).toBe(false);
     expect(fs.existsSync(projectFile)).toBe(false);
   });
 
   it('refuses a project file of an untrusted project', async () => {
     platform.trust.setTrusted(false);
-    expect(await save('project', '{}', '')).toMatchObject({ ok: false, error: 'The project is not trusted, so its settings files cannot be saved.' });
+    expect(await save('project', '{}', '')).toMatchObject({ ok: false, error: { message: 'The project is not trusted, so its settings files cannot be saved.' } });
     expect(fs.existsSync(projectFile)).toBe(false);
   });
 

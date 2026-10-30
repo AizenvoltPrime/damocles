@@ -1,6 +1,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { REPO_ROOT } from '../../../__mocks__/source-tree';
+import { renderLocalizedText } from '../../../shared/localized-text';
+import { markerNames, mergeWithMarkers } from '../../../shared/scm/merge-markers';
+import type { MergeLabel } from '../merge';
 import type { TextCodec } from '../staging';
 import { folder, freshStatus, git, harness, HAS_GIT, makeRepo, ready, statusOf, useGitSandbox, waitFor, write, type Harness } from './git-harness';
 
@@ -125,14 +129,40 @@ describe.skipIf(!HAS_GIT)('editor git reads', { timeout: 180_000 }, () => {
     if (!inputs.ok) throw new Error(`no inputs: ${inputs.reason}`);
     expect(inputs.operation).toBe('merge');
     expect([inputs.base, inputs.current, inputs.incoming]).toEqual(['one\ntwo\nthree\n', 'one\nmain\nthree\n', 'one\nside\nthree\n']);
-    expect(inputs.labels.current).toMatchObject({ title: 'Current', detail: 'main' });
-    expect(inputs.labels.incoming).toMatchObject({ title: 'Incoming', detail: 'side' });
+    expect(inputs.labels.current).toMatchObject({ title: { message: 'Current' }, detail: 'main' });
+    expect(inputs.labels.incoming).toMatchObject({ title: { message: 'Incoming' }, detail: 'side' });
     const merged = await h.service.mergeFile(repoId, 'c.txt', UTF8, true, fileText);
     if (!merged.ok) throw new Error('no merge');
     // labelled with the branch names, as git's merge and Reset Result write them
     expect(merged.text).toBe('one\n<<<<<<< main\nmain\n||||||| Base\ntwo\n=======\nside\n>>>>>>> side\nthree\n');
     const plain = await h.service.mergeFile(repoId, 'c.txt', UTF8, false, fileText);
     expect(plain).toEqual({ ok: true, text: 'one\n<<<<<<< main\nmain\n=======\nside\n>>>>>>> side\nthree\n' });
+    h.service.dispose();
+  });
+
+  it('names Reset Result\'s markers as git\'s merge names them while main shows the titles in another language', async () => {
+    const dir = makeRepo(folder('stash-markers'));
+    write(path.join(dir, 'c.txt'), 'one\ntwo\nthree\n');
+    commit(dir, 'base');
+    write(path.join(dir, 'c.txt'), 'one\nstashed\nthree\n');
+    git(['stash', '--quiet'], dir);
+    write(path.join(dir, 'c.txt'), 'one\nmain\nthree\n');
+    commit(dir, 'main change');
+    expect(() => git(['stash', 'apply', '--quiet'], dir)).toThrow();
+    const { h, repoId } = await open(dir);
+    await freshStatus(h, repoId);
+    const fileText = fs.readFileSync(path.join(dir, 'c.txt'), 'utf8');
+    const inputs = await h.service.mergeInputs(repoId, 'c.txt', UTF8, fileText);
+    if (!inputs.ok) throw new Error(`no inputs: ${inputs.reason}`);
+    expect(inputs.operation).toBe('stash');
+    // main gives the shell each title in its own language (ScmHost.mergeInputs)
+    const greek = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'l10n', 'bundle.l10n.el.json'), 'utf8')) as Record<string, string>;
+    const shown = (label: MergeLabel) => ({ ...label, title: renderLocalizedText(label.title, (key) => greek[key], 'el') });
+    const labels = { current: shown(inputs.labels.current), incoming: shown(inputs.labels.incoming), base: shown(inputs.labels.base) };
+    expect(labels.incoming.title).toBe('Αλλαγές στο stash');
+    const reset = mergeWithMarkers(inputs.base, inputs.current, inputs.incoming, markerNames(labels), '\n');
+    expect(await h.service.mergeFile(repoId, 'c.txt', UTF8, false, fileText)).toEqual({ ok: true, text: reset });
+    expect(reset).toBe('one\n<<<<<<< main\nmain\n=======\nstashed\n>>>>>>> Stashed Changes\nthree\n');
     h.service.dispose();
   });
 

@@ -2,16 +2,17 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createDesktopLocalizationService, formatMessage, launchLanguage, normalizeLanguage, readLanguageSetting } from '../localization-service';
+import { fillMessage } from '../../../shared/localized-text';
+import { createDesktopLocalizationService, launchLanguage, normalizeLanguage, readLanguageSetting } from '../localization-service';
 
 const noLog = (): void => undefined;
 
 describe('desktop localization', () => {
   it('formats positional arguments like vscode.l10n.t', () => {
-    expect(formatMessage('Could not open file: {0}', ['a.ts'])).toBe('Could not open file: a.ts');
-    expect(formatMessage('{1} then {0} then {1}', ['a', 2])).toBe('2 then a then 2');
-    expect(formatMessage('missing {2}', ['a'])).toBe('missing {2}');
-    expect(formatMessage('{0}', [false])).toBe('false');
+    expect(fillMessage('Could not open file: {0}', ['a.ts'])).toBe('Could not open file: a.ts');
+    expect(fillMessage('{1} then {0} then {1}', ['a', 2])).toBe('2 then a then 2');
+    expect(fillMessage('missing {2}', ['a'])).toBe('missing {2}');
+    expect(fillMessage('{0}', [false])).toBe('false');
   });
 
   it('normalizes the app locale to the shipped languages', () => {
@@ -50,7 +51,7 @@ describe('desktop localization', () => {
     const sources = dirs.flatMap((dir) => fs.readdirSync(dir, { recursive: true, encoding: 'utf8' })
       .filter((file) => file.endsWith('.ts') && !file.split(path.sep).includes('__tests__'))
       .map((file) => fs.readFileSync(path.join(dir, file), 'utf8')));
-    const messages = new Set(sources.flatMap((source) => [...source.matchAll(/\bt\('((?:[^'\\]|\\.)+)'/g)].map((m) => m[1]!.replace(/\\'/g, "'"))));
+    const messages = new Set(sources.flatMap((source) => [...source.matchAll(/\b[tl]\('((?:[^'\\]|\\.)+)'/g)].map((m) => m[1]!.replace(/\\'/g, "'"))));
     expect(messages.size).toBeGreaterThan(40);
     expect(messages).toContain('{0} is not valid JSON, so Damocles keeps using the settings it last read from it. Fix the file to apply it: {1}');
     for (const bundle of ['bundle.l10n.json', 'bundle.l10n.el.json']) {

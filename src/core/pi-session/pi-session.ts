@@ -2,11 +2,10 @@ import { randomUUID } from "crypto";
 import { existsSync } from "fs";
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
 import type { AgentSession, AgentSessionRuntime, BuildSystemPromptOptions, CreateAgentSessionRuntimeFactory, ToolDefinition, AgentBeforeSettleEvent, CustomMessageEntryDraft, SessionEntry, InputEventResult } from "@earendil-works/pi-coding-agent";
 import type { Model, Api, ImageContent } from "@earendil-works/pi-ai";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ChatSession, ResumeOutcome, SendOutcome, SendTicket, SlashInvocation, UserBroadcast } from "../chat-session";
+import type { ChatSession, LiveConversation, QueueDisposition, ResumeOutcome, SendOutcome, SendTicket, SlashInvocation, UserBroadcast } from "../chat-session";
 import type { SessionOptions, ContentInput, McpScope, RewindOption } from "../session-types";
 import type { Disposable } from "../../platform/disposable";
 import type { ExtensionToWebviewMessage, PromptReturnReason, QueuedPart } from "../../shared/types/messages";
@@ -46,7 +45,8 @@ import { folderKey } from "../workspace-folders/folder-key";
 import type { ChatScope } from "./chat-changes";
 import { createQueuedMessage } from "../chat-panel/queue-manager";
 import { log } from "../logger";
-import { t } from "../l10n";
+import { errorTextOf, l, verbatim } from "../l10n";
+import { englishText, LocalizedError, type LocalizedText } from "../../shared/localized-text";
 import { perfSpan, timed } from "../perf";
 import { PiRuntime } from "./pi-runtime";
 import { ownSessionUsage } from "./session-usage";
@@ -60,7 +60,7 @@ import { buildPlanModeGuidance } from "./plan-mode-guidance";
 import { dispatchInput, dispatchObserveOnly, type DispatchDeps, type InputHookResult } from "./hooks/dispatch";
 import { HOOK_CONTEXT_CUSTOM_TYPE, postUserPromptVerdict } from "./hooks";
 import { buildPermissionRequiredPayload, buildForkPayload } from "./hooks/payload";
-import { PiStreamAdapter, isNothingToCompact, type LiveSnapshot, type UserEcho } from "./pi-stream-adapter";
+import { PiStreamAdapter, isNothingToCompact, type UserEcho } from "./pi-stream-adapter";
 import { deriveSessionState, turnOutcomeOfError, type ChatActivity, type PendingPrompt, type RaisedPrompt, type SessionState, type TurnChange, type TurnOutcome, type TurnState } from "./session-state";
 import { noticeWindDown, type WindDownNotice } from "./wind-down-notice";
 import { trackRunLifecycle, type RunLifecycle } from "./run-lifecycle";
@@ -163,6 +163,7 @@ import {
   type LiveTitleOutcome,
 } from "./session-store";
 import { recordedSelection } from "./session-store/recorded-selection";
+import { earlierModelRuns } from "./session-store/model-runs";
 import type { TerminalAttachmentsData } from "./session-store/terminal-attachments";
 import { acquireSessionLease, refreshSessionLeaseOwners, releaseSessionLease, sessionLeasesOf, type SessionLeaseHolder } from "./session-store/session-lease";
 import { computePlanFilePath, findSessionPlanFiles } from "../paths";
@@ -203,6 +204,7 @@ import {
 import { abortRunAtStart } from "./abort-run-at-start";
 import { queuedPromptEntries, watchPromptEntry, type PromptDisposition, type PromptEntry, type PromptEntryWatch, type QueuedPromptEntries, type RequeuedFollowUp, type ReturnRefused } from "./prompt-entry";
 import { isExtensionCommand, resolveSlashInvocation } from "./slash-invocation";
+import { loadOsName, osName } from "./os-name";
 import {
   PLAN_MODE_NUDGE_CUSTOM_TYPE,
   selectPlanModeNudgeText,
@@ -275,36 +277,36 @@ function parseSteerImages(images: unknown): ImageBlock[] | null {
 }
 
 /** The user's text for a file rewind or undo in a chat with no project folder. */
-function noProjectRewindMessage(): string {
-  return t("This chat has no project folder, so its files have no checkpoints to restore.");
+function noProjectRewindMessage(): LocalizedText {
+  return l("This chat has no project folder, so its files have no checkpoints to restore.");
 }
 
 /** The user's text for a rewind of a turn that has no usable checkpoint. */
-function notRewindableMessage(record: NotRewindableRecord): string {
+function notRewindableMessage(record: NotRewindableRecord): LocalizedText {
   return record.reason === "baseline-timeout"
-    ? t("This turn cannot be rewound: a file-changing tool ran before its checkpoint was ready.")
-    : t("This turn cannot be rewound: its checkpoint could not be taken.");
+    ? l("This turn cannot be rewound: a file-changing tool ran before its checkpoint was ready.")
+    : l("This turn cannot be rewound: its checkpoint could not be taken.");
 }
 
 /** The user's text for a restore or undo that did not complete. */
-function restoreErrorMessage(result: Exclude<ServiceRestoreResult, { ok: true }>): string {
+function restoreErrorMessage(result: Exclude<ServiceRestoreResult, { ok: true }>): LocalizedText {
   switch (result.reason) {
     case "service-unavailable":
-      return t("File rewind is unavailable because checkpoints are not active for this conversation in this panel.");
+      return l("File rewind is unavailable because checkpoints are not active for this conversation in this panel.");
     case "git-unavailable":
-      return t("File rewind is unavailable because git was not found.");
+      return l("File rewind is unavailable because git was not found.");
     case "aborted":
-      return t("Checkpoint work in this folder is still running, so no files were changed. Try again in a moment.");
+      return l("Checkpoint work in this folder is still running, so no files were changed. Try again in a moment.");
     case "snapshot-failed":
-      return t("No files were changed: the current files could not be saved before the restore ({0}).", result.error);
+      return l("No files were changed: the current files could not be saved before the restore ({0}).", result.error);
     case "unavailable":
-      return t("No files were changed: the checkpoint storage for this folder is not available ({0}).", result.error);
+      return l("No files were changed: the checkpoint storage for this folder is not available ({0}).", result.error);
     case "checkout-failed":
       return result.rollbackError
-        ? t("File restore failed and could not be rolled back, so the folder may be partly restored. Your files from before the rewind are kept. Use Undo rewind in the rewind list to bring them back. Restore error: {0}. Rollback error: {1}", result.error, result.rollbackError)
-        : t("File restore failed and no files were changed: {0}", result.error);
+        ? l("File restore failed and could not be rolled back, so the folder may be partly restored. Your files from before the rewind are kept. Use Undo rewind in the rewind list to bring them back. Restore error: {0}. Rollback error: {1}", result.error, result.rollbackError)
+        : l("File restore failed and no files were changed: {0}", result.error);
     case "failed":
-      return t("File restore failed: {0}", result.error);
+      return l("File restore failed: {0}", result.error);
   }
 }
 
@@ -342,6 +344,8 @@ interface OutgoingPrompt extends SendTicket {
   /** pi queued it, opened a run with it, or handled it. */
   accepted: boolean;
   withdrawn: boolean;
+  /** When it was claimed, which is when the sending view's turn clock starts (`App.vue` `handleSendMessage`). */
+  readonly claimedAt: number;
   /** Returns it to the composer, `returnText` and then its chips, unless it already went back. */
   withdraw: (returnText: () => void) => void;
   /** Returns it as a message that never reached the model. */
@@ -408,7 +412,7 @@ function resumeRequestFor(sessionId: string, prior: string | null, atStart: bool
 
 /** A resume that threw: pi's own error is what the user reads. */
 function resumeFailure(err: unknown): ResumeOutcome {
-  return { kind: "failed", reason: err instanceof Error ? err.message : String(err) };
+  return { kind: "failed", reason: errorTextOf(err) };
 }
 
 /** A resume switch queued behind earlier replacements; `cancelled` once the panel let go of its target before pi installed it. */
@@ -436,13 +440,13 @@ interface BuiltSelection {
  */
 interface ModelRefusal {
   readonly reason: "modelSignInRequired" | "modelUnavailable";
-  readonly detail?: string;
+  readonly detail?: LocalizedText;
   readonly account?: SettingsAccountId;
 }
 
 /** Why a model value cannot run, and the Accounts row whose sign-in would let it, when a sign-in would. */
 interface UnavailableModel {
-  readonly text: string;
+  readonly text: LocalizedText;
   readonly signIn?: SettingsAccountId;
 }
 
@@ -824,7 +828,8 @@ export class PiSession implements ChatSession {
 
   private async start(): Promise<void> {
     const piRuntime = PiRuntime.get();
-    const folder = await piRuntime.folder(this.cwd);
+    // the environment section states it, so it is read before anything builds the session's prompt
+    const [folder] = await Promise.all([piRuntime.folder(this.cwd), loadOsName()]);
     this.throwIfDisposedDuringStart();
     this.folder = folder;
     const pi = getPiCodingAgent();
@@ -935,7 +940,7 @@ export class PiSession implements ChatSession {
     // conversation, and its tail switches to a later target.
     const letGo = (): boolean => resumingStored && this.resumeSessionId !== resumeTargetId;
     // A stored conversation whose file is gone fails to open; a new conversation in its place would take its sends.
-    if (resumingStored && resumePath === null && !letGo()) throw new Error(t("its file was not found"));
+    if (resumingStored && resumePath === null && !letGo()) throw new LocalizedError(l("its file was not found"));
     // Opening can rewrite the file (a format migration), so a session whose lease was lost meanwhile is not opened; the pending detach resets this panel.
     if (resumeTargetId && this.lostLeases.has(resumeTargetId)) throw new Error("PiSession: the session's lease was lost during start");
     let openedPath = letGo() ? null : resumePath;
@@ -1254,7 +1259,7 @@ export class PiSession implements ChatSession {
     // A panel being disposed is already letting go of the session; a detach would re-register it.
     if (this._disposed) return;
     log("[PiSession] lease on session %s lost; detaching", sessionId);
-    void this.options.platform.notifications.warn(t("This conversation was opened in another Damocles window, so this panel closed it."));
+    void this.options.platform.notifications.warn(l("This conversation was opened in another Damocles window, so this panel closed it."));
     this.detachSession().catch((err) => log("[PiSession] detaching after a lost lease failed: %O", err));
   }
 
@@ -1286,7 +1291,7 @@ export class PiSession implements ChatSession {
       if (this._disposed || this.lostLeases.has(sessionId)) return;
       await this.detachSession();
       if (!this.lostLeases.has(sessionId)) {
-        void this.options.platform.notifications.warn(t("This conversation was opened in another Damocles window, so this panel closed it."));
+        void this.options.platform.notifications.warn(l("This conversation was opened in another Damocles window, so this panel closed it."));
       }
     } finally {
       // A dispose under way still appends the aborted turn in its teardown.
@@ -1416,11 +1421,10 @@ export class PiSession implements ChatSession {
     if (unreachedWarnedRuntimes.has(piRuntime)) return;
     unreachedWarnedRuntimes.add(piRuntime);
 
-    const message = t("Damocles could not reach {0} in time, so \"{1}\" cannot run yet.", providerDisplayName(info), info.displayName);
-    const reload = t("Reload Window");
+    const message = l("Damocles could not reach {0} in time, so \"{1}\" cannot run yet.", providerDisplayName(info), info.displayName);
     void (async () => {
-      const choice = await this.options.platform.notifications.warn(message, reload);
-      if (choice === reload) await this.options.platform.lifecycle.reload();
+      const choice = await this.options.platform.notifications.warn(message, [l("Reload Window")]);
+      if (choice === 0) await this.options.platform.lifecycle.reload();
     })().catch((err) => log("[PiSession] unreached-provider notification failed: %O", err));
   }
 
@@ -1436,7 +1440,7 @@ export class PiSession implements ChatSession {
   ): Promise<SendOutcome> {
     const outgoing = ticket ? [...this.outgoingSends].find((candidate) => candidate === ticket) : this.claimSend(correlationId, userBroadcast, onWithdrawn, prompt);
     // A ticket the session no longer lists ended, or went back to the composer, before this call.
-    if (!outgoing) return ticket?.signal.aborted ? "withdrawn" : "unsent";
+    if (!outgoing) return !ticket ? "busy" : ticket.signal.aborted ? "withdrawn" : "unsent";
     try {
       const outcome = await this.promptPi(prompt, target, correlationId, userBroadcast, outgoing);
       return outgoing.withdrawn ? "withdrawn" : outcome;
@@ -1449,12 +1453,9 @@ export class PiSession implements ChatSession {
     return this.claimSend(correlationId, userBroadcast, onWithdrawn);
   }
 
-  /** The session's one send, from its first step; null, with the refusal reported, while a send, turn or compaction holds it. */
+  /** The session's one send, from its first step; null while a send, turn or compaction holds it, which the caller answers. */
   private claimSend(correlationId: string | undefined, userBroadcast: UserBroadcast | undefined, onWithdrawn: (() => void) | undefined, prompt?: ContentInput): OutgoingPrompt | null {
-    if (this.processingFlag || this.compacting) {
-      this.adapter.emitAlreadyInProgress();
-      return null;
-    }
+    if (this.processingFlag || this.compacting) return null;
     const controller = new AbortController();
     const outgoing: OutgoingPrompt = {
       signal: controller.signal,
@@ -1463,6 +1464,7 @@ export class PiSession implements ChatSession {
       inPi: false,
       accepted: false,
       withdrawn: false,
+      claimedAt: Date.now(),
       withdraw: (returnText) => {
         if (outgoing.withdrawn) return;
         outgoing.withdrawn = true;
@@ -1556,9 +1558,17 @@ export class PiSession implements ChatSession {
   }
 
   /**
+   * A daemon's core: pi's availability refresh after a client change (a new acting client, a clientAuth delta), which
+   * every judge of the shown model waits for, since until it settles pi's snapshot holds the client from before; else null.
+   */
+  private clientSnapshotSettling(): Promise<void> | null {
+    return PiRuntime.exists ? PiRuntime.get().clientSnapshotSettling() : null;
+  }
+
+  /**
    * Why the chat may not start a model call now, or null: the model it shows is checked against today's credentials and
    * plan at every call, so a key removed or a plan narrowed since it was adopted refuses too. With no model runtime (one
-   * retired at shutdown) nothing can be checked, so every call is refused.
+   * retired at shutdown) nothing can be checked, so every call is refused. A caller waits for `clientSnapshotSettling` first.
    */
   private modelRefusal(): ModelRefusal | null {
     const piRuntime = PiRuntime.exists ? PiRuntime.get() : null;
@@ -1601,7 +1611,7 @@ export class PiSession implements ChatSession {
       await this.ensureStarted();
       if (this.resetPromise) await this.afterReplacements();
     } catch (err) {
-      this.emit({ type: "error", message: t("pi failed to start: {0}", err instanceof Error ? err.message : String(err)) });
+      this.emit({ type: "error", message: l("pi failed to start: {0}", errorTextOf(err)) });
       return "unsent";
     }
     // A model picked before this send is the one the turn runs on and the composer shows.
@@ -1628,7 +1638,7 @@ export class PiSession implements ChatSession {
     }
     const session = this.runtime?.session;
     if (!session) {
-      this.emit({ type: "error", message: t("Failed to initialize pi session") });
+      this.emit({ type: "error", message: l("Failed to initialize pi session") });
       return "unsent";
     }
     if (this.sendOvertaken(outgoing, session)) return "withdrawn";
@@ -1649,6 +1659,11 @@ export class PiSession implements ChatSession {
     // names no prompt, and the next real prompt keeps the index it would have had.
     const isPrompt = !isExtensionCommand(session, text);
     if (isPrompt) {
+      const refreshing = this.clientSnapshotSettling();
+      if (refreshing) {
+        await refreshing;
+        if (this.sendOvertaken(outgoing, session)) return "withdrawn";
+      }
       const adopting = this.adoptShownModelIfRunnable();
       if (adopting) {
         await adopting;
@@ -1676,7 +1691,7 @@ export class PiSession implements ChatSession {
     } catch (err) {
       log("[PiSession] the working-folder note was not delivered: %O", err);
       if (this.sendOvertaken(outgoing, session)) return "withdrawn";
-      this.emit({ type: "error", message: t("Damocles could not tell the agent where this chat now works: {0}", err instanceof Error ? err.message : String(err)) });
+      this.emit({ type: "error", message: l("Damocles could not tell the agent where this chat now works: {0}", errorTextOf(err)) });
       this.returnUnsentMessage(correlationId, userBroadcast, prompt);
       return "unsent";
     }
@@ -1743,7 +1758,7 @@ export class PiSession implements ChatSession {
 
     this._aborting = false;
     this._budgetStopRequested = false;
-    this.adapter.beginTurn(correlationId, echo);
+    this.adapter.beginTurn(correlationId, echo, outgoing.claimedAt);
 
     // After `beginTurn`, which makes the chat busy, so no finish action (D33) starts while the hook runs.
     const hooks = isPrompt ? this.promptHooks() : undefined;
@@ -1870,7 +1885,7 @@ export class PiSession implements ChatSession {
         log("[PiSession] prompt failed: %O", err);
         const message = err instanceof Error ? err.message : String(err);
         const card = failureCard(session.model?.provider, session.model?.id, message);
-        outcome = turnOutcomeOfError(failureText(session.model?.provider, session.model?.id, message, "user"));
+        outcome = turnOutcomeOfError(failureText(session.model?.provider, session.model?.id, message));
         this.emit(card);
         this.emit({ type: "processing", isProcessing: false });
         // Nothing stores a prompt pi refused before committing its entry, such as one whose credential went after `modelRefusal`.
@@ -2037,7 +2052,7 @@ export class PiSession implements ChatSession {
     const retryNotice = (): void =>
       this.emit({
         type: "notification",
-        message: t("Could not deliver the results of finished background subagents; they will be retried with your next message."),
+        message: l("Could not deliver the results of finished background subagents; they will be retried with your next message."),
         notificationType: "warning",
       });
     let cold: UndeliveredFileResult[] = [];
@@ -2105,7 +2120,7 @@ export class PiSession implements ChatSession {
       log("[PiSession] interruption notice failed: %O", err);
       this.emit({
         type: "notification",
-        message: t("Could not record which agents were interrupted; the model will not be told it can resume them."),
+        message: l("Could not record which agents were interrupted; the model will not be told it can resume them."),
         notificationType: "warning",
       });
     }
@@ -2119,17 +2134,18 @@ export class PiSession implements ChatSession {
    * boundary, redirecting the agent mid-task. Returns 'queued' so the webview shows a pending chip per
    * message; the chips collapse into the combined message once the adapter sees pi deliver it.
    */
-  queueInput(content: ContentInput, messageId?: string, typed?: string, target?: string): "queued" | "flushed" | "otherConversation" | false {
+  queueInput(content: ContentInput, messageId?: string, typed?: string, target?: string): QueueDisposition {
     const session = this.runtime?.session;
     const run = this.runOf(session);
-    // Gate on pi's own run state, not `processingFlag`: the two can momentarily disagree. An idle session refuses so the
-    // caller can fall back.
+    if (!session) return "noRuntime";
     // Refused after a budget stop too, even though the run is still streaming: pi's settle boundary
     // continues on a non-empty queue whatever the decider answers, so accepting one bills a round trip
     // past a hard limit (the same hazard `stopForBudget` flushes the existing queue for).
-    // A send on its way to pi holds the message for the run it opens.
+    if (this._budgetStopRequested) return "budgetStopped";
+    // Gate on pi's own run state, not `processingFlag`: the two can momentarily disagree. A send on its way to pi holds the
+    // message for the run it opens.
     const holding = this.currentSend !== null && !this.currentSend.accepted;
-    if (!session || !(run?.mayQueue || holding) || this._budgetStopRequested) return false;
+    if (!(run?.mayQueue || holding)) return "runEnded";
     if (!this.sendsTo(session, target)) return "otherConversation";
     const input: QueuedInput = {
       id: messageId ?? `queue-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -2349,6 +2365,12 @@ export class PiSession implements ChatSession {
   /** `runOpeningRefusal` once a shown model that can run is the one pi runs, adopted first as a send adopts it; never mid-run. */
   private async whenShownModelRuns(session: AgentSession): Promise<ModelRefusal | null> {
     if (this.runOf(session)?.streaming) return null;
+    const refreshing = this.clientSnapshotSettling();
+    if (refreshing) {
+      await refreshing;
+      // the adoption must read the run state in its own step: a run opened during the wait keeps its model
+      if (this.runOf(session)?.streaming) return null;
+    }
     const adopting = this.adoptShownModelIfRunnable();
     if (adopting) await adopting;
     return this.runOpeningRefusal(session);
@@ -2368,19 +2390,33 @@ export class PiSession implements ChatSession {
     for (const text of notes) {
       const index = this.injectedNotes.findIndex((note) => note.text === text);
       const [note] = index === -1 ? [] : this.injectedNotes.splice(index, 1);
-      if (note?.echoed) this.emit({ type: "notification", message: t("Your cancel note was not sent: this chat cannot run its model now."), notificationType: "warning" });
+      if (note?.echoed) this.emit({ type: "notification", message: l("Your cancel note was not sent: this chat cannot run its model now."), notificationType: "warning" });
     }
     if (refusal) this.openSettingsAt(refusal);
   }
 
-  /** Puts one follow-up back with the content it was queued with; one a Stop overtook in pi's hands is sent and stopped, or returned (`queued`). */
+  /**
+   * Puts one follow-up back with the content it was queued with. Until its `prompt()` a withdraw returns it whole, and one
+   * withdrawn meanwhile is never handed to pi; one a Stop overtook in pi's hands is sent and stopped, or returned (`queued`).
+   */
   private requeueFollowUp(session: AgentSession, queued: RequeuedFollowUp): void {
+    if (queued.withdrawn()) return;
+    // one that opens a run is judged as a send is; the refresh is one promise, so deferred follow-ups keep their order
+    const refreshing = this.runOf(session)?.streaming ? null : this.clientSnapshotSettling();
+    if (refreshing) {
+      void refreshing.then(() => {
+        if (this.runtime?.session === session) this.requeueFollowUp(session, queued);
+        else queued.giveBack();
+      });
+      return;
+    }
     const refusal = this.runOpeningRefusal(session);
     if (refusal) {
       queued.refuse((prompt, broadcast, correlationId) => this.refuseForModel(prompt, broadcast, refusal, correlationId));
       return;
     }
     let dispositioned = false;
+    queued.inPi();
     void this.pinned(() => session
       .prompt(queued.text, {
         expandPromptTemplates: false,
@@ -2560,7 +2596,7 @@ export class PiSession implements ChatSession {
    * more and pi's next run starts by draining whatever its queue still holds: pi's queue is cleared,
    * every chip goes back to the composer, and each note pi held is dropped with its echo corrected.
    */
-  private withdrawQueue(session: AgentSession | undefined, noteDropped: string): void {
+  private withdrawQueue(session: AgentSession | undefined, noteDropped: LocalizedText): void {
     this.returnQueue(session, false);
     this.dropEchoedNotes(noteDropped);
   }
@@ -2617,7 +2653,7 @@ export class PiSession implements ChatSession {
   }
 
   /** Correct the echo of every accepted cancel note the agent never received, once the queue that held it is dropped. */
-  private dropEchoedNotes(message: string): void {
+  private dropEchoedNotes(message: LocalizedText): void {
     for (const note of this.injectedNotes) {
       if (note.echoed) this.emit({ type: "notification", message, notificationType: "warning" });
     }
@@ -2675,7 +2711,7 @@ export class PiSession implements ChatSession {
       }
       void this.whenShownModelRuns(bound).then((modelRefused) => {
         if (!modelRefused) return this.deliverNote(text, session, deliver);
-        this.emit({ type: "notification", message: t("Your cancel note was not sent: this chat cannot run its model now."), notificationType: "warning" });
+        this.emit({ type: "notification", message: l("Your cancel note was not sent: this chat cannot run its model now."), notificationType: "warning" });
         this.openSettingsAt(modelRefused);
       }).catch((err) => log("[PiSession] cancel note delivery to the panel session failed: %O", err));
     };
@@ -2725,11 +2761,11 @@ export class PiSession implements ChatSession {
   }
 
   /** Why a cancel note for `target` can no longer reach the agent, or null when it can. */
-  private noteRefusal(target: AgentSession | undefined): string | null {
+  private noteRefusal(target: AgentSession | undefined): LocalizedText | null {
     if (target === undefined || target !== this.runtime?.session || !this.runStopped()) return null;
     return this._budgetStopRequested
-      ? t("Your cancel note was not sent: the budget limit stopped this turn.")
-      : t("Your cancel note was not sent: the turn was stopped.");
+      ? l("Your cancel note was not sent: the budget limit stopped this turn.")
+      : l("Your cancel note was not sent: the turn was stopped.");
   }
 
   /** Whether the live run was stopped by the budget or an ESC and so must deliver nothing more from pi's queue. */
@@ -2760,7 +2796,7 @@ export class PiSession implements ChatSession {
     const stopped = this.stopTurn();
     this._budgetStopRequested = false;
     this.stopAgentsAsUser();
-    this.withdrawQueue(stopped.session, t("Stopping the turn discarded your cancel note before the agent read it."));
+    this.withdrawQueue(stopped.session, l("Stopping the turn discarded your cancel note before the agent read it."));
     // After the agents: a queued subagent the Stop completes posts its stop first, so the webview's cancel finds its card settled.
     this.publishTurnStopped();
     return this.endStoppedRun(stopped, origin);
@@ -2837,11 +2873,11 @@ export class PiSession implements ChatSession {
   /** `onAccepted` runs once the compaction is accepted, before anything it reports; a refusal never calls it. */
   async compact(instructions?: string, onAccepted?: () => void, target?: string): Promise<void> {
     if (this.processingFlag || this.compacting) {
-      this.emit({ type: "notification", message: t("Finish or stop the current turn before compacting."), notificationType: "warning" });
+      this.emit({ type: "notification", message: l("Finish or stop the current turn before compacting."), notificationType: "warning" });
       return;
     }
-    // Hold `compacting` across the whole operation so a sendMessage arriving mid-compaction is rejected
-    // with the normal "already in progress" notice instead of racing into pi's raw "Agent is already
+    // Hold `compacting` across the whole operation so a sendMessage arriving mid-compaction is refused as
+    // `busy`, which gives it back to the composer, instead of racing into pi's raw "Agent is already
     // processing" error on the shared session.
     this.compacting = true;
     const beforePi = new AbortController();
@@ -2851,7 +2887,7 @@ export class PiSession implements ChatSession {
         await this.ensureStarted();
         if (this.resetPromise) await this.afterReplacements();
       } catch (err) {
-        this.emit({ type: "error", message: t("pi failed to start: {0}", err instanceof Error ? err.message : String(err)) });
+        this.emit({ type: "error", message: l("pi failed to start: {0}", errorTextOf(err)) });
         return;
       }
       if (this.abortPromise) await this.abortPromise;
@@ -2866,12 +2902,12 @@ export class PiSession implements ChatSession {
       }
       // pi's `compact()` aborts the run it finds open (agent-session.js:2231), one no send opened included.
       if (this.runOf(waitedOn)?.streaming) {
-        this.emit({ type: "notification", message: t("Finish or stop the current turn before compacting."), notificationType: "warning" });
+        this.emit({ type: "notification", message: l("Finish or stop the current turn before compacting."), notificationType: "warning" });
         return;
       }
       const session = this.runtime?.session;
       if (!session) {
-        this.emit({ type: "error", message: t("Failed to initialize pi session") });
+        this.emit({ type: "error", message: l("Failed to initialize pi session") });
         return;
       }
       if (!this.sendsTo(session, target)) {
@@ -2883,7 +2919,8 @@ export class PiSession implements ChatSession {
         this.emit({ type: "error", message: readOnly });
         return;
       }
-      const adopting = this.adoptShownModelIfRunnable();
+      const refreshing = this.clientSnapshotSettling();
+      const adopting = refreshing ? refreshing.then(() => this.adoptShownModelIfRunnable() ?? undefined) : this.adoptShownModelIfRunnable();
       if (adopting) {
         await adopting;
         if (beforePi.signal.aborted) {
@@ -2915,7 +2952,7 @@ export class PiSession implements ChatSession {
           log("[PiSession] compact outcome already reported by the adapter: %s", message);
         } else if (isNothingToCompact(message)) {
           log("[PiSession] compact skipped: nothing to compact (session too small)");
-          this.emit({ type: "notification", message: t("The conversation is too short to compact yet."), notificationType: "info" });
+          this.emit({ type: "notification", message: l("The conversation is too short to compact yet."), notificationType: "info" });
         } else {
           log("[PiSession] compact failed: %O", err);
           this.emit(failureCard(session.model?.provider, session.model?.id, message));
@@ -3111,7 +3148,7 @@ export class PiSession implements ChatSession {
           if (cancelled) throw new Error("session replacement was cancelled");
         } catch (err) {
           if (await this.releaseIfTornDown(runtime, left)) {
-            void this.options.platform.notifications.error(t("Damocles could not open a new conversation: {0}", err instanceof Error ? err.message : String(err)));
+            void this.options.platform.notifications.error(l("Damocles could not open a new conversation: {0}", errorTextOf(err)));
           }
           throw err;
         } finally {
@@ -3447,7 +3484,7 @@ export class PiSession implements ChatSession {
       session.setThinkingLevel(this.resolveThinkingLevel());
       this.publishAccountInfo();
     } else {
-      this.notifyModelRefused(t("Sign in to {0} to use {1}", providerDisplayName(this.getModelInfo(model)), this.modelDisplayName(model)));
+      this.notifyModelRefused(l("Sign in to {0} to use {1}", providerDisplayName(this.getModelInfo(model)), this.modelDisplayName(model)));
     }
     this.publishModel();
   }
@@ -3470,9 +3507,9 @@ export class PiSession implements ChatSession {
     const info = this.getModelInfo(model);
     if (this.onlySignedOut(model, resolution, openaiAuth)) {
       const account = info ? accountOfModel(info) : accountOfProvider(resolution.model?.provider);
-      return { text: t("Sign in to {0} to use {1}", providerDisplayName(info), this.modelDisplayName(model)), ...(account ? { signIn: account } : {}) };
+      return { text: l("Sign in to {0} to use {1}", providerDisplayName(info), this.modelDisplayName(model)), ...(account ? { signIn: account } : {}) };
     }
-    return { text: t("Model {0} is unavailable on the pi harness", this.modelDisplayName(model)) };
+    return { text: l("Model {0} is unavailable on the pi harness", this.modelDisplayName(model)) };
   }
 
   /** Whether a model value that cannot run lacks only its credential: a catalog model of a known provider (StepFun or DeepSeek pre-key), or a GPT model with no OpenAI credential. */
@@ -3482,13 +3519,13 @@ export class PiSession implements ChatSession {
   }
 
   /** The notice for a model outside the user's plan, in the wording every refusal of one uses. */
-  private notInPlanNotice(model: Model<Api>): string {
+  private notInPlanNotice(model: Model<Api>): LocalizedText {
     const names = refusalNames(model);
-    return t("Your {0} plan does not include {1}", names.provider, names.model);
+    return l("Your {0} plan does not include {1}", names.provider, names.model);
   }
 
   /** A host notice rather than a chat toast, because the pick may come from a settings view laid over the chat. */
-  private notifyModelRefused(message: string, level: "warn" | "error" = "warn"): void {
+  private notifyModelRefused(message: LocalizedText, level: "warn" | "error" = "warn"): void {
     void this.options.platform.notifications[level](message);
   }
 
@@ -3656,14 +3693,22 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * The conversation pi holds, its in-memory branch and the adapter's live snapshot, read in one synchronous step so no event
-   * falls between the branch and the snapshot's sequence; undefined while no runtime holds a conversation.
+   * The conversation pi holds, its in-memory branch, the adapter's live snapshot and its unsettled subagents'
+   * (`AgentManager.liveSnapshot`), read in one synchronous step so no event falls between the branch and the snapshots;
+   * undefined while no runtime holds a conversation.
    */
-  liveConversation(): { readonly sessionId: string; readonly stored: boolean; readonly branch: readonly SessionEntry[]; readonly sessionManager: AgentSession["sessionManager"]; readonly snapshot: LiveSnapshot } | undefined {
+  liveConversation(): LiveConversation | undefined {
     const session = this.runtime?.session;
     if (!session) return undefined;
     const sm = session.sessionManager;
-    return { sessionId: session.sessionId, stored: this.hasSessionFile(), branch: [...sm.getBranch(sm.getLeafId() ?? undefined)], sessionManager: sm, snapshot: this.adapter.liveSnapshot() };
+    const agents = this.subagentManager?.liveSnapshot();
+    return { sessionId: session.sessionId, stored: this.hasSessionFile(), branch: [...sm.getBranch(sm.getLeafId() ?? undefined)], sessionManager: sm, snapshot: this.adapter.liveSnapshot(), ...(agents ? { agents } : {}) };
+  }
+
+  holdsLiveConversation(sessionId: string | undefined): boolean {
+    const live = this.runtime?.session.sessionId;
+    if (live === undefined || (this.resumeSessionId !== null && this.resumeSessionId !== live)) return false;
+    return sessionId === undefined || sessionId === live;
   }
 
   hasSessionFile(): boolean {
@@ -3831,8 +3876,8 @@ export class PiSession implements ChatSession {
   private settleResume(request: ResumeRequest, outcome: ResumeOutcome): void {
     if (request.settled) return;
     if (outcome.kind === "failed") {
-      log("[PiSession] resume of %s failed: %s", request.sessionId, outcome.reason);
-      void this.options.platform.notifications.error(t("This conversation could not be opened: {0}", outcome.reason));
+      log("[PiSession] resume of %s failed: %s", request.sessionId, englishText(outcome.reason));
+      void this.options.platform.notifications.error(l("This conversation could not be opened: {0}", outcome.reason));
     }
     request.settle(outcome);
     if (outcome.kind === "switched" || this.resumeRequest !== request) return;
@@ -3865,7 +3910,7 @@ export class PiSession implements ChatSession {
       const filePath = await resolvePiSessionFile(this.cwd, sessionId);
       // Opening can rewrite the file (a format migration), so a target this panel let go of is never opened.
       if (target.cancelled) return RESUME_CANCELLED;
-      if (!filePath) return { kind: "failed", reason: t("its file was not found") };
+      if (!filePath) return { kind: "failed", reason: l("its file was not found") };
       await this.retireAgents(runtime.session, stopped);
       // Before the switch: a switch that fails or is cancelled leaves the old session bound, and the retired agents are known only from their files.
       this.interruptionCheckPending = true;
@@ -3891,7 +3936,7 @@ export class PiSession implements ChatSession {
         this.runningSwitch = null;
       }
       // A session_before_switch handler refused the switch, which left the old session bound.
-      if (cancelled) return { kind: "failed", reason: t("an extension cancelled opening it") };
+      if (cancelled) return { kind: "failed", reason: l("an extension cancelled opening it") };
       // The rebind callback re-subscribed the adapter + re-registered the panel, unless a dispose began meanwhile.
       if (this._disposed) return RESUME_CANCELLED;
       // Seed the meter from the now-current resumed session.
@@ -3900,7 +3945,7 @@ export class PiSession implements ChatSession {
       this.mcpReloadPendingAfterTurn = false;
       if (target.cancelled) return RESUME_CANCELLED;
       // pi opens a file that went missing after the lookup as a new conversation (session-manager.js:685-689 in pi-coding-agent 1.4.0).
-      return this.runtime?.session.sessionId === sessionId ? RESUME_SWITCHED : { kind: "failed", reason: t("its file was not found") };
+      return this.runtime?.session.sessionId === sessionId ? RESUME_SWITCHED : { kind: "failed", reason: l("its file was not found") };
     } finally {
       this.piReplacement = null;
       this.queuedSwitches.delete(target);
@@ -4354,7 +4399,7 @@ export class PiSession implements ChatSession {
     this.emit({
       type: "notification",
       notificationType: "info",
-      message: pending.length === 1 ? t("Waiting for MCP server {0}", pending[0]!) : t("Waiting for MCP servers {0}", pending.join(", ")),
+      message: pending.length === 1 ? l("Waiting for MCP server {0}", pending[0]!) : l("Waiting for MCP servers {0}", pending.join(", ")),
     });
     const outcome = await waitForPendingDirectServers(source, signal);
     log("[PiSession] Always-loaded MCP wait ended: %s", outcome);
@@ -4364,8 +4409,8 @@ export class PiSession implements ChatSession {
         type: "notification",
         notificationType: "info",
         message: late.length === 1
-          ? t("MCP server {0} is still connecting. Its Always-loaded tools join from the next turn after it connects.", late[0]!)
-          : t("MCP servers {0} are still connecting. Their Always-loaded tools join from the next turn after they connect.", late.join(", ")),
+          ? l("MCP server {0} is still connecting. Its Always-loaded tools join from the next turn after it connects.", late[0]!)
+          : l("MCP servers {0} are still connecting. Their Always-loaded tools join from the next turn after they connect.", late.join(", ")),
       });
     }
   }
@@ -4669,8 +4714,8 @@ export class PiSession implements ChatSession {
       this.emit({
         type: "notification",
         message: data.kind === "team"
-          ? t("Could not record a team in the session file; its card will not be restored after a reload.")
-          : t("Could not record a subagent in the session file. After a reload its card will not be restored, and the model will not receive a result it has not received by then."),
+          ? l("Could not record a team in the session file; its card will not be restored after a reload.")
+          : l("Could not record a subagent in the session file. After a reload its card will not be restored, and the model will not receive a result it has not received by then."),
         notificationType: "warning",
       });
     }
@@ -5009,7 +5054,7 @@ export class PiSession implements ChatSession {
       onBaselineTimeout: (waitedMs) => this.emit({
         type: "notification",
         notificationType: "warning",
-        message: t("A file change ran before this turn's checkpoint was ready (waited {0} s), so this turn cannot be rewound.", Math.round(waitedMs / 1000)),
+        message: l("A file change ran before this turn's checkpoint was ready (waited {0} s), so this turn cannot be rewound.", Math.round(waitedMs / 1000)),
       }),
       baselineWaitMs: () => checkpointBaselineWaitMs(settings),
       maxFileSizeBytes: () => checkpointMaxFileSizeBytes(settings),
@@ -5107,7 +5152,7 @@ export class PiSession implements ChatSession {
       const needsFork = option === "fork-conversation" || option === "fork-and-rewind-code";
       // D61: a turn before the latest hand-off made its files in the other folder; only its conversation comes back.
       if (needsFileRewind && precedesHandOff(sm.getEntries(), userMessageId)) {
-        this.emit({ type: "rewindError", message: t("Files from before the hand-off are in the other folder. Rewind restores the conversation only.") });
+        this.emit({ type: "rewindError", message: l("Files from before the hand-off are in the other folder. Rewind restores the conversation only.") });
         return;
       }
 
@@ -5120,7 +5165,7 @@ export class PiSession implements ChatSession {
           const notRewindable = getNotRewindableEntries(sm.getEntries()).find((r) => r.userEntryId === userMessageId);
           this.emit({
             type: "rewindError",
-            message: notRewindable ? notRewindableMessage(notRewindable) : t("No checkpoint exists for this message"),
+            message: notRewindable ? notRewindableMessage(notRewindable) : l("No checkpoint exists for this message"),
           });
           return;
         }
@@ -5145,7 +5190,7 @@ export class PiSession implements ChatSession {
         // `forkAtUuid: null` (fresh panel, no branched file). A compaction entry always has a parent, so
         // it never hits the root case anyway.
         if (!sm.getEntry(userMessageId)) {
-          this.emit({ type: "rewindError", message: t("This rewind point can't be resolved. The session may have changed.") });
+          this.emit({ type: "rewindError", message: l("This rewind point can't be resolved. The session may have changed.") });
           return;
         }
         await this.spawnPiFork(session, userMessageId, promptContent);
@@ -5159,7 +5204,7 @@ export class PiSession implements ChatSession {
         ...(promptContent ? { promptContent } : {}),
       });
     } catch (err) {
-      this.emit({ type: "rewindError", message: err instanceof Error ? err.message : String(err) });
+      this.emit({ type: "rewindError", message: errorTextOf(err) });
     }
   }
 
@@ -5179,7 +5224,7 @@ export class PiSession implements ChatSession {
       const sm = session.sessionManager;
       const record = getPreRewindEntries(sm.getEntries()).find((r) => r.id === preRewindId);
       if (!record) {
-        this.emit({ type: "rewindError", message: t("This restore point no longer exists.") });
+        this.emit({ type: "rewindError", message: l("This restore point no longer exists.") });
         return;
       }
       const service = this.checkpointService;
@@ -5188,7 +5233,7 @@ export class PiSession implements ChatSession {
         : { ok: false, reason: "service-unavailable", preRewind: null };
       this.emit(result.ok ? { type: "rewindUndone" } : { type: "rewindError", message: restoreErrorMessage(result) });
     } catch (err) {
-      this.emit({ type: "rewindError", message: err instanceof Error ? err.message : String(err) });
+      this.emit({ type: "rewindError", message: errorTextOf(err) });
     }
   }
 
@@ -5202,12 +5247,12 @@ export class PiSession implements ChatSession {
     try {
       await this.ensureStarted();
     } catch (err) {
-      this.emit({ type: "rewindError", message: t("Failed to start the session: {0}", err instanceof Error ? err.message : String(err)) });
+      this.emit({ type: "rewindError", message: l("Failed to start the session: {0}", errorTextOf(err)) });
       return null;
     }
     const session = this.runtime?.session ?? null;
     if (!session) {
-      this.emit({ type: "rewindError", message: t("No active session to rewind.") });
+      this.emit({ type: "rewindError", message: l("No active session to rewind.") });
       return null;
     }
     const readOnly = this.readOnlyRefusal();
@@ -5222,12 +5267,12 @@ export class PiSession implements ChatSession {
    * Rules 17 and 18: why a read-only chat refuses a send, compaction, rewind, fork or undo; undefined for a writable one. Read
    * only once the session started, since the latest worktree entry decides and comes from the session's file.
    */
-  private readOnlyRefusal(): string | undefined {
+  private readOnlyRefusal(): LocalizedText | undefined {
     switch (this.worktree.readOnlyReason()) {
       case "deleted":
-        return t("This chat's worktree was deleted");
+        return l("This chat's worktree was deleted");
       case "hostWithoutWorktrees":
-        return t("This chat works in a worktree, which only the Damocles app can open.");
+        return l("This chat works in a worktree, which only the Damocles app can open.");
       case undefined:
         return undefined;
     }
@@ -5256,7 +5301,7 @@ export class PiSession implements ChatSession {
     for (const failure of failures) log("[PiSession] copying agent data to the fork failed: %O", failure);
     this.emit({
       type: "notification",
-      message: t("Some subagent or team history could not be copied into the fork; those cards may be incomplete and cannot be resumed there."),
+      message: l("Some subagent or team history could not be copied into the fork; those cards may be incomplete and cannot be resumed there."),
       notificationType: "warning",
     });
   }
@@ -5298,7 +5343,7 @@ export class PiSession implements ChatSession {
   private async spawnPiFork(session: AgentSession, userEntryId: string, promptContent?: string): Promise<void> {
     const onSpawnFork = this.options.onSpawnFork;
     if (!onSpawnFork) {
-      this.emit({ type: "rewindError", message: t("Fork is unavailable") });
+      this.emit({ type: "rewindError", message: l("Fork is unavailable") });
       return;
     }
     const liveSm = session.sessionManager;
@@ -5358,7 +5403,7 @@ export class PiSession implements ChatSession {
             log("[PiSession] copying injection records to the fork failed: %O", err);
             this.emit({
               type: "notification",
-              message: t("The injected context of the prompts the fork inherited could not be copied, so \"{0}\" may show nothing for those prompts in the fork.", t(VIEW_CONTEXT_BUTTON)),
+              message: l("The injected context of the prompts the fork inherited could not be copied, so \"{0}\" may show nothing for those prompts in the fork.", l(VIEW_CONTEXT_BUTTON)),
               notificationType: "warning",
             });
           }
@@ -5489,9 +5534,10 @@ export class PiSession implements ChatSession {
       // pi gates its own `<skills>` section on `read` OR `bash` and names the resolved tool in the
       // section's prose, so this preview must resolve it the same way the turn path does.
       const skillFileReadTool = resolveSkillFileReadTool(session.getActiveToolNames());
+      const env = this.systemPromptEnv();
 
       return assembleDamoclesSystemPrompt({
-        env: this.systemPromptEnv(),
+        env,
         memoryEnabled: !!this.options.memoryService?.isEnabled,
         planMode,
         teamEnabled: !!this.options.teamService && this.isTeamEnabled(),
@@ -5501,6 +5547,7 @@ export class PiSession implements ChatSession {
         contextFiles,
         skills,
         skillFileReadTool,
+        earlierModels: earlierModelRuns(session.sessionManager.getBranch(), env.model),
       });
     } catch (err) {
       log("[PiSession] buildEffectiveSystemPrompt failed: %O", err);
@@ -5542,14 +5589,17 @@ export class PiSession implements ChatSession {
     try {
       await this.ensureStarted();
     } catch (err) {
-      post({ type: "btwError", btwId, message: t("pi failed to start: {0}", err instanceof Error ? err.message : String(err)) });
+      post({ type: "btwError", btwId, message: l("pi failed to start: {0}", errorTextOf(err)) });
       return;
     }
+    // pi's availability snapshot holds the asking device's sign-ins only once the client refresh settled
+    const refreshing = this.clientSnapshotSettling();
+    if (refreshing) await refreshing;
     const piRuntime = PiRuntime.get();
     const modelRuntime = piRuntime.modelLookup;
     const folder = this.folder;
     if (!modelRuntime || !folder || !this.runtime) {
-      post({ type: "btwError", btwId, message: t("Start a conversation first") });
+      post({ type: "btwError", btwId, message: l("Start a conversation first") });
       return;
     }
     const openaiAuth = piRuntime.getOpenAIAuthStatus();
@@ -5565,7 +5615,7 @@ export class PiSession implements ChatSession {
     const liveSession = this.runtime?.session;
     // The aside reads the conversation it was asked in, so it is not asked of another.
     if (liveSession && !this.sendsTo(liveSession, target)) {
-      post({ type: "btwError", btwId, message: t("This chat no longer shows the conversation this question was asked in.") });
+      post({ type: "btwError", btwId, message: l("This chat no longer shows the conversation this question was asked in.") });
       return;
     }
     const contextBlock = liveSession ? buildBtwContextBlock(liveSession) : "";
@@ -5585,7 +5635,7 @@ export class PiSession implements ChatSession {
         store: { kind: "memory" },
       }));
     } catch (err) {
-      post({ type: "btwError", btwId, message: err instanceof Error ? err.message : String(err) });
+      post({ type: "btwError", btwId, message: errorTextOf(err) });
       return;
     }
     this.btwSessions.set(btwId, { session, ac });
@@ -5596,7 +5646,7 @@ export class PiSession implements ChatSession {
     const failure = (message: string): ExtensionToWebviewMessage => {
       const card = failureCard(model.provider, model.id, message);
       return card.type === "authFailure"
-        ? { type: "btwError", btwId, message, authFailure: { account: card.account, reason: card.reason } }
+        ? { type: "btwError", btwId, message: verbatim(message), authFailure: { account: card.account, reason: card.reason } }
         : { type: "btwError", btwId, message: card.message };
     };
     const attribution = { cwd: this.cwd, ...(liveSession ? { sessionId: liveSession.sessionId } : {}) };
@@ -5620,7 +5670,7 @@ export class PiSession implements ChatSession {
         const finalText = (streamed.trim() || session.getLastAssistantText() || "").trim();
         if (finalText) post({ type: "btwComplete", btwId, text: finalText });
         else if (failedCall !== undefined) post(failure(failedCall));
-        else post({ type: "btwError", btwId, message: t("No response received") });
+        else post({ type: "btwError", btwId, message: l("No response received") });
       }
     } catch (err) {
       if (!ac.signal.aborted) post(failure(err instanceof Error ? err.message : String(err)));
@@ -5970,11 +6020,11 @@ export class PiSession implements ChatSession {
     // past the limit, so its echo is corrected instead of honoured.
     this.withdrawQueue(
       this.runtime?.session,
-      t("The budget stop discarded your cancel note before the agent read it. Send it again to have it applied."),
+      l("The budget stop discarded your cancel note before the agent read it. Send it again to have it applied."),
     );
     this.emit({
       type: "notification",
-      message: t("Budget limit reached. This turn was stopped after the current step."),
+      message: l("Budget limit reached. This turn was stopped after the current step."),
       notificationType: "warning",
     });
   }
@@ -5987,7 +6037,7 @@ export class PiSession implements ChatSession {
       isGitRepo: existsSync(path.join(this.cwd, ".git")),
       platform: process.platform,
       shell: process.env["SHELL"] ?? "unknown",
-      osVersion: `${os.type()} ${os.release()}`,
+      osVersion: osName(),
       compassEnabled: !!this.options.compassService?.isEnabled,
       thinkingDisabled: this.resolveThinkingLevel() === "off",
     };
@@ -6020,6 +6070,12 @@ export class PiSession implements ChatSession {
   /** The account state, then the model list, whose marks read the same sign-ins (`publishAvailableModels`). */
   publishAccountInfo(clientId?: string): void {
     if (this._disposed) return;
+    // the account state reads the OpenAI key presence the runtime records from its first read of the secret
+    const recording = PiRuntime.unlessRetired()?.openaiKeyRecording;
+    if (recording) {
+      void recording.then(() => this.publishAccountInfo(clientId));
+      return;
+    }
     this.emitPerClient(() => this.accountMessages(), clientId);
     this.publishAvailableModels(clientId);
   }

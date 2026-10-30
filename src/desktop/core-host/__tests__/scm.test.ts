@@ -8,6 +8,8 @@ import { installedCredentialRelay, type RelayIdentity } from '../../../core/scm/
 import { FakeSettings, FakeTrust, folder, git, GIT_PATH, HAS_GIT, MapMemento, makeRepo, useGitSandbox, waitFor, watchers, write } from '../../../core/scm/__tests__/git-harness';
 import { parseGitVersion } from '../../../core/scm/git-version';
 import type { GitCredentialAnswer } from '../../../shared/git-credential';
+import type { LocalizedText } from '../../../shared/localized-text';
+import { createDesktopLocalizationService } from '../../local-services/localization-service';
 import type { RepoSnapshot, ScmEvent } from '../../../core/scm/scm-service';
 import { createCoreEndpoint, createLoopback, createMainEndpoint, type AskQuestion, type MainEndpoint, type ScmMirrorPatch } from '../../core-protocol';
 import type { CorePlatform } from '../platform';
@@ -247,6 +249,30 @@ describe.runIf(HAS_GIT)("a daemon's core's git credential relay", { timeout: 60_
   });
 });
 
+describe.runIf(HAS_GIT)("core's commit", { timeout: 60_000 }, () => {
+  it("answers a refusal with its LocalizedText and a failed git commit with git's own words, which main renders in its language", async () => {
+    const repo = makeRepo(folder('commit-refusal'));
+    write(path.join(repo, 'a.txt'), 'edit\n');
+    git(['add', 'a.txt'], repo);
+    const hook = path.join(repo, '.git', 'hooks', 'pre-commit');
+    write(hook, '#!/bin/sh\necho refused by the hook >&2\nexit 1\n');
+    fs.chmodSync(hook, 0o755);
+    const { seen, call, mainEndpoint } = start(repo);
+    await call('setProjects', [[{ key: 'p', path: repo }]]);
+    const listed = await waitFor(() => patches(seen).find((patch) => patch.kind === 'repository' && ((patch.repository?.snapshot as RepoSnapshot | undefined)?.status?.groups.index.length ?? 0) > 0), 'a.txt staged');
+    const commit = (noVerify: boolean) => mainEndpoint.request('scm.commit', { repoId: (listed as { repoId: string }).repoId, message: 'Blocked', variant: { scope: 'auto', amend: false, signoff: false, noVerify, empty: false }, saved: [] });
+    const el = createDesktopLocalizationService(process.cwd(), 'el', () => undefined);
+
+    const refused = await commit(true);
+    expect(refused).toEqual({ ok: false, reason: 'failed', error: { message: 'Commits without verification are not allowed, please enable them with the "Allow no-verify commits" setting.' } });
+    expect(el.render((refused as { error: LocalizedText }).error)).toBe('Οι υποβολές χωρίς επαλήθευση δεν επιτρέπονται. Ενεργοποιήστε τις με τη ρύθμιση «Να επιτρέπονται υποβολές χωρίς επαλήθευση».');
+
+    const failed = await commit(false);
+    expect(failed).toEqual({ ok: false, reason: 'failed', error: { message: '{0}', args: ['refused by the hook'] } });
+    expect(el.render((failed as { error: LocalizedText }).error)).toBe('refused by the hook');
+  });
+});
+
 describe.runIf(HAS_GIT)("core's discard", { timeout: 60_000 }, () => {
   async function discardJunk(remote: boolean): Promise<{ asked: AskQuestion[]; trashed: string[]; junk: string }> {
     const repo = makeRepo(folder(remote ? 'discard-remote' : 'discard-local'));
@@ -261,14 +287,14 @@ describe.runIf(HAS_GIT)("core's discard", { timeout: 60_000 }, () => {
 
   it("deletes permanently on a daemon's core, after saying so, and never asks main to trash", async () => {
     const { asked, trashed, junk } = await discardJunk(true);
-    expect(asked[0]).toMatchObject({ actions: ['Delete File'], detail: 'This is IRREVERSIBLE!\nThis file will be FOREVER LOST if you proceed.' });
+    expect(asked[0]).toMatchObject({ actions: [{ message: 'Delete File' }], detail: { message: 'This is IRREVERSIBLE!\nThis file will be FOREVER LOST if you proceed.' } });
     expect(trashed).toEqual([]);
     expect(fs.existsSync(junk)).toBe(false);
   });
 
   it('asks main to trash on a local core', async () => {
     const { asked, trashed, junk } = await discardJunk(false);
-    expect(asked[0]!.actions).toEqual([process.platform === 'win32' ? 'Move to Recycle Bin' : 'Move to Trash']);
+    expect(asked[0]!.actions).toEqual([{ message: process.platform === 'win32' ? 'Move to Recycle Bin' : 'Move to Trash' }]);
     expect(trashed).toEqual([junk]);
   });
 });

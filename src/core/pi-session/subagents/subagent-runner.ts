@@ -135,7 +135,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<RunResul
     if (event.type === 'tool_execution_end') options.onToolActivity?.({ type: 'end', toolName: event.toolName });
     if (event.type === 'message_end' && event.message.role === 'assistant') {
       // pi reports a failed model call only here, and a retry that answers replaces it.
-      error = event.message.stopReason === 'error' ? nestedCallError(event.message, 'model') : undefined;
+      error = event.message.stopReason === 'error' ? nestedCallError(event.message) : undefined;
       const usage = (event.message as { usage?: { input?: number; output?: number; cacheWrite?: number } }).usage;
       if (usage) {
         options.onAssistantUsage?.({ input: usage.input ?? 0, output: usage.output ?? 0, cacheWrite: usage.cacheWrite ?? 0 });

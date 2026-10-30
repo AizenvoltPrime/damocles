@@ -50,12 +50,12 @@ describe('reconcileMcpServers', () => {
 
   it('keeps a failure and its error message', () => {
     const store = useSettingsStore();
-    store.setMcpServers([live({ status: 'failed', error: 'MCP error -32000: Connection closed', tools: undefined })]);
+    store.setMcpServers([live({ status: 'failed', error: { message: 'MCP error -32000: Connection closed' }, tools: undefined })]);
 
     store.reconcileMcpServers([config()]);
 
     expect(store.mcpServers[0]!.status).toBe('failed');
-    expect(store.mcpServers[0]!.error).toBe('MCP error -32000: Connection closed');
+    expect(store.mcpServers[0]!.error).toEqual({ message: 'MCP error -32000: Connection closed' });
   });
 
   it('takes config fields from the new entry, not the stale one', () => {

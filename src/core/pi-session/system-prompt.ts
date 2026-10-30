@@ -218,22 +218,46 @@ export function buildEnvironmentSection(facts: EnvironmentFacts): string {
   return ["# Environment", "You have been invoked in the following environment: ", ...lines].join("\n");
 }
 
-/** The section `buildModelSection` fills. Its text must change only with the chat's model: any change re-folds the whole prompt (`model-switch-prompt.ts`). */
+/** The section `buildModelSection` fills. Its text must change only at a switch of the chat's model: any other change re-folds the whole prompt (`identity-prompt-fold.ts`). */
 export const MODEL_SECTION = 'damocles_model';
 
-/** The fold (`model-switch-prompt.ts`) drops pi's record of a switch, so the prompt itself says earlier replies may be another model's. */
+/** The section `buildEnvironmentSection` fills, an identity section of the fold (`identity-prompt-fold.ts`). */
+export const ENVIRONMENT_SECTION = 'damocles_environment';
+
+/** The section pi itself writes with the session's working folder (`buildSystemPromptSections`, forward slashes). */
+export const PI_CWD_SECTION = 'cwd';
+
+/** The model section's last line while no other model wrote a reply. The fold (`identity-prompt-fold.ts`) drops pi's record of a switch, so the prompt itself speaks about earlier replies. */
 export const MODEL_SWITCH_NOTE = "The user can switch this chat's model at any time, so earlier replies in this conversation may have come from another model.";
 
-/** Without a catalog entry for `model`, only a retired id gets a name and cutoff. */
-export function buildModelSection(model: string): string {
+/** How the prompt names any model, the current one and earlier ones alike. Without a catalog entry, only a retired id gets a name. */
+function modelIdentity(model: string): { name: string | null; id: string } {
   const entry = modelCatalogEntry(model);
-  const displayName = entry ? entry.displayName : (retiredModel(model)?.name ?? null);
-  const modelId = entry ? (entry.piModelId ?? entry.value) : model;
-  const modelLine = displayName
-    ? `You are powered by the model named ${displayName}. The exact model ID is ${modelId}.`
-    : `You are powered by the model ${modelId}.`;
+  return {
+    name: entry ? entry.displayName : (retiredModel(model)?.name ?? null),
+    id: entry ? (entry.piModelId ?? entry.value) : model,
+  };
+}
+
+/** The note naming the models that wrote the replies before the latest switch (`earlierModelRuns`), or `MODEL_SWITCH_NOTE` when none did. */
+function earlierRepliesNote(earlierModels: readonly string[]): string {
+  if (earlierModels.length === 0) return MODEL_SWITCH_NOTE;
+  const named = earlierModels.map((model) => {
+    const { name, id } = modelIdentity(model);
+    return name ? `${name} (${id})` : id;
+  });
+  return `The user can switch this chat's model at any time. Before the latest switch, replies in this conversation came from ${named.join(', then ')}; replies since then are yours.`;
+}
+
+/** Without a catalog entry for `model`, only a retired id gets a name and cutoff. `earlierModels` must change only at a switch, as `earlierModelRuns` gives it. */
+export function buildModelSection(model: string, earlierModels: readonly string[]): string {
+  const entry = modelCatalogEntry(model);
+  const { name, id } = modelIdentity(model);
+  const modelLine = name
+    ? `You are powered by the model named ${name}. The exact model ID is ${id}.`
+    : `You are powered by the model ${id}.`;
   const cutoff = entry ? entry.knowledgeCutoff : (retiredModel(model)?.cutoff ?? null);
-  return [modelLine, ...(cutoff ? [`Assistant knowledge cutoff is ${cutoff}.`] : []), MODEL_SWITCH_NOTE].join('\n');
+  return [modelLine, ...(cutoff ? [`Assistant knowledge cutoff is ${cutoff}.`] : []), earlierRepliesNote(earlierModels)].join('\n');
 }
 
 /**
