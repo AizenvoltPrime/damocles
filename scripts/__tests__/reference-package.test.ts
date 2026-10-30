@@ -29,7 +29,7 @@ describe('the reference tag check', () => {
     const repo = tempDir('reference-ref-');
     git(repo, 'init', '-q');
     git(repo, 'commit', '-q', '--allow-empty', '-m', 'reference');
-    expect(refProblem('remote-protocol-ref', repo)).toContain('git tag remote-protocol-ref 1e8eec04 && git push origin remote-protocol-ref');
+    expect(refProblem('remote-protocol-ref', repo)).toContain('git tag remote-protocol-ref 0c58749c && git push origin remote-protocol-ref');
     expect(refProblem('no-such-ref', repo)).toBe('no-such-ref names no commit in this clone');
     git(repo, 'tag', 'remote-protocol-ref');
     expect(refProblem('remote-protocol-ref', repo)).toBeUndefined();
