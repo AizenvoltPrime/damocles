@@ -13,7 +13,7 @@ import { cleanUp, daemonPid, endLeftoverDaemon, filesUnder, listRuns, LOCAL_DAEM
 import { chatRequests, type OpenAIStub, type StubReply } from './support/openai-stub';
 import { readyOverlay } from './support/overlay';
 import { openProjectChat, setReducedMotion, showShellTheme, THEMES } from './support/screenshots';
-import { holdToast, overlayPage, popupPage, popupToasts, recordedToasts, recordToasts, setWindowFocused, shellPage, shellState } from './support/shell';
+import { holdToast, overlayPage, popupPage, popupToasts, recordedToasts, recordShellMouse, recordToasts, setWindowFocused, shellPage, shellState } from './support/shell';
 import { awaitTurnEnd, chatInput, clickMenu, hostMessages, postFromWebview, recordHostMessages } from './support/ui';
 import { openTerminal } from './support/terminal';
 import { openedExternally, recordOpenExternal } from './support/updates';
@@ -710,7 +710,12 @@ test('on a loopback chat voice records in this computer\'s core and fills the re
     await expect.poll(() => linksOpened('/')).toBe(1);
     // and so does a Ctrl+click on a link in the file's source, which Monaco would otherwise open as a window of its own
     expect(await openInEditor(app, { projectKey: remoteKey, relativePath: 'README.md', as: 'source' })).toMatchObject({ ok: true });
-    await (await shellPage(app)).locator('.monaco-editor .detected-link').first().click({ modifiers: [process.platform === 'darwin' ? 'Meta' : 'Control'] });
+    // on Windows runners this click has seen a first trusted mouse event outside the shell, so the event log goes with a failure
+    const shellMouse = await recordShellMouse(app);
+    await (await shellPage(app)).locator('.monaco-editor .detected-link').first().click({ modifiers: [process.platform === 'darwin' ? 'Meta' : 'Control'] }).catch(async (error: unknown) => {
+      await testInfo.attach('shell-mouse-events.json', { body: await shellMouse(), contentType: 'application/json' });
+      throw error;
+    });
     await expect.poll(() => linksOpened('/')).toBe(2);
     if (REVIEW_SHOTS !== undefined) {
       const popup = await popupPage(app);

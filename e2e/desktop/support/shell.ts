@@ -50,6 +50,30 @@ export async function viewFocused(app: ElectronApplication, page: Page): Promise
   return app.evaluate(({ webContents }, url) => webContents.getAllWebContents().find((contents) => contents.getURL() === url)?.isFocused() ?? false, page.url());
 }
 
+const MOUSE_RECORD_LIMIT = 400;
+
+/**
+ * Records every mouse event main routes to the shell page, from the OS or Playwright alike, and resolves a reader of them with
+ * the window's bounds and the OS cursor. Playwright names `<html>` as a click's interceptor when the first trusted event lands
+ * outside the page; this says what sent it.
+ */
+export async function recordShellMouse(app: ElectronApplication): Promise<() => Promise<string>> {
+  const key = `shellMouse${Date.now()}`;
+  await app.evaluate(({ webContents }, [url, name, limit]) => {
+    const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL() === url)!;
+    const events: unknown[] = [];
+    (globalThis as Record<string, unknown>)[name] = events;
+    contents.on('before-mouse-event', (_event, mouse) => {
+      if (events.length < limit) events.push({ at: Date.now(), type: mouse.type, x: mouse.x, y: mouse.y, button: mouse.button, modifiers: mouse.modifiers });
+    });
+  }, [SHELL_URL, key, MOUSE_RECORD_LIMIT] as const);
+  return () => app.evaluate(({ BrowserWindow, screen }, [url, name]) => {
+    const window = BrowserWindow.getAllWindows().find((candidate) => candidate.webContents.getURL() === url);
+    const layout = { window: window?.getBounds(), content: window?.getContentBounds(), cursor: screen.getCursorScreenPoint(), windows: BrowserWindow.getAllWindows().map((other) => ({ url: other.webContents.getURL(), bounds: other.getBounds(), visible: other.isVisible() })) };
+    return JSON.stringify({ layout, events: (globalThis as Record<string, unknown>)[name] }, null, 2);
+  }, [SHELL_URL, key] as const);
+}
+
 /** The selected project's key, once main knows a project. */
 export async function selectedProjectKey(app: ElectronApplication): Promise<string> {
   let key: string | undefined;
