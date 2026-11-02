@@ -6,6 +6,7 @@ import { constants, promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { networkFileSystem } from '../../core/network-fs';
+import { agentSocketName } from '../core-protocol/agent-sockets';
 import { restrictToUser } from '../../core/owner-only-acl';
 import { MAX_SHARED_HOME_HOSTS, OTHER_HOSTNAME } from './control-messages';
 import { machineRunKey } from './machine-id';
@@ -131,11 +132,19 @@ async function lingers(): Promise<boolean> {
   }
 }
 
+// sun_path's size less its NUL: 104 bytes on macOS, 108 on Linux
+const MAX_SOCKET_PATH_BYTES = { darwin: 103, other: 107 } as const;
+// agent-<24 hex>.sock, the longest name SOCKET_FOLDER_ENTRY lets a daemon bind in a socket folder
+const LONGEST_SOCKET_NAME_BYTES = Buffer.byteLength(agentSocketName(''));
+
+/** TMPDIR on macOS, XDG_RUNTIME_DIR on a lingering Linux account, else /tmp; /tmp too when the first would pass sun_path. */
 export async function socketFolderBase(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, lingering: () => Promise<boolean> = lingers): Promise<string> {
-  if (platform === 'darwin') return env['TMPDIR'] || os.tmpdir();
   const runtime = env['XDG_RUNTIME_DIR'];
-  if (runtime && path.isAbsolute(runtime) && (await lingering())) return runtime;
-  return '/tmp';
+  let preferred = '/tmp';
+  if (platform === 'darwin') preferred = env['TMPDIR'] || os.tmpdir();
+  else if (runtime && path.isAbsolute(runtime) && (await lingering())) preferred = runtime;
+  const longest = Buffer.byteLength(path.posix.join(preferred, `${SOCKET_FOLDER_PREFIX}XXXXXX`)) + 1 + LONGEST_SOCKET_NAME_BYTES;
+  return longest <= MAX_SOCKET_PATH_BYTES[platform === 'darwin' ? 'darwin' : 'other'] ? preferred : '/tmp';
 }
 
 /** Throws unless the folder is a real folder, not a link, owned by this user, mode 0700, and not on a network file system. */
