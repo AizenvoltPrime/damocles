@@ -21,6 +21,7 @@ $LIVE_PID_FILE_MIN = 1500
 $LOCK_WAIT_S = 600
 # the count curl --retry gets in stage1-posix.sh
 $DOWNLOAD_RETRIES = 3
+$MOVE_RETRY_S = 30
 $HANDSHAKE_MAX_BYTES = 65536
 $PIPE_PATTERN = '^\\\\\.\\pipe\\(damocles-server-[0-9a-f]{32})$'
 $RUN_FOLDER_LABEL = 'damocles-server-run-folder'
@@ -488,6 +489,26 @@ function Clear-DamoclesPrevious([string]$previous, [string]$install) {
   if (-not $kept) { Send-DamoclesLine '{"kind":"settled"}' }
 }
 
+# Renames a folder, retried for up to MOVE_RETRY_S while Windows refuses it as access denied or a sharing or lock violation:
+# antivirus scanning the freshly unpacked files and the self-test's exiting processes hold them open for a moment.
+function Move-DamoclesFolder([string]$from, [string]$to) {
+  $deadline = (Get-Date).AddSeconds($MOVE_RETRY_S)
+  $delayMs = 10
+  while ($true) {
+    try {
+      [IO.Directory]::Move($from, $to)
+      return
+    } catch {
+      $cause = $_.Exception.InnerException
+      # Directory.Move reports ERROR_ACCESS_DENIED as an IOException; ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION too
+      $held = $cause -is [UnauthorizedAccessException] -or ($cause -is [IO.IOException] -and @(5, 32, 33) -contains ($cause.HResult -band 0xFFFF))
+      if (-not $held -or (Get-Date) -ge $deadline) { throw }
+      Start-Sleep -Milliseconds $delayMs
+      $delayMs = [Math]::Min($delayMs * 2, 1000)
+    }
+  }
+}
+
 # Ends the install after a failure: the staging folder and the lock go, then the stage fails.
 function Stop-DamoclesInstall([string]$staging, [string]$lock, [string]$code, [hashtable]$params = @{}) {
   Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
@@ -528,7 +549,7 @@ function Install-DamoclesVersion {
     }
   }
   try {
-    [IO.Directory]::Move($unpacked, $versionDir)
+    Move-DamoclesFolder $unpacked $versionDir
   } catch {
     Write-DamoclesLog "[stage1] moving the package into $versionDir failed: $($_.Exception.Message)"
     Stop-DamoclesInstall $staging $lock 'unknown' @{ reason = 'moveFailed' }
