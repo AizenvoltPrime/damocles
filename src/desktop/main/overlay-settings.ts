@@ -5,10 +5,10 @@ import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../..
 import type { HostTone } from '../../shared/host-tones';
 import { isSettingsAccountId, isSettingsSectionId, type SettingsTarget } from '../../shared/settings-sections';
 import { SETTINGS_VIEW_REQUEST_TYPES } from '../../shared/settings-view-messages';
-import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayPrefs, type OverlayPrefWrite, type OverlaySettingsScopes } from '../preload/overlay-channels';
+import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayPrefs, type OverlayPrefWrite, type OverlayRect, type OverlaySettingsScopes } from '../preload/overlay-channels';
 import type { TerminalProfileReport } from '../preload/terminal-channels';
 import { DESKTOP_CONFIGURATION, isDesktopSettingValue, TERMINAL_PROFILES_SETTING, type DesktopLanguageSetting } from '../local-services/desktop-configuration';
-import type { OverlayHost } from './overlay';
+import { parseRect, type OverlayHost } from './overlay';
 import { isVersion } from './release-notes';
 import { asJsonValue, isWebviewMessage } from './views';
 
@@ -30,7 +30,8 @@ export interface SettingsAttachTarget {
 
 // The tabs a remote chat's settings show: User (the local core), its host (machine scope) and Project.
 export interface SettingsScopes {
-  readonly host: { readonly authority: string; readonly name: string; readonly color?: HostTone };
+  // canAllowYolo: the host has a saved record, so main may ask to allow YOLO on it
+  readonly host: { readonly authority: string; readonly name: string; readonly color?: HostTone; readonly canAllowYolo?: true };
   readonly projectFile?: string;
 }
 
@@ -52,6 +53,12 @@ export interface OverlaySettingsDeps {
   readonly languageAtLaunch: DesktopLanguageSetting;
   // a saved SSH host's id, which a target's host must name
   readonly knownHost: (hostId: string) => boolean;
+  // asks to allow YOLO on the authority's saved host, hung from anchor; resolves whether it allows YOLO now
+  readonly allowYolo: (authority: string, anchor: OverlayRect) => Promise<boolean>;
+}
+
+function shownHost(host: SettingsScopes['host']): OverlaySettingsScopes['host'] {
+  return { name: host.name, ...(host.color !== undefined ? { color: host.color } : {}), ...(host.canAllowYolo ? { canAllowYolo: true } : {}) };
 }
 
 /** The one write path for a damocles.desktop.* value: checked against its declaration, written to user settings (D37). */
@@ -106,6 +113,7 @@ export class OverlaySettings {
     const settingsOpen = (): boolean => this.open;
     overlay.handleWhileOpen(OVERLAY_CHANNELS.prefsSet, settingsOpen, (raw) => this.setPref(raw));
     overlay.handleWhileOpen(OVERLAY_CHANNELS.settingsScope, settingsOpen, (raw) => this.selectScope(raw));
+    overlay.handleWhileOpen(OVERLAY_CHANNELS.settingsAllowYolo, settingsOpen, (raw) => this.allowYolo(raw));
     overlay.handleWhileOpen(OVERLAY_CHANNELS.relaunch, settingsOpen, () => deps.relaunch());
     overlay.handleWhileOpen(OVERLAY_CHANNELS.layoutReset, settingsOpen, () => deps.resetLayout());
     overlay.handleWhileOpen(OVERLAY_CHANNELS.terminalProfiles, settingsOpen, (raw) => {
@@ -220,14 +228,25 @@ export class OverlaySettings {
   hostChanged(authority: string): void {
     const scopes = this.deps.scopes();
     if (!this.open || this.scope === undefined || scopes?.host.authority !== authority) return;
-    this.deps.overlay.send(OVERLAY_CHANNELS.settingsScopeHost, { name: scopes.host.name, ...(scopes.host.color !== undefined ? { color: scopes.host.color } : {}) });
+    this.deps.overlay.send(OVERLAY_CHANNELS.settingsScopeHost, shownHost(scopes.host));
+  }
+
+  // Only a remote chat's host or Project tab asks, and always for the attached tab's host, never one the renderer names.
+  private async allowYolo(raw: unknown): Promise<boolean> {
+    const anchor = typeof raw === 'object' && raw !== null && !Array.isArray(raw) && Object.keys(raw).length === 1 ? parseRect((raw as { anchor?: unknown }).anchor) : undefined;
+    if (!anchor) throw new Error('Malformed allow YOLO request');
+    const host = this.scopeHost;
+    if (host === undefined || this.scope === undefined || this.scope === 'user') throw new Error('No remote host tab shows');
+    // the selection moved to another host's chat, whose tab is not attached yet
+    if (host !== this.deps.scopes()?.host.authority) throw new Error('The settings are re-attaching to another chat');
+    return this.deps.allowYolo(host, anchor);
   }
 
   private scopesShown(): OverlaySettingsScopes | undefined {
     const scopes = this.deps.scopes();
     if (!scopes || this.scope === undefined) return undefined;
     return {
-      host: { name: scopes.host.name, ...(scopes.host.color !== undefined ? { color: scopes.host.color } : {}) },
+      host: shownHost(scopes.host),
       ...(scopes.projectFile !== undefined ? { projectFile: scopes.projectFile } : {}),
       active: this.scope,
     };

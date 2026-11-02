@@ -14,7 +14,7 @@ import type { FakePanelHost } from '../../../__mocks__/fake-platform';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayPrefs, type OverlayPrefWrite, type OverlayRequest, type PopupAnswer } from '../../preload/overlay-channels';
 import { DESKTOP_CONFIGURATION, LANGUAGE_SETTING, TERMINAL_PROFILES_SETTING } from '../../local-services/desktop-configuration';
-import { OverlaySettings, type SettingsViewHost } from '../overlay-settings';
+import { OverlaySettings, type SettingsScopes, type SettingsViewHost } from '../overlay-settings';
 import { WebviewPrompts } from '../../../core/chat-panel/webview-prompts';
 import type { AttachedView } from '../../../core/chat-panel/types';
 import type { OverlayHost } from '../overlay';
@@ -114,6 +114,7 @@ async function setup() {
     log: (line) => lines.push(line),
     languageAtLaunch: 'el',
     knownHost: () => false,
+    allowYolo: async () => false,
   });
   harness.routed.length = 0;
   return {
@@ -141,6 +142,7 @@ describe('OverlaySettings', () => {
       log: () => undefined,
       languageAtLaunch: 'en',
       knownHost: () => false,
+      allowYolo: async () => false,
     });
     await expect(settings.show({ section: 'accounts', account: 'openai' })).rejects.toThrow('No chat could be opened');
     expect(seen).toEqual([['user', true]]);
@@ -532,13 +534,25 @@ describe('OverlaySettings scope tabs', () => {
     const remote = await openPanel(harness);
     const fake = fakeOverlay();
     const attached = new Map<number, { readonly panelId: string; readonly view: AttachedView }>();
-    const hooks = { remoteUp: true, refuse: (_scope: string | undefined): boolean => false, attaches: 0 };
+    const hooks = {
+      remoteUp: true,
+      refuse: (_scope: string | undefined): boolean => false,
+      // what an attach waits for before core answers it, as a remote core over the wire does
+      hold: (_scope: string | undefined): Promise<void> | undefined => undefined,
+      attaches: 0,
+      allowYolo: [] as Array<{ authority: string; anchor: object }>,
+      // the selected chat's host, and what finding its chat waits for
+      host: { authority: 'loopback', name: 'Local daemon' } as SettingsScopes['host'],
+      holdTarget: (): Promise<void> | undefined => undefined,
+    };
     const host = (): SettingsViewHost => ({
       attachSettingsView: async (panelId, attachment, view, scope) => {
         hooks.attaches++;
+        await hooks.hold(scope);
         if (hooks.refuse(scope)) throw new Error('No open chat panel');
-        attached.set(attachment, { panelId, view });
-        return harness.manager.attachView(panelId, view);
+        const scoped: AttachedView = scope === undefined ? view : { ...view, scope };
+        attached.set(attachment, { panelId, view: scoped });
+        return harness.manager.attachView(panelId, scoped);
       },
       dispatchSettingsView: async (attachment, message) => {
         const entry = attached.get(attachment);
@@ -550,10 +564,13 @@ describe('OverlaySettings scope tabs', () => {
     const settings = new OverlaySettings({
       overlay: fake.overlay,
       settings: createFakePlatform({ settings: { scopeFiles: { user: USER_FILE } } }).settings,
-      target: async (scope) => (scope === 'user'
-        ? { host: localCore, panelId: local.panelId, scope }
-        : hooks.remoteUp ? { host: remoteCore, panelId: remote.panelId, scope: scope ?? 'machine' } : undefined),
-      scopes: () => ({ host: { authority: 'loopback', name: 'Local daemon' } }),
+      target: async (scope) => {
+        await hooks.holdTarget();
+        return scope === 'user'
+          ? { host: localCore, panelId: local.panelId, scope }
+          : hooks.remoteUp ? { host: remoteCore, panelId: remote.panelId, scope: scope ?? 'machine' } : undefined;
+      },
+      scopes: () => ({ host: hooks.host }),
       focused: () => undefined,
       relaunch: vi.fn(),
       resetLayout: vi.fn(),
@@ -561,6 +578,10 @@ describe('OverlaySettings scope tabs', () => {
       log: () => undefined,
       languageAtLaunch: 'en',
       knownHost: () => false,
+      allowYolo: async (authority, anchor) => {
+        hooks.allowYolo.push({ authority, anchor });
+        return true;
+      },
     });
     harness.routed.length = 0;
     const attachedEvents = () => fake.sent.filter((entry) => entry.channel === OVERLAY_CHANNELS.settingsAttached).map((entry) => entry.payload);
@@ -599,6 +620,53 @@ describe('OverlaySettings scope tabs', () => {
     await settings.show({ section: 'integrations' }, 'machine');
     expect(attachedEvents().at(-1)).toMatchObject({ scopes: { active: 'machine' } });
     expect(await send(attachedEvents().length + 1)).toEqual([remote.panelId]);
+  });
+
+  it("asks to allow YOLO only from a remote chat's host or Project tab, for the attached chat's host, and refuses a malformed anchor", async () => {
+    const { fake, settings, hooks } = await scoped();
+    const anchor = { x: 900, y: 420, width: 36, height: 20 };
+    await expect(fake.invoke(OVERLAY_CHANNELS.settingsAllowYolo, { anchor })).resolves.toEqual({ ok: false, reason: 'closed' });
+    void settings.show({});
+    await tick();
+    await expect(fake.invoke(OVERLAY_CHANNELS.settingsAllowYolo, { anchor })).resolves.toEqual({ ok: true, value: true });
+    await fake.invoke(OVERLAY_CHANNELS.settingsScope, { scope: 'project' });
+    await expect(fake.invoke(OVERLAY_CHANNELS.settingsAllowYolo, { anchor })).resolves.toEqual({ ok: true, value: true });
+    await expect(fake.invoke(OVERLAY_CHANNELS.settingsAllowYolo, { anchor: { x: -1, y: 0, width: 1, height: 1 } })).rejects.toThrow('Malformed');
+    await expect(fake.invoke(OVERLAY_CHANNELS.settingsAllowYolo, { anchor, host: 'ssh+other' })).rejects.toThrow('Malformed');
+    await fake.invoke(OVERLAY_CHANNELS.settingsScope, { scope: 'user' });
+    await expect(fake.invoke(OVERLAY_CHANNELS.settingsAllowYolo, { anchor })).rejects.toThrow('No remote host tab');
+    expect(hooks.allowYolo).toEqual([{ authority: 'loopback', anchor }, { authority: 'loopback', anchor }]);
+  });
+
+  it('refuses to ask while the modal re-attaches to a chat of another host, and asks for that host once it attached', async () => {
+    const { fake, settings, hooks } = await scoped();
+    const anchor = { x: 900, y: 420, width: 36, height: 20 };
+    void settings.show({});
+    await tick();
+    let release!: () => void;
+    hooks.holdTarget = () => new Promise<void>((resolve) => (release = resolve));
+    hooks.host = { authority: 'ssh+h2', name: 'staging' };
+    settings.selectionChanged();
+    await tick();
+    await expect(fake.invoke(OVERLAY_CHANNELS.settingsAllowYolo, { anchor })).rejects.toThrow('re-attaching');
+    hooks.holdTarget = () => undefined;
+    release();
+    await tick();
+    await expect(fake.invoke(OVERLAY_CHANNELS.settingsAllowYolo, { anchor })).resolves.toEqual({ ok: true, value: true });
+    expect(hooks.allowYolo).toEqual([{ authority: 'ssh+h2', anchor }]);
+  });
+
+  it('tells the page which host main may ask to allow YOLO on, in the request, each attach and a rename', async () => {
+    const { fake, settings, hooks, attachedEvents } = await scoped();
+    hooks.host = { authority: 'ssh+h1', name: 'prod', color: 'danger', canAllowYolo: true };
+    void settings.show({});
+    await tick();
+    expect(fake.requests.at(-1)).toMatchObject({ scopes: { host: { name: 'prod', color: 'danger', canAllowYolo: true } } });
+    await fake.invoke(OVERLAY_CHANNELS.settingsScope, { scope: 'project' });
+    expect(attachedEvents().at(-1)).toMatchObject({ scopes: { host: { name: 'prod', color: 'danger', canAllowYolo: true } } });
+    hooks.host = { authority: 'ssh+h1', name: 'prod-1', canAllowYolo: true };
+    settings.hostChanged('ssh+h1');
+    expect(fake.sent.filter((entry) => entry.channel === OVERLAY_CHANNELS.settingsScopeHost).map((entry) => entry.payload)).toEqual([{ name: 'prod-1', canAllowYolo: true }]);
   });
 
   it("opens on the User tab while the host's core is unavailable", async () => {
@@ -642,6 +710,88 @@ describe('OverlaySettings scope tabs', () => {
     await expect(fake.invoke(OVERLAY_CHANNELS.settingsScope, { scope: 'user' })).rejects.toThrow('No open chat panel');
     await tick();
     expect(hooks.attaches - before).toBe(2);
+  });
+
+  // The renderer takes a tab's generation from settingsAttached, which main sends before core answers the attach.
+  function holdAttaches(hooks: { hold: (scope: string | undefined) => Promise<void> | undefined }): () => void {
+    let release: () => void = () => undefined;
+    hooks.hold = () => new Promise<void>((resolve) => { release = resolve; });
+    return () => release();
+  }
+  const sendFor = (fake: ReturnType<typeof fakeOverlay>, generation: number, type: 'requestSettingsState' | 'setBudgetLimit'): void => {
+    fake.fire(OVERLAY_CHANNELS.settingsSend, { generation, message: type === 'requestSettingsState' ? { type } : { type, budgetUsd: generation } });
+  };
+
+  it('runs what the modal sends for a tab core is still attaching on that tab once it is attached, back and forth, and none of it on the tab it left', async () => {
+    const { harness, fake, settings, remote, hooks, attachedEvents } = await scoped();
+    void settings.show({});
+    await tick();
+    const routed = () => harness.routed.map((r) => [r.message.type, (r.message as { budgetUsd?: number }).budgetUsd, r.panelId, r.view?.scope]);
+
+    let release = holdAttaches(hooks);
+    const toProject = fake.invoke(OVERLAY_CHANNELS.settingsScope, { scope: 'project' });
+    await tick();
+    expect(attachedEvents()).toEqual([{ generation: 2, scopes: { host: { name: 'Local daemon' }, active: 'project' } }]);
+    sendFor(fake, 2, 'requestSettingsState');
+    sendFor(fake, 2, 'setBudgetLimit');
+    await tick();
+    expect(harness.routed).toEqual([]);
+    release();
+    await expect(toProject).resolves.toEqual({ ok: true, value: 'project' });
+    await tick();
+    expect(routed()).toEqual([['requestSettingsState', undefined, remote.panelId, 'project'], ['setBudgetLimit', 2, remote.panelId, 'project']]);
+
+    harness.routed.length = 0;
+    release = holdAttaches(hooks);
+    const toHost = fake.invoke(OVERLAY_CHANNELS.settingsScope, { scope: 'machine' });
+    await tick();
+    sendFor(fake, 3, 'requestSettingsState');
+    sendFor(fake, 1, 'setBudgetLimit');
+    await tick();
+    expect(harness.routed).toEqual([]);
+    release();
+    await expect(toHost).resolves.toEqual({ ok: true, value: 'machine' });
+    await tick();
+    expect(routed()).toEqual([['requestSettingsState', undefined, remote.panelId, 'machine']]);
+  });
+
+  it('drops what the modal sent for a tab core refused, and runs what it sends for the tab attached again', async () => {
+    const { harness, fake, settings, remote, hooks, attachedEvents } = await scoped();
+    void settings.show({});
+    await tick();
+    const release = holdAttaches(hooks);
+    hooks.refuse = (scope) => scope === 'project';
+    const toProject = fake.invoke(OVERLAY_CHANNELS.settingsScope, { scope: 'project' });
+    await tick();
+    sendFor(fake, 2, 'setBudgetLimit');
+    hooks.hold = () => undefined;
+    release();
+    await expect(toProject).rejects.toThrow('No open chat panel');
+    await tick();
+    expect(attachedEvents().map((event) => (event as { generation: number }).generation)).toEqual([2, 3]);
+    expect(harness.routed).toEqual([]);
+
+    sendFor(fake, 2, 'setBudgetLimit');
+    sendFor(fake, 3, 'requestSettingsState');
+    await tick();
+    expect(harness.routed.map((r) => [r.message.type, r.panelId, r.view?.scope])).toEqual([['requestSettingsState', remote.panelId, 'machine']]);
+  });
+
+  it('runs nothing the modal sent for a tab core was attaching when the modal closed', async () => {
+    const { harness, fake, settings, remote, hooks } = await scoped();
+    const shown = settings.show({});
+    await tick();
+    const release = holdAttaches(hooks);
+    const toProject = fake.invoke(OVERLAY_CHANNELS.settingsScope, { scope: 'project' }) as Promise<unknown>;
+    await tick();
+    sendFor(fake, 2, 'setBudgetLimit');
+    fake.close();
+    await shown;
+    release();
+    await expect(toProject).rejects.toThrow();
+    await tick();
+    expect(harness.routed).toEqual([]);
+    expect(harness.manager.attachedView(remote.panelId)).toBeUndefined();
   });
 
   it('stays attached when a core it is not attached to ends', async () => {

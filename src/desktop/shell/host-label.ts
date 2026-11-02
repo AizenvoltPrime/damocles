@@ -19,3 +19,13 @@ export function hostStateLabel(host: LabelledHost, t: Translate): string {
   }
   return t('projects.hostState', { host: host.name, state: t(`projects.connection.${host.connection}`) });
 }
+
+/** A host's state without its name, where the name already shows beside it: "Connected · 38 ms", "Slow connection (620 ms)". */
+export function hostStatus(host: Omit<LabelledHost, 'name'>, t: Translate): string {
+  if (host.reconnect) return t(host.reconnect.phase === 'failed' ? 'projects.connection.reconnectFailed' : 'projects.connection.reconnecting');
+  if (host.connection === 'connected' && host.latency) {
+    const ms = Math.round(host.latency.latencyMs);
+    return host.latency.slow ? t('projects.slowConnectionShort', { ms }) : t('projects.latencyShort', { ms });
+  }
+  return t(`projects.connection.${host.connection}`);
+}

@@ -23,7 +23,8 @@ const props = withDefaults(defineProps<{
   // false: a wrapper around the row and its notice moves and lifts them together
   flip?: boolean;
 }>(), { flip: true, host: undefined });
-const emit = defineEmits<{ trust: [] }>();
+// hostDetails: the host badge's element, which the host's card hangs from
+const emit = defineEmits<{ trust: []; hostDetails: [badge: HTMLElement] }>();
 const { t } = useI18n();
 
 const remote = computed(() => props.project.authority.kind !== 'local');
@@ -37,6 +38,14 @@ const badge = computed(() => {
 
 // The host and its state as one phrase ("Local daemon, Connecting", "prod-1 · 38 ms"), for the dot's name and the badge's tooltip.
 const hostState = computed(() => hostStateLabel({ name: props.project.authority.name, connection: props.project.connection, reconnect: props.host?.reconnect, latency: props.host?.latency }, t));
+
+// A host with no saved record (loopback) has no card, so its badge leaves the click to the row.
+const opensCard = computed(() => props.project.authority.hostId !== undefined);
+function openDetails(event: MouseEvent): void {
+  if (!opensCard.value) return;
+  event.stopPropagation();
+  emit('hostDetails', event.currentTarget as HTMLElement);
+}
 </script>
 
 <template>
@@ -107,12 +116,15 @@ const hostState = computed(() => hostStateLabel({ name: props.project.authority.
       />
       {{ badge.text }}
     </Badge>
+    <!-- An option holds no buttons, so the badge is a pointer shortcut; the row's menu has Details for the keyboard. -->
     <HostBadge
       v-if="remote && !grouped"
       data-testid="host-badge"
       :name="project.authority.name"
       :tone="project.authority.color"
       :title="hostState"
+      :class="opensCard ? 'cursor-pointer hover:bg-(--tone)/25' : ''"
+      @click="openDetails"
     >
       <template #leading>
         <HostStatusDot

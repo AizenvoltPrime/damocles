@@ -28,7 +28,10 @@ let revealed: DesktopPanel[];
 let savedSessionChanges: DesktopPanel[];
 let pageEvents: string[];
 let popupOpen: boolean;
+// the chats main withholds, read at every layout
+let withheld: Set<DesktopPanel>;
 let hostActions: string[];
+let allowYoloAsks: Array<{ authority: string; anchor: unknown; window: object }>;
 let queueActions: string[];
 let remoteLinks: string[];
 
@@ -53,6 +56,10 @@ function views(width = 1200): PanelViews {
     hostLabel: () => undefined,
     hostNames: () => ({}),
     onHostAction: (panel, action) => hostActions.push(`${panel.authority}:${action}`),
+    onAllowYolo: async (panel, anchor) => {
+      allowYoloAsks.push({ authority: panel.authority, anchor, window: panel.windowRect(anchor as { x: number; y: number; width: number; height: number }) });
+      return true;
+    },
     connection: (panel) => (panel.authority === 'local' ? undefined : { state: { phase: 'offline' }, queued: [] }),
     onQueueAction: (panel, action) => queueActions.push(`${panel.authority}:${action.action}:${action.id}`),
     takeCoreMessage: (_panel, type) => type === 'promptReturned',
@@ -68,6 +75,7 @@ function views(width = 1200): PanelViews {
     onRendererGaveUp: (panel) => gaveUp.push(panel),
     onSavedSessionChange: (chat) => savedSessionChanges.push(chat),
     popupOpen: () => popupOpen,
+    withholds: (chat) => withheld.has(chat),
   }, (p) => p);
 }
 
@@ -81,6 +89,7 @@ function open(tabs: PanelViews, restore?: { panelId: string; state: unknown }): 
 beforeEach(() => {
   states = fakeStates();
   hostActions = [];
+  allowYoloAsks = [];
   queueActions = [];
   remoteLinks = [];
   gaveUp = [];
@@ -90,6 +99,7 @@ beforeEach(() => {
   savedSessionChanges = [];
   pageEvents = [];
   popupOpen = false;
+  withheld = new Set();
   H.webContentsOptions.length = 0;
 });
 
@@ -377,6 +387,52 @@ describe('PanelViews chats', () => {
     expect(chat.visible).toBe(false);
   });
 
+  it('hides the selected chat once main withholds it, and shows it again once main no longer does', () => {
+    const tabs = views(1200);
+    const chat = open(tabs);
+    tabs.setContentBounds({ x: 264, y: 40, width: 936, height: 760 });
+    withheld.add(chat);
+    tabs.withholdingChanged();
+    expect(chat.visible).toBe(false);
+    withheld.delete(chat);
+    tabs.withholdingChanged();
+    expect(chat.visible).toBe(true);
+    expect(viewOf(chat).bounds).toEqual({ x: 264, y: 40, width: 936, height: 760 });
+  });
+
+  it('judges a chat as it is shown, so a withheld one never appears', () => {
+    const tabs = views();
+    const first = open(tabs);
+    const kept = tabs.create({ options: CHAT });
+    withheld.add(kept);
+    tabs.show(kept.panelId, { focus: false });
+    expect(tabs.selected()).toBe(kept);
+    expect(kept.visible).toBe(false);
+    expect(first.visible).toBe(false);
+  });
+
+  // A hidden view keeps keyboard focus, so keys would reach the hidden composer.
+  it('moves focus from a withheld chat to the window page, and gives the window page the focus a withheld chat is asked to take', () => {
+    const tabs = views();
+    const chat = open(tabs);
+    chat.showPage({ kind: 'chat' });
+    expect(contentsOf(chat).focused).toBe(true);
+    withheld.add(chat);
+    tabs.withholdingChanged();
+    expect(window.webContents.focus).toHaveBeenCalledTimes(1);
+
+    contentsOf(chat).focused = false;
+    tabs.focusChat();
+    expect(window.webContents.focus).toHaveBeenCalledTimes(2);
+    const launched = tabs.create({ options: CHAT });
+    withheld.add(launched);
+    tabs.show(launched.panelId, { focus: 'whenReady' });
+    launched.showPage({ kind: 'chat' });
+    window.emit('focus');
+    expect(contentsOf(launched).focus).not.toHaveBeenCalled();
+    expect(contentsOf(chat).focus).toHaveBeenCalledTimes(1);
+  });
+
   it('asks the owner to restack the overlay after every view it adds', () => {
     const tabs = views();
     const chat = tabs.create({ options: CHAT, restore: { panelId: 'chat', state: null } });
@@ -523,6 +579,95 @@ describe('panel IPC', () => {
     send(local, 'reconnect');
     expect(hostActions).toEqual(['ssh+h1:reconnect', 'ssh+h1:signIn', 'ssh+h1:showLog', 'ssh+h1:editHost', 'ssh+h1:switchWhenIdle', 'ssh+h1:switchNow']);
     expect(lines.filter((line) => line.includes('dropped a host action'))).toHaveLength(2);
+  });
+
+  describe('Allow YOLO', () => {
+    const anchor = { x: 100, y: 500, width: 40, height: 20 };
+    const ask = (panel: DesktopPanel, payload: unknown, sender: unknown = contentsOf(panel)): Promise<unknown> => {
+      const handler = contentsOf(panel).ipc.handlers.get(PANEL_CHANNELS.allowYolo)!;
+      return Promise.resolve().then(() => handler({ sender, senderFrame: { url: panel.pageUrl, parent: null } }, payload));
+    };
+    const click = (panel: DesktopPanel): void => {
+      contentsOf(panel).emit('before-mouse-event', {}, { type: 'mouseUp', button: 'left', modifiers: [] });
+    };
+
+    it("asks only for a remote chat's own page, after a click main observed, with its anchor in the window's DIPs", async () => {
+      const tabs = views();
+      const remote = tabs.create({ options: CHAT, authority: 'ssh+h1' });
+      const local = tabs.create({ options: CHAT });
+      tabs.show(remote.panelId, { focus: true });
+      viewOf(remote).bounds = { x: 300, y: 40, width: 800, height: 600 };
+      contentsOf(remote).zoom = 1.25;
+
+      click(remote);
+      await expect(ask(remote, { anchor })).resolves.toBe(true);
+      expect(allowYoloAsks).toEqual([{ authority: 'ssh+h1', anchor, window: { x: 425, y: 665, width: 50, height: 25 } }]);
+      click(local);
+      await expect(ask(local, { anchor })).rejects.toThrow('may not ask to allow YOLO');
+      click(remote);
+      await expect(ask(remote, { anchor, more: 1 })).rejects.toThrow('may not ask to allow YOLO');
+      click(remote);
+      await expect(ask(remote, { anchor }, contentsOf(local))).rejects.toThrow('Rejected sender');
+      expect(allowYoloAsks).toHaveLength(1);
+      expect(lines.filter((line) => line.includes(`${PANEL_CHANNELS.allowYolo} failed`))).toHaveLength(2);
+    });
+
+    it('takes an activation key as the gesture, and each gesture allows one ask', async () => {
+      const tabs = views();
+      const remote = tabs.create({ options: CHAT, authority: 'ssh+h1' });
+      tabs.show(remote.panelId, { focus: true });
+      contentsOf(remote).emit('before-input-event', {}, { type: 'keyDown', code: 'Enter', shift: false, control: false, alt: false, meta: false, isComposing: false });
+      await expect(ask(remote, { anchor })).resolves.toBe(true);
+      await expect(ask(remote, { anchor })).rejects.toThrow('Only a click or key in the shown chat');
+      expect(allowYoloAsks).toHaveLength(1);
+    });
+
+    it('refuses without a gesture, after the page lost focus, in a hidden chat and while a popup is open', async () => {
+      const tabs = views();
+      const remote = tabs.create({ options: CHAT, authority: 'ssh+h1' });
+      const other = tabs.create({ options: CHAT, authority: 'ssh+h2' });
+      tabs.show(remote.panelId, { focus: true });
+      await expect(ask(remote, { anchor })).rejects.toThrow('Only a click or key in the shown chat');
+      click(remote);
+      contentsOf(remote).emit('blur');
+      await expect(ask(remote, { anchor })).rejects.toThrow('Only a click or key in the shown chat');
+      click(other);
+      await expect(ask(other, { anchor })).rejects.toThrow('Only a click or key in the shown chat');
+      popupOpen = true;
+      click(remote);
+      await expect(ask(remote, { anchor })).rejects.toThrow('Only a click or key in the shown chat');
+      expect(allowYoloAsks).toEqual([]);
+    });
+
+    it("refuses a browser page of a remote chat, which carries the chat's authority", async () => {
+      const tabs = views();
+      const chat = tabs.create({ options: CHAT, authority: 'ssh+h1' });
+      tabs.show(chat.panelId, { focus: true });
+      const page = tabs.create({ options: pageOptions(chat) });
+      expect(page.authority).toBe('ssh+h1');
+      click(page);
+      await expect(ask(page, { anchor })).rejects.toThrow('may not ask to allow YOLO');
+      expect(allowYoloAsks).toEqual([]);
+    });
+
+    it('removes its handler when the chat closes', () => {
+      const tabs = views();
+      const remote = tabs.create({ options: CHAT, authority: 'ssh+h1' });
+      const contents = contentsOf(remote);
+      expect(contents.ipc.handlers.has(PANEL_CHANNELS.allowYolo)).toBe(true);
+      remote.close();
+      expect(contents.ipc.handlers.has(PANEL_CHANNELS.allowYolo)).toBe(false);
+    });
+
+    it("converts the page's CSS pixels to the overlay's at the page's and the shell's zoom", () => {
+      const tabs = views();
+      const remote = tabs.create({ options: CHAT, authority: 'ssh+h1' });
+      viewOf(remote).bounds = { x: 300, y: 40, width: 800, height: 600 };
+      contentsOf(remote).zoom = 1.5;
+      // DIPs: (300 + 100 * 1.5, 40 + 200 * 1.5) = (450, 340), 60 x 30; at a shell zoom of 1.25, 4/5 of each
+      expect(remote.overlayRect({ x: 100, y: 200, width: 40, height: 20 }, 1.25)).toEqual({ x: 360, y: 272, width: 48, height: 24 });
+      expect(remote.overlayRect({ x: 100, y: 200, width: 40, height: 20 }, 1)).toEqual({ x: 450, y: 340, width: 60, height: 30 });
+    });
   });
 
   it('reads the saved session from the restore state, then from each webview state, and reports only a change of it', () => {

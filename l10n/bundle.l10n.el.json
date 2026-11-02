@@ -1501,5 +1501,6 @@
   "damocles: Damocles exited before it took the request.": "damocles: το Damocles τερματίστηκε πριν παραλάβει το αίτημα.",
   "The project is not in a container any more.": "Το έργο δεν βρίσκεται πλέον σε κοντέινερ.",
   "Another host is already named {0}.": "Ένας άλλος κεντρικός υπολογιστής ονομάζεται ήδη {0}.",
-  "The folder's name cannot name a host.": "Το όνομα του φακέλου δεν μπορεί να γίνει όνομα κεντρικού υπολογιστή."
+  "The folder's name cannot name a host.": "Το όνομα του φακέλου δεν μπορεί να γίνει όνομα κεντρικού υπολογιστή.",
+  "Damocles could not allow YOLO on {0}: {1}": "Το Damocles δεν μπόρεσε να επιτρέψει το YOLO στο {0}: {1}"
 }

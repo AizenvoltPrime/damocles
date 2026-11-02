@@ -37,6 +37,7 @@ export const STATE: ShellState = {
     { key: 'p2', name: 'beta', fsPath: '/w/beta', trusted: false, authority: LOCAL, platform: 'win32', connection: 'connected', trash: true, running: 2, waiting: 1, branch: 'main' },
   ],
   selected: { projectKey: 'p1', chatId: 'c1' },
+  chatViewShown: true,
   selectedChat: { id: 'c1', title: 'Fix login', status: 'idle' },
   effectiveTheme: 'dark',
   layout: {
@@ -343,6 +344,7 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     restartEngine: vi.fn(async () => {}),
     renameHost: vi.fn(async (_hostId: string, name: string) => ({ ok: true as const, name })),
     renameHostOnCard: vi.fn(async () => {}),
+    showHostCard: vi.fn(async () => {}),
     openConnect: vi.fn(async () => {}),
     openHostFolder: vi.fn(async () => {}),
     setProjectsView: vi.fn(async () => {}),
@@ -607,6 +609,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
     onChime: vi.fn((listener) => { chimeListeners.add(listener); return () => chimeListeners.delete(listener); }),
     settingsSend: vi.fn(),
     setSettingsScope: vi.fn(async (scope: OverlaySettingsScope) => ({ ok: true as const, value: scope })),
+    allowHostYolo: vi.fn(async () => ({ ok: true as const, value: false })),
     onSettingsMessage: vi.fn((listener) => { settingsListeners.add(listener); return () => settingsListeners.delete(listener); }),
     onSettingsAttached: vi.fn((listener) => { attachedListeners.add(listener); return () => attachedListeners.delete(listener); }),
     onSettingsTarget: vi.fn((listener) => { targetListeners.add(listener); return () => targetListeners.delete(listener); }),

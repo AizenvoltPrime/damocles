@@ -70,8 +70,10 @@ test.describe('renderer security at runtime', () => {
     // The renderer has no Node and only the bridge crosses the isolation boundary.
     expect(await tab.evaluate(() => [typeof (window as unknown as { require?: unknown }).require, typeof (window as unknown as { process?: unknown }).process])).toEqual(['undefined', 'undefined']);
     // calls into main are postMessage, setState, the init read, and hostAction and queueAction, which main takes only from a
-    // remote chat (views.ts); the getters and on* listeners only read what main's init and pushes name
+    // remote chat, and allowYolo, which main takes only from a remote chat page on a user gesture (views.ts); the getters and
+    // on* listeners only read what main's init and pushes name
     expect(await tab.evaluate(() => Object.keys(window.damoclesBridge ?? {}).sort())).toEqual([
+      'allowYolo',
       'getConnection',
       'getHost',
       'getHostNames',

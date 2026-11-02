@@ -1286,6 +1286,7 @@
     "test:remote": "node scripts/test-remote.mjs",
     "dist": "npm run build && npm run build:desktop && node scripts/dist-desktop.mjs",
     "dist:linux-wsl": "node scripts/dist-linux-wsl.mjs",
+    "dist:local": "node scripts/dist-local.mjs",
     "watch": "concurrently \"npm run watch:extension\" \"npm run watch:webview\"",
     "watch:extension": "node esbuild.config.mjs --watch",
     "watch:webview": "vite build --watch",

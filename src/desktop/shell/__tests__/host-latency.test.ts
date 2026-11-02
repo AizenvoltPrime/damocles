@@ -5,7 +5,7 @@ import { nextTick } from 'vue';
 import { OFFLINE_GRACE_MS, RECONNECTED_MS } from '@shared/host-connection';
 import HostStatusDot from '../components/HostStatusDot.vue';
 import LatencySparkline from '../overlay/components/LatencySparkline.vue';
-import { hostStateLabel } from '../host-label';
+import { hostStateLabel, hostStatus } from '../host-label';
 import { shellI18n } from '../i18n';
 
 const t = (key: string, params?: Record<string, unknown>): string => shellI18n.global.t(key, params ?? {});
@@ -31,6 +31,22 @@ describe('host latency in the shell', () => {
     expect(hostStateLabel({ name: 'prod-1', connection: 'connected', latency: { latencyMs: 620, slow: true, history: [40, 620], measurements: 2 } }, t)).toBe('Slow connection to prod-1 (620 ms)');
     expect(hostStateLabel({ name: 'prod-1', connection: 'connected' }, t)).toBe('prod-1, Connected');
     expect(hostStateLabel({ name: 'prod-1', connection: 'offline', reconnect: { phase: 'failed', since: 1, code: 'hostRemoved' } }, t)).toBe("prod-1, Couldn't reconnect");
+  });
+
+  // the host card's status row: its heading names the host, so a long name never truncates the latency away
+  it("says a host's state and latency without its name", () => {
+    expect(hostStatus({ connection: 'connected', latency: { latencyMs: 38.4, slow: false, history: [38], measurements: 1 } }, t)).toBe('Connected · 38 ms');
+    expect(hostStatus({ connection: 'connected', latency: { latencyMs: 620, slow: true, history: [40, 620], measurements: 2 } }, t)).toBe('Slow connection (620 ms)');
+    expect(hostStatus({ connection: 'connected' }, t)).toBe('Connected');
+    expect(hostStatus({ connection: 'offline', reconnect: { phase: 'running', since: 1 } }, t)).toBe('Reconnecting');
+    expect(hostStatus({ connection: 'offline', reconnect: { phase: 'failed', since: 1, code: 'hostRemoved' } }, t)).toBe("Couldn't reconnect");
+  });
+
+  it('leaves a dot without a label out of the accessibility tree, beside the text that says its state', () => {
+    const root = dot({ connection: 'connected' }).get('[data-testid="host-status-dot"]');
+    expect(root.attributes('aria-hidden')).toBe('true');
+    expect(root.attributes()).not.toHaveProperty('role');
+    expect(root.attributes()).not.toHaveProperty('aria-label');
   });
 
   it('keeps the green center and adds a warning ring while slow, read out as slow', () => {

@@ -67,6 +67,6 @@ describe('YOLO on a host whose policy refuses it', () => {
     window.dispatchEvent(new MessageEvent('message', { data: { type: 'permissionModeRefused', mode: 'dangerouslySkipPermissions', reason: 'remote-host' } }));
     await flushPromises();
     expect(useSettingsStore().currentSettings.dangerouslySkipPermissions).toBe(false);
-    expect(notice()!.textContent).toContain('YOLO is off for your turns on this host.');
+    expect(notice()!.textContent).toContain('YOLO is off for your chats on this host.');
   });
 });

@@ -6,6 +6,7 @@ import type { SettingsAccountId, SettingsSectionId, SettingsTarget } from '@shar
 import type { ExtensionToWebviewMessage, SettingsFileScope } from '@shared/types/messages';
 import SettingsModal, { type SettingsFooter } from '@/components/settings/SettingsModal.vue';
 import ExtensionUiDialog from '@/components/ExtensionUiDialog.vue';
+import { provideAllowHostYolo, type AllowHostYolo } from '@/components/settings/settings-view';
 import { MCP_HOST_SERVERS_ROW, NO_HOST_SETTINGS, type HostSettings, type HostSettingsSection, type SettingsScopeView } from '@/components/settings/settings-rows';
 import { useSettingWritesStore } from '@/components/settings/settings-writes';
 import { settingsViewHandlers, type SettingsHandlerContext, type SettingsViewHandlers } from '@/composables/message-handler/handlers/settings-handlers';
@@ -453,6 +454,12 @@ function editSettingsFile(scope: SettingsFileScope, key?: string): void {
 }
 provide(EDIT_SETTINGS_FILE, editSettingsFile);
 provide(REMOTE_HOSTS_TARGET, computed(() => target.value.host));
+const allowHostYolo: AllowHostYolo = async (anchor) => {
+  const answer = await props.api.allowHostYolo({ x: anchor.x, y: anchor.y, width: anchor.width, height: anchor.height });
+  return answer.ok && answer.value;
+};
+// follows each attach: a tab of a host main never asks about (no saved record) gets none
+provideAllowHostYolo(() => (scopes.value?.host.canAllowYolo ? allowHostYolo : undefined));
 
 const modal = ref<InstanceType<typeof SettingsModal> | null>(null);
 </script>

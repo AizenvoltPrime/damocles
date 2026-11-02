@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CoreHost } from '../core-host';
-import { chatOfSelectedProject, remoteSelection } from '../remote/remote-selection';
+import { chatOfSelectedProject, keptChatWithheld, remoteSelection } from '../remote/remote-selection';
+import type { HostAttention } from '../../preload/shell-channels';
 
 interface FakeCore {
   readonly authority: string;
@@ -123,5 +124,28 @@ describe('remote project selection', () => {
     await started(host);
     expect(selections).toEqual([]);
     expect(breadcrumb()).toEqual([LOCAL_PROJECT, LOCAL_CHAT.id]);
+  });
+});
+
+describe('the kept chat withheld', () => {
+  const REMOTE_CHAT: Chat = { id: 'remote-chat', authority: 'loopback', projectKey: REMOTE_PROJECT };
+  const asked: string[] = [];
+  const attention = (value: HostAttention | undefined) => (authority: string): HostAttention | undefined => {
+    asked.push(authority);
+    return value;
+  };
+
+  it("withholds another authority's chat only while the selected project's host needs the user", () => {
+    expect(keptChatWithheld(REMOTE_PROJECT, LOCAL_CHAT, attention('signIn'))).toBe(true);
+    expect(keptChatWithheld(REMOTE_PROJECT, LOCAL_CHAT, attention('offline'))).toBe(true);
+    expect(keptChatWithheld(REMOTE_PROJECT, LOCAL_CHAT, attention(undefined))).toBe(false);
+    expect(asked).toEqual(['loopback', 'loopback', 'loopback']);
+  });
+
+  it("never withholds a chat of the selected project's authority, or with nothing selected", () => {
+    expect(keptChatWithheld(REMOTE_PROJECT, REMOTE_CHAT, attention('signIn'))).toBe(false);
+    expect(keptChatWithheld(LOCAL_PROJECT, LOCAL_CHAT, attention('offline'))).toBe(false);
+    expect(keptChatWithheld(undefined, LOCAL_CHAT, attention('signIn'))).toBe(false);
+    expect(keptChatWithheld(REMOTE_PROJECT, undefined, attention('signIn'))).toBe(false);
   });
 });

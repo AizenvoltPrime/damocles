@@ -867,6 +867,7 @@ describe('overlay dispose', () => {
     await expect(call).rejects.toThrow('failed');
     await done;
     expect(settled).toBe(true);
+    expect(lines).toContain('[overlay] test:popup failed: failed');
   });
 
   it('refuses a second handler for a channel, as Electron does', () => {
@@ -1025,6 +1026,24 @@ describe('overlay message dialogs (D41)', () => {
     emit(OVERLAY_CHANNELS.answer, own(), settingsId, { kind: 'settings', closed: true });
     await expect(settings).resolves.toEqual({ kind: 'settings', closed: true });
     expect(returnFocus.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it('hold Allow YOLO above the settings modal that asked, and take a malformed answer as a dismissal', async () => {
+    loaded();
+    const settings = host.request(SETTINGS, returnFocus as never);
+    const settingsId = lastRequestId();
+    const request: OverlayRequest = { kind: 'allowYolo', hostName: 'prod', anchor: { x: 900, y: 400, width: 36, height: 20 } };
+    const ask = host.request(request, undefined);
+    expect(host.isOpen('settings')).toBe(true);
+    expect(host.isOpen('allowYolo')).toBe(true);
+    emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'allowYolo', allow: true });
+    await expect(ask).resolves.toEqual({ kind: 'allowYolo', allow: true });
+    const forged = host.request(request, undefined);
+    emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'allowYolo', allow: true, extra: 1 });
+    await expect(forged).resolves.toEqual({ kind: 'dismissed' });
+    expect(host.isOpen('settings')).toBe(true);
+    emit(OVERLAY_CHANNELS.answer, own(), settingsId, { kind: 'settings', closed: true });
+    await expect(settings).resolves.toEqual({ kind: 'settings', closed: true });
   });
 
   it('stay open when another popup replaces the open one', async () => {

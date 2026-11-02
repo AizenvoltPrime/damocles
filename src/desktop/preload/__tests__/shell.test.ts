@@ -55,6 +55,27 @@ describe('shell preload', () => {
     ]);
   });
 
+  it('sends a host card\'s anchor as a plain copy of its four fields, never the DOMRect it was given', async () => {
+    await import('../shell');
+    const api = H.exposed!;
+    H.invoked.length = 0;
+    // a DOMRect's fields are prototype getters beside top, right, bottom, left and toJSON
+    class Rect {
+      get x(): number { return 120; }
+      get y(): number { return 6; }
+      get width(): number { return 90; }
+      get height(): number { return 28; }
+      get top(): number { return 6; }
+      get left(): number { return 120; }
+      toJSON(): unknown { return {}; }
+    }
+    await api.showHostCard('h1', Object.assign(new Rect(), { extra: 1 }));
+    expect(H.invoked).toEqual([['damocles:shell:hosts:show-card', { hostId: 'h1', anchor: { x: 120, y: 6, width: 90, height: 28 } }]]);
+    const anchor = (H.invoked[0]![1] as { anchor: object }).anchor;
+    expect(Object.getPrototypeOf(anchor)).toBe(Object.prototype);
+    expect(Object.keys(anchor)).toEqual(['x', 'y', 'width', 'height']);
+  });
+
   it('sends the Files transfer calls as their own fields only, on their own channels', async () => {
     await import('../shell');
     const api = H.exposed!;

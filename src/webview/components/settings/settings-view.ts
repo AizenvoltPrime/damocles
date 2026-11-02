@@ -2,6 +2,7 @@ import { inject, provide, shallowRef, watch, type InjectionKey, type Ref, type S
 import type { SettingsSectionId, SettingsTarget } from '@shared/settings-sections';
 import type { SettingsFileScope } from '@shared/types/messages';
 import type { HostTone } from '@shared/host-tones';
+import type { ViewRect } from '@/utils/visible-rect';
 import type { SettingsRowMeta } from './settings-rows';
 
 /** Rows enter staggered by this many ms each, for the first STAGGERED_ROWS rows of a page only (M4). */
@@ -127,6 +128,23 @@ export function provideSettingsChatHost(host: () => string | undefined): void {
 
 export function useSettingsChatHost(): () => string | undefined {
   return inject(CHAT_HOST, () => undefined);
+}
+
+/**
+ * Asks the desktop host to allow YOLO on the attached remote chat's host, hung from anchor (the view's CSS pixels, x and y
+ * at least 0); resolves whether it allows YOLO now, and rejects when the ask failed. Provided only by the desktop settings
+ * overlay, whose host and Project tabs are the only settings views a host refuses YOLO in.
+ */
+export type AllowHostYolo = (anchor: ViewRect) => Promise<boolean>;
+// undefined while the attached tab's host is one the desktop host never asks about
+const ALLOW_HOST_YOLO: InjectionKey<() => AllowHostYolo | undefined> = Symbol('allowHostYolo');
+
+export function provideAllowHostYolo(allow: () => AllowHostYolo | undefined): void {
+  provide(ALLOW_HOST_YOLO, allow);
+}
+
+export function useAllowHostYolo(): () => AllowHostYolo | undefined {
+  return inject(ALLOW_HOST_YOLO, () => undefined);
 }
 
 /** The host whose machine scope the modal edits (a remote chat's host tab), as this computer names it; undefined elsewhere. */

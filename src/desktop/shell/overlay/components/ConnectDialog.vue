@@ -24,7 +24,10 @@ import type {
   RunningContainer,
   WslDistroInfo,
 } from '../../../preload/overlay-channels';
+import { useWindowSize } from '@vueuse/core';
+import { remPx } from '@/composables/useRemPx';
 import { answerOf, ran } from '../popup-answer';
+import { placePanel } from '../placement';
 import { distroDetail, isDefiniteRefusal, otherDeviceCount, refusalText, wslVersionName } from '../connect-text';
 import HostBadge from '@/components/HostBadge.vue';
 import HostStatusDot from '../../components/HostStatusDot.vue';
@@ -50,7 +53,9 @@ const { t } = useI18n();
 
 const hosts = shallowRef<readonly HostCardInfo[]>(props.request.hosts);
 const distros = shallowRef<readonly WslDistroInfo[]>(props.request.distros);
-const view = ref<View>('hosts');
+// Opened from a host chip, the card hangs from it as a popover from the first frame; any other view shows the centered dialog.
+const anchored = ref(props.request.anchor !== undefined);
+const view = ref<View>(anchored.value ? 'card' : 'hosts');
 const query = ref(props.request.query ?? '');
 // main's parse of the typed text, kept with that text: a card is offered only for the text in the box now
 const parsed = shallowRef<{ readonly input: string; readonly result: HostParseResult } | undefined>();
@@ -78,6 +83,7 @@ const rebuilding = ref(false);
 const cardBusy = computed(() => actionsBusy.value || converting.value || rebuilding.value);
 watch(view, (next) => {
   if (next !== 'card') {
+    anchored.value = false;
     renameOnCard.value = false;
     rebuildOnCard.value = false;
     actionsBusy.value = false;
@@ -86,9 +92,30 @@ watch(view, (next) => {
   }
   if (next === 'hosts') containerFlow.value = undefined;
 });
-// A forgotten host leaves the list, and its card goes with it.
+const POPOVER_WIDTH_REM = 26;
+const viewport = useWindowSize();
+// The popover's place under (or over) its chip; the class gives it the same width.
+const popover = computed(() => {
+  const anchor = props.request.anchor;
+  if (!anchored.value || !anchor) return undefined;
+  const width = Math.min(remPx(POPOVER_WIDTH_REM), viewport.width.value - remPx(1));
+  const placed = placePanel(anchor, width, { width: viewport.width.value, height: viewport.height.value });
+  return {
+    left: `${placed.left}px`,
+    ...('top' in placed ? { top: `${placed.top}px` } : { top: 'auto', bottom: `${placed.bottom}px` }),
+    maxHeight: `${placed.maxHeight}px`,
+    translate: 'none',
+  };
+});
+
+// The card draws its own heading and Close, so the dialog's bar gives way to it.
+const cardShown = computed(() => view.value === 'card' && host.value !== undefined);
+
+// A forgotten host leaves the list, and its card goes with it; the popover, opened from that host alone, closes.
 watch(host, (shown) => {
-  if (!shown && view.value === 'card') view.value = 'hosts';
+  if (shown || view.value !== 'card') return;
+  if (anchored.value) close();
+  else view.value = 'hosts';
 });
 
 async function act<T>(call: () => Promise<T>): Promise<T | undefined> {
@@ -614,9 +641,12 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
       :show-close="false"
       data-testid="connect-dialog"
       :data-pick-mode="picker?.mode"
+      :data-popover="popover ? '' : undefined"
       :aria-describedby="undefined"
-      class="connect-dialog flex max-h-[86vh] outline-none w-[min(47rem,calc(100%-2rem))] max-w-none flex-col gap-0 overflow-hidden rounded-2xl p-0 @container"
-      :class="view === 'name' ? 'h-auto' : 'h-[min(40rem,86vh)]'"
+      :scrim="!popover"
+      :style="popover"
+      class="connect-dialog flex outline-none max-w-none flex-col gap-0 overflow-hidden rounded-2xl p-0 @container"
+      :class="popover ? 'h-auto w-[min(26rem,calc(100%-1rem))]' : ['max-h-[86vh] w-[min(47rem,calc(100%-2rem))]', view === 'name' ? 'h-auto' : 'h-[min(40rem,86vh)]']"
       @open-auto-focus="onOpenFocus"
       @escape-key-down="onEscape"
       @interact-outside="onOutside"
@@ -625,13 +655,17 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
         ref="frame"
         class="relative flex min-h-0 flex-1 flex-col"
       >
-        <!-- The host card draws its own heading, so its view keeps only the dialog's name and Close, laid over the card's corner. -->
+        <DialogTitle
+          v-if="cardShown"
+          class="sr-only"
+        >
+          {{ title }}
+        </DialogTitle>
         <div
+          v-else
           class="flex items-center gap-2.5 px-4.5 pt-4 pb-1"
-          :class="view === 'card' && 'absolute top-0 right-0 z-1'"
         >
           <span
-            v-if="view !== 'card'"
             aria-hidden="true"
             class="grid size-8.5 shrink-0 place-items-center rounded-10 bg-(--d-accent-soft) text-(--d-accent-text)"
           >
@@ -640,14 +674,8 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
               class="size-4.5"
             />
           </span>
-          <div
-            class="flex min-w-0 flex-col"
-            :class="view !== 'card' && 'flex-1'"
-          >
-            <DialogTitle
-              class="truncate text-15 font-semibold"
-              :class="view === 'card' && 'sr-only'"
-            >
+          <div class="flex min-w-0 flex-1 flex-col">
+            <DialogTitle class="truncate text-15 font-semibold">
               {{ title }}
             </DialogTitle>
             <span
@@ -1182,6 +1210,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
             :host="host"
             :runs="runs"
             :start-renaming="renameOnCard"
+            :hide-back="popover !== undefined"
             :check-name="(name) => answerOf(api.checkHostName(name, host!.hostId))"
             :rename="(name) => answerOf(api.renameHost(host!.hostId, name))"
             :set-install-folder="(folder) => answerOf(api.setInstallFolder(host!.hostId, folder))"
@@ -1194,6 +1223,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
             @open-settings="openSettings(host!.hostId)"
             @kill="kill"
             @open-run="openRun"
+            @close="close"
           >
             <template
               v-if="host.container?.origin === 'devcontainer'"

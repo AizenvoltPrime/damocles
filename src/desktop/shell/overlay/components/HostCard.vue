@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, useId } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { ArrowLeft, Box, FileText, FolderPlus, Key, KeyRound, Laptop, Pencil, Plug, Server, Settings2, Shield, SquareTerminal, TriangleAlert, Users } from 'lucide-vue-next';
+import { ArrowLeft, Box, FileText, FolderPlus, Key, KeyRound, Laptop, Pencil, Plug, Server, Settings2, Shield, SquareTerminal, TriangleAlert, Users, X } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import { visibleText } from '@shared/visible-text';
 import type { HostCardInfo, HostRun, InstallFolderResult, LingerResult, NameCheck, RemoteBrowseResult } from '../../../preload/overlay-channels';
 import HostStatusDot from '../../components/HostStatusDot.vue';
-import { hostStateLabel } from '../../host-label';
+import { hostStatus } from '../../host-label';
 import LatencySparkline from './LatencySparkline.vue';
 import HostNameField from './HostNameField.vue';
 import InstallFolderField from './InstallFolderField.vue';
@@ -27,8 +27,10 @@ const props = defineProps<{
   allowBackgroundWork: () => Promise<LingerResult | undefined>;
   // opens with the name field open (Rename from a project's menu)
   startRenaming?: boolean;
+  // shown as a popover from a host chip, with no host list to go back to
+  hideBack?: boolean;
 }>();
-const emit = defineEmits<{ back: []; connect: []; openFolder: []; showLog: []; openSettings: []; kill: [runId: string]; openRun: [runId: string] }>();
+const emit = defineEmits<{ back: []; close: []; connect: []; openFolder: []; showLog: []; openSettings: []; kill: [runId: string]; openRun: [runId: string] }>();
 defineSlots<{ wsl?: () => unknown; container?: () => unknown; actions?: () => unknown }>();
 const { t, locale } = useI18n();
 
@@ -39,8 +41,8 @@ const field = ref<InstanceType<typeof HostNameField> | null>(null);
 const renameButton = ref<InstanceType<typeof Button> | null>(null);
 const choosingFolder = ref(false);
 
-// "prod-1 · 38 ms", "Slow connection to prod-1 (620 ms)", else the host's state
-const statusText = computed(() => (props.host.reconnect || (props.host.connection === 'connected' && props.host.latency) ? hostStateLabel(props.host, t) : t(`projects.connection.${props.host.connection}`)));
+// the heading names the host, so the row shows its state alone and the latency never truncates away
+const statusText = computed(() => hostStatus(props.host, t));
 const notices = computed(() => hostNotices(props.host, t, locale.value));
 const failure = computed(() => (props.host.failure ? failureText(props.host.failure, props.host.name, t) : undefined));
 const others = computed(() => otherDeviceCount(props.host.devices));
@@ -181,6 +183,21 @@ async function save(name: string): Promise<void> {
           class="truncate font-mono text-11 text-(--d-faint-text)"
         >{{ host.wsl ? distroDetail(host.name, host.wsl) : host.destinationLabel }}</span>
       </div>
+      <!-- in the header row, so a long name truncates before Close -->
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        data-testid="host-card-close"
+        class="size-7 shrink-0 self-start rounded-7 text-(--d-muted)"
+        :aria-label="t('remote.connect.close')"
+        @click="emit('close')"
+      >
+        <X
+          aria-hidden="true"
+          class="size-3.5"
+        />
+      </Button>
     </div>
 
     <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4.5 py-3.5">
@@ -189,7 +206,6 @@ async function save(name: string): Promise<void> {
           :connection="host.connection"
           :reconnect="host.reconnect"
           :slow="host.latency?.slow"
-          :label="statusText"
         />
         <span
           class="min-w-0 flex-1 truncate text-13 font-semibold"
@@ -454,8 +470,10 @@ async function save(name: string): Promise<void> {
       </section>
     </div>
 
+    <!-- the primary action keeps the trailing edge, wrapped or not -->
     <div class="flex flex-wrap items-center gap-2 border-t border-(--d-border) px-4.5 py-3">
       <Button
+        v-if="!hideBack"
         type="button"
         variant="ghost"
         size="sm"
@@ -465,7 +483,6 @@ async function save(name: string): Promise<void> {
         <ArrowLeft aria-hidden="true" />
         {{ t('remote.connect.back') }}
       </Button>
-      <span class="flex-1" />
       <Button
         type="button"
         variant="outline"
@@ -493,18 +510,19 @@ async function save(name: string): Promise<void> {
         size="sm"
         data-view-focus
         data-testid="host-card-open-folder"
-        class="h-7.5 rounded-8 px-3 text-12 font-semibold"
+        class="ms-auto h-7.5 rounded-8 px-3 text-12 font-semibold"
+        :aria-label="t('remote.card.openFolder', { name: host.name })"
         @click="emit('openFolder')"
       >
         <FolderPlus aria-hidden="true" />
-        {{ t('remote.card.openFolder', { name: host.name }) }}
+        {{ t('remote.card.openFolderShort') }}
       </Button>
       <Button
         v-else
         type="button"
         size="sm"
         data-view-focus
-        class="h-7.5 rounded-8 px-3 text-12 font-semibold"
+        class="ms-auto h-7.5 rounded-8 px-3 text-12 font-semibold"
         @click="emit('connect')"
       >
         <Plug aria-hidden="true" />

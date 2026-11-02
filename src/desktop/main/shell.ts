@@ -4,7 +4,7 @@ import { HOST_THEME_STYLE_ID } from '../../shared/host-theme';
 import { isSettingsSectionId, type SettingsSectionId } from '../../shared/settings-sections';
 import { MAX_BROWSER_URL_LENGTH } from '../../shared/typed-address';
 import { HOST_ID } from '../daemon/control-messages';
-import { MAX_HOST_NAME_LENGTH, type NameCheck, type OverlayAnswer, type OverlayRequest, type WslDistroInfo } from '../preload/overlay-channels';
+import { MAX_HOST_NAME_LENGTH, type NameCheck, type OverlayAnswer, type OverlayRect, type OverlayRequest, type WslDistroInfo } from '../preload/overlay-channels';
 import { isWslDistroName } from './remote/wsl/distro-name';
 import type { PanelTheme } from '../preload/panel-channels';
 import {
@@ -176,7 +176,7 @@ import { MAX_CONTEXT_LINES, MAX_REPLACEMENT_LENGTH, MAX_SEARCH_GLOBS_LENGTH, MAX
 import { GestureGrant, isActivationKey, isContextMenuKey, isContextMenuMouse, isPrimaryClick } from './clipboard-gestures';
 import { isRelativeOrRoot } from '../local-services/confine';
 import { PROJECTS_VIEWS } from '../local-services/desktop-configuration';
-import { parseOverlayRequest } from './overlay';
+import { parseOverlayRequest, parseRect } from './overlay';
 import { APP_ORIGIN, SHELL_PAGE_URL } from './protocol';
 import { loadAppPage, loggableUrl, mainFrameLoadFailed } from './security';
 import { isPanelSender } from './views';
@@ -217,6 +217,7 @@ export interface ShellActions {
   // null: main could not save the name
   renameHost(hostId: string, name: string): Promise<NameCheck | null>;
   renameHostOnCard(hostId: string): Promise<void>;
+  showHostCard(hostId: string, anchor: OverlayRect): Promise<void>;
   openConnect(): Promise<void>;
   openHostFolder(hostId: string): Promise<void>;
   reconnectHost(hostId: string): Promise<void>;
@@ -1220,6 +1221,12 @@ export class ShellHost {
       const call = exactRecord(raw, ['hostId']);
       if (!call || !isHostId(call['hostId'])) throw new Error('Malformed host rename from the shell');
       return this.actions.renameHostOnCard(call['hostId']);
+    });
+    this.handle(SHELL_CHANNELS.hostsShowCard, (raw) => {
+      const call = exactRecord(raw, ['hostId', 'anchor']);
+      const anchor = call ? parseRect(call['anchor']) : undefined;
+      if (!call || !isHostId(call['hostId']) || !anchor) throw new Error('Malformed host details request from the shell');
+      return this.actions.showHostCard(call['hostId'], anchor);
     });
     this.handle(SHELL_CHANNELS.projectsSetView, (raw) => {
       const call = exactRecord(raw, ['view']);

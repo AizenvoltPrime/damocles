@@ -9,6 +9,8 @@ export interface BridgeHost {
   readonly attention?: 'offline' | 'signIn';
   // a daemon of another protocol still runs agents on the host: its app version, how many, and whether a switch waits for them
   readonly update?: { readonly serverVersion: string; readonly runningAgents: number; readonly phase: 'offer' | 'waiting' };
+  // the host has a saved record, so allowYolo may ask; absent for a host main never asks about
+  readonly canAllowYolo?: true;
 }
 
 /** A saved host as this computer's host store names it, for pages of this computer's core that show remote data. */
@@ -31,6 +33,10 @@ export interface DamoclesBridge {
   // the banner's Reconnect (Reconnect now, Retry), Sign in, Show log or Edit host, and the update banner's two switches, on
   // the page's own host
   hostAction(action: 'reconnect' | 'signIn' | 'showLog' | 'editHost' | 'switchWhenIdle' | 'switchNow'): void;
+  // the composer's locked YOLO: main asks to allow YOLO on the page's own host, hung from anchor (page CSS pixels), and
+  // answers whether the host allows YOLO now; rejects when main refused the ask (no click or key it observed in the shown
+  // chat, a popup open) or the ask failed
+  allowYolo(anchor: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }): Promise<boolean>;
   // a remote chat's connection and the messages main holds for it while its host is away; undefined for a local chat
   getConnection(): ChatConnection | undefined;
   onConnection(listener: (connection: ChatConnection) => void): () => void;

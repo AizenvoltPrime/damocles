@@ -73,6 +73,7 @@ beforeEach(() => {
       connectionListener = listener;
       return () => undefined;
     },
+    allowYolo: async () => false,
     queueAction: (action) => void queueActions.push(action),
   };
 });

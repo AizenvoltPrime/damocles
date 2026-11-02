@@ -115,6 +115,7 @@ const api: DamoclesOverlayApi = {
   onSettingsScopeHost: (listener) => subscribe<OverlaySettingsScopes['host']>(OVERLAY_CHANNELS.settingsScopeHost, listener),
   onSettingsTarget: (listener) => subscribe<SettingsTarget>(OVERLAY_CHANNELS.settingsTarget, listener),
   setSettingsScope: (scope) => ipcRenderer.invoke(OVERLAY_CHANNELS.settingsScope, { scope }) as Promise<PopupAnswer<OverlaySettingsScope>>,
+  allowHostYolo: (anchor) => ipcRenderer.invoke(OVERLAY_CHANNELS.settingsAllowYolo, { anchor: { x: anchor.x, y: anchor.y, width: anchor.width, height: anchor.height } }) as Promise<PopupAnswer<boolean>>,
   getPrefs: () => ipcRenderer.invoke(OVERLAY_CHANNELS.prefsGet) as Promise<OverlayPrefs>,
   onPrefsChanged: (listener) => subscribe<OverlayPrefs>(OVERLAY_CHANNELS.prefsChanged, listener),
   setPref: (key, value) => ipcRenderer.invoke(OVERLAY_CHANNELS.prefsSet, { key, value }) as Promise<PopupAnswer<OverlayPrefWrite>>,

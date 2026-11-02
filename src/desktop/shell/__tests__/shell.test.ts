@@ -219,12 +219,19 @@ describe('a remote host that is not connected', () => {
     expect(wrapper.find('[data-testid="editor-offline"]').exists()).toBe(false);
   });
 
-  it("shows the banner over the chat pane of the selected project's host while no chat page covers it, green for a moment once it connects, and none under a chat page or for a local project", async () => {
-    const EMPTY: ShellState = { ...REMOTE, selected: { projectKey: 'ssh:h1|/srv/app' } };
+  it("shows the selected project's host banner under the placeholder's header while no chat view covers the slot, green for a moment once it connects", async () => {
+    const EMPTY: ShellState = { ...REMOTE, selected: { projectKey: 'ssh:h1|/srv/app' }, chatViewShown: false };
     const api = fakeShellApi([], { getState: vi.fn(async () => EMPTY) });
     const wrapper = mountApp(api);
     await flushPromises();
-    const banner = wrapper.get('[data-testid="grid-pane-chat"] [data-testid="connection-banner"]');
+    const header = wrapper.get('[data-testid="chat-slot"] [data-testid="chat-placeholder-header"]');
+    expect(header.text()).toBe('alphaon prod-1');
+    const banner = wrapper.get('[data-testid="chat-slot"] [data-testid="connection-banner"]');
+    // the banner sits under the header, never above it
+    expect(header.element.compareDocumentPosition(banner.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(wrapper.get('[data-testid="chat-slot"]').text()).toContain('No chat selected');
+    // the gutter's strip continues the banner across it, under the grip's cell
+    expect(wrapper.get('[data-testid="grid-pane-chat"] [data-testid="connection-banner-edge"]').attributes('data-state')).toBe('offline');
     expect(banner.text()).toContain('prod-1 is offline');
     await banner.get('button').trigger('click');
     expect(api.reconnectHost).toHaveBeenCalledWith('h1');
@@ -235,19 +242,42 @@ describe('a remote host that is not connected', () => {
     await flushPromises();
     await wrapper.get('[data-testid="connection-banner"] button').trigger('click');
     expect(api.signInHost).toHaveBeenCalledWith('h1');
-    // a chat page covers the slot and shows the banner under its own header, which stays at the pane's top; the gutter beside
-    // the page continues that banner, so it spans the pane's whole width
-    api.push(REMOTE);
+  });
+
+  it("leaves the banner to a selected chat's page, with the gutter's strip beside it", async () => {
+    const api = fakeShellApi([], { getState: vi.fn(async () => REMOTE) });
+    const wrapper = mountApp(api);
     await flushPromises();
-    await vi.waitFor(() => expect(wrapper.find('[data-testid="connection-banner"]').exists()).toBe(false));
-    expect(wrapper.find('[data-testid="grid-pane-chat"] [data-testid="connection-banner-edge"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="connection-banner"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="chat-placeholder"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="grid-pane-chat"] [data-testid="connection-banner-edge"]').attributes('data-state')).toBe('offline');
     api.push({ ...REMOTE, hosts: [{ ...HOST, connection: 'connected' }] });
     await flushPromises();
     // the edge goes green with the page's banner, then both collapse
     expect(wrapper.get('[data-testid="connection-banner-edge"]').attributes('data-state')).toBe('reconnected');
-    api.push({ ...EMPTY, selected: { projectKey: STATE.projects[0]!.key }, projects: [...REMOTE.projects, STATE.projects[0]!] });
+  });
+
+  it("shows neither banner nor strip over another project's chat kept on screen", async () => {
+    const api = fakeShellApi([], { getState: vi.fn(async () => ({ ...REMOTE, selected: { projectKey: 'ssh:h1|/srv/app' }, chatViewShown: true })) });
+    const wrapper = mountApp(api);
     await flushPromises();
-    await vi.waitFor(() => expect(wrapper.find('[data-testid="connection-banner"]').exists()).toBe(false));
+    expect(wrapper.find('[data-testid="connection-banner"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="connection-banner-edge"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="chat-placeholder"]').exists()).toBe(false);
+  });
+
+  it('names a local project in the placeholder with no host and no banner, and shows no header with no project selected', async () => {
+    const { selectedChat: _chat, ...rest } = STATE;
+    const api = fakeShellApi([], { getState: vi.fn(async () => ({ ...rest, selected: { projectKey: 'p1' }, chatViewShown: false })) });
+    const wrapper = mountApp(api);
+    await flushPromises();
+    expect(wrapper.get('[data-testid="chat-placeholder-header"]').text()).toBe('alpha');
+    expect(wrapper.find('[data-testid="connection-banner"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="connection-banner-edge"]').exists()).toBe(false);
+    api.push({ ...rest, selected: {}, chatViewShown: false });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="chat-placeholder-header"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="chat-slot"]').text()).toContain('No chat selected');
   });
 });
 
@@ -263,7 +293,7 @@ describe('App and title bar', () => {
     expect(wrapper.get('[data-testid="chat-slot"]').text()).toBe('');
 
     const { selectedChat: _chat, ...rest } = STATE;
-    api.push({ ...rest, locale: 'el', selected: { projectKey: 'p1' } });
+    api.push({ ...rest, locale: 'el', selected: { projectKey: 'p1' }, chatViewShown: false });
     await flushPromises();
     expect(document.documentElement.lang).toBe('el');
     expect(wrapper.find('[data-testid="breadcrumb-chat"]').exists()).toBe(false);

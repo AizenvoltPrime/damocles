@@ -23,6 +23,7 @@ import {
   type LingerResult,
   type NameCheck,
   type OverlayAnswer,
+  type OverlayRect,
   type OverlayRequest,
   type PasswordlessResult,
   type PasswordlessRun,
@@ -213,6 +214,14 @@ interface OpenDialog {
   opened?: string;
 }
 
+/** What openConnect opens the Connect dialog on, beside its host. */
+export interface ConnectDialogOptions {
+  readonly card?: 'rename' | 'show' | 'rebuild';
+  readonly query?: string;
+  readonly openFolder?: true;
+  readonly anchor?: OverlayRect;
+}
+
 /** How a Connect dialog ended: shown false when it closed before it was on screen; opened, the project a container's folder opened as. */
 export interface ConnectDialogEnd {
   readonly shown: boolean;
@@ -355,9 +364,11 @@ export class RemoteHosts implements ConnectActions {
    * 'rebuild' at a devcontainer's Rebuild Container confirmation. query fills the host list's search, as if typed, starting nothing.
    * The dialog shows the distros and container states last listed; their fresh lists follow once it is on screen. openFolder
    * (Reopen in Container): a connected devcontainer shows its connected attempt while its folder opens, where its folder browser
-   * would show otherwise. Settles once the dialog closed.
+   * would show otherwise. anchor (with card 'show'): the chip the card hangs from as a popover, which shows a running attempt
+   * only in the card's status, never its timeline. Settles once the dialog closed.
    */
-  async openConnect(hostId?: string, card?: 'rename' | 'show' | 'rebuild', query?: string, openFolder?: true): Promise<ConnectDialogEnd> {
+  async openConnect(hostId?: string, options: ConnectDialogOptions = {}): Promise<ConnectDialogEnd> {
+    const { card, query, openFolder, anchor } = options;
     const overlay = this.deps.overlay();
     if (!overlay) throw new Error('No window shows the Connect dialog');
     const record = hostId === undefined ? undefined : this.deps.store.host(hostId);
@@ -368,7 +379,8 @@ export class RemoteHosts implements ConnectActions {
     const aliases = (await this.configAliases()).filter((alias) => !known.has(alias));
     const joined = openFolder && hostId !== undefined && this.connectionOf(hostId) === 'connected' ? this.deps.connections.connect(hostId, true) : undefined;
     const attempt = hostId === undefined ? undefined : this.deps.connections.attempt(hostId);
-    const running = attempt && attempt.step !== 'connected' && attempt.step !== 'failed' ? attempt : undefined;
+    // the timeline's Escape cancels its attempt, which stops a reconnect loop; a popover opened for details never shows it
+    const running = anchor === undefined && attempt && attempt.step !== 'connected' && attempt.step !== 'failed' ? attempt : undefined;
     // a changed host key stops every attempt: the dialog shows that failure and starts none until the user retries
     const keyChanged = card === undefined && attempt?.step === 'failed' && attempt.failure?.code === 'hostKeyChanged' ? attempt : undefined;
     const shown = running ?? keyChanged ?? (joined !== undefined && attempt?.attemptId === joined ? attempt : undefined);
@@ -376,6 +388,7 @@ export class RemoteHosts implements ConnectActions {
       kind: 'connect',
       ...(hostId !== undefined ? { hostId } : {}),
       ...(card !== undefined ? { card } : {}),
+      ...(anchor !== undefined ? { anchor } : {}),
       ...(query !== undefined ? { query } : {}),
       hosts: this.cards(),
       distros: this.distroInfos(),
@@ -434,7 +447,7 @@ export class RemoteHosts implements ConnectActions {
    */
   async reopenInContainer(hostId: string): Promise<ReopenInContainerResult> {
     this.devcontainerRecord(hostId);
-    const ended = await this.openConnect(hostId, undefined, undefined, true);
+    const ended = await this.openConnect(hostId, { openFolder: true });
     if (ended.opened !== undefined) return { ok: true, projectKey: ended.opened };
     const failure = this.deps.connections.failure(hostId);
     return !ended.shown || failure === undefined || failure.code === 'cancelled' ? { ok: false, code: 'cancelled' } : { ok: false, code: 'connectFailed', message: failure.code };

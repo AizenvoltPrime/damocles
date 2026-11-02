@@ -29,6 +29,7 @@ beforeEach(() => {
       listener = next;
       return () => undefined;
     },
+    allowYolo: async () => false,
     queueAction: (action) => void actions.push(action),
   };
 });

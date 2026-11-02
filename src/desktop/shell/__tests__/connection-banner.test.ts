@@ -3,8 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { nextTick } from 'vue';
 import { OFFLINE_GRACE_MS, RECONNECTED_MS } from '@shared/host-connection';
-import type { ShellHost } from '../../preload/shell-channels';
+import type { ShellHost, ShellProject } from '../../preload/shell-channels';
 import ConnectionBanner from '../components/ConnectionBanner.vue';
+import ChatPlaceholder from '../components/ChatPlaceholder.vue';
+import { fakeShellApi } from './fakes';
 import { shellI18n } from '../i18n';
 
 const mounted: VueWrapper[] = [];
@@ -168,5 +170,25 @@ describe('connection banner', () => {
     mounted.push(wrapper);
     expect(wrapper.get('[data-testid="connection-banner-edge"]').attributes('aria-hidden')).toBe('true');
     expect(wrapper.find('[data-testid="connection-banner-announcement"]').exists()).toBe(false);
+  });
+});
+
+describe('chat slot placeholder', () => {
+  const PROJECT: ShellProject = { key: 'ssh:h1|/srv/app', name: 'app', fsPath: '/srv/app', trusted: true, authority: { kind: 'ssh', key: 'ssh+h1', hostId: 'h1', name: 'prod-1' }, platform: 'linux', connection: 'failed', trash: false, running: 0, waiting: 0 };
+
+  it("names the project and its host in a chat header's row, then the full banner, whose actions reach main", async () => {
+    const api = fakeShellApi();
+    const host: ShellHost = { ...HOST, connection: 'failed', reconnect: { phase: 'failed', since: Date.now() - OFFLINE_GRACE_MS, code: 'authFailed' } };
+    const wrapper = mount(ChatPlaceholder, { props: { api, project: PROJECT, host }, global: { plugins: [shellI18n] } });
+    mounted.push(wrapper);
+    await nextTick();
+    const header = wrapper.get('[data-testid="chat-placeholder-header"]');
+    expect(header.classes()).toEqual(expect.arrayContaining(['h-11.5', 'border-b', 'border-(--d-border)', 'bg-(--d-panel)']));
+    expect(header.text()).toBe('appon prod-1');
+    expect(header.element.compareDocumentPosition(wrapper.get('[data-testid="connection-banner"]').element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    for (const action of ['reconnect', 'showLog', 'editHost'] as const) await wrapper.get(`[data-testid="connection-banner-${action}"]`).trigger('click');
+    expect([api.reconnectHost, api.showHostLog, api.renameHostOnCard].map((call) => vi.mocked(call).mock.calls)).toEqual([[['h1']], [['h1']], [['h1']]]);
+    await wrapper.get('button:not([data-testid^="connection-banner"])').trigger('click');
+    expect(api.newChat).toHaveBeenCalledOnce();
   });
 });

@@ -280,7 +280,8 @@ async function reopenInContainer(project: ShellProject): Promise<void> {
   }
 }
 
-async function openProjectMenu(project: ShellProject, anchor: OverlayRect): Promise<void> {
+// element: the row the menu was opened on, which Details hangs the host's card from
+async function openProjectMenu(project: ShellProject, anchor: OverlayRect, element: HTMLElement | null): Promise<void> {
   activeId.value = `p:${project.key}`;
   const hostId = project.authority.hostId;
   const wslDistro = wslWrapped(project) ? project.wsl?.distro : undefined;
@@ -293,6 +294,7 @@ async function openProjectMenu(project: ShellProject, anchor: OverlayRect): Prom
     ...(devcontainerConfig === undefined ? [] : [{ kind: 'item', id: 'reopenInContainer', label: t('projects.container.reopen'), icon: 'box', hint: devcontainerConfig } as const, { kind: 'separator' } as const]),
     ...(rebuildable ? [{ kind: 'item', id: 'rebuildContainer', label: t('projects.container.rebuild'), icon: 'rotate-cw' } as const, { kind: 'separator' } as const] : []),
     ...(hostId === undefined ? [] : [
+      { kind: 'item', id: 'hostDetails', label: t('remote.connect.details', { name: project.authority.name }), icon: 'server' } as const,
       { kind: 'item', id: 'openFolder', label: t('projects.openAnotherFolder', { name: project.authority.name }), icon: 'folder-plus' } as const,
       { kind: 'item', id: 'rename', label: t('projects.renameHost', { name: project.authority.name }), icon: 'pencil' } as const,
       { kind: 'separator' } as const,
@@ -312,6 +314,7 @@ async function openProjectMenu(project: ShellProject, anchor: OverlayRect): Prom
   else if (answer.itemId === 'remove') await remove(project);
   else if (answer.itemId === 'moveUp' && row) await stepRow(row, -1);
   else if (answer.itemId === 'moveDown' && row) await stepRow(row, 1);
+  else if (answer.itemId === 'hostDetails') await openHostDetails(hostId, hostElement(element));
   else if (answer.itemId === 'openFolder' && hostId !== undefined) await props.api.openHostFolder(hostId);
   else if (answer.itemId === 'rename' && hostId !== undefined) {
     // the grouped view renames on the group header; the flat view has none, so the host's card opens with its name field
@@ -320,11 +323,12 @@ async function openProjectMenu(project: ShellProject, anchor: OverlayRect): Prom
   }
 }
 
-async function openGroupMenu(group: GroupView, anchor: OverlayRect): Promise<void> {
+async function openGroupMenu(group: GroupView, anchor: OverlayRect, element: HTMLElement | null): Promise<void> {
   activeId.value = `g:${group.key}`;
   const hostId = group.hostId;
   const items: OverlayMenuItem[] = [
     ...(hostId === undefined ? [] : [
+      { kind: 'item', id: 'hostDetails', label: t('remote.connect.details', { name: group.name }), icon: 'server' } as const,
       { kind: 'item', id: 'openFolder', label: t('projects.group.openFolder', { name: group.name }), icon: 'folder-plus' } as const,
       { kind: 'item', id: 'rename', label: t('projects.group.rename'), icon: 'pencil' } as const,
       { kind: 'separator' } as const,
@@ -336,19 +340,41 @@ async function openGroupMenu(group: GroupView, anchor: OverlayRect): Promise<voi
   const row = rows.value.find((candidate) => candidate.id === `g:${group.key}`);
   if (answer.itemId === 'moveUp' && row) await stepRow(row, -1);
   else if (answer.itemId === 'moveDown' && row) await stepRow(row, 1);
+  else if (answer.itemId === 'hostDetails') await openHostDetails(hostId, hostElement(element));
   else if (answer.itemId === 'openFolder' && hostId !== undefined) await props.api.openHostFolder(hostId);
   else if (answer.itemId === 'rename' && hostId !== undefined) startRename(group.key);
 }
 
 function openRowMenu(row: Row, anchor: OverlayRect): void {
   refusal.value = undefined;
-  if (row.kind === 'project') void openProjectMenu(row.project, anchor);
-  else void openGroupMenu(row.group, anchor);
+  const element = document.getElementById(row.domId);
+  if (row.kind === 'project') void openProjectMenu(row.project, anchor, element);
+  else void openGroupMenu(row.group, anchor, element);
 }
 
 function onContextMenu(row: Row, event: MouseEvent): void {
   event.preventDefault();
   openRowMenu(row, { x: event.clientX, y: event.clientY, width: 0, height: 0 });
+}
+
+// The host's card hangs from the element that shows the host: a flat row's badge, a group header's dot, else the row itself.
+function hostElement(row: Element | null | undefined): Element | null | undefined {
+  return row?.querySelector('[data-testid="host-badge"], [data-testid="project-group-host-details"]') ?? row;
+}
+
+// Main reads the ssh config before the overlay covers the window, so a second click meanwhile would open a second card.
+let hostDetailsOpen = false;
+async function openHostDetails(hostId: string | undefined, element: Element | null | undefined): Promise<void> {
+  if (hostId === undefined || hostDetailsOpen) return;
+  hostDetailsOpen = true;
+  try {
+    await props.api.showHostCard(hostId, rectOf(element));
+  } catch (error) {
+    // main shows a failure to open the card itself; a rejection is a refused request
+    console.error('[projects] opening the host card failed', error);
+  } finally {
+    hostDetailsOpen = false;
+  }
 }
 
 function rectOf(element: Element | null | undefined): OverlayRect {
@@ -800,6 +826,7 @@ defineExpose({
           @click="select(project)"
           @contextmenu="onContextMenu(projectRow(project, index), $event)"
           @trust="trust(project)"
+          @host-details="openHostDetails(project.authority.hostId, $event)"
           @animationend="onRowAnimationEnd(project.key, $event)"
         />
       </template>
@@ -823,6 +850,7 @@ defineExpose({
           @rename-submit="submitRename(group, $event, true)"
           @rename-blur="submitRename(group, $event, false)"
           @rename-cancel="endRename(true)"
+          @host-details="openHostDetails(group.hostId, $event)"
           @contextmenu="onContextMenu({ id: `g:${group.key}`, domId: `${listId}-g${index}`, kind: 'header', group }, $event)"
         >
           <TransitionGroup

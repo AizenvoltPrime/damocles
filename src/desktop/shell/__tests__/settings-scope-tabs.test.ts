@@ -192,4 +192,58 @@ describe('settings scope tabs', () => {
     await update(undefined);
     expect(row('mcpHostServers')).toBeNull();
   });
+
+  describe("the host tab's Allow YOLO", () => {
+    const refusedHost = (canAllowYolo: boolean): OverlaySettingsScopes['host'] => ({ name: HOST, ...(canAllowYolo ? { canAllowYolo: true } : {}) });
+
+    // core's state for a tab whose host refuses YOLO, with the default on
+    async function refusedState(): Promise<void> {
+      const store = useSettingsStore();
+      api.settingsMessage({ type: 'hostCapabilities', capabilities: { ...VSCODE_HOST_CAPABILITIES, settingsInPanel: false, bypassPermissions: false } });
+      api.settingsMessage({ type: 'settingsUpdate', settings: { ...store.currentSettings, defaultDangerouslySkipPermissions: true }, workspaceWritable: true, writableKeys: ['damocles.dangerouslySkipPermissions'] });
+      await flushPromises();
+    }
+
+    async function openRefused(canAllowYolo: boolean): Promise<void> {
+      mounted.push(mount(OverlayApp, {
+        props: { api, settingsBridge },
+        global: { plugins: [shellI18n, pinia], stubs: { transition: false, 'transition-group': false } },
+        attachTo: document.body,
+      }));
+      await flushPromises();
+      api.request('s1', { kind: 'settings', generation: 1, section: 'defaults', scopes: { host: refusedHost(canAllowYolo), active: 'machine' } });
+      await flushPromises();
+      await refusedState();
+    }
+
+    it('asks main for a host it may ask about', async () => {
+      vi.mocked(api.allowHostYolo).mockClear();
+      await openRefused(true);
+      q('[data-testid="default-yolo-allow"]')!.click();
+      await flushPromises();
+      expect(api.allowHostYolo).toHaveBeenCalledTimes(1);
+    });
+
+    it('offers no note or ask for a host main never asks about', async () => {
+      await openRefused(false);
+      expect(q('[data-testid="default-yolo-refused"]')).toBeNull();
+      expect(q('[data-testid="default-yolo-allow"]')).toBeNull();
+    });
+
+    it('follows the host of each attach while the modal stays open', async () => {
+      await openRefused(true);
+      expect(q('[data-testid="default-yolo-allow"]')).not.toBeNull();
+      api.settingsAttached(2, { host: refusedHost(false), active: 'machine' });
+      await flushPromises();
+      await refusedState();
+      expect(q('[data-testid="default-yolo-refused"]')).toBeNull();
+      api.settingsAttached(3, { host: refusedHost(true), active: 'machine' });
+      await flushPromises();
+      await refusedState();
+      expect(q('[data-testid="default-yolo-allow"]')).not.toBeNull();
+      api.settingsScopeHost(refusedHost(false));
+      await flushPromises();
+      expect(q('[data-testid="default-yolo-refused"]')).toBeNull();
+    });
+  });
 });

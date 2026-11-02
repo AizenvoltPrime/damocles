@@ -6,8 +6,8 @@ import type { ProjectConnection } from '../../preload/shell-channels';
 
 const props = defineProps<{
   connection: ProjectConnection;
-  // the host's name and state, read out for the dot alone
-  label: string;
+  // the host's name and state, read out for the dot alone; without one the dot is decorative, beside text that says it
+  label?: string | undefined;
   // the reconnect loop's phase, which the dot shows only once it outlasted the grace
   reconnect?: HostReconnect | undefined;
   // the latest measurement was slow: a warning ring around the connected center
@@ -32,11 +32,12 @@ const shape = computed((): Shape => {
 <template>
   <!-- An SVG per state, so the state never rests on color alone. -->
   <span
-    role="img"
+    :role="label === undefined ? undefined : 'img'"
     data-testid="host-status-dot"
     :data-connection="connection"
     :data-shape="shape"
     :aria-label="label"
+    :aria-hidden="label === undefined ? 'true' : undefined"
     class="relative inline-flex size-2.5 shrink-0 transition-colors duration-200 ease-out"
     :class="{
       'text-(--d-success)': shape === 'connected' || shape === 'slow',

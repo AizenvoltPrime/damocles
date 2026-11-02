@@ -79,6 +79,7 @@ async function chatPage(host: 'vscode' | 'desktop') {
       hostAction: () => undefined,
       getConnection: () => undefined,
       onConnection: () => () => undefined,
+      allowYolo: async () => false,
       queueAction: () => undefined,
     } satisfies NonNullable<typeof window.damoclesBridge>;
     deliver = (message) => {

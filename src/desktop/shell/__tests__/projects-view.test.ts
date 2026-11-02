@@ -194,7 +194,7 @@ describe('grouped Projects view', () => {
     expect(activeOf(wrapper)?.getAttribute('data-group')).toBe('ssh+h1');
     await press(wrapper, 'F10', { shiftKey: true });
     expect(api.overlayRequests.at(-1)).toMatchObject({ kind: 'menu', label: 'Actions for prod-1' });
-    expect(menuLabels(api)).toEqual(['Open folder on prod-1...', 'Rename...', '-', 'Move up', 'Move down (disabled)']);
+    expect(menuLabels(api)).toEqual(['Details for prod-1', 'Open folder on prod-1...', 'Rename...', '-', 'Move up', 'Move down (disabled)']);
     await press(wrapper, 'ContextMenu');
     expect(api.overlayRequests).toHaveLength(2);
     await header(wrapper, 'local').trigger('contextmenu', { clientX: 5, clientY: 6 });
@@ -212,7 +212,7 @@ describe('grouped Projects view', () => {
     api.answerNext({ kind: 'menu', itemId: 'openFolder' });
     await wrapper.get('[data-project-key="y"]').trigger('contextmenu');
     await flushPromises();
-    expect(menuLabels(api)).toEqual(['Open another folder on prod-1...', 'Rename prod-1...', '-', 'Move up', 'Move down (disabled)', '-', 'Remove project']);
+    expect(menuLabels(api)).toEqual(['Details for prod-1', 'Open another folder on prod-1...', 'Rename prod-1...', '-', 'Move up', 'Move down (disabled)', '-', 'Remove project']);
     expect(api.openHostFolder).toHaveBeenCalledTimes(2);
     expect(api.openConnect).not.toHaveBeenCalled();
   });

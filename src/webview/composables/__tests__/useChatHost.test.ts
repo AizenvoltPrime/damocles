@@ -1,14 +1,15 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-type HostListener = (host: { hostId: string; name: string; computer: string }) => void;
+type Label = { hostId: string; name: string; computer: string; canAllowYolo?: true };
+type HostListener = (host: Label) => void;
 
 afterEach(() => {
   delete window.damoclesBridge;
   vi.resetModules();
 });
 
-function bridge(initial: { hostId: string; name: string; computer: string } | undefined) {
+function bridge(initial: Label | undefined) {
   let listener: HostListener | undefined;
   window.damoclesBridge = {
     postMessage: vi.fn(),
@@ -26,9 +27,10 @@ function bridge(initial: { hostId: string; name: string; computer: string } | un
     hostAction: vi.fn(),
     getConnection: vi.fn(),
     onConnection: vi.fn(() => () => {}),
+    allowYolo: vi.fn(async () => false),
     queueAction: vi.fn(),
   };
-  return { answer: (host: { hostId: string; name: string; computer: string }) => listener?.(host) };
+  return { answer: (host: Label) => listener?.(host) };
 }
 
 describe('useChatHost', () => {
@@ -45,5 +47,11 @@ describe('useChatHost', () => {
     bridge({ hostId: 'h1', name: 'prod-1', computer: 'ALEXIOS-PC' });
     const { useChatHost } = await import('../useChatHost');
     expect(useChatHost().value).toEqual({ name: 'prod-1', computer: 'ALEXIOS-PC' });
+  });
+
+  it('says whether main may ask to allow YOLO on the host', async () => {
+    bridge({ hostId: 'h1', name: 'prod-1', computer: 'ALEXIOS-PC', canAllowYolo: true });
+    const { useChatHost } = await import('../useChatHost');
+    expect(useChatHost().value).toEqual({ name: 'prod-1', computer: 'ALEXIOS-PC', canAllowYolo: true });
   });
 });

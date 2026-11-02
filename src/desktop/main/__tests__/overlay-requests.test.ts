@@ -474,6 +474,16 @@ describe('the Connect dialog request', () => {
     expect(parseConnectRequest({ ...request, hostId: 'h1', query: 'prod-1' })).toBeUndefined();
   });
 
+  it('takes a chip\'s anchor only for a host card opened to show it without an attempt, and only a rect within the bounds', () => {
+    const anchor = { x: 120, y: 6, width: 90, height: 28 };
+    const attempt = { attemptId: 'a', hostId: 'h1', transport: 'ssh', step: 'connecting', visited: ['connecting'], notices: [] };
+    expect(parseConnectRequest({ ...request, hostId: 'h1', card: 'show', anchor })).toEqual({ ...request, hostId: 'h1', card: 'show', anchor });
+    expect(parseConnectRequest({ ...request, hostId: 'h1', card: 'show', attempt })).toBeDefined();
+    for (const bad of [{ hostId: 'h1', anchor }, { hostId: 'h1', card: 'rename', anchor }, { hostId: 'h1', card: 'show', anchor: { ...anchor, y: -2 } }, { hostId: 'h1', card: 'show', anchor: 'top' }, { hostId: 'h1', card: 'show', anchor, attempt }]) {
+      expect(parseConnectRequest({ ...request, ...bad })).toBeUndefined();
+    }
+  });
+
   it('takes WSL distros, a WSL card and a WSL attempt, which never authenticates or asks', () => {
     const distro = { distro: 'Ubuntu-24.04', state: 'running', version: 2, isDefault: true, hostId: 'h2' };
     const wslCard = { ...card, hostId: 'h2', kind: 'wsl', destinationLabel: 'Ubuntu-24.04', wsl: { distro: 'Ubuntu-24.04', version: 2, state: 'running', isDefault: true } };

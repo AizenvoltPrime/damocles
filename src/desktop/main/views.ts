@@ -11,6 +11,7 @@ import { CHAT_WORKER_SRC } from '../app-urls';
 import { PAGE_STATE_TYPES } from '../core-protocol';
 import { PANEL_CHANNELS, PANEL_HOST_ACTIONS, type PanelConnection, type PanelHostAction, type PanelHostLabel, type PanelHostNames, type PanelInit, type PanelQueueAction, type PanelTheme } from '../preload/panel-channels';
 import { onWindowActivated, onWindowDeactivated } from './activation-focus';
+import { GestureGrant, isActivationKey, isPrimaryClick } from './clipboard-gestures';
 import type { PanelStateStore } from './panel-state-store';
 import { APP_ORIGIN, isPanelId, panelPageUrl } from './protocol';
 import { loadAppPage, loggableUrl, registerPanelContents } from './security';
@@ -168,6 +169,8 @@ interface PanelViewsDeps {
   readonly hostNames: () => PanelHostNames;
   // a remote chat page's banner asked to reconnect, sign in, show the log or edit its own host
   readonly onHostAction: (panel: DesktopPanel, action: PanelHostAction) => void;
+  // a remote chat page's locked YOLO asked to allow YOLO on its own host, anchor as the page sent it; resolves whether it is allowed
+  readonly onAllowYolo: (panel: DesktopPanel, anchor: unknown) => Promise<boolean>;
   // a remote chat's connection and held messages, which its page reads at init; undefined for a local chat
   readonly connection: (panel: DesktopPanel) => PanelConnection | undefined;
   // a chip's Cancel or Discard on one of the page's held messages
@@ -192,6 +195,8 @@ interface PanelViewsDeps {
   readonly onSavedSessionChange: (chat: DesktopPanel) => void;
   // An overlay popup is open, and so holds keyboard focus.
   readonly popupOpen: () => boolean;
+  // The selected chat is another project's, kept while that project's host needs the user: its view hides (keptChatWithheld).
+  readonly withholds: (chat: DesktopPanel) => boolean;
 }
 
 // true moves keyboard focus into the chat's page now (once it commits); 'whenReady' once, when its page is ready in the focused
@@ -238,6 +243,9 @@ export class DesktopPanel implements PanelHost {
   private readonly disposes = new Listeners<[]>();
   private readonly viewStates = new Listeners<[]>();
   private readonly ipcHandlers: Array<[string, (event: IpcMainEvent, ...args: unknown[]) => void]> = [];
+  private readonly invokeChannels: string[] = [];
+  // a click or activation key main observed in a remote chat's page, which its Allow YOLO ask takes
+  private readonly yoloGesture = new GestureGrant<true>();
   private readonly owner: PanelViews;
   private readonly deps: PanelViewsDeps;
 
@@ -300,6 +308,13 @@ export class DesktopPanel implements PanelHost {
       }
       deps.onHostAction(this, action as PanelHostAction);
     });
+    this.handleIpc(PANEL_CHANNELS.allowYolo, async (payload) => {
+      const gesture = this.yoloGesture.take() === true;
+      const anchor = typeof payload === 'object' && payload !== null && !Array.isArray(payload) && Object.keys(payload).length === 1 ? (payload as { anchor?: unknown }).anchor : undefined;
+      if (this.kind !== 'chat' || this.authority === 'local' || anchor === undefined) throw new Error('This page may not ask to allow YOLO');
+      if (!gesture || !this.visible || deps.popupOpen()) throw new Error('Only a click or key in the shown chat asks to allow YOLO');
+      return deps.onAllowYolo(this, anchor);
+    });
     this.onIpc(PANEL_CHANNELS.queueAction, (_event, payload) => {
       const { action, id } = (typeof payload === 'object' && payload !== null ? payload : {}) as { action?: unknown; id?: unknown };
       if (this.kind !== 'chat' || this.authority === 'local' || (action !== 'cancel' && action !== 'discard') || typeof id !== 'string' || id.length > 64) {
@@ -324,6 +339,16 @@ export class DesktopPanel implements PanelHost {
     });
 
     const contents = this.view.webContents;
+    if (this.kind === 'chat' && this.authority !== 'local') {
+      // Only input the browser process routes reaches these: page script's synthetic events never do.
+      contents.on('before-input-event', (_event, input) => {
+        if (isActivationKey(input)) this.yoloGesture.grant(true);
+      });
+      contents.on('before-mouse-event', (_event, mouse) => {
+        if (isPrimaryClick(mouse, process.platform)) this.yoloGesture.grant(true);
+      });
+      contents.on('blur', () => this.yoloGesture.clear());
+    }
     contents.on('did-navigate', () => owner.committed(this));
     contents.on('dom-ready', () => owner.domReady(this));
     contents.on('render-process-gone', (_event, details) => {
@@ -541,7 +566,11 @@ export class DesktopPanel implements PanelHost {
   close(): void {
     if (this.disposed) return;
     this.disposed = true;
-    if (!this.webContents.isDestroyed()) for (const [channel, handler] of this.ipcHandlers) this.webContents.ipc.removeListener(channel, handler);
+    this.yoloGesture.clear();
+    if (!this.webContents.isDestroyed()) {
+      for (const [channel, handler] of this.ipcHandlers) this.webContents.ipc.removeListener(channel, handler);
+      for (const channel of this.invokeChannels) this.webContents.ipc.removeHandler(channel);
+    }
     this.owner.removed(this);
     if (!this.webContents.isDestroyed()) this.webContents.close();
     this.disposes.fire();
@@ -573,6 +602,35 @@ export class DesktopPanel implements PanelHost {
     };
     this.webContents.ipc.on(channel, guarded);
     this.ipcHandlers.push([channel, guarded]);
+  }
+
+  private handleIpc<T>(channel: string, handler: (payload: unknown) => Promise<T>): void {
+    this.webContents.ipc.handle(channel, async (event, ...args: unknown[]) => {
+      if (!isPanelSender(event, this.webContents, this.pageUrl)) {
+        this.deps.log(`[views] panel ${this.panelId}: rejected ${channel} from ${event.senderFrame ? loggableUrl(event.senderFrame.url) : 'a destroyed frame'} (webContents ${event.sender.id})`);
+        throw new Error('Rejected sender');
+      }
+      try {
+        return await handler(args[0]);
+      } catch (err) {
+        this.deps.log(`[views] panel ${this.panelId}: ${channel} failed: ${err instanceof Error ? err.message : String(err)}`);
+        throw err;
+      }
+    });
+    this.invokeChannels.push(channel);
+  }
+
+  /** A rectangle in this page's CSS pixels, in the window's content DIPs. */
+  windowRect(rect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }): Rectangle {
+    const bounds = this.view.getBounds();
+    const zoom = this.webContents.getZoomFactor();
+    return { x: bounds.x + rect.x * zoom, y: bounds.y + rect.y * zoom, width: rect.width * zoom, height: rect.height * zoom };
+  }
+
+  /** A rectangle in this page's CSS pixels, in the overlay's CSS pixels, which the overlay draws at the shell's zoom. */
+  overlayRect(rect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }, shellZoom: number): Rectangle {
+    const dip = this.windowRect(rect);
+    return { x: dip.x / shellZoom, y: dip.y / shellZoom, width: dip.width / shellZoom, height: dip.height / shellZoom };
   }
 }
 
@@ -703,6 +761,11 @@ export class PanelViews {
     this.layout();
   }
 
+  // What `withholds` reads changed: the selected project, its host's connection or sign-in, or the selected chat.
+  withholdingChanged(): void {
+    this.layout();
+  }
+
   /** Every chat page of the authority hears its host's new label. */
   broadcastHost(authority: string, host: PanelHostLabel): void {
     for (const panel of this.panels.values()) if (panel.kind === 'chat' && panel.authority === authority) panel.sendHost(host);
@@ -778,9 +841,15 @@ export class PanelViews {
     return this.selected()?.webContents.isFocused() ?? false;
   }
 
+  // A withheld chat is hidden, and a hidden view keeps keyboard focus, so the window's own page takes it instead.
   focusChat(): void {
     const selected = this.selected();
-    if (selected) this.focus(selected);
+    if (!selected) return;
+    if (this.deps.withholds(selected)) {
+      this.launchFocus = undefined;
+      this.focusOnCommit = undefined;
+      this.deps.window.webContents.focus();
+    } else this.focus(selected);
   }
 
   // Electron focuses the window's own page before it reports the window's 'focus' (activation-focus.ts).
@@ -812,7 +881,7 @@ export class PanelViews {
     const pending = this.focusOnCommit;
     if (!pending?.committed || !this.deps.window.isFocused() || this.deps.window.isMinimized()) return;
     this.focusOnCommit = undefined;
-    if (this.selected() === pending.panel) pending.panel.webContents.focus();
+    if (this.selected() === pending.panel && !this.deps.withholds(pending.panel)) pending.panel.webContents.focus();
   }
 
   // A popup open meanwhile keeps focus, and returns it where it was when it closes.
@@ -820,7 +889,7 @@ export class PanelViews {
     const launch = this.launchFocus;
     if (!launch?.ready || !this.deps.window.isFocused() || this.deps.window.isMinimized()) return;
     this.launchFocus = undefined;
-    if (this.selected() === launch.panel && !this.deps.popupOpen()) launch.panel.webContents.focus();
+    if (this.selected() === launch.panel && !this.deps.popupOpen() && !this.deps.withholds(launch.panel)) launch.panel.webContents.focus();
   }
 
   private focus(panel: DesktopPanel): void {
@@ -878,13 +947,16 @@ export class PanelViews {
   }
 
   // An empty chat slot (a maximized editor fills the grid) or the focus overlay hides the chat view, so neither the eye nor
-  // a screen reader finds it under them.
+  // a screen reader finds it under them; a withheld chat hides under the shell's placeholder.
   private layout(): void {
     const chat = this.selected();
     if (!chat) return;
     const area = this.area();
-    const shown = !this.focusOverlay && area !== undefined && area.width > 0 && area.height > 0;
+    const withheld = this.deps.withholds(chat);
+    const shown = !this.focusOverlay && !withheld && area !== undefined && area.width > 0 && area.height > 0;
     if (shown) chat.view.setBounds(area);
+    // a hidden view keeps keyboard focus, so keys never reach a withheld chat's composer
+    if (withheld && chat.webContents.isFocused()) this.deps.window.webContents.focus();
     if (chat.view.getVisible() === shown) return;
     chat.view.setVisible(shown);
     chat.fireViewState();

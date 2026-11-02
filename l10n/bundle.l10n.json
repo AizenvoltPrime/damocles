@@ -1501,5 +1501,6 @@
   "damocles: Damocles exited before it took the request.": "damocles: Damocles exited before it took the request.",
   "The project is not in a container any more.": "The project is not in a container any more.",
   "Another host is already named {0}.": "Another host is already named {0}.",
-  "The folder's name cannot name a host.": "The folder's name cannot name a host."
+  "The folder's name cannot name a host.": "The folder's name cannot name a host.",
+  "Damocles could not allow YOLO on {0}: {1}": "Damocles could not allow YOLO on {0}: {1}"
 }

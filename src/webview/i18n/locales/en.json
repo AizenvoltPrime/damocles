@@ -76,8 +76,9 @@
       "tooltip": "YOLO mode. Approves every tool call automatically, except plan approval and questions.",
       "active": "YOLO",
       "inactive": "YOLO",
-      "refusedOnHost": "YOLO is off for your turns on {host}.",
-      "refused": "YOLO is off for your turns on this host."
+      "refusedOnHost": "YOLO is off for your chats on {host}.",
+      "refused": "YOLO is off for your chats on this host.",
+      "locked": "YOLO isn't allowed on {host}. Activate to allow it."
     },
     "voice": {
       "startRecording": "Start voice recording",
@@ -2669,7 +2670,10 @@
       },
       "defaultYolo": {
         "label": "Start in YOLO mode",
-        "description": "Auto-approve every tool call except plan approval and questions."
+        "description": "Auto-approve every tool call except plan approval and questions.",
+        "refused": "YOLO is off for your chats on {host}. Turning this on asks to allow it there.",
+        "refusedOn": "Has no effect for your chats on {host} until YOLO is allowed there.",
+        "allow": "Allow YOLO..."
       },
       "ideContext": {
         "label": "Include the active file",

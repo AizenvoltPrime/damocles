@@ -235,6 +235,23 @@ describe('a pane drag whose pointer capture ends', () => {
   });
 });
 
+// A banner always sits under a header: the chat row has no slot above it, and the slot's content spans its full width.
+describe('the chat pane', () => {
+  it('takes content only in the gutter under its grip cell and in the slot, never above the chat row', () => {
+    wrapper = mount(LayoutGrid, {
+      props: { api: fakeShellApi(), state: STATE, focusOverlay: false, sidebarSliding: false },
+      slots: { chatBanner: '<div data-testid="above-row" />', chatGutter: '<div data-testid="gutter-strip" />', chat: '<div data-testid="slot-content" />' },
+      global: { plugins: [shellI18n], stubs: { transition: true, TerminalPane: true, PaneGrip: true } },
+    });
+    expect(wrapper.find('[data-testid="above-row"]').exists()).toBe(false);
+    const strip = wrapper.get('[data-testid="gutter-strip"]').element;
+    expect(strip.previousElementSibling?.className).toContain('h-11.5');
+    const slot = wrapper.get('[data-testid="chat-slot"]');
+    expect(slot.find('[data-testid="slot-content"]').exists()).toBe(true);
+    expect(slot.classes()).not.toContain('items-center');
+  });
+});
+
 describe('a sash sizing the pane before it', () => {
   function mountSash(pane?: 'before') {
     wrapper = mount(Sash, { props: { orientation: 'horizontal', label: 'Resize', value: 150, min: 60, max: 400, ...(pane ? { pane } : {}) }, global: { plugins: [shellI18n] } });

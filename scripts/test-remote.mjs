@@ -14,12 +14,15 @@
  * package for any Docker spec, the Alpine package with the alpine image; for a @wsl spec, which starts no fixture container,
  * the Linux and Alpine packages its distros install from the app's cache; and for a @devcontainer spec the same two packages,
  * which its dev containers install, with the sshd fixture images only for a spec that starts one (`sshd(`). Building the
- * Alpine package compiles node-pty in the pinned Alpine build image with docker, once per node-pty and Node version
- * (dist/server-packages/.cache), so a run on a machine without Docker needs that file or DAMOCLES_E2E_PREBUILT=server-packages.
+ * Alpine package compiles node-pty in the pinned Alpine build image with docker, once per node-pty version, Node version and
+ * image pin (dist/server-packages/.cache), so a run on a machine without Docker needs that file or
+ * DAMOCLES_E2E_PREBUILT=server-packages. A compile needs `docker buildx` (bundled with Docker Desktop, a separate plugin on
+ * docker-ce) and registry access to resolve the architecture's image; the other architecture's runs emulated, which on Linux
+ * docker-ce needs binfmt/QEMU registered (`docker run --privileged --rm tonistiigi/binfmt --install arm64,amd64`).
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync } from 'node:fs';
 import { arch } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -179,11 +182,37 @@ function desktopSetup() {
   for (const step of steps.slice(0, playwright)) run(step, [], { shell: true });
 }
 
-// node-pty compiled against musl in the pinned Alpine build image, as the release's Alpine legs build it; kept per version.
-function muslNodePty(target, nodeVersion) {
+// ELF e_machine of each server target arch
+const ELF_MACHINE = { x64: 0x3e, arm64: 0xb7 };
+
+/** Whether `data` starts with an ELF header whose e_machine (uint16 LE at offset 18) is `cpu`'s, a SERVER_TARGETS arch. */
+export function isElfFor(data, cpu) {
+  return data.length >= 20 && data.readUInt32BE(0) === 0x7f454c46 && data.readUInt16LE(18) === ELF_MACHINE[cpu];
+}
+
+function builtFor(file, cpu) {
+  const fd = openSync(file, 'r');
+  try {
+    const header = Buffer.alloc(20);
+    return isElfFor(header.subarray(0, readSync(fd, header, 0, 20, 0)), cpu);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// node-pty compiled against musl in the pinned Alpine build image, as the release's Alpine legs build it; kept per version and
+// index digest, which fixes each architecture's image digest.
+export function muslNodePty(target, nodeVersion) {
   const { version } = JSON.parse(readFileSync(join(ROOT, 'node_modules', 'node-pty', 'package.json'), 'utf8'));
-  const out = join(PTY_CACHE, `node-pty-${version}-${target}-node-${nodeVersion}.node`);
-  if (existsSync(out)) return out;
+  const { alpineImage } = NODE_RELEASES[nodeVersion];
+  const cpu = SERVER_TARGETS[target].arch;
+  const pin = alpineImage.split('@sha256:')[1].slice(0, 12);
+  const out = join(PTY_CACHE, `node-pty-${version}-${target}-node-${nodeVersion}-${pin}.node`);
+  if (existsSync(out)) {
+    if (builtFor(out, cpu)) return out;
+    console.log(`${out} is not an ${cpu} ELF binary; rebuilding it`);
+    rmSync(out);
+  }
   mkdirSync(PTY_CACHE, { recursive: true });
   const cache = relative(ROOT, PTY_CACHE).split('\\').join('/');
   const script = [
@@ -196,8 +225,29 @@ function muslNodePty(target, nodeVersion) {
     'node /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild',
     `cp build/Release/pty.node "/work/${cache}/${out.slice(PTY_CACHE.length + 1)}"`,
   ].join('\n');
-  run('docker', ['run', '--rm', '-v', `${ROOT}:/work`, NODE_RELEASES[nodeVersion].alpineImage, 'sh', '-c', script]);
+  const dockerArch = cpu === 'x64' ? 'amd64' : 'arm64';
+  run('docker', ['run', '--rm', '--platform', `linux/${dockerArch}`, '-v', `${ROOT}:/work`, platformImage(alpineImage, dockerArch), 'sh', '-c', script]);
+  if (!builtFor(out, cpu)) {
+    rmSync(out, { force: true });
+    throw new Error(`The node-pty built for ${target} is not an ${cpu} ELF binary`);
+  }
   return out;
+}
+
+/** `image` (a `name:tag@digest` multi-arch index reference) by the digest of its linux/`dockerArch` entry in `index`, the index's JSON. */
+export function platformDigestRef(image, index, dockerArch) {
+  const at = image.indexOf('@');
+  if (at === -1) throw new Error(`${image} is not pinned by digest`);
+  if (!Array.isArray(index.manifests)) throw new Error(`${image} is not a multi-arch index`);
+  const entry = index.manifests.find((manifest) => manifest.platform?.os === 'linux' && manifest.platform.architecture === dockerArch);
+  if (!entry) throw new Error(`${image} has no linux/${dockerArch} image`);
+  return `${image.slice(0, at)}@${entry.digest}`;
+}
+
+// By the platform's own digest: Docker's classic image store holds one platform per reference, so a second platform of the
+// index's digest fails with "cannot overwrite digest".
+function platformImage(image, dockerArch) {
+  return platformDigestRef(image, JSON.parse(output('docker', ['buildx', 'imagetools', 'inspect', '--raw', image])), dockerArch);
 }
 
 function serverPackages(targets) {

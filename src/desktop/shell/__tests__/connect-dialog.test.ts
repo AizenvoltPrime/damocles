@@ -848,6 +848,74 @@ describe('connect dialog', () => {
     expect(dialog().querySelector('input[aria-label="Host name"]')).toBeNull();
   });
 
+  describe('the host card opened from a host chip', () => {
+    const ANCHOR = { x: 120, y: 6, width: 90, height: 28 };
+    const scrim = (): Element | null => document.querySelector('.d-scrim');
+
+    it('hangs from the chip with no scrim and no Back, connecting nothing, and Escape closes it', async () => {
+      await openConnect({ hostId: 'h1', card: 'show', anchor: ANCHOR });
+      await vi.waitFor(() => expect(dialog().querySelector('[data-testid="host-card"]')).not.toBeNull());
+      expect(dialog().hasAttribute('data-popover')).toBe(true);
+      expect(dialog().style.left).toBe('120px');
+      expect(dialog().style.top).toBe('40px');
+      expect(scrim()).toBeNull();
+      expect([...dialog().querySelectorAll('button')].some((button) => button.textContent?.trim() === 'Back')).toBe(false);
+      expect(api.hostRuns).toHaveBeenCalledWith('h1');
+      expect(api.startConnect).not.toHaveBeenCalled();
+      press('Escape');
+      await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('c1', { kind: 'dismissed' }));
+    });
+
+    it('becomes the centered dialog once it moves on to another view', async () => {
+      await openConnect({ hosts: [{ ...PROD, connection: 'connected' }], hostId: 'h1', card: 'show', anchor: ANCHOR });
+      await vi.waitFor(() => expect(dialog().querySelector('[data-testid="host-card-open-folder"]')).not.toBeNull());
+      dialog().querySelector<HTMLElement>('[data-testid="host-card-open-folder"]')!.click();
+      await vi.waitFor(() => expect(api.browseHost).toHaveBeenCalled());
+      await flushPromises();
+      expect(dialog().hasAttribute('data-popover')).toBe(false);
+      expect(dialog().style.left).toBe('');
+      expect(scrim()).not.toBeNull();
+    });
+
+    it('stays the card while the host reconnects, and Escape closes it without cancelling the attempt', async () => {
+      await openConnect({ hosts: [{ ...PROD, reconnect: { phase: 'running', since: 1 } }], hostId: 'h1', card: 'show', anchor: ANCHOR });
+      await vi.waitFor(() => expect(dialog().querySelector('[data-testid="host-card"]')).not.toBeNull());
+      api.connectStep(step({}));
+      await flushPromises();
+      expect(dialog().hasAttribute('data-popover')).toBe(true);
+      expect(dialog().querySelector('[data-testid="connect-progress"]')).toBeNull();
+      expect(dialog().querySelector('[data-testid="host-card-status"]')!.textContent!.trim()).toBe('Reconnecting');
+      // the status text says what the dot shows, so the dot is not read out too
+      expect(dialog().querySelector('[data-testid="host-card-status"]')!.parentElement!.querySelector('[data-testid="host-status-dot"]')!.getAttribute('aria-hidden')).toBe('true');
+      press('Escape');
+      await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('c1', { kind: 'dismissed' }));
+      expect(api.cancelConnect).not.toHaveBeenCalled();
+    });
+
+    it('hangs above the chip when there is more room there', async () => {
+      const anchor = { x: 120, y: window.innerHeight - 40, width: 90, height: 28 };
+      await openConnect({ hostId: 'h1', card: 'show', anchor });
+      await vi.waitFor(() => expect(dialog().querySelector('[data-testid="host-card"]')).not.toBeNull());
+      expect(dialog().style.top).toBe('auto');
+      expect(dialog().style.bottom).toBe('46px');
+      expect(dialog().style.left).toBe('120px');
+    });
+
+    it('closes on a click beside it, with no scrim to catch it', async () => {
+      await openConnect({ hostId: 'h1', card: 'show', anchor: ANCHOR });
+      await vi.waitFor(() => expect(dialog().querySelector('[data-testid="host-card"]')).not.toBeNull());
+      await pressPointer(document.body.appendChild(document.createElement('div')));
+      await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('c1', { kind: 'dismissed' }));
+    });
+
+    it('closes when its host is forgotten, where the dialog would go back to the host list', async () => {
+      await openConnect({ hostId: 'h1', card: 'show', anchor: ANCHOR });
+      await vi.waitFor(() => expect(dialog().querySelector('[data-testid="host-card"]')).not.toBeNull());
+      api.connectHosts([]);
+      await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('c1', { kind: 'dismissed' }));
+    });
+  });
+
   // A pointer press reaches the page before its click; reka's dismissable layers decide on it.
   const pressPointer = async (element: HTMLElement): Promise<void> => {
     element.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
@@ -1028,13 +1096,47 @@ describe('connect dialog', () => {
     expect(api.answer).not.toHaveBeenCalled();
   });
 
+  it("keeps the card's Close in its header row after Rename, whatever the name's length, and closes on it", async () => {
+    await openConnect({ hosts: [{ ...PROD, name: 'BOOKSCANNER10_ASTEFANOPOULOS_ADMINISTRATOR', connection: 'connected' }] });
+    dialog().querySelector<HTMLElement>('button[aria-label="Details for BOOKSCANNER10_ASTEFANOPOULOS_ADMINISTRATOR"]')!.click();
+    await flushPromises();
+    const card = await vi.waitFor(() => {
+      const shown = dialog().querySelector<HTMLElement>('[data-testid="host-card"]');
+      expect(shown).not.toBeNull();
+      return shown!;
+    });
+    const header = card.firstElementChild!;
+    const buttons = [...header.querySelectorAll<HTMLElement>('button')].map((button) => button.getAttribute('aria-label'));
+    expect(buttons).toEqual(['Rename BOOKSCANNER10_ASTEFANOPOULOS_ADMINISTRATOR', 'Close']);
+    // nothing of the dialog lies over the card's corner
+    expect(dialog().querySelectorAll('button[aria-label="Close"]')).toHaveLength(1);
+    expect(dialog().querySelector('.absolute.top-0.right-0')).toBeNull();
+    card.querySelector<HTMLElement>('[data-testid="host-card-close"]')!.click();
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('c1', { kind: 'dismissed' }));
+  });
+
+  it('puts the card footer in one order: Back, the secondary actions, then the primary at the trailing edge', async () => {
+    await openConnect({ hosts: [{ ...PROD, connection: 'connected' }] });
+    dialog().querySelector<HTMLElement>('button[aria-label="Details for prod"]')!.click();
+    await flushPromises();
+    const footer = await vi.waitFor(() => {
+      const primary = dialog().querySelector<HTMLElement>('[data-testid="host-card-open-folder"]');
+      expect(primary).not.toBeNull();
+      return primary!.parentElement!;
+    });
+    expect([...footer.querySelectorAll<HTMLElement>('button')].map((button) => button.textContent!.trim())).toEqual(['Back', 'Host settings', 'Show log', 'Open folder...']);
+    expect(footer.lastElementChild!.className).toContain('ms-auto');
+  });
+
   it('opens the folder browser of a connected host from its card', async () => {
     await openConnect({ hosts: [{ ...PROD, connection: 'connected' }] });
     dialog().querySelector<HTMLElement>('button[aria-label="Details for prod"]')!.click();
     await flushPromises();
     await vi.waitFor(() => expect(dialog().querySelector('[data-testid="host-card"] [data-testid="host-card-open-folder"]')).not.toBeNull());
     const button = dialog().querySelector<HTMLElement>('[data-testid="host-card"] [data-testid="host-card-open-folder"]')!;
-    expect(button.textContent?.trim()).toBe('Open folder on prod...');
+    // the header names the host, so the label is short; its accessible name keeps the host
+    expect(button.textContent?.trim()).toBe('Open folder...');
+    expect(button.getAttribute('aria-label')).toBe('Open folder on prod...');
     button.click();
     await vi.waitFor(() => expect(api.browseHost).toHaveBeenCalledWith('h1', undefined));
     expect(api.startConnect).not.toHaveBeenCalled();

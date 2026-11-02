@@ -905,6 +905,8 @@ npm run dist
 
 It never publishes. See [docs/release.md](docs/release.md) for the release workflow and the other platforms.
 
+For a version with no GitHub release, `npm run dist:local` also builds all eight remote server packages (Docker for the Alpine ones) and copies them into the packaged app's server cache, so remote installs work; a plain `npm run dist` packs whatever dev server manifest is in `dist/desktop/`, and the packaged app refuses an incomplete one.
+
 ## Code signing policy
 
 Windows releases are signed. Free code signing is provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).

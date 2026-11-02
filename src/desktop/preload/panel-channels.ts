@@ -28,6 +28,8 @@ export interface PanelHostLabel {
   readonly attention?: HostAttention;
   // a daemon of another protocol still runs agents there (ShellHost.update), which the update banner names
   readonly update?: HostUpdate;
+  // the host has a saved record, so main may ask to allow YOLO on it; absent for loopback
+  readonly canAllowYolo?: true;
 }
 
 // The page banner's button: Reconnect (also Reconnect now and Retry), Sign in, Show log or Edit host, and the update banner's
@@ -69,6 +71,9 @@ export const PANEL_CHANNELS = {
   host: 'damocles:panel:host',
   // renderer → main, a PanelHostAction on the page's own host
   hostAction: 'damocles:panel:host-action',
+  // renderer → main, invoke { anchor }: the composer's locked YOLO asks to allow YOLO on the page's own host, anchor in page
+  // CSS pixels, from a click or key main observed in the shown chat; answers whether the host allows YOLO now, rejects a refusal
+  allowYolo: 'damocles:panel:allow-yolo',
   // main → renderer, PanelConnection after the host's phase or the held messages changed
   connection: 'damocles:panel:connection',
   // renderer → main, a PanelQueueAction on one of the page's held messages

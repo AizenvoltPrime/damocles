@@ -12,6 +12,8 @@ export interface ChatHost {
   readonly attention?: 'offline' | 'signIn';
   // a daemon of another protocol still runs agents there
   readonly update?: BridgeHost['update'];
+  // main may ask to allow YOLO on the host (a saved host)
+  readonly canAllowYolo?: true;
 }
 
 const host = shallowRef<ChatHost | undefined>(undefined);
@@ -29,6 +31,7 @@ export function useChatHost(): Readonly<Ref<ChatHost | undefined>> {
       computer: label.computer,
       ...(label.attention !== undefined ? { attention: label.attention } : {}),
       ...(label.update !== undefined ? { update: label.update } : {}),
+      ...(label.canAllowYolo === true ? { canAllowYolo: true as const } : {}),
     });
     bridge.onHost((next) => {
       host.value = shown(next);

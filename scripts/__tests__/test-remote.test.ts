@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { resolve } from 'node:path';
 // @ts-expect-error -- plain .mjs helper, no types
-import { fixtureImagesIn, fixturesToRemove, grepOf, playwrightArgs, prebuiltParts, selection, serverPackageTargets, serverTargetsFor, specFilesOf, sshdSources } from '../test-remote.mjs';
+import { fixtureImagesIn, fixturesToRemove, grepOf, isElfFor, platformDigestRef, playwrightArgs, prebuiltParts, selection, serverPackageTargets, serverTargetsFor, specFilesOf, sshdSources } from '../test-remote.mjs';
 // @ts-expect-error -- plain .mjs helper, no types
 import { npmCliPath } from '../npm-cli.mjs';
 
@@ -100,6 +100,53 @@ describe('the fixtures test-remote removes', () => {
 
   it('after a run, removes that run\'s fixtures alone', () => {
     expect(fixturesToRemove(listed, { run: '4242', alive })).toEqual(['c-own']);
+  });
+});
+
+describe('the Alpine build image', () => {
+  const image = 'node:24.22.0-alpine3.24@sha256:index';
+  // docker buildx imagetools inspect --raw of a Docker Hub index: arm64 carries a variant, attestations are unknown/unknown
+  const index = {
+    manifests: [
+      { digest: 'sha256:amd', platform: { os: 'linux', architecture: 'amd64' } },
+      { digest: 'sha256:arm', platform: { os: 'linux', architecture: 'arm64', variant: 'v8' } },
+      { digest: 'sha256:att', platform: { os: 'unknown', architecture: 'unknown' } },
+    ],
+  };
+
+  it('names each architecture by its own digest in the index, keeping the name and tag', () => {
+    expect(platformDigestRef(image, index, 'amd64')).toBe('node:24.22.0-alpine3.24@sha256:amd');
+    expect(platformDigestRef(image, index, 'arm64')).toBe('node:24.22.0-alpine3.24@sha256:arm');
+  });
+
+  it('refuses a reference with no digest, a single-platform manifest and an index without the architecture', () => {
+    expect(() => platformDigestRef('node:24.22.0-alpine3.24', index, 'amd64')).toThrow('node:24.22.0-alpine3.24 is not pinned by digest');
+    expect(() => platformDigestRef(image, { config: {}, layers: [] }, 'amd64')).toThrow(`${image} is not a multi-arch index`);
+    expect(() => platformDigestRef(image, { manifests: [index.manifests[0]] }, 'arm64')).toThrow(`${image} has no linux/arm64 image`);
+  });
+});
+
+describe('a cached musl node-pty', () => {
+  const elf = (machine: number): Buffer => {
+    const header = Buffer.alloc(64);
+    header.write('\x7fELF', 0, 'latin1');
+    header.writeUInt16LE(machine, 18);
+    return header;
+  };
+
+  it('is trusted only as an ELF binary of the target\'s architecture', () => {
+    expect(isElfFor(elf(0x3e), 'x64')).toBe(true);
+    expect(isElfFor(elf(0xb7), 'arm64')).toBe(true);
+    expect(isElfFor(elf(0x3e), 'arm64')).toBe(false);
+    expect(isElfFor(elf(0xb7), 'x64')).toBe(false);
+  });
+
+  it('is not trusted when it is no ELF file or shorter than the header', () => {
+    const notElf = elf(0x3e);
+    notElf.write('MZ', 0, 'latin1');
+    expect(isElfFor(notElf, 'x64')).toBe(false);
+    expect(isElfFor(elf(0x3e).subarray(0, 19), 'x64')).toBe(false);
+    expect(isElfFor(Buffer.alloc(0), 'x64')).toBe(false);
   });
 });
 

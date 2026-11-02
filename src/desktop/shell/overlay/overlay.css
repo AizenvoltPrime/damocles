@@ -677,12 +677,14 @@ body {
   animation: o-zoom-out 0.18s ease-in both;
 }
 
-.overlay-pop-leave-active.devcontainer-trust-overlay {
+.overlay-pop-leave-active.devcontainer-trust-overlay,
+.overlay-pop-leave-active.allow-yolo-overlay {
   transition: none;
   animation: o-fade-out 0.18s ease-in both;
 }
 
-.overlay-pop-leave-active.devcontainer-trust-overlay .d-dialog {
+.overlay-pop-leave-active.devcontainer-trust-overlay .d-dialog,
+.overlay-pop-leave-active.allow-yolo-overlay .d-dialog {
   animation: o-zoom-out 0.18s ease-in both;
 }
 

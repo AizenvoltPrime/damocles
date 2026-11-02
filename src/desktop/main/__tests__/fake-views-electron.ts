@@ -26,6 +26,10 @@ export function fakeViewsElectron(webPreferences: unknown[] = []): Record<string
     readonly send = vi.fn();
     readonly close = vi.fn();
     readonly setZoomFactor = vi.fn();
+    zoom = 1;
+    getZoomFactor(): number {
+      return this.zoom;
+    }
     // A load commits, and its document is ready, at once.
     readonly loadURL = vi.fn(async (url: string) => {
       this.mainFrame.url = url;
@@ -78,6 +82,7 @@ export type FakeContents = DesktopPanel['webContents'] & {
   ipc: EventEmitter & { handlers: Map<string, (event: unknown, ...args: unknown[]) => unknown> };
   focus: ReturnType<typeof vi.fn>;
   focused: boolean;
+  zoom: number;
   loadURL: ReturnType<typeof vi.fn>;
   mainFrame: { url: string; parent: null };
 };
@@ -114,7 +119,7 @@ export function fakeWindow(width = 1200) {
         if (at >= 0) children.splice(at, 1);
       }),
     },
-    webContents: new EventEmitter(),
+    webContents: Object.assign(new EventEmitter(), { focus: vi.fn() }),
     isDestroyed: () => false,
     isFocused: (): boolean => true,
     isMinimized: (): boolean => false,

@@ -28,6 +28,7 @@ window.damoclesBridge = {
   hostAction: () => undefined,
   getConnection: () => undefined,
   onConnection: () => () => undefined,
+  allowYolo: async () => false,
   queueAction: () => undefined,
 };
 

@@ -101,6 +101,8 @@ const bridge: DamoclesBridge = {
   hostAction: (action: PanelHostAction): void => {
     ipcRenderer.send(PANEL_CHANNELS.hostAction, action);
   },
+  allowYolo: (anchor: { x: number; y: number; width: number; height: number }): Promise<boolean> =>
+    ipcRenderer.invoke(PANEL_CHANNELS.allowYolo, { anchor: { x: anchor.x, y: anchor.y, width: anchor.width, height: anchor.height } }) as Promise<boolean>,
   getConnection: (): PanelConnection | undefined => current()?.connection,
   onConnection: (listener: (connection: PanelConnection) => void): (() => void) => {
     connectionListeners.add(listener);

@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { MessageSquarePlus } from 'lucide-vue-next';
-import { Button } from '@/components/ui/button';
 import type { DamoclesShellApi, FileRef, ShellFocusPart, ShellState } from '../preload/shell-channels';
 import { applyShellLocale } from './i18n';
 import { watchContentBounds } from './content-bounds';
@@ -12,6 +10,7 @@ import LayoutGrid from './layout/LayoutGrid.vue';
 import EditorPane from './editor/EditorPane.vue';
 import FocusOverlay from './editor/FocusOverlay.vue';
 import ConnectionBanner from './components/ConnectionBanner.vue';
+import ChatPlaceholder from './components/ChatPlaceholder.vue';
 import { createEditorStore, EDITOR_STORE } from './editor/editor-store';
 import { createTerminalStore, TERMINAL_STORE } from './terminal/terminal-store';
 import { createScmStore, SCM_STORE } from './scm/scm-store';
@@ -35,11 +34,11 @@ watch(() => state.value?.projects, (projects) => {
   if (projects) scm.retainProjects(new Set(projects.map((project) => project.key)));
 });
 
-// The selected project's remote host, whose banner shows over the chat while it is offline or waits for a sign-in.
+const selectedProject = computed(() => state.value?.projects.find((project) => project.key === state.value?.selected.projectKey));
+// The selected project's remote host, whose banner shows under the chat's header while it is offline or waits for a sign-in.
 const selectedHost = computed(() => {
-  const current = state.value;
-  const hostId = current?.projects.find((project) => project.key === current.selected.projectKey)?.authority.hostId;
-  return hostId === undefined ? undefined : current?.hosts.find((host) => host.hostId === hostId);
+  const hostId = selectedProject.value?.authority.hostId;
+  return hostId === undefined ? undefined : state.value?.hosts.find((host) => host.hostId === hostId);
 });
 
 // Reveals waiting for main to show the sidebar they asked for.
@@ -163,24 +162,10 @@ onBeforeUnmount(() => {
         :focus-overlay="editor.focusOverlay.value"
         :sidebar-sliding="sidebarSliding"
       >
-        <!-- A chat page covers the slot and shows its own banner under its header, which stays level with the other panes'. -->
+        <!-- Every banner sits under a header, a chat page's or the placeholder's, and the gutter's strip continues it; a kept
+             chat of another project is another host's or local, so it gets no strip. -->
         <template
-          v-if="state.selected.chatId === undefined"
-          #chatBanner
-        >
-          <ConnectionBanner
-            :key="selectedHost?.hostId ?? 'none'"
-            :host="selectedHost"
-            @reconnect="api.reconnectHost($event)"
-            @sign-in="api.signInHost($event)"
-            @show-log="api.showHostLog($event)"
-            @edit-host="api.renameHostOnCard($event)"
-            @switch-when-idle="api.switchHostWhenIdle($event)"
-            @switch-now="api.switchHostNow($event)"
-          />
-        </template>
-        <template
-          v-else
+          v-if="state.selected.chatId !== undefined || !state.chatViewShown"
           #chatGutter
         >
           <ConnectionBanner
@@ -190,27 +175,21 @@ onBeforeUnmount(() => {
           />
         </template>
         <template #chat>
-          <FocusOverlay
+          <div
             v-if="editor.focusOverlay.value && state.selectedChat"
-            :title="state.selectedChat.title || t('chats.newChat')"
-            :status="state.selectedChat.status"
+            class="flex min-h-0 flex-1 flex-col items-center justify-center p-6"
+          >
+            <FocusOverlay
+              :title="state.selectedChat.title || t('chats.newChat')"
+              :status="state.selectedChat.status"
+            />
+          </div>
+          <ChatPlaceholder
+            v-else-if="!state.chatViewShown"
+            :api="api"
+            :project="selectedProject"
+            :host="selectedHost"
           />
-          <template v-else-if="state.selected.chatId === undefined">
-            <p class="text-sm font-medium">
-              {{ t('content.empty') }}
-            </p>
-            <Button
-              type="button"
-              class="h-auto gap-1.5 rounded-lg px-3 py-1.5 text-xs hover:bg-primary [&_svg]:size-3.5"
-              @click="api.newChat()"
-            >
-              <MessageSquarePlus
-                aria-hidden="true"
-                class="size-3.5"
-              />
-              {{ t('content.newChat') }}
-            </Button>
-          </template>
         </template>
         <template #editor>
           <EditorPane

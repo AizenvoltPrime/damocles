@@ -31,7 +31,7 @@ import type { ChatPermissions, PanelCreate } from '../core-protocol';
 import type { RelayView } from './core-services/host-services';
 import type { StoredSession } from '../../shared/types/session';
 import type { ChatAttachmentInput } from '../../shared/types/chat-attachment';
-import { MAX_OVERLAY_TAGS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRequest } from '../preload/overlay-channels';
+import { MAX_OVERLAY_TAGS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRect, type OverlayRequest } from '../preload/overlay-channels';
 import type { NotificationHost, NotificationProject } from '../preload/notifications';
 import { canCheck, type UpdateSnapshot, type VersionInfo } from '../preload/updates';
 import {
@@ -44,6 +44,7 @@ import {
   type GridSlot,
   type ShellGridLayout,
   hostAttention,
+  type HostAttention,
   type ChatMutationResult,
   type ChatStatus,
   type FileRef,
@@ -130,6 +131,7 @@ import { killQuestion } from './terminal/kill-confirmation';
 import { folderLinkAction, TerminalLinks, type LinkBase } from './terminal/terminal-links';
 import { pasteText, TerminalPasteGate } from './terminal/terminal-paste';
 import { askShellMenu, GestureGrant } from './clipboard-gestures';
+import { allowYoloAsker } from './allow-host-yolo';
 import { TERMINAL_LIST_DEFAULT_REM, type TerminalProfileReport, type TerminalAction, type TerminalAddToChat, type TerminalColor, type TerminalCustomIcon, type TerminalOpenLink, type TerminalOpenWebLink } from '../preload/terminal-channels';
 import { capTerminalText, MAX_TERMINAL_ATTACHMENT_OMITTED_LINES } from '../preload/terminal-attachment-cap';
 import { excludeSettingGlobs } from '../workspace/search/rg-args';
@@ -153,7 +155,7 @@ import { createAskpassBridge, type AskCredential } from './askpass-bridge';
 import { createCheckedMessageAsker, createMessageAsker, type AskCheckedMessage, type AskMessage } from './message-dialog';
 import { DO_NOT_DISTURB_KEY, handleCenterChannels, NotificationCenter, runEntryAction, type ChatKey, type ChatRef, type EntryActionDeps, type StickyNotice } from './notification-center';
 import { NotifierHost } from './notifier';
-import { closeRemoteResult, createInputAsker, createQuickPickAsker, devcontainerTrustAccepted, gitCredentialConsentChoice, OverlayHost, overlayHtml, parseCloseRemoteRequest, parseDevcontainerTrustRequest, parseGitCredentialConsentRequest } from './overlay';
+import { closeRemoteResult, createInputAsker, createQuickPickAsker, devcontainerTrustAccepted, gitCredentialConsentChoice, OverlayHost, overlayHtml, parseCloseRemoteRequest, parseDevcontainerTrustRequest, parseGitCredentialConsentRequest, parseRect } from './overlay';
 import { OverlaySettings, writeDesktopSetting, type SettingsAttachTarget, type SettingsScope, type SettingsScopes } from './overlay-settings';
 import { HiddenOpening } from './hidden-opening';
 import type { SettingsTarget } from '../../shared/settings-sections';
@@ -211,7 +213,7 @@ import type { WorktreeDialog } from '../preload/overlay-channels';
 import { remoteSetupShell, setupShell } from './worktrees/setup-terminal';
 import { chatRowWorktree } from './worktrees/chat-rows';
 import { UsageWarningStore } from './usage-warning-store';
-import { HostStore, type SshHostRecord } from './remote/host-store';
+import { HostStore, type HostRecord, type SshHostRecord } from './remote/host-store';
 import { parseContent, RemoteState, type RemoteTerminalRecord } from './remote/remote-state';
 import { startLoopbackTransport } from './remote/loopback-transport';
 import type { OtherProtocolDaemon, RemoteConnection } from './remote/connection';
@@ -290,7 +292,7 @@ import { openAsProject, openFolderAsProject, type OpenAsProjectDeps } from './op
 import { RemoteCore, type RemoteHostedCore } from './remote/remote-core';
 import { clientGitCredential, createGitCredentialClient, type GitCredentialClient } from './remote/git-credential-client';
 import { remoteServices } from './remote/remote-services';
-import { chatOfSelectedProject, remoteSelection } from './remote/remote-selection';
+import { chatOfSelectedProject, keptChatWithheld, remoteSelection } from './remote/remote-selection';
 import type { RemoteChatRecord } from './remote/remote-state';
 import type { OpenAsProjectRequest, OpenAsProjectResult, ProjectsView, ShellEngine } from '../preload/shell-channels';
 import type { HostServicesDeps, HostTrust } from './core-services/host-services';
@@ -1898,6 +1900,18 @@ class DesktopApp {
         hostLabel: (authority) => this.panelHostLabel(authority),
         hostNames: () => this.panelHostNames(),
         onHostAction: (panel, action) => this.panelHostAction(panel, action),
+        onAllowYolo: async (panel, anchor) => {
+          const rect = parseRect(anchor);
+          if (!rect) throw new Error('Malformed allow YOLO anchor');
+          // the question goes with the page that asked
+          const closed = new AbortController();
+          const watch = panel.onDispose(() => closed.abort());
+          try {
+            return await this.allowHostYolo(panel.authority, panel.overlayRect(rect, window.webContents.getZoomFactor()), closed.signal);
+          } finally {
+            watch.dispose();
+          }
+        },
         connection: (panel) => this.panelConnection(panel),
         onQueueAction: (panel, action) => this.heldMessageAction(panel, action),
         takeCoreMessage: (panel, type, json) => this.takeHeldVerdict(panel, type, json),
@@ -1910,6 +1924,7 @@ class DesktopApp {
         onRendererGaveUp: (panel) => this.chatGaveUp(panel),
         onSavedSessionChange: (chat) => this.chatChanged(chat),
         popupOpen: () => overlay.mode === 'full',
+        withholds: (chat) => this.chatWithheld(chat),
         openRemoteLink: (authority, url) => { this.requireOpenUrl().userClick(authority, url).catch(this.report('Open Link')); },
       },
       (absolutePath) => appResourceUri(resourceRoot, absolutePath),
@@ -1929,6 +1944,7 @@ class DesktopApp {
       log: (line) => log(line),
       languageAtLaunch: this.languageSetting,
       knownHost: (hostId) => this.hostStore?.host(hostId) !== undefined,
+      allowYolo: (authority, anchor) => this.allowHostYolo(authority, anchor),
     });
     const shell: ShellHost = new ShellHost(window, this.shellActions(views, browserTabs, overlay, window), (line) => log(line), () => this.shellGaveUp(shell));
     const terminals = this.requireTerminals();
@@ -2125,7 +2141,8 @@ class DesktopApp {
     const project = projectKey === undefined ? undefined : this.remoteProject(projectKey);
     const projectFile = project ? pathFor(project).join(project.fsPath, '.damocles', 'settings.json') : undefined;
     const color = this.hostColor(selected.authority);
-    return { host: { authority: selected.authority, name: this.hostName(selected.authority), ...(color !== undefined ? { color } : {}) }, ...(projectFile !== undefined ? { projectFile } : {}) };
+    const canAllowYolo = this.savedHostRecord(selected.authority) !== undefined;
+    return { host: { authority: selected.authority, name: this.hostName(selected.authority), ...(color !== undefined ? { color } : {}), ...(canAllowYolo ? { canAllowYolo } : {}) }, ...(projectFile !== undefined ? { projectFile } : {}) };
   }
 
   // Restore default layout: window-layout.json back to its defaults, applied to this window now.
@@ -3298,7 +3315,8 @@ class DesktopApp {
         (err) => log(`[shell] Rename Host failed: ${errorText(err)}`),
         null,
       ),
-      renameHostOnCard: reportFailure(async (hostId: string) => { await this.requireRemoteHosts().openConnect(hostId, 'rename'); }, this.shellFailure('Rename Host', 'Damocles could not open the Connect dialog: {0}')),
+      renameHostOnCard: reportFailure(async (hostId: string) => { await this.requireRemoteHosts().openConnect(hostId, { card: 'rename' }); }, this.shellFailure('Rename Host', 'Damocles could not open the Connect dialog: {0}')),
+      showHostCard: reportFailure(async (hostId: string, anchor: OverlayRect) => { await this.requireRemoteHosts().openConnect(hostId, { card: 'show', anchor }); }, this.shellFailure('Host Details', 'Damocles could not open the Connect dialog: {0}')),
       openConnect: reportFailure(async () => this.openConnect(undefined), this.shellFailure('Connect to Host', 'Damocles could not open the Connect dialog: {0}')),
       openHostFolder: reportFailure(async (hostId: string) => this.openConnect(hostId), this.shellFailure('Open Folder on Host', 'Damocles could not open the Connect dialog: {0}')),
       setProjectsView: reportFailure((view: ProjectsView) => this.requirePlatform().settings.update(PROJECTS_VIEW_SETTING, view, 'user'), this.shellFailure('Projects View', 'Damocles could not change the Projects section: {0}')),
@@ -3344,7 +3362,7 @@ class DesktopApp {
       rebuildContainer: reportFailure(async (projectKey: string) => {
         const hostId = this.savedHostIdOf(authorityKeyOfProject(projectKey));
         if (hostId === undefined || this.hostStore?.host(hostId)?.kind !== 'container') throw new Error(notContainerProjectText(this.requireLocalization().t));
-        await this.requireRemoteHosts().openConnect(hostId, 'rebuild');
+        await this.requireRemoteHosts().openConnect(hostId, { card: 'rebuild' });
       }, this.shellFailure('Rebuild Container', 'Damocles could not open the Rebuild Container confirmation: {0}')),
       dismissWslNotice: async (projectKey: string) => {
         if (!this.projects.folders().some((folder) => folderKey(folder.fsPath) === projectKey)) throw new Error('Not a local project of the list');
@@ -5440,7 +5458,7 @@ class DesktopApp {
       },
       openConnect: async (query) => {
         this.showWindow();
-        this.requireRemoteHosts().openConnect(undefined, undefined, query).catch(this.shellFailure('Connect to Host', 'Damocles could not open the Connect dialog: {0}'));
+        this.requireRemoteHosts().openConnect(undefined, { query }).catch(this.shellFailure('Connect to Host', 'Damocles could not open the Connect dialog: {0}'));
       },
       notify: (message) => void this.notifications.warn(message),
       claimWaitMarker: (marker) => claimWaitMarker(marker, waitMarkerFolder(DAMOCLES_HOME_DIR), process.pid),
@@ -5716,11 +5734,17 @@ class DesktopApp {
   // The label a remote chat page shows for its host, from this computer's host store; its banner says what the shell's would.
   private panelHostLabel(authority: string): PanelHostLabel {
     const color = this.hostColor(authority);
+    const attention = this.hostAttentionOf(authority);
+    const update = this.otherProtocolHosts.get(authority)?.update();
+    const canAllowYolo = this.savedHostRecord(authority) !== undefined;
+    return { hostId: this.hostIdOf(authority), name: this.hostName(authority), ...(color !== undefined ? { color } : {}), computer: os.hostname(), ...(attention !== undefined ? { attention } : {}), ...(update !== undefined ? { update } : {}), ...(canAllowYolo ? { canAllowYolo } : {}) };
+  }
+
+  // What the authority's saved host waits for the user to do, as the shell's and the chat pages' banners say it.
+  private hostAttentionOf(authority: string): HostAttention | undefined {
     const hostId = this.savedHostIdOf(authority);
     const host = hostId === undefined ? undefined : this.remoteHosts?.shellHosts().find((candidate) => candidate.hostId === hostId);
-    const attention = host === undefined ? undefined : hostAttention(host);
-    const update = this.otherProtocolHosts.get(authority)?.update();
-    return { hostId: this.hostIdOf(authority), name: this.hostName(authority), ...(color !== undefined ? { color } : {}), computer: os.hostname(), ...(attention !== undefined ? { attention } : {}), ...(update !== undefined ? { update } : {}) };
+    return host === undefined ? undefined : hostAttention(host);
   }
 
   // Every saved host's name and color, which this computer's chat pages label remote /stats rows with; core never names a host.
@@ -5767,7 +5791,7 @@ class DesktopApp {
       return;
     }
     if (action === 'editHost') {
-      this.requireRemoteHosts().openConnect(hostId, 'rename').catch(this.shellFailure('Edit host', 'Damocles could not open the Connect dialog: {0}'));
+      this.requireRemoteHosts().openConnect(hostId, { card: 'rename' }).catch(this.shellFailure('Edit host', 'Damocles could not open the Connect dialog: {0}'));
       return;
     }
     if (action === 'switchWhenIdle') {
@@ -5920,7 +5944,7 @@ class DesktopApp {
     const rebuild = t('Rebuild Container...');
     this.notificationCenter.notice('warning', message, [rebuild], this.notificationHost(authorityKey), title).then(async (answer) => {
       // the host may be forgotten meanwhile
-      if (answer === 0 && this.hostStore?.host(hostId)?.kind === 'container') await this.requireRemoteHosts().openConnect(hostId, 'rebuild');
+      if (answer === 0 && this.hostStore?.host(hostId)?.kind === 'container') await this.requireRemoteHosts().openConnect(hostId, { card: 'rebuild' });
     }).catch(this.report('Showing the container data notice'));
   }
 
@@ -5933,7 +5957,7 @@ class DesktopApp {
     const show = t('Show host');
     this.notificationCenter.notice('warning', message, [show], this.notificationHost(authorityKey), title).then(async (answer) => {
       const hostId = this.savedHostIdOf(authorityKey);
-      if (answer === 0 && hostId !== undefined) await this.requireRemoteHosts().openConnect(hostId, 'show');
+      if (answer === 0 && hostId !== undefined) await this.requireRemoteHosts().openConnect(hostId, { card: 'show' });
     }).catch(this.report('Showing the machines sharing the home'));
   }
 
@@ -6207,9 +6231,33 @@ class DesktopApp {
     };
   }
 
+  // A host's Allow YOLO turns on only from the user's answer to main's own question, never from a renderer's word alone.
+  private readonly allowHostYolo = allowYoloAsker({
+    savedHost: (authority) => {
+      const record = this.savedHostRecord(authority);
+      return record && { hostId: record.id, name: record.name, ...(record.color !== undefined ? { color: record.color } : {}), allowBypass: record.settings.allowBypass === true };
+    },
+    request: (request, signal) => {
+      const overlay = this.overlay;
+      if (!overlay) throw new Error('The window is not open');
+      return overlay.request(request, webContents.getFocusedWebContents() ?? undefined, undefined, undefined, signal);
+    },
+    allow: (hostId) => this.requireRemoteHosts().setSetting(hostId, { key: 'allowBypass', value: true }),
+    failed: (hostName, err) => {
+      log(`[remote] allowing YOLO on ${hostName} failed: ${errorText(err)}`);
+      void this.notifications.error(this.requireLocalization().t('Damocles could not allow YOLO on {0}: {1}', hostName, errorMessage(err)));
+    },
+  });
+
   // The saved host an authority key names: ssh+<id>'s id, or a recorded distro's for wsl+<distro>; undefined for any other.
   private savedHostIdOf(authorityKey: string): string | undefined {
     return this.hostStore ? this.hostStore.hostIdOf(authorityKey) : hostIdOfAuthority(authorityKey);
+  }
+
+  // The saved host record an authority key names; undefined for a key no saved host holds (loopback included).
+  private savedHostRecord(authorityKey: string): HostRecord | undefined {
+    const hostId = this.savedHostIdOf(authorityKey);
+    return hostId === undefined ? undefined : this.hostStore?.host(hostId);
   }
 
   // A saved host's authority: an SSH host by its id, a WSL distro by its name; undefined for a key no saved host holds.
@@ -7398,7 +7446,8 @@ class DesktopApp {
     });
     const byKey = new Map([...local, ...remote].map((project) => [project.key, project]));
     const projects = (this.hostStore?.order([...byKey.keys()]) ?? [...byKey.keys()]).map((key) => byKey.get(key)!);
-    const selected = chatOfSelectedProject(this.selectedProjectKey, views.selected());
+    const shownChat = views.selected();
+    const selected = chatOfSelectedProject(this.selectedProjectKey, shownChat);
     const selectedId = selected ? this.chatIdOf(selected) : undefined;
     const projectKey = this.selectedProjectKey ?? defaultKey;
     return {
@@ -7407,6 +7456,7 @@ class DesktopApp {
       windowState: windowStateOf(this.window),
       projects,
       selected: { ...(projectKey !== undefined ? { projectKey } : {}), ...(selectedId !== undefined ? { chatId: selectedId } : {}) },
+      chatViewShown: shownChat !== undefined && !this.chatWithheld(shownChat),
       ...(selected && selectedId !== undefined ? { selectedChat: { id: selectedId, title: this.titleOf(selected), status: statusOf(this.activityOf(selected)) } } : {}),
       effectiveTheme: currentThemeKind(),
       layout: this.windowLayout.sidebar(),
@@ -7440,6 +7490,7 @@ class DesktopApp {
   }
 
   private shellStateChanged(): void {
+    this.views?.withholdingChanged();
     this.shell?.stateChanged();
     this.updateWindowTitle();
     this.publishHostAttention();
@@ -7481,6 +7532,10 @@ class DesktopApp {
   private chatElsewhereSelected(): boolean {
     const selected = this.views?.selected();
     return selected !== undefined && chatOfSelectedProject(this.selectedProjectKey, selected) === undefined;
+  }
+
+  private chatWithheld(chat: DesktopPanel): boolean {
+    return keptChatWithheld(this.selectedProjectKey, chat, (authority) => this.hostAttentionOf(authority));
   }
 
   private viewsChanged(): void {

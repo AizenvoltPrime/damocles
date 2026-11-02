@@ -6,7 +6,7 @@ import type { OverlayRequest, OverlayToast } from '../../preload/overlay-channel
 import type { NoticeSeverity } from '../../preload/notifications';
 import NotifierApp from '../overlay/NotifierApp.vue';
 import OverlayApp from '../overlay/OverlayApp.vue';
-import { placePopup } from '../overlay/placement';
+import { placePanel, placePopup } from '../overlay/placement';
 import { shellI18n } from '../i18n';
 import { createOverlaySettingsBridge } from '../overlay/settings/overlay-bridge';
 import { FakeResizeObserver, fakeOverlayApi, opened, type FakeOverlayApi } from './fakes';
@@ -83,6 +83,17 @@ describe('placement', () => {
     expect(placePopup({ x: 100, y: 100, width: 50, height: 20 }, { width: 200, height: 100 }, viewport)).toEqual({ left: 100, top: 120 });
     expect(placePopup({ x: 100, y: 550, width: 50, height: 20 }, { width: 200, height: 100 }, viewport)).toEqual({ left: 100, top: 450 });
     expect(placePopup({ x: 780, y: 0, width: 0, height: 0 }, { width: 200, height: 100 }, viewport)).toEqual({ left: 592, top: 8 });
+  });
+
+  it('hangs a panel below its chip, or above it when there is more room there, capped to that room and inside the viewport', () => {
+    const viewport = { width: 800, height: 600 };
+    expect(placePanel({ x: 100, y: 6, width: 90, height: 28 }, 416, viewport)).toEqual({ left: 100, top: 40, maxHeight: 552 });
+    expect(placePanel({ x: 700, y: 6, width: 90, height: 28 }, 416, viewport)).toMatchObject({ left: 376, top: 40 });
+    expect(placePanel({ x: 10, y: 560, width: 50, height: 20 }, 416, viewport)).toEqual({ left: 10, bottom: 46, maxHeight: 546 });
+  });
+
+  it('gives a panel no negative height in a viewport too short for it', () => {
+    expect(placePanel({ x: 0, y: 0, width: 10, height: 16 }, 416, { width: 800, height: 20 })).toEqual({ left: 8, top: 22, maxHeight: 0 });
   });
 });
 

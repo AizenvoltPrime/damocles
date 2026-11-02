@@ -304,6 +304,18 @@ describe('ShellHost', () => {
     expect(vi.mocked(actions.renameHostOnCard).mock.calls).toEqual([['h1']]);
   });
 
+  it('opens a host\'s card only for a well-formed host id and an anchor inside the window\'s bounds', async () => {
+    actions.showHostCard = vi.fn(async () => undefined);
+    host();
+    const call = (raw: unknown): Promise<unknown> => Promise.resolve().then(() => ipc.handlers.get(SHELL_CHANNELS.hostsShowCard)!(own, raw));
+    const anchor = { x: 10, y: 4, width: 80, height: 28 };
+    await call({ hostId: 'h1', anchor });
+    for (const raw of [{ hostId: 'h1' }, { hostId: '../x', anchor }, { hostId: 'h1', anchor: { ...anchor, x: -1 } }, { hostId: 'h1', anchor: { ...anchor, width: Number.NaN } }, { hostId: 'h1', anchor: { x: 1, y: 1 } }, { hostId: 'h1', anchor, card: 'rename' }]) {
+      await expect(call(raw)).rejects.toThrow('Malformed');
+    }
+    expect(vi.mocked(actions.showHostCard).mock.calls).toEqual([['h1', anchor]]);
+  });
+
   it('takes the Projects section calls only well-formed, and hands main copies of the lists', async () => {
     actions.setProjectsView = vi.fn(async () => undefined);
     actions.setProjectGroupCollapsed = vi.fn(async () => undefined);

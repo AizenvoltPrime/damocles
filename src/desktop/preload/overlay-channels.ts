@@ -39,6 +39,9 @@ export const OVERLAY_CHANNELS = {
   settingsSend: 'damocles:overlay:settings:send',
   // renderer → main, invoke { scope }: a remote chat's settings tab chosen; answers closed unless the settings modal is open
   settingsScope: 'damocles:overlay:settings:scope',
+  // renderer → main, invoke { anchor }: the host or Project tab asks to allow YOLO on the attached tab's host; answers whether
+  // it is allowed, and closed unless the settings modal is open
+  settingsAllowYolo: 'damocles:overlay:settings:allow-yolo',
   // (id, png: Uint8Array | null): the answer to a rasterize request; main validates the PNG before using it
   rasterized: 'damocles:overlay:rasterized',
   // renderer → main, invoke
@@ -796,6 +799,7 @@ export const OVERLAY_ICONS = [
   'scissors',
   'scroll-text',
   'search',
+  'server',
   'shapes',
   'shield-check',
   'shield-off',
@@ -1046,6 +1050,9 @@ export type OverlayRequest =
       // with hostId: the host's card, with its name field open for rename, or its Rebuild Container confirmation, starting no
       // connection
       readonly card?: 'rename' | 'show' | 'rebuild';
+      // with card 'show': the chip the host's details were opened from, which the card hangs from as a popover until the
+      // dialog moves on to another view
+      readonly anchor?: OverlayRect;
       readonly hosts: readonly HostCardInfo[];
       // this computer's WSL distros; empty off Windows or without wsl.exe
       readonly distros: readonly WslDistroInfo[];
@@ -1064,7 +1071,10 @@ export type OverlayRequest =
   | ({ readonly kind: 'gitCredentialConsent' } & GitCredentialConsent)
   // What a devcontainer configuration runs and mounts, before its first up and whenever it changed (only main asks it); it
   // stacks as a message does
-  | ({ readonly kind: 'devcontainerTrust' } & DevcontainerTrustRequest);
+  | ({ readonly kind: 'devcontainerTrust' } & DevcontainerTrustRequest)
+  // Allow YOLO on a saved host whose switch is off, hung from the control that asked (only main asks it); it stacks as a
+  // message does, so it shows above the settings modal
+  | { readonly kind: 'allowYolo'; readonly hostName: string; readonly hostColor?: HostTone; readonly anchor: OverlayRect };
 
 // The host's name and tone come from this computer's host store; credentialHost is the https host the target's git asked
 // for, as main validated it; targetHelper: the target's git has a credential helper of its own that would save the credential.
@@ -1344,7 +1354,9 @@ export type OverlayAnswer =
   | { readonly kind: 'closeRemote'; readonly choice: CloseRemoteChoice; readonly dontAskAgain: boolean }
   | { readonly kind: 'gitCredentialConsent'; readonly choice: GitCredentialConsentChoice }
   // Escape, the scrim and Cancel refuse as accept: false does
-  | { readonly kind: 'devcontainerTrust'; readonly accept: boolean };
+  | { readonly kind: 'devcontainerTrust'; readonly accept: boolean }
+  // every way the user closes it answers allow false
+  | { readonly kind: 'allowYolo'; readonly allow: boolean };
 
 // Each answers only the dialog of the same name.
 export type WorktreeDialogAnswer =
@@ -1477,7 +1489,8 @@ export type OverlaySettingsScope = 'user' | 'machine' | 'project';
 
 // A remote chat's settings tabs: User, its host (as this computer names it) and Project, with the tab shown.
 export interface OverlaySettingsScopes {
-  readonly host: { readonly name: string; readonly color?: HostTone };
+  // canAllowYolo: the host has a saved record, so main may ask to allow YOLO on it
+  readonly host: { readonly name: string; readonly color?: HostTone; readonly canAllowYolo?: true };
   // the Project tab's settings file, its path native to the host
   readonly projectFile?: string;
   readonly active: OverlaySettingsScope;
@@ -1541,6 +1554,9 @@ export interface DamoclesOverlayApi {
   onSettingsScopeHost(listener: (host: OverlaySettingsScopes['host']) => void): () => void;
   // a remote chat's settings tab; main re-attaches the modal and answers the tab attached, or rejects when it could not
   setSettingsScope(scope: OverlaySettingsScope): Promise<PopupAnswer<OverlaySettingsScope>>;
+  // the host or Project tab's Allow YOLO: main asks, hung from anchor, and answers whether the attached tab's host now allows
+  // YOLO, or closed while the modal is closed
+  allowHostYolo(anchor: OverlayRect): Promise<PopupAnswer<boolean>>;
   onSettingsTarget(listener: (target: SettingsTarget) => void): () => void;
   getPrefs(): Promise<OverlayPrefs>;
   onPrefsChanged(listener: (prefs: OverlayPrefs) => void): () => void;

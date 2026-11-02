@@ -178,7 +178,7 @@ function isCoordinate(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_OVERLAY_COORDINATE;
 }
 
-function parseRect(raw: unknown): OverlayRect | undefined {
+export function parseRect(raw: unknown): OverlayRect | undefined {
   if (!isRecord(raw)) return undefined;
   const [x, y, width, height] = ['x', 'y', 'width', 'height'].map((key) => field(raw, key));
   if (!isCoordinate(x) || !isCoordinate(y) || !isCoordinate(width) || !isCoordinate(height)) return undefined;
@@ -948,6 +948,9 @@ export function parseConnectRequest(raw: unknown): Extract<OverlayRequest, { kin
   const attempt = field(raw, 'attempt') === undefined ? undefined : parseStepEvent(field(raw, 'attempt'));
   const pick = field(raw, 'pick') === undefined ? undefined : parsePick(field(raw, 'pick'));
   const query = field(raw, 'query');
+  const anchor = field(raw, 'anchor') === undefined ? undefined : parseRect(field(raw, 'anchor'));
+  // an anchored card never shows a timeline, whose Escape would cancel the attempt
+  if (field(raw, 'anchor') !== undefined && (!anchor || card !== 'show' || field(raw, 'attempt') !== undefined)) return undefined;
   if (hostId !== undefined && !isNonEmptyText(hostId, MAX_OVERLAY_ID_LENGTH)) return undefined;
   if (query !== undefined && (!isNonEmptyText(query, MAX_CONNECT_QUERY_LENGTH) || /[\p{Cc}\p{Cf}\u2028\u2029]/u.test(query) || hostId !== undefined)) return undefined;
   if (card !== undefined && ((card !== 'rename' && card !== 'show' && card !== 'rebuild') || hostId === undefined)) return undefined;
@@ -958,6 +961,7 @@ export function parseConnectRequest(raw: unknown): Extract<OverlayRequest, { kin
     kind: 'connect',
     ...(hostId !== undefined ? { hostId } : {}),
     ...(card !== undefined ? { card } : {}),
+    ...(anchor ? { anchor } : {}),
     hosts,
     distros,
     sshConfigAliases,
@@ -1234,6 +1238,10 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
     const choice = field(raw, 'choice');
     return Object.keys(raw).length === 2 && (GIT_CREDENTIAL_CONSENT_CHOICES as readonly unknown[]).includes(choice) ? { kind: 'gitCredentialConsent', choice: choice as GitCredentialConsentChoice } : undefined;
   }
+  if (request.kind === 'allowYolo') {
+    const allow = field(raw, 'allow');
+    return Object.keys(raw).length === 2 && typeof allow === 'boolean' ? { kind: 'allowYolo', allow } : undefined;
+  }
   if (request.kind === 'devcontainerTrust') {
     const accept = field(raw, 'accept');
     return Object.keys(raw).length === 2 && typeof accept === 'boolean' ? { kind: 'devcontainerTrust', accept } : undefined;
@@ -1413,7 +1421,7 @@ type PageState = 'none' | 'loading' | 'loaded';
 
 // Main's questions, which only main asks: they stack above whatever is open, and only their own answer closes them.
 function stacks(request: OverlayRequest): boolean {
-  return request.kind === 'message' || request.kind === 'worktreeDialog' || request.kind === 'closeRemote' || request.kind === 'gitCredentialConsent' || request.kind === 'devcontainerTrust';
+  return request.kind === 'message' || request.kind === 'worktreeDialog' || request.kind === 'closeRemote' || request.kind === 'gitCredentialConsent' || request.kind === 'devcontainerTrust' || request.kind === 'allowYolo';
 }
 
 interface PendingRaster {
@@ -1921,7 +1929,7 @@ export class OverlayHost {
   handle(channel: string, handler: (...args: unknown[]) => unknown): void {
     this.view.webContents.ipc.handle(channel, async (event, ...args: unknown[]) => {
       if (!this.accepts(event, channel)) throw new Error('Rejected');
-      return this.answer(handler, args);
+      return this.answer(channel, handler, args);
     });
   }
 
@@ -1930,15 +1938,18 @@ export class OverlayHost {
     this.view.webContents.ipc.handle(channel, async (event, ...args: unknown[]): Promise<PopupAnswer<T>> => {
       if (!this.accepts(event, channel)) throw new Error('Rejected');
       if (this.disposed || !isOpen()) return { ok: false, reason: 'closed' };
-      return { ok: true, value: await this.answer(handler, args) };
+      return { ok: true, value: await this.answer(channel, handler, args) };
     });
   }
 
-  private async answer<T>(handler: (...args: unknown[]) => T | Promise<T>, args: unknown[]): Promise<T> {
+  private async answer<T>(channel: string, handler: (...args: unknown[]) => T | Promise<T>, args: unknown[]): Promise<T> {
     const answer = (async () => handler(...args))();
     this.answering.add(answer);
     try {
       return await answer;
+    } catch (err) {
+      this.deps.log(`[overlay] ${channel} failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw err;
     } finally {
       this.answering.delete(answer);
     }

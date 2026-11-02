@@ -3,7 +3,9 @@ import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Bell, BellOff, ChevronRight, Moon, PanelBottom, PanelLeft, PanelRight, Search, Settings, Sun } from 'lucide-vue-next';
 import type { DamoclesShellApi, ShellState } from '../../preload/shell-channels';
+import { hostStateLabel } from '../host-label';
 import EnginePill from './EnginePill.vue';
+import HostStatusDot from './HostStatusDot.vue';
 import ProjectAvatar from './ProjectAvatar.vue';
 import UpdatePill from './UpdatePill.vue';
 import WindowControls from './WindowControls.vue';
@@ -22,8 +24,30 @@ const projectName = computed(() => selectedProject.value?.name ?? t('projects.ho
 // The safety stripe of the selected project's host, shown only once the host has a color.
 const stripe = computed(() => {
   const authority = selectedProject.value?.authority;
-  return authority?.color === undefined ? undefined : { key: authority.key, name: authority.name, tone: authority.color };
+  return authority?.color === undefined ? undefined : { key: authority.key, tone: authority.color };
 });
+// The selected remote project's host chip: its state and name, on its tone once it has a color; a click opens its card.
+const host = computed(() => {
+  const project = selectedProject.value;
+  const hostId = project?.authority.hostId;
+  if (!project || hostId === undefined) return undefined;
+  const saved = props.state.hosts.find((entry) => entry.authorityKey === project.authority.key);
+  const state = { name: project.authority.name, connection: project.connection, reconnect: saved?.reconnect, latency: saved?.latency };
+  return { ...state, key: project.authority.key, hostId, tone: project.authority.color, label: hostStateLabel(state, t) };
+});
+const hostChip = ref<HTMLElement | null>(null);
+const hostCardOpen = ref(false);
+
+async function openHostCard(): Promise<void> {
+  const rect = hostChip.value?.getBoundingClientRect();
+  if (!rect || !host.value || hostCardOpen.value) return;
+  hostCardOpen.value = true;
+  try {
+    await props.api.showHostCard(host.value.hostId, { x: Math.max(0, rect.left), y: Math.max(0, rect.top), width: rect.width, height: rect.height });
+  } finally {
+    hostCardOpen.value = false;
+  }
+}
 const chatTitle = computed(() => {
   const chat = props.state.selectedChat;
   if (!chat) return undefined;
@@ -122,35 +146,47 @@ async function openCenter(): Promise<void> {
       >
       <span class="font-semibold tracking-[-.01em]">{{ APP_NAME }}</span>
     </button>
-    <!-- out-in: the label sits in the row, so two at once would push the breadcrumb aside -->
+    <!-- out-in: the chip sits in the row, so two at once would push the breadcrumb aside -->
     <Transition
       appear
       mode="out-in"
       enter-active-class="animate-[d-fade_.3s_var(--ease-out)]"
       leave-active-class="animate-[o-fade-out_.14s_ease-in_both]"
     >
-      <span
-        v-if="stripe"
-        :key="`${stripe.key}:${stripe.tone}`"
-        data-testid="title-bar-stripe-label"
-        :data-tone="stripe.tone"
-        class="mr-2 inline-flex h-4.5 max-w-40 shrink-0 items-center rounded px-1.5 text-10 font-bold tracking-[.05em] bg-(--tone) text-(--tone-on)"
-        :class="`d-tone-${stripe.tone}`"
-        :title="t('titleBar.hostStripe', { host: stripe.name })"
+      <!-- named by its dot ("prod-1 · 38 ms"), so the visible name is not read twice -->
+      <button
+        v-if="host"
+        ref="hostChip"
+        :key="`${host.key}:${host.tone ?? ''}`"
+        type="button"
+        data-testid="title-bar-host"
+        :data-tone="host.tone"
+        class="title-bar-control mr-1 inline-flex h-7 max-w-52 shrink-0 items-center gap-1.75 rounded-7 px-2 hover:bg-(--d-hover) aria-expanded:bg-(--d-hover)"
+        :title="host.label"
+        aria-haspopup="dialog"
+        :aria-expanded="hostCardOpen"
+        @click="openHostCard"
       >
-        <span class="sr-only">{{ t('titleBar.hostStripe', { host: stripe.name }) }}</span>
+        <HostStatusDot
+          :connection="host.connection"
+          :reconnect="host.reconnect"
+          :slow="host.latency?.slow"
+          :label="host.label"
+        />
         <!-- A rename swaps the old name for the new one. -->
         <Transition
           name="t-swap"
           mode="out-in"
         >
           <span
-            :key="stripe.name"
+            :key="host.name"
             aria-hidden="true"
-            class="truncate"
-          >{{ stripe.name }}</span>
+            data-testid="title-bar-host-name"
+            class="min-w-0 truncate"
+            :class="host.tone ? ['rounded px-1.5 py-px text-10 font-bold tracking-[.05em] bg-(--tone) text-(--tone-on)', `d-tone-${host.tone}`] : 'text-12 font-medium text-(--d-text)'"
+          >{{ host.name }}</span>
         </Transition>
-      </span>
+      </button>
     </Transition>
     <nav
       data-testid="breadcrumb"

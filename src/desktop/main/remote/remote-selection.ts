@@ -1,6 +1,8 @@
-// Selecting a remote project: Files, Search and terminals move there at once, while the chat view keeps the chat it showed
-// until the project's core runs and opens the project's own (docs/invariants.md "Desktop host", chat retention).
+// Selecting a remote project: Files, Search and terminals move there at once, while the chat view keeps the chat it showed, hidden
+// while the project's host needs the user, until the project's core runs and opens the project's own (docs/invariants.md
+// "Desktop host", chat retention).
 import { authorityKeyOfProject } from '../../../shared/project-location';
+import type { HostAttention } from '../../preload/shell-channels';
 
 interface AuthorityChat {
   readonly authority: string;
@@ -25,6 +27,12 @@ export interface RemoteSelectionDeps<C extends AuthorityChat, V extends Authorit
 /** The selected chat unless it is another authority's than the selected project's: the only chat a title may pair with it. */
 export function chatOfSelectedProject<V extends AuthorityChat>(projectKey: string | undefined, chat: V | undefined): V | undefined {
   return chat !== undefined && projectKey !== undefined && authorityKeyOfProject(projectKey) !== chat.authority ? undefined : chat;
+}
+
+/** The kept chat of another authority hides while the selected project's host needs the user (hostAttention defined). */
+export function keptChatWithheld(projectKey: string | undefined, chat: AuthorityChat | undefined, attentionOf: (authority: string) => HostAttention | undefined): boolean {
+  if (projectKey === undefined || chat === undefined || chatOfSelectedProject(projectKey, chat) !== undefined) return false;
+  return attentionOf(authorityKeyOfProject(projectKey)) !== undefined;
 }
 
 export function remoteSelection<C extends AuthorityChat, V extends AuthorityChat>(deps: RemoteSelectionDeps<C, V>) {

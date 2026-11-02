@@ -30,6 +30,7 @@ function page(offline: { hostId: string; hostName: string } | undefined): void {
     hostAction: () => undefined,
     getConnection: () => undefined,
     onConnection: () => () => undefined,
+    allowYolo: async () => false,
     queueAction: () => undefined,
   };
 }

@@ -284,6 +284,7 @@ const api: DamoclesShellApi = {
   restartEngine: (authority) => ipcRenderer.invoke(SHELL_CHANNELS.restartEngine, authority) as Promise<void>,
   renameHost: (hostId, name) => ipcRenderer.invoke(SHELL_CHANNELS.hostsRename, { hostId, name }) as ReturnType<DamoclesShellApi['renameHost']>,
   renameHostOnCard: (hostId) => ipcRenderer.invoke(SHELL_CHANNELS.hostsRenameOnCard, { hostId }) as Promise<void>,
+  showHostCard: (hostId, anchor) => ipcRenderer.invoke(SHELL_CHANNELS.hostsShowCard, { hostId, anchor: { x: anchor.x, y: anchor.y, width: anchor.width, height: anchor.height } }) as Promise<void>,
   openConnect: () => ipcRenderer.invoke(SHELL_CHANNELS.connectOpen, {}) as Promise<void>,
   openHostFolder: (hostId) => ipcRenderer.invoke(SHELL_CHANNELS.hostsOpenFolder, { hostId }) as Promise<void>,
   reconnectHost: (hostId) => ipcRenderer.invoke(SHELL_CHANNELS.hostsReconnect, { hostId }) as Promise<void>,

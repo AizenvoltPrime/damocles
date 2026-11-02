@@ -22,8 +22,7 @@
     "toggleTerminal": "Toggle terminal ({shortcut})",
     "toggleEditor": "Toggle editor & browser pane",
     "quickOpen": "Search files in all projects",
-    "quickOpenTitle": "Go to File ({shortcut})",
-    "hostStripe": "On {host}"
+    "quickOpenTitle": "Go to File ({shortcut})"
   },
   "sidebar": {
     "label": "Sidebar",
@@ -68,6 +67,8 @@
     },
     "latency": "{host} · {ms} ms",
     "slowConnection": "Slow connection to {host} ({ms} ms)",
+    "latencyShort": "Connected · {ms} ms",
+    "slowConnectionShort": "Slow connection ({ms} ms)",
     "view": {
       "label": "Project view",
       "flat": "Flat",
@@ -164,7 +165,8 @@
   },
   "content": {
     "empty": "No chat selected",
-    "newChat": "New chat"
+    "newChat": "New chat",
+    "onHost": "on {host}"
   },
   "overlay": {
     "noMatches": "No matches",
@@ -2554,6 +2556,7 @@
       "connect": "Connect",
       "reconnect": "Reconnect",
       "openFolder": "Open folder on {name}...",
+      "openFolderShort": "Open folder...",
       "devices": "Devices attached ({count})",
       "thisDevice": "(this device)",
       "otherDevices": "{count} other device is connected to {name} | {count} other devices are connected to {name}",
@@ -2568,6 +2571,12 @@
       "forwardsAgent": "Forwards your SSH agent",
       "doesNotForwardAgent": "Does not forward your SSH agent",
       "hostSettings": "Host settings"
+    },
+    "allowYolo": {
+      "title": "Allow YOLO on {host}?",
+      "message": "Your chats on {host} can then skip permission prompts. You can turn this off in Settings › User › Remote hosts.",
+      "allow": "Allow and turn on",
+      "cancel": "Cancel"
     },
     "installFolder": {
       "heading": "Install folder",

@@ -99,6 +99,7 @@ function setup(width = 1200) {
     hostLabel: () => undefined,
     hostNames: () => ({}),
     onHostAction: () => undefined,
+    onAllowYolo: async () => false,
     connection: () => undefined,
     onQueueAction: () => undefined,
     takeCoreMessage: () => false,
@@ -112,6 +113,7 @@ function setup(width = 1200) {
     onRendererGaveUp: () => undefined,
     onSavedSessionChange: () => undefined,
     popupOpen: () => false,
+    withholds: () => false,
   }, (p) => p);
   owner.views = views;
   const chat = (): DesktopPanel => {

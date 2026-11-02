@@ -21,13 +21,14 @@ defineOptions({
 })
 
 const props = withDefaults(
-  // inline: rendered in place, not teleported to body, so the leave transition of the element holding it plays its exit
-  defineProps<DialogContentProps & { class?: HTMLAttributes["class"]; showClose?: boolean; inline?: boolean }>(),
-  { showClose: true, inline: false },
+  // inline: rendered in place, not teleported to body, so the leave transition of the element holding it plays its exit;
+  // scrim false: no dimmed layer behind it, for a panel hung from what opened it
+  defineProps<DialogContentProps & { class?: HTMLAttributes["class"]; showClose?: boolean; inline?: boolean; scrim?: boolean }>(),
+  { showClose: true, inline: false, scrim: true },
 )
 const emits = defineEmits<DialogContentEmits>()
 
-const delegatedProps = reactiveOmit(props, "class", "showClose", "inline")
+const delegatedProps = reactiveOmit(props, "class", "showClose", "inline", "scrim")
 
 const forwarded = useForwardPropsEmits(delegatedProps, emits)
 const { t } = useI18n()
@@ -43,7 +44,7 @@ const dialog = injectDialogRootContext()
   <DialogPortal :disabled="props.inline">
     <Transition @before-leave="markClosed">
       <DialogOverlay
-        v-if="dialog.open.value"
+        v-if="dialog.open.value && props.scrim"
         force-mount
         class="d-scrim fixed inset-0 bg-(--d-scrim) backdrop-blur-xs"
         :style="{ zIndex }"

@@ -18,3 +18,24 @@ export function placePopup(anchor: OverlayRect, size: { width: number; height: n
     top: Math.max(edge, Math.min(top, viewport.height - size.height - edge)),
   };
 }
+
+// rem between a panel and the chip it hangs from.
+const PANEL_GAP_REM = 0.375;
+
+/**
+ * A panel of the given width hung from its anchor: below it, or above it when there is more room there, its height capped to
+ * that room so it scrolls rather than leave the viewport; its start (or with align 'end' its end) lined up with the anchor's,
+ * clamped into the viewport.
+ */
+export function placePanel(anchor: OverlayRect, width: number, viewport: { width: number; height: number }, align: 'start' | 'end' = 'start'): { left: number; maxHeight: number } & ({ top: number } | { bottom: number }) {
+  const edge = remPx(EDGE_REM);
+  const gap = remPx(PANEL_GAP_REM);
+  const start = align === 'end' ? anchor.x + anchor.width - width : anchor.x;
+  const left = Math.max(edge, Math.min(start, viewport.width - width - edge));
+  const below = anchor.y + anchor.height + gap;
+  // a zoomed, short viewport leaves no room, and CSS drops a negative max-height
+  const roomBelow = Math.max(0, viewport.height - below - edge);
+  const roomAbove = Math.max(0, anchor.y - gap - edge);
+  if (roomBelow >= roomAbove) return { left, top: below, maxHeight: roomBelow };
+  return { left, bottom: viewport.height - anchor.y + gap, maxHeight: roomAbove };
+}

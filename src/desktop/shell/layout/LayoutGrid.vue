@@ -293,12 +293,10 @@ defineExpose({ chatSlot, root });
       class="flex min-h-0 min-w-0 flex-col overflow-hidden bg-(--d-bg)"
       :style="{ gridArea: area('chat') }"
     >
-      <!-- The pane's own banner spans gutter and slot; it shows only while no chat view covers the slot. -->
-      <slot name="chatBanner" />
       <div class="flex min-h-0 min-w-0 flex-1">
         <!-- The chat view covers its slot, so its grip lives in a gutter beside it; the gutter's top cell continues the chat
              header (h-11.5, panel background, bottom border), so the grip sits where the editor's and terminal's do, and the
-             cell under it continues a chat page's banner across the gutter. -->
+             cell under it continues the banner under that header (a chat page's or the slot's placeholder's) across the gutter. -->
         <div class="flex w-4 shrink-0 flex-col">
           <span class="flex h-11.5 shrink-0 items-center justify-center border-b border-(--d-border) bg-(--d-panel)">
             <PaneGrip
@@ -311,7 +309,7 @@ defineExpose({ chatSlot, root });
         <main
           ref="chatSlot"
           data-testid="chat-slot"
-          class="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center"
+          class="flex min-h-0 min-w-0 flex-1 flex-col"
         >
           <slot name="chat" />
         </main>

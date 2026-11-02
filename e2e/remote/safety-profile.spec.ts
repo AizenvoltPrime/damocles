@@ -13,7 +13,7 @@ const APP = '/srv/app';
 // the shown permission card: one that answered leaves through a transition while the next one enters
 const permissionCard = (tab: Page): Locator => tab.locator('section[role="region"][aria-label="Permission request"]:not([class*="-leave-"])');
 
-test('prod-1 in red: its badge and the title-bar stripe take the tone, a rename in Settings relabels the stripe at once; without Allow YOLO the control is hidden and a forged switch refused, with it YOLO runs a command unasked', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
+test('prod-1 in red: its badge, the title-bar stripe and the host chip take the tone, a rename in Settings renames the chip at once; without Allow YOLO the control is locked and a forged switch refused, with it YOLO runs a command unasked', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
   test.setTimeout(600_000);
   const fixture = await sshd('prod-1');
   const stub = await startTargetStub(home, fixture);
@@ -26,30 +26,41 @@ test('prod-1 in red: its badge and the title-bar stripe take the tone, a rename 
     await shell.evaluate((projectKey) => window.damoclesShell!.selectProject(projectKey), key);
     const badge = projectRow(shell, key).getByTestId('host-badge');
     const stripe = titleBar(shell).getByTestId('title-bar-stripe');
-    const label = titleBar(shell).getByTestId('title-bar-stripe-label');
+    const chip = titleBar(shell).getByTestId('title-bar-host');
+    const label = chip.getByTestId('title-bar-host-name');
 
-    // Red: the badge and the stripe take the danger tone, and the stripe's label names the host.
+    // Red: the badge, the stripe and the chip take the danger tone, and the chip names the host.
     const { overlay, block } = await openRemoteHostSettings(app, hostId);
     const red = block.getByRole('radiogroup', { name: 'Color' }).getByRole('radio', { name: 'Red', exact: true });
     await red.click();
     await expect(red).toBeChecked();
     await expect(badge).toHaveClass(/\bd-tone-danger\b/);
     await expect(stripe).toHaveAttribute('data-tone', 'danger');
-    await expect(label).toHaveAttribute('data-tone', 'danger');
-    await expect(label).toHaveText(/^\s*On prod-1\s*prod-1\s*$/);
+    await expect(chip).toHaveAttribute('data-tone', 'danger');
+    await expect(label).toHaveClass(/\bd-tone-danger\b/);
+    await expect(label).toHaveText('prod-1');
 
-    // A rename in Settings relabels the stripe while the modal is still open.
+    // A rename in Settings renames the chip while the modal is still open.
     const name = block.getByRole('textbox', { name: 'Name', exact: true });
     await name.fill('PROD');
     await name.press('Enter');
-    await expect(label).toHaveText(/^\s*On PROD\s*PROD\s*$/);
+    await expect(label).toHaveText('PROD');
     expect(storedHost(home, hostId)).toMatchObject({ name: 'PROD', color: 'danger' });
     await closeSettingsModal(overlay);
 
-    // Allow YOLO off (the default): no YOLO control, a forged switch is refused, and a command still asks.
+    // The chip opens the host's card as a popover, and Escape closes it.
+    await chip.click();
+    const popover = overlay.locator('[data-testid="connect-dialog"][data-popover]');
+    await expect(popover.getByTestId('host-card-name')).toHaveText('PROD');
+    await expect(popover.getByTestId('host-card-safety')).toContainText('YOLO not allowed');
+    await overlay.keyboard.press('Escape');
+    await expect(overlay.getByTestId('connect-dialog')).toHaveCount(0);
+    await expect(chip).toHaveAttribute('aria-expanded', 'false');
+
+    // Allow YOLO off (the default): the YOLO control is locked, a forged switch is refused, and a command still asks.
     let tab = await newRemoteChat(app, key);
     await recordHostMessages(tab);
-    await expect(tab.getByTestId('composer-yolo')).toHaveCount(0);
+    await expect(tab.getByTestId('composer-yolo')).toHaveAttribute('data-locked', '');
     await postFromWebview(tab, { type: 'setDangerouslySkipPermissions', enabled: true });
     await postFromWebview(tab, { type: 'setPermissionMode', mode: 'bypassPermissions' });
     await expect.poll(async () => (await hostMessages(tab, 'permissionModeRefused')).map((message) => String(message['mode']))).toEqual(['dangerouslySkipPermissions', 'bypassPermissions']);
@@ -67,6 +78,7 @@ test('prod-1 in red: its badge and the title-bar stripe take the tone, a rename 
     tab = await newRemoteChat(app, key);
     const yolo = tab.getByTestId('composer-yolo');
     await expect(yolo).toBeVisible();
+    await expect(yolo).not.toHaveAttribute('data-locked');
     await yolo.click();
     await expect(yolo).toHaveAttribute('aria-pressed', 'true');
     stub.replies.push({ chunks: [], toolCalls: [{ name: 'bash', arguments: { command: 'echo yolo-on-prod' } }] }, { chunks: ['Ran unasked.'] });

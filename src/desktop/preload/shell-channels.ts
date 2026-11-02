@@ -1,6 +1,6 @@
 // Shared by the shell preload, main and (as types only) the shell app; the shell never sees panel channels.
 
-import type { NameCheck, OverlayAnswer, OverlayRequest, WslDistroInfo } from './overlay-channels';
+import type { NameCheck, OverlayAnswer, OverlayRect, OverlayRequest, WslDistroInfo } from './overlay-channels';
 import type { NotificationBell } from './notifications';
 import type { SettingsSectionId } from '../../shared/settings-sections';
 import type { UpdateAction, UpdateSnapshot } from './updates';
@@ -62,6 +62,8 @@ export const SHELL_CHANNELS = {
   hostsOpenFolder: 'damocles:shell:hosts:open-folder',
   // { hostId } → void: the Connect dialog on the host's card with its name field open; no connection starts
   hostsRenameOnCard: 'damocles:shell:hosts:rename-on-card',
+  // { hostId, anchor } → void: the host's card as a popover hung from the chip at anchor, under or above it; no connection starts
+  hostsShowCard: 'damocles:shell:hosts:show-card',
   // {}: the Connect dialog on its host list
   connectOpen: 'damocles:shell:connect:open',
   // { hostId }: a failed or offline host connects again (the banner's and the offline placeholder's Reconnect)
@@ -1513,6 +1515,9 @@ export interface ShellState {
   readonly projects: readonly ShellProject[];
   // projectKey is absent until main knows a project: before the core starts and nothing is selected yet
   readonly selected: { readonly projectKey?: string; readonly chatId?: string };
+  // a chat view covers the chat slot: the selected chat, or another project's kept while the project's core opens its own;
+  // false while none is selected or the kept one is withheld (keptChatWithheld), and the slot shows the shell's placeholder
+  readonly chatViewShown: boolean;
   // the breadcrumb's chat
   readonly selectedChat?: { readonly id: string; readonly title: string; readonly status: ChatStatus };
   // by project key, every project of the list (D31)
@@ -1608,6 +1613,8 @@ export interface DamoclesShellApi {
   renameHost(hostId: string, name: string): Promise<NameCheck | null>;
   // resolves once main opened the Connect dialog on the host's card with its name field open
   renameHostOnCard(hostId: string): Promise<void>;
+  // resolves once the host's card, opened as a popover under anchor (shell CSS px), closed
+  showHostCard(hostId: string, anchor: OverlayRect): Promise<void>;
   // resolves once main opened the Connect dialog on its host list
   openConnect(): Promise<void>;
   // resolves once main opened the Connect dialog on the host's folder browser (connecting it first)

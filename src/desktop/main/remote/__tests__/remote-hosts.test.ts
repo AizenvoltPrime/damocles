@@ -296,7 +296,7 @@ describe('RemoteHosts', () => {
     const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
     if (!added.ok) throw new Error('setup');
     await hosts.openConnect(added.host.id);
-    await hosts.openConnect(added.host.id, 'rename');
+    await hosts.openConnect(added.host.id, { card: 'rename' });
     expect(requests).toMatchObject([{ kind: 'connect', hostId: added.host.id }, { kind: 'connect', hostId: added.host.id, card: 'rename' }]);
     expect(requests[0]).not.toHaveProperty('card');
     expect(connections.attempt(added.host.id)).toBeUndefined();
@@ -314,10 +314,26 @@ describe('RemoteHosts', () => {
     const attemptId = connections.connect(added.host.id, false);
     await vi.waitFor(() => expect(connections.attempt(added.host.id)?.step).toBe('failed'));
     await hosts.openConnect(added.host.id);
-    await hosts.openConnect(added.host.id, 'rename');
+    await hosts.openConnect(added.host.id, { card: 'rename' });
     expect(requests[0]?.attempt).toMatchObject({ attemptId, failure: { code: 'hostKeyChanged' } });
     expect(requests[1]).not.toHaveProperty('attempt');
     expect(connections.attempt(added.host.id)?.attemptId).toBe(attemptId);
+  });
+
+  it('shows a running attempt on the timeline, but a card hung from a chip without it', async () => {
+    const requests: Array<{ attempt?: { attemptId: string }; anchor?: unknown }> = [];
+    const overlay = { request: async (request: unknown) => { requests.push(request as (typeof requests)[number]); return { kind: 'dismissed' as const }; }, send: () => undefined, isOpen: () => false };
+    const { hosts, store, connections } = await setup({ overlay: () => overlay });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    const attemptId = connections.connect(added.host.id, false);
+    const anchor = { x: 120, y: 6, width: 90, height: 28 };
+    await hosts.openConnect(added.host.id, { card: 'show', anchor });
+    await hosts.openConnect(added.host.id, { card: 'show' });
+    expect(requests[0]).toMatchObject({ card: 'show', anchor });
+    expect(requests[0]).not.toHaveProperty('attempt');
+    expect(requests[1]?.attempt).toMatchObject({ attemptId });
+    expect(connections.attempt(added.host.id)?.step).not.toBe('failed');
   });
 
   it('refuses an install folder the stage rule refuses, and copies the host key command only for a changed key', async () => {
@@ -543,7 +559,7 @@ describe('RemoteHosts', () => {
     const removal = hosts.removeServer(id, { removeKey: false, disableLinger: false });
     await vi.waitFor(() => expect(runRemovalStage).toHaveBeenCalled());
     // the Connect dialog closes while Settings still shows the host
-    await hosts.openConnect(id, 'show');
+    await hosts.openConnect(id, { card: 'show' });
     expect(hosts.operations(id)).toMatchObject({ passwordless: { steps: { generate: 'failed' }, result: { code: 'configUnreadable' } }, removal: {} });
     open.clear();
     hosts.dropUnshownRuns();

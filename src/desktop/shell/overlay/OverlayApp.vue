@@ -22,6 +22,7 @@ import ConnectDialog from './components/ConnectDialog.vue';
 import CloseRemoteDialog from './components/CloseRemoteDialog.vue';
 import GitConsentDialog from './components/GitConsentDialog.vue';
 import DevcontainerTrustDialog from './components/DevcontainerTrustDialog.vue';
+import AllowYoloDialog from './components/AllowYoloDialog.vue';
 import { commandsModel, quickOpenItemId, quickOpenModel, type QuickPickModel } from './quick-pick';
 import OverlaySettings from './settings/OverlaySettings.vue';
 import { applySettingsLocale } from './settings/settings-messages';
@@ -78,9 +79,9 @@ function onAfterLeave(element: Element): void {
 }
 
 // Kinds that handle Escape themselves, so the window's handler leaves it to them: the settings modal and the dialogs through
-// the overlay stack (a search query clears first, a dialog above the modal cancels without closing it), the Connect dialog and the dev container confirmation
-// through their reka dialogs, and Quick Open, New Terminal, the quick pick and the input box in their own keydown.
-const OWN_ESCAPE: ReadonlySet<OverlayRequest['kind']> = new Set(['settings', 'connect', 'closeRemote', 'gitCredentialConsent', 'devcontainerTrust', 'confirm', 'message', 'worktreeDialog', 'quickOpen', 'newTerminal', 'quickPick', 'input']);
+// the overlay stack (a search query clears first, a dialog above the modal cancels without closing it), the Connect dialog, the dev container confirmation
+// and the Allow YOLO question through their reka dialogs, and Quick Open, New Terminal, the quick pick and the input box in their own keydown.
+const OWN_ESCAPE: ReadonlySet<OverlayRequest['kind']> = new Set(['settings', 'connect', 'closeRemote', 'gitCredentialConsent', 'devcontainerTrust', 'allowYolo', 'confirm', 'message', 'worktreeDialog', 'quickOpen', 'newTerminal', 'quickPick', 'input']);
 
 // Quick Open asks main for each query; the last answer names the files a pick may choose and how main parsed the query. A
 // query starting with ">" is the command palette, as in VS Code: it lists main's commands once per open request.
@@ -248,6 +249,18 @@ onBeforeUnmount(() => {
           class="devcontainer-trust-overlay"
         >
           <DevcontainerTrustDialog
+            :request="entry.request"
+            @answer="answer(entry.id, $event)"
+          />
+        </div>
+        <!-- The wrapper's leave plays the panel's exit, which renders in place for it. -->
+        <div
+          v-else-if="entry.request.kind === 'allowYolo'"
+          :key="entry.id"
+          :data-overlay-id="entry.id"
+          class="allow-yolo-overlay"
+        >
+          <AllowYoloDialog
             :request="entry.request"
             @answer="answer(entry.id, $event)"
           />

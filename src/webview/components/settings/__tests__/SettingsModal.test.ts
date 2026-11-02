@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { defineComponent, h, nextTick } from 'vue';
+import { defineComponent, h, nextTick, shallowRef } from 'vue';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { Palette } from 'lucide-vue-next';
@@ -20,6 +20,7 @@ import SettingsModal from '../SettingsModal.vue';
 import SettingsRow from '../SettingsRow.vue';
 import { NO_HOST_SETTINGS, type HostSettings } from '../settings-rows';
 import { PANEL_HOST_SETTINGS } from '../panel-host-settings';
+import { provideAllowHostYolo, type AllowHostYolo } from '../settings-view';
 
 const api = (globalThis as unknown as { acquireVsCodeApi: () => { postMessage: (message: unknown) => void } }).acquireVsCodeApi();
 
@@ -320,6 +321,125 @@ describe('controls write their messages', () => {
     row('damocles.dangerouslySkipPermissions')!.querySelector<HTMLElement>('[role="switch"]')!.click();
     expect(posted).toContainEqual({ type: 'setDefaultDangerouslySkipPermissions', enabled: true });
     expect(useSettingsStore().currentSettings.defaultDangerouslySkipPermissions).toBe(true);
+  });
+
+  describe("the default YOLO on a remote host's tab that refuses YOLO", () => {
+    async function openRefused(allow: () => AllowHostYolo | undefined): Promise<void> {
+      useSettingsStore().setHostCapabilities({ ...VSCODE_HOST_CAPABILITIES, bypassPermissions: false });
+      // the desktop overlay provides the ask; a VS Code host never refuses YOLO
+      const Host = defineComponent({
+        setup() {
+          provideAllowHostYolo(allow);
+          return () => h(SettingsModal, { host: NO_HOST_SETTINGS, footer: { kind: 'settingsFiles' }, backdrop: 'blur', target: { section: 'defaults' }, chatHost: 'prod-1' });
+        },
+      });
+      mounted.push(mount(Host, { attachTo: document.body, global: { plugins: [i18n] } }));
+      await nextTick();
+    }
+    const yoloSwitch = (): HTMLElement => row('damocles.dangerouslySkipPermissions')!.querySelector<HTMLElement>('[role="switch"]')!;
+    const note = (): HTMLElement | null => row('damocles.dangerouslySkipPermissions')!.querySelector<HTMLElement>('[data-testid="default-yolo-refused"]');
+    const yoloWrites = (): WebviewToExtensionMessage[] => posted.filter((message) => message.type === 'setDefaultDangerouslySkipPermissions');
+
+    it('says the host refuses it, asks hung from the switch, and writes the default only once allowed', async () => {
+      const allow = vi.fn<AllowHostYolo>(async () => true);
+      await openRefused(() => allow);
+      expect(note()!.textContent!.trim()).toBe(t('settingsModal.rows.defaultYolo.refused', { host: 'prod-1' }));
+      yoloSwitch().click();
+      await flush();
+      expect(allow).toHaveBeenCalledTimes(1);
+      expect(Object.keys(allow.mock.calls[0]![0]).sort()).toEqual(['height', 'width', 'x', 'y']);
+      expect(posted).toContainEqual({ type: 'setDefaultDangerouslySkipPermissions', enabled: true });
+    });
+
+    it('writes nothing when the user declines, and turns the default off without asking', async () => {
+      const allow = vi.fn<AllowHostYolo>(async () => false);
+      await openRefused(() => allow);
+      yoloSwitch().click();
+      await flush();
+      expect(yoloWrites()).toEqual([]);
+      useSettingsStore().setDefaultDangerouslySkipPermissions(true);
+      await nextTick();
+      expect(note()!.textContent).toContain(t('settingsModal.rows.defaultYolo.refusedOn', { host: 'prod-1' }));
+      yoloSwitch().click();
+      await flush();
+      expect(allow).toHaveBeenCalledTimes(1);
+      expect(posted).toContainEqual({ type: 'setDefaultDangerouslySkipPermissions', enabled: false });
+    });
+
+    it('writes nothing when the ask fails', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const allow = vi.fn<AllowHostYolo>(async () => {
+        throw new Error('the overlay is unavailable');
+      });
+      await openRefused(() => allow);
+      yoloSwitch().click();
+      await flush();
+      expect(allow).toHaveBeenCalledTimes(1);
+      expect(yoloWrites()).toEqual([]);
+      expect(yoloSwitch().getAttribute('aria-checked')).toBe('false');
+      expect(yoloSwitch().hasAttribute('aria-disabled')).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('asks once while the question is open, keeping the switch focusable', async () => {
+      let answer!: (allowed: boolean) => void;
+      const allow = vi.fn<AllowHostYolo>(() => new Promise<boolean>((resolve) => (answer = resolve)));
+      await openRefused(() => allow);
+      yoloSwitch().focus();
+      yoloSwitch().click();
+      await flush();
+      expect(yoloSwitch().getAttribute('aria-disabled')).toBe('true');
+      expect(yoloSwitch().hasAttribute('disabled')).toBe(false);
+      expect(document.activeElement).toBe(yoloSwitch());
+      yoloSwitch().click();
+      await flush();
+      expect(allow).toHaveBeenCalledTimes(1);
+      answer(true);
+      await flush();
+      expect(yoloWrites()).toEqual([{ type: 'setDefaultDangerouslySkipPermissions', enabled: true }]);
+    });
+
+    it('offers Allow YOLO on a default already on, which asks and changes no default', async () => {
+      const allow = vi.fn<AllowHostYolo>(async () => true);
+      await openRefused(() => allow);
+      useSettingsStore().setDefaultDangerouslySkipPermissions(true);
+      await nextTick();
+      note()!.querySelector<HTMLElement>('[data-testid="default-yolo-allow"]')!.click();
+      await flush();
+      expect(allow).toHaveBeenCalledTimes(1);
+      expect(yoloWrites()).toEqual([]);
+    });
+
+    it('says nothing once the host allows YOLO', async () => {
+      await openRefused(() => vi.fn<AllowHostYolo>(async () => true));
+      useSettingsStore().setHostCapabilities({ ...VSCODE_HOST_CAPABILITIES, bypassPermissions: true });
+      await nextTick();
+      expect(note()).toBeNull();
+    });
+
+    it('notes nothing and writes without asking where the desktop host cannot ask', async () => {
+      await openRefused(() => undefined);
+      expect(note()).toBeNull();
+      yoloSwitch().click();
+      await flush();
+      expect(yoloWrites()).toEqual([{ type: 'setDefaultDangerouslySkipPermissions', enabled: true }]);
+    });
+
+    it('follows the ask the attached tab offers', async () => {
+      const allow = vi.fn<AllowHostYolo>(async () => false);
+      const offered = shallowRef<AllowHostYolo | undefined>(undefined);
+      await openRefused(() => offered.value);
+      expect(note()).toBeNull();
+      offered.value = allow;
+      await nextTick();
+      expect(note()).not.toBeNull();
+      yoloSwitch().click();
+      await flush();
+      expect(allow).toHaveBeenCalledTimes(1);
+      offered.value = undefined;
+      await nextTick();
+      expect(note()).toBeNull();
+    });
   });
 
   it('a segmented control writes cache warming', async () => {

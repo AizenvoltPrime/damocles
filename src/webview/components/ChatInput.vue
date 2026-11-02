@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick, type Component } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, useId, type Component } from "vue";
 import { toast } from "vue-sonner";
 import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import type { PermissionMode } from "@shared/types/settings";
 import type { UserContentBlock } from "@shared/types/content";
-import { ArrowUp, AtSign, CheckCheck, ClipboardList, Code, Eye, LoaderCircle, LockOpen, Mic, Paperclip, Pencil } from "lucide-vue-next";
+import { ArrowUp, AtSign, CheckCheck, ClipboardList, Code, Eye, LoaderCircle, Lock, LockOpen, Mic, Paperclip, Pencil } from "lucide-vue-next";
 import { FILE_DRAG_MIME, parseFileDragPayload } from "@shared/file-drag";
 import { usePromptHistory } from "@/composables/usePromptHistory";
 import { useAtMentionAutocomplete } from "@/composables/useAtMentionAutocomplete";
@@ -21,6 +21,7 @@ import { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
 import type { CpuFallbackReason } from "@/stores/useVoiceJarvisStore";
 import { useStreamingStore } from "@/stores/useStreamingStore";
 import { parseSteerCommand, type SteerRequest } from "@/utils/steer-command";
+import { visibleRect } from "@/utils/visible-rect";
 import AtMentionPopup from "./AtMentionPopup.vue";
 import SlashCommandPopup from "./SlashCommandPopup.vue";
 import ImageThumbnailStrip from "./ImageThumbnailStrip.vue";
@@ -384,8 +385,33 @@ function toggleDangerouslySkipPermissions() {
 const chatHost = useChatHost();
 // core refused YOLO (a remote host's policy); the composer says so calmly, naming the host as this computer names it
 const yoloRefused = useYoloRefusal();
-// A host whose policy refuses YOLO hides it, except while it is on, so it can always be turned off.
-const yoloShown = computed(() => settingsStore.hostCapabilities.bypassPermissions !== false || props.dangerouslySkipPermissions);
+// A host whose policy refuses YOLO hides it, except while it is on, so it can always be turned off, and except on a desktop
+// remote chat of a host main may ask about, which shows it locked: a click asks this computer to allow YOLO there, then turns it on.
+const yoloAllowed = computed(() => settingsStore.hostCapabilities.bypassPermissions !== false || props.dangerouslySkipPermissions);
+const yoloLocked = computed(() => !yoloAllowed.value && chatHost.value?.canAllowYolo === true);
+const yoloLockedId = useId();
+const askingYolo = ref(false);
+
+async function onYoloClick(event: MouseEvent): Promise<void> {
+  if (askingYolo.value) return;
+  if (!yoloLocked.value) {
+    toggleDangerouslySkipPermissions();
+    return;
+  }
+  const bridge = window.damoclesBridge;
+  if (!bridge || !(event.currentTarget instanceof Element)) return;
+  const anchor = visibleRect(event.currentTarget.getBoundingClientRect());
+  askingYolo.value = true;
+  try {
+    // main answers once the host's new policy is on its way to core, ahead of this toggle on the same channel
+    if ((await bridge.allowYolo(anchor)) && !props.dangerouslySkipPermissions) toggleDangerouslySkipPermissions();
+  } catch (error) {
+    // main has told the user about a failure and logged a refusal; YOLO stays off
+    console.warn("[composer] allowYolo failed:", error);
+  } finally {
+    askingYolo.value = false;
+  }
+}
 
 const ideContextLabel = computed(() => {
   const ctx = uiStore.ideContext;
@@ -761,23 +787,41 @@ onUnmounted(() => {
         </button>
 
         <button
-          v-if="yoloShown"
+          v-if="yoloAllowed || yoloLocked"
           type="button"
           class="d-press flex h-7 shrink-0 items-center gap-1.25 rounded-full px-2.25 text-xs font-medium transition-colors duration-200"
           :class="dangerouslySkipPermissions
             ? 'bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)] text-(--d-danger-text)'
-            : 'text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text)'"
+            : yoloLocked
+              ? ['text-(--d-faint)', askingYolo ? 'cursor-default' : 'hover:bg-(--d-hover) hover:text-(--d-muted)']
+              : 'text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text)'"
           :aria-pressed="dangerouslySkipPermissions"
-          :title="t('chatInput.yolo.tooltip')"
+          :aria-haspopup="yoloLocked ? 'dialog' : undefined"
+          :aria-describedby="yoloLocked ? yoloLockedId : undefined"
+          :aria-disabled="askingYolo ? 'true' : undefined"
+          :title="yoloLocked && chatHost ? t('chatInput.yolo.locked', { host: chatHost.name }) : t('chatInput.yolo.tooltip')"
           data-testid="composer-yolo"
-          @click="toggleDangerouslySkipPermissions"
+          :data-locked="yoloLocked ? '' : undefined"
+          @click="onYoloClick"
         >
+          <Lock
+            v-if="yoloLocked"
+            class="size-3"
+            aria-hidden="true"
+          />
           <LockOpen
+            v-else
             class="size-3"
             aria-hidden="true"
           />
           <span class="@max-[25rem]:sr-only">{{ dangerouslySkipPermissions ? t("chatInput.yolo.active") : t("chatInput.yolo.inactive") }}</span>
         </button>
+        <!-- outside the button, so it describes the button without joining its name -->
+        <span
+          v-if="yoloLocked && chatHost"
+          :id="yoloLockedId"
+          class="sr-only"
+        >{{ t("chatInput.yolo.locked", { host: chatHost.name }) }}</span>
 
         <button
           v-if="settingsStore.hostCapabilities.ideContext"

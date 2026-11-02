@@ -22,8 +22,7 @@
     "toggleTerminal": "Εναλλαγή τερματικού ({shortcut})",
     "toggleEditor": "Εναλλαγή επεξεργαστή και περιηγητή",
     "quickOpen": "Αναζήτηση αρχείων σε όλα τα έργα",
-    "quickOpenTitle": "Μετάβαση σε αρχείο ({shortcut})",
-    "hostStripe": "Στο {host}"
+    "quickOpenTitle": "Μετάβαση σε αρχείο ({shortcut})"
   },
   "sidebar": {
     "label": "Πλευρική στήλη",
@@ -68,6 +67,8 @@
     },
     "latency": "{host} · {ms} χλστ.",
     "slowConnection": "Αργή σύνδεση με το {host} ({ms} χλστ.)",
+    "latencyShort": "Συνδεδεμένο · {ms} χλστ.",
+    "slowConnectionShort": "Αργή σύνδεση ({ms} χλστ.)",
     "view": {
       "label": "Προβολή έργων",
       "flat": "Λίστα",
@@ -164,7 +165,8 @@
   },
   "content": {
     "empty": "Δεν έχει επιλεγεί συνομιλία",
-    "newChat": "Νέα συνομιλία"
+    "newChat": "Νέα συνομιλία",
+    "onHost": "στο {host}"
   },
   "overlay": {
     "noMatches": "Δεν υπάρχουν αποτελέσματα",
@@ -2554,6 +2556,7 @@
       "connect": "Σύνδεση",
       "reconnect": "Επανασύνδεση",
       "openFolder": "Άνοιγμα φακέλου στο {name}...",
+      "openFolderShort": "Άνοιγμα φακέλου...",
       "devices": "Συνδεδεμένες συσκευές ({count})",
       "thisDevice": "(αυτή η συσκευή)",
       "otherDevices": "{count} ακόμη συσκευή είναι συνδεδεμένη στο {name} | {count} ακόμη συσκευές είναι συνδεδεμένες στο {name}",
@@ -2568,6 +2571,12 @@
       "forwardsAgent": "Προωθεί τον SSH agent σας",
       "doesNotForwardAgent": "Δεν προωθεί τον SSH agent σας",
       "hostSettings": "Ρυθμίσεις υπολογιστή"
+    },
+    "allowYolo": {
+      "title": "Να επιτρέπεται το YOLO στο {host};",
+      "message": "Οι συνομιλίες σας στο {host} θα μπορούν τότε να παραλείπουν τις ερωτήσεις αδειών. Μπορείτε να το απενεργοποιήσετε στις Ρυθμίσεις › Χρήστης › Απομακρυσμένοι υπολογιστές.",
+      "allow": "Να επιτρέπεται και να ενεργοποιηθεί",
+      "cancel": "Ακύρωση"
     },
     "installFolder": {
       "heading": "Φάκελος εγκατάστασης",

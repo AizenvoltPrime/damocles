@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({
   WebContentsView: class {
-    webContents = { on: vi.fn(), ipc: { on: vi.fn() }, isDestroyed: () => false, isCrashed: () => false };
+    webContents = { on: vi.fn(), ipc: { on: vi.fn(), handle: vi.fn() }, isDestroyed: () => false, isCrashed: () => false };
     setBackgroundColor = vi.fn();
     setVisible = vi.fn();
   },
@@ -16,7 +16,7 @@ import type { PanelStateStore } from '../panel-state-store';
 import { CHAT_WORKER_SRC, DesktopPanel, type PagesHost, type PanelViews } from '../views';
 
 function panel(kind: PanelOptions['kind']): DesktopPanel {
-  const deps = { window: {} as never, preloadPath: '', resourceRoot: '', pageStrings: vi.fn(), language: () => 'en', hostLabel: () => undefined, hostNames: () => ({}), onHostAction: vi.fn(), connection: () => undefined, onQueueAction: vi.fn(), takeCoreMessage: () => false, openRemoteLink: vi.fn(), states: { set: vi.fn() } as unknown as PanelStateStore, pages: {} as PagesHost, log: vi.fn(), onChange: vi.fn(), onRestack: vi.fn(), onReveal: vi.fn(), onRendererGaveUp: vi.fn(), onSavedSessionChange: vi.fn(), popupOpen: () => false };
+  const deps = { window: {} as never, preloadPath: '', resourceRoot: '', pageStrings: vi.fn(), language: () => 'en', hostLabel: () => undefined, hostNames: () => ({}), onHostAction: vi.fn(), onAllowYolo: vi.fn(async () => false), connection: () => undefined, onQueueAction: vi.fn(), takeCoreMessage: () => false, openRemoteLink: vi.fn(), states: { set: vi.fn() } as unknown as PanelStateStore, pages: {} as PagesHost, log: vi.fn(), onChange: vi.fn(), onRestack: vi.fn(), onReveal: vi.fn(), onRendererGaveUp: vi.fn(), onSavedSessionChange: vi.fn(), popupOpen: () => false, withholds: () => false };
   return new DesktopPanel({} as PanelViews, deps, { options: { kind, title: '', localResourceRoots: [] } }, undefined);
 }
 

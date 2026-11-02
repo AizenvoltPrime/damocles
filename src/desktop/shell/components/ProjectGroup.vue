@@ -26,7 +26,8 @@ const props = defineProps<{
   busy: { readonly count: number; readonly waiting: boolean };
   renaming: boolean;
 }>();
-const emit = defineEmits<{ toggle: []; renameSubmit: [name: string]; renameBlur: [name: string]; renameCancel: [] }>();
+// hostDetails: the status dot's element, which the host's card hangs from
+const emit = defineEmits<{ toggle: []; renameSubmit: [name: string]; renameBlur: [name: string]; renameCancel: []; hostDetails: [dot: HTMLElement] }>();
 const { t } = useI18n();
 
 const nameId = useId();
@@ -42,6 +43,12 @@ const headerLabel = computed(() => [
   props.collapsed ? t('projects.group.collapsed') : t('projects.group.expanded'),
   props.collapsed && props.busy.count > 0 ? t('projects.group.busy', props.busy.count) : undefined,
 ].filter((part) => part !== undefined).join(', '));
+
+function openDetails(event: MouseEvent): void {
+  if (!props.host) return;
+  event.stopPropagation();
+  emit('hostDetails', event.currentTarget as HTMLElement);
+}
 
 watch(() => props.renaming, async (renaming) => {
   if (!renaming) return;
@@ -123,13 +130,22 @@ defineExpose({
           <span :key="name">{{ name }}</span>
         </Transition>
       </span>
-      <HostStatusDot
+      <!-- An option holds no buttons, so the dot is a pointer shortcut to the host's card; the header's menu has Details for the keyboard. -->
+      <span
         v-if="connection && !renaming"
-        :connection="connection"
-        :reconnect="host?.reconnect"
-        :slow="host?.latency?.slow"
-        :label="dotLabel"
-      />
+        data-testid="project-group-host-details"
+        class="-my-1 inline-flex size-5 shrink-0 items-center justify-center rounded-5"
+        :class="host ? 'cursor-pointer hover:bg-(--d-border2)' : ''"
+        :title="dotLabel"
+        @click="openDetails"
+      >
+        <HostStatusDot
+          :connection="connection"
+          :reconnect="host?.reconnect"
+          :slow="host?.latency?.slow"
+          :label="dotLabel"
+        />
+      </span>
       <Transition name="t-badge">
         <Badge
           v-if="collapsed && busy.count > 0 && !renaming"

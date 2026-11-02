@@ -21,7 +21,7 @@ const props = defineProps<{
   // the notice's distro while it shows
   noticeDistro?: string | undefined;
 }>();
-const emit = defineEmits<{ trust: [] }>();
+const emit = defineEmits<{ trust: []; hostDetails: [badge: HTMLElement] }>();
 const attrs = useAttrs();
 
 // The option keeps its id, the listbox's active descendant, and the drag mark its cursor keys on; the rest moves and lifts the unit.
@@ -41,6 +41,7 @@ const unitAttrs = computed(() => Object.fromEntries(Object.entries(attrs).filter
     :grouped="grouped"
     :host="host"
     @trust="emit('trust')"
+    @host-details="emit('hostDetails', $event)"
   />
   <div
     v-else
@@ -58,6 +59,7 @@ const unitAttrs = computed(() => Object.fromEntries(Object.entries(attrs).filter
       :host="host"
       :flip="false"
       @trust="emit('trust')"
+      @host-details="emit('hostDetails', $event)"
     />
     <Transition
       name="t-banner"

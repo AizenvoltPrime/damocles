@@ -566,7 +566,7 @@ test('permissions on a loopback chat: "Always allow on Local daemon" writes the 
     const forgeYolo = async (): Promise<void> => {
       await postFromWebview(tab, { type: 'setDangerouslySkipPermissions', enabled: true });
       await expect(refused).toBeVisible();
-      await expect(refused).toContainText(`YOLO is off for your turns on ${LOCAL_DAEMON}`);
+      await expect(refused).toContainText(`YOLO is off for your chats on ${LOCAL_DAEMON}`);
     };
     for (const theme of THEMES) {
       await showShellTheme(app, theme);

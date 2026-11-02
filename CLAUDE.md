@@ -14,6 +14,7 @@ npm run test:desktop     # same setup, then the Playwright Electron suite; -- <s
 node scripts/test-desktop-wsl.mjs --distro Ubuntu-24.04 [specs...]  # desktop suite on Linux, in WSL; its only copy is ~/damocles-e2e, delete any other copy you make
 npm run test:remote      # same setup, the server packages and Docker sshd images the selected specs need, then the remote suite; -- <spec> for one spec, -- --grep <tag> for a tag (@windows-target runs only when named); the two daemon-upgrade tests need DAMOCLES_E2E_REFERENCE_PACKAGE (e2e/remote/support/reference-package.mjs builds it)
 npm run dist             # package the desktop app for this OS into dist-desktop/ (macOS needs Xcode 26+)
+npm run dist:local       # dist plus all eight server packages (Alpine: Docker with buildx, and binfmt/QEMU on Linux docker-ce), copied into the packaged app's server cache, so remote installs work without a release; give each build you install a version no release or earlier install used (it refuses a released one)
 npm run dist:linux-wsl -- --distro Ubuntu-24.04  # Linux deb + rpm from Windows
 npm run build:server -- --target <target>  # remote server package into dist/server-packages/; node scripts/verify-server-package.mjs --target <target> <archive> checks it
 node scripts/protocol-compat.mjs [--check]  # write (or check) src/remote/protocol-snapshot.json after a wire contract change
