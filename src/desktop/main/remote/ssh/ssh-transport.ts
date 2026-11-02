@@ -3,7 +3,6 @@
 // is the same Duplex the loopback transport gives Authorities, past the bridge's authentication with the daemon.
 import { createReadStream, promises as fs } from 'node:fs';
 import * as os from 'node:os';
-import * as path from 'node:path';
 import { Duplex } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { processLauncher, type LaunchedProcess, type Launcher, type ProcessExit } from '../../../../core/process-launcher';
@@ -501,14 +500,19 @@ export function runStage(
       }
     };
 
-    // the stage copies from the cache folder it was given, so the package must be in exactly that folder
+    // the stage copies from the cache folder it was given; ArtifactCache puts every packagePath answer in packageFolder()
     const fillCache = async (): Promise<void> => {
       const { cache } = options;
       if (cache === 'none') throw new StageProtocolError('a cache request from a stage that copies from no cache');
       if (!target || !options.manifest.packages[target]) throw new StageProtocolError('a cache request before the probe named a packaged target');
       let ready = false;
       try {
-        ready = cache === 'artifactFolder' ? path.dirname(await options.artifacts.packagePath(target)) === options.artifacts.packageFolder() : await cache(target);
+        if (cache === 'artifactFolder') {
+          await options.artifacts.packagePath(target);
+          ready = true;
+        } else {
+          ready = await cache(target);
+        }
       } catch (err) {
         log(`the package for ${target} is not in the cache: ${messageOf(err)}`);
       }

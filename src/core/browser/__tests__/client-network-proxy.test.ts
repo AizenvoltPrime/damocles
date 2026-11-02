@@ -284,10 +284,15 @@ describe('client network proxy, a name still resolving', () => {
     raw.on('error', () => undefined);
     raw.write(`CONNECT slow.test:${servicePort} HTTP/1.1\r\nHost: slow.test:${servicePort}\r\n\r\n`);
     await slow.asked;
+    // both requests reached the proxy before they go: a request after them on a new connection is answered first
+    expect((await get(proxy, `http://[2001:db8::1]:${servicePort}/`)).status).toBe(200);
     const gone = Promise.all([new Promise((done) => plain.on('close', done)), new Promise((done) => raw.on('close', done))]);
     plain.destroy();
     raw.destroy();
     await gone;
+    // the proxy heard the closes: a request on a new connection after them is answered after it handled them
+    expect((await get(proxy, `http://[2001:db8::2]:${servicePort}/`)).status).toBe(200);
+    connects = [];
     slow.release();
     // a later request settles after the released ones resumed, so their connects would be recorded by now
     expect((await get(proxy, `http://public.test:${servicePort}/`)).status).toBe(200);

@@ -4,7 +4,7 @@ import { listeners } from '../../../../../remote/listeners';
 import type { RemoteConnection } from '../../connection';
 import { EMPTY_HOST_PORTS, type HostStore } from '../../host-store';
 import { LOOPBACK_HOST, PortsController, type PortsControllerDeps } from '../ports-controller';
-import { ForwardLimitError, MAX_FORWARDS_PER_HOST, type LoopbackAddress } from '../tunnels';
+import { accepts, ForwardLimitError, MAX_FORWARDS_PER_HOST, type LoopbackAddress } from '../tunnels';
 import type { PortCandidate } from '../../../../daemon/ports/ports-messages';
 import type { WindowsListeners } from '../../wsl/wsl-port-probe';
 import { AUTHORITY, candidate, HOST, PROJECT } from './fake-ports';
@@ -118,18 +118,6 @@ async function freePort(): Promise<number> {
   const { port } = server.address() as net.AddressInfo;
   await new Promise<void>((resolve) => server.close(() => resolve()));
   return port;
-}
-
-// whether this computer's 127.0.0.1 accepts a connection on port
-function accepts(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = net.connect({ host: '127.0.0.1', port });
-    socket.once('connect', () => {
-      socket.destroy();
-      resolve(true);
-    });
-    socket.once('error', () => resolve(false));
-  });
 }
 
 // connects the test answers one at a time
@@ -253,10 +241,10 @@ describe('the Ports controller', () => {
     const { connection: followed } = connection();
     ports.connected(HOST, followed);
     const tunnel = await ports.forwarding.forwardingFor(HOST).forward(AUTHORITY, { host: 'localhost', port: await freePort() });
-    expect(await accepts(tunnel.localPort)).toBe(true);
+    expect(await accepts('127.0.0.1', tunnel.localPort)).toBe(true);
     ports.dispose();
     expect(ports.tunnels.list(AUTHORITY)).toEqual([]);
-    await vi.waitFor(async () => expect(await accepts(tunnel.localPort)).toBe(false));
+    await vi.waitFor(async () => expect(await accepts('127.0.0.1', tunnel.localPort)).toBe(false));
   });
 
   it('tells the user in a notice when their own forward is refused at the forward limit', async () => {
