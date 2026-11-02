@@ -219,6 +219,50 @@ describe('OverlaySettings', () => {
     expect(harness.routed.map((r) => [r.message, r.panelId])).toEqual([[{ type: 'setPermissionMode', mode: 'acceptEdits' }, second.panelId]]);
   });
 
+  it('runs what the remounted modal sends for a re-attach still under way once core attached it, and drops it when the attach fails', async () => {
+    const { harness, fake, settings, first, second, select, hooks, lines } = await setup();
+    const real = hooks.core()!;
+    let release!: () => void;
+    let refuse!: () => void;
+    const holding: SettingsViewHost = {
+      ...real,
+      attachSettingsView: async (panelId, attachment, view) => {
+        if (attachment === 2) await new Promise<void>((resolve) => { release = resolve; });
+        if (attachment === 3) await new Promise<void>((_resolve, reject) => { refuse = () => reject(new Error('core refused')); });
+        return real.attachSettingsView(panelId, attachment, view);
+      },
+    };
+    hooks.core = () => holding;
+    void settings.show({});
+    await tick();
+
+    select(second.panelId);
+    settings.selectionChanged();
+    await tick();
+    expect(fake.sent).toContainEqual({ channel: OVERLAY_CHANNELS.settingsAttached, payload: { generation: 2 } });
+    fake.fire(OVERLAY_CHANNELS.settingsSend, { generation: 2, message: { type: 'setBudgetLimit', budgetUsd: 4 } });
+    fake.fire(OVERLAY_CHANNELS.settingsSend, { generation: 2, message: { type: 'setBudgetLimit', budgetUsd: 5 } });
+    await tick();
+    expect(harness.routed).toEqual([]);
+    release();
+    await tick();
+    expect(harness.routed.map((r) => [r.message, r.panelId])).toEqual([
+      [{ type: 'setBudgetLimit', budgetUsd: 4 }, second.panelId],
+      [{ type: 'setBudgetLimit', budgetUsd: 5 }, second.panelId],
+    ]);
+    expect(lines.filter((line) => line.includes('dropped'))).toEqual([]);
+
+    harness.routed.length = 0;
+    select(first.panelId);
+    settings.selectionChanged();
+    await tick();
+    fake.fire(OVERLAY_CHANNELS.settingsSend, { generation: 3, message: { type: 'setBudgetLimit', budgetUsd: 6 } });
+    refuse();
+    await tick();
+    expect(harness.routed).toEqual([]);
+    expect(lines).toContain('[settings] dropped 1 settings messages sent for an attachment that did not attach');
+  });
+
   it('delivers the host prompt a re-attach moves into the modal after telling it the new attachment, with no requestSettingsState', async () => {
     const { harness, fake, settings, first, second, select } = await setup();
     const prompts = new WebviewPrompts(

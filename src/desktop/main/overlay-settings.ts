@@ -60,6 +60,9 @@ export async function writeDesktopSetting(settings: SettingsStore, key: string, 
   await settings.update(key, value, 'user');
 }
 
+// a remounted page sends a few state requests; a renderer sending more while an attach waits on core is not answered for them
+const MAX_HELD_SENDS = 32;
+
 interface Attachment {
   readonly host: SettingsViewHost;
   readonly panelId: string;
@@ -87,6 +90,9 @@ export class OverlaySettings {
   private userTab = false;
   // attach work runs one at a time, so a selection change during an attach never leaves two views
   private attaching: Promise<void> = Promise.resolve();
+  // The re-attach under way: the renderer has its generation (settingsAttached goes first) and remounts at once, so what it
+  // sends for it waits here and goes once core attached it.
+  private inFlight: { readonly generation: number; readonly sends: WebviewToExtensionMessage[] } | undefined;
   private readonly prefsWatch: Disposable;
 
   constructor(deps: OverlaySettingsDeps) {
@@ -270,6 +276,13 @@ export class OverlaySettings {
     // The first attachment's generation travels in the request itself.
     const scopes = this.scopesShown();
     if (current !== undefined) this.deps.overlay.send(OVERLAY_CHANNELS.settingsAttached, { generation, ...(scopes ? { scopes } : {}) });
+    const inFlight = { generation, sends: [] as WebviewToExtensionMessage[] };
+    this.inFlight = inFlight;
+    const held = (): readonly WebviewToExtensionMessage[] => {
+      if (this.inFlight !== inFlight) return [];
+      this.inFlight = undefined;
+      return inFlight.sends;
+    };
     let detachedEarly = false;
     let handle: Disposable;
     try {
@@ -286,6 +299,7 @@ export class OverlaySettings {
         },
       }, target.scope);
     } catch (err) {
+      this.dropHeld(held().length);
       // The renderer already took the new generation: the previous tab attaches again under a newer one.
       if (this.generation === generation) {
         this.scope = previous.scope;
@@ -297,13 +311,21 @@ export class OverlaySettings {
       }
       throw err;
     }
+    const sends = held();
     // the modal closed while core attached it
     if (this.generation !== generation) {
+      this.dropHeld(sends.length);
       handle.dispose();
       return;
     }
-    this.attachment = { host, panelId, scope: target.scope, generation, handle, live: !detachedEarly };
+    const attachment: Attachment = { host, panelId, scope: target.scope, generation, handle, live: !detachedEarly };
+    this.attachment = attachment;
     current?.handle.dispose();
+    for (const message of sends) this.deliver(attachment, message);
+  }
+
+  private dropHeld(count: number): void {
+    if (count > 0) this.deps.log(`[settings] dropped ${count} settings messages sent for an attachment that did not attach`);
   }
 
   private receive(raw: unknown): void {
@@ -313,22 +335,31 @@ export class OverlaySettings {
       this.deps.log('[settings] dropped a malformed or oversized settings message');
       return;
     }
-    const attachment = this.attachment;
-    if (!this.open || attachment === undefined || value.generation !== attachment.generation) {
-      this.deps.log('[settings] dropped a settings message sent for an earlier attachment');
-      return;
-    }
-    if (!attachment.live) {
-      this.deps.log('[settings] dropped a settings message: the chat or engine it was attached to is gone');
-      return;
-    }
     const message = value.message;
     // Only the type is ever logged: these messages carry API keys and prompt answers.
     if (!isWebviewMessage(message) || !SETTINGS_VIEW_REQUEST_TYPES.has(message.type)) {
       this.deps.log(`[settings] refused a settings message of type ${isWebviewMessage(message) ? JSON.stringify(message.type.slice(0, 64)) : 'none'}`);
       return;
     }
-    attachment.host.dispatchSettingsView(attachment.generation, message as WebviewToExtensionMessage)
+    if (this.open && this.inFlight !== undefined && value.generation === this.inFlight.generation) {
+      if (this.inFlight.sends.length >= MAX_HELD_SENDS) this.deps.log('[settings] dropped a settings message: too many wait for the attach under way');
+      else this.inFlight.sends.push(message as WebviewToExtensionMessage);
+      return;
+    }
+    const attachment = this.attachment;
+    if (!this.open || attachment === undefined || value.generation !== attachment.generation) {
+      this.deps.log('[settings] dropped a settings message sent for an earlier attachment');
+      return;
+    }
+    this.deliver(attachment, message as WebviewToExtensionMessage);
+  }
+
+  private deliver(attachment: Attachment, message: WebviewToExtensionMessage): void {
+    if (!attachment.live) {
+      this.deps.log('[settings] dropped a settings message: the chat or engine it was attached to is gone');
+      return;
+    }
+    attachment.host.dispatchSettingsView(attachment.generation, message)
       .catch((err: unknown) => this.deps.log(`[settings] ${message.type} failed: ${err instanceof Error ? err.message : String(err)}`));
   }
 
