@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { build } from 'esbuild';
 import { EXTENSION_EXTERNALS } from '../../scripts/extension-externals.mjs';
+import { windowsTerminalEnvironment } from '../../src/desktop/main/workspace/windows-terminal-environment';
 import { coreLog, launchDesktop } from './support/app';
 import { createHermeticHome, hermeticEnv, REPO_ROOT, WINDOWS_POWERSHELL_CACHE, WINDOWS_POWERSHELL_CACHE_IN_PROFILE } from './support/hermetic';
 import { PACKAGED_APP_ENV, packagedAppPath } from './support/packaged-app';
@@ -78,8 +79,9 @@ function warmWindowsPowerShellCache(): void {
   ].join('; ');
   const started = Date.now();
   const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
-    // ProgramFiles as the terminal specs pass it; the cache is keyed by module path, so it covers launches without it too.
-    env: hermeticEnv({ root, home }, process.env['ProgramFiles'] === undefined ? {} : { ProgramFiles: process.env['ProgramFiles'] }),
+    // The cache is keyed by module path, so it is built under the environment a terminal starts with: the registry's
+    // variables over the launch's (its PSModulePath included), and ProgramFiles as the terminal specs pass it.
+    env: windowsTerminalEnvironment(hermeticEnv({ root, home }, process.env['ProgramFiles'] === undefined ? {} : { ProgramFiles: process.env['ProgramFiles'] }), (line) => console.log(line)),
     encoding: 'utf8',
     timeout: POWERSHELL_WARM_TIMEOUT_MS,
     windowsHide: true,

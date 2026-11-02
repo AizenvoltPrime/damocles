@@ -235,6 +235,8 @@ test('blame shows the cursor line\'s commit after a rest, its card on hover, You
   const focusToggle = shell.getByTestId('editor-focus-toggle');
   await focusToggle.click();
   await expect(focusToggle).toHaveAttribute('aria-pressed', 'true');
+  // the pane zooms in (d-zoom): a hover measured mid-zoom is left off the text when it ends, which hides the card
+  await shell.getByTestId('editor-pane').evaluate((pane) => Promise.all(pane.getAnimations().map((animation) => animation.finished)).then(() => undefined));
   await hoverBlame(shell);
   await expect(card).toBeVisible();
   await expectCardUnderText(shell);

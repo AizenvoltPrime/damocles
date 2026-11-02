@@ -6,7 +6,7 @@ import { corePid } from './support/app';
 import { expect, test } from './support/fixtures';
 import { git, initRepo } from './support/git';
 import { writeAuth, writeUserSettings, type HermeticHome } from './support/hermetic';
-import { activePageTab, browserTabs, chromeEnv, PAGE_TIMEOUT } from './support/browser';
+import { activePageTab, browserTabs, chromeEnv, PAGE_TIMEOUT, systemChrome } from './support/browser';
 import { openInEditor } from './support/editor';
 import { attachDaemonLogs, credentialRequests, filesHolding, mergeJson, newLoopbackChat, sendPrompt, servedProviders, startLoopbackStub, systemPrompts, targetAgentDir, targetDamoclesDir, witnessCommand, witnessed, WITNESS } from './support/loopback-agent';
 import { cleanUp, daemonPid, endLeftoverDaemon, filesUnder, listRuns, LOCAL_DAEMON, loopbackHome, LOOPBACK_ENV, LOOPBACK_TAG, processTree, REVIEW_SHOTS, shutdownDaemon } from './support/loopback';
@@ -679,19 +679,22 @@ test('on a loopback chat voice records in this computer\'s core and fills the re
     await recordToasts(app);
     await recordOpenExternal(app);
     const warnings = async (): Promise<string[]> => (await recordedToasts(app!)).filter((toast) => toast.severity === 'warning').map((toast) => toast.message);
-    await postFromWebview(tab, { type: 'openBrowser' });
-    await expect.poll(async () => (await browserTabs(app!)).length, { timeout: PAGE_TIMEOUT }).toBe(1);
-    await expect.poll(async () => (await activePageTab(app!))?.browser.loading, { timeout: PAGE_TIMEOUT }).toBe(false);
-    const address = (await shellPage(app)).getByTestId('browser-address');
-    await address.fill('10.0.0.5');
-    await address.press('Enter');
-    await expect.poll(warnings).toContainEqual(expect.stringContaining('10.0.0.5 is on this computer or its local network'));
-    // the stub listens on this computer, which is the loopback daemon's too, so its port's forward listens on another one
-    await address.fill(`localhost:${stub.port}`);
-    await address.press('Enter');
-    await expect.poll(async () => (await activePageTab(app!))?.browser.forwardedFrom?.targetUrl, { timeout: PAGE_TIMEOUT }).toBe(`http://localhost:${stub.port}/`);
-    expect(new URL((await activePageTab(app))!.browser.url).port).not.toBe(String(stub.port));
-    await expect((await shellPage(app)).getByTestId('browser-forwarded-from')).toContainText(`${LOCAL_DAEMON}:${stub.port}`);
+    // the page launches the installed Chrome or Edge by channel, which some runners (Linux arm64) do not have
+    if (systemChrome() !== undefined) {
+      await postFromWebview(tab, { type: 'openBrowser' });
+      await expect.poll(async () => (await browserTabs(app!)).length, { timeout: PAGE_TIMEOUT }).toBe(1);
+      await expect.poll(async () => (await activePageTab(app!))?.browser.loading, { timeout: PAGE_TIMEOUT }).toBe(false);
+      const address = (await shellPage(app)).getByTestId('browser-address');
+      await address.fill('10.0.0.5');
+      await address.press('Enter');
+      await expect.poll(warnings).toContainEqual(expect.stringContaining('10.0.0.5 is on this computer or its local network'));
+      // the stub listens on this computer, which is the loopback daemon's too, so its port's forward listens on another one
+      await address.fill(`localhost:${stub.port}`);
+      await address.press('Enter');
+      await expect.poll(async () => (await activePageTab(app!))?.browser.forwardedFrom?.targetUrl, { timeout: PAGE_TIMEOUT }).toBe(`http://localhost:${stub.port}/`);
+      expect(new URL((await activePageTab(app))!.browser.url).port).not.toBe(String(stub.port));
+      await expect((await shellPage(app)).getByTestId('browser-forwarded-from')).toContainText(`${LOCAL_DAEMON}:${stub.port}`);
+    }
     const linksOpened = async (pathname: string): Promise<number> => (await openedExternally(app!)).filter((url) => URL.canParse(url) && new URL(url).hostname === 'localhost' && new URL(url).pathname === pathname).length;
     await postFromWebview(tab, { type: 'openExternalUrl', url: 'http://localhost:3999/callback' });
     await expect.poll(() => linksOpened('/callback')).toBe(1);
