@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { _electron as electron, expect, type ElectronApplication, type TestInfo } from '@playwright/test';
 import { fileHolders } from './file-holders';
@@ -89,7 +90,24 @@ export async function killTree(proc: Pick<ChildProcess, 'pid' | 'exitCode' | 'si
   if ('error' in tree) throw tree.error;
 }
 
-async function closeWithin(app: ElectronApplication, proc: ChildProcess, exit: Promise<void>): Promise<void> {
+// seconds of a hung main's stacks sample(1) takes; with its symbolication it stays inside RUN_TIMEOUT_MS
+const HUNG_SAMPLE_S = 3;
+
+/** macOS sample(1)'s report of `pid`'s threads, which names what a hung quit waits on. */
+async function sampledStacks(pid: number): Promise<string> {
+  const file = path.join(os.tmpdir(), `damocles-hung-${pid}.sample.txt`);
+  try {
+    const sampled = await run('/usr/bin/sample', [String(pid), String(HUNG_SAMPLE_S), '-mayDie', '-file', file]);
+    return sampled.code === 0 ? fs.readFileSync(file, 'utf8') : `sample exited with code ${sampled.code}: ${sampled.stderr.trim()}`;
+  } catch (error) {
+    // the kill and its error still follow
+    return `sample failed: ${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
+}
+
+async function closeWithin(app: ElectronApplication, proc: ChildProcess, exit: Promise<void>, note: (text: string) => void): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   const timedOut = new Promise<'timeout'>((resolve) => (timer = setTimeout(() => resolve('timeout'), QUIT_TIMEOUT_MS)));
   try {
@@ -98,8 +116,10 @@ async function closeWithin(app: ElectronApplication, proc: ChildProcess, exit: P
   } finally {
     clearTimeout(timer);
   }
+  const sampledPid = process.platform === 'darwin' ? proc.pid : undefined;
+  if (sampledPid !== undefined) note(`\n[e2e] main's stacks after ${QUIT_TIMEOUT_MS} ms of quitting:\n${await sampledStacks(sampledPid)}`);
   const killFailure = await killTree(proc).then(() => '', (error: unknown) => `; reading its process tree failed: ${error instanceof Error ? error.message : String(error)}`);
-  throw new Error(`the app did not quit within ${QUIT_TIMEOUT_MS} ms of app.close(); killed it${killFailure}`);
+  throw new Error(`the app did not quit within ${QUIT_TIMEOUT_MS} ms of app.close(); killed it${killFailure}${sampledPid !== undefined ? '; its stacks are in the main output' : ''}`);
 }
 
 export interface DesktopApp {
@@ -160,7 +180,7 @@ export async function launchDesktop(h: HermeticHome, options: LaunchOptions = {}
     },
     close: async () => {
       // A packaged app's close bounds its own quit and kills it (packaged-app.ts).
-      if (!exited()) await (packaged !== undefined ? app.close() : closeWithin(app, proc, exit));
+      if (!exited()) await (packaged !== undefined ? app.close() : closeWithin(app, proc, exit, (text) => (output += text)));
       if (exitReported) return;
       exitReported = true;
       if (proc.exitCode !== 0) throw new Error(`the main process ${proc.signalCode !== null ? `died of ${proc.signalCode}` : `exited with code ${proc.exitCode}`} instead of 0; see its main output`);
