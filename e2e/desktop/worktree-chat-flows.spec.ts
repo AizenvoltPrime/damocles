@@ -286,6 +286,8 @@ test('A new worktree gets the .asar files .worktreeinclude names and the untrack
     await openProjectChat(app, repo.project);
     const tab = await optIn(app, { bring: true });
     await turn(tab, 'Bring the archives', 'Worktree ready');
+    // the turn's checkpoint reads the worktree's files after the reply shows, and its record shows the rewind
+    await expect(tab.getByTestId('user-message-rewind').first()).toBeVisible();
     const [record] = liveRecords(home);
     const copies = [path.join(record!.worktreeRoot, 'vendor', 'app.asar'), path.join(record!.worktreeRoot, 'inbox', 'new.asar')];
     for (const [copy, source] of [[copies[0]!, included], [copies[1]!, untracked]] as const) {

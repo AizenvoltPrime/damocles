@@ -749,7 +749,8 @@ test('on a loopback chat voice records in this computer\'s core and fills the re
     }, [FILE_DRAG_MIME, JSON.stringify(file)] as const);
     await drop({ projectKey: localKey, relativePath: 'notes.md' });
     const popup = await popupPage(app);
-    await expect(popupToasts(popup).filter({ hasText: LOCAL_DAEMON }).filter({ hasText: 'This computer' })).toHaveCount(1);
+    // the whole sentence: a port forward's toast also names the host and "this computer"
+    await expect(popupToasts(popup).filter({ hasText: `This chat runs on ${LOCAL_DAEMON}, so it cannot take what is on This computer.` })).toHaveCount(1);
     await expect(chatInput(tab)).toHaveValue('');
 
     // A drop of the host's own project file is mentioned in the composer, as a drop is in a local chat.
