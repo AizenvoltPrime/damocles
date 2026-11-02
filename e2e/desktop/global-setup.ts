@@ -62,25 +62,36 @@ async function warmFirstLaunch(): Promise<void> {
 
 // Analysing a runner's whole module path takes minutes, never more than this.
 const POWERSHELL_WARM_TIMEOUT_MS = 600_000;
+// a module no cache holds yet, so the analysis always queues a save
+const CACHE_PROBE_MODULE = 'DamoclesE2eCacheProbe';
+
+const psQuote = (text: string): string => `'${text.replaceAll("'", "''")}'`;
 
 /**
- * Builds Windows PowerShell 5.1's module analysis cache in a hermetic profile and keeps it as WINDOWS_POWERSHELL_CACHE.
- * PowerShell saves the cache on a timer seconds after the analysis, never at exit, so the script waits for the file to be
- * written and closed.
+ * Builds Windows PowerShell 5.1's module analysis cache that a terminal reads and keeps a copy as WINDOWS_POWERSHELL_CACHE.
+ * A terminal starts with the registry's variables over the launch's, so a machine-wide PSModuleAnalysisCachePath (GitHub's
+ * Windows images set one) names its cache instead of the profile's, and that file is warmed in place. PowerShell saves the
+ * cache on a timer seconds after an analysis and never at exit, so the script analyses a probe module and waits for a write
+ * after its start to close.
  */
 function warmWindowsPowerShellCache(): void {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dps')));
   const home = path.join(root, 'h');
   for (const dir of [path.join(home, 'AppData', 'Local'), path.join(home, 'AppData', 'Roaming'), path.join(root, 'tmp')]) fs.mkdirSync(dir, { recursive: true });
-  const cache = path.join(home, 'AppData', 'Local', WINDOWS_POWERSHELL_CACHE_IN_PROFILE);
+  const probes = path.join(root, 'probe');
+  fs.mkdirSync(path.join(probes, CACHE_PROBE_MODULE), { recursive: true });
+  fs.writeFileSync(path.join(probes, CACHE_PROBE_MODULE, `${CACHE_PROBE_MODULE}.psm1`), `function Get-${CACHE_PROBE_MODULE} {}\n`);
   const script = [
+    `$env:PSModulePath = ${psQuote(`${probes};`)} + $env:PSModulePath`,
+    `$cache = if ($env:PSModuleAnalysisCachePath) { $env:PSModuleAnalysisCachePath } else { Join-Path $env:LOCALAPPDATA ${psQuote(WINDOWS_POWERSHELL_CACHE_IN_PROFILE)} }`,
+    '$started = [DateTime]::UtcNow',
     'Get-Command | Out-Null',
-    `while ($true) { try { [IO.File]::Open('${cache}', 'Open', 'Read', 'None').Dispose(); break } catch { Start-Sleep -Milliseconds 200 } }`,
+    "while ($true) { if ([IO.File]::GetLastWriteTimeUtc($cache) -ge $started) { try { [IO.File]::Open($cache, 'Open', 'Read', 'None').Dispose(); break } catch {} }; Start-Sleep -Milliseconds 200 }",
+    '[Console]::Out.Write($cache)',
   ].join('; ');
   const started = Date.now();
   const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
-    // The cache is keyed by module path, so it is built under the environment a terminal starts with: the registry's
-    // variables over the launch's (its PSModulePath included), and ProgramFiles as the terminal specs pass it.
+    // the environment a terminal starts with, and ProgramFiles as the terminal specs pass it
     env: windowsTerminalEnvironment(hermeticEnv({ root, home }, process.env['ProgramFiles'] === undefined ? {} : { ProgramFiles: process.env['ProgramFiles'] }), (line) => console.log(line)),
     encoding: 'utf8',
     timeout: POWERSHELL_WARM_TIMEOUT_MS,
@@ -89,8 +100,9 @@ function warmWindowsPowerShellCache(): void {
   if (result.status !== 0) {
     throw new Error(`Warming Windows PowerShell's module analysis cache failed (${result.error?.message ?? `exit ${result.status}`}): ${result.stderr}`);
   }
+  const cache = result.stdout;
   fs.mkdirSync(path.dirname(WINDOWS_POWERSHELL_CACHE), { recursive: true });
   fs.copyFileSync(cache, WINDOWS_POWERSHELL_CACHE);
   fs.rmSync(root, { recursive: true, force: true, maxRetries: 25, retryDelay: 200 });
-  console.log(`Warmed Windows PowerShell's module analysis cache in ${((Date.now() - started) / 1000).toFixed(1)} s`);
+  console.log(`Warmed Windows PowerShell's module analysis cache ${cache} in ${((Date.now() - started) / 1000).toFixed(1)} s`);
 }

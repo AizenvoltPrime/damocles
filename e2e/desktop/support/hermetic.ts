@@ -21,7 +21,8 @@ export interface HermeticHome {
 /**
  * Windows PowerShell 5.1's module analysis cache, warmed once per run by global-setup.ts and copied into each home: without
  * it a shell's first cmdlet analyses every module on the module path first, which on a GitHub runner (AWSPowershell, Az,
- * Microsoft.Graph) outlasts a test's wait.
+ * Microsoft.Graph) outlasts a test's wait. A machine-wide PSModuleAnalysisCachePath reaches terminals from the registry and
+ * overrides the home's copy; global-setup.ts warms that file in place.
  */
 export const WINDOWS_POWERSHELL_CACHE = path.join(REPO_ROOT, 'dist', 'e2e-cache', 'ModuleAnalysisCache');
 // Where Windows PowerShell 5.1 keeps the cache under a profile's LOCALAPPDATA.
