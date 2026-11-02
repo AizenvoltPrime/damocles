@@ -1,7 +1,8 @@
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { promisify } from 'node:util';
 import { build } from 'esbuild';
 import { EXTENSION_EXTERNALS } from '../../scripts/extension-externals.mjs';
 import { windowsTerminalEnvironment } from '../../src/desktop/main/workspace/windows-terminal-environment';
@@ -32,7 +33,7 @@ export default async function globalSetup(): Promise<void> {
     external: EXTENSION_EXTERNALS.filter((name) => name !== 'vscode'),
     logLevel: 'warning',
   });
-  if (process.platform === 'win32') warmWindowsPowerShellCache();
+  if (process.platform === 'win32') await warmWindowsPowerShellCaches();
   await warmFirstLaunch();
 }
 
@@ -66,43 +67,55 @@ const POWERSHELL_WARM_TIMEOUT_MS = 600_000;
 const CACHE_PROBE_MODULE = 'DamoclesE2eCacheProbe';
 
 const psQuote = (text: string): string => `'${text.replaceAll("'", "''")}'`;
+const execFileAsync = promisify(execFile);
 
 /**
- * Builds Windows PowerShell 5.1's module analysis cache that a terminal reads and keeps a copy as WINDOWS_POWERSHELL_CACHE.
- * A terminal starts with the registry's variables over the launch's, so a machine-wide PSModuleAnalysisCachePath (GitHub's
- * Windows images set one) names its cache instead of the profile's, and that file is warmed in place. PowerShell saves the
- * cache on a timer seconds after an analysis and never at exit, so the script analyses a probe module and waits for a write
- * after its start to close.
+ * Builds the Windows PowerShell 5.1 module analysis caches the launches' shells read, each under its readers' environment:
+ * one in a fresh profile under the hermetic environment, which the loopback daemon's shells and the specs' own run under,
+ * kept as WINDOWS_POWERSHELL_CACHE for createHermeticHome to copy; and, when the registry names a machine-wide
+ * PSModuleAnalysisCachePath (GitHub's Windows images set one), that file in place under the environment a local terminal
+ * starts with, the registry's variables over the launch's.
  */
-function warmWindowsPowerShellCache(): void {
+async function warmWindowsPowerShellCaches(): Promise<void> {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dps')));
   const home = path.join(root, 'h');
   for (const dir of [path.join(home, 'AppData', 'Local'), path.join(home, 'AppData', 'Roaming'), path.join(root, 'tmp')]) fs.mkdirSync(dir, { recursive: true });
   const probes = path.join(root, 'probe');
   fs.mkdirSync(path.join(probes, CACHE_PROBE_MODULE), { recursive: true });
   fs.writeFileSync(path.join(probes, CACHE_PROBE_MODULE, `${CACHE_PROBE_MODULE}.psm1`), `function Get-${CACHE_PROBE_MODULE} {}\n`);
+  const hermetic = hermeticEnv({ root, home });
+  const terminal = windowsTerminalEnvironment(hermetic, (line) => console.log(line));
+  const machineWide = Object.entries(terminal).some(([key, value]) => key.toUpperCase() === 'PSMODULEANALYSISCACHEPATH' && value);
+  const [profileCache] = await Promise.all([warmPowerShellCache(hermetic, probes), ...(machineWide ? [warmPowerShellCache(terminal, probes)] : [])]);
+  fs.mkdirSync(path.dirname(WINDOWS_POWERSHELL_CACHE), { recursive: true });
+  fs.copyFileSync(profileCache!, WINDOWS_POWERSHELL_CACHE);
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 25, retryDelay: 200 });
+}
+
+/**
+ * Analyses every module on the module path under `env` and resolves the cache file PowerShell wrote. PowerShell saves the
+ * cache on a timer seconds after an analysis and never at exit, so the script also analyses a probe module, which no cache
+ * holds yet, and waits for a write after its start to close.
+ */
+async function warmPowerShellCache(env: NodeJS.ProcessEnv, probes: string): Promise<string> {
   const script = [
     `$env:PSModulePath = ${psQuote(`${probes};`)} + $env:PSModulePath`,
-    `$cache = if ($env:PSModuleAnalysisCachePath) { $env:PSModuleAnalysisCachePath } else { Join-Path $env:LOCALAPPDATA ${psQuote(WINDOWS_POWERSHELL_CACHE_IN_PROFILE)} }`,
+    `$cache = if ($env:PSModuleAnalysisCachePath) { $env:PSModuleAnalysisCachePath } else { Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) ${psQuote(WINDOWS_POWERSHELL_CACHE_IN_PROFILE)} }`,
     '$started = [DateTime]::UtcNow',
     'Get-Command | Out-Null',
     "while ($true) { if ([IO.File]::GetLastWriteTimeUtc($cache) -ge $started) { try { [IO.File]::Open($cache, 'Open', 'Read', 'None').Dispose(); break } catch {} }; Start-Sleep -Milliseconds 200 }",
     '[Console]::Out.Write($cache)',
   ].join('; ');
   const started = Date.now();
-  const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
-    // the environment a terminal starts with, and ProgramFiles as the terminal specs pass it
-    env: windowsTerminalEnvironment(hermeticEnv({ root, home }, process.env['ProgramFiles'] === undefined ? {} : { ProgramFiles: process.env['ProgramFiles'] }), (line) => console.log(line)),
+  const { stdout: cache } = await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+    env,
     encoding: 'utf8',
     timeout: POWERSHELL_WARM_TIMEOUT_MS,
     windowsHide: true,
+  }).catch((error: unknown) => {
+    const reason = (error as { killed?: boolean }).killed ? `no save within ${POWERSHELL_WARM_TIMEOUT_MS / 1000} s` : error instanceof Error ? error.message : String(error);
+    throw new Error(`Warming Windows PowerShell's module analysis cache failed: ${reason}`);
   });
-  if (result.status !== 0) {
-    throw new Error(`Warming Windows PowerShell's module analysis cache failed (${result.error?.message ?? `exit ${result.status}`}): ${result.stderr}`);
-  }
-  const cache = result.stdout;
-  fs.mkdirSync(path.dirname(WINDOWS_POWERSHELL_CACHE), { recursive: true });
-  fs.copyFileSync(cache, WINDOWS_POWERSHELL_CACHE);
-  fs.rmSync(root, { recursive: true, force: true, maxRetries: 25, retryDelay: 200 });
   console.log(`Warmed Windows PowerShell's module analysis cache ${cache} in ${((Date.now() - started) / 1000).toFixed(1)} s`);
+  return cache;
 }

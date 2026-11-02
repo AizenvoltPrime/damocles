@@ -4,7 +4,7 @@ import type { ElectronApplication, TestInfo } from '@playwright/test';
 import { createLauncherPool, installProcessLauncher, type Launcher } from '../../../src/core/process-launcher';
 import { localRunPaths } from '../../../src/desktop/daemon/token';
 import { expect } from './fixtures';
-import { REPO_ROOT, type HermeticHome } from './hermetic';
+import { LOOPBACK_HOME_IN_USER_DATA, REPO_ROOT, type HermeticHome } from './hermetic';
 import { isAlive, run, windowsProcessTree } from './app';
 import { shellState } from './shell';
 import { answerDialogs, answerOpenDialog, clickMenu } from './ui';
@@ -38,7 +38,7 @@ interface LoopbackHooks {
 }
 
 /** The daemon's home: HOME and USERPROFILE of the daemon and every child it starts, under the test's userData. */
-export const loopbackHome = (home: HermeticHome): string => path.join(home.userData, 'loopback-home');
+export const loopbackHome = (home: HermeticHome): string => path.join(home.userData, LOOPBACK_HOME_IN_USER_DATA);
 
 /** The daemon's run folder in its home: its lock, pid file and logs live under ~/.damocles/server. */
 export const serverDir = (home: HermeticHome): string => path.join(loopbackHome(home), '.damocles', 'server');

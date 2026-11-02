@@ -19,14 +19,17 @@ export interface HermeticHome {
 }
 
 /**
- * Windows PowerShell 5.1's module analysis cache, warmed once per run by global-setup.ts and copied into each home: without
- * it a shell's first cmdlet analyses every module on the module path first, which on a GitHub runner (AWSPowershell, Az,
- * Microsoft.Graph) outlasts a test's wait. A machine-wide PSModuleAnalysisCachePath reaches terminals from the registry and
- * overrides the home's copy; global-setup.ts warms that file in place.
+ * Windows PowerShell 5.1's module analysis cache, warmed once per run by global-setup.ts under the hermetic environment and
+ * copied into each profile a launch runs PowerShell under, the home's and the loopback daemon's: without it a shell's first
+ * cmdlet analyses every module on the module path first, which on a GitHub runner (AWSPowershell, Az, Microsoft.Graph)
+ * outlasts a test's wait. A machine-wide PSModuleAnalysisCachePath reaches local terminals from the registry and overrides
+ * the home's copy; global-setup.ts warms that file in place.
  */
 export const WINDOWS_POWERSHELL_CACHE = path.join(REPO_ROOT, 'dist', 'e2e-cache', 'ModuleAnalysisCache');
-// Where Windows PowerShell 5.1 keeps the cache under a profile's LOCALAPPDATA.
+// Where Windows PowerShell 5.1 keeps the cache in its LocalApplicationData folder, which follows USERPROFILE, not LOCALAPPDATA.
 export const WINDOWS_POWERSHELL_CACHE_IN_PROFILE = path.join('Microsoft', 'Windows', 'PowerShell', 'ModuleAnalysisCache');
+// the loopback daemon's HOME and USERPROFILE in the launch's userData (main's startLoopbackTransport)
+export const LOOPBACK_HOME_IN_USER_DATA = 'loopback-home';
 
 /**
  * A fresh HOME, userData and project folder under one temp root; nothing outside it is touched. Names stay short:
@@ -44,9 +47,11 @@ export function createHermeticHome(): HermeticHome {
     fs.mkdirSync(dir, { recursive: true });
   }
   if (process.platform === 'win32') {
-    const cache = path.join(home, 'AppData', 'Local', WINDOWS_POWERSHELL_CACHE_IN_PROFILE);
-    fs.mkdirSync(path.dirname(cache), { recursive: true });
-    fs.copyFileSync(WINDOWS_POWERSHELL_CACHE, cache);
+    for (const profile of [home, path.join(userData, LOOPBACK_HOME_IN_USER_DATA)]) {
+      const cache = path.join(profile, 'AppData', 'Local', WINDOWS_POWERSHELL_CACHE_IN_PROFILE);
+      fs.mkdirSync(path.dirname(cache), { recursive: true });
+      fs.copyFileSync(WINDOWS_POWERSHELL_CACHE, cache);
+    }
   }
   return {
     root,
