@@ -23,6 +23,7 @@ afterEach(() => {
 
 const PROD: HostCardInfo = {
   hostId: 'h1',
+  kind: 'ssh',
   name: 'prod-1',
   destinationLabel: 'deploy@prod-1',
   connection: 'connected',
@@ -137,7 +138,7 @@ describe('Allow background work', () => {
 });
 
 describe('connect timeline devices', () => {
-  const connected: ConnectStepEvent = { attemptId: 'a1', hostId: 'h1', step: 'connected', visited: ['connecting', 'authenticating', 'checking', 'starting'], notices: [] };
+  const connected: ConnectStepEvent = { attemptId: 'a1', hostId: 'h1', transport: 'ssh', step: 'connected', visited: ['connecting', 'authenticating', 'checking', 'starting'], notices: [] };
   const mountTimeline = (event: ConnectStepEvent, otherDevices: number): VueWrapper => {
     const wrapper = mount(StepTimeline, { props: { event, hostName: 'prod-1', otherDevices, setInstallFolder: vi.fn(async () => ({ ok: true as const })) }, global, attachTo: document.body });
     mounted.push(wrapper);

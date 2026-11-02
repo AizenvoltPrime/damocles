@@ -3,7 +3,7 @@ import { computed, ref, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { LoaderCircle, X } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
-import type { DamoclesOverlayApi, PopupAnswer, RemovalInfo, RemoveServerOptions, RemoveServerResult } from '../../../preload/overlay-channels';
+import type { DamoclesOverlayApi, HostCardInfo, PopupAnswer, RemovalInfo, RemoveServerOptions, RemoveServerResult } from '../../../preload/overlay-channels';
 import type { ProjectConnection, ShellPlatform } from '../../../preload/shell-channels';
 import { useHostOperations } from '../host-operations';
 import { answerOf, ran } from '../popup-answer';
@@ -20,9 +20,13 @@ const props = defineProps<{
   api: DamoclesOverlayApi;
   hostId: string;
   hostName: string;
+  // a WSL host signs in through wsl.exe, so it has no passwordless setup
+  kind: HostCardInfo['kind'];
   connection: ProjectConnection;
   passwordless: boolean;
   os?: ShellPlatform | undefined;
+  // container records name this SSH host as the one they run on, so Forget host forgets them too
+  containers: boolean;
 }>();
 // busy: a setup or removal runs here, whose progress the page shows
 const emit = defineEmits<{ busy: [busy: boolean] }>();
@@ -127,7 +131,7 @@ const removedText = computed(() => {
 <template>
   <div class="flex flex-col gap-2">
     <PasswordlessSetup
-      v-if="setup || (!passwordless && connected)"
+      v-if="kind === 'ssh' && (setup || (!passwordless && connected))"
       :api="api"
       :host-id="hostId"
       :host-name="hostName"
@@ -135,7 +139,9 @@ const removedText = computed(() => {
       :run="setup"
     />
     <div class="flex flex-wrap items-center gap-2">
+      <!-- The removal stage runs over ssh, so a WSL or container host has none. -->
       <Button
+        v-if="kind === 'ssh'"
         type="button"
         variant="outline"
         size="sm"
@@ -229,7 +235,8 @@ const removedText = computed(() => {
     <ForgetHostDialog
       :open="forgetting"
       :host-name="hostName"
-      :offer-removal="connected"
+      :offer-removal="connected && kind === 'ssh'"
+      :containers="containers"
       @choose="chooseForget"
     />
   </div>

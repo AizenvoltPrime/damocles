@@ -86,6 +86,8 @@ export interface NewMemoryFields {
   workspace?: string;
   isStatic?: boolean;
   createdAt?: number;
+  /** The new row's id; a relayed write uses its uuid, so its client keeps the id the remote core reported. */
+  id?: string;
 }
 
 /**
@@ -117,72 +119,75 @@ export function insertWithDedup(
   writeQueue: MemoryWriteQueue,
   fields: NewMemoryFields,
 ): Promise<{ id: string; deduped: boolean }> {
-  return writeQueue.run(() => {
-    const now = Date.now();
-    const createdAt = fields.createdAt ?? now;
-    const contentHash = normalizedContentHash(fields.content);
-    const hasWorkspace = fields.workspace !== undefined;
-    const hasSession = fields.scope === 'session' && fields.sessionId !== undefined;
+  return writeQueue.run(() => insertWithDedupInTransaction(db, fields));
+}
 
-    const params: unknown[] = [contentHash, fields.scope, fields.kind];
-    if (hasWorkspace) params.push(fields.workspace);
-    if (hasSession) params.push(fields.sessionId);
+/** {@link insertWithDedup}'s body, for a caller that already holds the write queue's transaction. */
+export function insertWithDedupInTransaction(db: DatabaseInstance, fields: NewMemoryFields): { id: string; deduped: boolean } {
+  const now = Date.now();
+  const createdAt = fields.createdAt ?? now;
+  const contentHash = normalizedContentHash(fields.content);
+  const hasWorkspace = fields.workspace !== undefined;
+  const hasSession = fields.scope === 'session' && fields.sessionId !== undefined;
 
-    const existing = db
-      .prepare(buildSameContentSelect(hasWorkspace, hasSession))
-      .get(...params) as { id: string } | undefined;
+  const params: unknown[] = [contentHash, fields.scope, fields.kind];
+  if (hasWorkspace) params.push(fields.workspace);
+  if (hasSession) params.push(fields.sessionId);
 
-    if (existing) {
-      db.prepare(
-        'UPDATE memories SET source_count = source_count + 1, updated_at = ? WHERE id = ?',
-      ).run(now, existing.id);
-      return { id: existing.id, deduped: true };
-    }
+  const existing = db
+    .prepare(buildSameContentSelect(hasWorkspace, hasSession))
+    .get(...params) as { id: string } | undefined;
 
-    const id = crypto.randomUUID();
-    const forgetAfter = fields.kind === 'episode' ? createdAt + EPISODE_TTL_MS : null;
-
+  if (existing) {
     db.prepare(
-      `INSERT INTO memories (
-         id, kind, observation_type, scope, content, summary, title,
-         tags, facts, observation_tags, search_terms,
-         content_hash, version, is_latest, parent_id, root_id, source_count,
-         is_inference, is_static, forget_after, forgotten, forget_reason, reprocessed,
-         session_id, workspace, files_read, files_modified,
-         access_count, file_change_count, pinned, created_at, updated_at
-       ) VALUES (
-         ?, ?, ?, ?, ?, ?, ?,
-         ?, ?, ?, '[]',
-         ?, 1, 1, NULL, ?, 1,
-         0, ?, ?, 0, NULL, 1,
-         ?, ?, ?, ?,
-         0, 0, 0, ?, ?
-       )`,
-    ).run(
-      id,
-      fields.kind,
-      fields.observationType ?? null,
-      fields.scope,
-      fields.content,
-      fields.summary ?? null,
-      fields.title ?? null,
-      JSON.stringify(fields.tags ?? []),
-      JSON.stringify(fields.facts ?? []),
-      JSON.stringify(fields.observationTags ?? []),
-      contentHash,
-      id,
-      fields.isStatic ? 1 : 0,
-      forgetAfter,
-      fields.sessionId ?? null,
-      fields.workspace ?? null,
-      JSON.stringify(fields.filesRead ?? []),
-      JSON.stringify(fields.filesModified ?? []),
-      createdAt,
-      createdAt,
-    );
+      'UPDATE memories SET source_count = source_count + 1, updated_at = ? WHERE id = ?',
+    ).run(now, existing.id);
+    return { id: existing.id, deduped: true };
+  }
 
-    return { id, deduped: false };
-  });
+  const id = fields.id ?? crypto.randomUUID();
+  const forgetAfter = fields.kind === 'episode' ? createdAt + EPISODE_TTL_MS : null;
+
+  db.prepare(
+    `INSERT INTO memories (
+       id, kind, observation_type, scope, content, summary, title,
+       tags, facts, observation_tags, search_terms,
+       content_hash, version, is_latest, parent_id, root_id, source_count,
+       is_inference, is_static, forget_after, forgotten, forget_reason, reprocessed,
+       session_id, workspace, files_read, files_modified,
+       access_count, file_change_count, pinned, created_at, updated_at
+     ) VALUES (
+       ?, ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, '[]',
+       ?, 1, 1, NULL, ?, 1,
+       0, ?, ?, 0, NULL, 1,
+       ?, ?, ?, ?,
+       0, 0, 0, ?, ?
+     )`,
+  ).run(
+    id,
+    fields.kind,
+    fields.observationType ?? null,
+    fields.scope,
+    fields.content,
+    fields.summary ?? null,
+    fields.title ?? null,
+    JSON.stringify(fields.tags ?? []),
+    JSON.stringify(fields.facts ?? []),
+    JSON.stringify(fields.observationTags ?? []),
+    contentHash,
+    id,
+    fields.isStatic ? 1 : 0,
+    forgetAfter,
+    fields.sessionId ?? null,
+    fields.workspace ?? null,
+    JSON.stringify(fields.filesRead ?? []),
+    JSON.stringify(fields.filesModified ?? []),
+    createdAt,
+    createdAt,
+  );
+
+  return { id, deduped: false };
 }
 
 /** Jaccard similarity of two token sets: |A ∩ B| / |A ∪ B|, in [0, 1]. */
@@ -411,6 +416,18 @@ export function purgeForgottenRows(db: DatabaseInstance, writeQueue: MemoryWrite
     deleteMemoriesWithHygiene(db, ids);
     return { purged: ids.length };
   });
+}
+
+/**
+ * How long this computer keeps the uuid of a global write a remote host relayed. Only an outbox entry whose drain was cut
+ * between apply and acknowledgement is sent again, at its device's next attach; one unacknowledged for a year is applied a
+ * second time (docs/invariants.md "Data scopes").
+ */
+export const APPLIED_WRITE_RETENTION_MS: number = 365 * 24 * 60 * 60 * 1000;
+
+/** Deletes the applied-write uuids older than APPLIED_WRITE_RETENTION_MS. */
+export function pruneAppliedWrites(db: DatabaseInstance, writeQueue: MemoryWriteQueue): Promise<{ pruned: number }> {
+  return writeQueue.run(() => ({ pruned: Number(db.prepare('DELETE FROM memory_applied_writes WHERE applied_at < ?').run(Date.now() - APPLIED_WRITE_RETENTION_MS).changes) }));
 }
 
 /** Free-list page fraction above which {@link maybeVacuum} runs a VACUUM (below this the rewrite isn't worth it). */

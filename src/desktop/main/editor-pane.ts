@@ -30,12 +30,15 @@ import {
   type ShellDiffSide,
   type ShellEditorTab,
   type ShellFileGit,
+  type ShellPatchSide,
+  type ShellPatchTab,
   type ShellTimelineTab,
 } from '../preload/shell-channels';
 import type { ScmChangesTab, ScmMergeInputsResult } from '../preload/scm-channels';
 import type { ChatReviewTab } from '../preload/review-channels';
 import { parseRootKey } from '../preload/folder-root';
 import { authorityKeyOfProject, pathFor } from '../../shared/project-location';
+import { linuxToWslUnc } from './remote/wsl/wsl-paths';
 import {
   EDITOR_AUTO_SAVES,
   EDITOR_AUTO_SAVE_SETTING,
@@ -63,6 +66,17 @@ import type { AskMessage } from './message-dialog';
 function isLocalLocation(location: { readonly projectKey?: string; readonly host?: string }): boolean {
   if (location.host !== undefined) return false;
   return location.projectKey === undefined || authorityKeyOfProject(location.projectKey) === 'local';
+}
+
+/**
+ * The path File Explorer reveals a document at: a local one's own, a WSL distro's through \\wsl.localhost; undefined for any
+ * other host's, whose path this computer cannot open.
+ */
+export function revealPathOf(location: { readonly path: string; readonly projectKey?: string; readonly host?: string }, wslDistro: (authorityKey: string) => string | undefined): string | undefined {
+  if (isLocalLocation(location)) return location.path;
+  const authority = location.host ?? (location.projectKey === undefined ? undefined : authorityKeyOfProject(location.projectKey));
+  const distro = authority === undefined ? undefined : wslDistro(authority);
+  return distro === undefined ? undefined : linuxToWslUnc(distro, location.path);
 }
 
 // Recent files Quick Open lists first, most recent first.
@@ -95,6 +109,13 @@ export interface ScmDiffOrigin {
 
 function scmFlags(scm: ScmDiffOrigin | undefined): { readonly scmRepoId?: string; readonly scmGit?: Omit<ShellDiffGit, 'repoId'> } {
   return scm ? { scmRepoId: scm.repoId, ...(scm.git ? { scmGit: scm.git } : {}) } : {};
+}
+
+// Two files' patch as the damocles command's --diff hands it over; a binary or too large pair shows only why.
+export interface PatchDiff {
+  readonly left: ShellPatchSide;
+  readonly right: ShellPatchSide;
+  readonly content: { readonly kind: 'patch'; readonly patch: string } | { readonly kind: 'binary' | 'tooLarge' };
 }
 
 // A source control group's multi-file diff (ChangesTab.vue); its entries follow the repository's status while it is open.
@@ -134,11 +155,15 @@ interface Tab {
     readonly scmGit?: Omit<ShellDiffGit, 'repoId'>;
   };
   changes?: ChangesTabState;
+  // two files' read-only patch; its document is released with the tab
+  patch?: ShellPatchTab;
   // a chat's review (D60), kept current by its owner
   review?: ChatReviewTab;
   timeline?: ShellTimelineTab & { readonly title: string };
   // the Result is the tab's documentId; upload: an offline save that met a changed target, whose inputs are its document's
   merge?: ({ readonly repoId: string; readonly path: string } | { readonly upload: true; readonly path: string }) & { readonly title: string };
+  // the authority whose text the tab shows when no project file is its source (a remote core's markdown)
+  textAuthority?: string;
 }
 
 // What the active tab is to source control (MenuState.editorGit).
@@ -210,6 +235,8 @@ export interface EditorPaneDeps {
   readonly worktreeBranch: (rootKey: string) => string | undefined;
   readonly copy: (text: string) => Promise<void>;
   readonly reveal: (absolutePath: string) => Promise<void>;
+  // the distro of a WSL authority, whose files this computer reaches under \\wsl.localhost; undefined for any other
+  readonly wslDistro: (authorityKey: string) => string | undefined;
   // Mention this file in chat: core's resolver for the selected chat
   readonly mention: (file: FileRef | { readonly path: string }) => Promise<void>;
   // the window's browser tabs; undefined while no window is open
@@ -329,6 +356,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   private readonly logReloads = new Map<string, NodeJS.Timeout>();
   // each showDiff tab still open, settling its closed once the tab is gone
   private readonly diffClosed = new Map<string, () => void>();
+  // whenClosed's waiters by tab id
+  private readonly closeWaiters = new Map<string, Array<() => void>>();
   private readonly subscriptions: Disposable[];
   private stateScheduled = false;
   private persistScheduled = false;
@@ -400,7 +429,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   }
 
   content(documentId: string): ShellDocumentContent {
-    if (!this.tabs.some((tab) => tab.documentId === documentId || tab.diff?.originalId === documentId || tab.diff?.modifiedId === documentId)) {
+    const patchOf = (tab: Tab): string | undefined => (tab.patch?.content.kind === 'patch' ? tab.patch.content.documentId : undefined);
+    if (!this.tabs.some((tab) => tab.documentId === documentId || tab.diff?.originalId === documentId || tab.diff?.modifiedId === documentId || patchOf(tab) === documentId)) {
       throw new Error('Unknown document');
     }
     return this.deps.documents.content(documentId);
@@ -531,6 +561,21 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     if (!tab?.changes || JSON.stringify(tab.changes) === JSON.stringify(state)) return;
     tab.changes = state;
     this.stateChanged();
+  }
+
+  /**
+   * Two files' read-only patch (the damocles command's --diff) in a new changes tab titled with both names; whenClosed(tabId)
+   * settles once it goes.
+   */
+  showPatch(diff: PatchDiff, opts: { readonly focus: boolean }): string {
+    const content: ShellPatchTab['content'] = diff.content.kind === 'patch'
+      ? { kind: 'patch', documentId: this.deps.documents.openMemory(`${diff.right.name}.diff`, diff.content.patch, { untitled: false, languageId: 'diff' }).id }
+      : { kind: diff.content.kind };
+    const tab = this.addTab({ id: randomUUID(), kind: 'changes', patch: { left: diff.left, right: diff.right, content } });
+    this.afterOpen(tab, opts);
+    // afterOpen pushes nothing for the tab already active
+    this.stateChanged();
+    return tab.id;
   }
 
   /** A chat's review tab: the one of that review updated, else a new one; a user action focuses it. */
@@ -683,6 +728,12 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return location && this.deps.gitOf(location) ? 'file' : null;
   }
 
+  /** Settles once the tab is gone, however it went; at once for a tab that is not open. */
+  whenClosed(tabId: string): Promise<void> {
+    if (!this.tabs.some((tab) => tab.id === tabId)) return Promise.resolve();
+    return new Promise((resolve) => this.closeWaiters.set(tabId, [...(this.closeWaiters.get(tabId) ?? []), resolve]));
+  }
+
   /** A path core named (a tool card click, the agent): shown in the pane, focused only for a user's click. */
   async openPath(filePath: string, opts: { readonly line?: number; readonly focus: boolean; readonly preview?: boolean }): Promise<void> {
     const document = await this.deps.documents.openPath(filePath);
@@ -705,10 +756,19 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   }
 
   /** A core-originated Markdown text (a remote core's system prompt, an MCP tool's schema) as a rendered preview tab titled title. */
-  openMarkdownText(title: string, content: string, focus: boolean): void {
+  openMarkdownText(title: string, content: string, focus: boolean, authority: string): void {
     const document = this.deps.documents.openMemory(title, content, { untitled: false, languageId: 'markdown' });
-    const tab = this.addTab({ id: randomUUID(), kind: 'markdownPreview', documentId: document.id });
+    const tab = this.addTab({ id: randomUUID(), kind: 'markdownPreview', documentId: document.id, textAuthority: authority });
     this.afterOpen(tab, { focus });
+  }
+
+  /** Where a link clicked in the tab came from: the host whose file or text it shows, else this computer; undefined for no tab. */
+  linkAuthority(tabId: string): string | undefined {
+    const tab = this.tabs.find((each) => each.id === tabId);
+    if (!tab) return undefined;
+    if (tab.textAuthority !== undefined) return tab.textAuthority;
+    const location = tab.documentId === undefined ? undefined : this.deps.documents.get(tab.documentId)?.location;
+    return location?.host ?? (location?.projectKey === undefined ? 'local' : authorityKeyOfProject(location.projectKey));
   }
 
   openUntitled(content: string, name: string, languageId: string, opts: { readonly focus: boolean }): void {
@@ -985,11 +1045,13 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
         await this.deps.copy(relative ? location.relativePath!.split('/').join(this.flavorOf(location).sep) : location.path);
         return;
       }
-      case 'revealInExplorer':
+      case 'revealInExplorer': {
         if (!document?.location) return;
-        if (!isLocalLocation(document.location)) this.deps.warn(this.deps.t('The file is not on this computer.'));
-        else await this.deps.reveal(document.location.path);
+        const shown = revealPathOf(document.location, this.deps.wslDistro);
+        if (shown === undefined) this.deps.warn(this.deps.t('The file is not on this computer.'));
+        else await this.deps.reveal(shown);
         return;
+      }
     }
   }
 
@@ -1493,7 +1555,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
         if (this.browserTabs().some((candidate) => candidate.id === tabId)) this.deps.browser()?.close(tabId);
         continue;
       }
-      const documentIds = tab.diff ? [tab.diff.originalId, tab.diff.modifiedId] : tab.documentId !== undefined ? [tab.documentId] : [];
+      const patchId = tab.patch?.content.kind === 'patch' ? tab.patch.content.documentId : undefined;
+      const documentIds = tab.diff ? [tab.diff.originalId, tab.diff.modifiedId] : tab.documentId !== undefined ? [tab.documentId] : patchId !== undefined ? [patchId] : [];
       const heldElsewhere = (id: string): boolean => this.tabs.some((other) => other !== tab && (other.documentId === id || other.diff?.originalId === id || other.diff?.modifiedId === id));
       for (const id of documentIds.filter((candidate) => !heldElsewhere(candidate))) {
         const document = this.deps.documents.get(id);
@@ -1534,6 +1597,11 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       if (this.tabs.some((tab) => tab.id === tabId)) continue;
       this.diffClosed.delete(tabId);
       closed();
+    }
+    for (const [tabId, waiters] of this.closeWaiters) {
+      if (this.tabs.some((tab) => tab.id === tabId)) continue;
+      this.closeWaiters.delete(tabId);
+      for (const settle of waiters) settle();
     }
   }
 
@@ -1602,6 +1670,10 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   private shellTab(tab: Tab): ShellEditorTab {
     if (tab.changes) {
       return { id: tab.id, kind: 'changes', title: tab.changes.title, displayPath: tab.changes.title, dirty: false, readOnly: true, conflict: false, changes: tab.changes.changes };
+    }
+    if (tab.patch) {
+      const { left, right } = tab.patch;
+      return { id: tab.id, kind: 'changes', title: `${left.name} ↔ ${right.name}`, displayPath: `${left.path} ↔ ${right.path}`, dirty: false, readOnly: true, conflict: false, patch: tab.patch };
     }
     if (tab.review) {
       return { id: tab.id, kind: 'review', title: tab.review.title, displayPath: tab.review.title, dirty: false, readOnly: true, conflict: false, review: tab.review };

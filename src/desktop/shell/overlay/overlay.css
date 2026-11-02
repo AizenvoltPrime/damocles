@@ -677,6 +677,15 @@ body {
   animation: o-zoom-out 0.18s ease-in both;
 }
 
+.overlay-pop-leave-active.devcontainer-trust-overlay {
+  transition: none;
+  animation: o-fade-out 0.18s ease-in both;
+}
+
+.overlay-pop-leave-active.devcontainer-trust-overlay .d-dialog {
+  animation: o-zoom-out 0.18s ease-in both;
+}
+
 .host-card {
   animation: d-up 0.3s var(--ease-out) both;
   animation-delay: calc(var(--card-index, 0) * 40ms);

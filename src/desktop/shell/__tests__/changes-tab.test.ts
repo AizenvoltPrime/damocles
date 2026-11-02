@@ -118,6 +118,12 @@ describe('the Changes tab', () => {
     expect(entry(wrapper, 'c.ts').attributes('aria-selected')).toBe('true');
   });
 
+  it('splits a git path at / alone, so a POSIX name holding a backslash is listed whole', async () => {
+    const { wrapper } = await mountTab([change('src/a\\b.ts')], async (request) => patch(request.path));
+    const listed = wrapper.findAll('[data-testid="changes-entry"]').find((row) => row.attributes('data-path')?.endsWith('b.ts'));
+    expect(listed!.findAll('span').slice(0, 2).map((part) => part.text())).toEqual(['a\\b.ts', 'src']);
+  });
+
   it('gives each file its position in the whole list and diff row numbers their AA shade', async () => {
     const { wrapper } = await mountTab([change('a.ts'), change('b.ts'), change('c.ts')], async ({ path }) => patch(path));
     expect(entry(wrapper, 'b.ts').attributes()).toMatchObject({ 'aria-posinset': '2', 'aria-setsize': '3' });

@@ -41,11 +41,11 @@ describe("McpManager.toolExposureScopes", () => {
     expect(manager.toolExposureScopes(trustedFolder.key)).toEqual(["user"]);
   });
 
-  // Every client's folders are open on a daemon's core and none is the window's, so a write with no folder has no project.
-  it("offers only User on a daemon's core, whose window-level writes have no project file", () => {
+  // The user layer there is each device's own; the host tab writes the host's machine settings.
+  it("offers only the host's machine settings on a daemon's core", () => {
     const base = createFakePlatform({ folders: openFolders, settings: { scopeFiles: { local: "/ws/a/.damocles/settings.local.json" } } });
     const manager = new McpManager({ ...base, remote: createFakeRemoteHost().remote }, () => [trustedFolder]);
-    expect(manager.toolExposureScopes(trustedFolder.key)).toEqual(["user"]);
+    expect(manager.toolExposureScopes(trustedFolder.key)).toEqual(["machine"]);
   });
 
   it("offers only User for a target with no project layer, or an unknown folder", () => {

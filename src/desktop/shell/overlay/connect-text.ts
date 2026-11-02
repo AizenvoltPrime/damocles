@@ -10,6 +10,14 @@ export function needsInstallFolder(failure: ConnectFailure | undefined): boolean
   return failure !== undefined && INSTALL_FOLDER_FAILURES.has(failure.code);
 }
 
+// A product name, the same in every language.
+export const wslVersionName = (version: 1 | 2): string => `WSL ${version}`;
+
+/** A WSL host's address line: its distro when the host's name differs, and its WSL version ("Ubuntu-24.04 · WSL 2"). */
+export function distroDetail(name: string, wsl: { readonly distro: string; readonly version: 1 | 2 }): string {
+  return [...(name === wsl.distro ? [] : [wsl.distro]), wslVersionName(wsl.version)].join(' · ');
+}
+
 /** A failure main reported as a code, in the user's language; name is this computer's name for the host. */
 export function failureText(failure: ConnectFailure, name: string, t: Translate): string {
   return t(`remote.failure.${failureKey(failure)}`, { ...failure.params, name });
@@ -19,7 +27,7 @@ export function failureText(failure: ConnectFailure, name: string, t: Translate)
 function failureKey(failure: ConnectFailure): string {
   const reason = failure.params.reason;
   if (failure.code === 'noexec' && reason === 'notWritable') return 'noexecNotWritable';
-  if (failure.code === 'unknown' && (reason === 'sshMissing' || reason === 'noPackage')) return `unknown_${reason}`;
+  if (failure.code === 'unknown' && (reason === 'sshMissing' || reason === 'noPackage' || reason === 'wslExited')) return `unknown_${reason}`;
   if (failure.code === 'permissionDenied' && typeof failure.params.hop === 'string') return 'permissionDenied_hop';
   return failure.code;
 }

@@ -204,8 +204,9 @@ export interface MenuActions {
   restartEngine(): void;
   // present only in a dev or e2e run with the loopback daemon enabled
   readonly loopback?: { openFolder(): void; showLog(): void };
-  // present only while remote features are enabled (remote-enabled.ts)
-  readonly remote?: { connectToHost(): void; disconnectHost(): void; openFolderOnHost(): void };
+  readonly remote: { connectToHost(): void; disconnectHost(): void; openFolderOnHost(): void; forwardPort(): void };
+  // the damocles command on PATH: present only in a packaged app on Windows (add, remove) and macOS (install, uninstall)
+  readonly cliCommand?: { install(): void; uninstall(): void };
   // Settings › About
   about(): void;
   // Settings › About with the running version expanded in What's new
@@ -316,7 +317,10 @@ export function installApplicationMenu(
       item(MENU_IDS.saveAs),
       { type: 'separator' },
       item(MENU_IDS.addProject),
-      ...(actions.remote ? [item(MENU_IDS.connectToHost), item(MENU_IDS.openFolderOnHost), item(MENU_IDS.disconnectHost)] : []),
+      item(MENU_IDS.connectToHost),
+      item(MENU_IDS.openFolderOnHost),
+      item(MENU_IDS.disconnectHost),
+      item(MENU_IDS.forwardPort),
       ...(actions.loopback ? [item(MENU_IDS.openFolderThroughLocalDaemon), item(MENU_IDS.showLocalDaemonLog)] : []),
       { type: 'separator' },
       ...(mac ? [] : [settingsItem, { type: 'separator' as const }]),
@@ -414,11 +418,16 @@ export function installApplicationMenu(
   const t = (label: string): string => l10n.t(label);
   // macOS keeps them in the app menu, Windows and Linux in Help.
   const aboutItems: MenuItemConstructorOptions[] = [item(MENU_IDS.about), item(MENU_IDS.releaseNotes), item(MENU_IDS.checkForUpdates)];
+  // the damocles command on PATH beside them, where its commands exist (a packaged app on Windows or macOS)
+  const cliItems: MenuItemConstructorOptions[] = byId.has(MENU_IDS.installCliCommand)
+    ? [{ type: 'separator' }, item(MENU_IDS.installCliCommand), item(MENU_IDS.uninstallCliCommand)]
+    : [];
   const appMenu: MenuItemConstructorOptions = {
     id: 'damocles.menu.app',
     role: 'appMenu',
     submenu: [
       ...aboutItems,
+      ...cliItems,
       { type: 'separator' },
       settingsItem,
       { type: 'separator' },
@@ -471,7 +480,7 @@ export function installApplicationMenu(
       // No close role here: its CmdOrCtrl+W would compete with Close Editor.
       : [{ role: 'minimize', label: t('Minimize') }],
   };
-  const helpMenu: MenuItemConstructorOptions = { id: 'damocles.menu.help', label: t('Help'), submenu: aboutItems };
+  const helpMenu: MenuItemConstructorOptions = { id: 'damocles.menu.help', label: t('Help'), submenu: [...aboutItems, ...cliItems] };
   const template: MenuItemConstructorOptions[] = mac
     ? [appMenu, fileMenu, editMenu, viewMenu, chatMenu, windowMenu]
     : [fileMenu, editMenu, viewMenu, chatMenu, windowMenu, helpMenu];

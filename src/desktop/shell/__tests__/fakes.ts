@@ -1,7 +1,8 @@
 import { vi } from 'vitest';
-import { DEFAULT_GRID_LAYOUT, SIDEBAR_SECTIONS, type DamoclesShellApi, type DropZonesPointer, type EditorCommand, type EditorDocumentChange, type EditorFlushRequest, type EditorReveal, type FileRef, type FilesChanged, type SearchCommandMessage, type SearchDone, type SearchEditorHighlights, type SearchFileUpdate, type SearchFocus, type SearchResultsBatch, type ShellSearchSettings, type ChatsContinueWorktree, type ChatsWorktreeOptions, type ShellChat, type ShellChatList, type ShownFolder, type ShellEditorState, type ShellFocusPart, type ShellState } from '../../preload/shell-channels';
-import type { CloseRemoteRow, ConnectStepEvent, LingerResult, DamoclesOverlayApi, HostOperations, RemoteHostEntry, HostCardInfo, InputBrowseResult, OverlayAnswer, PaletteCommand, OverlayPrefs, OverlayRasterRequest, OverlayRequest, OverlaySettingsScope, OverlaySettingsScopes, OverlayState, OverlayToast, PopupAnswer, QuickOpenQuery, QuickOpenResponse, RemoveServerResult } from '../../preload/overlay-channels';
+import { DEFAULT_GRID_LAYOUT, SIDEBAR_SECTIONS, type DamoclesShellApi, type DropZonesPointer, type EditorCommand, type EditorDocumentChange, type EditorFlushRequest, type EditorReveal, type FileRef, type FilesChanged, type FilesClipboardChanged, type FilesTransferProgress, type SearchCommandMessage, type SearchDone, type SearchEditorHighlights, type SearchFileUpdate, type SearchFocus, type SearchResultsBatch, type ShellSearchSettings, type ChatsContinueWorktree, type ChatsWorktreeOptions, type ShellChat, type ShellChatList, type ShownFolder, type ShellEditorState, type ShellFocusPart, type ShellState } from '../../preload/shell-channels';
+import type { CloseRemoteRow, ConnectStepEvent, LingerResult, DamoclesOverlayApi, HeldMemoryResult, HostOperations, RemoteHostEntry, HostCardInfo, InputBrowseResult, OverlayAnswer, PaletteCommand, OverlayPrefs, OverlayRasterRequest, OverlayRequest, OverlaySettingsScope, OverlaySettingsScopes, OverlayState, OverlayToast, PopupAnswer, QuickOpenQuery, QuickOpenResponse, RemoveServerResult, WslDistroInfo } from '../../preload/overlay-channels';
 import type { ChimeTone, NotificationCenterState } from '../../preload/notifications';
+import type { DamoclesPortsApi, PortsView } from '../../preload/ports-channels';
 import type { DamoclesTerminalApi, TerminalData, TerminalProfileReport, TerminalRunAction, TerminalScreen, TerminalState } from '../../preload/terminal-channels';
 import type { ReleaseIndex, UpdateSnapshot, VersionInfo } from '../../preload/updates';
 import type { DamoclesScmApi, ScmArtifacts, ScmArtifactsChanged, ScmArtifactsRequest, ScmArtifactsResult, ScmCloneState, ScmCommitDetailsResult, ScmCommitInput, ScmHistoryResult, ScmDecorations, ScmRepoSnapshot, ScmSetInput, ScmSettings, ScmShellCommand, ScmShellState, ScmView } from '../../preload/scm-channels';
@@ -55,7 +56,6 @@ export const STATE: ShellState = {
   notifications: { unseen: 0, doNotDisturb: false, popupsOff: false, attention: 0 },
   engineHalted: false,
   engines: [],
-  remoteEnabled: false,
   hosts: [],
   projectsView: 'flat',
   projectGroups: { order: ['local'], collapsed: [] },
@@ -96,6 +96,30 @@ export type FakeTerminalApi = DamoclesTerminalApi & {
   runAction: (request: TerminalRunAction) => void;
 };
 
+export type FakePortsApi = DamoclesPortsApi & {
+  // main's PortsView push for one host
+  push: (view: PortsView) => void;
+};
+
+export function fakePortsApi(get: (hostId: string) => Promise<PortsView | null> = async () => null): FakePortsApi {
+  const views = emitter<PortsView>();
+  return {
+    get: vi.fn(get),
+    onState: vi.fn(views.listen),
+    forward: vi.fn(async () => {}),
+    forwardDetected: vi.fn(async () => {}),
+    stop: vi.fn(async () => {}),
+    setLabel: vi.fn(async () => {}),
+    changeLocalPort: vi.fn(async () => {}),
+    setOnDetect: vi.fn(async () => {}),
+    openInPane: vi.fn(async () => {}),
+    openInBrowser: vi.fn(async () => {}),
+    copyAddress: vi.fn(async () => {}),
+    undoFallback: vi.fn(async () => {}),
+    push: views.emit,
+  };
+}
+
 export function fakeTerminalApi(state: TerminalState = TERMINAL_STATE): FakeTerminalApi {
   const states = emitter<TerminalState>();
   const data = emitter<TerminalData>();
@@ -129,6 +153,7 @@ export function fakeTerminalApi(state: TerminalState = TERMINAL_STATE): FakeTerm
     reportInputFocus: vi.fn(),
     resolveLinks: vi.fn(async (request: { paths: readonly string[] }) => request.paths.map(() => null)),
     openLink: vi.fn(),
+    openWebLink: vi.fn(),
     rename: vi.fn(),
     pickIcon: vi.fn(),
     pickColor: vi.fn(),
@@ -233,6 +258,8 @@ export type FakeShellApi = DamoclesShellApi & {
   editorFocus: (tabId: string) => void;
   editorReveal: (reveal: EditorReveal) => void;
   filesChanged: (change: FilesChanged) => void;
+  filesTransferProgress: (progress: FilesTransferProgress) => void;
+  filesClipboardChanged: (change: FilesClipboardChanged) => void;
   // main's Search pushes
   searchResults: (batch: SearchResultsBatch) => void;
   searchDone: (done: SearchDone) => void;
@@ -274,6 +301,8 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
   const editorFocus = emitter<string>();
   const editorReveal = emitter<EditorReveal>();
   const filesChanged = emitter<FilesChanged>();
+  const filesTransferProgress = emitter<FilesTransferProgress>();
+  const filesClipboardChanged = emitter<FilesClipboardChanged>();
   const searchResults = emitter<SearchResultsBatch>();
   const searchDone = emitter<SearchDone>();
   const searchFocus = emitter<SearchFocus>();
@@ -321,6 +350,11 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     reorderProjects: vi.fn(async () => true),
     reorderProjectGroups: vi.fn(async () => true),
     openAsProject: vi.fn(async (request: { projectKey: string; relativePath: string }) => ({ projectKey: `${request.projectKey}/${request.relativePath}`, added: true })),
+    listWslDistros: vi.fn(async () => []),
+    reopenInWsl: vi.fn(async (projectKey: string) => ({ ok: true as const, projectKey: `wsl:${projectKey}` })),
+    dismissWslNotice: vi.fn(async () => {}),
+    reopenInContainer: vi.fn(async (projectKey: string) => ({ ok: true as const, projectKey: `container:${projectKey}` })),
+    rebuildContainer: vi.fn(async () => {}),
     reconnectHost: vi.fn(async () => {}),
     signInHost: vi.fn(async () => {}),
     showHostLog: vi.fn(async () => {}),
@@ -354,6 +388,7 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     resolveConflict: vi.fn(async () => ({ ok: true as const })),
     formatDocument: vi.fn(async () => ({ kind: 'skipped' as const })),
     reportFormatFailure: vi.fn(),
+    openEditorLink: vi.fn(),
     reportSelection: vi.fn(),
     mentionTab: vi.fn(async () => {}),
     uploadMergeInputs: vi.fn(async () => ({ ok: false as const, reason: 'notConflicted' as const })),
@@ -375,6 +410,17 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     revealFile: vi.fn(async () => {}),
     mentionFile: vi.fn(async () => {}),
     onFilesChanged: vi.fn(filesChanged.listen),
+    copyFilesIn: vi.fn(async () => ({ ok: true as const, transferId: 1 })),
+    pickFilesToCopyIn: vi.fn(async () => ({ ok: true as const, transferId: 1 })),
+    dropFilesRow: vi.fn(async () => ({ ok: true as const, transferId: 1 })),
+    setFilesClipboard: vi.fn(async () => {}),
+    clearFilesClipboard: vi.fn(async () => {}),
+    pasteFiles: vi.fn(async () => ({ ok: false as const, reason: 'empty' as const })),
+    downloadFile: vi.fn(async () => ({ ok: true as const, transferId: 1 })),
+    cancelFilesTransfer: vi.fn(async () => {}),
+    onFilesTransferProgress: vi.fn(filesTransferProgress.listen),
+    onFilesClipboardChanged: vi.fn(filesClipboardChanged.listen),
+    pathsForFiles: vi.fn((files: readonly File[]) => files.map(() => '')),
     openQuickOpen: vi.fn(async () => {}),
     showCommands: vi.fn(async () => {}),
     reportDropZonesPointer: vi.fn(),
@@ -399,6 +445,7 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     previewReplace: vi.fn(async () => ({ ok: true as const })),
     terminal: fakeTerminalApi(),
     scm: fakeScmApi(),
+    ports: fakePortsApi(),
     review: {
       fileDiff: vi.fn(async () => ({ kind: 'missing' as const })),
       setScope: vi.fn(async () => {}),
@@ -420,6 +467,8 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     editorFocus: editorFocus.emit,
     editorReveal: editorReveal.emit,
     filesChanged: filesChanged.emit,
+    filesTransferProgress: filesTransferProgress.emit,
+    filesClipboardChanged: filesClipboardChanged.emit,
     searchResults: searchResults.emit,
     searchDone: searchDone.emit,
     searchFocus: searchFocus.emit,
@@ -467,6 +516,7 @@ export type FakeOverlayApi = DamoclesOverlayApi & {
   // main's pushes while a connect request is open
   connectStep: (event: ConnectStepEvent) => void;
   connectHosts: (hosts: readonly HostCardInfo[]) => void;
+  connectDistros: (distros: readonly WslDistroInfo[]) => void;
   // main's pushes while a connect or settings request is open: what listRemoteHosts answers, and the hosts after a change
   remoteHosts: { list: readonly RemoteHostEntry[] };
   hostEntries: (hosts: readonly RemoteHostEntry[]) => void;
@@ -478,6 +528,20 @@ export type FakeOverlayApi = DamoclesOverlayApi & {
   // main's live rows while a closeRemote request is open
   closeRemoteRows: (rows: readonly CloseRemoteRow[]) => void;
 };
+
+// A control's name from its content as assistive technology computes it: text and img names outside aria-hidden, parts apart.
+export function contentName(element: Element): string {
+  const parts: string[] = [];
+  const walk = (node: Node): void => {
+    if (node.nodeType === Node.TEXT_NODE) parts.push(node.textContent ?? '');
+    else if (node instanceof Element && node.getAttribute('aria-hidden') !== 'true') {
+      if (node.getAttribute('role') === 'img') parts.push(node.getAttribute('aria-label') ?? '');
+      else node.childNodes.forEach(walk);
+    }
+  };
+  element.childNodes.forEach(walk);
+  return parts.join(' ').replace(/\s+/g, ' ').trim();
+}
 
 export const VERSION_INFO: VersionInfo = { version: '3.4.0', packaged: false, platform: 'win32', arch: 'x64', electron: '38.0.0', chromium: '140.0.0.0', node: '22.19.0' };
 
@@ -508,6 +572,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
   const profilesChanged = emitter<TerminalProfileReport>();
   const connectStep = emitter<ConnectStepEvent>();
   const connectHosts = emitter<readonly HostCardInfo[]>();
+  const connectDistros = emitter<readonly WslDistroInfo[]>();
   const closeRemoteRows = emitter<readonly CloseRemoteRow[]>();
   const hostEntries = emitter<readonly RemoteHostEntry[]>();
   const operationsChanged = emitter<HostOperations>();
@@ -517,7 +582,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
   const remoteHosts: { list: readonly RemoteHostEntry[] } = { list: [] };
   const worktree: FakeOverlayApi['worktree'] = { options: opened({ available: false, reason: 'notGit' }), continue: opened([]), message: opened(null) };
   return {
-    getState: vi.fn(async () => ({ locale: 'en' as const, platform: 'win32' as const, remoteEnabled: true })),
+    getState: vi.fn(async () => ({ locale: 'en' as const, platform: 'win32' as const })),
     onState: vi.fn((listener) => { stateListeners.add(listener); return () => stateListeners.delete(listener); }),
     onRequest: vi.fn((listener) => { requestListeners.add(listener); return () => requestListeners.delete(listener); }),
     onCancel: vi.fn((listener) => { cancelListeners.add(listener); return () => cancelListeners.delete(listener); }),
@@ -527,6 +592,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
     onToast: vi.fn((listener) => { toastListeners.add(listener); return () => toastListeners.delete(listener); }),
     onToastDismiss: vi.fn((listener) => { dismissListeners.add(listener); return () => dismissListeners.delete(listener); }),
     resolveToast: vi.fn(),
+    copyToast: vi.fn(),
     reportToastArea: vi.fn(),
     reportToastPointer: vi.fn(),
     onToastsFocus: vi.fn((listener) => { toastsFocusListeners.add(listener); return () => toastsFocusListeners.delete(listener); }),
@@ -584,16 +650,26 @@ export function fakeOverlayApi(): FakeOverlayApi {
     setInstallFolder: vi.fn(async () => opened({ ok: true as const })),
     onConnectStep: vi.fn(connectStep.listen),
     onConnectHosts: vi.fn(connectHosts.listen),
+    onConnectDistros: vi.fn(connectDistros.listen),
     allowBackgroundWork: vi.fn(async (): Promise<PopupAnswer<LingerResult>> => opened({ result: 'enabled' })),
     onCloseRemoteRows: vi.fn(closeRemoteRows.listen),
     listRemoteHosts: vi.fn(async () => opened(remoteHosts.list)),
     setHostSetting: vi.fn(async () => opened(undefined)),
     revokeCredentialHost: vi.fn(async () => opened(undefined)),
+    deliverHeldMemory: vi.fn(async (): Promise<PopupAnswer<HeldMemoryResult>> => opened({ ok: true as const })),
+    discardHeldMemory: vi.fn(async (): Promise<PopupAnswer<HeldMemoryResult>> => opened({ ok: true as const })),
     setUpPasswordless: vi.fn(async () => opened({ ok: true as const })),
     removalInfo: vi.fn(async () => opened({ runs: [], offerRemoveKey: false, offerDisableLinger: false })),
     removeServer: vi.fn(async (): Promise<PopupAnswer<RemoveServerResult>> => opened({ ok: true as const, notices: [] })),
     retryRemoval: vi.fn(async (): Promise<PopupAnswer<RemoveServerResult>> => opened({ ok: true as const, notices: [] })),
     getHostOperations: vi.fn(async (hostId: string) => opened(hostOperations.get(hostId) ?? { hostId, revision: 0 })),
+    conversionInfo: vi.fn(async () => opened({ runs: [] })),
+    convertToWsl2: vi.fn(async () => opened(undefined)),
+    rebuildInfo: vi.fn(async () => opened({ runs: [] })),
+    rebuildContainer: vi.fn(async () => opened(undefined)),
+    listContainers: vi.fn(async () => opened({ ok: true as const, engine: 'docker' as const, containers: [] })),
+    pickContainerFolder: vi.fn(async () => opened(null)),
+    checkContainerFolder: vi.fn(async (_via: string, folder: string) => opened({ ok: false as const, code: 'noDevcontainerConfig' as const, folder })),
     forgetHost: vi.fn(async () => opened(undefined)),
     openHostSettings: vi.fn(async () => opened(undefined)),
     onHostEntries: vi.fn(hostEntries.listen),
@@ -612,6 +688,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
     },
     connectStep: connectStep.emit,
     connectHosts: connectHosts.emit,
+    connectDistros: connectDistros.emit,
     closeRemoteRows: closeRemoteRows.emit,
     worktree,
     request: (id, request) => { for (const l of requestListeners) l(id, request); },

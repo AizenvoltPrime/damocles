@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, useId } from 'vue';
+import { Checkbox } from '@/components/ui/checkbox';
 import type { OverlayAnswer, OverlayRequest } from '../../../preload/overlay-channels';
 import OverlayDialog, { type DialogButton } from './OverlayDialog.vue';
 
@@ -19,6 +20,13 @@ const buttons = computed((): DialogButton[] => [
   ...(props.request.cancelLabel === undefined ? [] : [{ label: props.request.cancelLabel, variant: 'plain' as const, testId: 'overlay-message-cancel' }]),
   ...props.request.actions.map((label, index): DialogButton => ({ label, variant: index === fillIndex.value ? 'fill' : 'plain', testId: `overlay-message-action-${index}` })),
 ]);
+// The box answers with every choice, Cancel included; main applies it only with an action.
+const checked = ref(props.request.checkbox?.checked ?? false);
+const checkboxId = useId();
+function choose(index: number): void {
+  const action = index === cancel.value ? null : index - firstAction.value;
+  emit('answer', { kind: 'message', action, ...(props.request.checkbox ? { checked: checked.value } : {}) });
+}
 const initialFocus = computed(() => (props.request.defaultAction === undefined ? Math.max(0, cancel.value) : props.request.defaultAction + firstAction.value));
 
 // Main draws a preview's control characters as Control Pictures (U+2400 to U+2426) or <U+XXXX>. They show as warning chips,
@@ -36,7 +44,7 @@ const previewLines = computed(() => (props.request.preview ?? []).map((line) => 
     :initial-focus="initialFocus"
     :cancel-index="cancel"
     test-id="overlay-message"
-    @choose="emit('answer', { kind: 'message', action: $event === cancel ? null : $event - firstAction })"
+    @choose="choose"
   >
     <!-- Main bounded the lines and drew their control characters as visible symbols; they show verbatim, as code. -->
     <div
@@ -57,6 +65,22 @@ const previewLines = computed(() => (props.request.preview ?? []).map((line) => 
           v-text="part.text"
         />
       </div>
+    </div>
+    <div
+      v-if="request.checkbox"
+      class="flex items-center gap-2"
+    >
+      <Checkbox
+        :id="checkboxId"
+        :checked="checked"
+        data-testid="overlay-message-checkbox"
+        class="size-3.75 shrink-0 rounded-xs border-(--d-border2) data-[state=checked]:border-(--d-accent) data-[state=checked]:bg-(--d-accent) data-[state=checked]:text-(--d-on-accent) [&_svg]:size-2.75"
+        @update:checked="checked = $event"
+      />
+      <label
+        :for="checkboxId"
+        class="cursor-pointer text-12.5"
+      >{{ request.checkbox.label }}</label>
     </div>
   </OverlayDialog>
 </template>

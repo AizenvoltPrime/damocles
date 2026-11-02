@@ -6,6 +6,7 @@ import { folderKey } from '../../core/workspace-folders/folder-key';
 import { confineEntry, confineExisting, confineMissing, confineOrCreateFolder, followsLocalLinksOnly, projectOfPath, type ConfineFailure, type Confined, type Project } from '../local-services/confine';
 import { readFileBytes, type FileBytes } from '../local-services/file-bytes';
 import type { ProjectFileLocation } from './search/types';
+import { createdThroughLink, createTransferOps, type TransferOps } from './transfer-ops';
 
 export interface WatchEvent {
   readonly kind: 'create' | 'change' | 'delete';
@@ -53,7 +54,7 @@ export interface HostSettingsRead {
 }
 
 // Project paths are confined on the host that holds them (docs/invariants.md "Desktop host", Confinement).
-export interface WorkspaceFileSystem {
+export interface WorkspaceFileSystem extends TransferOps {
   confineExisting(project: Project, relativePath: string): Promise<Confined>;
   confineMissing(project: Project, relativePath: string): Promise<Confined>;
   // the entry itself, never followed, with what a delete compares against after its questions
@@ -93,6 +94,8 @@ export interface FileSystemDeps {
   // the host's ~/.damocles, which holds HOST_SETTINGS_FILE
   readonly damoclesHome: string;
   readonly log: (line: string) => void;
+  // the host's OS, which transfers check names for; process.platform unless a test names another
+  readonly platform?: NodeJS.Platform;
 }
 
 function errorText(err: unknown): string {
@@ -163,9 +166,11 @@ async function reconfine(project: Project, location: ProjectFileLocation): Promi
   return undefined;
 }
 
-// The exclusive create landed somewhere confinement never approved: the empty file is removed, but only while the path
-// still names that same file, so a swapped-in link never deletes a file the editor did not create.
-async function removeCreated(filePath: string, made: { readonly dev: bigint; readonly ino: bigint }, log: (line: string) => void): Promise<void> {
+// The exclusive create landed somewhere confinement never approved: the empty file is removed where it is, through a link
+// Windows' create followed included, but only while it is still that same file, so a swapped-in link never deletes a file the
+// editor did not create.
+async function removeCreated(filePath: string, made: EntryIdentity, log: (line: string) => void): Promise<void> {
+  if (await createdThroughLink(filePath, made)) return;
   const now = await fs.stat(filePath, { bigint: true });
   if (now.dev === made.dev && now.ino === made.ino) await fs.rm(filePath);
   else log(`[documents] left ${filePath} alone: it is no longer the file a refused save created`);
@@ -258,6 +263,7 @@ async function isAnotherEntry(target: string, entry: string): Promise<boolean> {
 export function createFileSystem(deps: FileSystemDeps): WorkspaceFileSystem {
   const remove = deps.remove ?? ((target: string) => fs.rm(target, { recursive: true }));
   return {
+    ...createTransferOps({ platform: deps.platform ?? process.platform, log: deps.log }),
     confineExisting,
     confineMissing,
     projectOfPath,
@@ -299,7 +305,13 @@ export function createFileSystem(deps: FileSystemDeps): WorkspaceFileSystem {
           await fs.mkdir(target);
         } else {
           const handle = await fs.open(target, 'wx');
-          await handle.close();
+          let made: EntryIdentity;
+          try {
+            made = await handle.stat({ bigint: true });
+          } finally {
+            await handle.close();
+          }
+          if (await createdThroughLink(target, made)) return { ok: false, reason: 'exists' };
         }
       } catch (err) {
         if (errnoCode(err) === 'EEXIST') return { ok: false, reason: 'exists' };

@@ -37,7 +37,7 @@ test('projects: the sidebar adds, trusts, selects and removes projects, shows th
     await expect.poll(async () => (await shellState(app)).projects[0]?.trusted).toBe(true);
     await expect(alphaRow.getByTestId('untrusted-badge')).toHaveCount(0);
 
-    // Add project's Local folder... (a menu while the remote gate is open) opens the folder picker; the new project is selected.
+    // Add project's Local folder... (a menu beside Remote folder...) opens the folder picker; the new project is selected.
     await answerOpenDialog(app, beta);
     await answerDialogs(app, { [TRUST_PROMPT]: 'Trust Folder' });
     await clickSectionAction(shell, 'add-project');

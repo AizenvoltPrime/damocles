@@ -134,6 +134,8 @@ describe('the POSIX probe checks in a real sh', { timeout: 120_000 }, () => {
   it('compares glibc, kernel and macOS versions numerically', async () => {
     expect(await codes('check_kernel 3.10.0-1160.el7.x86_64')).toEqual([{ kind: 'fail', code: 'kernelTooOld', params: { found: '3.10.0', needed: '4.18' } }]);
     expect(await codes('check_kernel 5.15.0-91-generic; check_macos 14.2.1; say \'{"kind":"settled"}\'')).toEqual([{ kind: 'settled' }]);
+    // WSL 1's release names the Windows build, never a Linux kernel
+    expect(await codes('check_kernel 4.4.0-26100-Microsoft; say \'{"kind":"settled"}\'')).toEqual([{ kind: 'settled' }]);
     expect(await codes('check_macos 13.4')).toEqual([{ kind: 'fail', code: 'macosTooOld', params: { found: '13.4', needed: '13.5' } }]);
     expect(await codes('set_arch Linux riscv64')).toEqual([{ kind: 'fail', code: 'unsupportedOs', params: { os: 'Linux', arch: 'riscv64' } }]);
   });

@@ -127,6 +127,7 @@ const editors: FakeCodeEditor[] = [];
 const diffEditors: FakeDiffEditor[] = [];
 const models = new Map<string, FakeModel>();
 const monacoModule = {
+  setWebLinkOpener: () => undefined,
   useMonaco: () => ({
     KeyMod: { chord: () => 0, CtrlCmd: 0, Alt: 0, Shift: 0 },
     KeyCode: {},
@@ -234,6 +235,22 @@ describe('the markdown preview', () => {
     model.type('# Typed most');
     await vi.advanceTimersByTimeAsync(1);
     expect(heading(wrapper)).toBe('Typed most');
+  });
+
+  it('hands a clicked web link to main with its tab, which opens no window of its own, for a click and a middle click', async () => {
+    const preview = tab('p', { kind: 'markdownPreview', documentId: 'doc-md', projectKey: 'ssh+h1|/srv/app', relativePath: 'README.md' });
+    const { api, store } = await setup(state([preview]), { 'doc-md': text('doc-md', '[dev](http://localhost:3000/a?x=1)') });
+    const wrapper = mountWith(MarkdownPreview, store, { api, tab: preview });
+    await flushPromises();
+    const anchor = wrapper.get('a').element as HTMLAnchorElement;
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+    anchor.dispatchEvent(click);
+    const middle = new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 });
+    anchor.dispatchEvent(middle);
+    expect(click.defaultPrevented).toBe(true);
+    expect(middle.defaultPrevented).toBe(true);
+    expect(anchor.getAttribute('target')).toBeNull();
+    expect(vi.mocked(api.openEditorLink).mock.calls).toEqual([[{ tabId: 'p', url: 'http://localhost:3000/a?x=1' }], [{ tabId: 'p', url: 'http://localhost:3000/a?x=1' }]]);
   });
 
   it('follows a buffer created while it shows, as a search replace in the file creates one', async () => {

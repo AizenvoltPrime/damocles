@@ -8,6 +8,7 @@ import {
   Eye,
   Gauge,
   Info,
+  Link,
   MessageCircleQuestion,
   MessageSquare,
   Pause,
@@ -59,7 +60,7 @@ const NOTICES: Readonly<Record<NoticeSeverity, { readonly icon: Component; reado
 };
 
 export interface NotificationView {
-  readonly kind: NotificationKind | 'notice';
+  readonly kind: NotificationKind | 'notice' | 'link';
   readonly icon: Component;
   readonly tone: Tone;
   // undefined: no project, the app's own avatar shows
@@ -74,7 +75,7 @@ export interface NotificationView {
   readonly title: string;
   readonly lead: string;
   readonly message: string;
-  // the primary action of a kind; a notice's actions are its own labels
+  // the primary action of a kind; a notice's actions are its own labels; a link request's Open and Copy are the toast's own
   readonly action: { readonly label: string; readonly icon: Component } | undefined;
   readonly actions: readonly string[];
   // announced assertively: a prompt that blocks the agent, or a core error
@@ -107,6 +108,23 @@ function kindAction(kind: NotificationKind, t: Translate): NotificationView['act
 
 /** What a toast or a center row shows for an entry, localized here; the entry itself is data main built. */
 export function notificationView(body: NotificationBody, t: Translate, locale: string, now: number): NotificationView {
+  if (body.kind === 'link') {
+    return {
+      kind: 'link',
+      icon: Link,
+      tone: 'warning',
+      project: undefined,
+      where: t('toasts.link.where'),
+      host: body.host,
+      hostTone: body.hostTone,
+      title: t('toasts.link.title', { host: body.host }),
+      lead: '',
+      message: body.url,
+      action: undefined,
+      actions: [],
+      urgent: true,
+    };
+  }
   if (body.kind === 'notice') {
     const { icon, tone } = NOTICES[body.severity];
     return {

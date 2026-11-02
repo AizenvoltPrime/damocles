@@ -10,8 +10,7 @@ export class NoteManager {
     this.db = db;
   }
 
-  add(content: string, tags: string[] = []): MemoryEntry {
-    const id = crypto.randomUUID();
+  add(content: string, tags: string[] = [], id: string = crypto.randomUUID()): MemoryEntry {
     const now = Date.now();
     this.db.prepare(`
       INSERT INTO memories (id, scope, kind, content, content_hash, root_id, created_at, updated_at, tags)

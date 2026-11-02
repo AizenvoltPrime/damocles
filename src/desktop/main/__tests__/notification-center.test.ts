@@ -34,6 +34,7 @@ let selected: string | undefined;
 let viewed: ChatKey | undefined;
 let flashes: boolean[];
 let changes: number;
+let copied: string[];
 
 function center(overrides: Partial<NotificationCenterDeps> = {}): NotificationCenter {
   return new NotificationCenter({
@@ -48,6 +49,7 @@ function center(overrides: Partial<NotificationCenterDeps> = {}): NotificationCe
     viewedChat: () => viewed,
     flash: (on) => flashes.push(on),
     describeChat: async () => CHAT,
+    copyText: (text) => copied.push(text),
     popups: () => (popupReady ? { show: (toast) => shown.push(toast), dismiss: (id) => dismissed.push(id) } : undefined),
     chime: (tone) => chimes.push(tone),
     usageWarningShown: () => false,
@@ -94,6 +96,7 @@ beforeEach(() => {
   viewed = undefined;
   flashes = [];
   changes = 0;
+  copied = [];
 });
 
 afterEach(() => {
@@ -799,5 +802,82 @@ describe('notification actions', () => {
     await runEntryAction({ kind: 'team', chat: CHAT, teamId: 'team-9' }, actionDeps({ whenReady: async () => false }));
     await runEntryAction({ kind: 'attention', chat: CHAT, attention: 'question' }, actionDeps({ select: async () => undefined }));
     expect(posts).toEqual([]);
+  });
+});
+
+describe('notification center: link requests', () => {
+  const URL_TEXT = 'https://github.com/login/device';
+  const PROD = { name: 'prod-1', tone: 'danger' as const };
+  const toastOf = (): OverlayToast => shown.at(-1)!;
+
+  it('shows a sticky link toast whatever silences popups, and answers open only for its Open', async () => {
+    dnd = true;
+    const notifications = center();
+    const { answer } = notifications.linkRequest(PROD, URL_TEXT);
+    expect(toastOf()).toMatchObject({ body: { kind: 'link', host: 'prod-1', hostTone: 'danger', url: URL_TEXT }, sticky: true });
+    expect(notifications.isLinkRequest(toastOf().id)).toBe(true);
+    vi.advanceTimersByTime(NOTICE_LIFE_MS.withActions * 10);
+    expect(dismissed).toEqual([]);
+    notifications.resolveToast(toastOf().id, TOAST_OPEN_ACTION);
+    await expect(answer).resolves.toBe('open');
+    expect(ran).toEqual([]);
+    expect(notifications.state().entries[0]).toMatchObject({ read: true, body: { kind: 'link', url: URL_TEXT } });
+  });
+
+  it('never opens on a dismissal, an index answer, Dismiss all, a center row or the center going away', async () => {
+    const notifications = center();
+    const { answer: dismissedByX } = notifications.linkRequest(PROD, URL_TEXT);
+    notifications.resolveToast(toastOf().id, undefined);
+    await expect(dismissedByX).resolves.toBe('dismissed');
+
+    const { answer: byIndex } = notifications.linkRequest(PROD, URL_TEXT);
+    const indexed = toastOf().id;
+    notifications.resolveToast(indexed, 0);
+    notifications.open(indexed);
+    expect(notifications.isLinkRequest(indexed)).toBe(true);
+    notifications.dispose();
+    await expect(byIndex).resolves.toBe('dismissed');
+  });
+
+  it('copies the URL main holds and keeps the toast, for a link toast only', async () => {
+    const notifications = center();
+    const { answer } = notifications.linkRequest(PROD, URL_TEXT);
+    const id = toastOf().id;
+    notifications.copyLink(id);
+    notifications.copyLink(id);
+    expect(copied).toEqual([URL_TEXT, URL_TEXT]);
+    expect(dismissed).toEqual([]);
+    void notifications.notice('info', 'Saved', []);
+    notifications.copyLink(toastOf().id);
+    expect(copied).toHaveLength(2);
+    notifications.resolveToast(id, undefined);
+    await expect(answer).resolves.toBe('dismissed');
+  });
+
+  it('refuses a URL that is not exactly the canonical href it would open', async () => {
+    const notifications = center();
+    expect(() => notifications.linkRequest(PROD, 'HTTPS://GitHub.com/login')).toThrow('canonical');
+    expect(() => notifications.linkRequest(PROD, 'not a url')).toThrow('canonical');
+    expect(shown).toEqual([]);
+  });
+
+  it('withdraws its toast as dismissed and keeps its entry, once its link no longer opens what it shows', async () => {
+    const notifications = center();
+    const request = notifications.linkRequest(PROD, URL_TEXT);
+    const id = toastOf().id;
+    request.withdraw();
+    await expect(request.answer).resolves.toBe('dismissed');
+    expect(dismissed).toEqual([id]);
+    expect(notifications.isLinkRequest(id)).toBe(false);
+    expect(notifications.state().entries.map((entry) => entry.body)).toEqual([{ kind: 'link', host: 'prod-1', hostTone: 'danger', url: URL_TEXT }]);
+    notifications.resolveToast(id, TOAST_OPEN_ACTION);
+    await expect(request.answer).resolves.toBe('dismissed');
+  });
+
+  it('follows a host rename on the showing toast', () => {
+    const notifications = center();
+    void notifications.linkRequest(PROD, URL_TEXT);
+    notifications.relabelHost('prod-1', { name: 'billing' });
+    expect(toastOf().body).toEqual({ kind: 'link', host: 'billing', url: URL_TEXT });
   });
 });

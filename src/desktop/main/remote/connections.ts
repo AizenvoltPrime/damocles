@@ -3,6 +3,7 @@ import type { Duplex } from 'node:stream';
 import {
   SSH_FAILURE_CODES,
   type CachedPlatform,
+  type BuildLog,
   type ConnectFailure,
   type ConnectStep,
   type ConnectStepEvent,
@@ -12,12 +13,12 @@ import {
   type SshPromptAnswer,
 } from '../../preload/overlay-channels';
 import type { ProjectConnection } from '../../preload/shell-channels';
-import type { SshHostRecord } from './host-store';
+import type { ContainerHostRecord, HostRecord, SshHostRecord, WslHostRecord } from './host-store';
 import type { LoopAttempt } from './reconnect';
 import { knownHostsRemoveCommand, SshConnectError, type SshAttemptHooks } from './ssh';
 
-// the steps stage 1 reports once it runs on the target
-const STAGE_STEPS: ReadonlySet<Attempt['step']> = new Set<Attempt['step']>(['checking', 'installing', 'starting']);
+// a watched container's build and the steps stage 1 reports on the target, which outlast any fixed bound
+const STAGE_STEPS: ReadonlySet<Attempt['step']> = new Set<Attempt['step']>(['building', 'checking', 'installing', 'starting']);
 
 export interface SshStartRequest {
   readonly host: SshHostRecord;
@@ -27,7 +28,27 @@ export interface SshStartRequest {
   readonly installFolderSettled: () => Promise<void>;
 }
 
-// A running ssh bridge: its byte stream past the bridge's authentication, and ssh's stderr tail for Show log.
+export interface WslStartRequest {
+  readonly host: WslHostRecord;
+  readonly signal: AbortSignal;
+  readonly hooks: SshAttemptHooks;
+  readonly installFolderSettled: () => Promise<void>;
+}
+
+export interface ContainerStartRequest {
+  readonly host: ContainerHostRecord;
+  readonly signal: AbortSignal;
+  // building while `devcontainer up` runs, then the stage's steps; buildLog: the log's lines as they come
+  readonly hooks: Pick<SshAttemptHooks, 'step' | 'progress' | 'notice'> & { buildLog(log: BuildLog): void };
+  // a user watches the attempt in the Connect dialog now; only then may it ask, or build
+  readonly watched: () => boolean;
+  readonly installFolderSettled: () => Promise<void>;
+}
+
+// How long build log lines gather before the attempt's change is told, so a fast log does not resend the attempt per line.
+export const BUILD_LOG_PUSH_MS = 100;
+
+// A running ssh or wsl.exe bridge: its byte stream past the bridge's authentication, and ssh's stderr tail for Show log.
 export interface SshStarted {
   readonly stream: Duplex;
   stderrTail(): string;
@@ -35,9 +56,13 @@ export interface SshStarted {
 }
 
 export interface RemoteConnectionsDeps {
-  readonly host: (hostId: string) => SshHostRecord | undefined;
+  readonly host: (hostId: string) => HostRecord | undefined;
   // starts ssh and the bridge; rejects with an error carrying code (an SshFailureCode), params and stderrTail
   readonly startSsh: (request: SshStartRequest) => Promise<SshStarted>;
+  // starts wsl.exe and the bridge in a distro, rejecting as startSsh does
+  readonly startWsl: (request: WslStartRequest) => Promise<SshStarted>;
+  // runs devcontainer up when the container needs it, then execs the bridge in the container, rejecting as startSsh does
+  readonly startContainer: (request: ContainerStartRequest) => Promise<SshStarted>;
   readonly savePlatform: (hostId: string, platform: CachedPlatform) => Promise<void>;
   readonly installFolderSettled: (hostId: string) => Promise<void>;
   // Authorities.connect for the host's authority key: the transport below, then hello, welcome and attach
@@ -58,7 +83,11 @@ interface PendingPrompt {
 interface Attempt {
   readonly id: string;
   readonly hostId: string;
+  readonly transport: 'ssh' | 'wsl' | 'container';
   readonly controller: AbortController;
+  buildLog?: BuildLog | undefined;
+  // a build log change waits for this timer to tell it
+  logTimer?: NodeJS.Timeout | undefined;
   step: ConnectStep | 'connected' | 'failed';
   readonly visited: ConnectStep[];
   progress?: number | undefined;
@@ -71,6 +100,8 @@ interface Attempt {
   done: Promise<void>;
   // an ssh call that is no connect (the removal stage), which shows only its prompts
   readonly stage?: true;
+  // a devcontainer's attempt that connected, whose workspace folder then did not open as a project
+  folderFailed?: boolean;
 }
 
 interface HostState {
@@ -111,7 +142,8 @@ export function isCancelled(err: unknown): boolean {
 }
 
 /**
- * The SSH hosts' connection attempts (docs/invariants.md "Remote daemon and wire"): one attempt per host at a time, shared by
+ * The saved hosts' connection attempts, over ssh, wsl.exe or a container's exec (docs/invariants.md "Remote connections and
+ * credentials"): one attempt per host at a time, shared by
  * every caller, with its steps, the prompt ssh waits on and its failure. Authorities keeps the connection itself; this
  * manager is the ssh transport it calls; reconnect.ts decides when a dropped connection is attempted again.
  */
@@ -127,28 +159,34 @@ export class RemoteConnections {
   /**
    * Connects the host, or joins its attempt in flight; resolves the attempt's id at once. watched: a user waits on it in the
    * Connect dialog, so a prompt shows there instead of behind the sign-in banner. A suspect connection is joined, since only
-   * the keepalive timeout decides a drop, unless force (Reconnect now) gives up its transport.
+   * the keepalive timeout decides a drop, unless force (Reconnect now) gives up its transport. A watched join tells the attempt
+   * as it stands, so the dialog that started it shows main's step, never one of its own.
    */
   connect(hostId: string, watched: boolean, options: { readonly force?: boolean } = {}): string {
     if (this.disposed) throw new Error('The app is quitting');
-    if (!this.deps.host(hostId)) throw new Error(`No saved host ${hostId}`);
+    const record = this.deps.host(hostId);
+    if (!record) throw new Error(`No saved host ${hostId}`);
     const state = this.stateOf(hostId);
     const running = this.running(state);
     if (running?.stage) throw new Error(`An ssh call to ${hostId} is running; connect once it finished`);
     if (running) {
-      if (watched && !running.watched) {
+      if (watched) {
         running.watched = true;
         this.deps.changed(hostId);
       }
       return running.id;
     }
     const held = this.deps.connection(hostId);
-    if (state.attempt?.step === 'connected' && (held === 'usable' || (held === 'suspect' && options.force !== true))) return state.attempt.id;
-    const attempt: Attempt = { id: randomUUID(), hostId, controller: new AbortController(), step: 'connecting', visited: ['connecting'], notices: [], watched, done: Promise.resolve() };
+    if (state.attempt?.step === 'connected' && (held === 'usable' || (held === 'suspect' && options.force !== true))) {
+      if (watched) this.deps.changed(hostId);
+      return state.attempt.id;
+    }
+    const attempt: Attempt = { id: randomUUID(), hostId, transport: record.kind, controller: new AbortController(), step: 'connecting', visited: ['connecting'], notices: [], watched, done: Promise.resolve() };
     state.attempt = attempt;
     this.deps.changed(hostId);
     attempt.done = this.deps.connect(hostId).then(() => {
       if (state.attempt !== attempt) return;
+      endBuildLog(attempt, false);
       attempt.step = 'connected';
       attempt.prompt = undefined;
       this.deps.changed(hostId);
@@ -189,13 +227,13 @@ export class RemoteConnections {
     const attempt = state.attempt;
     const host = this.deps.host(hostId);
     if (!attempt || attempt.step === 'connected' || attempt.step === 'failed' || !host) throw new Error(`No connection attempt for ${hostId} is waiting on its transport`);
-    const started = await this.deps.startSsh({
-      host,
-      signal: attempt.controller.signal,
-      hooks: this.hooksOf(attempt),
-      savePlatform: (platform) => this.deps.savePlatform(hostId, platform),
-      installFolderSettled: () => this.deps.installFolderSettled(hostId),
-    }).catch((err: unknown) => {
+    const common = { signal: attempt.controller.signal, hooks: this.hooksOf(attempt), installFolderSettled: () => this.deps.installFolderSettled(hostId) };
+    const starting = host.kind === 'wsl'
+      ? this.deps.startWsl({ host, ...common })
+      : host.kind === 'container'
+        ? this.deps.startContainer({ host, ...common, hooks: { ...common.hooks, buildLog: (log) => this.buildLogChanged(attempt, log) }, watched: () => attempt.watched })
+        : this.deps.startSsh({ host, ...common, savePlatform: (platform) => this.deps.savePlatform(hostId, platform) });
+    const started = await starting.catch((err: unknown) => {
       if (isConnectError(err) && err.stderrTail !== undefined) state.lastStderr = err.stderrTail;
       throw err;
     });
@@ -238,10 +276,11 @@ export class RemoteConnections {
    * host's attempt is what it was afterwards. A connect meanwhile is refused.
    */
   async withPrompts<T>(hostId: string, run: (prompt: SshAttemptHooks['prompt'], signal: AbortSignal) => Promise<T>): Promise<T> {
+    if (this.deps.host(hostId)?.kind !== 'ssh') throw new Error(`The host ${hostId} is reached over no ssh`);
     const state = this.stateOf(hostId);
     const previous = state.attempt;
     if (previous && previous.step !== 'connected' && previous.step !== 'failed') throw new Error(`An attempt to reach ${hostId} is running`);
-    const attempt: Attempt = { id: randomUUID(), hostId, controller: new AbortController(), step: 'authenticating', visited: ['authenticating'], notices: [], watched: true, done: Promise.resolve(), stage: true };
+    const attempt: Attempt = { id: randomUUID(), hostId, transport: 'ssh', controller: new AbortController(), step: 'authenticating', visited: ['authenticating'], notices: [], watched: true, done: Promise.resolve(), stage: true };
     state.attempt = attempt;
     this.deps.changed(hostId);
     try {
@@ -253,6 +292,14 @@ export class RemoteConnections {
         this.deps.changed(hostId);
       }
     }
+  }
+
+  /** Whether the connected attempt's container folder failed to open; a later opening clears it. Nothing for another attempt. */
+  setFolderFailed(attemptId: string, failed: boolean): void {
+    const attempt = this.attemptById(attemptId);
+    if (attempt?.step !== 'connected' || (attempt.folderFailed === true) === failed) return;
+    attempt.folderFailed = failed;
+    this.deps.changed(attempt.hostId);
   }
 
   /** Ends the attempt: ssh is killed and the host stays offline. */
@@ -280,7 +327,10 @@ export class RemoteConnections {
     const attempt = state.attempt;
     // an attempt that is no longer the host's reports nothing when it settles
     delete state.attempt;
-    if (attempt) this.end(attempt);
+    if (attempt) {
+      endBuildLog(attempt, false);
+      this.end(attempt);
+    }
     state.started?.dispose();
   }
 
@@ -298,7 +348,7 @@ export class RemoteConnections {
     return (state && this.running(state))?.watched === true;
   }
 
-  /** The host's connect attempt in flight runs stage 1 on the target. */
+  /** The host's connect attempt in flight builds its container or runs stage 1 on the target. */
   staging(hostId: string): boolean {
     const state = this.hosts.get(hostId);
     const running = state && this.running(state);
@@ -312,12 +362,15 @@ export class RemoteConnections {
     return {
       attemptId: attempt.id,
       hostId,
+      transport: attempt.transport,
       step: attempt.step,
       visited: [...attempt.visited],
       ...(attempt.progress !== undefined ? { progress: attempt.progress } : {}),
       ...(attempt.prompt ? { prompt: { promptId: attempt.prompt.id, ...attempt.prompt.prompt } } : {}),
       ...(attempt.failure ? { failure: attempt.failure } : {}),
+      ...(attempt.folderFailed === true ? { folderFailure: { code: 'containerFolderFailed', params: {} } } : {}),
       notices: [...attempt.notices],
+      ...(attempt.buildLog ? { buildLog: attempt.buildLog } : {}),
     };
   }
 
@@ -330,6 +383,11 @@ export class RemoteConnections {
   /** The failure of the host's last attempt while it is the host's latest outcome. */
   failure(hostId: string): ConnectFailure | undefined {
     return this.hosts.get(hostId)?.attempt?.failure;
+  }
+
+  /** The host's last attempt stopped where only an attempt a user watches goes on (a container to build). */
+  needsWatchedAttempt(hostId: string): boolean {
+    return this.failure(hostId)?.code === 'containerNeedsBuild';
   }
 
   notices(hostId: string): readonly HostNotice[] {
@@ -356,7 +414,10 @@ export class RemoteConnections {
   dispose(): void {
     this.disposed = true;
     for (const state of this.hosts.values()) {
-      if (state.attempt) this.cancel(state.attempt.id);
+      if (state.attempt) {
+        endBuildLog(state.attempt, true);
+        this.cancel(state.attempt.id);
+      }
       state.started?.dispose();
     }
   }
@@ -386,7 +447,18 @@ export class RemoteConnections {
     attempt.prompt?.answer(undefined);
   }
 
+  // The newest log goes on the attempt at once; its change is told at most once per BUILD_LOG_PUSH_MS.
+  private buildLogChanged(attempt: Attempt, log: BuildLog): void {
+    if (this.hosts.get(attempt.hostId)?.attempt !== attempt || attempt.step !== 'building') return;
+    attempt.buildLog = log;
+    attempt.logTimer ??= setTimeout(() => {
+      attempt.logTimer = undefined;
+      if (this.hosts.get(attempt.hostId)?.attempt === attempt) this.deps.changed(attempt.hostId);
+    }, BUILD_LOG_PUSH_MS);
+  }
+
   private fail(attempt: Attempt, err: unknown): void {
+    endBuildLog(attempt, attempt.step === 'building');
     attempt.step = 'failed';
     attempt.prompt = undefined;
     attempt.progress = undefined;
@@ -400,6 +472,9 @@ export class RemoteConnections {
     return {
       step: (step) => {
         if (!live() || attempt.step === step) return;
+        // a container builds before anything connects, so its build is the timeline's first step
+        if (step === 'building') attempt.visited.splice(0, attempt.visited.length);
+        else endBuildLog(attempt, false);
         attempt.step = step;
         attempt.progress = undefined;
         if (!attempt.visited.includes(step)) attempt.visited.push(step);
@@ -439,6 +514,13 @@ export class RemoteConnections {
       },
     };
   }
+}
+
+// The attempt's build log stops changing; no view shows it past the building step, except the failure of a build.
+function endBuildLog(attempt: Attempt, keep: boolean): void {
+  clearTimeout(attempt.logTimer);
+  attempt.logTimer = undefined;
+  if (!keep) attempt.buildLog = undefined;
 }
 
 /** The connection state a host shows: Authorities' state, except that a cancelled attempt leaves it offline. */

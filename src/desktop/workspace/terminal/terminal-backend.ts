@@ -31,7 +31,8 @@ export interface LiveTerminal {
 export interface TerminalBackend {
   startHost(): PtyHostProcess;
   detectProfiles(): Promise<TerminalProfile[]>;
-  // the login environment without ELECTRON_* and the scripts' state, LANG following locale when it is not UTF-8
+  // the login environment (with the OS's current variables over it, where the host reads them) without ELECTRON_* and the
+  // scripts' state, LANG following locale when it is not UTF-8
   environment(locale: string): Promise<Record<string, string>>;
   // the shell's integration args and environment, its startup files copied; undefined when VS Code's rules inject nothing
   // into it or the copy failed
@@ -54,6 +55,9 @@ export interface TerminalBackendDeps {
   readonly homedir: string;
   // the login environment the host merged at startup
   readonly env: NodeJS.ProcessEnv;
+  // the environment a new terminal starts from, read at each spawn: env with the OS's current variables over it (this
+  // computer's registry on Windows); absent, env as it is
+  readonly currentEnvironment?: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
   readonly log: (line: string) => void;
   // the synchronous copy of zsh's startup files (throws on failure)
   readonly copyFiles?: (files: ReadonlyArray<{ readonly source: string; readonly dest: string }>) => void;
@@ -71,7 +75,7 @@ export function createTerminalBackend(deps: TerminalBackendDeps): TerminalBacken
   return {
     startHost: () => deps.starters.startPtyHost(),
     detectProfiles: () => detectProfiles(systemProfileProbe(deps.env, deps.log)),
-    environment: async (locale) => terminalEnvironment(deps.env, { locale, zshDotDir: deps.zshDotDir }),
+    environment: async (locale) => terminalEnvironment(deps.currentEnvironment?.(deps.env) ?? deps.env, { locale, zshDotDir: deps.zshDotDir }),
     async injection(request) {
       const injection = shellIntegrationInjection({ ...request, platform: deps.platform, scriptsDir: deps.scriptsDir, zshDotDir: deps.zshDotDir, homedir: deps.homedir });
       if (!injection?.filesToCopy) return injection;

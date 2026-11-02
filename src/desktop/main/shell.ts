@@ -4,7 +4,8 @@ import { HOST_THEME_STYLE_ID } from '../../shared/host-theme';
 import { isSettingsSectionId, type SettingsSectionId } from '../../shared/settings-sections';
 import { MAX_BROWSER_URL_LENGTH } from '../../shared/typed-address';
 import { HOST_ID } from '../daemon/control-messages';
-import { MAX_HOST_NAME_LENGTH, type NameCheck, type OverlayAnswer, type OverlayRequest } from '../preload/overlay-channels';
+import { MAX_HOST_NAME_LENGTH, type NameCheck, type OverlayAnswer, type OverlayRequest, type WslDistroInfo } from '../preload/overlay-channels';
+import { isWslDistroName } from './remote/wsl/distro-name';
 import type { PanelTheme } from '../preload/panel-channels';
 import {
   BROWSER_ACTIONS,
@@ -16,6 +17,8 @@ import {
   MAX_CHAT_NAME_LENGTH,
   MAX_EDITOR_LINE,
   MAX_EDITOR_TEXT_CHARS,
+  MAX_COPY_IN_PATH_LENGTH,
+  MAX_COPY_IN_PATHS,
   MAX_FILE_NAME_LENGTH,
   MAX_ID_LENGTH,
   MAX_REPLACE_FILES,
@@ -45,7 +48,14 @@ import {
   type EditorEditReport,
   type EditorTextRequest,
   type FileRef,
+  type FilesClipboardChanged,
+  type FilesClipboardSetRequest,
+  type FilesCopyInRequest,
   type FilesCreateRequest,
+  type FilesDropRowRequest,
+  type FilesPasteResult,
+  type FilesTransferProgress,
+  type FilesTransferStartResult,
   type FilesDeleteResult,
   type FilesListResult,
   type FilesMutationResult,
@@ -57,6 +67,8 @@ import {
   type ShellEditorState,
   type OpenAsProjectRequest,
   type OpenAsProjectResult,
+  type ReopenInWslResult,
+  type ReopenInContainerResult,
   type ProjectsView,
   type RemoveProjectResult,
   type SelectChatResult,
@@ -95,6 +107,8 @@ import {
   type ShownFolder,
   type WorktreeFinishAction,
   type WorktreeFinishRequest,
+  MAX_EDITOR_LINK_CHARS,
+  type EditorOpenLink,
 } from '../preload/shell-channels';
 import { isFullRefName } from '../preload/scm-channels';
 import { isWorktreeId } from '../../shared/worktree-id';
@@ -107,6 +121,7 @@ import {
   MAX_TERMINAL_LINK_PATH_LENGTH,
   MAX_TERMINAL_LINK_PATHS,
   MAX_TERMINAL_LINK_POSITION,
+  MAX_TERMINAL_WEB_LINK_CHARS,
   MAX_TERMINAL_ROWS,
   TERMINAL_CHANNELS,
   isTerminalPasteChord,
@@ -119,12 +134,15 @@ import {
   type TerminalScreen,
   type TerminalLinkKind,
   type TerminalOpenLink,
+  type TerminalOpenWebLink,
   type TerminalPaste,
   type TerminalResolveLinks,
   type TerminalState,
 } from '../preload/terminal-channels';
 import { MAX_TERMINAL_ATTACHMENT_CHARS, MAX_TERMINAL_ATTACHMENT_OMITTED_LINES } from '../preload/terminal-attachment-cap';
 import { REVIEW_CHANNELS, type ChatReviewFileDiffResult, type ChatReviewSendResult } from '../preload/review-channels';
+import { PORTS_CHANNELS, type PortsView } from '../preload/ports-channels';
+import type { ShellPortsActions } from './remote/ports/ports-controller';
 import {
   SCM_CHANNELS,
   type ScmBlameResult,
@@ -214,6 +232,12 @@ export interface ShellActions {
   reorderProjectGroups(groupOrder: readonly string[]): Promise<boolean>;
   // relativePath passed isRelativeFilePath
   openAsProject(request: OpenAsProjectRequest): Promise<OpenAsProjectResult | null>;
+  // WSL: the distros for Reopen in WSL..., the reopen itself (distro passed isWslDistroName), and a project's notice dismissed
+  listWslDistros(): Promise<readonly WslDistroInfo[]>;
+  reopenInWsl(projectKey: string, distro: string | undefined): Promise<ReopenInWslResult>;
+  dismissWslNotice(projectKey: string): Promise<void>;
+  reopenInContainer(projectKey: string): Promise<ReopenInContainerResult>;
+  rebuildContainer(projectKey: string): Promise<void>;
   toggleSidebar(): void;
   showSidebar(): void;
   windowControl(control: WindowControl): void;
@@ -239,6 +263,7 @@ export interface ShellActions {
   readonly terminal: ShellTerminalActions;
   readonly scm: ShellScmActions;
   readonly review: ShellReviewActions;
+  readonly ports: ShellPortsActions;
   readonly gestures: ShellGestureActions;
   openQuickOpen(): Promise<void>;
   showCommands(): Promise<void>;
@@ -318,6 +343,8 @@ export interface ShellTerminalActions {
   // each path resolved against the terminal's project, index-aligned
   resolveLinks(request: TerminalResolveLinks): Promise<Array<TerminalLinkKind | null>>;
   openLink(request: TerminalOpenLink): void;
+  // a remote terminal's link opens through OpenUrl.userClick, a local one's in the system browser
+  openWebLink(request: TerminalOpenWebLink): void;
   // null restores the automatic title
   rename(id: string, name: string | null): void;
   pickIcon(id: string): void;
@@ -331,7 +358,7 @@ export interface ShellTerminalActions {
 export interface ShellBrowserActions {
   action(request: BrowserActionRequest): Promise<void>;
   // url is the bounded text as typed; false when main refused it
-  navigate(request: BrowserNavigateRequest): boolean;
+  navigate(request: BrowserNavigateRequest): Promise<boolean>;
   // window DIP; undefined while no browser tab shows its page area; radius rounds the page view's corners
   setBounds(bounds: Rectangle | undefined, radius: number): void;
 }
@@ -370,6 +397,8 @@ export interface ShellEditorActions {
   // the documentId is resolved against main's open documents; main confines the file and checks the project's trust
   format(request: EditorFormatRequest): Promise<EditorFormatReply>;
   formatFailed(failure: EditorBuiltinFormatFailure): void;
+  // a web link clicked in the tab; main reads where the tab's text came from
+  openLink(request: EditorOpenLink): void;
   selection(documentId: string, range: EditorSelectionRange | null): void;
   mention(tabId: string): Promise<void>;
   uploadMergeInputs(tabId: string): ScmMergeInputsResult;
@@ -388,6 +417,14 @@ export interface ShellFilesActions {
   copyPath(file: FileRef, relative: boolean): Promise<void>;
   reveal(file: FileRef): Promise<void>;
   mention(file: FileRef): Promise<void>;
+  copyIn(request: FilesCopyInRequest): Promise<FilesTransferStartResult>;
+  pickCopyIn(folder: FileRef): Promise<FilesTransferStartResult>;
+  dropRow(request: FilesDropRowRequest): Promise<FilesTransferStartResult>;
+  setClipboard(request: FilesClipboardSetRequest): void;
+  clearClipboard(): void;
+  paste(toDir: FileRef): Promise<FilesPasteResult>;
+  download(file: FileRef): Promise<FilesTransferStartResult>;
+  cancelTransfer(transferId: number): void;
 }
 
 const MAX_BOUND = MAX_SHELL_COORDINATE;
@@ -475,6 +512,13 @@ export function parseTerminalOpenLink(raw: unknown): TerminalOpenLink | undefine
   const line = value?.['line'];
   const column = value?.['column'];
   return isTerminalId(id) && isLinkPath(linkPath) && isLinkPosition(line) && isLinkPosition(column) ? { id, path: linkPath, line, column } : undefined;
+}
+
+export function parseTerminalOpenWebLink(raw: unknown): TerminalOpenWebLink | undefined {
+  const value = exactFields(raw, ['id', 'url']);
+  const id = value?.['id'];
+  const url = value?.['url'];
+  return isTerminalId(id) && isText(url, MAX_TERMINAL_WEB_LINK_CHARS) && url.length > 0 ? { id, url } : undefined;
 }
 
 /** terminal:rename: a known shape, and a name parseTerminalName accepts; null restores the automatic title. */
@@ -873,6 +917,13 @@ export function parseEditorFormat(raw: unknown): EditorFormatRequest | undefined
   return { documentId, text, options: { tabSize, insertSpaces }, reason };
 }
 
+export function parseEditorOpenLink(raw: unknown): EditorOpenLink | undefined {
+  const value = exactFields(raw, ['tabId', 'url']);
+  const tabId = value?.['tabId'];
+  const url = value?.['url'];
+  return isShellId(tabId) && isText(url, MAX_EDITOR_LINK_CHARS) && url.length > 0 ? { tabId, url } : undefined;
+}
+
 export function parseFormatFailure(raw: unknown): EditorBuiltinFormatFailure | undefined {
   const value = record(raw);
   if (!value) return undefined;
@@ -915,6 +966,42 @@ export function parseFileRef(raw: unknown, allowRoot: boolean): FileRef | undefi
   if (!isShellId(projectKey)) return undefined;
   const valid = allowRoot ? isRelativeOrRoot(relativePath) : isRelativeFilePath(relativePath);
   return valid ? { projectKey, relativePath: relativePath as string } : undefined;
+}
+
+// what one drop can carry; past MAX_COPY_IN_PATHS main refuses it with a notice
+const MAX_COPY_IN_REQUEST_PATHS = 100 * MAX_COPY_IN_PATHS;
+// the UTF-16 units of all of one request's paths together
+export const MAX_COPY_IN_REQUEST_CHARS: number = 64 * 1024 * 1024;
+
+// a FileRef with exactly its two fields
+function exactFileRef(raw: unknown, allowRoot: boolean): FileRef | undefined {
+  return exactFields(raw, ['projectKey', 'relativePath']) ? parseFileRef(raw, allowRoot) : undefined;
+}
+
+export function parseFilesCopyIn(raw: unknown): FilesCopyInRequest | undefined {
+  const value = exactFields(raw, ['projectKey', 'relativeDir', 'paths', 'withoutPath', 'origin']);
+  if (!value) return undefined;
+  const folder = parseFileRef({ projectKey: value['projectKey'], relativePath: value['relativeDir'] }, true);
+  const { paths, withoutPath, origin } = value;
+  if (!folder || !Array.isArray(paths) || paths.length > MAX_COPY_IN_REQUEST_PATHS) return undefined;
+  let chars = 0;
+  if (!paths.every((entry): entry is string => typeof entry === 'string' && entry.length > 0 && entry.length <= MAX_COPY_IN_PATH_LENGTH && (chars += entry.length) <= MAX_COPY_IN_REQUEST_CHARS)) return undefined;
+  if (typeof withoutPath !== 'number' || !Number.isSafeInteger(withoutPath) || withoutPath < 0 || withoutPath > MAX_COPY_IN_REQUEST_PATHS) return undefined;
+  if (origin !== 'drop' && origin !== 'paste') return undefined;
+  return { projectKey: folder.projectKey, relativeDir: folder.relativePath, paths: [...paths], withoutPath, origin };
+}
+
+export function parseFilesDropRow(raw: unknown): FilesDropRowRequest | undefined {
+  const value = exactFields(raw, ['from', 'toDir', 'copy']);
+  const from = value && exactFileRef(value['from'], false);
+  const toDir = value && exactFileRef(value['toDir'], true);
+  return from && toDir && typeof value['copy'] === 'boolean' ? { from, toDir, copy: value['copy'] } : undefined;
+}
+
+export function parseFilesClipboardSet(raw: unknown): FilesClipboardSetRequest | undefined {
+  const value = exactFields(raw, ['op', 'ref']);
+  const ref = value && exactFileRef(value['ref'], false);
+  return ref && (value['op'] === 'copy' || value['op'] === 'cut') ? { op: value['op'], ref } : undefined;
 }
 
 export function parseFilesCreate(raw: unknown): FilesCreateRequest | undefined {
@@ -1159,6 +1246,30 @@ export class ShellHost {
       if (!call || !isShellId(call['projectKey']) || !isRelativeFilePath(call['relativePath'])) throw new Error('Malformed open as project request from the shell');
       return this.actions.openAsProject({ projectKey: call['projectKey'], relativePath: call['relativePath'] });
     });
+    this.handle(SHELL_CHANNELS.wslListDistros, (raw) => {
+      if (!exactRecord(raw, [])) throw new Error('Malformed distro list request from the shell');
+      return this.actions.listWslDistros();
+    });
+    this.handle(SHELL_CHANNELS.wslReopen, (raw) => {
+      const call = exactRecord(raw, ['projectKey']) ?? exactRecord(raw, ['projectKey', 'distro']);
+      if (!call || !isShellId(call['projectKey']) || (call['distro'] !== undefined && !isWslDistroName(call['distro']))) throw new Error('Malformed Reopen in WSL request from the shell');
+      return this.actions.reopenInWsl(call['projectKey'], call['distro'] as string | undefined);
+    });
+    this.handle(SHELL_CHANNELS.wslDismissNotice, (raw) => {
+      const call = exactRecord(raw, ['projectKey']);
+      if (!call || !isShellId(call['projectKey'])) throw new Error('Malformed notice dismissal from the shell');
+      return this.actions.dismissWslNotice(call['projectKey']);
+    });
+    for (const [channel, action] of [
+      [SHELL_CHANNELS.containersReopen, (projectKey: string) => this.actions.reopenInContainer(projectKey)],
+      [SHELL_CHANNELS.containersRebuild, (projectKey: string) => this.actions.rebuildContainer(projectKey)],
+    ] as const) {
+      this.handle(channel, (raw) => {
+        const call = exactRecord(raw, ['projectKey']);
+        if (!call || !isShellId(call['projectKey'])) throw new Error(`Malformed ${channel} call from the shell`);
+        return action(call['projectKey']);
+      });
+    }
     this.handle(SHELL_CHANNELS.hostsReconnect, (raw) => {
       const call = exactRecord(raw, ['hostId']);
       if (!call || !isHostId(call['hostId'])) throw new Error('Malformed reconnect from the shell');
@@ -1240,6 +1351,7 @@ export class ShellHost {
     this.handleTerminal();
     this.handleScm();
     this.handleReview();
+    this.handlePorts();
 
     const contents = window.webContents;
     // Only input the browser process routes reaches these: page script's synthetic events never do.
@@ -1368,6 +1480,11 @@ export class ShellHost {
       if (failure) editor.formatFailed(failure);
       else this.log('[shell] ignoring a malformed format failure');
     });
+    this.on(SHELL_CHANNELS.editorOpenLink, (raw) => {
+      const request = parseEditorOpenLink(raw);
+      if (request) editor.openLink(request);
+      else this.log('[shell] ignoring a malformed editor link');
+    });
     this.handle(SHELL_CHANNELS.editorMention, (raw) => {
       const value = record(raw);
       const tabId = value ? own(value, 'tabId') : undefined;
@@ -1469,6 +1586,48 @@ export class ShellHost {
       if (!ref) throw new Error('Malformed mention from the shell');
       return files.mention(ref);
     });
+    // copies in start only from these gestures of the shell's own page
+    this.handle(SHELL_CHANNELS.filesCopyIn, (raw) => {
+      const request = parseFilesCopyIn(raw);
+      if (!request) throw new Error('Malformed copy in from the shell');
+      return files.copyIn(request);
+    });
+    this.handle(SHELL_CHANNELS.filesPickCopyIn, (raw) => {
+      const folder = exactFileRef(raw, true);
+      if (!folder) throw new Error('Malformed Copy files here from the shell');
+      return files.pickCopyIn(folder);
+    });
+    this.handle(SHELL_CHANNELS.filesDropRow, (raw) => {
+      const request = parseFilesDropRow(raw);
+      if (!request) throw new Error('Malformed row drop from the shell');
+      return files.dropRow(request);
+    });
+    this.handle(SHELL_CHANNELS.filesClipboardSet, (raw) => {
+      const request = parseFilesClipboardSet(raw);
+      if (!request) throw new Error('Malformed Files clipboard from the shell');
+      files.setClipboard(request);
+    });
+    this.handle(SHELL_CHANNELS.filesClipboardClear, (raw) => {
+      if (!exactFields(raw, [])) throw new Error('Malformed Files clipboard clear from the shell');
+      files.clearClipboard();
+    });
+    this.handle(SHELL_CHANNELS.filesPaste, (raw) => {
+      const value = exactFields(raw, ['toDir']);
+      const toDir = value && exactFileRef(value['toDir'], true);
+      if (!toDir) throw new Error('Malformed paste from the shell');
+      return files.paste(toDir);
+    });
+    this.handle(SHELL_CHANNELS.filesDownload, (raw) => {
+      // the project root has no row to download from, and the summary and Reveal name the item that landed
+      const file = exactFileRef(raw, false);
+      if (!file) throw new Error('Malformed download from the shell');
+      return files.download(file);
+    });
+    this.handle(SHELL_CHANNELS.filesTransferCancel, (raw) => {
+      const transferId = exactFields(raw, ['transferId'])?.['transferId'];
+      if (typeof transferId !== 'number' || !Number.isSafeInteger(transferId) || transferId < 1) throw new Error('Malformed transfer cancel from the shell');
+      files.cancelTransfer(transferId);
+    });
   }
 
   private handleSearch(): void {
@@ -1567,6 +1726,7 @@ export class ShellHost {
     this.onTerminal(TERMINAL_CHANNELS.paste, parseTerminalPaste, (request) => terminal.paste(request));
     this.onTerminal(TERMINAL_CHANNELS.inputFocus, parseTerminalInputFocus, (focused) => terminal.setInputFocused(focused));
     this.onTerminal(TERMINAL_CHANNELS.openLink, parseTerminalOpenLink, (request) => terminal.openLink(request));
+    this.onTerminal(TERMINAL_CHANNELS.openWebLink, parseTerminalOpenWebLink, (request) => terminal.openWebLink(request));
     this.onTerminal(TERMINAL_CHANNELS.rename, parseTerminalRename, ({ id, name }) => terminal.rename(id, name));
     this.onTerminal(TERMINAL_CHANNELS.pickIcon, parseTerminalRef, (id) => terminal.pickIcon(id));
     this.onTerminal(TERMINAL_CHANNELS.pickColor, parseTerminalRef, (id) => terminal.pickColor(id));
@@ -1608,6 +1768,25 @@ export class ShellHost {
     this.handle(REVIEW_CHANNELS.send, (raw) => review.send(raw));
     this.handle(REVIEW_CHANNELS.discard, (raw) => review.discard(raw));
     this.handle(REVIEW_CHANNELS.setDrafts, (raw) => review.setDrafts(raw));
+  }
+
+  private handlePorts(): void {
+    const ports = this.actions.ports;
+    this.handle(PORTS_CHANNELS.get, (raw) => ports.get(raw));
+    this.handle(PORTS_CHANNELS.forward, (raw) => ports.forward(raw));
+    this.handle(PORTS_CHANNELS.forwardDetected, (raw) => ports.forwardDetected(raw));
+    this.handle(PORTS_CHANNELS.stop, (raw) => ports.stop(raw));
+    this.handle(PORTS_CHANNELS.setLabel, (raw) => ports.setLabel(raw));
+    this.handle(PORTS_CHANNELS.changeLocalPort, (raw) => ports.changeLocalPort(raw));
+    this.handle(PORTS_CHANNELS.setOnDetect, (raw) => ports.setOnDetect(raw));
+    this.handle(PORTS_CHANNELS.openInPane, (raw) => ports.openInPane(raw));
+    this.handle(PORTS_CHANNELS.openInBrowser, (raw) => ports.openInBrowser(raw));
+    this.handle(PORTS_CHANNELS.copyAddress, (raw) => ports.copyAddress(raw));
+    this.handle(PORTS_CHANNELS.undoFallback, (raw) => ports.undoFallback(raw));
+  }
+
+  portsView(view: PortsView): void {
+    this.send(PORTS_CHANNELS.state, view);
   }
 
   scmView(view: ScmView): void {
@@ -1819,6 +1998,14 @@ export class ShellHost {
 
   filesChanged(change: FilesChanged): void {
     this.send(SHELL_CHANNELS.filesChanged, change);
+  }
+
+  filesTransferProgress(progress: FilesTransferProgress): void {
+    this.send(SHELL_CHANNELS.filesTransferProgress, progress);
+  }
+
+  filesClipboardChanged(change: FilesClipboardChanged): void {
+    this.send(SHELL_CHANNELS.filesClipboardChanged, change);
   }
 
   // Keyboard focus moves to the window's own page; the shell then focuses the part (the sidebar's current row, the active editor).

@@ -77,6 +77,37 @@ describe('QuickInput', () => {
     expect(wrapper.emitted('answer')?.[1]).toEqual([{ kind: 'dismissed' }]);
   });
 
+  it("shows main's refusal of the last answer as invalid until the next edit, and lets the same value be sent again", async () => {
+    const { wrapper, field, element } = await open({ kind: 'input', title: 'Change local port for 5173', prompt: 'Local port on this computer', value: '5174', validation: 'localPort', error: 'Port 5174 is in use on this computer' });
+    expect(element.value).toBe('5174');
+    const problem = wrapper.get('[data-testid="quick-input-problem"]');
+    expect(problem.text()).toBe('Port 5174 is in use on this computer');
+    expect(problem.attributes('data-code')).toBe('refused');
+    expect(field.attributes('aria-invalid')).toBe('true');
+    await field.trigger('keydown', { key: 'Enter' });
+    expect(wrapper.emitted('answer')).toEqual([[{ kind: 'input', value: '5174' }]]);
+    await field.setValue('9100');
+    expect(wrapper.find('[data-testid="quick-input-problem"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="quick-input-prompt"]').text()).toBe('Local port on this computer');
+    expect(field.attributes('aria-invalid')).toBe('false');
+  });
+
+  it('names the port problems as the user types', async () => {
+    const target = await open({ kind: 'input', title: 'Forward a port', prompt: 'Port on prod-1', placeholder: '8080 or db:5432', validation: 'portTarget' });
+    await target.field.setValue('db:99999');
+    expect(target.wrapper.get('[data-testid="quick-input-problem"]').text()).toBe('A port is a number from 1 to 65535');
+    await target.field.setValue('db');
+    expect(target.wrapper.get('[data-testid="quick-input-problem"]').attributes('data-code')).toBe('portTarget');
+    await target.field.trigger('keydown', { key: 'Enter' });
+    expect(target.wrapper.emitted('answer')).toBeUndefined();
+    await target.field.setValue('db:5432');
+    await target.field.trigger('keydown', { key: 'Enter' });
+    expect(target.wrapper.emitted('answer')).toEqual([[{ kind: 'input', value: 'db:5432' }]]);
+    const local = await open({ kind: 'input', prompt: 'Local port on this computer', value: '5174', validation: 'localPort' });
+    await local.field.setValue('51a');
+    expect(local.wrapper.get('[data-testid="quick-input-problem"]').text()).toBe('Use digits only');
+  });
+
   it('keeps focus in the field when the title or prompt is pressed, so Enter and Escape still answer', async () => {
     const { wrapper, field } = await open({ kind: 'input', title: 'Rename', prompt: 'Press Enter' });
     for (const part of ['quick-input-title', 'quick-input-prompt']) {

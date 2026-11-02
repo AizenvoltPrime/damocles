@@ -4,14 +4,19 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createFakePlatform, type FakePanelHost } from '../../../../__mocks__/fake-platform';
 import type { Disposable } from '../../../../platform/disposable';
-import { attachedTransport, createCoreEndpoint, createLoopback, type ChatEntry, type ChatPermissions, type CoreEndpoint } from '../../../core-protocol';
+import { FEATURES } from '../../../../remote/protocol-version';
+import type { RelayedMcpServer } from '../../../../shared/remote-user';
+import { attachedTransport, createLoopback, type ChatEntry, type ChatPermissions, type CoreEndpoint } from '../../../core-protocol';
+import { createEndpoint } from '../../../core-protocol/endpoint';
+import { ERROR_CODEC } from '../../../core-protocol/errors';
+import { CORE_TO_MAIN, MAIN_TO_CORE } from '../../../core-protocol/messages';
 import type { CoreAttach, CoreState } from '../../../daemon/control-messages';
 import { createDesktopKeyValueState } from '../../../local-services/key-value-state';
 import type { RelayView } from '../../core-services/host-services';
 import { hostExtras } from '../../core-services/__tests__/host-deps';
 import type { RemoteConnection } from '../connection';
 import { RemoteCore, type RemoteHostedCore } from '../remote-core';
-import { UserRelays } from '../user-relays';
+import { CLIENT_MCP_FEATURE, UserRelays, type LocalUserScope } from '../user-relays';
 
 const EPOCH_A = 'a'.repeat(32);
 const EPOCH_B = 'b'.repeat(32);
@@ -28,10 +33,14 @@ afterEach(async () => {
 });
 
 // The daemon's side: control answers and events, and one core endpoint per attach generation, over the connection main
-// holds now; a dropped connection fails its requests in flight, as an endpoint closing does.
-function fakeDaemon(epoch: string, phase: CoreState['phase'] = 'running') {
+// holds now; a dropped connection fails its requests in flight, as an endpoint closing does. features: its welcome's; a
+// mirror topic it does not list is outside its contract, which its core endpoint records as a violation.
+function fakeDaemon(epoch: string, phase: CoreState['phase'] = 'running', features: readonly string[] = FEATURES) {
   const attaches: CoreAttach[] = [];
   const cores = new Map<number, CoreEndpoint>();
+  const violations: string[] = [];
+  const mirrors = features.includes(CLIENT_MCP_FEATURE) ? MAIN_TO_CORE.mirrors : Object.fromEntries(Object.entries(MAIN_TO_CORE.mirrors).filter(([topic]) => topic !== CLIENT_MCP_FEATURE));
+  const incoming = { ...MAIN_TO_CORE, mirrors } as typeof MAIN_TO_CORE;
   const stateListeners = new Set<(state: CoreState) => void>();
   let state: CoreState = { epoch, phase, restarts: 0, pid: 42, ppid: 41 };
   let join: (viewKey: string) => { panelId: string } | null = () => null;
@@ -58,7 +67,7 @@ function fakeDaemon(epoch: string, phase: CoreState['phase'] = 'running') {
           if (held) await Promise.race([held, closed]);
           const transport = attachedTransport(channel.core, attach.attach, () => undefined);
           transport.open();
-          const core = createCoreEndpoint(transport, () => undefined);
+          const core: CoreEndpoint = createEndpoint({ transport, outgoing: CORE_TO_MAIN, incoming, log: () => undefined, errors: ERROR_CODEC, onViolation: (error) => violations.push(error.message) });
           core.serve('views.join', ({ viewKey }) => join(viewKey));
           core.serve('chats.restore', ({ viewId, permissions }) => {
             restores.push({ viewId, ...(permissions ? { permissions } : {}) });
@@ -82,6 +91,7 @@ function fakeDaemon(epoch: string, phase: CoreState['phase'] = 'running') {
     };
     return {
       facts: {},
+      features,
       skewMs: 0,
       control,
       workspace: {},
@@ -122,6 +132,7 @@ function fakeDaemon(epoch: string, phase: CoreState['phase'] = 'running') {
     attaches,
     cores,
     restores,
+    violations,
     // main's coreState listeners, over every connection it ever had
     stateListeners: (): number => stateListeners.size,
     holdAttaches: (): (() => void) => {
@@ -166,6 +177,9 @@ function remote(daemon: ReturnType<typeof fakeDaemon>, lastEpoch: string | null,
       release();
     };
   };
+  // the personal MCP servers this computer marks available on remote hosts
+  const mcp: RelayedMcpServer[] = [];
+  const relays = new UserRelays({ resolveCredential: async () => ({ type: 'none' }), clientAuth: async () => ({ providers: {} }), voice: true, homedir: '/nonexistent', userSettingKeys: () => [], userValue: () => undefined, hostPolicy: () => ({ allowBypass: false }), local: { mcpServers: async () => [...mcp] } as unknown as LocalUserScope, log: () => undefined });
   const core = new RemoteCore({
     authority: 'loopback',
     hostId: 'loopback',
@@ -192,7 +206,7 @@ function remote(daemon: ReturnType<typeof fakeDaemon>, lastEpoch: string | null,
     retainTabStates: () => undefined,
     subscribe: () => [],
     sharedLoopback: true,
-    relays: new UserRelays({ resolveCredential: async () => ({ type: 'none' }), clientAuth: async () => ({ providers: {} }), voice: true, homedir: '/nonexistent', userSettingKeys: () => [], userValue: () => undefined, hostPolicy: () => ({ allowBypass: false }), log: () => undefined }),
+    relays,
     changed: () => undefined,
     keptChats: () => 0,
     reattached: (restarted) => reattached.push(restarted),
@@ -201,7 +215,7 @@ function remote(daemon: ReturnType<typeof fakeDaemon>, lastEpoch: string | null,
     log: () => undefined,
   });
   cleanups.push(() => core.dispose());
-  return { core, opened, views, main, holdReopens, reattached, coresEnded: () => coresEnded };
+  return { core, opened, views, main, holdReopens, reattached, coresEnded: () => coresEnded, relays, mcp };
 }
 
 const chat = (viewId: string): ChatEntry => ({ panelId: 'host-1', viewId, hasConversation: true, folder: target, permissions: PLAN });
@@ -220,6 +234,30 @@ describe('RemoteCore', () => {
     expect(daemon.attaches[0]!.mirrors.clientPolicy).toEqual({ voice: true, allowBypass: false, sharedLoopback: true });
     expect(daemon.attaches[0]!.mirrors.clientAuth).toEqual({ providers: {} });
     expect(core.epoch()).toBe(EPOCH_A);
+  });
+
+  it('attaches to a daemon whose welcome does not list clientMcp without sending it a clientMcp mirror, then or on a change', async () => {
+    const notes: RelayedMcpServer = { name: 'notes', tools: [{ name: 'search' }], resources: false };
+    const older = fakeDaemon(EPOCH_A, 'running', FEATURES.filter((feature) => feature !== CLIENT_MCP_FEATURE));
+    const { core, relays, mcp } = remote(older, EPOCH_A);
+    core.connected(older.connection);
+    await core.host.ready();
+    mcp.push(notes);
+    await relays.mcpChanged();
+    await tick();
+    expect(older.violations).toEqual([]);
+
+    const current = fakeDaemon(EPOCH_A);
+    const attached = remote(current, EPOCH_A);
+    const heard: unknown[] = [];
+    attached.core.connected(current.connection);
+    await attached.core.host.ready();
+    current.cores.get(1)!.onMirror('clientMcp', (patch) => heard.push(patch));
+    attached.mcp.push(notes);
+    await attached.relays.mcpChanged();
+    await tick();
+    expect(heard).toEqual([{ value: { servers: [notes] } }]);
+    expect(current.violations).toEqual([]);
   });
 
   it('restores the chats with their kept permissions when a new epoch replaces the core', async () => {

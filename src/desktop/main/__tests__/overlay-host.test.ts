@@ -77,7 +77,7 @@ beforeEach(() => {
   host = new OverlayHost({
     window: window as never,
     preloadPath: 'preload-overlay.js',
-    state: () => ({ locale: 'en', platform: 'win32', remoteEnabled: false }),
+    state: () => ({ locale: 'en', platform: 'win32' }),
     focusOutside: () => {
       focusedOutside++;
     },
@@ -128,7 +128,7 @@ describe('overlay sender check', () => {
     expect(lines.filter((line) => line.startsWith('[overlay] rejected'))).toHaveLength(3);
     const getState = view().webContents.ipc.handlers.get(OVERLAY_CHANNELS.getState)!;
     await expect(getState({ sender: { id: 9 }, senderFrame: { url: OVERLAY_PAGE_URL, parent: null } })).rejects.toThrow('Rejected');
-    await expect(getState(own())).resolves.toEqual({ locale: 'en', platform: 'win32', remoteEnabled: false });
+    await expect(getState(own())).resolves.toEqual({ locale: 'en', platform: 'win32' });
   });
 
   it('never receives a toast: it sends none to its page and answers none of the toast channels', async () => {
@@ -838,7 +838,7 @@ describe('overlay dispose', () => {
     host.handleWhileOpen('test:popup', () => true, () => 'value');
     host.dispose();
     const getState = view().webContents.ipc.handlers.get(OVERLAY_CHANNELS.getState)!;
-    await expect(getState(own())).resolves.toEqual({ locale: 'en', platform: 'win32', remoteEnabled: false });
+    await expect(getState(own())).resolves.toEqual({ locale: 'en', platform: 'win32' });
     await expect(getState({ sender: { id: 9 }, senderFrame: { url: OVERLAY_PAGE_URL, parent: null } })).rejects.toThrow('Rejected');
     await expect(view().webContents.ipc.handlers.get('test:popup')!(own())).resolves.toEqual({ ok: false, reason: 'closed' });
   });

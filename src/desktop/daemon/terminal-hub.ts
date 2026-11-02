@@ -8,6 +8,7 @@ import { parseHostMessage, type HostMessage, type TerminalView } from '../pty-ho
 import type { PtyHostEnd, TerminalPost } from '../workspace/messages';
 import type { LiveTerminal } from '../workspace/terminal/terminal-backend';
 import type { PtyHostProcess } from '../workspace/host-starters';
+import type { TerminalCli } from './cli-server';
 import type { RunRegistry } from './run-registry';
 
 // main's HOST_SHUTDOWN_TIMEOUT_MS: a pty still connecting on Windows holds the pty host's shutdown, so it is killed after this
@@ -58,6 +59,10 @@ export interface TerminalHubDeps {
   // the self-acknowledging pty host
   readonly start: () => PtyHostProcess;
   readonly registry: RunRegistry;
+  // every terminal's output, which the port detector's url finder reads, and its end
+  readonly output?: { data(id: string, text: string): void; ended(id: string): void };
+  // each terminal's damocles command socket, following which connections attach its view
+  readonly cli?: TerminalCli;
   readonly log: (line: string) => void;
 }
 
@@ -71,6 +76,8 @@ export function createTerminalHub(deps: TerminalHubDeps): TerminalHub {
 
   const forget = (id: string): void => {
     if (!terminals.delete(id)) return;
+    deps.output?.ended(id);
+    deps.cli?.closed(id);
     deps.registry.removeTerminal(id);
   };
 
@@ -114,6 +121,7 @@ export function createTerminalHub(deps: TerminalHubDeps): TerminalHub {
     if (!terminal) return;
     switch (message.type) {
       case 'data':
+        deps.output?.data(message.id, message.data);
         for (const [client, window] of terminal.windows) {
           if (window.behind || window.awaiting) continue;
           window.unacked += message.data.length;
@@ -167,6 +175,7 @@ export function createTerminalHub(deps: TerminalHubDeps): TerminalHub {
 
   const detachView = (id: string, terminal: Terminal, client: HubClient): void => {
     if (!terminal.windows.delete(client)) return;
+    deps.cli?.detached(id, client.id);
     // its screens in flight still come back; they go to nobody
     terminal.screens.forEach((asked, index) => {
       if (asked === client) terminal.screens[index] = undefined;
@@ -182,12 +191,22 @@ export function createTerminalHub(deps: TerminalHubDeps): TerminalHub {
           client.message({ type: 'error', id: request.id, message: `terminal ${request.id} already exists on this host` });
           return;
         }
+        // before the terminal is registered: a socket that cannot open leaves no terminal behind
+        let spawn: Extract<TerminalPost, { readonly type: 'spawn' }>;
+        try {
+          spawn = deps.cli ? { ...request, env: deps.cli.open(request.id, request.env) } : request;
+        } catch (err) {
+          deps.log(`[terminal] ${request.id} did not start: its CLI socket could not open: ${err instanceof Error ? err.message : String(err)}`);
+          client.message({ type: 'error', id: request.id, message: `terminal ${request.id} could not open its damocles command socket` });
+          return;
+        }
         const created: Terminal = { pid: 0, cols: request.cols, rows: request.rows, scrollback: request.scrollback, windows: new Map([[client, window(request.scrollback)]]), screens: [], view: request.view };
         terminals.set(request.id, created);
         clients.add(client);
         deps.registry.addTerminal({ id: request.id, projectKey: projectKey ?? '', title: path.basename(request.file) });
         attachedCount(request.id, created);
-        ensureHost().postMessage(request);
+        deps.cli?.attached(request.id, client.id);
+        ensureHost().postMessage(spawn);
         return;
       }
       if (!terminal) {
@@ -203,6 +222,7 @@ export function createTerminalHub(deps: TerminalHubDeps): TerminalHub {
           clients.add(client);
           attachedCount(request.id, terminal);
         }
+        deps.cli?.attached(request.id, client.id);
         requestScreen(request.id, terminal, client, own);
         return;
       }

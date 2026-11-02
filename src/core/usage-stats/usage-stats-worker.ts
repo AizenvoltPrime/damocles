@@ -71,6 +71,7 @@ export function createUsageStatsWorkerRuntime(
         db: database,
         sessionsDir: req.paths.sessionsDir,
         ledgerPath: req.paths.ledgerPath,
+        ...(req.paths.remoteMirrorsDir !== undefined ? { remoteMirrorsDir: req.paths.remoteMirrorsDir } : {}),
         models: req.models,
         log,
         onProgress: (progress) => {

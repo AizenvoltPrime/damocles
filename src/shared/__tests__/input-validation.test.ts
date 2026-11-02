@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { inputProblem, MAX_INPUT_VALUE_LENGTH } from '../input-validation';
+import { inputProblem, MAX_INPUT_VALUE_LENGTH, MAX_PORT_TARGET_HOST_LENGTH, parseLocalPort, parsePortTarget } from '../input-validation';
 import { isRelativeFilePath } from '../relative-path';
 
 const POSIX = { windows: false };
@@ -97,5 +97,83 @@ describe('inputProblem', () => {
     expect(code('path', 'a'.repeat(MAX_INPUT_VALUE_LENGTH + 1))).toBe('tooLong');
     expect(code('branchName', 'a'.repeat(MAX_INPUT_VALUE_LENGTH + 1))).toBe('tooLong');
     expect(inputProblem('path', 'a'.repeat(MAX_INPUT_VALUE_LENGTH), POSIX)).toBeUndefined();
+  });
+});
+
+describe('port inputs', () => {
+  it('takes a port or host:port as VS Code parseAddress does, the port from 1 to 65535', () => {
+    const cases: Array<[string, { host?: string; port: number }]> = [
+      ['8080', { port: 8080 }],
+      ['1', { port: 1 }],
+      ['65535', { port: 65535 }],
+      ['00080', { port: 80 }],
+      ['db:5432', { host: 'db', port: 5432 }],
+      ['localhost:5173', { host: 'localhost', port: 5173 }],
+      ['10.0.0.5:9000', { host: '10.0.0.5', port: 9000 }],
+      ['api_1.internal-net.example:443', { host: 'api_1.internal-net.example', port: 443 }],
+    ];
+    for (const [value, expected] of cases) {
+      expect(parsePortTarget(value), value).toEqual(expected);
+      expect(inputProblem('portTarget', value, POSIX), value).toBeUndefined();
+    }
+  });
+
+  it('refuses a target with no port, a bad host or a port out of range, naming which', () => {
+    const cases: Array<[string, string]> = [
+      ['', 'empty'],
+      ['0', 'portRange'],
+      ['65536', 'portRange'],
+      ['000065535', 'portRange'],
+      ['db:0', 'portRange'],
+      ['db', 'portTarget'],
+      ['db:', 'portTarget'],
+      [':80', 'portTarget'],
+      ['-1', 'portTarget'],
+      ['+80', 'portTarget'],
+      [' 80', 'portTarget'],
+      ['80 ', 'portTarget'],
+      ['8080.5', 'portTarget'],
+      ['0x50', 'portTarget'],
+      ['a..b:80', 'portTarget'],
+      ['.a:80', 'portTarget'],
+      ['a.:80', 'portTarget'],
+      ['user@db:80', 'portTarget'],
+      ['http://db:80', 'portTarget'],
+      ['[::1]:80', 'portTarget'],
+      ['db:80/x', 'portTarget'],
+      ['db:80:81', 'portTarget'],
+      ['d b:80', 'portTarget'],
+      ['db\n:80', 'portTarget'],
+      ['８０', 'portTarget'],
+      [`${'a'.repeat(MAX_PORT_TARGET_HOST_LENGTH + 1)}:80`, 'portTarget'],
+      // the daemon refuses an option-like host, which would end the connection
+      ['-db:5432', 'portTarget'],
+      ['--proxy:80', 'portTarget'],
+      ['db.-x:80', 'portTarget'],
+    ];
+    for (const [value, expected] of cases) {
+      expect(code('portTarget', value), JSON.stringify(value)).toBe(expected);
+      expect(parsePortTarget(value), JSON.stringify(value)).toBeUndefined();
+    }
+    expect(parsePortTarget(`${'a'.repeat(MAX_PORT_TARGET_HOST_LENGTH)}:80`)).toEqual({ host: 'a'.repeat(MAX_PORT_TARGET_HOST_LENGTH), port: 80 });
+  });
+
+  it('checks a long hostile target in linear time', () => {
+    const value = `${'a.'.repeat(2000)}!`;
+    const started = performance.now();
+    expect(code('portTarget', value)).toBe('portTarget');
+    expect(performance.now() - started).toBeLessThan(50);
+  });
+
+  it('takes a local port of digits only, 1 to 65535', () => {
+    for (const [value, port] of [['9100', 9100], ['1', 1], ['65535', 65535], ['05174', 5174]] as const) {
+      expect(parseLocalPort(value), value).toBe(port);
+      expect(inputProblem('localPort', value, POSIX), value).toBeUndefined();
+    }
+    const cases: Array<[string, string]> = [['', 'empty'], ['0', 'portRange'], ['65536', 'portRange'], ['99999999', 'portRange'], ['-1', 'portDigits'], ['9100 ', 'portDigits'], ['91a', 'portDigits'], ['1e3', 'portDigits'], ['localhost:9100', 'portDigits'], ['٩١٠٠', 'portDigits']];
+    for (const [value, expected] of cases) {
+      expect(code('localPort', value), JSON.stringify(value)).toBe(expected);
+      expect(parseLocalPort(value), JSON.stringify(value)).toBeUndefined();
+    }
   });
 });

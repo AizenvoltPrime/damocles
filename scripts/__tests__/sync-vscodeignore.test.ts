@@ -72,7 +72,7 @@ describe('the generated .vscodeignore allowlist', () => {
   it('carries no desktop-only package', () => {
     expect(DESKTOP_ONLY_PACKAGES).toEqual(expect.arrayContaining([
       'electron', '@parcel/watcher', 'electron-updater', 'node-pty', 'monaco-editor', '@playwright/test', 'electron-builder', '@electron/fuses',
-      '@fontsource-variable/geist', '@fontsource-variable/geist-mono', '@fontsource-variable/inter',
+      '@fontsource-variable/geist', '@fontsource-variable/geist-mono', '@fontsource-variable/inter', '@devcontainers/cli',
     ]));
     const shipped = block.map((line) => line.slice('!node_modules/'.length).replace(/\/\*\*$/, ''));
     expect(desktopOnlyIn(shipped)).toEqual([]);

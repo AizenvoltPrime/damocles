@@ -9,7 +9,7 @@ import { createCoreEndpoint, createLoopback, createMainEndpoint, processActor } 
 import { createClientMirrors, createCoreRouter, type CoreRouter } from '../../../daemon/core-routes';
 import { createRunRegistry } from '../../../daemon/run-registry';
 import { createDesktopLocalizationService, type DesktopLanguage } from '../../../local-services/localization-service';
-import { createHostServices, type HostServices } from '../../core-services/host-services';
+import { createHostServices, NO_USER_RELAYS, type HostServices } from '../../core-services/host-services';
 import { hostExtras } from '../../core-services/__tests__/host-deps';
 import { createDesktopNotificationService } from '../../platform/notification-service';
 import { remoteServices } from '../remote-services';
@@ -19,7 +19,7 @@ const none = (): Disposable => ({ dispose: () => undefined });
 const PROJECT = { key: 'loopback|/srv/app', fsPath: '/srv/app', name: 'app' };
 
 const NOTICE: LocalizedText = { message: 'Could not open file: {0}', args: ['a.ts'] };
-const ACTIONS: readonly LocalizedText[] = [{ message: 'Open' }, { message: 'Cancel' }];
+const ACTIONS: readonly LocalizedText[] = [{ message: 'Retry' }, { message: 'Cancel' }];
 
 const emptyMirrors = {
   trust: { keys: [] },
@@ -62,7 +62,9 @@ function clientMain(router: CoreRouter, id: string, language: DesktopLanguage, p
       authority: 'loopback',
       hostId: 'h1',
       hostName: () => 'Build server',
+      openLink: async () => false,
       platform: createFakePlatform(),
+      runProcess: async () => undefined,
       projects: () => [PROJECT],
       fileRoots: () => [PROJECT],
       onProjectsChanged: none,
@@ -77,7 +79,7 @@ function clientMain(router: CoreRouter, id: string, language: DesktopLanguage, p
       pick: async () => undefined,
       ui: { ask: async () => 0, askpass: async () => ({ cancelled: true }), worktrees: hostExtras().ui.worktrees },
       notices,
-      user: { credentials: async () => ({ type: 'none' }), speak: async () => undefined, gitCredential: async () => ({ kind: 'none' }) },
+      user: { ...NO_USER_RELAYS, credentials: async () => ({ type: 'none' }), speak: async () => undefined, gitCredential: async () => ({ kind: 'none' }), browserTool: async () => ({ content: [] }) },
       base,
       t: (message, ...args) => localization.t(message, ...args),
     }),
@@ -94,7 +96,7 @@ function daemonCore() {
   const coreLoop = createLoopback();
   const daemonMain = createMainEndpoint(coreLoop.main, quiet, undefined, processActor);
   const core = createCoreEndpoint(coreLoop.core, quiet, undefined, processActor);
-  const router = createCoreRouter({ core: daemonMain, state: { snapshot: () => ({}), update: async () => undefined, flush: async () => undefined }, registry: createRunRegistry(), mirrors: createClientMirrors(), secrets: new Map(), e2eHooks: false, reload: quiet, log: quiet });
+  const router = createCoreRouter({ core: daemonMain, state: { snapshot: () => ({}), update: async () => undefined, flush: async () => undefined }, registry: createRunRegistry(), mirrors: createClientMirrors(), secrets: new Map(), e2eHooks: false, reload: quiet, agentShellUrl: () => undefined, clientPolicyChanged: () => undefined, log: quiet });
   cleanups.push(() => {
     router.dispose();
     core.close('closed');
@@ -115,8 +117,8 @@ describe('a daemon\'s core\'s notification on this computer', () => {
     await greek.endpoint.request('catalog.list', { projectKey: PROJECT.key, complete: false }).catch(() => undefined);
     expect(await ask()).toBe(1);
 
-    expect(english.shown).toEqual([{ text: 'Could not open file: a.ts', labels: ['Open', 'Cancel'] }]);
-    expect(greek.shown).toEqual([{ text: 'Δεν ήταν δυνατό το άνοιγμα του αρχείου: a.ts', labels: ['Άνοιγμα', 'Άκυρο'] }]);
+    expect(english.shown).toEqual([{ text: 'Could not open file: a.ts', labels: ['Retry', 'Cancel'] }]);
+    expect(greek.shown).toEqual([{ text: 'Δεν ήταν δυνατό το άνοιγμα του αρχείου: a.ts', labels: ['Επανάληψη', 'Άκυρο'] }]);
     expect(greek.shown[0]).toEqual({ text: inGreek(NOTICE), labels: ACTIONS.map(inGreek) });
     expect(english.shown[0]).toEqual({ text: englishText(NOTICE), labels: ACTIONS.map(englishText) });
   });

@@ -87,8 +87,13 @@ ALTER TABLE entries ADD COLUMN credential_source TEXT;
 ALTER TABLE files ADD COLUMN client_providers TEXT;
 `;
 
+// A project indexed from a remote host's session mirror names that host; its key is host-qualified (hostProjectKey).
+const MIGRATION_V3 = `
+ALTER TABLE projects ADD COLUMN host_id TEXT;
+`;
+
 // Entry i migrates user_version i to i + 1. Append only; never edit a shipped entry.
-const MIGRATIONS: readonly string[] = [MIGRATION_V1, MIGRATION_V2];
+const MIGRATIONS: readonly string[] = [MIGRATION_V1, MIGRATION_V2, MIGRATION_V3];
 
 const userVersion = (db: UsageDatabase): number => Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
 

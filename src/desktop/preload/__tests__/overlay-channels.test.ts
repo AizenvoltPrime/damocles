@@ -51,6 +51,15 @@ describe('parseInputRequest', () => {
     expect(parseInputRequest({ ...password, value: 'hunter2' })).toBeUndefined();
     expect(parseInputRequest({ ...password, password: 'yes' })).toBeUndefined();
   });
+
+  it('carries the refusal main asks again with, bounded, never on a password box', () => {
+    const again = { kind: 'input', title: 'Change local port for 5173', prompt: 'Local port on this computer', value: '5174', validation: 'localPort', error: 'Port 5174 is in use on this computer' };
+    expect(parseInputRequest(again)).toEqual(again);
+    expect(parseInputRequest({ ...again, error: '' })).toBeUndefined();
+    expect(parseInputRequest({ ...again, error: 5174 })).toBeUndefined();
+    expect(parseInputRequest({ ...again, error: 'e'.repeat(MAX_OVERLAY_TEXT_LENGTH + 1) })).toBeUndefined();
+    expect(parseInputRequest({ kind: 'input', prompt: 'Password', password: true, error: 'Wrong password' })).toBeUndefined();
+  });
 });
 
 describe('parseInputAnswer', () => {

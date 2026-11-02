@@ -44,6 +44,11 @@ export function watchWorkerPath(paths: AppPaths): string {
   return path.join(paths.unpackedRoot, 'dist', 'watch-worker.js');
 }
 
+// The Dev Containers CLI's entry, which the app's binary runs as Node from app.asar.unpacked.
+export function devcontainersCliPath(paths: AppPaths): string {
+  return path.join(paths.unpackedRoot, 'node_modules', '@devcontainers', 'cli', 'devcontainer.js');
+}
+
 // dist/core-host.js, which utilityProcess.fork loads from inside app.asar when packaged, so its bare imports resolve
 // app.asar/node_modules and it stays under asar integrity; never add it to ASAR_UNPACK.
 export function coreHostEntryPath(paths: AppPaths): string {

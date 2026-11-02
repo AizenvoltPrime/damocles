@@ -48,6 +48,8 @@ const props = defineProps<{
   submitting: boolean;
   /** The extension's reason for refusing the last write, or null. */
   writeError: McpWriteErrorInfo | null;
+  /** The remote host whose `~/.damocles/mcp.json` the form writes, as this computer names it; undefined for this computer's file. */
+  host?: string | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -200,7 +202,7 @@ const ADD_BUTTON = '-ml-1 flex h-6.5 items-center gap-1.25 self-start rounded-7 
 <template>
   <OverlayShell
     :title="editingName === null ? t('mcp.form.addTitle') : t('mcp.form.editTitle')"
-    :subtitle="t('mcp.form.description')"
+    :subtitle="host === undefined ? t('mcp.form.description') : t('mcp.form.descriptionOnHost', { host })"
     :icon="editingName === null ? Plus : Pencil"
     max-width="38.75rem"
     :has-draft="isDirty || submitting"

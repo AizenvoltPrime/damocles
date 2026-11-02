@@ -23,7 +23,7 @@ const FALLBACK_MATCHERS: readonly RegExp[] = [
   /^ *(?<link>(?<path>.+))/,
 ];
 
-// xterm's addon-web-links URL pattern; only http and https open (main's window-open handler allows no other scheme).
+// xterm's addon-web-links URL pattern; only http and https open (main opens no other scheme).
 const URL_PATTERN = /(https?|HTTPS?):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~[\]`()<>]/g;
 const TRAILING_SPECIAL = /[[\]"'.]$/;
 

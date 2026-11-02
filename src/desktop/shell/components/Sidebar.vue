@@ -10,6 +10,8 @@ import { atRootFont, GRID_SASH_REM, ROW_SASH_OVERLAP_REM, ROW_SASH_REM, SASH_KEY
 import ProjectsSection from './ProjectsSection.vue';
 import ChatsSection from './ChatsSection.vue';
 import FilesSection from './FilesSection.vue';
+import PortsSection from './PortsSection.vue';
+import { wslNoticeDistro } from './wsl-reopen';
 import SearchSection from '../search/SearchSection.vue';
 import ScmSection from '../scm/ScmSection.vue';
 import RepositoriesSection from '../scm/RepositoriesSection.vue';
@@ -35,6 +37,11 @@ const chats = ref<InstanceType<typeof ChatsSection> | null>(null);
 const files = ref<InstanceType<typeof FilesSection> | null>(null);
 const { width: windowWidth } = useWindowSize();
 const { height: sidebarHeight } = useElementSize(root);
+// Ports is docked below the ordered sections, as tall as its rows up to its cap; the sections share what it leaves.
+const ports = ref<InstanceType<typeof PortsSection> | null>(null);
+const portsElement = computed(() => (ports.value?.$el instanceof HTMLElement ? ports.value.$el : null));
+const { height: portsHeight } = useElementSize(portsElement, undefined, { box: 'border-box' });
+const portsCollapsed = ref(false);
 
 // The sidebar owns its width, section sizes and Search states: it edits them here and reports them, and main's replace them
 // only when main replaced the layout itself, so a state push carrying older ones never undoes a change.
@@ -62,7 +69,7 @@ const width = computed(() => Math.min(Math.max(layout.value.sidebarWidth, minWid
 const sections = computed(() => layout.value.sections);
 const order = computed(() => layout.value.sectionOrder);
 const filler = computed(() => (['chats', 'files', 'search', 'projects', 'repos', 'scm', 'graph'] as const).find((name) => !sections.value[name].collapsed));
-const sectionRoom = computed(() => sidebarHeight.value - remPx(SECTION_CHROME_REM) - minSection.value);
+const sectionRoom = computed(() => sidebarHeight.value - remPx(SECTION_CHROME_REM) - portsHeight.value - minSection.value);
 const fixedSections = computed(() => order.value.filter(isSizedSection).filter((name) => !sections.value[name].collapsed && filler.value !== name));
 const sizes = computed(() => {
   const stored = Object.fromEntries(SIZED_SECTIONS.map((name) => [name, sections.value[name].size])) as SectionSizes;
@@ -148,11 +155,17 @@ provide(SECTION_ORDER, {
 });
 
 const selectedProject = computed(() => props.state.projects.find((project) => project.key === props.state.selected.projectKey));
+const filesWslNotice = computed(() => {
+  const project = selectedProject.value;
+  const distro = project && wslNoticeDistro(project);
+  return project && distro !== undefined ? { projectKey: project.key, projectName: project.name, distro } : undefined;
+});
 // D31: Files, Search, Source control and Repositories read the folder shown for the selected project, by its root key.
 const shownFolder = computed(() => (selectedProject.value ? props.state.shownFolders[selectedProject.value.key] : undefined));
 const viewKey = computed(() => shownFolder.value?.rootKey ?? selectedProject.value?.key);
 // The selected project's host as its banner shows it: away once a drop outlasted the grace, or while it is not connected at all.
 const selectedHost = computed(() => props.state.hosts.find((host) => host.authorityKey === selectedProject.value?.authority.key));
+const portsHost = computed(() => (selectedProject.value && selectedProject.value.authority.kind !== 'local' ? selectedHost.value : undefined));
 const hostView = useHostConnection(() => (selectedHost.value ? { hostId: selectedHost.value.hostId, connected: selectedHost.value.connection === 'connected', reconnect: selectedHost.value.reconnect } : undefined));
 const filesAway = computed(() => {
   const project = selectedProject.value;
@@ -327,7 +340,6 @@ defineExpose({
       :api="api"
       :projects="state.projects"
       :selected-key="state.selected.projectKey"
-      :remote-enabled="state.remoteEnabled"
       :hosts="state.hosts"
       :view="state.projectsView"
       :groups="state.projectGroups"
@@ -381,6 +393,10 @@ defineExpose({
       :collapsed="layout.sections.files.collapsed"
       :body-size="bodySize('files')"
       :away="filesAway"
+      :remote="selectedProject !== undefined && selectedProject.authority.kind !== 'local'"
+      :offline="selectedProject?.connection !== 'connected'"
+      :transfers-unsupported-on="selectedProject?.transfersUnsupported ? selectedProject.authority.name : undefined"
+      :wsl-notice="filesWslNotice"
       @toggle="toggleSection('files')"
       @expand="expand('files')"
     />
@@ -433,6 +449,17 @@ defineExpose({
       @expand="expand('search')"
       @view-state="selectedProject && saveSearchView(selectedProject.key, $event)"
       @reveal-in-files="files?.reveal($event)"
+    />
+    <!-- A remote project's forwarded ports; docked last, outside the user's order. -->
+    <PortsSection
+      v-if="selectedProject && portsHost"
+      ref="ports"
+      :api="api"
+      :project-key="selectedProject.key"
+      :host-id="portsHost.hostId"
+      :host-name="portsHost.name"
+      :collapsed="portsCollapsed"
+      @toggle="portsCollapsed = !portsCollapsed"
     />
     <!-- A sash: no shadcn part covers a resize handle. -->
     <div

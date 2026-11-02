@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, toRaw, useId, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useElementSize, useVirtualList } from '@vueuse/core';
-import { FileCheck2, FileSymlink, FileX2, MessageSquare, Trash2, TriangleAlert } from 'lucide-vue-next';
+import { ArrowRight, FileCheck2, FileSymlink, FileX2, MessageSquare, Trash2, TriangleAlert } from 'lucide-vue-next';
 import RollingNumber from '@/components/RollingNumber.vue';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -341,13 +341,19 @@ function onLineKeydown(event: KeyboardEvent, row: Row, index: number): void {
   }
 }
 
-// A file outside the chat's folder is listed by its native absolute path, so both separators split it.
-const lastSeparator = (path: string): number => Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+// A chat's file outside its folder is listed by its native absolute path, so on Windows both separators split it; git's paths
+// and POSIX names split only at '/', since a POSIX name may hold a backslash.
+const lastSeparator = (path: string): number => (props.source.windowsPaths === true ? Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) : path.lastIndexOf('/'));
 const nameOf = (path: string): string => path.slice(lastSeparator(path) + 1);
 const dirOf = (path: string): string => path.slice(0, Math.max(0, lastSeparator(path)));
 const fileStats = computed(() => (shown.value?.value.kind === 'diff' ? shown.value.value.diff.stats : undefined));
 const empty = computed(() => (shown.value?.value.kind === 'diff' ? shown.value.value.diff.empty : undefined));
 const commentCount = (path: string): number => comments.value?.of(path).length ?? 0;
+// A notice in a pair's words: two files are identical, or one of them is binary.
+const noticeKey = (kind: 'diff' | 'binary' | 'tooLarge' | 'missing' | 'unreadable'): string => {
+  const key = kind === 'diff' ? (empty.value ?? 'noChanges') : kind;
+  return props.source.pair && (key === 'noChanges' || key === 'binary') ? `changesTab.pair.${key}` : `changesTab.notice.${key}`;
+};
 
 const lineClass = (line: DiffLine): string =>
   line.type === 'addition' ? 'bg-(--d-add)' : line.type === 'deletion' ? 'bg-(--d-del)' : line.type === 'gap' ? 'text-(--d-faint-text) bg-(--d-panel)' : '';
@@ -382,6 +388,7 @@ defineExpose({ scrollTo, addComment });
           class="flex h-8 max-w-full min-w-0 items-center"
         ><span class="truncate text-(--d-text)">{{ lead }}</span></span>
         <span
+          v-if="!source.pair"
           data-testid="changes-summary"
           class="flex h-8 shrink-0 items-center gap-2"
         >
@@ -409,6 +416,7 @@ defineExpose({ scrollTo, addComment });
     >
       <!-- A virtualized listbox of the files, with the sliding selection; no shadcn part virtualizes a list. -->
       <div
+        v-if="!source.pair"
         v-bind="containerProps"
         :id="listId"
         role="listbox"
@@ -498,12 +506,40 @@ defineExpose({ scrollTo, addComment });
             :path="selected.path"
             class="size-3.25 shrink-0"
           />
+          <!-- A pair names both files, each with its folder, which shortens first as the header narrows; the arrow reads left to right. -->
+          <template v-if="source.pair">
+            <span
+              data-testid="changes-pair-left"
+              class="flex min-w-0 items-baseline gap-1.5"
+              :title="visibleText(source.pair.left.path)"
+            >
+              <span class="max-w-full min-w-0 shrink-0 truncate font-mono text-(--d-text)">{{ visibleText(source.pair.left.name) }}</span>
+              <span class="min-w-0 truncate text-11 text-(--d-faint-text)">{{ visibleText(source.pair.left.folder) }}</span>
+            </span>
+            <ArrowRight
+              aria-hidden="true"
+              class="size-3 shrink-0 self-center text-(--d-faint)"
+            />
+            <span class="sr-only">{{ t('changesTab.pair.against') }}</span>
+            <span
+              data-testid="changes-pair-right"
+              class="flex min-w-0 items-baseline gap-1.5"
+              :title="visibleText(source.pair.right.path)"
+            >
+              <span class="max-w-full min-w-0 shrink-0 truncate font-mono text-(--d-text)">{{ visibleText(source.pair.right.name) }}</span>
+              <span class="min-w-0 truncate text-11 text-(--d-faint-text)">{{ visibleText(source.pair.right.folder) }}</span>
+            </span>
+          </template>
           <span
+            v-else
             data-testid="changes-path"
             class="min-w-0 truncate font-mono text-(--d-text)"
           >{{ visibleText(selected.path) }}</span>
           <!-- The name comes first: as the header narrows the status word goes, then the counts, then the note's words. -->
-          <span class="shrink-0 text-(--d-faint-text) @max-[20rem]/file:hidden">{{ selected.status }}</span>
+          <span
+            v-if="selected.status"
+            class="shrink-0 text-(--d-faint-text) @max-[20rem]/file:hidden"
+          >{{ selected.status }}</span>
           <span
             v-if="fileStats"
             class="shrink-0 font-mono @max-[14rem]/file:hidden"
@@ -544,8 +580,10 @@ defineExpose({ scrollTo, addComment });
             v-if="loadingBar"
             role="progressbar"
             :aria-label="t('changesTab.loading')"
-            class="d-sweep-bar absolute inset-x-0 -bottom-px h-0.5 text-(--d-accent)"
-          />
+            class="absolute inset-x-0 -bottom-px h-0.5"
+          >
+            <div class="d-sweep-bar size-full text-(--d-accent)" />
+          </div>
         </div>
         <div
           v-if="entries.length === 0"
@@ -777,7 +815,7 @@ defineExpose({ scrollTo, addComment });
                 />
               </span>
               <p class="max-w-80 text-12.5 text-(--d-muted)">
-                {{ shown.value.kind === 'missing' && source.missingText ? source.missingText : t(`changesTab.notice.${shown.value.kind === 'diff' ? (empty ?? 'noChanges') : shown.value.kind}`) }}
+                {{ shown.value.kind === 'missing' && source.missingText ? source.missingText : t(noticeKey(shown.value.kind)) }}
               </p>
             </div>
           </div>

@@ -7,6 +7,9 @@ D_VERSION=''
 D_INSTALL_FOLDER=''
 D_PREVIOUS_KIND='none'
 D_PREVIOUS_FOLDER=''
+D_WSL_CACHE=''
+D_CONTAINER_CACHE=''
+D_DATA_FOLDER=''
 D_LINUX_X64=''
 D_LINUX_ARM64=''
 D_ALPINE_X64=''
@@ -146,6 +149,10 @@ check_glibcxx() {
 }
 
 check_kernel() {
+  # WSL 1 runs Linux programs on the Windows kernel, and its release (4.4.0-<build>-Microsoft) names no Linux kernel
+  case "$1" in
+    *-Microsoft) return 0 ;;
+  esac
   kernel=$(printf '%s' "$1" | sed 's/[^0-9.].*//')
   if ! version_at_least "$kernel" "$NEEDED_KERNEL"; then
     fail kernelTooOld "\"found\":\"$(json_str "$kernel")\",\"needed\":\"$NEEDED_KERNEL\""
@@ -308,6 +315,67 @@ download() {
   wait "$fetcher"
 }
 
+# WSL: once the app answers that its cache holds the package, copies it from the cache's Linux path. wslpath's answer is
+# taken only as one absolute line; the copy is checked by its hash as a download is.
+copy_from_cache() {
+  say '{"kind":"cache"}'
+  IFS= read -r answer || return 1
+  [ "$answer" = ready ] || return 1
+  cache=$(wslpath -u "$D_WSL_CACHE" 2>/dev/null) || cache=''
+  case "$cache" in
+    /*) ;;
+    *)
+      say '{"kind":"copyFailed","reason":"wslpath"}'
+      return 1
+      ;;
+  esac
+  if [ "$(printf '%s' "$cache" | wc -l)" -ne 0 ]; then
+    say '{"kind":"copyFailed","reason":"wslpath"}'
+    return 1
+  fi
+  if ! cp "$cache/$package_file" "$1" >&2; then
+    say '{"kind":"copyFailed","reason":"copy"}'
+    return 1
+  fi
+}
+
+# A container: the stage makes a private folder, the app copies the package into it with the engine's cp, and the stage takes
+# it from there; the copy is checked by its hash as a download is.
+copy_from_container() {
+  if ! mkdir -m 700 "$D_CONTAINER_CACHE" >&2; then
+    say '{"kind":"copyFailed","reason":"cacheFolder"}'
+    return 1
+  fi
+  say '{"kind":"cache"}'
+  IFS= read -r answer || answer=''
+  if [ "$answer" = ready ] && cp "$D_CONTAINER_CACHE/$package_file" "$1" >&2; then
+    rm -rf "$D_CONTAINER_CACHE"
+    return 0
+  fi
+  [ "$answer" = ready ] && say '{"kind":"copyFailed","reason":"copy"}'
+  rm -rf "$D_CONTAINER_CACHE"
+  return 1
+}
+
+# A devcontainer keeps Damocles' data in its data volume, so the install, sessions and settings outlive a rebuild: a home with
+# no ~/.damocles gets a link to the volume's folder; a home that cannot hold it fails as a home the install cannot write.
+link_data_folder() {
+  if [ -n "$D_DATA_FOLDER" ] && [ ! -e "$HOME/.damocles" ] && [ ! -L "$HOME/.damocles" ]; then
+    ln -s "$D_DATA_FOLDER" "$HOME/.damocles" || fail noexec "\"folder\":\"$(json_str "$HOME/.damocles")\",\"reason\":\"notWritable\""
+  fi
+}
+
+# The package into $1: copied from the app's cache on WSL or in a container, downloaded elsewhere.
+fetch_package() {
+  if [ -n "$D_WSL_CACHE" ]; then
+    copy_from_cache "$1"
+  elif [ -n "$D_CONTAINER_CACHE" ]; then
+    copy_from_container "$1"
+  else
+    download "$1"
+  fi
+}
+
 # Reads exactly $1 bytes of stdin into $2. Each dd makes one read of at most its block, so nothing past the upload is consumed.
 read_exact() {
   left=$1
@@ -448,8 +516,9 @@ clean_previous() {
   if [ -z "$kept" ]; then say '{"kind":"settled"}'; fi
 }
 
-# Installs the package into $version_dir under the install lock: downloaded or uploaded into a staging folder, its hash
-# checked before it is unpacked, its self-test run, then renamed into place.
+# Installs the package into $version_dir under the install lock: downloaded (copied from the app's cache on WSL, or into a
+# container by the app's engine cp) or uploaded into a staging folder, its hash checked before it is unpacked, its self-test
+# run, then renamed into place.
 install_version() {
   take_lock
   if installed "$version_dir"; then
@@ -463,7 +532,7 @@ install_version() {
     fail noexec "\"folder\":\"$(json_str "$install")\",\"reason\":\"notWritable\""
   }
   archive="$staging/$package_file"
-  if ! download "$archive"; then
+  if ! fetch_package "$archive"; then
     rm -f "$archive"
     if ! upload "$archive"; then
       rm -rf "$staging"
@@ -508,6 +577,8 @@ install_version() {
 
 # BEGIN MAIN
 step checking
+
+link_data_folder
 
 kernel_name=$(uname -s)
 machine=$(uname -m)

@@ -51,6 +51,10 @@ import { openAppSettingsFor } from "./open-app-settings";
 import { openTranscriptView } from "./transcript-view";
 import { asClient, clientPrefersApiKey } from "../client-snapshots";
 import { deviceHost, forEachDevice, hostForChange } from "./device-hosts";
+import { relayedServerDescriptors, remoteAvailableNames, runRelayedMcpRequest, type RelayedMcpExposure, type RelayedMcpRequest } from "../pi-session/mcp/relayed-mcp";
+import { MCP_REMOTE_AVAILABLE_SETTING, MCP_RESOURCE_EXPOSURE_SETTING, MCP_TOOL_EXPOSURE_SETTING, RELAYABLE_SOURCES } from "../../shared/types/mcp";
+import { toolExposureLayers } from "../pi-session/mcp/exposure";
+import type { RelayedMcpServer } from "../../shared/remote-user";
 
 /**
  * Settles once every config file write core started (MCP, settings and permission files), one queued meanwhile included,
@@ -73,6 +77,10 @@ export class ChatPanelProvider {
   private readonly sessionCatalog: SessionCatalog;
   private readonly historyManager: HistoryManager;
   private readonly settingsManager: SettingsManager;
+  private readonly relayedMcpListeners = new Set<() => void>();
+  // hear the user MCP manager's tool changes once it first served a remote host
+  private readonly relayedMcpToolListeners = new Set<() => void>();
+  private relayedMcpToolsHeard = false;
   private readonly workspaceManager: WorkspaceManager;
   private readonly sessionManager: SessionManager;
   private readonly messageRouter: MessageRouter;
@@ -227,7 +235,12 @@ export class ChatPanelProvider {
 
     this.usageStatsService = new UsageStatsService({
       workerPath: platform.paths.workerEntry("usageStats"),
-      paths: { sessionsDir: path.join(PI_AGENT_DIR, "sessions"), ledgerPath: SUBCALL_USAGE_LEDGER_PATH, dbPath: USAGE_INDEX_DB_PATH },
+      paths: {
+        sessionsDir: path.join(PI_AGENT_DIR, "sessions"),
+        ledgerPath: SUBCALL_USAGE_LEDGER_PATH,
+        dbPath: USAGE_INDEX_DB_PATH,
+        ...(platform.paths.remoteMirrors !== undefined ? { remoteMirrorsDir: platform.paths.remoteMirrors } : {}),
+      },
       notifications: platform.notifications,
     });
     this.compassRegistry = new CompassRegistry({ platform });
@@ -504,6 +517,10 @@ export class ChatPanelProvider {
     return this.voiceService;
   }
 
+  getMemoryService(): MemoryService {
+    return this.memoryService;
+  }
+
   /**
    * Push runtime MCP status to one panel. `sendMcpStatus` awaits a live SDK round-trip, so it can
    * reject on a server that is mid-teardown; every caller here is a fire-and-forget listener, and an
@@ -516,13 +533,74 @@ export class ChatPanelProvider {
   }
 
   /**
+   * This computer's personal MCP servers marked available on remote hosts, with the user servers fed to the user MCP manager
+   * and connected first, which no local chat may have done yet.
+   */
+  private async relayedMcp(): Promise<{ readonly userMcp: NonNullable<ReturnType<PiRuntime["getUserMcp"]>>; readonly servers: RelayedMcpServer[]; readonly exposure: RelayedMcpExposure }> {
+    const runtime = PiRuntime.get();
+    await runtime.init();
+    const userMcp = runtime.getUserMcp();
+    if (!userMcp) throw new Error("The MCP client is not available");
+    if (!this.relayedMcpToolsHeard) {
+      this.relayedMcpToolsHeard = true;
+      const stop = userMcp.onToolsChanged(() => {
+        for (const listener of [...this.relayedMcpToolListeners]) listener();
+      });
+      this.subscriptions.push({ dispose: () => void stop() });
+    }
+    if (!this.settingsManager.getMcpConfigLoaded()) await this.settingsManager.loadMcpConfig();
+    const key = this.folderRegistry.defaultTarget().key;
+    await userMcp.reconcile(this.settingsManager.getEnabledMcpServers(key).userUnion);
+    await userMcp.whenReady();
+    // judged on the user scope's own entries: a project server of the same name in one folder does not hide it
+    const relayable = (name: string): boolean => {
+      const source = this.settingsManager.getUserMcpServerSource(name);
+      return source !== undefined && RELAYABLE_SOURCES.has(source);
+    };
+    // a user server's exposure on this computer is its config's under the user settings; project and local layers are a folder's
+    const exposure = {
+      tools: toolExposureLayers(this.platform.settings.inspect<unknown>(MCP_TOOL_EXPOSURE_SETTING), false),
+      resources: toolExposureLayers(this.platform.settings.inspect<unknown>(MCP_RESOURCE_EXPOSURE_SETTING), false),
+    };
+    return { userMcp, servers: relayedServerDescriptors(userMcp, relayable, remoteAvailableNames(this.platform.settings), exposure), exposure };
+  }
+
+  /** The personal MCP servers a remote host may relay now: names and schemas only. */
+  async relayedMcpServers(): Promise<RelayedMcpServer[]> {
+    // no server is started for remote hosts before the user marks one
+    if (remoteAvailableNames(this.platform.settings).length === 0) return [];
+    return (await this.relayedMcp()).servers;
+  }
+
+  /** Runs a remote host's request on a personal server, refused unless the server is one relayed now; the remote caller's abort ends it. */
+  async runRelayedMcp(request: RelayedMcpRequest, signal?: AbortSignal): Promise<unknown> {
+    const { userMcp, servers, exposure } = await this.relayedMcp();
+    return runRelayedMcpRequest(userMcp, servers, exposure, request, signal);
+  }
+
+  /** Hears every change that may change what relayedMcpServers answers: the marks, the exposures, the config, a server's tools. */
+  onRelayedMcpChange(listener: () => void): Disposable {
+    const settings = [MCP_REMOTE_AVAILABLE_SETTING, MCP_TOOL_EXPOSURE_SETTING, MCP_RESOURCE_EXPOSURE_SETTING].map((key) => this.platform.settings.onDidChange(key, listener));
+    this.relayedMcpListeners.add(listener);
+    this.relayedMcpToolListeners.add(listener);
+    return {
+      dispose: () => {
+        for (const subscription of settings) subscription.dispose();
+        this.relayedMcpListeners.delete(listener);
+        this.relayedMcpToolListeners.delete(listener);
+      },
+    };
+  }
+
+  /**
    * Give every panel its own folder's MCP list and scope, so a folder's servers never reach another
    * folder's panels. Live connections reconcile with no session restart (US-014.9).
    */
   private refeedMcpPanels(): void {
+    for (const listener of [...this.relayedMcpListeners]) listener();
     for (const [, instance] of this.panelManager.getPanels()) {
       const folderKey = instance.folder.key;
-      this.panelManager.postMessage(instance.host, this.settingsManager.buildMcpConfigUpdate(folderKey));
+      this.settingsManager.sendMcpConfig(instance.host, folderKey);
       instance.session.setMcpServers(this.settingsManager.getEnabledMcpServers(folderKey));
       // The config update describes config only, so every enabled server reads as `idle` until real
       // status is pushed.

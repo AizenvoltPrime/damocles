@@ -22,9 +22,10 @@ const MAX_DEPTH = 10;
 export const CONTRACTS = [
   ...['CoreRequests', 'MainRequests', 'CoreEvents', 'MainEvents', 'CoreMirrorTopics', 'MirrorTopics', 'CorePanelOps', 'MainPanelOps'].map((type) => ({ file: 'src/desktop/core-protocol/messages.ts', type, table: true })),
   { file: 'src/desktop/core-protocol/messages.ts', type: 'CoreInit' },
-  ...['WorkspaceRequests', 'WorkspaceClientEvents', 'WorkspaceHostEvents'].map((type) => ({ file: 'src/desktop/workspace/messages.ts', type, table: true })),
+  ...['WorkspaceRequests', 'WorkspaceClientEvents', 'WorkspaceHostEvents', 'WorkspaceToClientRequests'].map((type) => ({ file: 'src/desktop/workspace/messages.ts', type, table: true })),
   ...['ControlRequests', 'ControlEvents'].map((type) => ({ file: 'src/desktop/daemon/control-messages.ts', type, table: true })),
   { file: 'src/desktop/daemon/control-messages.ts', type: 'FrozenControl', table: true, frozen: true },
+  ...['PortsRequests', 'PortsEvents'].map((type) => ({ file: 'src/desktop/daemon/ports/ports-messages.ts', type, table: true })),
   ...['Hello', 'Welcome', 'Refused', 'HostFacts'].map((type) => ({ file: 'src/remote/handshake.ts', type, frozen: true })),
   ...['ExtensionToWebviewMessage', 'WebviewToExtensionMessage'].map((type) => ({ file: 'src/shared/types/messages.ts', type })),
 ];

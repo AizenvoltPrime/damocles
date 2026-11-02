@@ -1203,11 +1203,13 @@ describe('AgentManager → subagent gate context', () => {
     mgr.dispose();
   });
 
-  it('on a daemon\'s core leaves the browser tools out of what the agent\'s ToolSearch may load, since the browser is the client\'s', async () => {
+  it('on a daemon\'s core with no client attached leaves the browser tools out of what the agent\'s ToolSearch may load, since the browser runs on the client', async () => {
     vi.mocked(createSubagentExtensionFactory).mockClear();
     const { engine } = makeEngine();
     engine.parentFullToolNames = () => ['Read', 'Bash', ...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, 'ToolSearch'];
-    installPlatform({ ...createFakePlatform(), remote: createFakeRemoteHost().remote });
+    const fake = createFakeRemoteHost();
+    fake.set('clientAuth', 'client-a', undefined);
+    installPlatform({ ...createFakePlatform(), remote: fake.remote });
     try {
       const mgr = new AgentManager(engine, 2);
       mgr.spawn(spec(0));

@@ -251,6 +251,13 @@ describe('terminal quick picks, menu glyphs and the paste preview', () => {
     for (const query of [undefined, null, 3, ['x'], { value: 'x' }]) expect(parseOverlayAnswer({ kind: 'quickPick', itemId: 'red', query }, quickPick), String(query)).toBeUndefined();
   });
 
+  it('lets a menu item carry a hint line, shown as its label is, and refuses one that is no text', () => {
+    const menu = (item: Record<string, unknown>) => parseOverlayRequest({ kind: 'menu', label: 'Reopen in WSL', anchor: grid, items: [{ kind: 'item', id: 'distro:Ubuntu', label: 'Ubuntu', ...item }] });
+    expect(menu({ hint: 'Running · Default' })).toMatchObject({ items: [{ hint: 'Running · Default' }] });
+    expect(menu({ hint: 'x'.repeat(MAX_OVERLAY_LABEL_LENGTH + 5) })).toMatchObject({ items: [{ hint: `…${'x'.repeat(MAX_OVERLAY_LABEL_LENGTH - 1)}` }] });
+    for (const hint of ['', 3, ['x']]) expect(menu({ hint }), JSON.stringify(hint)).toBeUndefined();
+  });
+
   it('lets a menu item carry a disabled reason only while disabled, as non-empty text within MAX_OVERLAY_LABEL_LENGTH', () => {
     const menu = (item: Record<string, unknown>) => parseOverlayRequest({ kind: 'menu', label: 'Stash', anchor: grid, items: [{ kind: 'item', id: 'stashPopLatest', label: 'Pop Latest Stash', ...item }] });
     expect(menu({ disabled: true, disabledReason: 'No stashes' })).toMatchObject({ items: [{ disabled: true, disabledReason: 'No stashes' }] });
@@ -448,16 +455,40 @@ describe('the QuickInput asker', () => {
 
 describe('the Connect dialog request', () => {
   const card = {
-    hostId: 'h1', name: 'prod-1', destinationLabel: 'prod-1', connection: 'offline', signInNeeded: false, recentFolders: ['/srv/app'], projectFolders: [],
+    hostId: 'h1', kind: 'ssh', name: 'prod-1', destinationLabel: 'prod-1', connection: 'offline', signInNeeded: false, recentFolders: ['/srv/app'], projectFolders: [],
     notices: [{ code: 'noLinger', params: { user: 'u' } }], allowBypass: false, passwordless: false, keyInstalledByDamocles: false, lingerEnabledByDamocles: false,
   };
-  const request = { kind: 'connect', hosts: [card], sshConfigAliases: ['staging'] };
+  const request = { kind: 'connect', hosts: [card], distros: [], sshConfigAliases: ['staging'] };
 
   it('takes what main builds within the bounds, and only main opens it', () => {
     expect(parseConnectRequest(request)).toEqual(request);
     expect(parseConnectRequest({ ...request, sshConfigAliases: [...Array.from({ length: 999 }, (_, index) => `h${index}`), 'a'.repeat(255)] })).toBeDefined();
-    expect(parseConnectRequest({ ...request, hostId: 'h1', attempt: { attemptId: 'a', hostId: 'h1', step: 'installing', visited: ['connecting', 'installing'], progress: 0.5, notices: [] } })).toBeDefined();
+    expect(parseConnectRequest({ ...request, hostId: 'h1', attempt: { attemptId: 'a', hostId: 'h1', transport: 'ssh', step: 'installing', visited: ['connecting', 'installing'], progress: 0.5, notices: [] } })).toBeDefined();
     expect(parseOverlayRequest(request)).toBeUndefined();
+  });
+
+  it('takes a filled-in host search only on the host list, bounded and without control characters', () => {
+    expect(parseConnectRequest({ ...request, query: 'deploy@10.0.7.12' })).toEqual({ ...request, query: 'deploy@10.0.7.12' });
+    expect(parseConnectRequest({ ...request, query: 'a'.repeat(1024) })).toBeDefined();
+    for (const query of ['', 'a'.repeat(1025), 'deploy@host\n-oProxyCommand=x', 'host\u202E', 7]) expect(parseConnectRequest({ ...request, query })).toBeUndefined();
+    expect(parseConnectRequest({ ...request, hostId: 'h1', query: 'prod-1' })).toBeUndefined();
+  });
+
+  it('takes WSL distros, a WSL card and a WSL attempt, which never authenticates or asks', () => {
+    const distro = { distro: 'Ubuntu-24.04', state: 'running', version: 2, isDefault: true, hostId: 'h2' };
+    const wslCard = { ...card, hostId: 'h2', kind: 'wsl', destinationLabel: 'Ubuntu-24.04', wsl: { distro: 'Ubuntu-24.04', version: 2, state: 'running', isDefault: true } };
+    expect(parseConnectRequest({ ...request, hosts: [wslCard], distros: [distro, { distro: 'Alpine', state: 'other', version: 1, isDefault: false }] })).toEqual({ ...request, hosts: [wslCard], distros: [distro, { distro: 'Alpine', state: 'other', version: 1, isDefault: false }] });
+    for (const bad of [{ distro: '-d' }, { state: 'paused' }, { version: 3 }, { isDefault: 'yes' }, { hostId: '' }]) {
+      expect(parseConnectRequest({ ...request, distros: [{ ...distro, ...bad }] })).toBeUndefined();
+    }
+    expect(parseConnectRequest({ ...request, distros: undefined })).toBeUndefined();
+    expect(parseConnectRequest({ ...request, hosts: [{ ...card, wsl: wslCard.wsl }] })).toBeUndefined();
+    expect(parseConnectRequest({ ...request, hosts: [{ ...card, kind: 'docker' }] })).toBeUndefined();
+    const attempt = { attemptId: 'a', hostId: 'h2', transport: 'wsl', step: 'installing', visited: ['connecting', 'checking', 'installing'], notices: [] };
+    expect(parseConnectRequest({ ...request, hostId: 'h2', attempt })).toBeDefined();
+    expect(parseConnectRequest({ ...request, hostId: 'h2', attempt: { ...attempt, visited: ['connecting', 'authenticating'] } })).toBeUndefined();
+    expect(parseConnectRequest({ ...request, hostId: 'h2', attempt: { ...attempt, prompt: { promptId: 'p', kind: 'secret', secretKind: 'password', text: 'Password:' } } })).toBeUndefined();
+    expect(parseConnectRequest({ ...request, hostId: 'h2', attempt: { ...attempt, transport: undefined } })).toBeUndefined();
   });
 
   it('refuses one past the bounds or malformed', () => {
@@ -474,7 +505,7 @@ describe('the Connect dialog request', () => {
       ...card, color: 'danger', os: 'win32', lastUsed: 5, clockSkewMs: -180000, installFolder: 'D:\\damocles', defaultPermissionMode: 'plan',
       failure: { code: 'timedOut', params: {} }, reconnect: { phase: 'waiting', since: 1, retryAt: 2 }, devices: [{ deviceName: 'laptop', self: true }],
     };
-    const attempt = { attemptId: 'a', hostId: 'h1', step: 'authenticating', visited: ['connecting', 'authenticating'], prompt: { promptId: 'p', kind: 'secret', secretKind: 'password', text: 'Password:', offerRemember: true }, notices: [] };
+    const attempt = { attemptId: 'a', hostId: 'h1', transport: 'ssh', step: 'authenticating', visited: ['connecting', 'authenticating'], prompt: { promptId: 'p', kind: 'secret', secretKind: 'password', text: 'Password:', offerRemember: true }, notices: [] };
     const parsed = parseConnectRequest({ ...request, hostId: 'h1', hosts: [{ ...full, extra: 'x' }], attempt: { ...attempt, extra: 'x' }, extra: 'x' });
     expect(parsed).toEqual({ ...request, hostId: 'h1', hosts: [full], attempt });
     expect(parsed!.hosts[0]).not.toBe(full);
@@ -486,7 +517,7 @@ describe('the Connect dialog request', () => {
       { defaultPermissionMode: 'yolo' }, { allowBypass: undefined }, { passwordless: 'yes' }, { connection: 'up' },
       { failure: { code: 'notACode', params: {} } }, { reconnect: { phase: 'failed', since: 1, code: 'timedOut' } }, { devices: [{ deviceName: '', self: true }] },
     ]) expect(parseConnectRequest({ ...request, hosts: [{ ...card, ...bad }] })).toBeUndefined();
-    const attempt = { attemptId: 'a', hostId: 'h1', step: 'installing', visited: ['connecting'], notices: [] };
+    const attempt = { attemptId: 'a', hostId: 'h1', transport: 'ssh', step: 'installing', visited: ['connecting'], notices: [] };
     for (const bad of [
       { progress: 1.5 }, { progress: Number.NaN }, { visited: ['flying'] }, { failure: { code: 'nope', params: {} } },
       { prompt: { promptId: 'p', kind: 'secret', secretKind: 'pin', text: 'x'.repeat(2001) } }, { prompt: { promptId: 'p', kind: 'secret', secretKind: 'mind', text: 'PIN:' } },

@@ -206,11 +206,11 @@ export async function readPidFile(file: string): Promise<PidRecord | undefined> 
 }
 
 // The run folder's list of the socket folders its daemon has, one absolute path per line: the next start and a removal read
-// it, so a crashed daemon's agent and relay folders, which its pid file does not name, are found too.
+// it, so a crashed daemon's agent, relay and CLI folders, which its pid file does not name, are found too.
 const SOCKET_FOLDERS_FILE = 'socket-folders';
 // the names a daemon makes in a socket folder: the endpoint's socket and token, the relay's socket (serve.ts), an agent
-// socket (agentSocketName); remove-posix.sh removes the same names
-const SOCKET_FOLDER_ENTRY = /^(?:daemon\.sock|token|askpass\.sock|agent-[0-9a-f]{24}\.sock)$/;
+// socket (agentSocketName), a terminal's CLI socket (cli-server.ts); remove-posix.sh removes the same names
+const SOCKET_FOLDER_ENTRY = /^(?:daemon\.sock|token|askpass\.sock|agent-[0-9a-f]{24}\.sock|cli-[0-9a-f]{24}\.sock)$/;
 
 export function socketFoldersFile(paths: RunPaths): string {
   return path.join(paths.runDir, SOCKET_FOLDERS_FILE);

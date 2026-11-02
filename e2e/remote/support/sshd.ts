@@ -4,6 +4,7 @@ import * as net from 'node:net';
 import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { HermeticHome } from '../../desktop/support/hermetic';
+import { shellQuote } from '../../../src/desktop/main/remote/bootstrap/quote';
 
 // The sshd fixtures: one Docker container per fixture, its sshd on a localhost port, and a temp ~/.ssh on this computer.
 
@@ -84,6 +85,11 @@ export interface SshdOptions {
   readonly image?: FixtureImage;
   /** The user's home on a tmpfs mounted noexec. */
   readonly noexecHome?: boolean;
+  /**
+   * The engine's socket mounted at /var/run/docker.sock for the dev user, and this absolute folder of the engine's own host
+   * mounted at the same path, so a bind mount the host's docker asks for names a folder the engine sees.
+   */
+  readonly engineFolder?: string;
 }
 
 export interface SshdFixture {
@@ -126,6 +132,7 @@ export async function startSshd(options: SshdOptions = {}): Promise<SshdFixture>
   const args = ['run', '-d', '--init', '--name', name, ...fixtureLabels(), '-p', `127.0.0.1:${port}:22`, '--hostname', 'prod-1', '--add-host', `${HOST_FROM_CONTAINER}:host-gateway`];
   // Docker's tmpfs default is 64 MiB, below the probe's 300 MB free space check, which must not be what fails.
   if (options.noexecHome) args.push('--tmpfs', `${TARGET_HOME}:rw,noexec,nosuid,size=1g,uid=1000,gid=1000,mode=0755`);
+  if (options.engineFolder !== undefined) args.push('-v', '/var/run/docker.sock:/var/run/docker.sock', '-v', `${options.engineFolder}:${options.engineFolder}`);
   args.push(tag);
   const sh = async (script: string, user: Account = 'root', input?: string | Buffer): Promise<string> =>
     docker(['exec', '-i', '-u', user, '-w', user === 'root' ? '/' : `/home/${user}`, name, 'sh', '-c', script], input);
@@ -136,6 +143,8 @@ export async function startSshd(options: SshdOptions = {}): Promise<SshdFixture>
   try {
     await docker(args);
     await newHostKey();
+    // the dev user joins the socket's group, whatever gid the engine's host gives it
+    if (options.engineFolder !== undefined) await sh(`gid=$(stat -c %g /var/run/docker.sock) && (getent group "$gid" > /dev/null || groupadd -g "$gid" engine) && usermod -aG "$(getent group "$gid" | cut -d: -f1)" ${TARGET_USER} && chown ${TARGET_USER}:${TARGET_USER} ${shellQuote(options.engineFolder)}`);
     await startSshdProcess();
   } catch (error) {
     // a failed `docker run` leaves the container created or none at all, so the removal's exit code is not checked

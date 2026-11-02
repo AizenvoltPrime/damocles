@@ -850,7 +850,7 @@ onUnmounted(() => {
           >
             <LoaderCircle
               v-if="micShowsSpinner"
-              class="size-3.75 animate-[d-spin_.9s_linear_infinite]"
+              class="size-3.75 d-spinning"
               aria-hidden="true"
             />
             <Mic

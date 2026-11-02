@@ -54,6 +54,7 @@ const source = computed<ChangesSource>(() => {
       ...(entry.outsideEdits ? { note: t('review.outsideEdits') } : {}),
     })),
     emptyText: scope === 'turn' ? t('review.emptyTurn') : t('review.emptyChat'),
+    windowsPaths: props.platform === 'win32',
     missingText: t('review.missing'),
     fileDiff: (path) => props.api.review.fileDiff({ reviewId, path }),
     comments: {

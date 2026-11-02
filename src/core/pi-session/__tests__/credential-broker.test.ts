@@ -29,12 +29,16 @@ function remoteHost(answer: (provider: string, clientId: string) => Promise<Brok
     actor: () => undefined,
     acting: () => acting,
     attached: (id) => attached.has(id),
+    anyAttached: () => attached.size > 0,
+    attachedClients: () => [...attached],
     auth: (id) => auth.get(id),
     user: () => undefined,
     policy: () => undefined,
     editor: () => undefined,
     terminal: () => undefined,
     language: () => undefined,
+    mcp: () => undefined,
+    mcpClients: () => [],
     onDidChange: (cb) => {
       listeners.add(cb);
       return { dispose: () => listeners.delete(cb) };
@@ -42,7 +46,10 @@ function remoteHost(answer: (provider: string, clientId: string) => Promise<Brok
   };
   const credentials = vi.fn(answer);
   const runProviders = vi.fn();
-  const remote: RemoteHost = { hostId: 'h', clients, agentSocket: () => undefined, credentials, speak: vi.fn(), runProviders };
+  const remote: RemoteHost = {
+    hostId: 'h', clients, agentSocket: () => undefined, credentials, speak: vi.fn(), runProviders, browserTool: vi.fn(), browserRelease: vi.fn(), browserDiscard: vi.fn(), shellOutput: () => ({ write: () => undefined, end: () => undefined }),
+    memorySearch: vi.fn(), memoryProfile: vi.fn(), memoryResolve: vi.fn(), memoryApply: vi.fn(), heldMemoryChanged: vi.fn(), mcpCall: vi.fn(), mcpResources: vi.fn(), mcpReadResource: vi.fn(),
+  };
   return {
     remote,
     credentials,

@@ -287,9 +287,11 @@ const fillButton = `${button} bg-(--d-accent) font-semibold text-(--d-on-accent)
       <Transition name="t-fade">
         <div
           v-if="busy"
-          class="d-sweep-bar absolute inset-x-0 bottom-0 h-0.5 bg-(--d-hover) text-(--d-accent)"
+          class="absolute inset-x-0 bottom-0 h-0.5"
           aria-hidden="true"
-        />
+        >
+          <div class="d-sweep-bar size-full bg-(--d-hover) text-(--d-accent)" />
+        </div>
       </Transition>
     </div>
   </Transition>

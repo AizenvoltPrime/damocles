@@ -23,7 +23,7 @@ const scopes = (active: OverlaySettingsScope): OverlaySettingsScopes => ({ host:
 const mounted: VueWrapper[] = [];
 let pinia: Pinia;
 
-async function openOn(active: OverlaySettingsScope, section: 'chat' | 'defaults' = 'chat'): Promise<void> {
+async function openOn(active: OverlaySettingsScope, section: 'chat' | 'defaults' | 'integrations' = 'chat'): Promise<void> {
   mounted.push(mount(OverlayApp, {
     props: { api, settingsBridge },
     global: { plugins: [shellI18n, pinia], stubs: { transition: false, 'transition-group': false } },
@@ -169,5 +169,27 @@ describe('settings scope tabs', () => {
     // no TabsContent registers, so no tab names a panel that does not exist
     expect(tab('host').hasAttribute('aria-controls')).toBe(false);
     expect(tab('host').querySelector('.truncate')!.textContent).toBe(HOST);
+  });
+
+  it('offers the host\'s own MCP servers only on its host tab', async () => {
+    await openOn('machine', 'integrations');
+    await update(['damocles.mcp.enabled']);
+    expect(row('mcpHostServers')!.textContent).toContain(`MCP servers on ${HOST}`);
+    // the panel's own words reach the overlay page, whose i18n holds only the namespaces merged into it
+    q('[data-testid="mcp-host-servers-open"]')!.click();
+    await flushPromises();
+    const panel = q('[data-testid="mcp-panel"]')!;
+    expect(panel.textContent).toContain(`MCP servers on ${HOST}`);
+    expect(panel.textContent).toContain('Enable MCP');
+    expect(q('[data-testid="mcp-add-server"]')!.textContent).toContain('Add server');
+    expect(panel.querySelector('[aria-label="Close"]')).not.toBeNull();
+    expect(panel.textContent!.replaceAll('mcp.json', '')).not.toMatch(/\b(mcp|overlays?)\.[a-z]/);
+    api.settingsAttached(2, scopes('project'));
+    await update(['damocles.mcp.enabled']);
+    expect(row('damocles.mcp.enabled')).not.toBeNull();
+    expect(row('mcpHostServers')).toBeNull();
+    api.settingsAttached(3, scopes('user'));
+    await update(undefined);
+    expect(row('mcpHostServers')).toBeNull();
   });
 });

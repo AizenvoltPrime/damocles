@@ -58,6 +58,8 @@ async function setup(renderer: Renderer, roots: () => readonly Project[] = () =>
   const connections = new RemoteConnections({
     host: (id) => store.host(id),
     startSsh: () => new Promise(() => undefined),
+    startWsl: () => new Promise(() => undefined),
+    startContainer: () => new Promise(() => undefined),
     savePlatform: async () => undefined,
     installFolderSettled: async () => undefined,
     connect: () => new Promise(() => undefined),
@@ -83,6 +85,7 @@ async function setup(renderer: Renderer, roots: () => readonly Project[] = () =>
   const hosts: RemoteHosts = new RemoteHosts({
     store,
     connections,
+    heldMemory: () => undefined,
     update: () => undefined,
     state: () => 'connected',
     connection: () => ({ facts } as RemoteConnection),
@@ -108,11 +111,22 @@ async function setup(renderer: Renderer, roots: () => readonly Project[] = () =>
     reconnectFresh: async () => undefined,
     deleteRememberedSecrets: async () => undefined,
     forgetLocalData: async () => undefined,
-    disconnect: () => undefined,
+    disconnect: async () => undefined,
     openSettings: () => undefined,
     keySetup: { folder: '/nonexistent', clientName: 'laptop', resolveKeygen: async () => undefined, resolveSsh: async () => undefined, run: async () => { throw new Error('no process starts here'); }, sshQuery: async () => { throw new Error('no process starts here'); }, askpass: async () => { throw new Error('no askpass here'); }, sshVersion: async () => undefined, env: {}, log: () => undefined },
     runRemovalStage: async () => { throw new Error('no removal here'); },
     exitControlMaster: async () => undefined,
+    listDistros: async () => ({ ok: true, distros: [] }),
+    setWslVersion: async () => 0,
+    containerSide: () => {
+      throw new Error('no containers in this test');
+    },
+    cliFolderKey: async (_via, target) => target,
+    containerEngine: () => 'docker',
+    pickLocalFolder: async () => undefined,
+    containerGate: async () => undefined,
+    containerUp: async () => undefined,
+    openContainerFolder: async () => '',
   });
   return { hosts, requests, logged, addProject };
 }
@@ -204,7 +218,7 @@ describe('a remote core\'s pickers in the host\'s folder browser', () => {
   });
 
   it('takes a picked path only as the answer of an open picker', () => {
-    const connect: OverlayRequest = { kind: 'connect', hostId: 'h1', hosts: [], sshConfigAliases: [] };
+    const connect: OverlayRequest = { kind: 'connect', hostId: 'h1', hosts: [], distros: [], sshConfigAliases: [] };
     const picker: OverlayRequest = { ...connect, pick: { mode: 'file', hostName: 'prod-1', roots: ['/srv/app'] } };
     expect(parseOverlayAnswer({ kind: 'connect', path: '/srv/app/a.md' }, connect)).toBeUndefined();
     expect(parseOverlayAnswer({ kind: 'connect', path: '/srv/app/a.md' }, picker)).toEqual({ kind: 'connect', path: '/srv/app/a.md' });

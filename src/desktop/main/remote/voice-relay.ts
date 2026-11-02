@@ -1,6 +1,7 @@
-// A remote chat's voice on this computer: the view's VOICE_VIEW_MESSAGES go to the local core's voice service through a
-// foreign view proxy, and that proxy's VOICE_VIEW_POSTS come back to the view. Every check reads main's own views, never an
-// authority or view id a core named.
+// A remote chat's voice and browser on this computer go through a foreign view proxy on the local core.
+// The view's VOICE_VIEW_MESSAGES go to the local core's voice service; the proxy's VOICE_VIEW_POSTS come back to it.
+// The proxy owns the chat's browser pages.
+// Every check reads main's own views, never an authority or view id a core named.
 import { VOICE_VIEW_MESSAGES, VOICE_VIEW_POSTS } from '../../../shared/remote-user';
 
 /** A loaded remote chat view as main holds it. */
@@ -48,17 +49,34 @@ export class VoiceRelay {
       this.deps.log(`[voice] dropped ${message.type} from a chat on ${view.authority}, whose core is not attached`);
       return true;
     }
-    let entry = this.attachedViews.get(viewId);
-    if (!entry || entry.authority !== view.authority) {
-      const authority = view.authority;
-      entry = { authority, queue: this.deps.local.attachForeign(authority, viewId) };
-      this.attachedViews.set(viewId, entry);
-    }
-    const current = entry;
+    const current = this.entryOf(viewId, view.authority);
     current.queue = current.queue.then(() => this.deps.local.foreignMessage(viewId, message)).catch((err: unknown) => {
       this.deps.log(`[voice] ${message.type} from a chat on ${current.authority} failed: ${err instanceof Error ? err.message : String(err)}`);
     });
     return true;
+  }
+
+  /**
+   * The local core holds a proxy for the live remote chat view once this settles, so its browser pages are that chat's tabs
+   * and close with it; the view's close lets go of it.
+   */
+  async attachView(viewId: string, authority: string): Promise<void> {
+    const view = this.deps.chatView(viewId);
+    if (!view || view.authority !== authority || authority === 'local') throw new Error('No chat of this host shows that view');
+    await this.entryOf(viewId, authority).queue;
+  }
+
+  private entryOf(viewId: string, authority: string): { readonly authority: string; queue: Promise<void> } {
+    const known = this.attachedViews.get(viewId);
+    if (known && known.authority === authority) return known;
+    const attach = this.deps.local.attachForeign(authority, viewId);
+    const entry = { authority, queue: attach };
+    this.attachedViews.set(viewId, entry);
+    // a refused attach is not kept: the view's next message or browser call attaches again
+    attach.catch(() => {
+      if (this.attachedViews.get(viewId) === entry) this.attachedViews.delete(viewId);
+    });
+    return entry;
   }
 
   /** The local core posted to a foreign proxy: only voice view state, and only to that live remote chat view of an attached authority. */

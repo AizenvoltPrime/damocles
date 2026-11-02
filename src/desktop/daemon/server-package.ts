@@ -1,6 +1,16 @@
+import * as path from 'node:path';
+
 // scripts/build-server.mjs replaces this module's source with `true` when it bundles a server package; the dev tree's
 // daemon (dist/daemon.js from esbuild.config.mjs) keeps `false`.
 export const SERVER_PACKAGE: boolean = false;
+
+/**
+ * The folder holding the terminals' remote-cli and helpers: a server package's bin/, or in a checkout the dist/server-bin
+ * the desktop build writes (esbuild.config.mjs writeCheckoutServerBin), whose scripts run this checkout's dist/cli-remote.js.
+ */
+export function terminalBinFolder(root: string, serverPackage: boolean = SERVER_PACKAGE): string {
+  return serverPackage ? path.join(root, 'bin') : path.join(root, 'dist', 'server-bin');
+}
 
 /** Whether the daemon serves e2e.* and gives its core e2e hooks: only a dev-tree daemon, and only when the variable asks. */
 export function daemonE2eHooks(env: NodeJS.ProcessEnv, serverPackage: boolean = SERVER_PACKAGE): boolean {

@@ -1,9 +1,10 @@
 // WorkspaceContract: a ProjectWorkspace served over the `workspace` channel. The client allocates every watch and run id and
 // the host checks each belongs to the connection that opened it; streams arrive as events keyed by that id.
 
+import { CLI_RELAY, CLI_RELAY_ANSWER, type CliRelay, type CliRelayAnswer } from '../cli/cli-protocol';
 import type { Call, Contract, Tables } from '../core-protocol/messages';
 import { MAX_DATA_CHARS, MAX_ITEMS, MAX_KEY_CHARS, MAX_MESSAGE_CHARS, MAX_PATH_CHARS } from '../core-protocol/messages';
-import { arr, bool, bytes, data, dict, either, int, INVALID, maybe, nonEmpty, none, num, obj, oneOf, opt, str, type Parser } from '../core-protocol/schema';
+import { arr, bool, bytes, data, dict, either, finite, int, INVALID, maybe, nonEmpty, none, num, obj, oneOf, opt, str, streamId, type Parser } from '../core-protocol/schema';
 import type { Confined, Project } from '../local-services/confine';
 import { isValidFileName } from '../preload/file-names';
 import type { FileEntry } from '../preload/shell-channels';
@@ -19,6 +20,7 @@ import type { ShellInjectionRequest } from './terminal/terminal-backend';
 import type { TerminalProfile } from './terminal/profiles';
 import type { LiveTerminal } from './terminal/terminal-backend';
 import type { FolderListing } from './tree-listing';
+import { MOVE_LEFT_LISTED, WALK_PAGE_ENTRIES, type Clash, type ClashesResult, type MoveResult, type TransferFailure, type TransferKind, type TransferResult } from './transfer-ops';
 
 // The largest message: a terminal screen of MAX_TERMINAL_SCREEN_CHARS UTF-16 units and its kept shell sequences'
 // MAX_KEPT_SHELL_SEQUENCE_CHARS, at most 3 UTF-8 bytes each, plus its envelope.
@@ -62,6 +64,27 @@ export interface PtyHostEnd {
   readonly error: string | null;
 }
 
+// TransferEntry with its identity as decimal strings
+export interface WireTransferEntry {
+  readonly relativePath: string;
+  readonly kind: TransferKind;
+  readonly size: number;
+  readonly mode: number;
+  readonly mtimeMs: number;
+  readonly linkTarget?: string;
+  readonly identity: WireIdentity;
+  readonly unreadable?: string;
+  readonly error?: string;
+}
+
+export interface WalkPage {
+  readonly entries: readonly WireTransferEntry[];
+  // the walk ended and its id is free
+  readonly done: boolean;
+}
+
+export type WireReadResult = { readonly ok: true; readonly size: number } | { readonly ok: false; readonly reason: 'outside' | 'missing' | 'failed' | 'notAFile'; readonly code?: string };
+
 export interface WorkspaceRequests {
   'files.confineExisting': Call<{ readonly project: Project; readonly relativePath: string }, Confined>;
   'files.confineMissing': Call<{ readonly project: Project; readonly relativePath: string }, Confined>;
@@ -89,6 +112,24 @@ export interface WorkspaceRequests {
   'files.unwatch': Call<{ readonly watchId: number }, void>;
   // the watched folders whose tree ran out of inotify watches, and fs.inotify.max_user_watches (null when unreadable)
   'files.watchLimits': Call<object, WatchLimits>;
+  // an lstat walk of the item, the first page; files.walkNext pages on until done, files.walkEnd stops it early
+  'files.walk': Call<{ readonly walkId: number; readonly project: Project; readonly relativePath: string }, WalkPage>;
+  'files.walkNext': Call<{ readonly walkId: number }, WalkPage>;
+  'files.walkEnd': Call<{ readonly walkId: number }, void>;
+  'files.clashes': Call<{ readonly project: Project; readonly relativeDir: string; readonly names: readonly string[] }, ClashesResult>;
+  // the bytes arrive on stream, a stream the client opened; an end before size bytes leaves no file
+  'files.receiveFile': Call<{ readonly project: Project; readonly relativeDir: string; readonly name: string; readonly stream: number; readonly mode: number; readonly mtimeMs: number; readonly replace: boolean; readonly size: number }, TransferResult>;
+  // answered before the bytes, which follow on stream, a stream the client opened; the client ending its side stops them
+  'files.readFile': Call<{ readonly project: Project; readonly relativePath: string; readonly stream: number }, WireReadResult>;
+  'files.copy': Call<{ readonly from: Project; readonly relativePath: string; readonly to: Project; readonly toDir: string; readonly name: string; readonly replace: boolean }, TransferResult>;
+  'files.move': Call<{ readonly from: Project; readonly relativePath: string; readonly to: Project; readonly toDir: string; readonly name: string; readonly replace: boolean }, MoveResult>;
+  // mode (feature files.folderMode): the source folder's, which a POSIX host creates it with under its umask
+  'files.makeFolder': Call<{ readonly project: Project; readonly relativeDir: string; readonly name: string; readonly mode?: number }, TransferResult>;
+  // within: the folder the link must resolve inside on the host, every link on the way followed
+  'files.makeLink': Call<{ readonly project: Project; readonly relativeDir: string; readonly name: string; readonly target: string; readonly replace: boolean; readonly within?: string }, TransferResult>;
+  // a link made with within, checked again once every link of the transfer landed (feature files.verifyLink)
+  'files.verifyLink': Call<{ readonly project: Project; readonly relativePath: string; readonly within: string }, TransferResult>;
+  'files.removeFolder': Call<{ readonly project: Project; readonly relativePath: string; readonly confirmed: WireIdentity }, TransferResult>;
   'tree.list': Call<{ readonly project: Project; readonly relativeDir: string; readonly excludes: readonly string[] }, FolderListing>;
   'search.run': Call<{ readonly runId: number; readonly cwd: string; readonly args: readonly string[] }, void>;
   'search.kill': Call<{ readonly runId: number }, void>;
@@ -139,8 +180,14 @@ export interface ClientToWorkspace extends Contract {
   readonly panelOps: Record<string, never>;
 }
 
+export interface WorkspaceToClientRequests {
+  // a damocles command in one of this connection's terminals (feature `cli`); answered once main handled it, after its tabs
+  // closed for --wait
+  'cli.request': Call<CliRelay, CliRelayAnswer>;
+}
+
 export interface WorkspaceToClient extends Contract {
-  readonly requests: Record<string, never>;
+  readonly requests: WorkspaceToClientRequests;
   readonly events: WorkspaceHostEvents;
   readonly mirrors: Record<string, never>;
   readonly panelOps: Record<string, never>;
@@ -158,7 +205,7 @@ const nothing = obj({});
 const nul: Parser<null> = (raw) => (raw === null ? null : INVALID);
 const lit = <const T extends string>(value: T): Parser<T> => oneOf([value] as const);
 const confineFailure = oneOf(['outside', 'missing', 'failed'] as const);
-const decimal: Parser<string> = (raw) => (typeof raw === 'string' && /^\d{1,40}$/.test(raw) ? raw : INVALID);
+const decimal: Parser<string> = (raw) => (typeof raw === 'string' && /^-?\d{1,40}$/.test(raw) ? raw : INVALID);
 const env = dict(str(32_767), 32_767, 4096);
 const args = arr(str(MAX_PATH_CHARS), MAX_ITEMS);
 const globs = arr(str(MAX_PATH_CHARS), MAX_ITEMS);
@@ -207,6 +254,29 @@ const terminalPost: Parser<TerminalPost> = (raw) => {
 };
 const hostMessage: Parser<HostMessage> = (raw) => parseHostMessage(raw) ?? INVALID;
 const exitCode = int(-(2 ** 31), 2 ** 32);
+const transferKind = oneOf(['file', 'dir', 'link', 'other'] as const);
+const errno = str(64);
+const transferFailure: Parser<TransferFailure> = oneOf(['outside', 'missing', 'failed', 'exists', 'invalidName', 'incomplete', 'unsupported', 'notFolder', 'notAFile', 'intoItself', 'notEmpty', 'changed'] as const);
+const transferFailed = obj({ ok: okFalse, reason: transferFailure, code: opt(errno), message: opt(message) });
+const transferResult: Parser<TransferResult> = either(obj({ ok: okTrue }), transferFailed);
+const moveResult: Parser<MoveResult> = either(obj({ ok: okTrue, left: arr(relative, MOVE_LEFT_LISTED), leftMore: opt(int(1, Number.MAX_SAFE_INTEGER)) }), transferFailed);
+const size = int(0, Number.MAX_SAFE_INTEGER);
+// names and link targets from the walked host are checked by the receiver, never here, so an odd name skips one item
+const transferEntry: Parser<WireTransferEntry> = obj({
+  relativePath: relative,
+  kind: transferKind,
+  size,
+  mode: int(0, 0o7777),
+  mtimeMs: finite,
+  linkTarget: opt(str(MAX_PATH_CHARS)),
+  identity,
+  unreadable: opt(errno),
+  error: opt(errno),
+});
+const walkPage: Parser<WalkPage> = obj({ entries: arr(transferEntry, WALK_PAGE_ENTRIES), done: bool });
+const clash: Parser<Clash | null> = either(obj({ name: nonEmpty(MAX_PATH_CHARS), kind: transferKind }), nul);
+const clashesResult: Parser<ClashesResult> = either(obj({ ok: okTrue, clashes: arr(clash, MAX_ITEMS) }), obj({ ok: okFalse, reason: oneOf(['outside', 'missing', 'failed', 'notFolder'] as const), code: opt(errno), message: opt(message) }));
+const readResult: Parser<WireReadResult> = either(obj({ ok: okTrue, size }), obj({ ok: okFalse, reason: oneOf(['outside', 'missing', 'failed', 'notAFile'] as const), code: opt(errno) }));
 
 export const CLIENT_TO_WORKSPACE: Tables<ClientToWorkspace> = {
   requests: {
@@ -234,6 +304,18 @@ export const CLIENT_TO_WORKSPACE: Tables<ClientToWorkspace> = {
     'files.watch': method(obj({ watchId: runId, base: filePath, glob: nonEmpty(MAX_PATH_CHARS) }), done),
     'files.unwatch': method(obj({ watchId: runId }), done),
     'files.watchLimits': method(nothing, obj({ roots: arr(filePath, MAX_ITEMS), limit: either(int(0, 2 ** 32), nul) })),
+    'files.walk': method(obj({ walkId: runId, project, relativePath: relative }), walkPage),
+    'files.walkNext': method(obj({ walkId: runId }), walkPage),
+    'files.walkEnd': method(obj({ walkId: runId }), done),
+    'files.clashes': method(obj({ project, relativeDir: relative, names: arr(fileName, MAX_ITEMS) }), clashesResult),
+    'files.receiveFile': method(obj({ project, relativeDir: relative, name: fileName, stream: streamId, mode: int(0, 0o7777), mtimeMs: finite, replace: bool, size }), transferResult),
+    'files.readFile': method(obj({ project, relativePath: relative, stream: streamId }), readResult),
+    'files.copy': method(obj({ from: project, relativePath: relative, to: project, toDir: relative, name: fileName, replace: bool }), transferResult),
+    'files.move': method(obj({ from: project, relativePath: relative, to: project, toDir: relative, name: fileName, replace: bool }), moveResult),
+    'files.makeFolder': method(obj({ project, relativeDir: relative, name: fileName, mode: opt(int(0, 0o7777)) }), transferResult),
+    'files.makeLink': method(obj({ project, relativeDir: relative, name: fileName, target: nonEmpty(MAX_PATH_CHARS), replace: bool, within: opt(relative) }), transferResult),
+    'files.verifyLink': method(obj({ project, relativePath: relative, within: relative }), transferResult),
+    'files.removeFolder': method(obj({ project, relativePath: relative, confirmed: identity }), transferResult),
     'tree.list': method(obj({ project, relativeDir: relative, excludes: globs }), folderListing),
     'search.run': method(obj({ runId, cwd: filePath, args }), done),
     'search.kill': method(obj({ runId }), done),
@@ -263,7 +345,9 @@ export const CLIENT_TO_WORKSPACE: Tables<ClientToWorkspace> = {
 };
 
 export const WORKSPACE_TO_CLIENT: Tables<WorkspaceToClient> = {
-  requests: {},
+  requests: {
+    'cli.request': method(CLI_RELAY, CLI_RELAY_ANSWER),
+  },
   events: {
     'files.watchEvent': obj({ watchId: runId, kind: oneOf(['create', 'change', 'delete'] as const), path: filePath }),
     'files.watchLimit': obj({ root: filePath, limit: either(int(0, 2 ** 32), nul) }),

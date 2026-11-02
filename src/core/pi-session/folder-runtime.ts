@@ -12,6 +12,8 @@ import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import { existsSync } from 'fs';
 import * as os from 'os';
 import { log } from '../logger';
+import { installedPlatform } from '../platform-host';
+import { browserReachable } from '../user-scope';
 import { outsidePins } from '../client-snapshots';
 import type { PiCodingAgentModule } from './pi-loader';
 import { overrideGlobalContextFile } from './context-files';
@@ -250,6 +252,7 @@ export class FolderRuntime {
   /** Count of sessions bound off this folder's services; the first uses the pristine creation runtime. */
   private _sessionsCreated = 0;
   private _disposed = false;
+  private readonly _browserReachListener: { dispose(): void } | undefined;
 
   constructor(options: FolderRuntimeOptions) {
     this.cwd = options.cwd;
@@ -284,6 +287,13 @@ export class FolderRuntime {
     });
     this._trustGrantListener = options.trust.onDidGrantTrust(() => this.queueRenamedToolRuleMigration());
     this._hooksConfig = new HooksConfigService(options.cwd, options.trust, options.fileWatchers);
+    // a daemon's core: the browser tools join ToolSearch's menu when the first client attaches and leave it with the last
+    let browserReach = browserReachable();
+    this._browserReachListener = installedPlatform()?.remote?.clients.onDidChange(() => {
+      if (browserReachable() === browserReach) return;
+      browserReach = !browserReach;
+      this.republishToolSearch();
+    });
   }
 
   /** This folder's services. Throws before `createServices()` resolves. */
@@ -949,6 +959,7 @@ export class FolderRuntime {
     this._workspaceAgents = null;
     this._mcpUnsubscribe();
     this._trustGrantListener.dispose();
+    this._browserReachListener?.dispose();
     this._ruleNoticePosters.clear();
     this._mcpView.dispose();
     try {

@@ -11,6 +11,7 @@ import { createLauncherPool, installProcessLauncher, lockThreadSpawns, runProces
 import { windowsSystemTool } from '../../core/system-tools';
 import type { HostMessage, HostRequest } from '../pty-host/protocol';
 import { daemonChildEnv } from './child-env';
+import { devcontainersCliEntry } from './container-commands';
 import type { CoreAttach, CoreState } from './control-messages';
 import type { DaemonState } from './daemon-state';
 import { forkChild } from './process-starts';
@@ -83,6 +84,13 @@ async function runRipgrep(root: string): Promise<string> {
   return text.split('\n')[0]!.trim();
 }
 
+async function runDevcontainersCli(root: string): Promise<string> {
+  const output = await runProcess({ file: process.execPath, args: [devcontainersCliEntry(root), '--version'], stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }, { timeoutMs: STEP_TIMEOUT_MS });
+  const text = output.stdout.toString('utf8').trim();
+  if (output.exit?.code !== 0 || !/^\d+\.\d+\.\d+$/.test(text)) throw new Error(`devcontainer --version failed: ${output.stderr.toString('utf8').trim()}`);
+  return `devcontainer ${text}`;
+}
+
 function echoThroughPty(root: string): Promise<string> {
   const host = daemonStarters(root).startPtyHost();
   const [file, args] = process.platform === 'win32' ? [windowsSystemTool('cmd'), ['/d', '/c', `echo ${MARKER}`]] : ['/bin/sh', ['-c', `echo ${MARKER}`]];
@@ -110,6 +118,8 @@ async function startCore(root: string, version: string, log: (line: string) => v
     paths: await localRunPaths(),
     git: { available: false, reason: 'not probed by the self-test' },
     e2eHooks: false,
+    agentShellUrl: () => undefined,
+    clientPolicyChanged: () => undefined,
     state,
     registry: createRunRegistry(),
     fork: (entry, args) => forkChild(entry, args, daemonChildEnv('node')),
@@ -163,6 +173,7 @@ export async function selfTest(root: string): Promise<boolean> {
     ['node:sqlite', () => openSqlite()],
     ['launcher worker and ripgrep', () => runRipgrep(root)],
     ['node-pty', () => echoThroughPty(root)],
+    ['devcontainers CLI', () => runDevcontainersCli(root)],
     ['Damocles Core', () => startCore(root, info.version, log)],
   ];
   process.stdout.write(`self-test: Damocles server ${info.version} (${info.target}) on Node ${process.versions.node}\n`);

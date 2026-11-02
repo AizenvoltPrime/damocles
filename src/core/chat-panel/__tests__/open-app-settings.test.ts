@@ -31,7 +31,8 @@ describe("openAppSettingsFor", () => {
     const { platform, post, posted, openAppSettings } = host(false);
     openAppSettingsFor(platform, post, undefined, "voice");
     openAppSettingsFor(platform, post, chat, "accounts", "openai");
-    expect(openAppSettings.mock.calls).toEqual([["voice", undefined], ["accounts", "openai"]]);
+    openAppSettingsFor(platform, post, chat, "integrations", undefined, "machine");
+    expect(openAppSettings.mock.calls).toEqual([["voice", undefined, undefined], ["accounts", "openai", undefined], ["integrations", undefined, "machine"]]);
     expect(posted).toEqual([]);
   });
 });

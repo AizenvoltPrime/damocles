@@ -8,7 +8,7 @@ import Breadcrumbs from '../editor/Breadcrumbs.vue';
 import EditorTabs from '../editor/EditorTabs.vue';
 import { createEditorStore, EDITOR_STORE, type EditorStore } from '../editor/editor-store';
 import { createScmStore, SCM_STORE } from '../scm/scm-store';
-import { isSendableAddress, pageHost, pageTitle } from '../editor/browser-page';
+import { forwardedTarget, isSendableAddress, pageHost, pageTitle } from '../editor/browser-page';
 import { AS_TYPED, HTTP_AT_ONCE, UPGRADED } from '../../../shared/__tests__/typed-address-cases';
 import { shellI18n } from '../i18n';
 import { EDITOR_STATE, FakeResizeObserver, fakeShellApi } from './fakes';
@@ -57,6 +57,14 @@ describe('browser page helpers', () => {
     for (const refused of ['file:///etc/hosts', 'javascript:alert(1)', 'JavaScript:alert(1)', 'chrome://settings', 'data:text/html,x']) expect(isSendableAddress(refused)).toBe(false);
   });
 
+  it('names a forwarded page by its host and the target address the page sees', () => {
+    expect(forwardedTarget({ hostName: 'prod-1', targetUrl: 'http://localhost:5173/upload' })).toBe('prod-1:5173');
+    expect(forwardedTarget({ hostName: 'prod-1', targetUrl: 'http://127.0.0.1/' })).toBe('prod-1:80');
+    expect(forwardedTarget({ hostName: 'prod-1', targetUrl: 'https://[::1]/' })).toBe('prod-1:443');
+    expect(forwardedTarget({ hostName: 'prod-1', targetUrl: 'http://db:8080/' })).toBe('prod-1 · db:8080');
+    expect(forwardedTarget({ hostName: 'prod\u202E-1', targetUrl: 'not a url' })).toBe('prod-1');
+  });
+
   // Main and core read the text with the same table (browser-tabs.test.ts, panel-wiring.test.ts).
   it.each([...UPGRADED, ...HTTP_AT_ONCE, ...AS_TYPED])('sends %s to main', (_kind, typed) => {
     expect(isSendableAddress(typed.trim())).toBe(true);
@@ -64,6 +72,19 @@ describe('browser page helpers', () => {
 });
 
 describe('navigation bar', () => {
+  it("shows where a remote chat's forwarded page lives, tinted with its host's color, and nothing for any other page", async () => {
+    const { wrapper } = mountTab(pageTab({ url: 'http://localhost:5174/', forwardedFrom: { hostId: 'h1', hostName: 'prod-1', hostTone: 'success', targetUrl: 'http://localhost:5173/' } }));
+    const chip = wrapper.get('[data-testid="browser-forwarded-from"]');
+    expect(chip.text()).toBe('Forwarded from prod-1:5173');
+    expect(chip.attributes('title')).toBe('Forwarded from prod-1:5173');
+    expect(chip.classes()).toContain('d-tone-success');
+    expect(chip.get('.sr-only').text()).toBe('Forwarded from');
+    const plain = mountTab(pageTab(), fakeShellApi());
+    expect(plain.wrapper.find('[data-testid="browser-forwarded-from"]').exists()).toBe(false);
+    const untinted = mountTab(pageTab({ forwardedFrom: { hostId: 'h1', hostName: 'prod-1', targetUrl: 'http://localhost:8000/' } }), fakeShellApi());
+    expect(untinted.wrapper.get('[data-testid="browser-forwarded-from"]').classes()).toContain('d-tone-muted');
+  });
+
   it('reflects the page in disabled controls and sends each action for its tab', async () => {
     const { wrapper, api } = mountTab(pageTab({ canGoBack: true, picking: true }));
     expect(wrapper.get('[data-testid="browser-back"]').attributes('disabled')).toBeUndefined();

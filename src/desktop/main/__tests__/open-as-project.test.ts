@@ -45,7 +45,7 @@ describe('openAsProject', () => {
     ]);
   });
 
-  it('opens local folders while the remote gate is closed, and refuses remote ones', async () => {
+  it('opens local folders and refuses the folders of an authority this build does not serve', async () => {
     const { deps, calls } = fake({ served: (authority) => authority === 'local' });
     await expect(openAsProject(deps, { projectKey: LOCAL.key, relativePath: 'src' })).resolves.toMatchObject({ added: true });
     await expect(openAsProject(deps, { projectKey: REMOTE.key, relativePath: 'src' })).rejects.toThrow('not enabled');

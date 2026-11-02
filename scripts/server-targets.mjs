@@ -55,6 +55,10 @@ export const SERVER_TARGETS = {
   },
 };
 
+// The Dev Containers CLI a server package carries for `containers.up`; the daemon runs this file with the package's Node.
+export const DEVCONTAINERS_CLI = '@devcontainers/cli';
+export const DEVCONTAINERS_CLI_ENTRY = `node_modules/${DEVCONTAINERS_CLI}/devcontainer.js`;
+
 // A clean Alpine target holding only the prerequisites docs/release.md "Server packages" names, where the Alpine legs
 // self-test; pinned by its multi-arch index digest.
 export const ALPINE_TARGET_IMAGE = 'alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a';

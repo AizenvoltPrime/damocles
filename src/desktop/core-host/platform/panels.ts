@@ -27,6 +27,8 @@ export interface CorePanels extends Disposable {
   attachForeign(authority: string, viewId: string): PanelHost;
   detachForeign(viewId: string): void;
   foreign(viewId: string): PanelHost | undefined;
+  // the authority of a remote chat's view this core holds a proxy for
+  foreignAuthority(viewId: string): string | undefined;
 }
 
 export interface CorePanelsDeps {
@@ -210,7 +212,7 @@ export function createCorePanels(deps: CorePanelsDeps): CorePanels {
   };
 
   const ownerOf = (owner: PanelHost): string => {
-    const viewId = ids.get(owner);
+    const viewId = ids.get(owner) ?? foreignViews.viewIdOf(owner);
     if (viewId === undefined) throw new Error('A browser page opens only in a loaded chat');
     return viewId;
   };
@@ -254,6 +256,7 @@ export function createCorePanels(deps: CorePanelsDeps): CorePanels {
     attachForeign: (authority, viewId) => foreignViews.attach(authority, viewId),
     detachForeign: (viewId) => foreignViews.detach(viewId),
     foreign: (viewId) => foreignViews.get(viewId),
+    foreignAuthority: (viewId) => foreignViews.authorityOf(viewId),
     dispose: () => {
       for (const subscription of subscriptions) subscription.dispose();
       foreignViews.dispose();

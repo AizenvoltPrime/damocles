@@ -23,6 +23,11 @@ import OverlayHeaderAction from './OverlayHeaderAction.vue';
 import SegmentedToggle, { type SegmentedOption } from './SegmentedToggle.vue';
 import ToggleSwitch from './ToggleSwitch.vue';
 import McpServerFormDialog from './McpServerFormDialog.vue';
+import HostBadge from './HostBadge.vue';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import type { HostTone } from '@shared/host-tones';
 import { canDeleteMcpServer, canEditMcpServer, type McpCollisionServer } from './mcp-server-form-logic';
 
 const { t } = useI18n();
@@ -41,6 +46,10 @@ const props = defineProps<{
   toolExposureScopes?: McpToolExposureScope[];
   /** Counts applied `mcpConfigUpdate` payloads, so the panel can see a reload land. */
   configRevision: number;
+  /** A remote core's host as this computer names it; core sends only each server's placement, never a host name. */
+  host?: { readonly name: string; readonly color?: HostTone | undefined } | undefined;
+  /** `hostSettings`: the settings overlay's host tab, the one place a remote core takes this host's MCP edits. */
+  context?: 'chat' | 'hostSettings';
 }>();
 
 const emit = defineEmits<{
@@ -60,7 +69,16 @@ const emit = defineEmits<{
   (e: 'setToolExposure', serverName: string, toolName: string, exposure: McpToolExposureSetting, scope: McpToolExposureScope): void;
   (e: 'setResourceExposure', serverName: string, exposure: McpToolExposureSetting, scope: McpToolExposureScope): void;
   (e: 'browseResources', serverName: string): void;
+  (e: 'setRemoteAvailable', serverName: string, available: boolean): void;
+  (e: 'openHostSettings'): void;
 }>();
+
+const host = computed(() => props.host);
+const inHostSettings = computed(() => props.context === 'hostSettings');
+/** A remote core's rows carry a placement, so its page is known before the host label arrives. */
+const remoteCore = computed(() => host.value !== undefined || props.servers.some((server) => server.placement !== undefined));
+/** A remote chat's page: its core refuses this host's MCP edits, which the settings overlay's host tab makes. */
+const editsElsewhere = computed(() => remoteCore.value && !inHostSettings.value);
 
 const TOOL_EXPOSURES: readonly { value: McpToolExposureSetting; labelKey: string; icon: Component }[] = [
   { value: 'off', labelKey: 'mcp.toolExposureOff', icon: CircleOff },
@@ -74,15 +92,26 @@ const exposureOptions = computed<SegmentedOption<McpToolExposureSetting>[]>(() =
 
 const exposureScopes = computed<McpToolExposureScope[]>(() => props.toolExposureScopes ?? ['user']);
 
-/** The scope the next exposure change is written to; User until the user picks another the host offers. */
+/** The scope the next exposure change is written to; the first the host offers until the user picks another. */
 const chosenSaveScope = ref<McpToolExposureScope>('user');
 const saveScope = computed<McpToolExposureScope>(() =>
-  exposureScopes.value.includes(chosenSaveScope.value) ? chosenSaveScope.value : 'user',
+  exposureScopes.value.includes(chosenSaveScope.value) ? chosenSaveScope.value : exposureScopes.value[0] ?? 'user',
 );
 
+/** A scope or a setting's source as a label; a remote host's machine settings are named after the host. */
+function exposureSourceLabel(source: McpToolExposureScope | 'config'): string {
+  if (source === 'machine' && host.value) return t('mcp.toolExposureSource.machineOn', { host: host.value.name });
+  return t(`mcp.toolExposureSource.${source}`);
+}
+
 const scopeOptions = computed<SegmentedOption<McpToolExposureScope>[]>(() =>
-  exposureScopes.value.map((scope) => ({ value: scope, label: t(`mcp.toolExposureSource.${scope}`), attrs: { 'data-scope': scope } })),
+  exposureScopes.value.map((scope) => ({ value: scope, label: exposureSourceLabel(scope), attrs: { 'data-scope': scope } })),
 );
+
+/** A host's machine settings hold only its own servers' exposure, so another row's control stays read-only there. */
+function exposureLocked(server: McpServerStatusInfo): boolean {
+  return editsElsewhere.value || (saveScope.value === 'machine' && server.placement !== 'host');
+}
 
 function handleToolExposure(server: McpServerStatusInfo, tool: McpToolInfo, value: McpToolExposureSetting): void {
   if (value === (tool.exposure ?? 'deferred')) return;
@@ -346,6 +375,7 @@ function getStatusClass(status: McpServerStatusInfo['status']): { icon: string; 
  * ship unbadged without failing to compile here.
  */
 const SOURCE_LABEL_KEYS: Record<McpServerSource, string> = {
+  relayed: 'mcp.fromRelayed',
   workspace: 'mcp.fromWorkspace',
   damocles: 'mcp.fromDamocles',
   claude: 'mcp.fromClaudeCode',
@@ -411,7 +441,9 @@ interface ServerRowAction {
  */
 function buildRowActions(server: McpServerStatusInfo): ServerRowAction[] {
   const actions: ServerRowAction[] = [];
-  if (server.status === 'needs-auth') {
+  // A server's connection is the chat's, so the settings overlay offers only its definition's edits.
+  const connection = !inHostSettings.value;
+  if (connection && server.status === 'needs-auth') {
     actions.push({
       key: 'authenticate',
       icon: KeyRound,
@@ -420,7 +452,7 @@ function buildRowActions(server: McpServerStatusInfo): ServerRowAction[] {
       run: () => emit('authenticate', server.name),
     });
   }
-  if (server.status === 'failed') {
+  if (connection && server.status === 'failed') {
     actions.push({
       key: 'reconnect',
       icon: RefreshCw,
@@ -429,7 +461,7 @@ function buildRowActions(server: McpServerStatusInfo): ServerRowAction[] {
       run: () => emit('reconnect', server.name),
     });
   }
-  if (server.supportsOAuth && server.status === 'connected') {
+  if (connection && server.supportsOAuth && server.status === 'connected') {
     actions.push({
       key: 'reauthenticate',
       icon: KeyRound,
@@ -446,7 +478,7 @@ function buildRowActions(server: McpServerStatusInfo): ServerRowAction[] {
     });
   }
   // VS Code's BrowseResourcesAction: shown while the capability is unknown too, and opening the picker connects the server.
-  if (server.enabled && server.untrusted !== true && props.mcpEnabled && server.hasResources !== false) {
+  if (connection && server.enabled && server.untrusted !== true && props.mcpEnabled && server.hasResources !== false) {
     actions.push({
       key: 'browseResources',
       icon: FolderOpen,
@@ -457,7 +489,7 @@ function buildRowActions(server: McpServerStatusInfo): ServerRowAction[] {
   }
   // Withheld while `~/.damocles/mcp.json` is unusable: every write reads that file first, so none of
   // these can succeed until it parses again.
-  if (canEditMcpServer(server) && !damoclesConfigBroken.value) {
+  if (canEditMcpServer(server) && !damoclesConfigBroken.value && !editsElsewhere.value) {
     actions.push({
       key: 'edit',
       icon: Pencil,
@@ -466,7 +498,7 @@ function buildRowActions(server: McpServerStatusInfo): ServerRowAction[] {
       run: () => openEditForm(server),
     });
   }
-  if (canDeleteMcpServer(server) && !damoclesConfigBroken.value) {
+  if (canDeleteMcpServer(server) && !damoclesConfigBroken.value && !editsElsewhere.value) {
     actions.push({
       key: 'delete',
       icon: Trash2,
@@ -478,10 +510,19 @@ function buildRowActions(server: McpServerStatusInfo): ServerRowAction[] {
   return actions;
 }
 
-const rows = computed(() => props.servers.map((server) => ({ server, actions: buildRowActions(server) })));
+const rows = computed(() => props.servers.map((server) => ({ server, actions: buildRowActions(server), placement: placementChip(server) })));
 
-/** How many config sources the merged list draws on, named in the master switch's description. */
-const SOURCE_COUNT = Object.keys(SOURCE_LABEL_KEYS).length;
+/** How many config sources the merged list draws on, named in the master switch's description; only a remote chat's core relays. */
+const sourceCount = computed(() => Object.keys(SOURCE_LABEL_KEYS).length - (host.value ? 0 : 1));
+
+/** A remote core's placement as a chip; the host chip waits for this page's host label, since core never names the host. */
+function placementChip(server: McpServerStatusInfo): { label: string; title: string; tone?: HostTone; host?: true } | undefined {
+  if (server.placement === 'client') return { label: t('mcp.placement.client'), title: t('mcp.placement.clientTitle') };
+  if (server.placement === 'project') return { label: t('mcp.placement.project'), title: t('mcp.placement.projectTitle') };
+  const label = host.value;
+  if (server.placement !== 'host' || !label) return undefined;
+  return { label: label.name, title: t('mcp.placement.hostTitle', { host: label.name }), ...(label.color ? { tone: label.color } : {}), host: true };
+}
 
 function toolsSummary(server: McpServerStatusInfo): string {
   const tools = server.tools ?? [];
@@ -490,7 +531,7 @@ function toolsSummary(server: McpServerStatusInfo): string {
   const direct = tools.filter((tool) => tool.exposure === 'direct').length;
   const off = tools.filter((tool) => tool.exposure === 'off').length;
   return [
-    t('mcp.tools', { count: tools.length }),
+    t('mcp.tools', { n: tools.length }, tools.length),
     direct > 0 ? t('overlays.mcp.alwaysLoadedCount', { n: direct }) : null,
     off > 0 ? t('overlays.mcp.offCount', { n: off }) : null,
   ].filter(Boolean).join(' · ');
@@ -528,8 +569,8 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
 
 <template>
   <OverlayShell
-    :title="t('mcp.title')"
-    :subtitle="t('mcp.description')"
+    :title="inHostSettings && host ? t('mcp.hostSettings.title', { host: host.name }) : t('mcp.title')"
+    :subtitle="inHostSettings && host ? t('mcp.hostSettings.subtitle', { host: host.name }) : t('mcp.description')"
     :icon="Plug"
     data-testid="mcp-panel"
     @close="handleClose"
@@ -546,6 +587,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
         @click="handleReloadClick"
       />
       <OverlayHeaderAction
+        v-if="!editsElsewhere"
         ref="addServerAction"
         :label="t('mcp.addServer')"
         :title="damoclesConfigBroken ? t('mcp.addServerBlocked') : t('mcp.addServer')"
@@ -564,16 +606,39 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
             {{ t('mcp.masterToggle') }}
           </div>
           <div class="text-11.5 text-(--d-muted) text-pretty">
-            {{ t('overlays.mcp.sources', { n: SOURCE_COUNT }) }}
+            {{ t('overlays.mcp.sources', { n: sourceCount }) }}
           </div>
         </div>
         <ToggleSwitch
           size="md"
           :checked="mcpEnabled"
+          :disabled="editsElsewhere"
           :aria-label="t('mcp.masterToggle')"
           data-testid="mcp-master-toggle"
           @update:checked="(checked: boolean) => emit('toggleEnabled', checked)"
         />
+      </div>
+
+      <!-- A remote chat's core refuses this host's MCP edits from the page; the settings overlay's host tab makes them. -->
+      <div
+        v-if="editsElsewhere && host"
+        class="flex items-center gap-2.5 rounded-10 border border-(--d-border) bg-(--d-panel) px-3 py-2.25 text-xs text-(--d-muted)"
+        data-testid="mcp-host-settings-note"
+      >
+        <Settings
+          class="size-3.5 flex-none text-(--d-faint)"
+          aria-hidden="true"
+        />
+        <span class="min-w-0 flex-1 text-pretty">{{ t('mcp.hostSettings.note', { host: host.name }) }}</span>
+        <Button
+          type="button"
+          variant="ghost"
+          class="d-press h-6.5 flex-none rounded-7 px-2.25 text-11.5 font-semibold text-(--d-accent-text) hover:bg-(--d-hover) hover:text-(--d-accent-text)"
+          data-testid="mcp-open-host-settings"
+          @click="emit('openHostSettings')"
+        >
+          {{ t('mcp.hostSettings.open') }}
+        </Button>
       </div>
 
       <div
@@ -611,6 +676,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
           </div>
         </div>
         <button
+          v-if="!inHostSettings"
           type="button"
           class="flex-none self-end whitespace-nowrap rounded-7 px-2.25 py-1 text-11.5 font-semibold text-(--d-danger-text) transition-colors hover:bg-[color-mix(in_srgb,var(--d-danger)_12%,transparent)]"
           @click="emit('openFile', configError.path, configError.line)"
@@ -649,6 +715,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
         />
         <span class="flex-1 text-pretty">{{ t('mcp.untrustedNotice') }}</span>
         <button
+          v-if="!inHostSettings"
           type="button"
           class="flex-none font-semibold underline"
           @click="emit('trustProject')"
@@ -681,7 +748,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
       >
         <!-- One choice for the whole panel: it applies to the next exposure change of any tool or Resources row. -->
         <div
-          v-if="hasExposureRows"
+          v-if="hasExposureRows && !editsElsewhere"
           class="flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-lg border border-(--d-border) bg-(--d-panel) py-1.5 pr-2 pl-2.5 text-11 text-(--d-faint)"
         >
           <span :id="`${panelId}-save-to`">{{ t('mcp.toolExposureSaveTo') }}</span>
@@ -697,7 +764,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
         </div>
 
         <div
-          v-for="({ server, actions }, rowIndex) in rows"
+          v-for="({ server, actions, placement }, rowIndex) in rows"
           :ref="(el) => setRowElement(server.name, el)"
           :key="server.name"
           tabindex="-1"
@@ -773,6 +840,25 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
                   class="min-w-0 font-mono text-12.5 font-semibold break-all"
                   :class="!server.enabled && 'opacity-50'"
                 >{{ server.displayName ?? server.name }}</span>
+                <HostBadge
+                  v-if="placement?.host"
+                  :name="placement.label"
+                  :title="placement.title"
+                  :tone="placement.tone"
+                  data-testid="mcp-server-placement"
+                  :data-placement="server.placement"
+                />
+                <Badge
+                  v-else-if="placement"
+                  as="span"
+                  variant="tone"
+                  class="d-tone-muted inline-flex h-4.5 shrink-0 border-0 bg-(--tone)/15 px-1.5 align-middle text-10 font-semibold whitespace-nowrap"
+                  :title="placement.title"
+                  data-testid="mcp-server-placement"
+                  :data-placement="server.placement"
+                >
+                  {{ placement.label }}
+                </Badge>
                 <span
                   v-if="getSourceLabel(server.source)"
                   class="whitespace-nowrap rounded-full border border-(--d-border) bg-(--d-hover) px-1.75 text-10/4 text-(--d-faint-text)"
@@ -851,11 +937,37 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
                 </div>
               </div>
               <p
-                v-if="canDeleteMcpServer(server) && !canEditMcpServer(server)"
+                v-if="canDeleteMcpServer(server) && !canEditMcpServer(server) && !editsElsewhere"
                 class="text-(--d-faint) text-pretty"
               >
                 {{ t('mcp.notFormEditable') }}
               </p>
+              <p
+                v-if="server.source === 'relayed'"
+                class="text-(--d-faint) text-pretty"
+                data-testid="mcp-relayed-note"
+              >
+                {{ t('mcp.relayedReadOnly') }}
+              </p>
+              <div
+                v-if="server.remoteAvailable !== undefined"
+                class="mt-0.5 flex items-center gap-2"
+                data-testid="mcp-remote-available"
+              >
+                <Label
+                  :for="`${panelId}-remote-${rowIndex}`"
+                  class="block min-w-0 flex-1 cursor-pointer text-11.5/normal font-normal text-(--d-muted) text-pretty select-auto"
+                  :title="t('mcp.remoteAvailableTitle')"
+                >{{ t('mcp.remoteAvailable') }}</Label>
+                <ToggleSwitch
+                  :id="`${panelId}-remote-${rowIndex}`"
+                  :checked="server.remoteAvailable"
+                  :aria-label="t('mcp.remoteAvailableLabel', { name: server.displayName ?? server.name })"
+                  :title="t('mcp.remoteAvailableTitle')"
+                  data-testid="mcp-remote-available-toggle"
+                  @update:checked="(checked: boolean) => emit('setRemoteAvailable', server.name, checked)"
+                />
+              </div>
               <div
                 v-if="actions.length > 0"
                 class="mt-0.5 flex flex-wrap justify-end gap-1"
@@ -912,6 +1024,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
                       :indicator-class="exposureIndicator(server.resourceExposure)"
                       :selected-class="server.resourceExposure === 'off' ? 'text-(--d-text)' : 'text-(--d-accent-text)'"
                       class="border border-(--d-border)"
+                      :disabled="exposureLocked(server)"
                       data-testid="mcp-resource-exposure"
                       :aria-label="t('mcp.resourceExposureLabel', { name: server.displayName ?? server.name })"
                       :title="t('mcp.resourceExposureTooltip')"
@@ -920,8 +1033,8 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
                     <span
                       data-testid="mcp-resource-exposure-source"
                       class="rounded-full border border-(--d-border) bg-(--d-hover) px-1.75 text-10/4 text-(--d-faint-text)"
-                      :title="t('mcp.toolExposureSourceTitle', { source: t(`mcp.toolExposureSource.${server.resourceExposureSource ?? 'config'}`) })"
-                    >{{ t(`mcp.toolExposureSource.${server.resourceExposureSource ?? 'config'}`) }}</span>
+                      :title="t('mcp.toolExposureSourceTitle', { source: exposureSourceLabel(server.resourceExposureSource ?? 'config') })"
+                    >{{ exposureSourceLabel(server.resourceExposureSource ?? 'config') }}</span>
                   </div>
                   <p class="text-11 text-(--d-faint) text-pretty">
                     {{ t('mcp.resourcesDescription') }}
@@ -961,6 +1074,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
                       :indicator-class="exposureIndicator(tool.exposure)"
                       :selected-class="(tool.exposure ?? 'deferred') === 'off' ? 'text-(--d-text)' : 'text-(--d-accent-text)'"
                       class="border border-(--d-border)"
+                      :disabled="exposureLocked(server)"
                       data-testid="mcp-tool-exposure"
                       :aria-label="t('mcp.toolExposureLabel', { name: tool.name })"
                       :title="t('mcp.toolExposureTooltip')"
@@ -969,8 +1083,8 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
                     <span
                       data-testid="mcp-tool-exposure-source"
                       class="rounded-full border border-(--d-border) bg-(--d-hover) px-1.75 text-10/4 text-(--d-faint-text)"
-                      :title="t('mcp.toolExposureSourceTitle', { source: t(`mcp.toolExposureSource.${tool.exposureSource ?? 'config'}`) })"
-                    >{{ t(`mcp.toolExposureSource.${tool.exposureSource ?? 'config'}`) }}</span>
+                      :title="t('mcp.toolExposureSourceTitle', { source: exposureSourceLabel(tool.exposureSource ?? 'config') })"
+                    >{{ exposureSourceLabel(tool.exposureSource ?? 'config') }}</span>
                   </div>
                   <p
                     v-if="tool.description"
@@ -998,6 +1112,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
           :servers="collisionServers"
           :submitting="mcpWriteInFlight"
           :write-error="mcpWriteError"
+          :host="host?.name"
           @save="handleFormSave"
           @cancel="closeForm"
         />

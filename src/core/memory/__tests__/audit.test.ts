@@ -177,7 +177,7 @@ describe('memory quality audit', () => {
       const v4 = createDatabaseWrapper(new DatabaseSync(':memory:'));
       runMigrations(v4);
       v4.exec(
-        'DROP TABLE memory_audit_proposals; DROP TABLE memory_audit_runs; DROP INDEX idx_candidates_set_aside; DROP INDEX idx_candidates_claimable; ' +
+        'ALTER TABLE memory_candidates DROP COLUMN client_id; DROP TABLE memory_applied_writes; DROP TABLE memory_audit_proposals; DROP TABLE memory_audit_runs; DROP INDEX idx_candidates_set_aside; DROP INDEX idx_candidates_claimable; ' +
           'ALTER TABLE memory_candidates DROP COLUMN set_aside_at; ALTER TABLE memory_candidates DROP COLUMN failed_attempts; ' +
           'DELETE FROM schema_version WHERE version >= 5',
       );
@@ -188,7 +188,7 @@ describe('memory quality audit', () => {
       expect(tables).toEqual(['memory_audit_proposals', 'memory_audit_runs']);
       const idx = (v4.prepare("PRAGMA index_info('idx_audit_proposals_run_status')").all() as Array<{ name: string }>).map(c => c.name);
       expect(idx).toEqual(['run_id', 'status']);
-      expect((v4.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(7);
+      expect((v4.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(9);
       v4.close();
     });
   });
@@ -480,6 +480,17 @@ describe('memory quality audit', () => {
 
       await revertAuditRun(applyDeps(), runId);
       expect(row(db, id)).toEqual(before);
+    });
+
+    it('neither shows, counts nor applies a rescope to global a daemon\'s core graded for its client', async () => {
+      const id = seed(db, { kind: 'fact', scope: 'project', workspace: WS_A, content: 'the user prefers tabs' });
+      const runId = await audit(scriptedRunner({ [id]: { verdict: 'rescope', targetScope: 'global' } }));
+      const proposal = proposalFor(runId, id);
+      db.prepare("UPDATE memory_audit_proposals SET before_state = json_set(before_state, '$.toClient', json('true')) WHERE id = ?").run(proposal);
+      expect((await state()).proposals).toEqual([]);
+      expect(getAuditSummary(db, HOLDER).pendingCount).toBe(0);
+      expect(await applyAuditDecisions(applyDeps(), runId, [proposal], [])).toEqual({ applied: 0, stale: 0, rejected: 0 });
+      expect(row(db, id)).toMatchObject({ scope: 'project', workspace: WS_A, forgotten: 0 });
     });
 
     it('rescope_workspace of a session row clears session_id, and revert restores it', async () => {

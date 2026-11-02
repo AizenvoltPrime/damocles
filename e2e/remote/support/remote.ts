@@ -29,6 +29,8 @@ export interface RemoteHost {
 }
 
 export interface ConnectStepEvent {
+  // one per attempt: a reconnect is a new one
+  readonly attemptId: string;
   readonly step: ConnectStep | 'connected' | 'failed';
   /** The steps the attempt entered, in order, which the timeline's rows show. */
   readonly visited: readonly ConnectStep[];
@@ -125,9 +127,9 @@ export async function remoteProjectKey(app: ElectronApplication, host: Pick<Remo
   return key;
 }
 
-/** The environment a launch needs to reach the fixtures: the e2e hooks, the remote gate, the temp ssh config and the mirror. */
+/** The environment a launch needs to reach the fixtures: the e2e hooks, the temp ssh config and the mirror. */
 export function remoteEnv(ssh: Pick<SshClientHome, 'config'>, mirror: Pick<ReleaseMirror, 'url'>): Record<string, string> {
-  return { ...WINDOWS_SSH_ENV, DAMOCLES_E2E_HOOKS: '1', DAMOCLES_REMOTE: '1', DAMOCLES_E2E_SSH_CONFIG: ssh.config, DAMOCLES_E2E_RELEASE_URL: mirror.url };
+  return { ...WINDOWS_SSH_ENV, DAMOCLES_E2E_HOOKS: '1', DAMOCLES_E2E_SSH_CONFIG: ssh.config, DAMOCLES_E2E_RELEASE_URL: mirror.url };
 }
 
 // Win32-OpenSSH's ssh.exe exits 255 without a word when ProgramData is missing, which the hermetic environment leaves out.

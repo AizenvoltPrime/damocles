@@ -518,7 +518,7 @@
     "fromClaudeCode": "From Claude Code",
     "fromDamocles": "From Damocles",
     "fromCodex": "From Codex",
-    "tools": "{count} tools",
+    "tools": "{n} tool | {n} tools",
     "toolReadOnly": "Read-only",
     "toolDestructive": "Destructive",
     "toolNetwork": "Network",
@@ -530,6 +530,8 @@
     "toolExposureSource": {
       "config": "Config",
       "user": "User",
+      "machine": "Host settings",
+      "machineOn": "{host} settings",
       "project": "Project",
       "local": "Local"
     },
@@ -544,6 +546,24 @@
     "fromClaudeLocal": "From Claude Code (local)",
     "fromPi": "From pi",
     "fromPiProject": "From project .pi",
+    "fromRelayed": "Personal",
+    "placement": {
+      "client": "Your computer",
+      "clientTitle": "Runs on your computer. This chat reaches it while you are connected.",
+      "hostTitle": "Runs on {host}",
+      "project": "Project",
+      "projectTitle": "From this project's files"
+    },
+    "relayedReadOnly": "Shared from your computer. Change it in the MCP servers of a local chat.",
+    "remoteAvailable": "Available on remote hosts",
+    "remoteAvailableLabel": "{name} available on remote hosts",
+    "remoteAvailableTitle": "Remote chats can call its tools and read its resources while you are connected. It runs on this computer, and its environment variables and headers stay here.",
+    "hostSettings": {
+      "title": "MCP servers on {host}",
+      "subtitle": "Saved on {host} in ~/.damocles/mcp.json. They run there for every project, even while Damocles is closed.",
+      "note": "Add, edit and delete {host}'s MCP servers, turn MCP on or off and choose which tools load in Settings, on the {host} tab.",
+      "open": "Open Settings"
+    },
     "toggleServer": "Enable {name}",
     "serverOutput": "Server output",
     "serverErrors": {
@@ -577,6 +597,7 @@
       "addTitle": "Add MCP server",
       "editTitle": "Edit MCP server",
       "description": "Saved to ~/.damocles/mcp.json, so this server is available in every workspace.",
+      "descriptionOnHost": "Saved to ~/.damocles/mcp.json on {host}, so this server is available in every project there.",
       "nameLabel": "Name",
       "namePlaceholder": "my-server",
       "modeLabel": "Transport",
@@ -669,7 +690,8 @@
         "fileServersNotObject": "The \"mcpServers\" key in ~/.damocles/mcp.json is not an object. Fix the file, then try again.",
         "fileUnreadable": "~/.damocles/mcp.json could not be read. Check its permissions. Nothing was written.",
         "writeFailed": "The change could not be saved: {detail}",
-        "invalidDefinition": "The server definition was rejected: {detail}"
+        "invalidDefinition": "The server definition was rejected: {detail}",
+        "hostTabOnly": "This host's MCP servers change only in Settings, on the host's tab."
       }
     },
     "configErrorTitle": "A config file could not be read",
@@ -796,6 +818,9 @@
     "emptyHint": "Pick a longer range or clear the model and project filters.",
     "error": "Couldn't load statistics",
     "retry": "Retry",
+    "removedHost": "Removed host",
+    "projectOnHost": "{project} on {host}",
+    "onHost": "On {host}",
     "presets": {
       "today": "Today",
       "thisWeek": "This week",
@@ -892,7 +917,8 @@
         "signIn": "Your sign-ins",
         "signInTitle": "Spend on your own sign-ins and keys, on this computer or sent to a remote host",
         "host": "Remote hosts' own credentials",
-        "hostTitle": "Spend a remote host paid with a credential of its own, for a provider you were not signed in to"
+        "hostTitle": "Spend a remote host paid with a credential of its own, for a provider you were not signed in to",
+        "hostEnvironmentTitle": "Spend {host} paid with a credential of its own, for a provider you were not signed in to"
       },
       "columns": {
         "name": "Name",
@@ -968,7 +994,8 @@
       "deleted": "Deleted conversation",
       "openHint": "Open {title}",
       "deletedHint": "This conversation was deleted. Its spend stays in the totals.",
-      "otherFolderHint": "Its folder is not open in this window, so it cannot be opened here."
+      "otherFolderHint": "Its folder is not open in this window, so it cannot be opened here.",
+      "remoteHint": "This conversation ran on {host}. Open it from that host's project."
     }
   },
   "context": {
@@ -2194,6 +2221,7 @@
     "cancelHeldElsewhere": "This audit is running in another Damocles window and can only be cancelled there.",
     "result": {
       "applied": "No changes applied. | Applied {count} change. | Applied {count} changes.",
+      "failed": "No accepted changes failed. | {count} accepted change could not be saved on your computer and stays pending. | {count} accepted changes could not be saved on your computer and stay pending.",
       "rejected": "No proposals rejected. | {count} proposal rejected. | {count} proposals rejected.",
       "stale": "No accepted changes were skipped. | {count} accepted change was not applied because its memory changed after grading. | {count} accepted changes were not applied because their memories changed after grading.",
       "reverted": "No changes reverted. | Reverted {count} change. | Reverted {count} changes.",
@@ -2778,6 +2806,14 @@
       "mcp": {
         "label": "MCP servers",
         "description": "Connect the MCP servers configured for this folder and your user."
+      },
+      "mcpHostServers": {
+        "label": "MCP servers on this host",
+        "description": "Servers in this host's ~/.damocles/mcp.json run on it for every project, even while Damocles is closed.",
+        "labelOn": "MCP servers on {host}",
+        "descriptionOn": "Servers in {host}'s ~/.damocles/mcp.json run there for every project, even while Damocles is closed.",
+        "count": "{n} server | {n} servers",
+        "manage": "Manage…"
       },
       "memory": {
         "label": "Memory",

@@ -234,7 +234,7 @@ import {
   type ToolStatusDeps,
 } from "./tool-status";
 import { deferredToolNames, loadableToolNames } from "./tools/deferred-tools";
-import { userScopeRemote } from "../user-scope";
+import { userScopeReach } from "../user-scope";
 import { resourceToolsExposure } from "./mcp/exposure";
 import { restoredDeferredTools } from "./tools/restored-tools";
 import { waitForPendingDirectServers } from "./mcp/startup-wait";
@@ -458,6 +458,8 @@ function samePiModel(a: Pick<Model<Api>, "provider" | "id">, b: Pick<Model<Api>,
 interface MemoryCandidateKey {
   readonly sessionId: string;
   readonly promptIndex: number;
+  // a daemon's core: the device the turn pins, which owns its global extractions
+  readonly clientId?: string;
 }
 
 /** The process usage monitor and the subscription a chat's model bills. */
@@ -885,6 +887,7 @@ export class PiSession implements ChatSession {
         ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
         ...(this.options.browserService ? { browserService: this.options.browserService } : {}),
         ...(this.options.browserChat ? { browserChat: this.options.browserChat } : {}),
+        ...(this.options.platform.remote ? { browserRelay: this.options.platform.remote } : {}),
         getSessionId: () => this.memorySessionId,
         getPlanFilePath: () => this.getPlanFilePath(),
         ...(this.subagentManager ? { subagentManager: this.subagentManager } : {}),
@@ -1739,7 +1742,9 @@ export class PiSession implements ChatSession {
       this.inFlightPromptIndex = nextPromptIndex(session.sessionManager.getBranch());
     }
     // A clear can replace the session before the turn settles; the turn's memory candidate stays with this conversation.
-    const candidateKey: MemoryCandidateKey = { sessionId: session.sessionId, promptIndex: this.currentPromptIndex };
+    const remote = this.options.platform.remote;
+    const turnClient = remote ? currentPin(remote).clientId : undefined;
+    const candidateKey: MemoryCandidateKey = { sessionId: session.sessionId, promptIndex: this.currentPromptIndex, ...(turnClient !== undefined ? { clientId: turnClient } : {}) };
 
     const echo: UserEcho | undefined = userBroadcast && correlationId
       ? {
@@ -3296,11 +3301,37 @@ export class PiSession implements ChatSession {
     this.checkpointService = null;
   }
 
+  /** An agent's browser scope at its settle; on a daemon's core its tabs are on the client showing the chat, which disposes it. */
+  private disposeAgentBrowserScope(scopeId: string, closeTabs: boolean): void {
+    const browser = this.options.browserService;
+    if (!browser) return;
+    const remote = this.options.platform.remote;
+    const chat = this.options.browserChat;
+    if (!remote) {
+      browser.disposeScope(scopeId, closeTabs);
+      return;
+    }
+    if (!chat) return;
+    void remote.browserRelease(chat, scopeId, closeTabs).catch((err: unknown) => {
+      log(`[PiSession] The client could not release browser scope ${scopeId}: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
   /** Reclaim every browser tab scope this session handed out, closing the tabs failed agents left open
-   *  for inspection. Runs when the conversation ends (dispose) or is replaced (reset/clear). */
+   *  for inspection. Runs when the conversation ends (dispose) or is replaced (reset/clear). On a daemon's core the
+   *  tabs are on the client showing the chat, which discards each scope there. */
   private releaseBrowserScopes(): void {
     const browser = this.options.browserService;
-    for (const scopeId of this.ownedBrowserScopes) browser?.discardScope(scopeId);
+    const remote = this.options.platform.remote;
+    const chat = this.options.browserChat;
+    for (const scopeId of this.ownedBrowserScopes) {
+      if (!remote) browser?.discardScope(scopeId);
+      else if (browser && chat) {
+        void remote.browserDiscard(chat, scopeId).catch((err: unknown) => {
+          log(`[PiSession] The client could not discard browser scope ${scopeId}: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+    }
     this.ownedBrowserScopes.clear();
   }
 
@@ -4192,6 +4223,7 @@ export class PiSession implements ChatSession {
         assistantText: exchange.assistantText,
         files: exchange.files,
         workspace: identityFolder(this.cwd),
+        ...(key.clientId !== undefined ? { clientId: key.clientId } : {}),
       });
     } catch (err) {
       log("[PiSession] enqueueMemoryCandidate failed: %O", err);
@@ -4279,7 +4311,7 @@ export class PiSession implements ChatSession {
   /** The eligible tools ToolSearch may load right now. */
   private deferrableNow(): Set<string> {
     const deps = this.toolStatusDeps();
-    return new Set(loadableToolNames(deferredToolNames(fullActiveToolNamesFrom(deps), mcpDeferrableNames(deps)), !userScopeRemote()));
+    return new Set(loadableToolNames(deferredToolNames(fullActiveToolNamesFrom(deps), mcpDeferrableNames(deps)), userScopeReach()));
   }
 
   /** A newly bound conversation starts from the loadout its transcript recorded, the record pi restores a resumed session from. */
@@ -4351,7 +4383,7 @@ export class PiSession implements ChatSession {
     const deps = this.toolStatusDeps();
     const eligible = fullActiveToolNamesFrom(deps);
     // a tool whose user-scope service this core cannot reach stays eligible and deferred, but off the menu
-    const names = loadableToolNames(deferredToolNames(eligible, mcpDeferrableNames(deps)), !userScopeRemote());
+    const names = loadableToolNames(deferredToolNames(eligible, mcpDeferrableNames(deps)), userScopeReach());
     const pendingMcpServers = (this.mcpClientManager()?.getServerStatuses() ?? [])
       .filter((status) => status.enabled && status.status !== 'connected')
       .map((status) => status.name);
@@ -4660,7 +4692,7 @@ export class PiSession implements ChatSession {
         });
         return { customTools: [...this.buildSubagentCustomTools(pi, this.noteDeliveryForSubagent(input.agentId), input.agentId), ...mcp.tools], mcp };
       },
-      disposeBrowserScope: (scopeId, closeTabs) => this.options.browserService?.disposeScope(scopeId, closeTabs),
+      disposeBrowserScope: (scopeId, closeTabs) => this.disposeAgentBrowserScope(scopeId, closeTabs),
       cancelAgentDialogs: (agentId) => this.uiContext.cancelAgentDialogs(agentId),
       resolveModel: (input) => this.resolveSubagentModel(input.agentConfig),
       modelDollarBilled: (model) => piModelDollarBilled(model, this.modelBillingDeps()),
@@ -4849,6 +4881,7 @@ export class PiSession implements ChatSession {
       ...(this.options.browserService ? { browserService: this.options.browserService } : {}),
       ...(browserScopeId ? { browserScopeId } : {}),
       ...(this.options.browserChat ? { browserChat: this.options.browserChat } : {}),
+      ...(this.options.platform.remote ? { browserRelay: this.options.platform.remote } : {}),
       getSessionId: () => this.memorySessionId,
       getShellOptions: () => this.shellOptions(),
       shellCancel: this.shellCancel,
@@ -5825,7 +5858,7 @@ export class PiSession implements ChatSession {
         // (`resolveToolSearchEntries` → "Unknown entries"). This mirrors the
         // `tools: [...toolNames, ...mcp.names]` the caller builds from the same snapshot. Always-loaded
         // tools are in `mcp.names` but not `mcp.deferrable`, so they are active and never on the menu.
-        deferrableToolNames: loadableToolNames(deferredToolNames([...this.teamAgentBaseToolNames(), ...mcp.names], mcp.deferrable), !userScopeRemote()),
+        deferrableToolNames: loadableToolNames(deferredToolNames([...this.teamAgentBaseToolNames(), ...mcp.names], mcp.deferrable), userScopeReach()),
         mcpDescriptions: mcp.descriptions,
         directMcpGroups: mcp.directGroups,
         isMcpReadOnly: mcp.isReadOnly,
@@ -5833,7 +5866,7 @@ export class PiSession implements ChatSession {
         hooks: folder.getHooksDispatchDeps(),
       }),
       onAgentCost: (delta) => this.adapter.addExternalCost(delta),
-      disposeBrowserScope: (scopeId, closeTabs) => this.options.browserService?.disposeScope(scopeId, closeTabs),
+      disposeBrowserScope: (scopeId, closeTabs) => this.disposeAgentBrowserScope(scopeId, closeTabs),
       cancelAgentDialogs: (agentId) => this.uiContext.cancelAgentDialogs(agentId),
     };
   }

@@ -38,7 +38,8 @@ function watchWorkerFailures(tab: Page): string[] {
   return failures;
 }
 
-/** The distinct Monaco token classes on the rendered line containing `text`; more than one means syntax highlighting. */
+/** The distinct Monaco token classes on the rendered line containing `text`; more than one means syntax highlighting. Monaco draws
+ * a line before its background tokenizer colors it, so callers poll this. */
 async function tokenClassesOnLine(editor: Locator, text: string): Promise<string[]> {
   const line = editor.locator('.view-line', { hasText: text }).first();
   await expect(line).toBeVisible();
@@ -94,7 +95,7 @@ test('permission diff: Monaco shows original and proposed for a file over 1 MB; 
     await expect(modifiedEditor.locator('.view-line', { hasText: "target = 'new'" })).toBeVisible();
     await expect(modifiedEditor.locator('.line-insert, .char-insert').first()).toBeAttached();
     await expect(originalEditor.locator('.line-delete, .char-delete').first()).toBeAttached();
-    expect((await tokenClassesOnLine(modifiedEditor, "target = 'new'")).length).toBeGreaterThan(1);
+    await expect.poll(async () => (await tokenClassesOnLine(modifiedEditor, "target = 'new'")).length).toBeGreaterThan(1);
     // The diff is computed in Monaco's editor worker, served from app:// under the chat panel's worker-src.
     expect(tab.workers().some((w) => /\/webview\/assets\/monaco-[^/]+\.js$/.test(w.url()))).toBe(true);
 
@@ -195,7 +196,7 @@ test("open file: a chat's openFile opens a pane tab at the requested line and fo
   await editorShows(shell, 'value_250 = 250');
   await expect.poll(() => viewFocused(app, shell)).toBe(true);
   // Syntax highlighting and the TypeScript service run in module workers served from the shell's assets.
-  expect((await tokenClassesOnLine(codeEditor(shell), 'value_250 = 250')).length).toBeGreaterThan(1);
+  await expect.poll(async () => (await tokenClassesOnLine(codeEditor(shell), 'value_250 = 250')).length).toBeGreaterThan(1);
   await expect.poll(() => ['editor', 'ts'].every((name) => shell.workers().some((worker) => worker.url().endsWith(`/desktop-shell/assets/worker-${name}.worker.js`)))).toBe(true);
   expect(failures).toEqual([]);
   expect((await editorState(app)).tabs).toHaveLength(1);

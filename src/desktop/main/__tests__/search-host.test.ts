@@ -71,6 +71,7 @@ beforeEach(() => {
   });
   pane = new EditorPane({
     authorityOs: () => process.platform,
+    wslDistro: () => undefined,
     documents,
     settings: platform.settings,
     ask: async () => undefined,

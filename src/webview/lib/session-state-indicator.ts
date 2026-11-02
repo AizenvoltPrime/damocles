@@ -15,7 +15,7 @@ export function sessionStateTreatment(state: SessionState): SessionStateTreatmen
   switch (state) {
     case 'running':
       return {
-        iconClass: 'text-(--d-accent) animate-[d-spin_.9s_linear_infinite]',
+        iconClass: 'text-(--d-accent) d-spinning',
         labelClass: 'text-(--d-muted) italic',
       };
     case 'requires_action':

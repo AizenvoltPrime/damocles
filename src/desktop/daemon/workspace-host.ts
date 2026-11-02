@@ -4,13 +4,17 @@ import { createEndpoint, type CoreProtocolError, type CoreTransport } from '../c
 import { ERROR_CODEC } from '../core-protocol/errors';
 import { folderKey } from '../../core/workspace-folders/folder-key';
 import type { Disposable } from '../../platform/disposable';
+import type { StreamChannel } from '../../remote/mux';
+import { streamBytes, writeBytes } from '../../remote/tunnel-pipe';
 import type { EntryIdentity, WorkspaceFileSystem } from '../workspace/file-system';
+import type { TransferEntry } from '../workspace/transfer-ops';
 import type { Formatter } from '../workspace/format/formatter';
-import { CLIENT_TO_WORKSPACE, WORKSPACE_TO_CLIENT, type ClientToWorkspace, type WireConfinedEntry, type WireIdentity, type WorkspaceToClient } from '../workspace/messages';
+import { CLIENT_TO_WORKSPACE, WORKSPACE_TO_CLIENT, type ClientToWorkspace, type WalkPage, type WireConfinedEntry, type WireReadResult, type WireIdentity, type WireTransferEntry, type WorkspaceToClient } from '../workspace/messages';
 import type { QuickOpenListing } from '../workspace/quick-open-listing';
 import type { SearchRunner } from '../workspace/search/search-runner';
 import type { TerminalBackend } from '../workspace/terminal/terminal-backend';
 import type { TreeListing } from '../workspace/tree-listing';
+import type { CliServer } from './cli-server';
 import type { HubClient, TerminalHub } from './terminal-hub';
 
 export interface WorkspaceModules {
@@ -22,6 +26,8 @@ export interface WorkspaceModules {
   // detection, environment, injection and links; its own pty host is never started, the hub's is
   readonly terminals: Omit<TerminalBackend, 'startHost' | 'list'>;
   readonly hub: TerminalHub;
+  // the terminals' damocles command sockets, which relay to the connection that most recently attached a terminal's view
+  readonly cli: Pick<CliServer, 'connected'>;
   // what a new terminal of clientId adds to its environment: the git credential relay and that client's forwarded agent's
   // socket; a value of undefined removes the variable
   readonly terminalCredentials: (base: Readonly<Record<string, string>>, clientId: string) => Readonly<Record<string, string | undefined>>;
@@ -34,11 +40,17 @@ export interface WorkspaceModules {
 }
 
 export interface WorkspaceHost {
-  // serves one connection of clientId (its hello's) until the returned disposable or onViolation ends it
-  serve(connectionId: string, clientId: string, transport: CoreTransport, onViolation: (reason: string) => void): Disposable;
+  // serves one connection of clientId (its hello's) until the returned disposable or onViolation ends it; claimStream takes a
+  // stream the client opened on this connection, once; lost: the connection dropped and waits inside its grace
+  serve(connectionId: string, clientId: string, transport: CoreTransport, onViolation: (reason: string) => void, claimStream: (id: number) => StreamChannel | undefined, lost: () => boolean): Disposable;
 }
 
+// walks one connection holds open: each is a client's transfer, which ends or returns its walk
+export const MAX_WALKS = 64;
+
 const wireIdentity = (identity: EntryIdentity): WireIdentity => ({ dev: identity.dev.toString(), ino: identity.ino.toString(), birthtimeNs: identity.birthtimeNs.toString() });
+const fromWireIdentity = (identity: WireIdentity): EntryIdentity => ({ dev: BigInt(identity.dev), ino: BigInt(identity.ino), birthtimeNs: BigInt(identity.birthtimeNs) });
+const wireEntry = (entry: TransferEntry): WireTransferEntry => ({ ...entry, identity: wireIdentity(entry.identity) });
 
 export function createWorkspaceHost(modules: WorkspaceModules, log: (line: string) => void): WorkspaceHost {
   // each connection's format.retain; the formatter keeps the union
@@ -46,18 +58,37 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
   const retain = (): void => modules.format.retain([...new Set([...retained.values()].flat())]);
 
   return {
-    serve(connectionId, clientId, transport, onViolation) {
+    serve(connectionId, clientId, transport, onViolation, claimStream, lost) {
       const endpoint = createEndpoint<WorkspaceToClient, ClientToWorkspace>({
         transport,
         outgoing: WORKSPACE_TO_CLIENT,
         incoming: CLIENT_TO_WORKSPACE,
         log,
         errors: ERROR_CODEC,
+        // an answer outside the contract fails that one request instead of ending the client's connection
+        checkOutgoing: true,
         onViolation: (error: CoreProtocolError) => onViolation(error.message),
       });
       const watches = new Map<number, Disposable>();
       const searches = new Map<number, { kill(): void }>();
       const listings = new Map<number, { kill(): void }>();
+      const walks = new Map<number, AsyncIterator<readonly TransferEntry[]>>();
+      const claim = (id: number): StreamChannel => {
+        const stream = claimStream(id);
+        if (!stream) throw new Error(`Stream ${id} is not open on ${connectionId}`);
+        return stream;
+      };
+      const page = async (walkId: number, walk: AsyncIterator<readonly TransferEntry[]>): Promise<WalkPage> => {
+        let next: IteratorResult<readonly TransferEntry[]>;
+        try {
+          next = await walk.next();
+        } catch (err) {
+          walks.delete(walkId);
+          throw err;
+        }
+        if (next.done) walks.delete(walkId);
+        return { entries: next.done ? [] : next.value.map(wireEntry), done: next.done === true };
+      };
       const fresh = <T>(map: Map<number, T>, id: number, what: string): void => {
         if (map.has(id)) throw new Error(`${what} ${id} is already running on this connection`);
       };
@@ -102,6 +133,56 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
         watches.delete(watchId);
       });
       endpoint.serve('files.watchLimits', async () => ({ roots: modules.watchLimits.roots(), limit: await modules.watchLimits.limit() }));
+      endpoint.serve('files.walk', ({ walkId, project, relativePath }) => {
+        fresh(walks, walkId, 'walk');
+        if (walks.size >= MAX_WALKS) throw new Error(`${MAX_WALKS} walks are already running on this connection`);
+        const walk = files.walk(project, relativePath)[Symbol.asyncIterator]();
+        walks.set(walkId, walk);
+        return page(walkId, walk);
+      });
+      endpoint.serve('files.walkNext', ({ walkId }) => {
+        const walk = walks.get(walkId);
+        if (!walk) throw new Error(`walk ${walkId} is not running on this connection`);
+        return page(walkId, walk);
+      });
+      endpoint.serve('files.walkEnd', async ({ walkId }) => {
+        const walk = walks.get(walkId);
+        walks.delete(walkId);
+        await walk?.return?.();
+      });
+      endpoint.serve('files.clashes', ({ project, relativeDir, names }) => files.clashes(project, relativeDir, names));
+      endpoint.serve('files.receiveFile', async ({ project, relativeDir, name, stream, mode, mtimeMs, replace, size }) => {
+        const bytes = claim(stream);
+        try {
+          return await files.receiveFile(project, relativeDir, name, streamBytes(bytes), { mode, mtimeMs, replace, size });
+        } finally {
+          // a refusal before the first byte, or a failure, still closes this side
+          bytes.end();
+        }
+      });
+      endpoint.serve('files.readFile', async ({ project, relativePath, stream }): Promise<WireReadResult> => {
+        const bytes = claim(stream);
+        const read = await files.readFile(project, relativePath).catch((err: unknown) => {
+          bytes.end();
+          throw err;
+        });
+        if (!read.ok) {
+          bytes.end();
+          return read;
+        }
+        // after the answer: the client holds the stream until it reads, and a read failure ends it short
+        setImmediate(() => {
+          writeBytes(bytes, read.chunks).catch((err: unknown) => log(`[workspace] reading ${relativePath} for ${connectionId} failed: ${err instanceof Error ? err.message : String(err)}`));
+        });
+        return { ok: true, size: read.size };
+      });
+      // the client's cancel of either stops it between files and removes the part being written (feature files.cancel)
+      endpoint.serve('files.copy', ({ from, relativePath, to, toDir, name, replace }, signal) => files.copy(from, relativePath, to, toDir, name, replace, signal));
+      endpoint.serve('files.move', ({ from, relativePath, to, toDir, name, replace }, signal) => files.move(from, relativePath, to, toDir, name, replace, signal));
+      endpoint.serve('files.makeFolder', ({ project, relativeDir, name, mode }) => files.makeFolder(project, relativeDir, name, mode));
+      endpoint.serve('files.makeLink', ({ project, relativeDir, name, target, replace, within }) => files.makeLink(project, relativeDir, name, target, replace, within));
+      endpoint.serve('files.verifyLink', ({ project, relativePath, within }) => files.verifyLink(project, relativePath, within));
+      endpoint.serve('files.removeFolder', ({ project, relativePath, confirmed }) => files.removeFolder(project, relativePath, fromWireIdentity(confirmed)));
       endpoint.serve('tree.list', ({ project, relativeDir, excludes }) => tree.list(project, relativeDir, excludes));
       endpoint.serve('search.run', ({ runId, cwd, args }) => {
         fresh(searches, runId, 'search');
@@ -154,6 +235,7 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
       endpoint.serve('terminals.list', () => hub.list());
       endpoint.serve('terminals.windowsBuild', () => terminals.windowsBuild());
       const subscriptions = [
+        modules.cli.connected(connectionId, { clientId, lost, relay: (relay) => endpoint.request('cli.request', relay) }),
         endpoint.onEvent('terminals.post', ({ request, projectKey }) => hub.post(client, request, projectKey)),
         endpoint.onEvent('terminals.detach', () => hub.detach(client)),
         // every client hears it: the watch is shared, and each one names its own project from the folder
@@ -167,6 +249,8 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
           subscriptions.forEach((subscription) => subscription.dispose());
           endpoint.close('the connection closed');
           for (const watch of watches.values()) watch.dispose();
+          for (const walk of walks.values()) void walk.return?.();
+          walks.clear();
           for (const run of [...searches.values(), ...listings.values()]) run.kill();
           watches.clear();
           searches.clear();

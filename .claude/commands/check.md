@@ -1,4 +1,4 @@
-Check these code review results and fix whichever are valid with best practice no bandaid fix solutions and use AskUserQuestion tool to ask me clarifying questions if needed:
+Check these code review results and fix whichever are valid with best practice no bandaid fix solutions and use the AskUserQuestion tool to ask me clarifying questions whenever needed. There is no limit: call it as many times as you need before you start fixing, rather than guessing:
 
 $ARGUMENTS
 

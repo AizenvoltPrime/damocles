@@ -53,6 +53,26 @@ describe('foreign views (main side)', () => {
     ]);
   });
 
+  it('attaches again after a refused attach, so the view\'s browser calls do not fail until it closes', async () => {
+    const { relay, calls } = fake();
+    let refuse = true;
+    const local = (relay as unknown as { deps: { local: ForeignCore } }).deps.local;
+    const attach = local.attachForeign;
+    local.attachForeign = async (...args) => {
+      if (refuse) {
+        calls.push(['refused', ...args]);
+        throw new Error('the local core restarted');
+      }
+      await attach(...args);
+    };
+    await expect(relay.attachView('remote-view', 'loopback')).rejects.toThrow('the local core restarted');
+    await settle();
+    refuse = false;
+    await relay.attachView('remote-view', 'loopback');
+    await relay.attachView('remote-view', 'loopback');
+    expect(calls).toEqual([['refused', 'loopback', 'remote-view'], ['attach', 'loopback', 'remote-view']]);
+  });
+
   it('leaves a local chat\'s voice to its own core and takes nothing from an unknown view', async () => {
     const { relay, calls } = fake();
     expect(relay.fromView('local-view', { type: 'startVoiceRecording' })).toBe(false);

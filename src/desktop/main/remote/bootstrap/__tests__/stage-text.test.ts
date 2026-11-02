@@ -97,6 +97,9 @@ describe('stage 1 text', () => {
       "D_INSTALL_FOLDER='/opt/my '\\''tools'\\'' $x'",
       "D_PREVIOUS_KIND='default'",
       "D_PREVIOUS_FOLDER=''",
+      "D_WSL_CACHE=''",
+      "D_CONTAINER_CACHE=''",
+      "D_DATA_FOLDER=''",
       `D_LINUX_X64='damocles-server-3.7.0-linux-x64.tar.gz ${sha('linux')} 76500000 ${RELEASES}/download/v3.7.0/damocles-server-3.7.0-linux-x64.tar.gz'`,
       "D_LINUX_ARM64=''",
       "D_ALPINE_X64=''",
@@ -105,6 +108,23 @@ describe('stage 1 text', () => {
       "D_DARWIN_ARM64=''",
     ].join('\n');
     expect(text).toBe(POSIX_TEMPLATE.replace(/# BEGIN PARAMETERS\n[\s\S]*?# END PARAMETERS/, `# BEGIN PARAMETERS\n${block}\n# END PARAMETERS`));
+  });
+
+  it('gives a WSL stage its cache folder as a quoted literal, and refuses a folder wslpath -u would not map', () => {
+    const text = buildPosixStage1({ manifest, releasesUrl: RELEASES, wslCacheFolder: "C:\\Users\\o'neil\\AppData\\Roaming\\Damocles\\server-cache\\3.7.0" });
+    expect(text).toContain("D_WSL_CACHE='C:\\Users\\o'\\''neil\\AppData\\Roaming\\Damocles\\server-cache\\3.7.0'\n");
+    for (const folder of ['\\\\wsl.localhost\\Ubuntu\\cache', '-C:\\cache', 'relative\\cache', 'C:\\ca\nche']) {
+      expect(() => buildPosixStage1({ manifest, releasesUrl: RELEASES, wslCacheFolder: folder })).toThrow(RangeError);
+    }
+  });
+
+  it('gives a container stage its private cache folder, and refuses any other folder or a second cache', () => {
+    const text = buildPosixStage1({ manifest, releasesUrl: RELEASES, containerCacheFolder: '/tmp/damocles-cache-0123456789abcdef01234567' });
+    expect(text).toContain("D_CONTAINER_CACHE='/tmp/damocles-cache-0123456789abcdef01234567'\n");
+    for (const folder of ['/tmp/other', '/tmp/damocles-cache-xyz', "/tmp/damocles-cache-0123456789abcdef'", '/home/me/damocles-cache-0123456789abcdef']) {
+      expect(() => buildPosixStage1({ manifest, releasesUrl: RELEASES, containerCacheFolder: folder })).toThrow(RangeError);
+    }
+    expect(() => buildPosixStage1({ manifest, releasesUrl: RELEASES, containerCacheFolder: '/tmp/damocles-cache-0123456789abcdef', wslCacheFolder: 'C:\\cache' })).toThrow(RangeError);
   });
 
   it('replaces only the Windows parameter block, with each value as a PowerShell literal', () => {

@@ -27,7 +27,7 @@ import type { WorktreeIsolation } from '../worktree-isolation';
 import type { ShellCancelRegistry } from '../tools/shell-cancel-registry';
 import type { DispatchDeps } from '../hooks';
 import { deferredToolNames, loadableToolNames } from '../tools/deferred-tools';
-import { userScopeRemote } from '../../user-scope';
+import { userScopeReach } from '../../user-scope';
 import type { NestedMcpToolset } from '../tools/mcp-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
 import { COMPASS_AGENT_PROMPT } from '../../compass/system-prompt';
@@ -772,7 +772,7 @@ export class AgentManager {
       readOnlyShell: toolset.readOnly,
       parentToolUseId,
       stopSignal: record.abortController!.signal,
-      deferrableToolNames: loadableToolNames(deferredToolNames(eligibleToolNames, mcp.deferrable), !userScopeRemote()),
+      deferrableToolNames: loadableToolNames(deferredToolNames(eligibleToolNames, mcp.deferrable), userScopeReach()),
       // Gate parity with the panel: a CLASSIFIER (auto-allow vs `canUseTool`), never a grant filter.
       // Without it `toolCategory('mcp__*')` is 'other' and every nested MCP call, annotated read
       // included, falls through to full approval.

@@ -357,6 +357,29 @@ export function checkAskpassScripts(read, stat, keepsModes) {
   ];
 }
 
+/**
+ * The damocles command beside app.asar (resources/bin): the sh script, which macOS, Linux and WSL shells run, exists, is LF
+ * and 0755 where the file system keeps modes; damocles.cmd, which cmd.exe runs, is CRLF and turns delayed expansion off.
+ * `read` and `stat` answer undefined for a missing file.
+ */
+export function checkCliScripts(read, stat, keepsModes) {
+  const sh = read('damocles');
+  const cmd = read('damocles.cmd');
+  const mode = stat('damocles')?.mode;
+  return [
+    sh === undefined || sh.length === 0 ? fail('damocles command', 'resources/bin/damocles is missing or empty')
+      : sh.includes(0x0d) || !sh.toString('utf8').startsWith('#!/bin/sh\n') ? fail('damocles command', 'resources/bin/damocles is not an LF sh script')
+        : pass('damocles command', 'resources/bin/damocles, LF'),
+    cmd === undefined || cmd.length === 0 ? fail('damocles.cmd', 'resources/bin/damocles.cmd is missing or empty')
+      : /(?<!\r)\n/.test(cmd.toString('utf8')) ? fail('damocles.cmd', 'resources/bin/damocles.cmd is not a CRLF batch file')
+        // a registry DelayedExpansion=1 would eat a ! in the arguments
+        : !/^setlocal DisableDelayedExpansion\r$/im.test(cmd.toString('utf8')) ? fail('damocles.cmd', 'resources/bin/damocles.cmd does not turn delayed expansion off')
+          : pass('damocles.cmd', 'CRLF, delayed expansion off'),
+    !keepsModes ? pass('damocles command mode', 'not kept on a Windows file system')
+      : mode !== undefined && (mode & 0o777) === 0o755 ? pass('damocles command mode', '0755') : fail('damocles command mode', `0${((mode ?? 0) & 0o777).toString(8)}, expected 0755`),
+  ];
+}
+
 /** Each script exists and is not empty, and none but the PowerShell one holds a CR; `read` answers undefined for a missing file. */
 export function checkShellIntegrationScripts(read) {
   const missing = SHELL_INTEGRATION_FILES.filter((file) => (read(file)?.length ?? 0) === 0);
@@ -435,6 +458,12 @@ export async function verifyPackage({ platform, arch, app, repoRoot, serverPacka
     process.platform !== 'win32',
   ));
   results.push(checkSameFiles('askpass script contents', join(repoRoot, 'resources', 'askpass'), askpass, (file) => file.endsWith('.sh')));
+  const bin = join(resources, 'bin');
+  results.push(...checkCliScripts(
+    (file) => (existsSync(join(bin, file)) ? readFileSync(join(bin, file)) : undefined),
+    (file) => (existsSync(join(bin, file)) ? statSync(join(bin, file)) : undefined),
+    process.platform !== 'win32',
+  ));
   if (platform === 'win32') results.push(checkAskpassTrampoline(existsSync(join(askpass, 'ssh-askpass.exe')) ? readFileSync(join(askpass, 'ssh-askpass.exe')) : undefined));
 
   const sidecar = join(unpacked, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar');

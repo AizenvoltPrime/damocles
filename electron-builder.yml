@@ -35,6 +35,8 @@ files:
   # The askpass scripts ship from dist/askpass, where the desktop build set their mode; resources/askpass is their source.
   - dist/askpass-main.js
   - dist/askpass/**
+  # The damocles command's program, which resources/bin/damocles(.cmd) runs under the app's binary as Node.
+  - dist/cli.js
   # Nothing loads source maps at runtime (no --enable-source-maps); they were a quarter of app.asar.
   - '!**/*.map'
   - l10n/**
@@ -42,6 +44,9 @@ files:
   - '!resources/askpass{,/**}'
   # the git credential relay runs only on a target, from a server package
   - '!resources/git-credential{,/**}'
+  # the damocles command's scripts ship beside app.asar from dist/bin (extraResources); resources/server-bin is a server package's
+  - '!resources/bin{,/**}'
+  - '!resources/server-bin{,/**}'
   - python/**
   - '!python/**/.venv{,/**}'
   - '!python/**/__pycache__{,/**}'
@@ -74,6 +79,10 @@ files:
 extraResources:
   - from: node_modules/monaco-editor/ThirdPartyNotices.txt
     to: monaco-editor-ThirdPartyNotices.txt
+  # <install>/resources/bin: on Windows the folder the installer puts on PATH, on Linux the /usr/bin alternative's target and on macOS
+  # the /usr/local/bin link's; the desktop build copies it from resources/bin with its mode
+  - from: dist/bin
+    to: bin
 
 # Every native module is Node-API with prebuilds; a rebuild against the Electron ABI fails on Windows runners without CMake.
 npmRebuild: false
@@ -95,6 +104,7 @@ asarUnpack:
   - dist/watch-worker.js
   - dist/askpass-main.js
   - dist/askpass/**
+  - dist/cli.js
   - resources/grammars/**
   - resources/shell-integration/**
   - python/**
@@ -104,6 +114,7 @@ asarUnpack:
   - node_modules/@koromix/koffi-*/**
   - node_modules/@parcel/watcher-*/**
   - node_modules/node-pty/prebuilds/**
+  - node_modules/@devcontainers/cli/**
 
 # docs/invariants.md "Desktop packaging and updates"; scripts/verify-desktop-package.mjs reads these back from every built binary.
 electronFuses:
@@ -136,6 +147,8 @@ nsis:
   deleteAppDataOnUninstall: false
   # No spaces: the release job uploads with `gh release create`, which would rename a spaced file away from the name latest-*.yml records.
   artifactName: Damocles-Setup-${version}-${arch}.${ext}
+  # customInstall and customUnInstall: the damocles command's entry in the user's Path
+  include: build/win/installer.nsh
 
 mac:
   target:

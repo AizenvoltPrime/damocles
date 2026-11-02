@@ -11,7 +11,7 @@ type NodeDatabaseSync = InstanceType<typeof DatabaseSync>;
 
 type SqlParam = null | number | bigint | string | Buffer | Uint8Array;
 
-const CURRENT_VERSION = 7;
+const CURRENT_VERSION = 9;
 
 // Shared so the integrity worker's FTS repair can DROP + recreate the table with identical DDL.
 export const CREATE_FTS_SQL = `CREATE VIRTUAL TABLE memories_fts USING fts5(
@@ -205,6 +205,17 @@ const MIGRATION_V7 = `
 CREATE INDEX IF NOT EXISTS idx_candidates_set_aside ON memory_candidates(set_aside_at) WHERE set_aside_at IS NOT NULL;
 `;
 
+// The global memory writes a remote host relayed, by uuid: each is applied in the transaction that records it, and a
+// write whose uuid is here was applied before.
+const MIGRATION_V8 = `
+CREATE TABLE memory_applied_writes (uuid TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) WITHOUT ROWID;
+`;
+
+// A remote host's candidate names the device whose turn it came from, which owns the global memories extracted from it.
+const MIGRATION_V9 = `
+ALTER TABLE memory_candidates ADD COLUMN client_id TEXT;
+`;
+
 const MIGRATIONS: Record<number, string> = {
   1: MIGRATION_V1,
   2: MIGRATION_V2,
@@ -213,7 +224,19 @@ const MIGRATIONS: Record<number, string> = {
   5: MIGRATION_V5,
   6: MIGRATION_V6,
   7: MIGRATION_V7,
+  8: MIGRATION_V8,
+  9: MIGRATION_V9,
 };
+
+/** Whether a relayed global memory write with this uuid was applied; read inside the transaction that would apply it. */
+export function appliedWrite(db: DatabaseInstance, uuid: string): boolean {
+  return db.prepare('SELECT 1 FROM memory_applied_writes WHERE uuid = ?').get(uuid) !== undefined;
+}
+
+/** Records a relayed write as applied, in the transaction that applied it. */
+export function recordAppliedWrite(db: DatabaseInstance, uuid: string): void {
+  db.prepare('INSERT INTO memory_applied_writes (uuid, applied_at) VALUES (?, ?)').run(uuid, Date.now());
+}
 
 export interface OpenDatabaseOptions {
   /**
@@ -443,7 +466,7 @@ export function openAndMigrate(dbPath: string, options?: OpenDatabaseOptions): {
  * absent: it is a transient raw-turn buffer (regenerable), and in practice it is the hot-write table
  * most likely to hold the torn page that made the source unreadable.
  */
-const SALVAGE_TABLES = ['memories', 'memory_edges', 'memory_retrievals', 'memory_profile'] as const;
+const SALVAGE_TABLES = ['memories', 'memory_edges', 'memory_retrievals', 'memory_profile', 'memory_applied_writes'] as const;
 
 /**
  * Copy every readable durable row from `sourcePath` (a corrupt or legacy DB) into the migrated `dest`, keeping

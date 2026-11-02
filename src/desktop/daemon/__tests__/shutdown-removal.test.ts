@@ -98,12 +98,12 @@ describe('a removal\'s connection', { timeout: 120_000 }, () => {
 });
 
 describe.runIf(process.platform !== 'win32')('the socket folder record', { timeout: 120_000 }, () => {
-  it('names the endpoint, agent and relay folders a running daemon has', async () => {
+  it('names the endpoint, agent, relay and CLI folders a running daemon has', async () => {
     const daemon = await startInProcessDaemon({ starters: NO_HOSTS, credentialRelay: true });
     try {
       const recorded = (await fs.readFile(socketFoldersFile(daemon.paths), 'utf8')).split('\n').filter((line) => line !== '');
       const pid = JSON.parse(await fs.readFile(daemon.paths.pidFile, 'utf8')) as { socketFolder: string };
-      expect(recorded.sort()).toEqual([pid.socketFolder, daemon.daemon.agentProxy.folder()!, path.dirname(daemon.relay!.identity().handle)].sort());
+      expect(recorded.sort()).toEqual([pid.socketFolder, daemon.daemon.agentProxy.folder()!, path.dirname(daemon.relay!.identity().handle), daemon.daemon.cli.kept()!.folder!].sort());
     } finally {
       await daemon.shutdown();
     }
@@ -137,16 +137,18 @@ describe.runIf(process.platform !== 'win32')('the socket folder record', { timeo
       await fs.writeFile(path.join(agent, `agent-${'a'.repeat(24)}.sock`), '');
       const relay = await createSocketFolder(base);
       await fs.writeFile(path.join(relay, 'askpass.sock'), '');
+      const cli = await createSocketFolder(base);
+      await fs.writeFile(path.join(cli, `cli-${'c'.repeat(24)}.sock`), '');
       const crowded = await createSocketFolder(base);
       await fs.writeFile(path.join(crowded, 'askpass.sock'), '');
       await fs.writeFile(path.join(crowded, 'notes.txt'), '');
       const foreign = path.join(base, 'other-tool');
       await fs.mkdir(foreign, { mode: 0o700 });
       await fs.writeFile(path.join(foreign, 'askpass.sock'), '');
-      await writeSocketFolders(paths, [agent, relay, crowded, foreign, path.join(base, 'damocles-gone')]);
+      await writeSocketFolders(paths, [agent, relay, cli, crowded, foreign, path.join(base, 'damocles-gone')]);
       const lines: string[] = [];
       await removeRecordedSocketFolders(paths, (line) => lines.push(line));
-      expect(existsSync(agent) || existsSync(relay)).toBe(false);
+      expect(existsSync(agent) || existsSync(relay) || existsSync(cli)).toBe(false);
       expect((await fs.readdir(crowded)).sort()).toEqual(['notes.txt']);
       expect(await fs.readdir(foreign)).toEqual(['askpass.sock']);
       expect(lines.filter((line) => line.startsWith('[daemon] leaving'))).toHaveLength(1);

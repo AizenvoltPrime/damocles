@@ -2,7 +2,7 @@
 
 import { hasUnsafeWindowsSegment } from './relative-path';
 
-export const INPUT_VALIDATIONS = ['branchName', 'tagName', 'path', 'remoteName'] as const;
+export const INPUT_VALIDATIONS = ['branchName', 'tagName', 'path', 'remoteName', 'portTarget', 'localPort'] as const;
 export type InputValidation = (typeof INPUT_VALIDATIONS)[number];
 
 // Must stay equal to MAX_RELATIVE_PATH_LENGTH in src/shared/relative-path.ts.
@@ -14,7 +14,8 @@ export const MAX_REMOTE_NAME_LENGTH = 100;
 export type InputProblem =
   | { readonly code: 'empty' | 'tooLong' | 'control' | 'space' | 'doubleDot' | 'slashEdge' | 'doubleSlash' | 'dotPart' | 'lockPart' | 'trailingDot' | 'atBrace' | 'at' | 'leadingDash' | 'head' }
   | { readonly code: 'char'; readonly char: string }
-  | { readonly code: 'absolute' | 'backslash' | 'outside' | 'notNormalized' | 'windowsName' };
+  | { readonly code: 'absolute' | 'backslash' | 'outside' | 'notNormalized' | 'windowsName' }
+  | { readonly code: 'portTarget' | 'portDigits' | 'portRange' };
 
 export interface InputPlatform {
   // a path also passes hasUnsafeWindowsSegment, as main's and core's checks on Windows do
@@ -74,6 +75,40 @@ function remoteNameProblem(name: string): InputProblem | undefined {
   return undefined;
 }
 
+// VS Code's parseAddress (tunnelModel.ts): an optional host of dot-separated [A-Za-z0-9_-] labels and a colon, then the port.
+// No label starts with '-', as in DNS, so the host is never option-like, which the daemon's ports.connect parser refuses.
+const PORT_TARGET = /^(?:([A-Za-z0-9_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_][A-Za-z0-9_-]*)*):)?([0-9]+)$/;
+// A DNS name's length limit, which also bounds the host part main passes on.
+export const MAX_PORT_TARGET_HOST_LENGTH = 253;
+const MAX_PORT = 65535;
+
+const isPortNumber = (digits: string): boolean => digits.length <= 5 && Number(digits) >= 1 && Number(digits) <= MAX_PORT;
+
+/** A port, or host:port for an address the target reaches; the host is absent for a bare port, the target's own loopback. */
+export function parsePortTarget(value: string): { readonly host?: string; readonly port: number } | undefined {
+  const match = PORT_TARGET.exec(value);
+  if (!match || !isPortNumber(match[2]!)) return undefined;
+  const host = match[1];
+  if (host !== undefined && host.length > MAX_PORT_TARGET_HOST_LENGTH) return undefined;
+  return host === undefined ? { port: Number(match[2]) } : { host, port: Number(match[2]) };
+}
+
+/** VS Code's ChangeLocalPortAction rule: digits only, 1 to 65535. */
+export function parseLocalPort(value: string): number | undefined {
+  return /^[0-9]+$/.test(value) && isPortNumber(value) ? Number(value) : undefined;
+}
+
+function portTargetProblem(value: string): InputProblem | undefined {
+  const match = PORT_TARGET.exec(value);
+  if (!match || (match[1] !== undefined && match[1].length > MAX_PORT_TARGET_HOST_LENGTH)) return { code: 'portTarget' };
+  return isPortNumber(match[2]!) ? undefined : { code: 'portRange' };
+}
+
+function localPortProblem(value: string): InputProblem | undefined {
+  if (!/^[0-9]+$/.test(value)) return { code: 'portDigits' };
+  return isPortNumber(value) ? undefined : { code: 'portRange' };
+}
+
 /** What is wrong with `value` for `kind` on `platform`, or undefined when it is valid. */
 export function inputProblem(kind: InputValidation, value: string, platform: InputPlatform): InputProblem | undefined {
   if (value.length === 0) return { code: 'empty' };
@@ -83,6 +118,10 @@ export function inputProblem(kind: InputValidation, value: string, platform: Inp
       return pathProblem(value, platform);
     case 'remoteName':
       return remoteNameProblem(value);
+    case 'portTarget':
+      return portTargetProblem(value);
+    case 'localPort':
+      return localPortProblem(value);
     case 'branchName':
       // strbuf_check_branch_ref refuses a leading '-' and HEAD
       if (value.startsWith('-')) return { code: 'leadingDash' };

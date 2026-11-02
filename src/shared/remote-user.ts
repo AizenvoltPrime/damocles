@@ -187,3 +187,131 @@ export const VOICE_VIEW_MESSAGES: ReadonlySet<string> = new Set([
   'voiceDismissModelUpgrade',
   'voiceCancelModelDownload',
 ] satisfies WebviewToExtensionMessage['type'][]);
+
+/** A browser tool's result as this computer's core runs it for a remote chat (user.browser.tool): pi's text and image blocks. */
+export interface BrowserToolAnswer {
+  readonly content: ReadonlyArray<{ readonly type: 'text'; readonly text: string } | { readonly type: 'image'; readonly data: string; readonly mimeType: string }>;
+  readonly isError?: boolean;
+}
+
+// the agent's scope id of a chat's main agent and its human, as a relayed browser tool names it
+export const CHAT_BROWSER_SCOPE = 'chat';
+
+/** The kinds of a global memory a remote core may read or write on its client. */
+export type GlobalMemoryKind = 'fact' | 'preference' | 'episode' | 'note';
+
+/** A client's global memory as its own core returns it to a remote core (user.memory.*); id is the client's own id. */
+export interface RelayedGlobalMemory {
+  readonly id: string;
+  readonly kind: GlobalMemoryKind;
+  readonly title?: string;
+  readonly content: string;
+  readonly contentHash: string;
+  readonly tags?: readonly string[];
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+/** A remote core's search_memories filters, which the client applies to its global rows as its own search does (epoch ms). */
+export interface GlobalMemorySearchFilters {
+  readonly since?: number;
+  readonly until?: number;
+  readonly includeForgotten?: boolean;
+}
+
+/** A memory a search answers; an injection search's also says whether the client's gate lets it render full, and the terms it matched. */
+export interface SearchedGlobalMemory extends RelayedGlobalMemory {
+  readonly fullAllowed?: boolean;
+  readonly matchedTerms?: readonly string[];
+}
+
+// The user.memory.* tables' bounds (core-protocol/messages.ts parses with them); a request or answer past one is a protocol
+// violation, so every producer keeps within them.
+/** The most global memories one user.memory request names or one answer lists, and the most terms an answer's memory matched. */
+export const MAX_RELAYED_MEMORIES = 64;
+/** The most tags a relayed global memory carries. */
+export const MAX_GLOBAL_MEMORY_TAGS = 64;
+/** The longest title or tag of a relayed global memory. */
+export const MAX_GLOBAL_MEMORY_LABEL_CHARS: number = 64 * 1024;
+/** The longest content of a relayed global memory. */
+export const MAX_GLOBAL_MEMORY_CONTENT_CHARS: number = 64 * 1024 * 1024;
+/** The longest id, content hash or write uuid of a relayed global memory. */
+export const MAX_GLOBAL_MEMORY_ID_CHARS = 128;
+
+/** Whether a write fits user.memory.apply's table, so sending it cannot be a protocol violation. */
+export function globalMemoryWriteFits(write: GlobalMemoryWrite): boolean {
+  return write.uuid.length > 0 && write.uuid.length <= MAX_GLOBAL_MEMORY_ID_CHARS
+    && write.content.length <= MAX_GLOBAL_MEMORY_CONTENT_CHARS
+    && (write.title === undefined || write.title.length <= MAX_GLOBAL_MEMORY_LABEL_CHARS)
+    && (write.tags === undefined || (write.tags.length <= MAX_GLOBAL_MEMORY_TAGS && write.tags.every((tag) => tag.length <= MAX_GLOBAL_MEMORY_LABEL_CHARS)));
+}
+
+/** The most pinned and preference globals a client sends with its profile. */
+export const MAX_STANDING_GLOBALS = 64;
+
+/**
+ * A client's global profile and the globals a remote core injects once per context whatever the prompt says: its pinned
+ * global memories and its global preferences (user.memory.profile), read once per attach.
+ */
+export interface ClientGlobalProfile {
+  readonly profile: { readonly static: string; readonly dynamic: string };
+  readonly pinned: readonly RelayedGlobalMemory[];
+  readonly preferences: readonly RelayedGlobalMemory[];
+}
+
+/** What a client's core says of a global memory a remote core injected earlier: its current version, or that it is gone. */
+export type GlobalMemoryResolution =
+  | { readonly id: string; readonly memory: RelayedGlobalMemory }
+  | { readonly id: string; readonly gone: true; readonly byUser: boolean };
+
+/** The JSON bytes of the writes one user.memory.apply carries, far below the core channel's message bound; a larger write goes alone. */
+export const MAX_GLOBAL_MEMORY_APPLY_BYTES: number = 16 * 1024 * 1024;
+
+/** How long main waits for this computer's core to answer a user.memory read (search, profile, resolve) of a remote core. */
+export const GLOBAL_MEMORY_READ_TIMEOUT_MS = 10_000;
+/** How long main waits for this computer's core to apply one user.memory.apply batch, each write's conflict check included. */
+export const GLOBAL_MEMORY_APPLY_TIMEOUT_MS: number = 5 * 60_000;
+
+/**
+ * An outbox a daemon's core holds for a device that has not attached for GLOBAL_MEMORY_HOLD_MS, which another attached device
+ * may take or discard: queueId is the held device's client id, count its entries, lastSeen when it was last attached (epoch ms).
+ */
+export interface HeldMemoryQueue {
+  readonly queueId: string;
+  readonly count: number;
+  readonly lastSeen: number;
+}
+
+export const GLOBAL_MEMORY_HOLD_MS: number = 30 * 24 * 60 * 60 * 1000;
+/** The most held queues a daemon's core lists, oldest lastSeen first. */
+export const MAX_HELD_MEMORY_QUEUES = 100;
+
+/** A global memory write of a remote core: applied once on its client, its uuid recorded in the same transaction. */
+export interface GlobalMemoryWrite {
+  readonly uuid: string;
+  readonly kind: GlobalMemoryKind;
+  readonly content: string;
+  readonly title?: string;
+  readonly tags?: readonly string[];
+}
+
+/** One personal MCP server a client marked available on remote hosts: its name and schemas only, never env or headers. */
+export interface RelayedMcpServer {
+  readonly name: string;
+  readonly description?: string;
+  readonly tools: ReadonlyArray<{
+    readonly name: string;
+    readonly title?: string;
+    readonly description?: string;
+    readonly inputSchema?: unknown;
+    readonly annotations?: { readonly readOnlyHint?: boolean; readonly destructiveHint?: boolean; readonly idempotentHint?: boolean; readonly openWorldHint?: boolean };
+    // the client's config exposure of the tool; absent: deferred
+    readonly exposure?: 'deferred' | 'direct';
+  }>;
+  readonly resources: boolean;
+  // how long the client waits on one request of the server (its config's timeout), so the remote side waits as long
+  readonly timeoutMs?: number;
+}
+
+/** The longest relayed request timeout: past it a Node timer fires at once. */
+export const MAX_RELAYED_MCP_TIMEOUT_MS = 2_147_483_647;

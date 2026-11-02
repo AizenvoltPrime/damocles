@@ -8,7 +8,7 @@ import type { PanelOptions } from '../../../../platform/window-service';
 import { createCorePlatform, type CorePlatform } from '../../../core-host/platform';
 import { createLoopback, createMainEndpoint, INVALID, parseCoreInit } from '../../../core-protocol';
 import { createDesktopKeyValueState, type DesktopKeyValueState } from '../../../local-services/key-value-state';
-import { createHostServices, type HostServices, type HostTrust, type HostUi, type RelayView } from '../host-services';
+import { createHostServices, NO_USER_RELAYS, type HostServices, type HostTrust, type HostUi, type HostUser, type RelayView } from '../host-services';
 import type { PageSpec } from '../../../../shared/panel-html';
 import { folderKey } from '../../../../core/workspace-folders/folder-key';
 import { hostExtras } from './host-deps';
@@ -54,7 +54,7 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function connect(options: { readonly trusted?: readonly string[]; readonly globalState?: Record<string, unknown>; readonly ui?: Partial<HostUi>; readonly language?: 'en' | 'el' } = {}): Harness {
+function connect(options: { readonly trusted?: readonly string[]; readonly globalState?: Record<string, unknown>; readonly ui?: Partial<HostUi>; readonly language?: 'en' | 'el'; readonly user?: Partial<HostUser> } = {}): Harness {
   let language = options.language ?? 'en';
   const languageListeners = new Set<() => void>();
   const main = createFakePlatform({ chatBrowserPane: true, secrets: { stored: 'one' }, folders: [{ fsPath: path.resolve('/projects/a'), name: 'a' }] });
@@ -98,6 +98,7 @@ function connect(options: { readonly trusted?: readonly string[]; readonly globa
     git: { available: true },
     e2eHooks: false,
     ...hostExtras(options.ui ? { ui: options.ui } : {}),
+    user: { ...NO_USER_RELAYS, ...options.user },
     language: {
       current: () => language,
       onDidChange: (listener): Disposable => {
@@ -143,6 +144,31 @@ function connect(options: { readonly trusted?: readonly string[]; readonly globa
 }
 
 const CHAT: PanelOptions = { kind: 'chat', title: 'Damocles', localResourceRoots: [path.resolve('/app/dist/webview')] };
+
+describe('a remote core\'s relayed MCP request', () => {
+  it('reaches this computer\'s user relays with the core\'s abort, so a Stop in the remote chat ends it here', async () => {
+    const seen: AbortSignal[] = [];
+    const hold = (_request: unknown, signal: AbortSignal) => {
+      seen.push(signal);
+      return new Promise<never>((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('stopped'))));
+    };
+    const { core } = connect({ user: { mcpCall: hold, mcpResources: hold, mcpReadResource: hold } });
+    const request = core.endpoint.request as (name: string, value: unknown, signal: AbortSignal) => Promise<unknown>;
+    const asks: Array<readonly [string, unknown]> = [
+      ['user.mcp.call', { clientId: 'c1', server: 'notes', tool: 'search', args: {} }],
+      ['user.mcp.resources', { clientId: 'c1', server: 'notes', kind: 'resources' }],
+      ['user.mcp.readResource', { clientId: 'c1', server: 'notes', uri: 'notes://a' }],
+    ];
+    for (const [index, [method, params]] of asks.entries()) {
+      const stop = new AbortController();
+      request(method, params, stop.signal).catch(() => undefined);
+      await vi.waitFor(() => expect(seen).toHaveLength(index + 1));
+      expect(seen[index]!.aborted).toBe(false);
+      stop.abort();
+      await vi.waitFor(() => expect(seen[index]!.aborted).toBe(true));
+    }
+  });
+});
 
 describe('the display language', () => {
   it('is main\'s, followed through its mirror; core holds no catalog to render with', () => {
@@ -565,19 +591,29 @@ describe('a value that cannot cross the process boundary', () => {
 
   it('fails an RPC', async () => {
     const { core } = connect();
-    await expect(core.secrets.store('k', notCloneable as unknown as string)).rejects.toThrow(/could not be cloned/);
-    await expect(core.state.global.update('k', { callback: notCloneable })).rejects.toThrow(/could not be cloned/);
+    await expect(core.secrets.store('k', notCloneable as unknown as string)).rejects.toThrow(/was not sent/);
+    await expect(core.state.global.update('k', { callback: notCloneable })).rejects.toThrow(/was not sent/);
+  });
+
+  // a detached ArrayBuffer passes the contract's data parser but not the structured clone the channel makes
+  it('fails an RPC the contract accepts when the channel cannot send it, and the channel stays up', async () => {
+    const { core, state } = connect();
+    const detached = new ArrayBuffer(8);
+    structuredClone(detached, { transfer: [detached] });
+    await expect(core.state.global.update('k', { bytes: detached })).rejects.toThrow(/detached and could not be cloned/);
+    await core.state.global.update('k', 'sent');
+    expect(state.global.get('k')).toBe('sent');
   });
 
   it('leaves core\'s state as main holds it when the write fails', async () => {
     const { core, state } = connect({ globalState: { kept: 'saved' } });
     const changed = vi.fn();
     core.state.onDidChange('global', 'kept', changed);
-    await expect(core.state.global.update('kept', { callback: notCloneable })).rejects.toThrow(/could not be cloned/);
+    await expect(core.state.global.update('kept', { callback: notCloneable })).rejects.toThrow(/was not sent/);
     expect(core.state.global.get('kept')).toBe('saved');
     expect(state.global.get('kept')).toBe('saved');
     expect(changed).toHaveBeenCalledTimes(2);
-    await expect(core.state.global.update('fresh', notCloneable)).rejects.toThrow(/could not be cloned/);
+    await expect(core.state.global.update('fresh', notCloneable)).rejects.toThrow(/was not sent/);
     expect(core.state.global.get('fresh')).toBeUndefined();
   });
 

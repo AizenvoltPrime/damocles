@@ -1,9 +1,10 @@
 // The forwarded SSH agent as the daemon's spawned processes reach it: one socket per client in the agent folder, listening
-// while that client's bridge named an agent socket (agentSock), whose every connection is piped to that client's agent and
-// refused while that client does not forward its agent (docs/invariants.md "Remote daemon and wire").
+// while that client forwards its agent and has an upstream (the agent socket its bridge named, or its connection's relay),
+// whose every connection reaches that client's agent only (docs/invariants.md "Remote connections and credentials").
 import { promises as fs } from 'node:fs';
 import * as net from 'node:net';
 import { agentSocketFile } from '../core-protocol/agent-sockets';
+import type { AgentRelay } from './agent-relay';
 import type { KeptFolder } from './endpoint-server';
 import { createSocketFolder, socketFolderBase } from './token';
 
@@ -20,9 +21,14 @@ export interface AgentProxyDeps {
   readonly base?: () => Promise<string>;
 }
 
+// Where a client's agent is: the socket an ssh session forwarded to its bridge, or its connection's relay to its own computer.
+export type AgentUpstream = { readonly kind: 'socket'; readonly path: string } | { readonly kind: 'relay'; readonly relay: AgentRelay };
+
 export interface AgentProxy {
-  /** A connection of clientId authenticated with this agentSock (undefined: its bridge named none, or it closed). */
-  setClient(clientId: string, agentSock: string | undefined): void;
+  /** The client's upstream as its latest connection names it (undefined: none, or the connection dropped or closed). */
+  setClient(clientId: string, upstream: AgentUpstream | undefined): void;
+  /** A client's policy changed: its socket listens only while it forwards, and stops with every connection once it does not. */
+  policyChanged(): void;
   /** Makes the agent folder (POSIX); a no-op on Windows. */
   start(): Promise<void>;
   /** The agent folder once made; each client's socket in it is agentSocketFile(folder, clientId). */
@@ -56,8 +62,8 @@ function listenOn(server: net.Server, file: string): Promise<void> {
 }
 
 export function createAgentProxy(deps: AgentProxyDeps): AgentProxy {
-  // each client's agentSock as its bridge named it
-  const wanted = new Map<string, string>();
+  // each client's upstream as its latest connection named it
+  const wanted = new Map<string, AgentUpstream>();
   const listeners = new Map<string, Listener>();
   let folder: string | undefined;
   let closed = false;
@@ -74,12 +80,17 @@ export function createAgentProxy(deps: AgentProxyDeps): AgentProxy {
     connections.add(incoming);
     incoming.once('close', () => connections.delete(incoming));
     incoming.on('error', (err) => deps.log(`[agent] a proxied connection failed: ${err.message}`));
-    const agent = deps.forwarding(clientId) ? wanted.get(clientId) : undefined;
-    if (agent === undefined) {
+    const upstream = deps.forwarding(clientId) ? wanted.get(clientId) : undefined;
+    if (upstream === undefined) {
       deps.log('[agent] refused a connection: its client does not forward its SSH agent');
       incoming.destroy();
       return;
     }
+    if (upstream.kind === 'relay') {
+      upstream.relay.request(incoming);
+      return;
+    }
+    const agent = upstream.path;
     incoming.pause();
     fs.lstat(agent).then((stat) => {
       if (deps.uid === undefined || !stat.isSocket() || stat.uid !== deps.uid) throw new Error(`${agent} is not a socket of this user`);
@@ -129,12 +140,13 @@ export function createAgentProxy(deps: AgentProxyDeps): AgentProxy {
     await fs.rm(listener.file, { force: true });
   };
 
-  // a failed listen leaves that client without a socket; its next attach tries again
+  // a failed listen leaves that client without a socket; its next attach or policy change tries again
+  const listening = (clientId: string): boolean => wanted.has(clientId) && deps.forwarding(clientId);
   const sync = (): Promise<void> => serially(async () => {
     if (closed || folder === undefined) return;
-    for (const clientId of [...listeners.keys()]) if (!wanted.has(clientId)) await stop(clientId);
+    for (const clientId of [...listeners.keys()]) if (!listening(clientId)) await stop(clientId);
     for (const clientId of wanted.keys()) {
-      if (listeners.has(clientId)) continue;
+      if (listeners.has(clientId) || !listening(clientId)) continue;
       await listen(clientId, folder).catch((err: unknown) => deps.log(`[agent] could not listen for ${clientId}: ${err instanceof Error ? err.message : String(err)}`));
     }
   });
@@ -148,16 +160,17 @@ export function createAgentProxy(deps: AgentProxyDeps): AgentProxy {
   };
 
   return {
-    setClient: (clientId, agentSock) => {
-      if (agentSock !== undefined && !isAgentSock(agentSock)) {
+    setClient: (clientId, upstream) => {
+      if (upstream?.kind === 'socket' && !isAgentSock(upstream.path)) {
         deps.log(`[agent] ignoring the agent socket of ${clientId}: not an absolute socket path`);
-        agentSock = undefined;
+        upstream = undefined;
       }
-      // a new ssh session's agent socket: connections already piped keep theirs
-      if (agentSock === undefined) wanted.delete(clientId);
-      else wanted.set(clientId, agentSock);
+      // a new connection's upstream: connections already piped keep theirs
+      if (upstream === undefined) wanted.delete(clientId);
+      else wanted.set(clientId, upstream);
       void sync();
     },
+    policyChanged: () => void sync(),
     start: () => serially(async () => {
       if (deps.uid === undefined || folder !== undefined || closed) return;
       folder = await createSocketFolder(await (deps.base ?? socketFolderBase)());

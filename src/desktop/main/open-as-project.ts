@@ -7,7 +7,7 @@ import type { RootProject } from './worktrees/roots';
 export interface OpenAsProjectDeps {
   // the project folder or live chat worktree a root key names, with the OS its paths are on; undefined for any other key
   readonly resolve: (rootKey: string) => (RootProject & { readonly os: NodeJS.Platform }) | undefined;
-  // whether this build serves the authority's projects (the remote gate, the loopback flag)
+  // whether this build serves the authority's projects (the loopback daemon's only with the loopback flag)
   readonly served: (authorityKey: string) => boolean;
   readonly isDirectory: (authorityKey: string, folder: string) => Promise<boolean>;
   // the key the folder has as a project of the authority, computed by the folder's own OS

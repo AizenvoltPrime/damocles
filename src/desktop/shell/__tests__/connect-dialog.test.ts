@@ -15,7 +15,7 @@ import en from '../locales/en.json';
 import el from '../locales/el.json';
 import { breadcrumbs, childPath } from '../overlay/remote-paths';
 import { shellI18n } from '../i18n';
-import { FakeResizeObserver, fakeOverlayApi, opened, type FakeOverlayApi } from './fakes';
+import { FakeResizeObserver, contentName, fakeOverlayApi, opened, type FakeOverlayApi } from './fakes';
 
 const mounted: VueWrapper[] = [];
 const track = <T extends VueWrapper>(wrapper: T): T => {
@@ -38,6 +38,7 @@ afterEach(() => {
 
 const PROD: HostCardInfo = {
   hostId: 'h1',
+  kind: 'ssh',
   name: 'prod',
   destinationLabel: 'deploy@10.0.0.7:22',
   connection: 'offline',
@@ -114,7 +115,7 @@ describe('host name field', () => {
   });
 });
 
-const step = (event: Partial<ConnectStepEvent>): ConnectStepEvent => ({ attemptId: 'a1', hostId: 'h1', step: 'connecting', visited: ['connecting'], notices: [], ...event });
+const step = (event: Partial<ConnectStepEvent>): ConnectStepEvent => ({ attemptId: 'a1', hostId: 'h1', transport: 'ssh', step: 'connecting', visited: ['connecting'], notices: [], ...event });
 
 describe('step timeline', () => {
   const mountTimeline = (event: ConnectStepEvent) => track(mount(StepTimeline, { props: { event, hostName: 'prod', otherDevices: 0, setInstallFolder: vi.fn(async () => ({ ok: true as const })) }, global, attachTo: document.body }));
@@ -429,6 +430,18 @@ describe('host card', () => {
     expect(wrapper.get('[data-testid="host-name-error"]').text()).toBe('Δεν ήταν δυνατή η αποθήκευση του ονόματος. Δοκιμάστε ξανά.');
   });
 
+  it('says in its Safety section whether the host gets the SSH agent, and nothing for a host the agent cannot reach', async () => {
+    const wrapper = mountCard();
+    expect(wrapper.find('[data-testid="host-card-agent"]').exists()).toBe(false);
+    await wrapper.setProps({ host: { ...PROD, agentForwarding: false } });
+    expect(wrapper.get('[data-testid="host-card-agent"]').text()).toBe('Does not forward your SSH agent');
+    await wrapper.setProps({ host: { ...PROD, kind: 'container', agentForwarding: true, container: { origin: 'attach', state: 'running', engine: 'docker', containerName: 'web', user: 'root' } } });
+    expect(wrapper.get('[data-testid="host-card-safety"] [data-testid="host-card-agent"]').text()).toBe('Forwards your SSH agent');
+    shellI18n.global.locale.value = 'el';
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get('[data-testid="host-card-agent"]').text()).toBe('Προωθεί τον SSH agent σας');
+  });
+
   it('draws an uncolored host\'s icon muted, as its badge is, and a colored one in its tone', async () => {
     const wrapper = mountCard();
     expect(wrapper.get('[data-testid="host-card-icon"]').classes()).toContain('d-tone-muted');
@@ -499,7 +512,7 @@ describe('connect dialog', () => {
       attachTo: document.body,
     }));
     await flushPromises();
-    api.request('c1', { kind: 'connect', hosts: [PROD], sshConfigAliases: ['lab'], ...request });
+    api.request('c1', { kind: 'connect', hosts: [PROD], distros: [], sshConfigAliases: ['lab'], ...request });
     await flushPromises();
     await flushPromises();
     return wrapper;
@@ -513,7 +526,13 @@ describe('connect dialog', () => {
     expect(document.getElementById(dialog().getAttribute('aria-labelledby')!)!.textContent!.trim()).toBe('Connect to host');
     await vi.waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Search hosts or enter a new one'));
     const cards = [...dialog().querySelectorAll<HTMLElement>('[data-connect-card]')];
-    expect(cards.map((card) => card.getAttribute('aria-label'))).toEqual(['prod, deploy@10.0.0.7:22, Not connected', 'lab, from ~/.ssh/config']);
+    // a saved host's card is named by its content: axe reads its parts with no space between them, which no aria-label can contain
+    expect(cards.map((card) => card.getAttribute('aria-label') ?? contentName(card))).toEqual([
+      'prod deploy@10.0.0.7:22 Not connected',
+      'lab, from ~/.ssh/config',
+      'Open a folder in a container Reads .devcontainer/devcontainer.json',
+      'Attach to a running container On this computer or an SSH host',
+    ]);
     press('ArrowDown');
     expect(document.activeElement).toBe(cards[0]);
     press('ArrowDown');
@@ -523,11 +542,11 @@ describe('connect dialog', () => {
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Search hosts or enter a new one');
   });
 
-  it('staggers the first 8 cards 40 ms apart, saved hosts then aliases, and enters every later card with the eighth', async () => {
+  it('staggers the first 8 cards 40 ms apart, saved hosts, aliases then the dev container cards, and enters every later card with the eighth', async () => {
     const hosts = Array.from({ length: 6 }, (_, index) => ({ ...PROD, hostId: `h${index}`, name: `prod-${index}` }));
     await openConnect({ hosts, sshConfigAliases: ['a', 'b', 'c', 'd'] });
     const delays = [...dialog().querySelectorAll<HTMLElement>('.host-card')].map((card) => card.style.getPropertyValue('--card-index'));
-    expect(delays).toEqual(['0', '1', '2', '3', '4', '5', '6', '7', '7', '7']);
+    expect(delays).toEqual(['0', '1', '2', '3', '4', '5', '6', '7', '7', '7', '7', '7']);
   });
 
   it('parses a typed host live, shows its options as written and names a refused option', async () => {
@@ -546,6 +565,16 @@ describe('connect dialog', () => {
     await flushPromises();
     expect(dialog().querySelector('[data-testid="new-host-card"]')).toBeNull();
     expect(dialog().querySelector('[role="alert"]')!.textContent!.trim()).toBe('-F is not allowed. Damocles passes only -l, -p, -i, -J, -4, -6, -C and allowed -o options to ssh.');
+  });
+
+  it('opens with a query main filled in as if typed, its new host offered and nothing started', async () => {
+    vi.mocked(api.parseHost).mockImplementation(async () => opened({ ok: true as const, destinationLabel: 'deploy@10.0.7.12', options: [], prefillName: '10.0.7.12', nameCheck: { ok: true as const, name: '10.0.7.12' } }));
+    await openConnect({ query: 'deploy@10.0.7.12' });
+    expect(dialog().querySelector<HTMLInputElement>('input')!.value).toBe('deploy@10.0.7.12');
+    expect(api.parseHost).toHaveBeenCalledExactlyOnceWith('deploy@10.0.7.12');
+    expect(dialog().querySelector('[data-testid="new-host-card"]')!.textContent).toContain('Connect to deploy@10.0.7.12');
+    await vi.waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Search hosts or enter a new one'));
+    expect(api.startConnect).not.toHaveBeenCalled();
   });
 
   it('holds back a missing value while the typed text still matches a card, and shows a refused value at once', async () => {
@@ -583,6 +612,11 @@ describe('connect dialog', () => {
     expect(dialog().querySelector('[role="alert"]')!.textContent).toBe('Another host is already called prod');
     name.value = 'billing-prod';
     name.dispatchEvent(new Event('input'));
+    // main pushes the new attempt's first step before it answers the start
+    vi.mocked(api.startConnect).mockImplementationOnce(async () => {
+      api.connectStep(step({ attemptId: 'attempt-1', hostId: 'host-new' }));
+      return opened({ ok: true as const, attemptId: 'attempt-1', hostId: 'host-new' });
+    });
     name.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     await vi.waitFor(() => expect(api.startConnect).toHaveBeenCalledWith({ input: 'deploy@10.0.0.9', name: 'billing-prod' }));
     await vi.waitFor(() => expect(dialog().querySelector('[role="progressbar"]')).not.toBeNull());
@@ -658,7 +692,10 @@ describe('connect dialog', () => {
   });
 
   it('moves focus from the vanished Cancel to the failed step\'s first action', async () => {
-    vi.mocked(api.startConnect).mockResolvedValue(opened({ ok: true as const, attemptId: 'a1', hostId: 'h1' }));
+    vi.mocked(api.startConnect).mockImplementation(async () => {
+      api.connectStep(step({}));
+      return opened({ ok: true as const, attemptId: 'a1', hostId: 'h1' });
+    });
     await openConnect({ hostId: 'h1' });
     await vi.waitFor(() => expect(document.activeElement?.textContent?.trim()).toMatch(/^Cancel/));
     api.connectStep(step({ step: 'failed', failure: { code: 'refused', params: {} } }));
@@ -833,6 +870,8 @@ describe('connect dialog', () => {
       return shown!;
     });
     expect(forget.textContent).toContain('Forget prod?');
+    // no container record runs on prod, so none is named
+    expect(forget.textContent).not.toContain('every container opened through it');
     await vi.waitFor(() => expect(document.activeElement).toBe(forget.querySelector('[data-testid="forget-host-cancel"]')));
     // the Connect dialog's focus trap steps aside, so the keyboard reaches every button of the question
     const confirm = forget.querySelector<HTMLElement>('[data-testid="forget-host-confirm"]')!;
@@ -858,6 +897,19 @@ describe('connect dialog', () => {
     // a dismissed dialog leaves inert, and answers once its exit ends
     expect(dialog().closest('[inert]')).toBeNull();
     expect(api.answer).not.toHaveBeenCalled();
+  });
+
+  it('says Forget host also forgets the containers only of an SSH host that container records run on', async () => {
+    const container = { ...PROD, hostId: 'c1', kind: 'container', name: 'api-shell', destinationLabel: 'api', connection: 'offline', container: { origin: 'attach', state: 'running', engine: 'docker', containerName: 'api', user: 'root', via: { hostId: 'h1', name: 'prod' } } } satisfies HostCardInfo;
+    await openConnect({ hosts: [PROD, container] });
+    await openCardOf();
+    await pressPointer(dialog().querySelector<HTMLElement>('[data-testid="forget-host"]')!);
+    const forget = await vi.waitFor(() => {
+      const shown = document.querySelector<HTMLElement>('[data-testid="forget-host-dialog"][data-state="open"]');
+      expect(shown).not.toBeNull();
+      return shown!;
+    });
+    expect(forget.textContent).toContain('every container opened through it');
   });
 
   it('gives main\'s question stacked over it, the trust question of a picked folder, the pointer and the keyboard, and stays open', async () => {

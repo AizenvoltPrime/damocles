@@ -7,6 +7,16 @@ export const USAGE_STATS_BUCKETS: readonly UsageStatsBucket[] = ['day', 'week', 
 /** Project key of ledger rows recorded with `cwd: null`; shown as "No project". */
 export const NO_PROJECT_KEY = '';
 
+/** The project key of a remote host's project, indexed from its session mirror; `cwd` is the path on that host, as written. */
+export function hostProjectKey(hostId: string, cwd: string): string {
+  return `remote:${hostId}|${cwd}`;
+}
+
+/** A remote host's spend that names no project (a sub-call with no cwd); its project row has a null `cwd`. */
+export function hostNoProjectKey(hostId: string): string {
+  return hostProjectKey(hostId, '');
+}
+
 /** The host rejects a query whose model or project filter exceeds these bounds. */
 export const USAGE_STATS_MAX_FILTER_KEYS = 200;
 export const USAGE_STATS_MAX_FILTER_KEY_LENGTH = 1024;
@@ -57,10 +67,12 @@ export interface UsageStatsModelOption {
   label: string;
 }
 
-/** `cwd` is null only for `NO_PROJECT_KEY`. */
+/** `cwd` is null only for `NO_PROJECT_KEY` and a host's `hostNoProjectKey`. */
 export interface UsageStatsProjectOption {
   key: string;
   cwd: string | null;
+  /** A remote host's project, indexed from its session mirror: `cwd` is the path on that host. */
+  hostId?: string;
 }
 
 /** Sums over one group of entries. Share and cache hit rate are derived from these and the report totals. */
@@ -107,8 +119,10 @@ export interface UsageStatsModelRow extends UsageStatsAggregate {
 
 export interface UsageStatsProjectRow extends UsageStatsAggregate {
   key: string;
-  /** Null only for `NO_PROJECT_KEY`. */
+  /** Null only for `NO_PROJECT_KEY` and a host's `hostNoProjectKey`. */
   cwd: string | null;
+  /** As `UsageStatsProjectOption.hostId`. */
+  hostId?: string;
 }
 
 /** Where spend came from. Every entry has exactly one source; precedence: `docs/invariants.md`, "Usage accounting". */
@@ -130,6 +144,8 @@ export type UsageStatsCredential = 'signIn' | 'host';
 
 export interface UsageStatsCredentialRow extends UsageStatsAggregate {
   credential: UsageStatsCredential;
+  /** On a `host` row of this computer's index, the host whose own credential paid; one row per host. Absent on a remote core's own `host` row. */
+  hostId?: string;
 }
 
 /** Usage in one weekday and hour of the query's zone. Weekday is 0 for Monday through 6 for Sunday; empty cells are omitted. */
@@ -148,6 +164,8 @@ export interface UsageStatsTopSession extends UsageStatsAggregate {
   title: string | null;
   projectKey: string;
   cwd: string | null;
+  /** As `UsageStatsProjectOption.hostId`. */
+  hostId?: string;
   lastActiveMs: number;
   /** The conversation's file is gone; its spend stays. */
   missing: boolean;

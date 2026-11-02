@@ -48,6 +48,11 @@ export type StageMessage =
   | { readonly kind: 'fail'; readonly code: ProbeFailureCode; readonly params: StageParams }
   | { readonly kind: 'probe'; readonly target: ServerTarget; readonly install: string }
   | { readonly kind: 'upload' }
+  // WSL and containers: the stage copies the package from the app's cache once the app answers that the cache holds it
+  | { readonly kind: 'cache' }
+  // the copy from the cache failed at wslpath, at a container's cache folder or at the copy itself; the stage asks for the
+  // upload next
+  | { readonly kind: 'copyFailed'; readonly reason: 'wslpath' | 'cacheFolder' | 'copy' }
   // a download try that failed; the stage retries, then asks for the upload
   | { readonly kind: 'downloadFailed'; readonly attempt: number; readonly reason: string }
   | { readonly kind: 'settled' }
@@ -113,7 +118,12 @@ function parseMessage(raw: unknown): StageMessage | undefined {
         && typeof reason === 'string' && DOWNLOAD_FAILURE_REASON.test(reason);
       return valid ? { kind: 'downloadFailed', attempt: attempt as number, reason: reason as string } : undefined;
     }
+    case 'copyFailed': {
+      const { reason } = raw;
+      return Object.keys(raw).length === 2 && (reason === 'wslpath' || reason === 'cacheFolder' || reason === 'copy') ? { kind: 'copyFailed', reason } : undefined;
+    }
     case 'upload':
+    case 'cache':
     case 'settled':
     case 'bridge':
       return Object.keys(raw).length === 1 ? { kind: raw['kind'] } : undefined;

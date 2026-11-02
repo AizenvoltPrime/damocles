@@ -1,27 +1,29 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { applyHostTheme } from './apply-theme';
-import { PANEL_CHANNELS, type PanelConnection, type PanelHostAction, type PanelHostLabel, type PanelInit, type PanelQueueAction, type PanelTheme } from './panel-channels';
+import { PANEL_CHANNELS, type PanelConnection, type PanelHostAction, type PanelHostLabel, type PanelHostNames, type PanelInit, type PanelQueueAction, type PanelTheme } from './panel-channels';
 import type { DamoclesBridge } from '../../shared/damocles-bridge';
 
 // Hydrated on first use, not at preload start: main checks the sender frame's URL, which commits only after the preload has run.
 // Undefined while main refuses the frame (it answers null); the next call asks again, DOMContentLoaded's at the latest, and
 // a host it learns then reaches the onHost listeners of a page that read none before.
-type Hydrated = { state: unknown; theme: PanelTheme; host: PanelHostLabel | undefined; offline: PanelInit['offline']; connection: PanelConnection | undefined };
+type Hydrated = { state: unknown; theme: PanelTheme; host: PanelHostLabel | undefined; offline: PanelInit['offline']; connection: PanelConnection | undefined; hostNames: PanelHostNames | undefined };
 let hydrated: Hydrated | undefined;
 function current(): Hydrated | undefined {
   if (!hydrated) {
     const init = ipcRenderer.sendSync(PANEL_CHANNELS.init) as PanelInit | null;
     if (init === null) return undefined;
-    hydrated = { state: init.state, theme: init.theme, host: init.host, offline: init.offline, connection: init.connection };
-    const { host, connection } = init;
+    hydrated = { state: init.state, theme: init.theme, host: init.host, offline: init.offline, connection: init.connection, hostNames: init.hostNames };
+    const { host, connection, hostNames } = init;
     if (host) for (const listener of [...hostListeners]) listener(host);
     if (connection) for (const listener of [...connectionListeners]) listener(connection);
+    if (hostNames) for (const listener of [...hostNamesListeners]) listener(hostNames);
   }
   return hydrated;
 }
 const listeners = new Set<(message: unknown) => void>();
 const hostListeners = new Set<(host: PanelHostLabel) => void>();
 const connectionListeners = new Set<(connection: PanelConnection) => void>();
+const hostNamesListeners = new Set<(hostNames: PanelHostNames) => void>();
 
 function parsed(payload: string): { readonly message: unknown } | undefined {
   try {
@@ -70,6 +72,13 @@ ipcRenderer.on(PANEL_CHANNELS.connection, (_event, connection: PanelConnection) 
   for (const listener of [...connectionListeners]) listener(connection);
 });
 
+ipcRenderer.on(PANEL_CHANNELS.hostNames, (_event, hostNames: PanelHostNames) => {
+  const hydratedState = current();
+  if (!hydratedState) return;
+  hydratedState.hostNames = hostNames;
+  for (const listener of [...hostNamesListeners]) listener(hostNames);
+});
+
 const bridge: DamoclesBridge = {
   postMessage: (message: unknown): void => {
     ipcRenderer.send(PANEL_CHANNELS.post, message);
@@ -97,6 +106,13 @@ const bridge: DamoclesBridge = {
     connectionListeners.add(listener);
     return () => {
       connectionListeners.delete(listener);
+    };
+  },
+  getHostNames: (): PanelHostNames | undefined => current()?.hostNames,
+  onHostNames: (listener: (hostNames: PanelHostNames) => void): (() => void) => {
+    hostNamesListeners.add(listener);
+    return () => {
+      hostNamesListeners.delete(listener);
     };
   },
   queueAction: (action: PanelQueueAction): void => {

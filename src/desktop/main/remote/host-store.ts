@@ -6,9 +6,14 @@ import { jsonConfigWritesSettled, writeJsonConfig } from '../../../core/config/j
 import type { ShellPlatform } from '../../preload/shell-channels';
 import { HOST_SWITCH_KEYS, MAX_HOST_NAME_LENGTH, type CachedPlatform, type HostSettingChange, type NameCheck } from '../../preload/overlay-channels';
 import { HOST_ID } from '../../daemon/control-messages';
-import { authorityKeyOfProject } from '../../../shared/project-location';
+import { authorityKeyOfProject, pathFor } from '../../../shared/project-location';
 import { isHostTone, type HostTone } from '../../../shared/host-tones';
 import { PERMISSION_MODES, type PermissionMode } from '../../../shared/types/settings';
+import { MAX_PORT_LABEL_CHARS, ON_DETECT, type OnDetect } from '../../preload/ports-channels';
+import { isWslDistroName } from './wsl/distro-name';
+import { CONTAINER_KEY, containerAuthorityKey } from './containers/container-key';
+import { isContainerEngine, isContainerId, isContainerName, isContainerPath, isContainerText, isContainerUser, type ContainerEngine } from '../../daemon/container-values';
+import { isCliPath } from '../../daemon/container-commands';
 
 const SCHEMA_VERSION = 1;
 export const HOST_STORE_FILE = 'remote-hosts.json';
@@ -37,7 +42,7 @@ export interface SshHostSettings {
   readonly defaultPermissionMode?: PermissionMode;
   // Allow YOLO
   readonly allowBypass?: boolean;
-  // POSIX targets only
+  // POSIX SSH hosts and containers only (canForwardAgent)
   readonly forwardAgent?: boolean;
   readonly rememberPassword?: boolean;
   readonly browserLocalNetwork?: boolean;
@@ -73,6 +78,145 @@ export interface SshHostRecord {
   readonly lingerEnabledByDamocles?: boolean;
   // credential hosts (git over https) this host may use without asking
   readonly alwaysCredentialHosts?: readonly string[];
+  // the host's port attributes, its output-only fallback, and the forwards each of its projects restores
+  readonly ports?: HostPorts;
+}
+
+// A WSL distro, recorded when it is first connected; its projects and trusted folders live under `wsl+<distro>`.
+export interface WslHostRecord {
+  readonly id: string;
+  readonly kind: 'wsl';
+  readonly distro: string;
+  readonly name: string;
+  readonly color?: HostTone;
+  readonly lastUsed?: number;
+  readonly recentFolders: readonly string[];
+  readonly settings: SshHostSettings;
+  readonly previousInstallFolder?: string | null;
+  readonly alwaysCredentialHosts?: readonly string[];
+  readonly ports?: HostPorts;
+}
+
+// A container, recorded when it is first connected; its projects and trusted folders live under `container+<key>`, and via
+// names the SSH host it runs on. The key never changes; containerId follows each up, a Rebuild's included.
+export interface ContainerHostRecord {
+  readonly id: string;
+  readonly kind: 'container';
+  readonly key: string;
+  readonly via?: string;
+  readonly engine: ContainerEngine;
+  readonly origin: 'devcontainer' | 'attach';
+  // devcontainer: the workspace folder and configuration file on the machine the CLI runs on
+  readonly workspaceFolder?: string;
+  readonly configPath?: string;
+  // attach: the container's name and the user Damocles runs as
+  readonly containerName?: string;
+  readonly user?: 'configured' | 'root';
+  // what the last up or attach found
+  readonly containerId?: string;
+  readonly image?: string;
+  readonly remoteUser?: string;
+  readonly remoteWorkspaceFolder?: string;
+  // devcontainer: the container the last up gave has no damocles-data volume, so ~/.damocles lives in it
+  readonly withoutDataVolume?: true;
+  // the container id the notice about a container without the data volume was last raised for
+  readonly dataNoticeShown?: string;
+  // the hash of the configuration the user last confirmed (devcontainer-trust.ts)
+  readonly trustHash?: string;
+  readonly name: string;
+  readonly color?: HostTone;
+  readonly lastUsed?: number;
+  readonly recentFolders: readonly string[];
+  readonly settings: SshHostSettings;
+  readonly previousInstallFolder?: string | null;
+  readonly alwaysCredentialHosts?: readonly string[];
+  readonly ports?: HostPorts;
+}
+
+// The fields of a new container record the caller chooses; the store draws its id.
+export type NewContainerHost = Pick<ContainerHostRecord, 'key' | 'via' | 'engine' | 'origin' | 'workspaceFolder' | 'configPath' | 'containerName' | 'user'>;
+
+// What an up or attach found, kept beside the key.
+export type ContainerFound = Pick<ContainerHostRecord, 'containerId' | 'image' | 'remoteUser' | 'remoteWorkspaceFolder' | 'withoutDataVolume' | 'dataNoticeShown'>;
+
+export type HostRecord = SshHostRecord | WslHostRecord | ContainerHostRecord;
+
+/** A port's or range's attributes: a label and what an automatic forward does once the port is detected. */
+export interface PortAttributes {
+  readonly label?: string;
+  readonly onDetect?: OnDetect;
+}
+
+/** A forward a project restores when its host connects: a manual one, or one whose local port the user changed. */
+export interface RestoredForward {
+  readonly host: string;
+  readonly port: number;
+  readonly localPort?: number;
+  readonly manual: boolean;
+  // epoch ms of the last forward or change; an entry past RESTORE_EXPIRY_MS is dropped
+  readonly lastUsed: number;
+}
+
+export interface HostPorts {
+  // by port ('5173') or inclusive range ('3000-3010')
+  readonly attributes: Readonly<Record<string, PortAttributes>>;
+  // switched: past the fallback threshold only ports seen in output forward; disabled: Undo, which turns the switch off for good
+  readonly fallback?: 'switched' | 'disabled';
+  // by project key, then by tunnel key
+  readonly restore: Readonly<Record<string, Readonly<Record<string, RestoredForward>>>>;
+}
+
+export const EMPTY_HOST_PORTS: HostPorts = { attributes: {}, restore: {} };
+// a restore entry no forward used for this long is dropped (VS Code's RESTORE_EXPIRATION_TIME)
+export const RESTORE_EXPIRY_MS: number = 14 * 24 * 60 * 60 * 1000;
+// a port '5173' or an inclusive range '3000-3010'
+export const PORT_ATTRIBUTE_KEY: RegExp = /^([1-9]\d{0,4})(?:-([1-9]\d{0,4}))?$/;
+const MAX_PORT_ENTRIES = 1000;
+// a restore entry's host: a loopback form or a name or address the target reaches; never option-like, as ports.connect parses it
+const PORT_HOST = /^(?!-)[A-Za-z0-9_.:%-]{1,253}$/;
+const isPort = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535;
+
+/** The port range an attribute key names, or undefined for one that names none. */
+export function attributeRange(key: string): { readonly from: number; readonly to: number } | undefined {
+  const match = PORT_ATTRIBUTE_KEY.exec(key);
+  if (!match) return undefined;
+  const from = Number(match[1]);
+  const to = match[2] === undefined ? from : Number(match[2]);
+  return isPort(from) && isPort(to) && from <= to ? { from, to } : undefined;
+}
+
+function parsePorts(id: string, authority: string, value: unknown, log: (line: string) => void): HostPorts | undefined {
+  if (!isRecordValue(value)) return undefined;
+  const attributes: Record<string, PortAttributes> = {};
+  const rawAttributes = own(value, 'attributes');
+  for (const [key, entry] of Object.entries(isRecordValue(rawAttributes) ? rawAttributes : {}).slice(0, MAX_PORT_ENTRIES)) {
+    if (!attributeRange(key) || !isRecordValue(entry)) continue;
+    const label = own(entry, 'label');
+    const onDetect = own(entry, 'onDetect');
+    attributes[key] = {
+      ...(typeof label === 'string' && label.length > 0 && label.length <= MAX_PORT_LABEL_CHARS && !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(label) ? { label } : {}),
+      ...(ON_DETECT.includes(onDetect as OnDetect) ? { onDetect: onDetect as OnDetect } : {}),
+    };
+  }
+  const fallback = own(value, 'fallback');
+  const restore: Record<string, Record<string, RestoredForward>> = {};
+  const rawRestore = own(value, 'restore');
+  for (const [projectKey, entries] of Object.entries(isRecordValue(rawRestore) ? rawRestore : {}).slice(0, MAX_PORT_ENTRIES)) {
+    if (!isText(projectKey) || authorityKeyOfProject(projectKey) !== authority || !isRecordValue(entries)) continue;
+    const kept: Record<string, RestoredForward> = {};
+    for (const [key, entry] of Object.entries(entries).slice(0, MAX_PORT_ENTRIES)) {
+      if (!isRecordValue(entry)) continue;
+      const host = own(entry, 'host');
+      const port = own(entry, 'port');
+      const localPort = own(entry, 'localPort');
+      const lastUsed = own(entry, 'lastUsed');
+      if (typeof host !== 'string' || !PORT_HOST.test(host) || !isPort(port) || (localPort !== undefined && !isPort(localPort)) || typeof lastUsed !== 'number' || !Number.isFinite(lastUsed)) continue;
+      kept[key] = { host, port, ...(localPort !== undefined ? { localPort } : {}), manual: own(entry, 'manual') === true, lastUsed };
+    }
+    if (Object.keys(kept).length > 0) restore[projectKey] = kept;
+  }
+  if (fallback !== undefined && fallback !== 'switched' && fallback !== 'disabled') log(`[hosts] dropping the port fallback state of ${id}: not a state`);
+  return { attributes, ...(fallback === 'switched' || fallback === 'disabled' ? { fallback } : {}), restore };
 }
 
 const TARGET_OSES: readonly unknown[] = ['win32', 'darwin', 'linux'] satisfies readonly ShellPlatform[];
@@ -104,14 +248,16 @@ interface HostFile {
   // the sidebar's project keys, local and remote, as last written; read back through order()
   readonly order: readonly string[];
   // by host id, in the order they were saved
-  readonly hosts: ReadonlyMap<string, SshHostRecord>;
+  readonly hosts: ReadonlyMap<string, HostRecord>;
   // the grouped view's groups by authority key, LOCAL_GROUP for this computer
   readonly groupOrder: readonly string[];
   // the grouped view's collapsed groups by authority key
   readonly collapsedGroups: readonly string[];
+  // local project keys whose Reopen in WSL notice was dismissed
+  readonly wslNoticeDismissed: readonly string[];
 }
 
-const EMPTY: HostFile = { authorities: new Map(), order: [], hosts: new Map(), groupOrder: [], collapsedGroups: [] };
+const EMPTY: HostFile = { authorities: new Map(), order: [], hosts: new Map(), groupOrder: [], collapsedGroups: [], wslNoticeDismissed: [] };
 
 const isText = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && !value.includes('\0');
 const own = (record: Record<string, unknown>, key: string): unknown => (Object.hasOwn(record, key) ? record[key] : undefined);
@@ -141,7 +287,7 @@ interface NameHolder {
   readonly alias?: string;
 }
 
-const holderOf = (record: SshHostRecord): NameHolder => ({ name: record.name, ...(record.destination.kind === 'alias' ? { alias: record.destination.alias } : {}) });
+const holderOf = (record: HostRecord): NameHolder => ({ name: record.name, ...(record.kind === 'ssh' && record.destination.kind === 'alias' ? { alias: record.destination.alias } : {}) });
 
 /**
  * The one host name rule: 1..MAX_HOST_NAME_LENGTH characters after trimming and NFC, no control, format or bidirectional
@@ -190,17 +336,42 @@ export function destinationLabel(destination: SshHostDestination): string {
 }
 
 /** The OS a host's paths follow: the user's override, else what detection found. */
-export function hostOs(record: SshHostRecord): ShellPlatform | undefined {
-  return record.osOverride ?? record.platform?.os;
+export function hostOs(record: HostRecord): ShellPlatform | undefined {
+  return record.kind === 'ssh' ? (record.osOverride ?? record.platform?.os) : 'linux';
 }
 
-/** Whether ssh forwards the agent to the host: its switch is on and the host is known to be a POSIX one. */
-export function forwardsAgent(record: SshHostRecord): boolean {
+/**
+ * Whether this computer's SSH agent can reach the host: an SSH host known to be POSIX, through ssh's ForwardAgent, or a
+ * container, through its daemon connection's agent relay; never a WSL distro.
+ */
+export function canForwardAgent(record: HostRecord): boolean {
+  if (record.kind === 'container') return true;
+  if (record.kind !== 'ssh') return false;
   const os = hostOs(record);
-  return record.settings.forwardAgent === true && os !== undefined && os !== 'win32';
+  return os !== undefined && os !== 'win32';
+}
+
+/** Whether the host gets this computer's SSH agent: it can, and its Forward my SSH agent switch is on. */
+export function forwardsAgent(record: HostRecord): boolean {
+  return canForwardAgent(record) && record.settings.forwardAgent === true;
+}
+
+/** Whether a push refused for its public key offers "Forward your SSH agent to <host>": it can forward, and does not. */
+export function offersAgentForwarding(record: HostRecord): boolean {
+  return canForwardAgent(record) && record.settings.forwardAgent !== true;
 }
 
 export const sshAuthorityKey = (hostId: string): string => `ssh+${hostId}`;
+
+export const wslAuthorityKey = (distro: string): string => `wsl+${distro}`;
+
+/** The authority key of a host's projects: ssh+<id> for an SSH host, wsl+<distro> for a WSL distro, container+<key> for a container. */
+export function authorityKeyOfHost(record: HostRecord): string {
+  if (record.kind === 'container') return containerAuthorityKey(record.key);
+  return record.kind === 'wsl' ? wslAuthorityKey(record.distro) : sshAuthorityKey(record.id);
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 /** The host id of an ssh authority key, or undefined for any other authority. */
 export function hostIdOfAuthority(authorityKey: string): string | undefined {
@@ -276,8 +447,92 @@ function parsePlatform(value: unknown): CachedPlatform | undefined {
 }
 
 // A record as written, its name not yet checked against the others (parseHostFile does, in file order).
-function parseHost(id: string, value: unknown, log: (line: string) => void): (Omit<SshHostRecord, 'name'> & { readonly name?: string }) | undefined {
-  if (!HOST_ID.test(id) || !isRecordValue(value) || own(value, 'kind') !== 'ssh') return undefined;
+type Unnamed<T> = T extends unknown ? Omit<T, 'name'> & { readonly name?: string } : never;
+
+function parseWslHost(id: string, value: Record<string, unknown>, log: (line: string) => void): Unnamed<WslHostRecord> | undefined {
+  const distro = own(value, 'distro');
+  if (!isWslDistroName(distro)) return undefined;
+  const name = own(value, 'name');
+  const color = own(value, 'color');
+  const lastUsed = own(value, 'lastUsed');
+  const recent = own(value, 'recentFolders');
+  const previous = own(value, 'previousInstallFolder');
+  const always = own(value, 'alwaysCredentialHosts');
+  const ports = parsePorts(id, wslAuthorityKey(distro), own(value, 'ports'), log);
+  if (color !== undefined && !isHostTone(color)) log(`[hosts] dropping the color of ${id}: not a palette tone`);
+  return {
+    id,
+    kind: 'wsl',
+    distro,
+    ...(typeof name === 'string' ? { name } : {}),
+    ...(isHostTone(color) ? { color } : {}),
+    ...(typeof lastUsed === 'number' && Number.isFinite(lastUsed) && lastUsed > 0 ? { lastUsed } : {}),
+    recentFolders: Array.isArray(recent) ? [...new Set(recent.filter(isText))].slice(0, MAX_RECENT_FOLDERS) : [],
+    settings: parseSettings(id, own(value, 'settings'), log),
+    ...(previous === null || isText(previous) ? { previousInstallFolder: previous } : {}),
+    ...(Array.isArray(always) ? { alwaysCredentialHosts: [...new Set(always.filter(isCredentialHost))] } : {}),
+    ...(ports ? { ports } : {}),
+  };
+}
+
+function parseContainerHost(id: string, value: Record<string, unknown>, log: (line: string) => void): Unnamed<ContainerHostRecord> | undefined {
+  const key = own(value, 'key');
+  const via = own(value, 'via');
+  const engine = own(value, 'engine');
+  const origin = own(value, 'origin');
+  const workspaceFolder = own(value, 'workspaceFolder');
+  const configPath = own(value, 'configPath');
+  const containerName = own(value, 'containerName');
+  const user = own(value, 'user');
+  if (typeof key !== 'string' || !CONTAINER_KEY.test(key) || (via !== undefined && !(typeof via === 'string' && HOST_ID.test(via))) || !isContainerEngine(engine)) return undefined;
+  if (origin !== 'devcontainer' && origin !== 'attach') return undefined;
+  if (origin === 'devcontainer' ? !isCliPath(workspaceFolder) || !isCliPath(configPath) : !isContainerName(containerName) || (user !== 'configured' && user !== 'root')) return undefined;
+  const containerId = own(value, 'containerId');
+  const image = own(value, 'image');
+  const remoteUser = own(value, 'remoteUser');
+  const remoteWorkspaceFolder = own(value, 'remoteWorkspaceFolder');
+  const withoutDataVolume = own(value, 'withoutDataVolume');
+  const dataNoticeShown = own(value, 'dataNoticeShown');
+  const trustHash = own(value, 'trustHash');
+  const name = own(value, 'name');
+  const color = own(value, 'color');
+  const lastUsed = own(value, 'lastUsed');
+  const recent = own(value, 'recentFolders');
+  const previous = own(value, 'previousInstallFolder');
+  const always = own(value, 'alwaysCredentialHosts');
+  const ports = parsePorts(id, containerAuthorityKey(key), own(value, 'ports'), log);
+  if (color !== undefined && !isHostTone(color)) log(`[hosts] dropping the color of ${id}: not a palette tone`);
+  return {
+    id,
+    kind: 'container',
+    key,
+    ...(typeof via === 'string' ? { via } : {}),
+    engine,
+    origin,
+    ...(origin === 'devcontainer' ? { workspaceFolder: workspaceFolder as string, configPath: configPath as string } : { containerName: containerName as string, user: user as 'configured' | 'root' }),
+    ...(isContainerId(containerId) ? { containerId } : {}),
+    ...(isContainerText(image) && image !== '' ? { image } : {}),
+    ...(isContainerUser(remoteUser) ? { remoteUser } : {}),
+    ...(isContainerPath(remoteWorkspaceFolder) ? { remoteWorkspaceFolder } : {}),
+    ...(origin === 'devcontainer' && withoutDataVolume === true ? { withoutDataVolume } : {}),
+    ...(isContainerId(dataNoticeShown) ? { dataNoticeShown } : {}),
+    ...(typeof trustHash === 'string' && SHA256_HEX.test(trustHash) ? { trustHash } : {}),
+    ...(typeof name === 'string' ? { name } : {}),
+    ...(isHostTone(color) ? { color } : {}),
+    ...(typeof lastUsed === 'number' && Number.isFinite(lastUsed) && lastUsed > 0 ? { lastUsed } : {}),
+    recentFolders: Array.isArray(recent) ? [...new Set(recent.filter(isText))].slice(0, MAX_RECENT_FOLDERS) : [],
+    settings: parseSettings(id, own(value, 'settings'), log),
+    ...(previous === null || isText(previous) ? { previousInstallFolder: previous } : {}),
+    ...(Array.isArray(always) ? { alwaysCredentialHosts: [...new Set(always.filter(isCredentialHost))] } : {}),
+    ...(ports ? { ports } : {}),
+  };
+}
+
+function parseHost(id: string, value: unknown, log: (line: string) => void): Unnamed<HostRecord> | undefined {
+  if (!HOST_ID.test(id) || !isRecordValue(value)) return undefined;
+  if (own(value, 'kind') === 'wsl') return parseWslHost(id, value, log);
+  if (own(value, 'kind') === 'container') return parseContainerHost(id, value, log);
+  if (own(value, 'kind') !== 'ssh') return undefined;
   const destination = parseDestination(own(value, 'destination'));
   if (!destination) return undefined;
   const name = own(value, 'name');
@@ -293,6 +548,7 @@ function parseHost(id: string, value: unknown, log: (line: string) => void): (Om
   const keyFile = own(value, 'installedKeyFile');
   const installed = typeof fingerprint === 'string' && FINGERPRINT.test(fingerprint) && typeof keyEntry === 'string' && KEY_ENTRY.test(keyEntry) && typeof keyFile === 'string' && HOST_FILE.test(keyFile);
   const always = own(value, 'alwaysCredentialHosts');
+  const ports = parsePorts(id, sshAuthorityKey(id), own(value, 'ports'), log);
   // only a palette tone is a color; anything else (an earlier '#rrggbb') is refused here, never shown
   if (color !== undefined && !isHostTone(color)) log(`[hosts] dropping the color of ${id}: not a palette tone`);
   return {
@@ -311,6 +567,7 @@ function parseHost(id: string, value: unknown, log: (line: string) => void): (Om
     ...(installed ? { installedKeyFingerprint: fingerprint, installedKeyEntry: keyEntry, installedKeyFile: keyFile } : {}),
     ...(own(value, 'lingerEnabledByDamocles') === true ? { lingerEnabledByDamocles: true } : {}),
     ...(Array.isArray(always) ? { alwaysCredentialHosts: [...new Set(always.filter(isCredentialHost))] } : {}),
+    ...(ports ? { ports } : {}),
   };
 }
 
@@ -325,7 +582,7 @@ function parseHostFile(text: string, log: (line: string) => void): HostFile {
   }
   const listedOrder = own(parsed, 'order');
   const order = Array.isArray(listedOrder) ? [...new Set(listedOrder.filter(isText))] : [];
-  const hosts = new Map<string, SshHostRecord>();
+  const hosts = new Map<string, HostRecord>();
   const rawHosts = own(parsed, 'hosts');
   for (const [id, value] of Object.entries(isRecordValue(rawHosts) ? rawHosts : {})) {
     const host = parseHost(id, value, log);
@@ -333,15 +590,35 @@ function parseHostFile(text: string, log: (line: string) => void): HostFile {
       log(`[hosts] dropping the malformed host record ${JSON.stringify(id).slice(0, 80)}`);
       continue;
     }
+    if (host.kind === 'wsl' && [...hosts.values()].some((other) => other.kind === 'wsl' && other.distro === host.distro)) {
+      log(`[hosts] dropping the host record ${id}: another record holds the distro ${host.distro}`);
+      continue;
+    }
+    if (host.kind === 'container' && [...hosts.values()].some((other) => other.kind === 'container' && other.key === host.key)) {
+      log(`[hosts] dropping the host record ${id}: another record holds the container key ${host.key}`);
+      continue;
+    }
     const others = [...hosts.values()].map(holderOf);
-    const alias = host.destination.kind === 'alias' ? host.destination.alias : undefined;
     const check = host.name === undefined ? undefined : checkHostName(host.name, others);
-    // an older record has no name, and a hand-edited one may break the rule: either gets its alias or host name, made unique
-    const name = check?.ok ? check.name : uniqueHostName(alias ?? (host.destination.kind === 'address' ? host.destination.host : id), others);
+    // an older record has no name, and a hand-edited one may break the rule: either gets its alias, host, distro or container
+    // name, made unique
+    const source = host.kind === 'wsl' ? host.distro : host.kind === 'container' ? (host.containerName ?? devcontainerNameSource(host.workspaceFolder!, host.via)) : host.destination.kind === 'alias' ? host.destination.alias : host.destination.host;
+    const name = check?.ok ? check.name : uniqueHostName(source, others);
     if (check && !check.ok) log(`[hosts] the host ${id} had a name the rules refuse (${check.reason}); it is named ${name}`);
-    hosts.set(id, { ...host, name });
+    hosts.set(id, { ...host, name } as HostRecord);
   }
-  return { authorities, order, hosts, groupOrder: textSet(own(parsed, 'groupOrder')), collapsedGroups: textSet(own(parsed, 'collapsedGroups')) };
+  // no record names a host that is gone: a container reached through an SSH host the file no longer holds goes with it
+  for (const [id, host] of hosts) {
+    if (host.kind !== 'container' || host.via === undefined || hosts.get(host.via)?.kind === 'ssh') continue;
+    log(`[hosts] dropping the container record ${id}: its SSH host ${host.via} is not saved`);
+    hosts.delete(id);
+  }
+  return { authorities, order, hosts, groupOrder: textSet(own(parsed, 'groupOrder')), collapsedGroups: textSet(own(parsed, 'collapsedGroups')), wslNoticeDismissed: textSet(own(parsed, 'wslNoticeDismissed')) };
+}
+
+/** What a devcontainer record is named after: its workspace folder's name, in the path flavor of the machine the CLI runs on. */
+export function devcontainerNameSource(folder: string, via: string | undefined): string {
+  return pathFor({ os: via === undefined ? process.platform : 'linux' }).basename(folder) || folder;
 }
 
 function textSet(value: unknown): string[] {
@@ -362,7 +639,7 @@ export function isPermutationOf(next: readonly string[], current: readonly strin
   return next.length === current.length && keys.size === current.length && new Set(next).size === next.length && next.every((key) => keys.has(key));
 }
 
-// The stored keys, then every listed key they lack; a stored key not listed (hidden by the remote gate) keeps its slot.
+// The stored keys, then every listed key they lack; a stored key not listed (a loopback project in a run without the loopback daemon) keeps its slot.
 function withListed(stored: readonly string[], listed: readonly string[]): string[] {
   const placed = new Set(stored);
   return [...stored, ...listed.filter((key) => !placed.has(key))];
@@ -395,10 +672,10 @@ export interface NewSshHost {
   readonly name: string;
 }
 
-export type AddHostResult = { readonly ok: true; readonly host: SshHostRecord } | { readonly ok: false; readonly check: NameCheck };
+export type AddHostResult<R extends HostRecord = SshHostRecord> = { readonly ok: true; readonly host: R } | { readonly ok: false; readonly check: NameCheck };
 
 /**
- * Remote projects, their trust, the sidebar order and the saved SSH hosts, in remote-hosts.json, so projects.json and
+ * Remote projects, their trust, the sidebar order and the saved hosts (SSH hosts, WSL distros, containers), in remote-hosts.json, so projects.json and
  * trusted-folders.json keep the shape an older app version reads after a downgrade.
  */
 export class HostStore {
@@ -506,18 +783,52 @@ export class HostStore {
     await this.change((file) => ({ ...file, order: placedAfter(withListed(file.order, listed()), projectKey, after) }));
   }
 
-  /** The saved SSH hosts, in the order they were saved. */
-  hosts(): readonly SshHostRecord[] {
+  /** The saved hosts, SSH hosts, WSL distros and containers, in the order they were saved. */
+  hosts(): readonly HostRecord[] {
     return [...this.file.hosts.values()];
   }
 
-  host(hostId: string): SshHostRecord | undefined {
+  host(hostId: string): HostRecord | undefined {
     return this.file.hosts.get(hostId);
+  }
+
+  /** The host as an SSH host, undefined for none, a WSL distro or a container. */
+  sshHost(hostId: string): SshHostRecord | undefined {
+    const record = this.file.hosts.get(hostId);
+    return record?.kind === 'ssh' ? record : undefined;
+  }
+
+  /** The record of a distro, matched exactly as wsl.exe lists it. */
+  wslHost(distro: string): WslHostRecord | undefined {
+    return [...this.file.hosts.values()].find((record): record is WslHostRecord => record.kind === 'wsl' && record.distro === distro);
+  }
+
+  /** The record of a container key. */
+  containerHost(key: string): ContainerHostRecord | undefined {
+    return [...this.file.hosts.values()].find((record): record is ContainerHostRecord => record.kind === 'container' && record.key === key);
+  }
+
+  /** The authority key of a saved host's projects, undefined for an unknown host. */
+  authorityOf(hostId: string): string | undefined {
+    const record = this.file.hosts.get(hostId);
+    return record && authorityKeyOfHost(record);
+  }
+
+  /** The saved host an authority key names: an ssh+<id> key's id, or the record of a wsl+<distro> key's distro or a container+<key> key's key. */
+  hostIdOf(authorityKey: string): string | undefined {
+    if (authorityKey.startsWith('wsl+')) return this.wslHost(authorityKey.slice('wsl+'.length))?.id;
+    if (authorityKey.startsWith('container+')) return this.containerHost(authorityKey.slice('container+'.length))?.id;
+    return hostIdOfAuthority(authorityKey);
   }
 
   /** The grouped view's host order as stored. */
   groupOrder(): readonly string[] {
     return this.file.groupOrder;
+  }
+
+  /** A name for a new record made from source (a distro name), unique among the saved hosts as uniqueHostName makes it. */
+  uniqueName(source: string): string {
+    return uniqueHostName(source, this.othersThan(undefined));
   }
 
   /** checkHostName against every saved host but hostId (the host being renamed). */
@@ -544,6 +855,95 @@ export class HostStore {
     return result;
   }
 
+  /**
+   * Records a distro on its first connect under a name that passes against the hosts as they are when the write runs; a distro
+   * recorded meanwhile, in any case as Windows resolves its name, resolves that record and writes nothing.
+   */
+  async addWslHost(distro: string, name: string): Promise<AddHostResult<WslHostRecord>> {
+    if (!isWslDistroName(distro)) throw new Error('Not a WSL distro name');
+    let result: AddHostResult<WslHostRecord> = { ok: false, check: { ok: false, reason: 'empty' } };
+    await this.change((file) => {
+      const existing = [...file.hosts.values()].find((record): record is WslHostRecord => record.kind === 'wsl' && record.distro.toLowerCase() === distro.toLowerCase());
+      if (existing) {
+        result = { ok: true, host: existing };
+        return file;
+      }
+      const check = checkHostName(name, [...file.hosts.values()].map(holderOf));
+      if (!check.ok) {
+        result = { ok: false, check };
+        return file;
+      }
+      let id = randomBytes(9).toString('base64url');
+      while (file.hosts.has(id)) id = randomBytes(9).toString('base64url');
+      const record: WslHostRecord = { id, kind: 'wsl', distro, name: check.name, recentFolders: [], settings: {} };
+      result = { ok: true, host: record };
+      return { ...file, hosts: new Map(file.hosts).set(id, record) };
+    });
+    return result;
+  }
+
+  /**
+   * Records a container on its first connect under a name that passes against the hosts as they are when the write runs; a key
+   * recorded meanwhile resolves that record and writes nothing. Its SSH host must be saved when the write runs.
+   */
+  async addContainerHost(container: NewContainerHost, name: string): Promise<AddHostResult<ContainerHostRecord>> {
+    if (!CONTAINER_KEY.test(container.key)) throw new Error('Not a container key');
+    const shape = container.origin === 'devcontainer'
+      ? isCliPath(container.workspaceFolder) && isCliPath(container.configPath) && container.containerName === undefined && container.user === undefined
+      : isContainerName(container.containerName) && (container.user === 'configured' || container.user === 'root') && container.workspaceFolder === undefined && container.configPath === undefined;
+    if (!shape) throw new Error('Not a devcontainer or attach record');
+    let result: AddHostResult<ContainerHostRecord> = { ok: false, check: { ok: false, reason: 'empty' } };
+    await this.change((file) => {
+      if (container.via !== undefined && file.hosts.get(container.via)?.kind !== 'ssh') throw new Error(`The SSH host ${container.via} is not saved`);
+      const existing = [...file.hosts.values()].find((record): record is ContainerHostRecord => record.kind === 'container' && record.key === container.key);
+      if (existing) {
+        result = { ok: true, host: existing };
+        return file;
+      }
+      const check = checkHostName(name, [...file.hosts.values()].map(holderOf));
+      if (!check.ok) {
+        result = { ok: false, check };
+        return file;
+      }
+      let id = randomBytes(9).toString('base64url');
+      while (file.hosts.has(id)) id = randomBytes(9).toString('base64url');
+      const fields = Object.fromEntries(Object.entries(container).filter(([, value]) => value !== undefined)) as NewContainerHost;
+      const record: ContainerHostRecord = { id, kind: 'container', ...fields, name: check.name, recentFolders: [], settings: {} };
+      result = { ok: true, host: record };
+      return { ...file, hosts: new Map(file.hosts).set(id, record) };
+    });
+    return result;
+  }
+
+  /**
+   * What the container's last up or attach found: a Rebuild's new container id replaces the old one under the same key, and a
+   * found container id without withoutDataVolume clears it.
+   */
+  async recordContainer(hostId: string, found: ContainerFound): Promise<void> {
+    const { containerId, image, remoteUser, remoteWorkspaceFolder, withoutDataVolume, dataNoticeShown } = found;
+    if ((containerId !== undefined && !isContainerId(containerId)) || (image !== undefined && !isContainerText(image)) || (remoteUser !== undefined && !isContainerUser(remoteUser)) || (remoteWorkspaceFolder !== undefined && !isContainerPath(remoteWorkspaceFolder)) || (dataNoticeShown !== undefined && !isContainerId(dataNoticeShown))) throw new Error('Not a container id, image, user or folder');
+    await this.updateContainerHost(hostId, (current) => {
+      if (withoutDataVolume !== undefined && current.origin !== 'devcontainer') throw new Error(`The container ${hostId} is no devcontainer`);
+      const { withoutDataVolume: _previous, ...rest } = current;
+      const record = containerId !== undefined && withoutDataVolume === undefined ? rest : current;
+      return { ...record, ...Object.fromEntries(Object.entries(found).filter(([, value]) => value !== undefined)) };
+    });
+  }
+
+  /** The user an attached container runs Damocles as, as the latest attach chose it. */
+  async setContainerUser(hostId: string, user: 'configured' | 'root'): Promise<void> {
+    await this.updateContainerHost(hostId, (record) => {
+      if (record.origin !== 'attach') throw new Error(`The container ${hostId} is no attached container`);
+      return record.user === user ? record : { ...record, user };
+    });
+  }
+
+  /** The hash of the configuration the user confirmed for the container's key. */
+  async setContainerTrustHash(hostId: string, hash: string): Promise<void> {
+    if (!SHA256_HEX.test(hash)) throw new Error('Not a SHA-256 hex digest');
+    await this.updateContainerHost(hostId, (record) => (record.trustHash === hash ? record : { ...record, trustHash: hash }));
+  }
+
   /** Renames a host when the name passes against the other hosts as they are when the write runs; a refusal writes nothing. */
   async renameHost(hostId: string, name: string): Promise<NameCheck> {
     let result: NameCheck = { ok: false, reason: 'empty' };
@@ -568,7 +968,7 @@ export class HostStore {
 
   /** Platform detection's result, kept so it runs once per host. */
   async savePlatform(hostId: string, platform: CachedPlatform): Promise<void> {
-    await this.updateHost(hostId, (record) => ({ ...record, platform }));
+    await this.updateSshHost(hostId, (record) => ({ ...record, platform }));
   }
 
   /**
@@ -594,6 +994,7 @@ export class HostStore {
           return change.value === null ? rest : { ...rest, color: change.value };
         }
         case 'osOverride': {
+          if (record.kind !== 'ssh') throw new Error('Only an SSH host has an OS override');
           const { osOverride: _os, ...rest } = record;
           return change.value === null ? rest : { ...rest, osOverride: change.value };
         }
@@ -612,27 +1013,27 @@ export class HostStore {
   /** Set up passwordless login appended Damocles' key line on the host, whether or not its check passes afterwards. */
   async recordInstalledKey(hostId: string, installed: InstalledKey): Promise<void> {
     if (!(FINGERPRINT.test(installed.fingerprint) && KEY_ENTRY.test(installed.entry) && HOST_FILE.test(installed.file))) throw new Error('Not an installed key record');
-    await this.updateHost(hostId, (record) => ({ ...record, installedKeyFingerprint: installed.fingerprint, installedKeyEntry: installed.entry, installedKeyFile: installed.file }));
+    await this.updateSshHost(hostId, (record) => ({ ...record, installedKeyFingerprint: installed.fingerprint, installedKeyEntry: installed.entry, installedKeyFile: installed.file }));
   }
 
   /** Passwordless login set up and verified: the key ssh is given from now on. */
   async recordPasswordless(hostId: string, identityFile: string): Promise<void> {
     if (!path.isAbsolute(identityFile)) throw new Error('Not an absolute identity file');
-    await this.updateHost(hostId, (record) => ({ ...record, identityFile }));
+    await this.updateSshHost(hostId, (record) => ({ ...record, identityFile }));
   }
 
   /** The removal took out the key Damocles installed: ssh stops offering it. */
   async clearInstalledKey(hostId: string): Promise<void> {
-    await this.updateHost(hostId, ({ identityFile: _file, installedKeyFingerprint: _fingerprint, installedKeyEntry: _entry, installedKeyFile: _keyFile, ...rest }) => rest);
+    await this.updateSshHost(hostId, ({ identityFile: _file, installedKeyFingerprint: _fingerprint, installedKeyEntry: _entry, installedKeyFile: _keyFile, ...rest }) => rest);
   }
 
   /** Allow background work turned linger on, so removing the server may turn it off. */
   async recordLingerEnabled(hostId: string): Promise<void> {
-    await this.updateHost(hostId, (record) => (record.lingerEnabledByDamocles ? record : { ...record, lingerEnabledByDamocles: true }));
+    await this.updateSshHost(hostId, (record) => (record.lingerEnabledByDamocles ? record : { ...record, lingerEnabledByDamocles: true }));
   }
 
   async clearLingerEnabled(hostId: string): Promise<void> {
-    await this.updateHost(hostId, ({ lingerEnabledByDamocles: _linger, ...rest }) => rest);
+    await this.updateSshHost(hostId, ({ lingerEnabledByDamocles: _linger, ...rest }) => rest);
   }
 
   /** "Always for <host>": the credential host this host may use without asking. */
@@ -652,22 +1053,47 @@ export class HostStore {
     });
   }
 
-  /** Forget host: its record, its authority's projects and trust, and its keys in the sidebar and group orders. */
+  /** The container records reached through the SSH host hostId, which cannot connect without it. */
+  containersVia(hostId: string): readonly ContainerHostRecord[] {
+    return this.hosts().filter((record): record is ContainerHostRecord => record.kind === 'container' && record.via === hostId);
+  }
+
+  /**
+   * Forget host: its record, its authority's projects and trust, and its keys in the sidebar and group orders; for an SSH host
+   * the same for every container record reached through it, in the same write.
+   */
   async forgetHost(hostId: string): Promise<void> {
-    const authorityKey = sshAuthorityKey(hostId);
     await this.change((file) => {
-      if (!file.hosts.has(hostId)) throw new Error(`No saved host ${hostId}`);
+      const record = file.hosts.get(hostId);
+      if (!record) throw new Error(`No saved host ${hostId}`);
+      const gone = [record, ...[...file.hosts.values()].filter((other) => other.kind === 'container' && other.via === hostId)];
+      const authorityKeys = new Set(gone.map(authorityKeyOfHost));
       const hosts = new Map(file.hosts);
-      hosts.delete(hostId);
+      for (const each of gone) hosts.delete(each.id);
       const authorities = new Map(file.authorities);
-      authorities.delete(authorityKey);
+      for (const key of authorityKeys) authorities.delete(key);
       return {
         authorities,
         hosts,
-        order: file.order.filter((key) => authorityKeyOfProject(key) !== authorityKey),
-        groupOrder: file.groupOrder.filter((key) => key !== authorityKey),
-        collapsedGroups: file.collapsedGroups.filter((key) => key !== authorityKey),
+        order: file.order.filter((key) => !authorityKeys.has(authorityKeyOfProject(key))),
+        groupOrder: file.groupOrder.filter((key) => !authorityKeys.has(key)),
+        collapsedGroups: file.collapsedGroups.filter((key) => !authorityKeys.has(key)),
+        wslNoticeDismissed: file.wslNoticeDismissed,
       };
+    });
+  }
+
+  /** The host's port state, empty for a host that has none yet. */
+  ports(hostId: string): HostPorts {
+    return this.host(hostId)?.ports ?? EMPTY_HOST_PORTS;
+  }
+
+  /** One change of the host's port state, applied to it as the write finds it. */
+  async updatePorts(hostId: string, apply: (ports: HostPorts) => HostPorts): Promise<void> {
+    await this.updateHost(hostId, (record) => {
+      const before = record.ports ?? EMPTY_HOST_PORTS;
+      const next = apply(before);
+      return next === before ? record : { ...record, ports: next };
     });
   }
 
@@ -708,9 +1134,21 @@ export class HostStore {
     });
   }
 
-  /** Drops a removed local project's key from the sidebar order, as removeProject does for a remote one. */
+  /** Drops a removed local project's key from the sidebar order and its dismissed notice, as removeProject does for a remote one. */
   async removeFromOrder(projectKey: string): Promise<void> {
-    await this.change((file) => (file.order.includes(projectKey) ? { ...file, order: file.order.filter((key) => key !== projectKey) } : file));
+    await this.change((file) => (file.order.includes(projectKey) || file.wslNoticeDismissed.includes(projectKey)
+      ? { ...file, order: file.order.filter((key) => key !== projectKey), wslNoticeDismissed: file.wslNoticeDismissed.filter((key) => key !== projectKey) }
+      : file));
+  }
+
+  /** Whether the local project's Reopen in WSL notice was dismissed. */
+  isWslNoticeDismissed(projectKey: string): boolean {
+    return this.file.wslNoticeDismissed.includes(projectKey);
+  }
+
+  /** The local project's Reopen in WSL notice stays hidden from now on. */
+  async dismissWslNotice(projectKey: string): Promise<void> {
+    await this.change((file) => (file.wslNoticeDismissed.includes(projectKey) ? file : { ...file, wslNoticeDismissed: [...file.wslNoticeDismissed, projectKey] }));
   }
 
   async grantTrust(authorityKey: string, folderKey: string): Promise<void> {
@@ -735,16 +1173,30 @@ export class HostStore {
     return this.hosts().filter((other) => other.id !== hostId).map(holderOf);
   }
 
-  private withHost(file: HostFile, record: SshHostRecord): HostFile {
+  private withHost(file: HostFile, record: HostRecord): HostFile {
     return { ...file, hosts: new Map(file.hosts).set(record.id, record) };
   }
 
-  private async updateHost(hostId: string, apply: (record: SshHostRecord) => SshHostRecord): Promise<void> {
+  private async updateHost(hostId: string, apply: (record: HostRecord) => HostRecord): Promise<void> {
     await this.change((file) => {
       const record = file.hosts.get(hostId);
       if (!record) throw new Error(`No saved host ${hostId}`);
       const next = apply(record);
       return next === record ? file : this.withHost(file, next);
+    });
+  }
+
+  private async updateContainerHost(hostId: string, apply: (record: ContainerHostRecord) => ContainerHostRecord): Promise<void> {
+    await this.updateHost(hostId, (record) => {
+      if (record.kind !== 'container') throw new Error(`The host ${hostId} is no container`);
+      return apply(record);
+    });
+  }
+
+  private async updateSshHost(hostId: string, apply: (record: SshHostRecord) => SshHostRecord): Promise<void> {
+    await this.updateHost(hostId, (record) => {
+      if (record.kind !== 'ssh') throw new Error(`The host ${hostId} is no SSH host`);
+      return apply(record);
     });
   }
 
@@ -761,6 +1213,7 @@ export class HostStore {
         hosts: Object.fromEntries(next.hosts),
         groupOrder: next.groupOrder,
         collapsedGroups: next.collapsedGroups,
+        wslNoticeDismissed: next.wslNoticeDismissed,
       }, null, 2)}\n`;
     });
     if (next === this.file) return false;

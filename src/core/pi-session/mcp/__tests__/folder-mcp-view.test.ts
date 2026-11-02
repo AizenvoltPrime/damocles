@@ -520,6 +520,22 @@ describe('FolderMcpView: per-tool exposure', () => {
     expect(view.pendingDirectServers().sort()).toEqual(['context7', 'local']);
   });
 
+  it("applies a daemon core's machine layer to the host's own servers only, never a project or a relayed server", async () => {
+    const tools = { db: [{ name: 'query' }], notes: [{ name: 'search' }], repo: [{ name: 'lint' }] };
+    const user = userManager(tools);
+    const holder: { view?: FolderMcpView } = {};
+    const folder = managerWithFake(tools, () => holder.view!.reservedToolNames());
+    track(folder.manager);
+    const machineValue = { db: { query: 'direct' }, notes: { search: 'direct' }, repo: { lint: 'direct' } };
+    const view = track(new FolderMcpView(user.manager, folder.manager, () => ({ inspection: { machineValue }, resourceInspection: {}, trusted: true })));
+    holder.view = view;
+    const relay = { name: 'notes', tools: [{ name: 'search' }], resources: false };
+    await user.manager.reconcile({ db: cfg('db'), notes: specOf({ type: 'http', url: 'relayed://notes', auth: false }, { relay }) });
+    await folder.manager.reconcile({ repo: specOf({ command: 'repo' }, { folderScoped: true }) });
+    view.setUserVisible(['db', 'notes']);
+    expect(exposureOf(view)).toEqual({ query: 'direct/machine', search: 'deferred/config', lint: 'deferred/config' });
+  });
+
   it('a connected server is never pending', async () => {
     const { view, ready } = exposedView({ command: 'c7', exposure: 'direct' });
     await ready();

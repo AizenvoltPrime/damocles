@@ -94,7 +94,8 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (msg.type !== "openAppSettings") return;
       if (msg.section !== undefined && !isSettingsSectionId(msg.section)) throw new Error("Unknown settings section");
       if (msg.account !== undefined && !isSettingsAccountId(msg.account)) throw new Error("Unknown settings account");
-      openAppSettingsFor(platform, postMessage, ctx.reply, msg.section, msg.account);
+      if (msg.scope !== undefined && msg.scope !== "machine") throw new Error("Unknown settings scope");
+      openAppSettingsFor(platform, postMessage, ctx.reply, msg.section, msg.account, msg.scope);
     },
 
     toggleTerminal: () => {

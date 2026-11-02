@@ -1,6 +1,6 @@
 // Shared by the shell preload, main and (as types only) the shell app; the shell never sees panel channels.
 
-import type { NameCheck, OverlayAnswer, OverlayRequest } from './overlay-channels';
+import type { NameCheck, OverlayAnswer, OverlayRequest, WslDistroInfo } from './overlay-channels';
 import type { NotificationBell } from './notifications';
 import type { SettingsSectionId } from '../../shared/settings-sections';
 import type { UpdateAction, UpdateSnapshot } from './updates';
@@ -12,6 +12,7 @@ import type { SearchFileKey, SearchFileResult, SearchQuery, SearchRange, SearchS
 import type { DamoclesTerminalApi } from './terminal-channels';
 import type { DamoclesScmApi, ScmChangesTab, ScmMergeInputsResult } from './scm-channels';
 import type { ChatReviewTab, DamoclesReviewApi } from './review-channels';
+import type { DamoclesPortsApi } from './ports-channels';
 import { MAX_ROOT_KEY_LENGTH, type FolderRoot } from './folder-root';
 import type { PROJECTS_VIEWS, SEARCH_ACTIONS_POSITIONS, SEARCH_COLLAPSE_RESULTS, SEARCH_DEFAULT_VIEW_MODES, SEARCH_EDITOR_DOUBLE_CLICK, SEARCH_MODES } from '../local-services/desktop-configuration';
 
@@ -84,6 +85,16 @@ export const SHELL_CHANNELS = {
   projectsReorderGroups: 'damocles:shell:projects:reorder-groups',
   // OpenAsProjectRequest → OpenAsProjectResult: a folder in Files as its own project on the same authority
   projectsOpenAsProject: 'damocles:shell:projects:open-as-project',
+  // {} → readonly WslDistroInfo[]: Reopen in WSL...'s distro pick; empty off Windows or without wsl.exe
+  wslListDistros: 'damocles:shell:wsl:list-distros',
+  // { projectKey, distro? } → ReopenInWslResult
+  wslReopen: 'damocles:shell:wsl:reopen',
+  // { projectKey }: the project's Reopen in WSL notice stays hidden, across restarts
+  wslDismissNotice: 'damocles:shell:wsl:dismiss-notice',
+  // { projectKey } → ReopenInContainerResult, once the container's attempt settled
+  containersReopen: 'damocles:shell:containers:reopen',
+  // { projectKey }: the Connect dialog opens on the container project's host card at its Rebuild Container confirmation
+  containersRebuild: 'damocles:shell:containers:rebuild',
   // renderer → main, send
   contentBounds: 'damocles:shell:content-bounds',
   sidebarLayout: 'damocles:shell:sidebar-layout',
@@ -140,6 +151,8 @@ export const SHELL_CHANNELS = {
   editorSelection: 'damocles:shell:editor:selection',
   // EditorBuiltinFormatFailure: Monaco's built-in formatter failed or ran past the budget; main logs it and tells the user
   editorFormatFailed: 'damocles:shell:editor:format-failed',
+  // EditorOpenLink: a web link the user clicked in a tab; one a target's text holds opens through main's link checks and port forwarding
+  editorOpenLink: 'damocles:shell:editor:open-link',
   // { requestId }: answers editor:flush once every pending editor:edit is sent
   editorFlushed: 'damocles:shell:editor:flushed',
   // Editor pane, main → renderer
@@ -181,9 +194,30 @@ export const SHELL_CHANNELS = {
   filesReveal: 'damocles:shell:files:reveal',
   // FileRef: Mention in chat; the same resolver as a drop on the composer
   filesMention: 'damocles:shell:files:mention',
+  // FilesCopyInRequest → FilesTransferStartResult: a user drop or paste of OS files; main checks each path
+  filesCopyIn: 'damocles:shell:files:copy-in',
+  // FileRef of a folder or '' → FilesTransferStartResult: "Copy files here...", main opens the OS picker
+  filesPickCopyIn: 'damocles:shell:files:pick-copy-in',
+  // FilesDropRowRequest → FilesTransferStartResult: a Files row dropped on a folder; main asks before a move
+  filesDropRow: 'damocles:shell:files:drop-row',
+  // FilesClipboardSetRequest: Copy or Cut in Files, kept per window; no channel the page invokes names the clipboard, since
+  // the page never runs the OS clipboard itself (shell-host.test.ts)
+  filesClipboardSet: 'damocles:shell:files:hold-set',
+  // {}: Escape on a cut row
+  filesClipboardClear: 'damocles:shell:files:hold-clear',
+  // FilesPasteRequest → FilesPasteResult: the window's Files clipboard
+  filesPaste: 'damocles:shell:files:paste',
+  // FileRef → FilesTransferStartResult: Download..., remote projects only
+  filesDownload: 'damocles:shell:files:download',
+  // FilesTransferCancelRequest
+  filesTransferCancel: 'damocles:shell:files:transfer-cancel',
   // Files, main → renderer
   // FilesChanged; the shell refetches only the expanded directories it names
   filesChanged: 'damocles:shell:files:changed',
+  // FilesTransferProgress: on start, at most every FILES_TRANSFER_PROGRESS_MS while running, and once at its end state
+  filesTransferProgress: 'damocles:shell:files:transfer-progress',
+  // FilesClipboardChanged: after a set, a clear and a paste that consumed a cut
+  filesClipboardChanged: 'damocles:shell:files:clipboard-changed',
 
   // { x, y, released }: the pointer of a pane drag the shell captured, forwarded to the overlay's open dropZones request
   dropZonesPointer: 'damocles:shell:drop-zones:pointer',
@@ -306,6 +340,8 @@ export interface ShellProject {
   readonly connection: ProjectConnection;
   // deleting a file can move it to the OS trash; false on remote targets, which delete permanently
   readonly trash: boolean;
+  // the project's host is connected to a Damocles server too old to copy files: drop, paste and Download are off
+  readonly transfersUnsupported?: true;
   // the project's branch from git's HEAD file (D42); undefined outside git
   readonly branch?: string;
   // a linked worktree opened as its own project (an adopted record): the name of the project holding its main worktree, or of
@@ -314,7 +350,28 @@ export interface ShellProject {
   // loaded chats of this project by status
   readonly running: number;
   readonly waiting: number;
+  // a local project at \\wsl.localhost\<distro>\... or \\wsl$\<distro>\...: the distro and the folder's Linux path
+  readonly wsl?: { readonly distro: string; readonly path: string };
+  // the project's Reopen in WSL notice was dismissed
+  readonly wslNoticeDismissed?: true;
+  // a local project outside WSL or an SSH one: the devcontainer configuration its folder holds, as last read
+  readonly devcontainerConfig?: string;
 }
+
+// notWindowsFolder: the project is neither a WSL UNC folder nor on a Windows drive; wslpathFailed: wslpath -u failed or
+// answered something other than one absolute Linux path (message: its own text); unknownDistro: wsl.exe does not list it;
+// connectFailed: the distro did not connect
+export type ReopenInWslFailureCode = 'notWindowsFolder' | 'wslpathFailed' | 'connectFailed' | 'unknownDistro';
+export type ReopenInWslResult =
+  | { readonly ok: true; readonly projectKey: string }
+  | { readonly ok: false; readonly code: ReopenInWslFailureCode; readonly message?: string };
+
+// noDevcontainerConfig: the folder has no .devcontainer/devcontainer.json or .devcontainer.json; notLocalOrSsh: the project is on
+// another authority; connectFailed: the container attempt failed (message: its failure code); cancelled: the attempt was cancelled
+export type ReopenInContainerFailureCode = 'noDevcontainerConfig' | 'notLocalOrSsh' | 'connectFailed' | 'cancelled';
+export type ReopenInContainerResult =
+  | { readonly ok: true; readonly projectKey: string }
+  | { readonly ok: false; readonly code: ReopenInContainerFailureCode; readonly message?: string };
 
 export interface ShellChat {
   // issued by main; the shell passes it back verbatim
@@ -677,6 +734,8 @@ export interface ShellBrowserPage {
   readonly picking: boolean;
   // a size-capped data: URL of the page's favicon
   readonly iconDataUrl?: string;
+  // a remote chat's page on a forwarded port: the host and the page's address as the target names it (http://localhost:5173/...)
+  readonly forwardedFrom?: { readonly hostId: string; readonly hostName: string; readonly hostTone?: HostTone; readonly targetUrl: string };
 }
 
 export interface ShellEditorTab {
@@ -725,6 +784,8 @@ export interface ShellEditorTab {
   readonly searchEditor?: { readonly config: SearchEditorConfig; readonly running: boolean; readonly untitled: boolean; readonly message?: SearchEditorMessage };
   // changes tabs only: a source control group's multi-file diff, whose entries main keeps current
   readonly changes?: ScmChangesTab;
+  // changes tabs only: two files' read-only patch (the damocles command's --diff), titled "<left> ↔ <right>"
+  readonly patch?: ShellPatchTab;
   // code and markdown source tabs of a file in an open repository of a trusted project (main's deepest repository holding
   // it), kept current as repositories open and close: quick diff, blame, selected ranges and Open Timeline follow it
   readonly git?: ShellFileGit;
@@ -734,6 +795,21 @@ export interface ShellEditorTab {
   readonly timeline?: ShellTimelineTab;
   // merge tabs only, titled "Merging: {name}"; never restored after a restart (AD8)
   readonly merge?: ShellMergeTab;
+}
+
+// A file of a two-file patch: its name, and its full path as the command named it, in that file's own path flavor.
+// name and folder split by the host's own path rules, so the shell never splits a host's path itself
+export interface ShellPatchSide {
+  readonly name: string;
+  readonly folder: string;
+  readonly path: string;
+}
+
+// content: the patch as a read-only document main holds while the tab is open (editor:get-document), or why it is not shown.
+export interface ShellPatchTab {
+  readonly left: ShellPatchSide;
+  readonly right: ShellPatchSide;
+  readonly content: { readonly kind: 'patch'; readonly documentId: string } | { readonly kind: 'binary' | 'tooLarge' };
 }
 
 // A file's place in an open repository: its repoId and repo-relative path.
@@ -884,6 +960,15 @@ export interface EditorOpenRequest {
 }
 
 export type EditorOpenResult = { readonly ok: true; readonly tabId: string } | { readonly ok: false; readonly reason: 'outside' | 'missing' | 'failed' };
+
+// the longest URL an editor tab's link sends, as a terminal's web link
+export const MAX_EDITOR_LINK_CHARS: number = 8 * 1024;
+
+// tabId names the tab whose text holds the link, from which main reads where the text came from
+export interface EditorOpenLink {
+  readonly tabId: string;
+  readonly url: string;
+}
 
 export const EDITOR_TAB_ACTIONS = [
   'activate',
@@ -1108,6 +1193,65 @@ export type FilesMutationResult =
 
 export type FilesDeleteResult = { readonly ok: true } | { readonly ok: false; readonly reason: 'cancelled' | 'outside' | 'missing' | 'failed'; readonly message?: string };
 
+// Paths of one copy-in request; main refuses more.
+export const MAX_COPY_IN_PATHS = 10_000;
+// A native path from pathsForFiles.
+export const MAX_COPY_IN_PATH_LENGTH = 32_767;
+export const FILES_TRANSFER_PROGRESS_MS = 100;
+
+// paths: pathsForFiles of the dropped or pasted files; withoutPath: File objects with no disk path, which main refuses
+export interface FilesCopyInRequest {
+  readonly projectKey: string;
+  readonly relativeDir: string;
+  readonly paths: readonly string[];
+  readonly withoutPath: number;
+  readonly origin: 'drop' | 'paste';
+}
+
+// copy: Ctrl (Option on macOS) was held at the drop
+export interface FilesDropRowRequest {
+  readonly from: FileRef;
+  readonly toDir: FileRef;
+  readonly copy: boolean;
+}
+
+export interface FilesClipboardSetRequest {
+  readonly op: 'copy' | 'cut';
+  readonly ref: FileRef;
+}
+
+export interface FilesPasteRequest {
+  readonly toDir: FileRef;
+}
+
+export interface FilesTransferCancelRequest {
+  readonly transferId: number;
+}
+
+// main told the user why for every refusal except cancelled
+export type FilesTransferStartResult =
+  | { readonly ok: true; readonly transferId: number }
+  | { readonly ok: false; readonly reason: 'cancelled' | 'offline' | 'refused' | 'failed' };
+
+export type FilesPasteResult = FilesTransferStartResult | { readonly ok: false; readonly reason: 'empty' };
+
+export interface FilesTransferProgress {
+  readonly transferId: number;
+  readonly projectKey: string;
+  readonly op: 'copy' | 'move' | 'download';
+  // preparing: planning, which Cancel stops; filesTotal and bytesTotal count what the walk found so far
+  readonly state: 'preparing' | 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+  readonly filesDone: number;
+  readonly filesTotal: number;
+  readonly bytesDone: number;
+  readonly bytesTotal: number;
+}
+
+// cut: the window's cut item, which the tree dims; absent: nothing is cut
+export interface FilesClipboardChanged {
+  readonly cut?: FileRef;
+}
+
 // CSS px in the shell page's coordinates; released ends the drag
 export interface DropZonesPointer {
   readonly x: number;
@@ -1323,6 +1467,9 @@ export interface ShellEngine {
 // A saved remote host as the sidebar and banners show it, named by this computer's host store.
 export interface ShellHost {
   readonly hostId: string;
+  readonly kind: 'ssh' | 'wsl' | 'container';
+  // a container record's last known image and the SSH host it runs on
+  readonly container?: { readonly origin: 'devcontainer' | 'attach'; readonly image?: string; readonly via?: string };
   readonly authorityKey: string;
   readonly name: string;
   readonly color?: HostTone;
@@ -1395,9 +1542,7 @@ export interface ShellState {
   readonly engineHalted: boolean;
   // each remote host's engine, the daemon's core as main last heard of it
   readonly engines: readonly ShellEngine[];
-  // remote features show (a development build, or DAMOCLES_REMOTE=1); false hides every remote entry point
-  readonly remoteEnabled: boolean;
-  // the saved SSH hosts, empty while remoteEnabled is false
+  // the saved SSH hosts, WSL distros and containers
   readonly hosts: readonly ShellHost[];
   readonly search: ShellSearchSettings;
   readonly sidebar: ShellSidebarSettings;
@@ -1482,6 +1627,15 @@ export interface DamoclesShellApi {
   reorderProjectGroups(groupOrder: readonly string[]): Promise<boolean>;
   // the folder's project is selected once this resolves; null: it failed, and a toast told the user
   openAsProject(request: OpenAsProjectRequest): Promise<OpenAsProjectResult | null>;
+  // WSL: the distros for Reopen in WSL...'s pick
+  listWslDistros(): Promise<readonly WslDistroInfo[]>;
+  // no distro: a WSL UNC project in its own distro; a distro: a Windows-drive folder through /mnt in that distro. The new
+  // project is selected once this resolves ok; the local project and its chats stay
+  reopenInWsl(projectKey: string, distro?: string): Promise<ReopenInWslResult>;
+  dismissWslNotice(projectKey: string): Promise<void>;
+  // Dev Containers: Reopen in Container, and Rebuild Container's confirmation
+  reopenInContainer(projectKey: string): Promise<ReopenInContainerResult>;
+  rebuildContainer(projectKey: string): Promise<void>;
   toggleSidebar(): Promise<void>;
   // resolves once main showed the sidebar; the state that says so follows
   showSidebar(): Promise<void>;
@@ -1517,6 +1671,7 @@ export interface DamoclesShellApi {
   resolveConflict(request: EditorConflictRequest): Promise<EditorConflictResult>;
   formatDocument(request: EditorFormatRequest): Promise<EditorFormatReply>;
   reportFormatFailure(failure: EditorBuiltinFormatFailure): void;
+  openEditorLink(request: EditorOpenLink): void;
   reportSelection(report: EditorSelectionReport): void;
   mentionTab(tabId: string): Promise<void>;
   uploadMergeInputs(tabId: string): Promise<ScmMergeInputsResult>;
@@ -1542,6 +1697,18 @@ export interface DamoclesShellApi {
   revealFile(file: FileRef): Promise<void>;
   mentionFile(file: FileRef): Promise<void>;
   onFilesChanged(listener: (change: FilesChanged) => void): () => void;
+  copyFilesIn(request: FilesCopyInRequest): Promise<FilesTransferStartResult>;
+  pickFilesToCopyIn(folder: FileRef): Promise<FilesTransferStartResult>;
+  dropFilesRow(request: FilesDropRowRequest): Promise<FilesTransferStartResult>;
+  setFilesClipboard(request: FilesClipboardSetRequest): Promise<void>;
+  clearFilesClipboard(): Promise<void>;
+  pasteFiles(request: FilesPasteRequest): Promise<FilesPasteResult>;
+  downloadFile(file: FileRef): Promise<FilesTransferStartResult>;
+  cancelFilesTransfer(transferId: number): Promise<void>;
+  onFilesTransferProgress(listener: (progress: FilesTransferProgress) => void): () => void;
+  onFilesClipboardChanged(listener: (change: FilesClipboardChanged) => void): () => void;
+  // webUtils.getPathForFile of each, '' for a File with no disk path
+  pathsForFiles(files: readonly File[]): string[];
   // Quick Open in the overlay
   openQuickOpen(): Promise<void>;
   // the command palette in the overlay
@@ -1583,4 +1750,5 @@ export interface DamoclesShellApi {
   readonly scm: DamoclesScmApi;
   // chat review tabs (review-channels.ts)
   readonly review: DamoclesReviewApi;
+  readonly ports: DamoclesPortsApi;
 }

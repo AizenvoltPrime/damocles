@@ -3,6 +3,7 @@ import { createEndpoint, CoreProtocolError } from '../endpoint';
 import { createLoopback } from '../loopback';
 import { CORE_TO_MAIN, MAIN_TO_CORE, type CoreToMain, type MainToCore } from '../messages';
 import { arr, data, INVALID, obj, opt, str } from '../schema';
+import { CLIENT_TO_WORKSPACE } from '../../workspace/messages';
 import { GitError, gitErrorText, GitUntrustedError, RemoteCancelledError, StashKeptError, SyncBranchChangedError } from '../../../core/scm/errors';
 import { createCoreEndpoint, createMainEndpoint } from '..';
 
@@ -39,6 +40,32 @@ describe('parsers', () => {
     expect(parse(cycle)).toBe(INVALID);
     const shared = { a: 1 };
     expect(parse({ left: shared, right: shared })).not.toBe(INVALID);
+  });
+});
+
+describe('numbers a peer sends', () => {
+  const memory = { id: 'g1', kind: 'fact', content: 'c', contentHash: 'h', createdAt: 1_700_000_000_000, updatedAt: 1_700_000_000_000 };
+  const resolve = MAIN_TO_CORE.requests['user.memory.resolve'].result;
+
+  it('take a relayed memory\'s times only as whole milliseconds from 0 up', () => {
+    expect(resolve([{ id: 'g1', memory }])).not.toBe(INVALID);
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5]) {
+      expect(resolve([{ id: 'g1', memory: { ...memory, createdAt: bad } }])).toBe(INVALID);
+      expect(resolve([{ id: 'g1', memory: { ...memory, updatedAt: bad } }])).toBe(INVALID);
+    }
+  });
+
+  it('take a sent file\'s time only as a finite number, before 1970 included', () => {
+    const receive = CLIENT_TO_WORKSPACE.requests['files.receiveFile'].params;
+    const file = { project: { key: '/srv/app', fsPath: '/srv/app', name: 'app' }, relativeDir: '', name: 'a.txt', stream: 1024, mode: 0o644, replace: false, size: 3 };
+    for (const mtimeMs of [0, -86_400_000.5, 1_700_000_000_000.25]) expect(receive({ ...file, mtimeMs })).not.toBe(INVALID);
+    for (const mtimeMs of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) expect(receive({ ...file, mtimeMs })).toBe(INVALID);
+  });
+
+  it('give each name of the e2e proxy answers at least one answer', () => {
+    const answers = MAIN_TO_CORE.requests['e2e.clientNetworkAnswers'].params;
+    expect(answers({ answers: { 'a.test': [['127.0.0.1']] } })).not.toBe(INVALID);
+    expect(answers({ answers: { 'a.test': [] } })).toBe(INVALID);
   });
 });
 
@@ -171,6 +198,34 @@ describe('a protocol violation', () => {
   it('includes a response to no request', () => {
     const { transports } = pair();
     expect(() => transports.main.post({ kind: 'response', id: 41, ok: true, result: undefined })).toThrow(/unknown request/);
+  });
+});
+
+describe('core\'s own requests and answers outside the contract', () => {
+  const tooManyIds = Array.from({ length: 65 }, (_, n) => `id-${n}`);
+
+  it('fail that one request in core, which main never sees, and the channel stays up', async () => {
+    const { main, core } = createLoopback();
+    const violations: CoreProtocolError[] = [];
+    const mainEnd = createMainEndpoint(main, quiet, (error) => violations.push(error));
+    const coreEnd = createCoreEndpoint(core, quiet);
+    const served = vi.fn(async () => []);
+    mainEnd.serve('user.memory.resolve', served);
+    await expect(coreEnd.request('user.memory.resolve', { clientId: 'client-a', ids: tooManyIds })).rejects.toThrow(CoreProtocolError);
+    expect(served).not.toHaveBeenCalled();
+    expect(violations).toEqual([]);
+    await expect(coreEnd.request('user.memory.resolve', { clientId: 'client-a', ids: ['id-1'] })).resolves.toEqual([]);
+  });
+
+  it('reach main as a failed call, never as a violation', async () => {
+    const { main, core } = createLoopback();
+    const violations: CoreProtocolError[] = [];
+    const mainEnd = createMainEndpoint(main, quiet, (error) => violations.push(error));
+    const coreEnd = createCoreEndpoint(core, quiet);
+    const tags = Array.from({ length: 65 }, (_, n) => `tag-${n}`);
+    coreEnd.serve('user.memory.resolve', async () => [{ id: 'g1', memory: { id: 'g1', kind: 'fact' as const, content: 'c', contentHash: 'h', tags, createdAt: 1, updatedAt: 1 } }]);
+    await expect(mainEnd.request('user.memory.resolve', { ids: ['g1'] })).rejects.toThrow(/answer to user\.memory\.resolve/);
+    expect(violations).toEqual([]);
   });
 });
 

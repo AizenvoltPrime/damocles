@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h, nextTick, ref } from 'vue';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import SidebarSection from '../components/SidebarSection.vue';
-import { ALWAYS_SHOW_SECTION_ACTIONS } from '../components/sidebar-section';
+import { ALWAYS_SHOW_SECTION_ACTIONS, DOCKED_SECTION_ORDER, SECTION_ORDER, type SectionOrderController } from '../components/sidebar-section';
 import { shellI18n } from '../i18n';
 
 const mounted: VueWrapper[] = [];
@@ -138,5 +138,25 @@ describe('SidebarSection title actions', () => {
     expect(line.getAttribute('data-testid')).toBe('sidebar-section-title-line');
     expect(line.className.split(/\s+/)).toEqual(expect.arrayContaining(['flex', 'flex-wrap', 'content-start', 'overflow-hidden', 'min-w-0', 'flex-1']));
     expect(wrapper.get('[data-testid="badge"]').element.parentElement).toBe(line);
+  });
+});
+
+describe('the docked Ports section', () => {
+  it('sits below every ordered section and sash, sized by its rows, and is never dragged or reordered', async () => {
+    const ordering: SectionOrderController = { dragged: ref(null), orderOf: vi.fn(() => 3), drop: vi.fn(), openMenu: vi.fn(async () => {}) };
+    const wrapper = mount(SidebarSection, { props: { section: 'ports', collapsed: false }, global: { plugins: [shellI18n], provide: { [SECTION_ORDER as symbol]: ordering } } });
+    mounted.push(wrapper);
+    const section = wrapper.get<HTMLElement>('section').element;
+    expect(Number(section.style.order)).toBe(DOCKED_SECTION_ORDER);
+    expect(DOCKED_SECTION_ORDER).toBe(15);
+    expect(section.style.flex).toBe('0 0 auto');
+    expect(wrapper.get('[data-testid="sidebar-section-title"]').text()).toBe('Ports');
+    const header = wrapper.get('[data-testid="sidebar-section-header"]');
+    expect(header.attributes('draggable')).toBe('false');
+    await header.trigger('contextmenu');
+    expect(ordering.openMenu).not.toHaveBeenCalled();
+    expect(ordering.orderOf).not.toHaveBeenCalled();
+    await wrapper.setProps({ collapsed: true });
+    expect(section.style.flex).toBe('0 0 1.875rem');
   });
 });

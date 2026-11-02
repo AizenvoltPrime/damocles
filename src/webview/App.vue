@@ -17,6 +17,7 @@ import HeldMessageChips from "./components/composer/HeldMessageChips.vue";
 import ConnectionBanner from "./components/ConnectionBanner.vue";
 import { useConnectionStore } from "./stores/useConnectionStore";
 import { chatOffline, useChatHost } from "./composables/useChatHost";
+import { useMcpPanelWrites } from "./composables/useMcpPanelWrites";
 import { CloudOff, LoaderCircle, Users } from "lucide-vue-next";
 import { branchLeaf } from "@/utils/branch-leaf";
 import { windDownText } from "@/utils/windDownText";
@@ -134,8 +135,7 @@ import type { UserContentBlock } from "@shared/types/content";
 import type { SteerRequest } from "@/utils/steer-command";
 import type { PermissionUpdate } from "@shared/types/permissions";
 import type { ToolGroup } from "@shared/types/tools";
-import type { McpServerConfig, McpToolExposureScope, McpToolExposureSetting } from "@shared/types/mcp";
-import type { WebviewToExtensionMessage, WorktreeAction } from "@shared/types/messages";
+import type { WorktreeAction } from "@shared/types/messages";
 import type { SettingsAccountId } from "@shared/settings-sections";
 import { visibleText } from "@shared/visible-text";
 import { isMcpToolName } from "@shared/tool-names";
@@ -149,6 +149,7 @@ const uiStore = useUIStore();
 const connectionStore = useConnectionStore();
 connectionStore.attach();
 const chatHost = useChatHost();
+const mcpWrites = useMcpPanelWrites();
 const {
   isProcessing,
   showSettingsModal,
@@ -659,20 +660,8 @@ function handleOpenMcpPanel() {
   }
 }
 
-function handleToggleMcpServer(serverName: string, enabled: boolean) {
-  postMessage({ type: "toggleMcpServer", serverName, enabled });
-}
-
-function handleSetMcpEnabled(enabled: boolean) {
-  postMessage({ type: "setMcpEnabled", enabled });
-}
-
-function handleSetMcpToolExposure(serverName: string, toolName: string, exposure: McpToolExposureSetting, scope: McpToolExposureScope) {
-  postMessage({ type: "mcpSetToolExposure", serverName, toolName, exposure, scope });
-}
-
-function handleSetMcpResourceExposure(serverName: string, exposure: McpToolExposureSetting, scope: McpToolExposureScope) {
-  postMessage({ type: "mcpSetResourceExposure", serverName, exposure, scope });
+function handleSetMcpRemoteAvailable(serverName: string, available: boolean) {
+  postMessage({ type: "mcpSetRemoteAvailable", serverName, available });
 }
 
 // As VS Code's picker hands its pick to the chat, an attach closes the picker and the panel; the chip lands in the composer.
@@ -709,41 +698,6 @@ function handleReauthenticateMcpServer(serverName: string) {
 
 function handleSignOutMcpServer(serverName: string) {
   postMessage({ type: "signOutMcpServer", serverName });
-}
-
-function handleReloadMcpConfig() {
-  postMessage({ type: "mcpReloadConfig" });
-}
-
-/**
- * Every MCP write carries a requestId and is registered as in-flight before it is sent, so the form
- * can stay open holding what the user typed until the extension acknowledges it.
- */
-function sendMcpWrite(build: (requestId: string) => WebviewToExtensionMessage) {
-  const requestId = crypto.randomUUID();
-  settingsStore.beginMcpWrite(requestId);
-  postMessage(build(requestId));
-}
-
-function handleAddMcpServer(serverName: string, config: McpServerConfig) {
-  sendMcpWrite((requestId) => ({ type: "mcpAddServer", requestId, serverName, config }));
-}
-
-function handleUpdateMcpServer(
-  serverName: string,
-  newServerName: string | undefined,
-  config: McpServerConfig,
-) {
-  // `serverName` is the pre-rename name; `newServerName` is omitted entirely for an in-place edit.
-  sendMcpWrite((requestId) =>
-    newServerName === undefined
-      ? { type: "mcpUpdateServer", requestId, serverName, config }
-      : { type: "mcpUpdateServer", requestId, serverName, newServerName, config },
-  );
-}
-
-function handleDeleteMcpServer(serverName: string) {
-  sendMcpWrite((requestId) => ({ type: "mcpDeleteServer", requestId, serverName }));
 }
 
 function handleOpenMcpConfigFile(filePath: string, line: number | null) {
@@ -1392,22 +1346,25 @@ function handleSuggestion(prompt: string) {
         :mcp-enabled="mcpEnabled"
         :mcp-write-in-flight="mcpWriteRequestId !== null"
         :mcp-write-error="mcpWriteError"
+        :host="chatHost"
         @close="uiStore.closeMcpPanel()"
-        @toggle="handleToggleMcpServer"
-        @toggle-enabled="handleSetMcpEnabled"
-        @set-tool-exposure="handleSetMcpToolExposure"
-        @set-resource-exposure="handleSetMcpResourceExposure"
+        @toggle="mcpWrites.toggle"
+        @toggle-enabled="mcpWrites.setEnabled"
+        @set-tool-exposure="mcpWrites.setToolExposure"
+        @set-resource-exposure="mcpWrites.setResourceExposure"
         @reconnect="handleReconnectMcpServer"
         @authenticate="handleAuthenticateMcpServer"
         @reauthenticate="handleReauthenticateMcpServer"
         @sign-out="handleSignOutMcpServer"
-        @reload-config="handleReloadMcpConfig"
+        @reload-config="mcpWrites.reloadConfig"
         @trust-project="postMessage({ type: 'setProjectTrusted' })"
-        @add-server="handleAddMcpServer"
-        @update-server="handleUpdateMcpServer"
-        @delete-server="handleDeleteMcpServer"
+        @add-server="mcpWrites.addServer"
+        @update-server="mcpWrites.updateServer"
+        @delete-server="mcpWrites.deleteServer"
         @open-file="handleOpenMcpConfigFile"
         @browse-resources="mcpResourceServer = $event"
+        @set-remote-available="handleSetMcpRemoteAvailable"
+        @open-host-settings="postMessage({ type: 'openAppSettings', section: 'integrations', scope: 'machine' })"
       />
     </Transition>
 

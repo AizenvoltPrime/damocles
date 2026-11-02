@@ -26,6 +26,8 @@ window.damoclesBridge = {
     page.listener = listener;
     return () => undefined;
   },
+  getHostNames: () => undefined,
+  onHostNames: () => () => undefined,
   getOffline: () => undefined,
   hostAction: () => undefined,
   getConnection: () => undefined,

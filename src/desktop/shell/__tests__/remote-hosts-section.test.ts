@@ -21,6 +21,7 @@ let pinia: Pinia;
 
 const PROD: RemoteHostEntry = {
   hostId: 'h1',
+  kind: 'ssh',
   authorityKey: 'ssh+h1',
   name: 'prod-1',
   destinationLabel: 'deploy@prod-1',
@@ -29,6 +30,7 @@ const PROD: RemoteHostEntry = {
   connection: 'connected',
   settings: { allowBypass: false, forwardAgent: false, rememberPassword: false, browserLocalNetwork: false, openLinksWithoutAsking: false },
   facts: { passwordless: false, keyInstalledByDamocles: true, lingerEnabledByDamocles: false, alwaysCredentialHosts: ['github.com'] },
+  heldMemoryQueues: [],
 };
 const WIN: RemoteHostEntry = { ...PROD, hostId: 'h2', authorityKey: 'ssh+h2', name: 'win-box', os: 'win32', detectedOs: 'win32', connection: 'offline', facts: { ...PROD.facts, alwaysCredentialHosts: [] } };
 
@@ -79,7 +81,7 @@ beforeEach(() => {
   vi.mocked(api.removeServer).mockClear();
   vi.mocked(api.forgetHost).mockClear();
   vi.mocked(api.setUpPasswordless).mockClear();
-  vi.mocked(api.getState).mockResolvedValue({ locale: 'en', platform: 'win32', remoteEnabled: true });
+  vi.mocked(api.getState).mockResolvedValue({ locale: 'en', platform: 'win32' });
 });
 
 afterEach(() => {
@@ -102,12 +104,6 @@ describe('Settings, Remote hosts', () => {
     await flushPromises();
     expect(tab().textContent).toContain('prod-eu');
     expect(tab().querySelector('.d-tone-danger')).not.toBeNull();
-  });
-
-  it('is a section only while remote development is on', async () => {
-    vi.mocked(api.getState).mockResolvedValue({ locale: 'en', platform: 'win32', remoteEnabled: false });
-    await openRemoteHosts();
-    expect($('[data-testid="settings-nav-remoteHosts"]')).toBeNull();
   });
 
   it('lists the saved hosts, shows the first, and holds the global idle limit in its header', async () => {
@@ -155,6 +151,30 @@ describe('Settings, Remote hosts', () => {
     expect(block().dataset.hostId).toBe('h2');
     expect(switchNamed('Forward my SSH agent')).toBeUndefined();
     expect(switchNamed('Allow YOLO')).toBeDefined();
+  });
+
+  it('offers a container its own agent forwarding switch, off by default, and no password to remember', async () => {
+    api.remoteHosts.list = [{ ...PROD, kind: 'container', authorityKey: `container+${'ab'.repeat(16)}`, name: 'web-app', destinationLabel: 'web-app', container: { origin: 'attach', state: 'running', engine: 'docker', containerName: 'web-app', user: 'configured' } }];
+    await openRemoteHosts();
+    const agent = switchNamed('Forward my SSH agent')!;
+    expect(agent.getAttribute('aria-checked')).toBe('false');
+    expect(switchNamed('Remember password')).toBeUndefined();
+    agent.click();
+    await flushPromises();
+    expect(api.setHostSetting).toHaveBeenCalledWith('h1', { key: 'forwardAgent', value: true });
+    expect(switchNamed('Forward my SSH agent')!.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('leaves the ssh-only settings and passwordless setup off a WSL host', async () => {
+    api.remoteHosts.list = [{ ...PROD, kind: 'wsl', name: 'ml-box', destinationLabel: 'Ubuntu-24.04' }];
+    await openRemoteHosts();
+    expect(switchNamed('Forward my SSH agent')).toBeUndefined();
+    expect(switchNamed('Remember password')).toBeUndefined();
+    expect(switchNamed('Allow YOLO')).toBeDefined();
+    expect(block().querySelector('[data-testid="settings-row-remote-host-os"]')).toBeNull();
+    expect(block().querySelector('[data-testid="passwordless"]')).toBeNull();
+    // the removal stage runs over ssh, so a WSL host offers none
+    expect(block().querySelector('[data-testid="remove-server"]')).toBeNull();
   });
 
   it('names the host in the links switch and stores the network and links switches', async () => {
@@ -355,12 +375,22 @@ describe('Settings, Remote hosts', () => {
     expect(api.forgetHost).toHaveBeenCalledWith('h1');
   });
 
+  it('says Forget host also forgets the containers of an SSH host that container records run on', async () => {
+    api.remoteHosts.list = [PROD, WIN, { ...WIN, hostId: 'c1', kind: 'container', authorityKey: 'container+c1', name: 'api-shell', container: { origin: 'attach', state: 'running', engine: 'docker', containerName: 'api', user: 'root', via: { hostId: 'h2', name: 'win-box' } } }];
+    await openRemoteHosts('h2');
+    buttonNamed('Forget host', block())!.click();
+    await flushPromises();
+    expect($('[data-testid="forget-host-dialog"]')!.textContent).toContain('every container opened through it');
+  });
+
   it('forgets an unreachable host without offering the removal', async () => {
     await openRemoteHosts('h2');
     buttonNamed('Forget host', block())!.click();
     await flushPromises();
     const dialog = $('[data-testid="forget-host-dialog"]')!;
     expect(buttonNamed('Remove the server first...', dialog)).toBeUndefined();
+    // no container record runs on win-box, so none is named
+    expect(dialog.textContent).not.toContain('every container opened through it');
     buttonNamed('Forget host', dialog)!.click();
     await flushPromises();
     expect(api.forgetHost).toHaveBeenCalledWith('h2');

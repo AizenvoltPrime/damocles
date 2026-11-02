@@ -6,6 +6,8 @@ import type { Platform } from '../../platform/platform';
 import type { PanelHost } from '../../platform/window-service';
 import type { BrowserContext, Page, CDPSession, Dialog, Request } from 'patchright';
 import { launchBrowserContext } from './launcher';
+import { REMOTE_CONTEXT_CHROME_ARGS, startClientNetworkProxy, type ClientNetworkProxy } from './client-network-proxy';
+import { CLOSED_CLIENT_NETWORK, type ClientNetworkPolicy } from './client-network-policy';
 import { PageController } from './page-controller';
 import { BrowserPanel, type NavigationState } from './browser-panel';
 import { ScreencastHealth } from './screencast-health';
@@ -18,7 +20,7 @@ import {
   createBindingName,
   isolatedBridgeInstaller,
 } from './page-scripts';
-import { resolveFavicon } from './favicon';
+import { fetchIconPinned, fetchIconThroughContext, resolveFavicon } from './favicon';
 import { isNavigableUrl } from './net-guard';
 import { httpFallbackUrl } from './https-fallback';
 import { typedAddress } from '../../shared/typed-address';
@@ -348,6 +350,16 @@ export async function installContextObservers(
   context.on('page', track);
 }
 
+/** Local chats' profile. */
+export function localProfileDir(): string {
+  return join(homedir(), '.damocles', 'browser-profile');
+}
+
+/** A remote authority's own profile, so its pages share no cookies or logins with local chats or other hosts. */
+export function remoteProfileDir(authority: string): string {
+  return join(homedir(), '.damocles', 'browser-profiles', authority);
+}
+
 // Ring-buffer cap for auto-answered dialogs retained per tab.
 const DIALOGS_MAX = 20;
 
@@ -368,9 +380,16 @@ export class BrowserService {
   static readonly PRIMARY_SCOPE_ID = '__primary__';
 
   private readonly platform: Platform;
+  private readonly profileDir: string | undefined;
+  private readonly network: (() => Promise<{ server: string; args: readonly string[] }>) | undefined;
 
-  constructor(platform: Platform) {
+  /** profileDir: this context's own profile (BrowserServices gives each authority one); network: a remote authority's proxy. */
+  constructor(platform: Platform, options: { readonly profileDir?: string; readonly network?: () => Promise<{ server: string; args: readonly string[] }> } = {}) {
     this.platform = platform;
+    this.profileDir = options.profileDir;
+    this.network = options.network;
+    // a remote authority's downloads stay inside its profile, so pruning never reaches another context's live launch
+    this.downloadManager = new DownloadManager(...(options.profileDir !== undefined ? [join(options.profileDir, 'damocles-downloads')] : []));
   }
 
   private state: BrowserSessionState = 'disconnected';
@@ -427,7 +446,9 @@ export class BrowserService {
   private iconCacheDir: string | null = null;
   private openChain: Promise<void> = Promise.resolve();
   private closing = false;
-  private readonly downloadManager = new DownloadManager();
+  // set by dispose(): nothing launches again, and a launch still in flight closes the context it gets
+  private disposed = false;
+  private readonly downloadManager: DownloadManager;
   // Active network-interception rules (BrowserIntercept), cleared on cleanup() (close + dispose).
   private readonly interceptManager = new InterceptManager(() => this.context);
 
@@ -852,16 +873,19 @@ export class BrowserService {
   }
 
   /**
-   * The human's "new page" beside a chat: a blank tab in the chat's human scope. A launch this call starts presents
+   * The human's "new page" beside a chat: a tab in the chat's human scope, blank or at url. A launch this call starts presents
    * its first page as the new one; otherwise, behind any launch in flight, a new tab opens.
    */
-  async openNewPageForChat(chat: PanelHost): Promise<void> {
+  async openNewPageForChat(chat: PanelHost, url?: string): Promise<void> {
     if (!this.readEnabledSetting()) {
       log('[Browser] Not opening a new page: damocles.browser.enabled is off');
       return;
     }
+    // the address is a forwarded port's, which main checked, and passes the address bar's check again
+    if (url !== undefined && !isNavigableUrl(url)) throw new Error('Not an address the browser opens');
     const scopeId = this.humanScopeId(chat);
-    if (!(await this.ensureContext(scopeId))) await this.openNewTab(scopeId);
+    if (!(await this.ensureContext(scopeId))) await this.openNewTab(scopeId, url);
+    else if (url !== undefined) await this.openForScope(scopeId, url);
   }
 
   /**
@@ -921,9 +945,17 @@ export class BrowserService {
 
   private async ensureContextInternal(launchScopeId: string, signal?: AbortSignal): Promise<boolean> {
     if (this.state === 'connected' && this.context) return false; // idempotent: a concurrent first-open awaited
-    if (this.context) await this.close(); // lingering/failed context — tear it down before relaunch
-    await this.ensureUserDataDir();
-    await this.launchAndAdopt(launchScopeId, signal);
+    try {
+      if (this.disposed) throw new Error('The browser service was disposed');
+      if (this.context) await this.close(); // lingering/failed context — tear it down before relaunch
+      await this.ensureUserDataDir();
+      await this.launchAndAdopt(launchScopeId, signal);
+    } catch (err) {
+      // a remote context's launch error reaches the target, and Node's file errors name this computer's paths
+      if (!this.network || err instanceof LocalizedError || signal?.aborted) throw err;
+      log(`[Browser] The browser could not start for a remote host — ${err instanceof Error ? err.message : String(err)}`);
+      throw new LocalizedError(l('The browser could not start on the computer that shows this chat. Damocles\' log there has the details.'), { cause: err });
+    }
     return true;
   }
 
@@ -1039,7 +1071,7 @@ export class BrowserService {
 
   private async ensureUserDataDir(): Promise<void> {
     if (this.userDataDir) return;
-    const dir = join(homedir(), '.damocles', 'browser-profile');
+    const dir = this.profileDir ?? localProfileDir();
     await fsp.mkdir(dir, { recursive: true });
     this.userDataDir = dir;
     const iconDir = join(dir, 'tab-icons');
@@ -1064,6 +1096,7 @@ export class BrowserService {
         viewport: { width: this.launchViewport.width, height: this.launchViewport.height },
         deviceScaleFactor: this.launchViewport.dpr,
         devToolsPort,
+        ...(this.network ? { network: await this.network() } : {}),
       });
       // If an ESC aborts the launch, the context may still finish opening in the background; make sure
       // a late-arriving one is torn down rather than leaked.
@@ -1074,6 +1107,10 @@ export class BrowserService {
         );
       }
       const context = await this.raceAbort(contextPromise, signal);
+      if (this.disposed) {
+        await context.close().catch((err: unknown) => log(`[Browser] Context close failed — ${err instanceof Error ? err.message : String(err)}`));
+        throw new Error('The browser service was disposed while the browser started');
+      }
       this.context = context;
       this.closing = false;
       this.userAgentCheck = readCleanUserAgent(context);
@@ -1470,7 +1507,9 @@ export class BrowserService {
     entry.lastTitle = null;
     entry.panel.updateUrl(shownUrl(entry) ?? '');
     this.applyTabIdentity(entry);
-    if (this.iconCacheDir) resolveFavicon(this.iconCacheDir, entry, (icon) => entry.panel.setIcon(icon));
+    // a remote authority's icons go through its context's proxy, as its pages do; only a local context fetches from Node
+    const fetchIcon = this.network ? fetchIconThroughContext(() => this.context?.request) : fetchIconPinned();
+    if (this.iconCacheDir) resolveFavicon(this.iconCacheDir, entry, (icon) => entry.panel.setIcon(icon), fetchIcon);
     // `Overlay.setInspectMode` is per-DOCUMENT, so after a navigation `Overlay.inspectNodeRequested`
     // can never fire for an in-flight pick. Left alone, `picking` stays true forever: the toolbar pick
     // button (`if (entry.picker.isPicking) return;`) goes permanently dead for this tab and every
@@ -2038,9 +2077,95 @@ export class BrowserService {
     this.closing = false;
   }
 
-  /** Extension shutdown. Awaits the context close so Chrome does not outlive the extension host —
-   *  a guarantee that holds only because every caller up to `deactivate` awaits this promise. */
-  dispose(): Promise<void> {
-    return this.teardown(true);
+  /** Extension shutdown, and a remote authority's release. Awaits the context close so Chrome does not outlive the
+   *  extension host — a guarantee that holds only because every caller up to `deactivate` awaits this promise — and a
+   *  launch still in flight, whose context closes as it arrives, so nothing holds the profile once this settles. */
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    await this.teardown(true);
+    await this.openChain;
+  }
+}
+
+// an authority key as a path segment: `ssh+<hostId>`, `wsl+<distro>`, `container+<hex>` or `loopback`; never ending in '.',
+// which Windows strips, so two authorities never share one profile folder
+const AUTHORITY_SEGMENT = /^[a-z]+(\+[A-Za-z0-9_.-]{0,127}[A-Za-z0-9_-])?$/;
+
+/** What starts a remote authority's client-network proxy; the proxy module in production, a stand-in in tests. */
+export type StartProxy = (policy: ClientNetworkPolicy) => Promise<ClientNetworkProxy>;
+
+/**
+ * One BrowserService, and so one Patchright persistent context and profile, per authority on this computer's core: local chats
+ * keep ~/.damocles/browser-profile and no proxy; each remote authority gets ~/.damocles/browser-profiles/<authority>/ and
+ * its own client-network proxy, kept current from the clientNetwork mirror (docs/invariants.md "Ports and the remote browser").
+ */
+export class BrowserServices {
+  private readonly remote = new Map<string, BrowserService>();
+  private readonly policies = new Map<string, ClientNetworkPolicy>();
+  private readonly proxies = new Map<string, Promise<ClientNetworkProxy>>();
+  private readonly platform: Platform;
+  private readonly localService: BrowserService;
+  private readonly startProxy: StartProxy;
+
+  constructor(platform: Platform, localService: BrowserService, startProxy: StartProxy = (policy) => startClientNetworkProxy(policy)) {
+    this.platform = platform;
+    this.localService = localService;
+    this.startProxy = startProxy;
+  }
+
+  forAuthority(authority: string): BrowserService {
+    if (authority === 'local') return this.localService;
+    const known = this.remote.get(authority);
+    if (known) return known;
+    if (!AUTHORITY_SEGMENT.test(authority)) throw new Error(`${JSON.stringify(authority.slice(0, 64))} is not an authority`);
+    const service: BrowserService = new BrowserService(this.platform, {
+      profileDir: remoteProfileDir(authority),
+      network: async () => {
+        // a launch its authority's release overtook starts no proxy, which nothing would close
+        if (this.remote.get(authority) !== service) throw new Error(`The browser of ${authority} was released`);
+        return { server: (await this.proxyOf(authority)).url, args: REMOTE_CONTEXT_CHROME_ARGS };
+      },
+    });
+    this.remote.set(authority, service);
+    return service;
+  }
+
+  /** A clientNetwork mirror delta: the host's forwarded local ports and its local-network switch. */
+  setClientNetwork(authority: string, policy: ClientNetworkPolicy): void {
+    this.policies.set(authority, policy);
+    void this.proxies.get(authority)?.then((proxy) => proxy.update(policy), () => undefined);
+  }
+
+  /** The authority's context and proxy close, so its profile can be removed; a later page starts both again. */
+  async release(authority: string): Promise<void> {
+    const service = this.remote.get(authority);
+    const proxy = this.proxies.get(authority);
+    this.remote.delete(authority);
+    this.proxies.delete(authority);
+    this.policies.delete(authority);
+    await service?.dispose();
+    await proxy?.then((started) => started.close(), () => undefined);
+  }
+
+  private proxyOf(authority: string): Promise<ClientNetworkProxy> {
+    let proxy = this.proxies.get(authority);
+    if (!proxy) {
+      const started = this.startProxy(this.policies.get(authority) ?? CLOSED_CLIENT_NETWORK);
+      // a proxy that failed to start is started again by the next launch; a newer one for the authority stays
+      started.catch(() => {
+        if (this.proxies.get(authority) === started) this.proxies.delete(authority);
+      });
+      this.proxies.set(authority, started);
+      proxy = started;
+    }
+    return proxy;
+  }
+
+  async dispose(): Promise<void> {
+    await Promise.all([...this.remote.values()].map((service) => service.dispose()));
+    this.remote.clear();
+    const proxies = [...this.proxies.values()];
+    this.proxies.clear();
+    await Promise.all(proxies.map((proxy) => proxy.then((started) => started.close(), () => undefined)));
   }
 }

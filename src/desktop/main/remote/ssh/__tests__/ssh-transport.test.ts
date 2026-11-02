@@ -152,7 +152,7 @@ function transportOptions(askpass: AskpassServer, extra: Partial<SshTransportOpt
     askpass,
     manifest: { version: '3.7.0', protocolVersion: 1, packages: {} } satisfies ServerManifest,
     releasesUrl: 'https://example.com/releases',
-    artifacts: { packagePath: async () => { throw new Error('no upload'); } },
+    artifacts: { packageFolder: () => 'unused', packagePath: async () => { throw new Error('no upload'); } },
     log: (line) => { logs.push(line); },
     ...extra,
   };
@@ -469,7 +469,7 @@ describe('startSshTransport', () => {
     const packaged = (size: number): ServerManifest => ({ version: '3.7.0', protocolVersion: 1, packages: { 'linux-x64': { file: path.basename(file), sha256: '0'.repeat(64), size } } });
     const upload = (size: number) => {
       const made = fixture((ssh) => ssh.stdout(`${PROBE}@@DAMOCLES {"kind":"upload"}\n`));
-      const { options, logs } = transportOptions(made.askpass, { manifest: packaged(size), artifacts: { packagePath: async () => file } });
+      const { options, logs } = transportOptions(made.askpass, { manifest: packaged(size), artifacts: { packageFolder: () => 'unused', packagePath: async () => file } });
       return { made, done: rejection(startSshTransport(options, made.deps)), logs };
     };
     const exact = upload(7);
@@ -483,6 +483,20 @@ describe('startSshTransport', () => {
     expect(wrong.logs.some((line) => line.includes('5'))).toBe(true);
   });
 
+  it('fails a cache request from an SSH target as a stage protocol error, filling no cache on this computer', async () => {
+    const packagePath = vi.fn(async () => '/cache/damocles-server-3.7.0-linux-x64.tar.gz');
+    const { launched, deps, askpass } = fixture((ssh) => ssh.stdout(`${PROBE}@@DAMOCLES {"kind":"cache"}\n`));
+    const { options } = transportOptions(askpass, {
+      manifest: { version: '3.7.0', protocolVersion: 1, packages: { 'linux-x64': { file: 'damocles-server-3.7.0-linux-x64.tar.gz', sha256: '0'.repeat(64), size: 7 } } },
+      artifacts: { packageFolder: () => '/cache', packagePath },
+    });
+    const failure = await rejection(startSshTransport(options, deps));
+    expect([failure.code, failure.params]).toEqual(['bridgeFailed', { reason: 'stageProtocol' }]);
+    expect(packagePath).not.toHaveBeenCalled();
+    // stage 1's frame alone: no ready or none answer
+    expect(launched[0]!.written).toHaveLength(1);
+  });
+
   it('fails an upload request before the probe as a stage protocol error, not as a failed upload', async () => {
     const { deps, askpass } = fixture((ssh) => ssh.stdout('@@DAMOCLES {"kind":"upload"}\n'));
     const failure = await rejection(startSshTransport(transportOptions(askpass).options, deps));
@@ -494,7 +508,7 @@ describe('startSshTransport', () => {
     const { deps, askpass } = fixture((ssh) => ssh.stdout(`${PROBE}@@DAMOCLES {"kind":"upload"}\n`));
     const { options, logs, controller } = transportOptions(askpass, {
       manifest: { version: '3.7.0', protocolVersion: 1, packages: { 'linux-x64': { file: 'damocles-server-3.7.0-linux-x64.tar.gz', sha256: '0'.repeat(64), size: 7 } } },
-      artifacts: { packagePath: () => new Promise((_resolve, reject) => { release = () => reject(new Error('the download was stopped')); }) },
+      artifacts: { packageFolder: () => 'unused', packagePath: () => new Promise((_resolve, reject) => { release = () => reject(new Error('the download was stopped')); }) },
     });
     const done = rejection(startSshTransport(options, deps));
     await vi.waitFor(() => expect(release).toBeDefined());

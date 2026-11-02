@@ -226,6 +226,8 @@ function assertNoDevOnlyPackages(topLevel, requirers, label) {
 export const DESKTOP_ONLY_PACKAGES = [
   ...DESKTOP_EXTERNALS.filter((name) => !EXTENSION_EXTERNALS.includes(name)),
   'node-pty',
+  // main and the daemon run its devcontainer.js by path; nothing imports it
+  '@devcontainers/cli',
   'monaco-editor',
   '@fontsource-variable/geist',
   '@fontsource-variable/geist-mono',

@@ -74,11 +74,13 @@ test.describe('renderer security at runtime', () => {
     expect(await tab.evaluate(() => Object.keys(window.damoclesBridge ?? {}).sort())).toEqual([
       'getConnection',
       'getHost',
+      'getHostNames',
       'getOffline',
       'getState',
       'hostAction',
       'onConnection',
       'onHost',
+      'onHostNames',
       'onMessage',
       'postMessage',
       'queueAction',

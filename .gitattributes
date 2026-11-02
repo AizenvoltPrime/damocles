@@ -19,3 +19,11 @@ e2e/remote/support/images/* text eol=lf
 # The git credential relay helper runs under sh (Git for Windows' sh included), which reads CR as part of a line.
 resources/git-credential/*.sh text eol=lf
 resources/git-credential/*.cmd text eol=crlf
+# The damocles command's sh scripts run under sh on macOS, Linux, WSL, every POSIX target and Git Bash or MSYS2 on Windows; its
+# .cmd forms under cmd.exe. browser.c is compiled into server packages, whose bytes must not depend on the checkout's line ends.
+resources/bin/damocles text eol=lf
+resources/bin/*.cmd text eol=crlf
+resources/server-bin/remote-cli/damocles text eol=lf
+resources/server-bin/helpers/*.sh text eol=lf
+resources/server-bin/helpers/*.c text eol=lf
+resources/server-bin/**/*.cmd text eol=crlf

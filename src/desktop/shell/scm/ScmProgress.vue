@@ -323,8 +323,10 @@ function endShift(event: AnimationEvent): void {
               v-if="row.phase === 'running'"
               role="progressbar"
               :aria-labelledby="labelId(index)"
-              class="d-sweep-bar absolute inset-x-0 bottom-0 h-0.5 bg-(--d-accent)/15 text-(--d-accent)"
-            />
+              class="absolute inset-x-0 bottom-0 h-0.5"
+            >
+              <div class="d-sweep-bar size-full bg-(--d-accent)/15 text-(--d-accent)" />
+            </div>
           </Transition>
         </div>
       </div>

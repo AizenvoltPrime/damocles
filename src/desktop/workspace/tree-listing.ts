@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import picomatch from 'picomatch';
 import type { FileEntry } from '../preload/shell-channels';
 import { confineExisting, followsLocalLinksOnly, type ConfineFailure, type Project } from '../local-services/confine';
+import { isPartName } from './transfer-ops';
 
 export type FolderListing = { readonly ok: true; readonly entries: FileEntry[] } | { readonly ok: false; readonly reason: ConfineFailure };
 
@@ -72,7 +73,7 @@ export function createTreeListing(log: (line: string) => void): TreeListing {
       const excluded = testFor(excludes);
       const entries: FileEntry[] = [];
       for (const dirent of dirents) {
-        if (excluded(joinRelative(relativeDir, dirent.name))) continue;
+        if (isPartName(dirent.name) || excluded(joinRelative(relativeDir, dirent.name))) continue;
         entries.push({ name: dirent.name, kind: await kindOf(confined.path, dirent) });
       }
       return { ok: true, entries };

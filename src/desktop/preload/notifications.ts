@@ -52,7 +52,9 @@ export type NotificationBody =
     }
   // A core NotificationService call: its text is already localized, and an action answers the caller. host: a remote core's,
   // named by this computer's host store
-  | { readonly kind: 'notice'; readonly severity: NoticeSeverity; readonly title?: string; readonly message: string; readonly actions: readonly string[]; readonly host?: string; readonly hostTone?: HostTone };
+  | { readonly kind: 'notice'; readonly severity: NoticeSeverity; readonly title?: string; readonly message: string; readonly actions: readonly string[]; readonly host?: string; readonly hostTone?: HostTone }
+  // A target asked to open a web page here: Open is the only answer that opens it. url: exactly what Open opens
+  | { readonly kind: 'link'; readonly host: string; readonly hostTone?: HostTone; readonly url: string };
 
 // A remote host as a notification names it: this computer's host store's name and safety color.
 export interface NotificationHost {
@@ -106,6 +108,7 @@ export function chimeTone(body: NotificationBody): ChimeTone {
     case 'plan':
     case 'question':
     case 'team':
+    case 'link':
       return 'attention';
     case 'done':
       return 'done';

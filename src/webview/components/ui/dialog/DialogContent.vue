@@ -9,11 +9,12 @@ import {
   DialogContent,
   DialogOverlay,
   DialogPortal,
+  injectDialogRootContext,
   useForwardPropsEmits,
 } from "reka-ui"
 import { cn } from "@/lib/utils"
 import { definedProps } from "@/lib/definedProps"
-import { useDialogLayer } from "@/composables/useOverlayEscape"
+import { markClosed, useDialogLayer } from "@/composables/useOverlayEscape"
 
 defineOptions({
   inheritAttrs: false,
@@ -33,36 +34,47 @@ const { t } = useI18n()
 
 // A layer of the overlay stack while open, so it paints above the overlay it was opened from and below one opened over it.
 const zIndex = useDialogLayer(useTemplateRef<ComponentPublicInstance>("content"))
+// reka's own exit keeps a closing dialog its highest dismissable layer, so the dialog beneath would not hear Escape until the
+// exit ends; unmounted at once, the content leaves reka's layers and its element plays the exit in the Transition
+const dialog = injectDialogRootContext()
 </script>
 
 <template>
   <DialogPortal :disabled="props.inline">
-    <DialogOverlay
-      class="d-scrim fixed inset-0 bg-(--d-scrim) backdrop-blur-xs"
-      :style="{ zIndex }"
-    />
-    <DialogContent
-      ref="content"
-      v-bind="{ ...definedProps(forwarded), ...$attrs }"
-      :style="{ zIndex }"
-      :class="
-        cn(
-          'd-dialog fixed left-1/2 top-1/2 grid w-full max-w-lg -translate-1/2 gap-4 rounded-2xl border border-(--d-border2) bg-(--d-card) p-6 text-(--d-text) shadow-(--d-shadow)',
-          props.class,
-        )"
-    >
-      <slot />
-
-      <DialogClose
-        v-if="props.showClose"
-        class="absolute right-3.5 top-3.5 flex size-7.5 items-center justify-center rounded-9 text-(--d-muted) transition-colors hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:outline-2 focus-visible:outline-(--d-accent) disabled:pointer-events-none"
+    <Transition @before-leave="markClosed">
+      <DialogOverlay
+        v-if="dialog.open.value"
+        force-mount
+        class="d-scrim fixed inset-0 bg-(--d-scrim) backdrop-blur-xs"
+        :style="{ zIndex }"
+      />
+    </Transition>
+    <Transition @before-leave="markClosed">
+      <DialogContent
+        v-if="dialog.open.value"
+        ref="content"
+        v-bind="{ ...definedProps(forwarded), ...$attrs }"
+        force-mount
+        :style="{ zIndex }"
+        :class="
+          cn(
+            'd-dialog fixed left-1/2 top-1/2 grid w-full max-w-lg -translate-1/2 gap-4 rounded-2xl border border-(--d-border2) bg-(--d-card) p-6 text-(--d-text) shadow-(--d-shadow)',
+            props.class,
+          )"
       >
-        <X
-          class="size-4"
-          aria-hidden="true"
-        />
-        <span class="sr-only">{{ t("overlay.close") }}</span>
-      </DialogClose>
-    </DialogContent>
+        <slot />
+
+        <DialogClose
+          v-if="props.showClose"
+          class="absolute right-3.5 top-3.5 flex size-7.5 items-center justify-center rounded-9 text-(--d-muted) transition-colors hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:outline-2 focus-visible:outline-(--d-accent) disabled:pointer-events-none"
+        >
+          <X
+            class="size-4"
+            aria-hidden="true"
+          />
+          <span class="sr-only">{{ t("overlay.close") }}</span>
+        </DialogClose>
+      </DialogContent>
+    </Transition>
   </DialogPortal>
 </template>

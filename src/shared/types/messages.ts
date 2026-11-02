@@ -142,8 +142,11 @@ export type WebviewToExtensionMessage =
    * Damocles setting; the desktop app opens its settings modal, whose search box stays the user's, so it ignores `query`.
    */
   | { type: "openSettings"; query?: string }
-  /** Opens the host's settings modal outside the chat page (desktop overlay); the section must be a SETTINGS_SECTION_IDS entry. */
-  | { type: "openAppSettings"; section?: SettingsSectionId; account?: SettingsAccountId }
+  /**
+   * Opens the host's settings modal outside the chat page (desktop overlay); the section must be a SETTINGS_SECTION_IDS entry.
+   * scope "machine": a remote chat's settings open on its host's tab, whichever tab an open modal shows.
+   */
+  | { type: "openAppSettings"; section?: SettingsSectionId; account?: SettingsAccountId; scope?: "machine" }
   /** The chat header's Terminal toggle, posted only when `HostCapabilities.windowLayout`; the host runs its Toggle Terminal command. */
   | { type: "toggleTerminal" }
   /** The header counter's click, posted only when `HostCapabilities.chatReview`: the host opens the chat's review tab (D60). */
@@ -188,6 +191,8 @@ export type WebviewToExtensionMessage =
   | { type: "mcpSetToolExposure"; serverName: string; toolName: string; exposure: McpToolExposureSetting; scope: McpToolExposureScope }
   /** Sets or removes the server's entry of `damocles.mcp.resourceExposure` at `scope`. */
   | { type: "mcpSetResourceExposure"; serverName: string; exposure: McpToolExposureSetting; scope: McpToolExposureScope }
+  /** Marks a personal server available on remote hosts; only a desktop local core accepts it. */
+  | { type: "mcpSetRemoteAvailable"; serverName: string; available: boolean }
   // The MCP panel's resource picker (D13: the user's own browse and attach, which resource exposure never restricts).
   // Each request gets one reply with its requestId; omitting `cursor` asks for the first page.
   | { type: "requestMcpResources"; requestId: string; serverName: string; cursor?: string }

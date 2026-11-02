@@ -1,6 +1,7 @@
 import { log } from '../logger';
 import { userScopeRemote } from '../user-scope';
 import { buildFtsMatchQuery } from './text-tokenize';
+import type { GlobalMemoryFields } from './global-memory-relay';
 import { USEFULNESS_RUBRIC } from './rubric';
 import { listKnownWorkspaces, matchKnownWorkspace, sameWorkspace, workspaceContaining } from './workspaces';
 import { estimateTokens } from './token-estimate';
@@ -28,6 +29,7 @@ import {
   promoteEpisodes,
   pruneConsumedCandidates,
   purgeForgottenRows,
+  pruneAppliedWrites,
   maybeVacuum,
   getDedupThreshold,
   type NewMemoryFields,
@@ -125,6 +127,8 @@ export interface ConsolidationCtx {
   folderExists: (folder: string) => Promise<boolean>;
   /** When false, the pass runs maintenance but extracts nothing. */
   autoExtractEnabled: boolean;
+  /** A daemon's core: a global extraction is written on the client (GlobalMemoryRelay.write), never in this store. */
+  globalWrite?: (fields: GlobalMemoryFields, clientId: string | undefined) => Promise<unknown>;
   /** Whether this pass was user-initiated ('manual') or background ('auto'). */
   trigger: ConsolidationTrigger;
   /** Invoked once when the runner reports a persistent `no-model` failure. */
@@ -164,6 +168,8 @@ interface ClaimedCandidate {
   sessionId: string | null;
   /** Files the turn's tool calls touched. */
   files: string[];
+  /** A daemon's core: the device the turn was pinned to; null on this computer's core and for a turn recorded before migration 9. */
+  clientId: string | null;
 }
 
 interface ClaimedRow {
@@ -172,6 +178,7 @@ interface ClaimedRow {
   assistant_text: string;
   session_id: string | null;
   files: string;
+  client_id: string | null;
 }
 
 function parseFiles(json: string): string[] {
@@ -331,16 +338,17 @@ function claimCandidates(ctx: ConsolidationCtx): Promise<{ candidates: ClaimedCa
     ];
 
     const head = ctx.db
-      .prepare(`SELECT workspace FROM memory_candidates WHERE ${sessionWhere} ORDER BY created_at LIMIT 1`)
-      .get(...sessionParams) as { workspace: string | null } | undefined;
+      .prepare(`SELECT workspace, client_id FROM memory_candidates WHERE ${sessionWhere} ORDER BY created_at LIMIT 1`)
+      .get(...sessionParams) as { workspace: string | null; client_id: string | null } | undefined;
     if (!head) return { candidates: [], workspace: null };
 
+    // one folder's and one device's turns, so every global extraction of the batch belongs to that device
     const rows = ctx.db
       .prepare(
-        `SELECT id, user_text, assistant_text, session_id, files FROM memory_candidates
-          WHERE ${sessionWhere} AND workspace IS ? ORDER BY created_at LIMIT ?`,
+        `SELECT id, user_text, assistant_text, session_id, files, client_id FROM memory_candidates
+          WHERE ${sessionWhere} AND workspace IS ? AND client_id IS ? ORDER BY created_at LIMIT ?`,
       )
-      .all(...sessionParams, head.workspace, CANDIDATE_BATCH_LIMIT) as ClaimedRow[];
+      .all(...sessionParams, head.workspace, head.client_id, CANDIDATE_BATCH_LIMIT) as ClaimedRow[];
 
     if (rows.length === 0) return { candidates: [], workspace: null };
 
@@ -355,6 +363,7 @@ function claimCandidates(ctx: ConsolidationCtx): Promise<{ candidates: ClaimedCa
         assistantText: r.assistant_text,
         sessionId: r.session_id,
         files: parseFiles(r.files),
+        clientId: r.client_id,
       });
       tokens += cost;
     }
@@ -577,6 +586,13 @@ function uniqueNonNullSession(candidates: ClaimedCandidate[]): string | null {
   return candidates.every(c => c.sessionId === first) ? first : null;
 }
 
+/** A global extraction as its client writes it; undefined when it is not a global memory a client may hold. */
+function relayedGlobalFields(memory: ExtractedMemory): GlobalMemoryFields | undefined {
+  const content = memory.content.trim();
+  if (!content || (memory.kind !== 'fact' && memory.kind !== 'preference' && memory.kind !== 'episode')) return undefined;
+  return { kind: memory.kind, content, ...(memory.tags && memory.tags.length > 0 ? { tags: memory.tags } : {}) };
+}
+
 /**
  * Maps an extracted memory to persist-pipeline fields, or null when rejected as invalid. Beyond
  * kind/scope/content validity, two hard rejections:
@@ -683,6 +699,7 @@ async function runMaintenance(ctx: ConsolidationCtx): Promise<{ promoted: number
   // Hard-purge long-decayed/merged rows (never user-forgotten) before VACUUM so freed pages land on
   // the free list for maybeVacuum to reclaim.
   await purgeForgottenRows(ctx.db, ctx.writeQueue);
+  await pruneAppliedWrites(ctx.db, ctx.writeQueue);
   // Re-decide facts deferred by a judge outage so a transient outage never leaves contradicting facts
   // co-latest permanently.
   await ctx.factGraph.sweepConflictChecks();
@@ -955,7 +972,14 @@ export async function runConsolidation(ctx: ConsolidationCtx): Promise<Consolida
       for (const memory of batch.memories) {
         const fields = toNewMemoryFields(memory, batch.pass, sessionId);
         try {
-          const outcome = fields ? await persistExtracted(batch.pass, fields) : 'invalid';
+          const relaying = ctx.globalWrite !== undefined && memory.scope === 'global';
+          // a batch holds one device's turns (claimCandidates), so its first names the owner; a turn recorded before
+          // migration 9 names none, and its global memories are dropped rather than sent to whichever device acts now
+          const owner = batch.candidates[0]?.clientId ?? undefined;
+          if (relaying && owner === undefined) log('[MemoryConsolidation] dropped a global memory of a turn that names no device');
+          const relayed = relaying && owner !== undefined ? relayedGlobalFields(memory) : undefined;
+          if (relayed) await ctx.globalWrite!(relayed, owner);
+          const outcome = relayed ? 'inserted' : !relaying && fields ? await persistExtracted(batch.pass, fields) : 'invalid';
           extracted.push({ ...extractedDisplay(batch.pass, memory, fields), outcome });
         } catch (err) {
           extracted.push({ ...extractedDisplay(batch.pass, memory, fields), outcome: 'invalid' });

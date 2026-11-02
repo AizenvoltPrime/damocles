@@ -60,5 +60,5 @@ export async function runnerTargetEnv(home: HermeticHome): Promise<Record<string
     `  UserKnownHostsFile "${posix(knownHosts)}"`,
     '',
   ].join('\n'));
-  return { ...WINDOWS_SSH_ENV, DAMOCLES_E2E_HOOKS: '1', DAMOCLES_REMOTE: '1', DAMOCLES_E2E_SSH_CONFIG: config, DAMOCLES_E2E_RELEASE_URL: NO_RELEASE };
+  return { ...WINDOWS_SSH_ENV, DAMOCLES_E2E_HOOKS: '1', DAMOCLES_E2E_SSH_CONFIG: config, DAMOCLES_E2E_RELEASE_URL: NO_RELEASE };
 }

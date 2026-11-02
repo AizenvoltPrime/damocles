@@ -238,11 +238,15 @@ async function replaceFile(
   }
 }
 
-/** A rename retried for a bounded time while Windows refuses it because another process (an editor, an indexer, antivirus) has the target open. */
-export async function renameWithRetry(from: string, to: string): Promise<void> {
+/**
+ * A rename retried for a bounded time while Windows refuses it because another process (an editor, an indexer, antivirus) has the
+ * target open. before runs ahead of every attempt, so a precondition that a wait can break is checked again; its throw ends the retries.
+ */
+export async function renameWithRetry(from: string, to: string, before?: () => Promise<void>): Promise<void> {
   const deadline = Date.now() + RENAME_RETRY_BUDGET_MS;
   let delay = 10;
   for (;;) {
+    await before?.();
     try {
       await fs.rename(from, to);
       return;

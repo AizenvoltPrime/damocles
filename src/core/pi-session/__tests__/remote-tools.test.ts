@@ -3,7 +3,6 @@ import type { ToolCallEvent } from '@earendil-works/pi-coding-agent';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { installPlatform } from '../../platform-host';
-import { USER_SCOPE_UNAVAILABLE } from '../../../shared/remote-user';
 import { POLICY_BLOCK_MARKER } from '../../../shared/types/constants';
 import { runPermissionGate, type GatePermissionContext } from '../permission-gate';
 import { ShellCancelStore } from '../tools/shell-cancel-registry';
@@ -17,21 +16,22 @@ import { DEFAULT_MODELS } from '../../../shared/types/constants';
 import type { OpenAIAuthStatus } from '../openai-auth';
 
 describe('deferred tools whose user-scope service a daemon\'s core cannot reach', () => {
+  const reach = (browser: boolean) => ({ browser, relayedTool: () => true });
   const eligible = ['Read', ...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES];
   const deferred = deferredToolNames(eligible, []);
 
   it('stay eligible and deferred, so none becomes active, but leave the loadable snapshot', () => {
     expect(deferred).toEqual(expect.arrayContaining([...BROWSER_PI_TOOL_NAMES]));
     expect(initialActiveToolNames(eligible, deferred, new Set())).toEqual(['Read']);
-    const loadable = loadableToolNames(deferred, false);
+    const loadable = loadableToolNames(deferred, reach(false));
     expect(loadable).toEqual([...COMPASS_PI_TOOL_NAMES]);
     expect(resolveToolSearchEntries(['browser'], loadable, new Map()).matches).toEqual([]);
   });
 
   it('are loadable on this computer\'s core', () => {
-    expect(loadableToolNames(deferred, true)).toEqual(deferred);
-    expect(userScopeToolNames(true).size).toBe(0);
-    expect([...userScopeToolNames(false)].sort()).toEqual([...BROWSER_PI_TOOL_NAMES].sort());
+    expect(loadableToolNames(deferred, reach(true))).toEqual(deferred);
+    expect(userScopeToolNames(reach(true)).size).toBe(0);
+    expect([...userScopeToolNames(reach(false))].sort()).toEqual([...BROWSER_PI_TOOL_NAMES].sort());
   });
 });
 
@@ -86,17 +86,25 @@ describe('a direct call of a tool whose user-scope service is unavailable', () =
     return { result: await runPermissionGate(event, panel, undefined), asked };
   };
 
-  it('is blocked with the user-scope reason on a daemon core, before any approval or hook', async () => {
-    installPlatform({ ...createFakePlatform(), remote: createFakeRemoteHost().remote });
+  it('is blocked on a daemon core with no client attached, since the browser runs on the closed app\'s computer, before any approval or hook', async () => {
+    const fake = createFakeRemoteHost();
+    fake.set('clientAuth', 'client-a', undefined);
+    installPlatform({ ...createFakePlatform(), remote: fake.remote });
     const { result, asked } = await call();
     expect(result?.block).toBe(true);
     expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
-    expect(result?.reason).toContain(USER_SCOPE_UNAVAILABLE);
+    expect(result?.reason).toContain('The browser runs on your computer and Damocles is closed.');
     expect(asked).not.toHaveBeenCalled();
+  });
+
+  it('reaches the gate on a daemon core while a client is attached, whose computer runs the browser', async () => {
+    installPlatform({ ...createFakePlatform(), remote: createFakeRemoteHost().remote });
+    const { result } = await call();
+    expect(result?.reason ?? '').not.toContain('Damocles is closed');
   });
 
   it('runs on this computer core', async () => {
     const { result } = await call();
-    expect(result?.reason ?? '').not.toContain(USER_SCOPE_UNAVAILABLE);
+    expect(result?.reason ?? '').not.toContain('Damocles is closed');
   });
 });

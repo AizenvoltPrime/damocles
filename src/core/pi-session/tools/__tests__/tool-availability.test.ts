@@ -7,6 +7,7 @@ import { MEMORY_PI_TOOL_NAMES } from '../memory-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../compass-tools';
 import { BROWSER_PI_TOOL_NAMES } from '../browser-tools';
 import { TOOL_GENERATE_IMAGE } from '../../../../shared/tool-names';
+import { createFakeRemoteHost } from '../../../../__mocks__/fake-remote-host';
 
 vi.mock('../../../logger', () => ({ log: vi.fn() }));
 
@@ -73,6 +74,25 @@ describe('buildCustomTools — build gate is service-presence, not enablement', 
     buildNames({ pi: fakePi(), cwd: '/cwd', permissionHandler, browserService, browserScopeId: 'agent-7', browserChat, getSessionId: () => 'sid' });
 
     expect(scopes).toEqual([['chat', browserChat], ['agent', 'agent-7', browserChat]]);
+  });
+
+  it('relays the browser calls through the session\'s own relay, and runs them here without one', async () => {
+    const fake = createFakeRemoteHost();
+    vi.mocked(fake.remote.browserTool).mockResolvedValue({ content: [{ type: 'text', text: 'from the client' }] });
+    const browserChat = { chat: 'host' } as never;
+    const browserService = { createAgentScope: () => ({}), chatScope: () => ({}) } as never;
+    const build = (relayed: boolean) => buildCustomTools({
+      pi: fakePi(), cwd: '/cwd', permissionHandler, browserService, browserChat, browserScopeId: 'agent-7', getSessionId: () => 'sid',
+      ...(relayed ? { browserRelay: fake.remote } : {}),
+      getShellOptions: () => ({}), shellCancel: new ShellCancelStore(), deliverUserNote: () => undefined, shellJob: undefined,
+    }).find((tool) => tool.name === 'BrowserDownloads')!;
+    const signal = new AbortController().signal;
+    const answer = await build(true).execute('call-1', {} as never, signal, undefined, undefined as never);
+    expect(answer.content).toEqual([{ type: 'text', text: 'from the client' }]);
+    expect(fake.remote.browserTool).toHaveBeenCalledWith(browserChat, 'agent-7', 'BrowserDownloads', {}, expect.anything());
+    vi.mocked(fake.remote.browserTool).mockClear();
+    await build(false).execute('call-2', {} as never, signal, undefined, undefined as never).catch(() => undefined);
+    expect(fake.remote.browserTool).not.toHaveBeenCalled();
   });
 
   it('builds GenerateImage only for a caller that passes imageGeneration, which nested builds never do', () => {

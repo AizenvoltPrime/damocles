@@ -3,7 +3,9 @@
 
 import type { Call, ClientAuth, ClientPolicy, ClientUser, Contract, MirrorTopics, Tables } from '../core-protocol/messages';
 import { MAIN_TO_CORE, parseClientValues, MAX_ITEMS, MAX_LABEL_CHARS, MAX_PATH_CHARS } from '../core-protocol/messages';
-import { arr, bool, bytes, either, int, INVALID, nonEmpty, none, num, obj, oneOf, opt, str, type Parser } from '../core-protocol/schema';
+import { arr, bool, bytes, either, int, INVALID, nonEmpty, none, num, obj, oneOf, opt, str, streamId, type Parser } from '../core-protocol/schema';
+import { isCliPath, PACKAGE_FILE } from './container-commands';
+import { CONTAINER_ENGINES, isContainerId, isContainerPath, isContainerUser, type ContainerEngine } from './container-values';
 
 export const CONTROL_MAX_MESSAGE_BYTES: number = 8 * 1024 * 1024;
 // the most of one log a logs.read returns
@@ -51,6 +53,22 @@ export interface MirrorFile {
 // stream channel that carries the change's length bytes, then ends.
 export interface MirrorChange {
   readonly file: string;
+  readonly kind: 'append' | 'full' | 'deleted';
+  readonly offset: number;
+  readonly length: number;
+  readonly stream: number;
+}
+
+// what the client holds of the target's sub-call ledger, whose place is fixed on both sides, so no name crosses
+export interface MirrorHeld {
+  readonly size: number;
+  // sha256 hex of the first 4 KiB, and of the 4 KiB before size
+  readonly headHash: string;
+  readonly tailHash: string;
+}
+
+// a change to the sub-call ledger, as MirrorChange for a session file
+export interface MirrorLedgerChange {
   readonly kind: 'append' | 'full' | 'deleted';
   readonly offset: number;
   readonly length: number;
@@ -135,7 +153,51 @@ export interface ControlRequests {
   // listRuns' chat runs whose turn this connection's client started; called only when welcome.features lists
   // control.listOwnRuns
   listOwnRuns: Call<object, { readonly runs: readonly Run[] }>;
+  // the target's sub-call ledger (~/.damocles/usage/subcalls.jsonl) by mirror.sync's rules for one file: kept only while it
+  // fits budgetBytes, else deleted when held; no change when the client holds it whole. Called only when welcome.features
+  // lists mirror.subcalls
+  'mirror.syncSubcalls': Call<{ readonly budgetBytes: number; readonly held?: MirrorHeld }, { readonly change?: MirrorLedgerChange }>;
+  // a daemon in WSL: its loopback probe listener's port and nonce (port-probe.ts); called only when welcome.features lists
+  // control.portProbe, and refused outside WSL
+  portProbe: Call<object, { readonly port: number; readonly nonce: string }>;
+  // Dev Containers on this host (containers.ts); each called only when welcome.features lists containers. stream: a stream the
+  // client opened on this connection, which the daemon claims by its id
+  // the devcontainer configuration of a folder, the CLI's own order; null for none
+  'containers.config': Call<{ readonly folder: string }, { readonly configPath: string | null }>;
+  // `devcontainer up` (removeExisting: Rebuild) or `read-configuration` with the package's Node, its stderr on stream
+  'containers.up': Call<ContainerCliTarget & { readonly dataKey: string; readonly removeExisting: boolean; readonly stream: number }, ContainerCliResult>;
+  // the data volume's folder given to the container's remote user (container-commands.ts dataOwnerArgs)
+  'containers.prepareData': Call<{ readonly engine: ContainerEngine; readonly containerId: string; readonly user: string }, ContainerEngineResult>;
+  'containers.readConfiguration': Call<ContainerCliTarget & { readonly trustReadId: string; readonly stream: number }, ContainerCliResult>;
+  // `<engine> ps` and `<engine> inspect --type container <ids>`
+  'containers.list': Call<{ readonly engine: ContainerEngine }, ContainerEngineResult>;
+  'containers.inspect': Call<{ readonly engine: ContainerEngine; readonly ids: readonly string[] }, ContainerEngineResult>;
+  // stage 0 under `<engine> exec -i -u <user> <id>`, its stdin and stdout on stream until either ends
+  'containers.exec': Call<{ readonly engine: ContainerEngine; readonly containerId: string; readonly user: string; readonly stream: number }, { readonly result: 'started' } | { readonly result: 'engineMissing' }>;
+  // the package from this host's package cache (downloaded once from url and checked by sha256 and size) into folder in the
+  // container; notCopied: no checked copy could be made, and the stage asks for the upload
+  'containers.copyPackage': Call<{ readonly engine: ContainerEngine; readonly containerId: string; readonly folder: string; readonly file: string; readonly sha256: string; readonly size: number; readonly url: string }, { readonly result: 'copied' | 'notCopied' | 'engineMissing' }>;
+  // The SSH agent relay (agent-relay.ts); each called only when welcome.features lists agent.relay. agent.relay: this
+  // connection's client relays its agent, so each connection on its proxy socket asks it with an agent.request event.
+  'agent.relay': Call<object, void>;
+  // the client connects request to its agent over stream, a stream it opened on this connection; ok false: the request is gone
+  'agent.connect': Call<{ readonly request: number; readonly stream: number }, { readonly ok: boolean }>;
+  // the client refuses request; the daemon closes the waiting connection
+  'agent.refuse': Call<{ readonly request: number }, void>;
 }
+
+export interface ContainerCliTarget {
+  readonly engine: ContainerEngine;
+  readonly workspaceFolder: string;
+  readonly configPath: string;
+}
+
+// ran: the CLI's exit code and its stdout, which carries its one result object; engineMissing: no engine on an absolute PATH
+export type ContainerCliResult = { readonly result: 'ran'; readonly code: number | null; readonly stdout: string } | { readonly result: 'engineMissing' };
+export type ContainerEngineResult = { readonly result: 'ran'; readonly code: number | null; readonly stdout: string; readonly stderr: string } | { readonly result: 'engineMissing' };
+// the most of a container command's stdout or stderr an answer carries
+export const MAX_CONTAINER_OUTPUT_CHARS: number = 4 * 1024 * 1024;
+const MAX_CONTAINER_IDS = 256;
 
 /**
  * installed: the key was appended; present: it was there already; failed: code names why, path the file it concerns (empty
@@ -170,6 +232,15 @@ export interface ControlEvents {
   coreState: CoreState;
   // the attached clients, on every attach, detach and replacement; sent only to a client whose attach asked (watchClients)
   clients: { readonly clients: readonly AttachedClient[] };
+  // a file under the session folder of a project this connection mirrors changed since its last mirror.sync of that project
+  // began; once per such sync (welcome.features lists mirror.changed)
+  'mirror.changed': { readonly projectKey: string };
+  // the target's sub-call ledger changed since this connection's last mirror.syncSubcalls began; once per such sync
+  // (welcome.features lists mirror.subcalls)
+  'mirror.subcallsChanged': object;
+  // a process connected to this client's agent proxy socket, held until the client's agent.connect or agent.refuse names
+  // request; sent only to a connection that called agent.relay
+  'agent.request': { readonly request: number };
 }
 
 export interface ClientToControl extends Contract {
@@ -198,6 +269,8 @@ export interface FrozenClientToControl extends Contract {
 const method = <P, R>(params: Parser<P>, result: Parser<R>): { readonly params: Parser<P>; readonly result: Parser<R> } => ({ params, result });
 
 const count = int(0, Number.MAX_SAFE_INTEGER);
+// port-probe.ts's nonce: PROBE_NONCE_BYTES random bytes in hex
+const PROBE_NONCE = /^[0-9a-f]{32}$/;
 const hex: Parser<string> = (raw) => (typeof raw === 'string' && /^[0-9a-f]{64}$/.test(raw) ? raw : INVALID);
 const nothing = obj({});
 const mirrorFile: Parser<MirrorFile> = obj({ file: nonEmpty(MAX_PATH_CHARS), size: count, headHash: hex, tailHash: hex });
@@ -210,6 +283,8 @@ const run: Parser<Run> = obj({
   providers: arr(nonEmpty(128), 256),
 });
 const change: Parser<MirrorChange> = obj({ file: nonEmpty(MAX_PATH_CHARS), kind: oneOf(['append', 'full', 'deleted'] as const), offset: count, length: count, stream: count });
+const mirrorHeld: Parser<MirrorHeld> = obj({ size: count, headHash: hex, tailHash: hex });
+const ledgerChange: Parser<MirrorLedgerChange> = obj({ kind: oneOf(['append', 'full', 'deleted'] as const), offset: count, length: count, stream: count });
 const logName: Parser<string> = (raw) => (typeof raw === 'string' && LOG_NAME.test(raw) ? raw : INVALID);
 const hostId: Parser<string> = (raw) => (typeof raw === 'string' && HOST_ID.test(raw) ? raw : INVALID);
 const nullable = <T>(parser: Parser<T>): Parser<T | null> => (raw) => (raw === null ? null : parser(raw));
@@ -253,6 +328,31 @@ const installKeyResult: Parser<InstallKeyResult> = either(
 );
 const publicKey: Parser<string> = (raw) => (typeof raw === 'string' && DAMOCLES_PUBLIC_KEY.test(raw) ? raw : INVALID);
 
+const engine = oneOf(CONTAINER_ENGINES);
+const checked = <T extends string>(test: (raw: unknown) => raw is T): Parser<T> => (raw) => (test(raw) ? raw : INVALID);
+const cliPath = checked(isCliPath);
+const agentRequest = int(1, Number.MAX_SAFE_INTEGER);
+const cliTarget = { engine, workspaceFolder: cliPath, configPath: cliPath };
+const cliResult: Parser<ContainerCliResult> = either(obj({ result: oneOf(['ran'] as const), code: nullable(int(-(2 ** 31), 2 ** 32)), stdout: str(MAX_CONTAINER_OUTPUT_CHARS) }), obj({ result: oneOf(['engineMissing'] as const) }));
+const engineResult: Parser<ContainerEngineResult> = either(
+  obj({ result: oneOf(['ran'] as const), code: nullable(int(-(2 ** 31), 2 ** 32)), stdout: str(MAX_CONTAINER_OUTPUT_CHARS), stderr: str(MAX_CONTAINER_OUTPUT_CHARS) }),
+  obj({ result: oneOf(['engineMissing'] as const) }),
+);
+const containerId = checked(isContainerId);
+const CONTAINER_REQUESTS = {
+  'containers.config': method(obj({ folder: cliPath }), obj({ configPath: nullable(cliPath) })),
+  'containers.up': method(obj({ ...cliTarget, dataKey: (raw) => (typeof raw === 'string' && /^[0-9a-f]{32}$/.test(raw) ? raw : INVALID), removeExisting: bool, stream: streamId }), cliResult),
+  'containers.prepareData': method(obj({ engine, containerId, user: checked(isContainerUser) }), engineResult),
+  'containers.readConfiguration': method(obj({ ...cliTarget, trustReadId: (raw) => (typeof raw === 'string' && /^[0-9a-f]{32}$/.test(raw) ? raw : INVALID), stream: streamId }), cliResult),
+  'containers.list': method(obj({ engine }), engineResult),
+  'containers.inspect': method(obj({ engine, ids: (raw) => (Array.isArray(raw) && raw.length > 0 && raw.length <= MAX_CONTAINER_IDS && raw.every(isContainerId) ? (raw as string[]) : INVALID) }), engineResult),
+  'containers.exec': method(obj({ engine, containerId, user: checked(isContainerUser), stream: streamId }), either(obj({ result: oneOf(['started'] as const) }), obj({ result: oneOf(['engineMissing'] as const) }))),
+  'containers.copyPackage': method(
+    obj({ engine, containerId, folder: checked(isContainerPath), file: (raw) => (typeof raw === 'string' && PACKAGE_FILE.test(raw) ? raw : INVALID), sha256: hex, size: int(1, Number.MAX_SAFE_INTEGER), url: (raw) => (typeof raw === 'string' && raw.length <= 2048 && /^https?:\/\/[^\s]+$/.test(raw) ? raw : INVALID) }),
+    obj({ result: oneOf(['copied', 'notCopied', 'engineMissing'] as const) }),
+  ),
+} satisfies Partial<Tables<ClientToControl>['requests']>;
+
 const FROZEN_REQUESTS: Tables<FrozenClientToControl>['requests'] = {
   listRuns: method(nothing, obj({ runs: arr(run, MAX_ITEMS) })),
   shutdownWhenIdle: method(nothing, none),
@@ -276,6 +376,12 @@ export const CLIENT_TO_CONTROL: Tables<ClientToControl> = {
     shutdownForRemoval: method(nothing, obj({ runKey: (raw) => (typeof raw === 'string' && RUN_KEY.test(raw) ? raw : INVALID) })),
     sharedHome: method(nothing, obj({ hosts: arr((raw) => (typeof raw === 'string' && OTHER_HOSTNAME.test(raw) ? raw : INVALID), MAX_SHARED_HOME_HOSTS) })),
     listOwnRuns: method(nothing, obj({ runs: arr(run, MAX_ITEMS) })),
+    'mirror.syncSubcalls': method(obj({ budgetBytes: count, held: opt(mirrorHeld) }), obj({ change: opt(ledgerChange) })),
+    portProbe: method(nothing, obj({ port: int(1, 65535), nonce: (raw) => (typeof raw === 'string' && PROBE_NONCE.test(raw) ? raw : INVALID) })),
+    ...CONTAINER_REQUESTS,
+    'agent.relay': method(nothing, none),
+    'agent.connect': method(obj({ request: agentRequest, stream: streamId }), obj({ ok: bool })),
+    'agent.refuse': method(obj({ request: agentRequest }), none),
   },
   events: {},
   mirrors: {},
@@ -287,7 +393,13 @@ export const FROZEN_CLIENT_TO_CONTROL: Tables<FrozenClientToControl> = { request
 
 export const CONTROL_TO_CLIENT: Tables<ControlToClient> = {
   requests: {},
-  events: { coreState: parseCoreState, clients: obj({ clients: arr(obj({ deviceName: displayText(MAX_DEVICE_NAME_CHARS), self: bool }), MAX_ITEMS) }) },
+  events: {
+    coreState: parseCoreState,
+    clients: obj({ clients: arr(obj({ deviceName: displayText(MAX_DEVICE_NAME_CHARS), self: bool }), MAX_ITEMS) }),
+    'mirror.changed': obj({ projectKey: nonEmpty(MAX_PATH_CHARS) }),
+    'mirror.subcallsChanged': nothing,
+    'agent.request': obj({ request: agentRequest }),
+  },
   mirrors: {},
   panelOps: {},
 };

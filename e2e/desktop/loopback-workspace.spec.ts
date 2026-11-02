@@ -159,6 +159,9 @@ test('a folder opened through the local daemon has its host badge, and its files
     await expect(activeTerminal(terminalShell)).toHaveAttribute('data-status', 'running');
     await expect.poll(async () => (await terminalText(terminalShell)).split('\n').filter((row) => row === 'loopback-ok-1f')).toHaveLength(1);
     expect((await listRuns(app)).runs).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'terminal', id: terminal.id, state: 'running' })]));
+    // the checkout's damocles (dist/server-bin) on its PATH, which asks the terminal's CLI socket for the help's language
+    await runInTerminal(terminalShell, 'damocles --help');
+    await waitForOutputLine(terminalShell, 'Usage: damocles [options] [paths...]');
 
     // Show log: the daemon's log read through control logs.read, as a read-only text tab named with the host.
     await clickMenu(app, 'damocles.developer.showLocalDaemonLog');

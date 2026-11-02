@@ -14,7 +14,8 @@ import { classifyReadOnlyShellCommand } from './readonly-shell';
 import { worktreeIsolationBlock, type WorktreeIsolation } from './worktree-isolation';
 import { GATEABLE_MODULE_NAMES } from './tools/tool-catalog';
 import { userScopeToolNames } from './tools/deferred-tools';
-import { browserUnavailableReason, userScopeRemote } from '../user-scope';
+import { browserClosedReason, relayedMcpUnreachableReason, userScopeReach } from '../user-scope';
+import { relayedServerOfTool } from './mcp/relayed-tool-names';
 import { englishText } from '../../shared/localized-text';
 import type { DeferrableSnapshot } from './tools/tool-search-tool';
 import type { ResourceReadReach } from './mcp/content';
@@ -338,7 +339,11 @@ async function decideToolCall(
   };
 
   // a tool whose user-scope service this core cannot reach never runs, in any mode, before any hook
-  if (userScopeToolNames(!userScopeRemote()).has(event.toolName)) return { block: true, reason: formatPolicyBlockReason(englishText(browserUnavailableReason())) };
+  if (userScopeToolNames(userScopeReach()).has(event.toolName)) {
+    const relayedServer = relayedServerOfTool(event.toolName);
+    const reason = relayedServer === undefined ? browserClosedReason() : relayedMcpUnreachableReason(relayedServer);
+    return { block: true, reason: formatPolicyBlockReason(englishText(reason)) };
+  }
 
   if (preToolUse) {
     const result = await preToolUse.run(event, callSignal);

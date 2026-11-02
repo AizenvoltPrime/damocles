@@ -9,7 +9,7 @@ import type { WorkerName } from '../../platform/app-paths';
 import type { Disposable } from '../../platform/disposable';
 import { isAttachedFrame } from '../core-protocol/attached-transport';
 import { createMainEndpoint, processActor, type CoreTransport, type MainEndpoint } from '../core-protocol';
-import type { ClientPolicy, CoreInit } from '../core-protocol/messages';
+import type { ClientPolicy, CoreEvents, CoreInit, MirrorTopics } from '../core-protocol/messages';
 import { restartDecision } from '../local-services/restart-policy';
 import type { GitProbe } from '../local-services/shell-env';
 import type { CoreAttach, CoreState } from './control-messages';
@@ -21,6 +21,8 @@ import type { RunPaths } from './token';
 
 // main's CLOSE_TIMEOUT_MS: how long core.shutdown may take before core is killed
 const CLOSE_TIMEOUT_MS = 3_000;
+// detached clients whose last language is kept, the most recently detached; a hello names any client id
+export const MAX_DETACHED_LANGUAGES = 64;
 
 // the esbuild outfiles under dist/, as main's app paths name them
 const WORKER_BUNDLES: Readonly<Record<WorkerName, string>> = {
@@ -47,6 +49,10 @@ export interface RemoteCoreHostDeps {
   readonly agentFolder: () => string | undefined;
   // the daemon's git credential relay, which every core it starts listens at; absent for the self-test's core
   readonly credentialRelay?: () => RelayIdentity;
+  // a URL an agent shell printed, for the port detector
+  readonly agentShellUrl: (hit: CoreEvents['ports.urlSeen']) => void;
+  // an attached client's clientPolicy was set, changed or dropped (the agent proxy follows agentForwarding)
+  readonly clientPolicyChanged: () => void;
   readonly log: (line: string) => void;
   readonly now?: () => number;
 }
@@ -69,6 +75,8 @@ export interface RemoteCoreHost {
   // the client core acts for now, and an attached client's policy, as the router keeps them
   actingClient(): string | undefined;
   clientPolicy(clientId: string): ClientPolicy | undefined;
+  // a client's UI language while attached, else the last it had
+  clientLanguage(clientId: string): MirrorTopics['language']['language'] | undefined;
   // the agent folder or the relay's handle moved: a running core hears the new paths, a later one reads them in its init
   socketsMoved(): void;
 }
@@ -104,6 +112,8 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
   // the core's own id for remote/: drawn once per daemon, never a client's
   const hostId = randomBytes(16).toString('hex');
   const mirrors = createClientMirrors();
+  // each detached client's last language, which the damocles command's own messages still use
+  const lastLanguage = new Map<string, MirrorTopics['language']['language']>();
   const secrets = new Map<string, string | undefined>();
   const connections = new Map<string, Connection>();
   const listeners = new Set<(state: CoreState) => void>();
@@ -193,6 +203,7 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
         clientEditor: Object.fromEntries(mirrors.clientEditor),
         clientTerminal: Object.fromEntries(mirrors.clientTerminal),
         clientLanguage: Object.fromEntries(mirrors.clientLanguage),
+        clientMcp: Object.fromEntries(mirrors.clientMcp),
       },
     };
   };
@@ -225,7 +236,7 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
     const current: Running = {
       child,
       endpoint,
-      router: createCoreRouter({ core: endpoint, state: deps.state, registry: deps.registry, mirrors, secrets, e2eHooks: deps.e2eHooks, reload: () => reload(), log }),
+      router: createCoreRouter({ core: endpoint, state: deps.state, registry: deps.registry, mirrors, secrets, e2eHooks: deps.e2eHooks, reload: () => reload(), agentShellUrl: deps.agentShellUrl, clientPolicyChanged: deps.clientPolicyChanged, log }),
       exited: new Promise<void>((resolve) => { exit = resolve; }),
       stopping: false,
       shutDown: false,
@@ -337,6 +348,7 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
           mirrors.clientAuth.set(clientId, payload.mirrors.clientAuth);
           mirrors.clientUser.set(clientId, payload.mirrors.clientUser);
           mirrors.clientPolicy.set(clientId, payload.mirrors.clientPolicy);
+          deps.clientPolicyChanged();
           mirrors.clientEditor.set(clientId, payload.mirrors.editor);
           mirrors.clientTerminal.set(clientId, payload.mirrors.terminal);
           mirrors.clientLanguage.set(clientId, payload.mirrors.language);
@@ -350,6 +362,8 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
         },
         dispose: () => {
           subscription.dispose();
+          // read before the router's detach, which drops it
+          const language = mirrors.clientLanguage.get(clientId);
           connection.served?.dispose();
           connections.delete(id);
           // a newer connection of the same client keeps its values
@@ -357,9 +371,19 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
           mirrors.clientAuth.delete(clientId);
           mirrors.clientUser.delete(clientId);
           mirrors.clientPolicy.delete(clientId);
+          deps.clientPolicyChanged();
           mirrors.clientEditor.delete(clientId);
           mirrors.clientTerminal.delete(clientId);
+          if (language) {
+            lastLanguage.delete(clientId);
+            lastLanguage.set(clientId, language.language);
+            for (const oldest of lastLanguage.keys()) {
+              if (lastLanguage.size <= MAX_DETACHED_LANGUAGES) break;
+              lastLanguage.delete(oldest);
+            }
+          }
           mirrors.clientLanguage.delete(clientId);
+          mirrors.clientMcp.delete(clientId);
           if (mirrors.actingClient.clientId === clientId) mirrors.actingClient = {};
         },
       };
@@ -378,6 +402,7 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
     },
     actingClient: () => mirrors.actingClient.clientId,
     clientPolicy: (clientId) => mirrors.clientPolicy.get(clientId),
+    clientLanguage: (clientId) => mirrors.clientLanguage.get(clientId)?.language ?? lastLanguage.get(clientId),
     socketsMoved: () => {
       if (!running || running.stopping) return;
       const relayHandle = deps.credentialRelay?.().handle;

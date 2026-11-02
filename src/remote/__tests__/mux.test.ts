@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createMux, FRAGMENT_BYTES, MAX_FRAME_BYTES, MAX_OPEN_STREAMS, MESSAGE_WINDOW_BYTES, type Mux } from '../mux';
+import { createMux, FRAGMENT_BYTES, MAX_FRAME_BYTES, MAX_OPEN_STREAMS, MESSAGE_WINDOW_BYTES, STREAM_WINDOW_BYTES, type Mux, type StreamChannel } from '../mux';
 import { createPersistentProtocol, type PersistentProtocol } from '../persistent-protocol';
 import { fakeSocket, socketPair } from './sockets';
 
@@ -137,6 +137,29 @@ describe('mux', () => {
     await vi.waitFor(() => expect(daemon.violations).toEqual(['an open of channel 16']));
   });
 
+  it('a paused stream withholds credit, so its sender stops at the window until the reader resumes', async () => {
+    const { client, daemon } = connected();
+    let received = 0;
+    let reader: StreamChannel | undefined;
+    client.mux.onStream((stream) => {
+      reader = stream;
+      stream.pause();
+      stream.onData((bytes) => {
+        received += bytes.length;
+      });
+    });
+    const writer = daemon.mux.openStream();
+    let accepted = true;
+    for (let sent = 0; sent < 4 * STREAM_WINDOW_BYTES; sent += 64 * 1024) accepted = writer.write(new Uint8Array(64 * 1024)) && accepted;
+    expect(accepted).toBe(false);
+    await vi.waitFor(() => expect(received).toBe(STREAM_WINDOW_BYTES));
+    // the rest waits in the sender's queue for credit the paused reader has not granted
+    expect(daemon.mux.heldBytes()).toBeGreaterThanOrEqual(3 * STREAM_WINDOW_BYTES);
+    expect(received).toBe(STREAM_WINDOW_BYTES);
+    reader!.resume();
+    await vi.waitFor(() => expect(received).toBe(4 * STREAM_WINDOW_BYTES));
+  });
+
   it('refuses a reopened stream id and more than MAX_OPEN_STREAMS open streams', async () => {
     const { client, daemon } = connected();
     client.mux.onStream(() => undefined);
@@ -148,6 +171,34 @@ describe('mux', () => {
     second.client.mux.onStream(() => undefined);
     for (let index = 0; index < MAX_OPEN_STREAMS; index++) second.daemon.mux.openStream();
     expect(() => second.daemon.mux.openStream()).toThrow(/streams are open/);
+  });
+
+  it('counts the open streams per opening side, so both sides opening up to the bound at once refuse nothing', async () => {
+    const [a, b] = socketPair();
+    const violations: string[] = [];
+    const side = (socket: typeof a, which: 'client' | 'daemon'): Mux => createMux({
+      protocol: createPersistentProtocol({ socket, maxBodyBytes: MAX_FRAME_BYTES, log }),
+      side: which,
+      acceptStreams: true,
+      onOverflow: () => violations.push('overflow'),
+      onViolation: (reason) => violations.push(`${which}: ${reason}`),
+      log,
+    });
+    const client = side(a, 'client');
+    const daemon = side(b, 'daemon');
+    const opened = { client: 0, daemon: 0 };
+    client.onStream(() => { opened.client++; });
+    daemon.onStream(() => { opened.daemon++; });
+    for (let index = 0; index < MAX_OPEN_STREAMS; index++) {
+      client.openStream();
+      daemon.openStream();
+    }
+    await vi.waitFor(() => expect(opened).toEqual({ client: MAX_OPEN_STREAMS, daemon: MAX_OPEN_STREAMS }));
+    expect(violations).toEqual([]);
+    expect(() => client.openStream()).toThrow(/streams are open/);
+    expect(() => daemon.openStream()).toThrow(/streams are open/);
+    client.dispose();
+    daemon.dispose();
   });
 
   it('keeps terminal output flowing during a sustained 100 MiB read, with no gap over 100 ms', async () => {

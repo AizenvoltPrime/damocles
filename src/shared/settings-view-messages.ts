@@ -20,6 +20,8 @@ export const SETTINGS_VIEW_MESSAGES = [
   "autoCompactConfigUpdate",
   "settingsFileAvailability",
   "mcpServerStatus",
+  "mcpConfigUpdate",
+  "mcpWriteResult",
   "toolStatus",
   "imageGenerationSettings",
   "voiceConfigUpdate",
@@ -147,6 +149,15 @@ export const SETTINGS_VIEW_REQUESTS = [
   "extensionUiResponse",
   "openSettingsFileInChat",
   "setCheckpointRetentionDays",
+  // the MCP section; a daemon's core takes the writes only from the host tab (machine scope)
+  "requestMcpStatus",
+  "toggleMcpServer",
+  "mcpAddServer",
+  "mcpUpdateServer",
+  "mcpDeleteServer",
+  "mcpSetToolExposure",
+  "mcpSetResourceExposure",
+  "mcpReloadConfig",
 ] as const;
 
 export type SettingsViewRequestType = Within<(typeof SETTINGS_VIEW_REQUESTS)[number], WebviewToExtensionMessage["type"]>;

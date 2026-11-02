@@ -17,7 +17,8 @@ import type { TerminalToggle } from '../../platform/window-service';
 import type { OpenFolder } from '../../platform/workspace-folders';
 import { parseCredentialFields, isCredentialValue, MAX_CREDENTIAL_PASSWORD_CHARS, MAX_CREDENTIAL_USERNAME_CHARS, type GitCredentialAnswer, type GitCredentialFields } from '../../shared/git-credential';
 import type { PageSpec } from '../../shared/panel-html';
-import { MAX_BROKER_EXPIRES_IN_MS, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, type BrokerAnswer, type ClientAuth, type ClientPolicy, type ClientUser, type HeldAuth } from '../../shared/remote-user';
+import { MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_CONTENT_CHARS, MAX_GLOBAL_MEMORY_ID_CHARS, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_TAGS, MAX_HELD_MEMORY_QUEUES, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, MAX_RELAYED_MCP_TIMEOUT_MS, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, type BrokerAnswer, type BrowserToolAnswer, type ClientAuth, type ClientGlobalProfile, type ClientPolicy, type ClientUser, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type GlobalMemoryWrite, type HeldAuth, type HeldMemoryQueue, type RelayedGlobalMemory, type RelayedMcpServer, type SearchedGlobalMemory } from '../../shared/remote-user';
+import type { UserProfile } from '../../shared/types/memory';
 import { SETTINGS_ACCOUNT_IDS, SETTINGS_SECTION_IDS, type SettingsAccountId, type SettingsSectionId } from '../../shared/settings-sections';
 import { WORKTREE_PHASES, type ChatPlace, type ChatReviewScope, type SettingsFileScope, type WorktreeFinishAction } from '../../shared/types/messages';
 import { MAX_CALL_ARGS, REPOSITORY_CALLS, SCM_CALLS, WORKTREE_CALLS, type RepositoryCall, type ScmCall, type WorktreeCall } from './scm-calls';
@@ -165,12 +166,32 @@ export interface CoreRequests {
   'user.credentials': Call<{ readonly provider: string; readonly clientId: string }, BrokerAnswer>;
   // a daemon's core: speak a chat's final reply on the client that shows the view
   'user.voice.speak': Call<{ readonly viewId: string; readonly text: string }, void>;
+  // a daemon's core: a browser tool of the chat's view, run by the client that shows it in that view's own browser scope
+  // (scope: CHAT_BROWSER_SCOPE for the chat's agent, else a subagent's or team member's scope id)
+  'user.browser.tool': Call<{ readonly viewId: string; readonly scope: string; readonly tool: string; readonly input: unknown }, BrowserToolAnswer>;
+  // a daemon's core: a subagent's or team member's browser scope of the chat's view ended; the client showing the view
+  // disposes that scope, closing its tabs when closeTabs (the agent succeeded)
+  // discard: the conversation that handed the scope out ended, so the tabs a failed agent left open close too
+  'user.browser.release': Call<{ readonly viewId: string; readonly scope: string; readonly closeTabs: boolean; readonly discard?: boolean }, void>;
+  // a daemon's core: the global memory of exactly the client clientId names: its own ranked search of its global rows (with
+  // injection, its injection's lexical gate over its global facts, preferences and episodes), its global profile, the
+  // current version of ids it returned before, and writes it applies in order, each with its uuid recorded in the same
+  // transaction; through is the end byte offset of the last entry it applied or had applied, ids each applied write's row
+  'user.memory.search': Call<{ readonly clientId: string; readonly query: string; readonly k: number; readonly tiers: readonly ('global' | 'note')[]; readonly injection?: boolean } & GlobalMemorySearchFilters, readonly SearchedGlobalMemory[]>;
+  'user.memory.profile': Call<{ readonly clientId: string }, ClientGlobalProfile>;
+  'user.memory.resolve': Call<{ readonly clientId: string; readonly ids: readonly string[] }, readonly GlobalMemoryResolution[]>;
+  'user.memory.apply': Call<{ readonly clientId: string; readonly entries: readonly { readonly end: number; readonly write: GlobalMemoryWrite }[] }, { readonly through: number; readonly ids?: readonly string[] }>;
+  // a daemon's core: a personal MCP server of exactly the client clientId names, which runs it after checking the server is
+  // one it marked available on remote hosts and, for a call, that the tool is one that server lists; the answer is the MCP result
+  'user.mcp.call': Call<{ readonly clientId: string; readonly server: string; readonly tool: string; readonly args: Readonly<Record<string, unknown>> }, unknown>;
+  'user.mcp.resources': Call<{ readonly clientId: string; readonly server: string; readonly kind: 'resources' | 'templates'; readonly cursor?: string }, unknown>;
+  'user.mcp.readResource': Call<{ readonly clientId: string; readonly server: string; readonly uri: string }, unknown>;
   // answers once what core posted to the view before is within the flow window of the host's queue toward the page; with
   // viewKey, of that one view's page only, else of every view's
   'views.drained': Call<{ readonly viewId: string; readonly viewKey?: string }, void>;
 }
 
-export type { BrokerAnswer, ClientAuth, ClientPolicy, ClientUser, HeldAuth };
+export type { BrokerAnswer, BrowserToolAnswer, ClientAuth, ClientPolicy, ClientUser, HeldAuth };
 
 /** A fresh OAuth access token main pushes to a daemon's core; a key is never pushed, since a cached one never expires. */
 export type PushedCredential = Extract<BrokerAnswer, { readonly type: 'oauth' }>;
@@ -250,7 +271,8 @@ export interface MainRequests {
   'catalog.tag': Call<{ readonly sessionId: string; readonly tag: string | null }, CatalogResult>;
   'catalog.delete': Call<{ readonly sessionId: string }, CatalogResult>;
   'folders.setDefault': Call<{ readonly key: string }, void>;
-  'browser.newPage': Call<{ readonly chatViewId: string }, void>;
+  // url: an address of a forwarded port, which main checked; absent opens a blank page
+  'browser.newPage': Call<{ readonly chatViewId: string; readonly url?: string }, void>;
   'worktree.retrySetup': Call<{ readonly worktreeId: string }, void>;
   // the hold's id, or undefined when a chat working there is busy (D33)
   'worktree.beginFinish': Call<{ readonly worktreeId: string; readonly action: WorktreeFinishAction }, string | undefined>;
@@ -301,6 +323,9 @@ export interface MainRequests {
   'e2e.fakeVoice': Call<{ readonly transcript: string }, { readonly pid: number }>;
   // how often core started a recorder since fakeVoice, and the last one's pid
   'e2e.voiceRecorder': Call<object, { readonly starts: number; readonly recorderPid: number | null }>;
+  // this computer's core: each remote authority's client-network proxy resolves these names to the given answers in turn,
+  // one answer per lookup, cycling (a name that rebinds); other names resolve as usual
+  'e2e.clientNetworkAnswers': Call<{ readonly answers: Readonly<Record<string, readonly (readonly string[])[]>> }, void>;
   // this computer's core signs in to a stub OAuth account whose tokens expire after expiresInMs; offline: its refresh fails
   'e2e.stubOAuth': Call<{ readonly account: string; readonly expiresInMs: number; readonly offline?: boolean }, void>;
   // this computer's core: a credential for a daemon's broker, resolved and refreshed by its own pi
@@ -313,6 +338,27 @@ export interface MainRequests {
   'user.credentials.push': Call<{ readonly provider: string; readonly credential: PushedCredential }, void>;
   // this computer's core speaks a remote chat's reply; its voice consent applies
   'user.voice.speak': Call<{ readonly viewId: string; readonly text: string }, void>;
+  // this computer's core runs a remote chat's browser tool in authority's context, the scope keyed by the chat's view;
+  // main rewrote and checked its addresses first
+  'user.browser.tool': Call<{ readonly authority: string; readonly viewId: string; readonly scope: string; readonly tool: string; readonly input: unknown }, BrowserToolAnswer>;
+  // this computer's core closes the authority's browser context and its client-network proxy (Forget host), settling once both
+  // did; with agentScope, only that agent's scope of a remote chat's view, closing its tabs when closeTabs
+  'user.browser.release': Call<{ readonly authority: string; readonly agentScope?: { readonly viewId: string; readonly scope: string; readonly closeTabs: boolean; readonly discard?: boolean } }, void>;
+  // this computer's core: its global memory for a remote core (user.memory.*); apply skips a write whose uuid it applied
+  // before and answers how many leading writes it applied or skipped, and the row each of them is in (ids)
+  'user.memory.search': Call<{ readonly query: string; readonly k: number; readonly tiers: readonly ('global' | 'note')[]; readonly injection?: boolean } & GlobalMemorySearchFilters, readonly SearchedGlobalMemory[]>;
+  'user.memory.profile': Call<object, ClientGlobalProfile>;
+  'user.memory.resolve': Call<{ readonly ids: readonly string[] }, readonly GlobalMemoryResolution[]>;
+  'user.memory.apply': Call<{ readonly writes: readonly GlobalMemoryWrite[] }, { readonly applied: number; readonly ids?: readonly string[] }>;
+  // this computer's core: the personal MCP servers marked available on remote hosts, and their calls, refused for any other
+  // a daemon's core: Deliver here takes a held outbox for the asking client (the request's actor), Discard deletes it; false:
+  // the queue is no longer held
+  'memory.deliverHeld': Call<{ readonly queueId: string }, boolean>;
+  'memory.discardHeld': Call<{ readonly queueId: string }, boolean>;
+  'user.mcp.servers': Call<object, readonly RelayedMcpServer[]>;
+  'user.mcp.call': Call<{ readonly server: string; readonly tool: string; readonly args: Readonly<Record<string, unknown>> }, unknown>;
+  'user.mcp.resources': Call<{ readonly server: string; readonly kind: 'resources' | 'templates'; readonly cursor?: string }, unknown>;
+  'user.mcp.readResource': Call<{ readonly server: string; readonly uri: string }, unknown>;
   // this computer's core: a proxy for a remote chat's view, which only VOICE_VIEW_MESSAGES reach
   'panels.attachForeign': Call<{ readonly authority: string; readonly viewId: string }, void>;
   'panels.detachForeign': Call<{ readonly viewId: string }, void>;
@@ -330,7 +376,7 @@ export type SettingsViewScope = 'user' | 'machine' | 'project';
 export type MentionTargetData = { readonly projectKey: string; readonly relativePath: string } | { readonly path: string };
 
 export interface CoreEvents {
-  'window.openAppSettings': { readonly section?: SettingsSectionId; readonly account?: SettingsAccountId };
+  'window.openAppSettings': { readonly section?: SettingsSectionId; readonly account?: SettingsAccountId; readonly scope?: 'machine' };
   'window.toggleTerminal': object;
   // after the chats mirror shows the change; sessionId: the stored session the chat is on, which lets a client that does not
   // view the chat (another device) show it running in its chat list
@@ -355,6 +401,10 @@ export interface CoreEvents {
   'panel.foreignPost': { readonly viewId: string; readonly message: unknown };
   // this computer's core: a credential changed, so user.clientAuth answers differently
   'user.clientAuthChanged': object;
+  // this computer's core: the personal MCP servers marked available on remote hosts or their tools changed, so user.mcp.servers answers differently
+  'user.mcpChanged': object;
+  // a daemon's core: a URL an agent shell printed, for the daemon's port detection
+  'ports.urlSeen': { readonly host: 'localhost' | '127.0.0.1' | '0.0.0.0'; readonly port: number };
 }
 
 export interface MainEvents {
@@ -374,6 +424,8 @@ export interface CoreMirrorTopics {
   // every record of core's worktree registry; main checks each against its own registry folder (core/worktrees/records.ts)
   worktrees: { readonly records: readonly unknown[] };
   scm: ScmMirrorPatch;
+  // a daemon's core: the outboxes it holds for devices long away, whole on every change
+  heldMemory: { readonly queues: readonly HeldMemoryQueue[] };
 }
 
 /** The facts main reads off an open repository; the paths and kind it acts on are parsed field by field, the snapshot as data. */
@@ -429,11 +481,16 @@ export interface MirrorTopics {
   clientTerminal: ClientDelta<TerminalToggle>;
   // the daemon's: each client's language patches under its id, value undefined when it detached; a client's is dropped
   clientLanguage: ClientDelta<MirrorTopics['language']>;
+  // per client, as clientUser: the personal MCP servers it marked available on remote hosts, names and schemas only
+  clientMcp: ClientDelta<{ readonly servers: readonly RelayedMcpServer[] }>;
   // the daemon's: the client that most recently sent core a message, published before that message; a client's is dropped
   actingClient: { readonly clientId?: string };
   // the daemon's, after a removed socket folder was made again: its agent folder (CoreInit.remote.agentFolder) and the git
   // credential relay's handle (CoreInit.paths.askpass.credentialRelay), which core listens at from then on; a client's is dropped
   hostSockets: { readonly agentFolder?: string; readonly relayHandle?: string };
+  // this computer's core: a remote authority's forwarded local ports and its local-network switch, which its browser
+  // context's client-network proxy applies; a daemon drops a client's
+  clientNetwork: { readonly authority: string; readonly allowedPorts: readonly number[]; readonly allowLocalNetwork: boolean };
 }
 
 /** The focused text editor's context; undefined when none has focus. */
@@ -491,6 +548,8 @@ export interface CoreInit {
     readonly unpackedRoot: string;
     readonly workers: Readonly<Record<WorkerName, string>>;
     readonly watchWorker: string;
+    // this computer's core: <userData>/remote, holding each host's session mirror, which /stats indexes
+    readonly remoteMirrors?: string;
     readonly askpass: AskpassPaths;
   };
   // <userData>/logs, and whether a sink mirrors its lines to stdout (the unpackaged app)
@@ -519,6 +578,9 @@ export interface CoreInit {
     readonly clientEditor?: Readonly<Record<string, EditorMirror>>;
     readonly clientTerminal?: Readonly<Record<string, TerminalToggle>>;
     readonly clientLanguage?: Readonly<Record<string, MirrorTopics['language']>>;
+    readonly clientMcp?: Readonly<Record<string, { readonly servers: readonly RelayedMcpServer[] }>>;
+    // this computer's core: each remote authority's, by authority
+    readonly clientNetwork?: Readonly<Record<string, { readonly allowedPorts: readonly number[]; readonly allowLocalNetwork: boolean }>>;
   };
 }
 
@@ -580,6 +642,55 @@ const column = opt(int(-2, 64));
 const trustedKeys = arr(filePath, MAX_ITEMS);
 // an index into at most MAX_ACTIONS actions
 const actionIndex = int(0, MAX_ACTIONS - 1);
+const clientNetworkShape = { allowedPorts: arr(int(1, 65535), 65535), allowLocalNetwork: bool };
+const browserToolAnswer: Parser<BrowserToolAnswer> = obj({
+  content: arr(either(obj({ type: oneOf(['text'] as const), text }), obj({ type: oneOf(['image'] as const), data: text, mimeType: id })), MAX_ACTIONS),
+  isError: opt(bool),
+});
+const globalMemoryKind = oneOf(['fact', 'preference', 'episode', 'note'] as const);
+const memoryId = nonEmpty(MAX_GLOBAL_MEMORY_ID_CHARS);
+const memoryLabel = str(MAX_GLOBAL_MEMORY_LABEL_CHARS);
+const memoryContent = str(MAX_GLOBAL_MEMORY_CONTENT_CHARS);
+const memoryTags = opt(arr(memoryLabel, MAX_GLOBAL_MEMORY_TAGS));
+const memoryTime = int(0, Number.MAX_SAFE_INTEGER);
+const relayedMemoryShape = {
+  id: memoryId, kind: globalMemoryKind, title: opt(memoryLabel), content: memoryContent, contentHash: memoryId, tags: memoryTags, createdAt: memoryTime, updatedAt: memoryTime,
+};
+const relayedGlobalMemory: Parser<RelayedGlobalMemory> = obj(relayedMemoryShape);
+const searchedGlobalMemory: Parser<SearchedGlobalMemory> = obj({ ...relayedMemoryShape, fullAllowed: opt(bool), matchedTerms: opt(arr(memoryLabel, MAX_RELAYED_MEMORIES)) });
+const globalMemoryResolution: Parser<GlobalMemoryResolution> = either(
+  obj({ id: memoryId, memory: relayedGlobalMemory }),
+  obj({ id: memoryId, gone: (raw): true | typeof INVALID => (raw === true ? true : INVALID), byUser: bool }),
+);
+const globalMemoryWrite: Parser<GlobalMemoryWrite> = obj({ uuid: memoryId, kind: globalMemoryKind, content: memoryContent, title: opt(memoryLabel), tags: memoryTags });
+const searchedMemories = arr(searchedGlobalMemory, MAX_RELAYED_MEMORIES);
+const relayedIds = arr(memoryId, MAX_RELAYED_MEMORIES);
+const searchCount = int(1, MAX_RELAYED_MEMORIES);
+const userProfile: Parser<UserProfile> = obj({ static: text, dynamic: text });
+const clientGlobalProfile: Parser<ClientGlobalProfile> = obj({
+  profile: userProfile,
+  pinned: arr(relayedGlobalMemory, MAX_STANDING_GLOBALS),
+  preferences: arr(relayedGlobalMemory, MAX_STANDING_GLOBALS),
+});
+const memoryTiers = arr(oneOf(['global', 'note'] as const), 2);
+const relayedMcpServer: Parser<RelayedMcpServer> = obj({
+  name: label,
+  description: opt(label),
+  tools: arr(obj({
+    name: label,
+    title: opt(label),
+    description: opt(text),
+    inputSchema: opt(value),
+    annotations: opt(obj({ readOnlyHint: opt(bool), destructiveHint: opt(bool), idempotentHint: opt(bool), openWorldHint: opt(bool) })),
+    exposure: opt(oneOf(['deferred', 'direct'] as const)),
+  }), MAX_ITEMS),
+  resources: bool,
+  timeoutMs: opt(int(1, MAX_RELAYED_MCP_TIMEOUT_MS)),
+});
+const mcpServers = obj({ servers: arr(relayedMcpServer, MAX_ITEMS) });
+const mcpResourceKind = oneOf(['resources', 'templates'] as const);
+const mcpArgs = dict(value, MAX_KEY_CHARS, MAX_ITEMS);
+
 
 const openFolder = obj({ fsPath: filePath, name: label, ownerKey: opt(str(MAX_PATH_CHARS)) });
 const editorContext = obj({
@@ -883,6 +994,15 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'worktrees.showApplyConflicts': method(obj({ worktreeId: id, files: arr(filePath, MAX_ITEMS) }), done),
   'user.credentials': method(obj({ provider: id, clientId: id }), brokerAnswer),
   'user.voice.speak': method(obj({ viewId: id, text }), done),
+  'user.browser.tool': method(obj({ viewId: id, scope: id, tool: id, input: value }), browserToolAnswer),
+  'user.browser.release': method(obj({ viewId: id, scope: id, closeTabs: bool, discard: opt(bool) }), done),
+  'user.memory.search': method(obj({ clientId: id, query: text, k: searchCount, tiers: memoryTiers, injection: opt(bool), since: opt(memoryTime), until: opt(memoryTime), includeForgotten: opt(bool) }), searchedMemories),
+  'user.memory.profile': method(obj({ clientId: id }), clientGlobalProfile),
+  'user.memory.resolve': method(obj({ clientId: id, ids: relayedIds }), arr(globalMemoryResolution, MAX_RELAYED_MEMORIES)),
+  'user.memory.apply': method(obj({ clientId: id, entries: arr(obj({ end: int(0, Number.MAX_SAFE_INTEGER), write: globalMemoryWrite }), MAX_ITEMS) }), obj({ through: int(0, Number.MAX_SAFE_INTEGER), ids: opt(arr(memoryId, MAX_ITEMS)) })),
+  'user.mcp.call': method(obj({ clientId: id, server: label, tool: label, args: mcpArgs }), value),
+  'user.mcp.resources': method(obj({ clientId: id, server: label, kind: mcpResourceKind, cursor: opt(message) }), value),
+  'user.mcp.readResource': method(obj({ clientId: id, server: label, uri: message }), value),
   'views.drained': method(obj({ viewId: id, viewKey }), done),
 };
 
@@ -902,6 +1022,8 @@ const MIRROR_TOPICS: Tables<MainToCore>['mirrors'] = {
   clientEditor: clientDelta(editorMirror),
   clientTerminal: clientDelta(terminalMirror),
   clientLanguage: clientDelta(obj({ language: oneOf(['en', 'el'] as const) })),
+  clientMcp: clientDelta(mcpServers),
+  clientNetwork: obj({ authority: filePath, ...clientNetworkShape }),
 };
 
 const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
@@ -937,7 +1059,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'catalog.tag': method(obj({ sessionId: id, tag: either(label, nul) }), catalogResult),
   'catalog.delete': method(obj({ sessionId: id }), catalogResult),
   'folders.setDefault': method(obj({ key: filePath }), done),
-  'browser.newPage': method(obj({ chatViewId: id }), done),
+  'browser.newPage': method(obj({ chatViewId: id, url: opt(message) }), done),
   'worktree.retrySetup': method(obj({ worktreeId: id }), done),
   'worktree.beginFinish': method(obj({ worktreeId: id, action: oneOf(['apply', 'merge', 'update', 'delete'] as const) }), maybe(id)),
   'worktree.endFinish': method(obj({ hold: id }), done),
@@ -968,11 +1090,25 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'e2e.stopWatchProbe': method(obj({ folder: filePath }), done),
   'e2e.fakeVoice': method(obj({ transcript: text }), obj({ pid: int(1, 2 ** 32) })),
   'e2e.voiceRecorder': method(nothing, obj({ starts: count, recorderPid: nullable(int(1, 2 ** 32)) })),
+  // each name takes its answers in turn, so a name has at least one
+  'e2e.clientNetworkAnswers': method(obj({ answers: dict(arr(arr(nonEmpty(MAX_LABEL_CHARS), MAX_ACTIONS), MAX_ACTIONS, 1), MAX_KEY_CHARS, MAX_ACTIONS) }), done),
   'e2e.stubOAuth': method(obj({ account: (raw) => (typeof raw === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(raw) ? raw : INVALID), expiresInMs: int(1000, 3_600_000), offline: opt(bool) }), done),
   'user.resolveCredential': method(obj({ provider: id, force: opt(bool) }), brokerAnswer),
   'user.clientAuth': method(nothing, heldAuth),
   'user.credentials.push': method(obj({ provider: providerId, credential: pushedCredential }), done),
   'user.voice.speak': method(obj({ viewId: id, text }), done),
+  'user.browser.tool': method(obj({ authority: filePath, viewId: id, scope: id, tool: id, input: value }), browserToolAnswer),
+  'user.browser.release': method(obj({ authority: filePath, agentScope: opt(obj({ viewId: id, scope: id, closeTabs: bool, discard: opt(bool) })) }), done),
+  'user.memory.search': method(obj({ query: text, k: searchCount, tiers: memoryTiers, injection: opt(bool), since: opt(memoryTime), until: opt(memoryTime), includeForgotten: opt(bool) }), searchedMemories),
+  'user.memory.profile': method(nothing, clientGlobalProfile),
+  'user.memory.resolve': method(obj({ ids: relayedIds }), arr(globalMemoryResolution, MAX_RELAYED_MEMORIES)),
+  'user.memory.apply': method(obj({ writes: arr(globalMemoryWrite, MAX_ITEMS) }), obj({ applied: int(0, MAX_ITEMS), ids: opt(arr(memoryId, MAX_ITEMS)) })),
+  'memory.deliverHeld': method(obj({ queueId: memoryId }), bool),
+  'memory.discardHeld': method(obj({ queueId: memoryId }), bool),
+  'user.mcp.servers': method(nothing, arr(relayedMcpServer, MAX_ITEMS)),
+  'user.mcp.call': method(obj({ server: label, tool: label, args: mcpArgs }), value),
+  'user.mcp.resources': method(obj({ server: label, kind: mcpResourceKind, cursor: opt(message) }), value),
+  'user.mcp.readResource': method(obj({ server: label, uri: message }), value),
   'panels.attachForeign': method(obj({ authority: filePath, viewId: id }), done),
   'panels.detachForeign': method(viewRef, done),
   'panels.foreignMessage': method(obj({ viewId: id, message: value }), done),
@@ -981,7 +1117,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
 export const CORE_TO_MAIN: Tables<CoreToMain> = {
   requests: CORE_REQUESTS,
   events: {
-    'window.openAppSettings': obj({ section: opt(section), account: opt(account) }),
+    'window.openAppSettings': obj({ section: opt(section), account: opt(account), scope: opt(oneOf(['machine'] as const)) }),
     'window.toggleTerminal': nothing,
     'chat.activity': obj({ panelId: id, activity: chatActivity, sessionId: opt(id) }),
     'chat.turnSettled': obj({ panelId: id, outcome: turnOutcome }),
@@ -999,6 +1135,8 @@ export const CORE_TO_MAIN: Tables<CoreToMain> = {
     'chat.providers': obj({ panelId: id, providers: arr(id, MAX_ACTIONS) }),
     'panel.foreignPost': obj({ viewId: id, message: value }),
     'user.clientAuthChanged': nothing,
+    'user.mcpChanged': nothing,
+    'ports.urlSeen': obj({ host: oneOf(['localhost', '127.0.0.1', '0.0.0.0'] as const), port: int(1, 65535) }),
   },
   mirrors: {
     chats: obj({ panelId: id, entry: opt(chatEntry) }),
@@ -1008,6 +1146,7 @@ export const CORE_TO_MAIN: Tables<CoreToMain> = {
       either(obj({ kind: oneOf(['view'] as const), projectKey: filePath, view: opt(value), realPath: opt(filePath) }), either(obj({ kind: oneOf(['repository'] as const), repoId: id, repository: opt(scmRepository) }), scmRepositoryState)),
       either(obj({ kind: oneOf(['decorations'] as const), projectKey: filePath, files: value }), obj({ kind: oneOf(['clone'] as const), state: value })),
     ),
+    heldMemory: obj({ queues: arr(obj({ queueId: memoryId, count: int(1, Number.MAX_SAFE_INTEGER), lastSeen: memoryTime }), MAX_HELD_MEMORY_QUEUES) }),
   },
   panelOps: {
     create: panelCreate,
@@ -1057,6 +1196,7 @@ export const parseCoreInit: Parser<CoreInit> = obj({
       voiceExtract: filePath,
     }),
     watchWorker: filePath,
+    remoteMirrors: opt(filePath),
     askpass: obj({ askpass: filePath, sshAskpass: filePath, node: filePath, main: filePath, credentialRelay: opt(obj({ helper: filePath, handle: filePath, nonce: credentialNonce })) }),
   }),
   logs: obj({ dir: filePath, echo: bool }),
@@ -1077,6 +1217,8 @@ export const parseCoreInit: Parser<CoreInit> = obj({
     clientEditor: opt(dict(editorMirror, MAX_ID_CHARS, MAX_ITEMS)),
     clientTerminal: opt(dict(terminalMirror, MAX_ID_CHARS, MAX_ITEMS)),
     clientLanguage: opt(dict(MIRROR_TOPICS.language, MAX_ID_CHARS, MAX_ITEMS)),
+    clientMcp: opt(dict(mcpServers, MAX_ID_CHARS, MAX_ITEMS)),
+    clientNetwork: opt(dict(obj(clientNetworkShape), MAX_PATH_CHARS, MAX_ITEMS)),
   }),
 });
 

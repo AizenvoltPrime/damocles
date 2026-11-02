@@ -73,6 +73,8 @@ async function chatPage(host: 'vscode' | 'desktop') {
       setState: () => {},
       getHost: () => undefined,
       onHost: () => () => {},
+      getHostNames: () => undefined,
+      onHostNames: () => () => undefined,
       getOffline: () => undefined,
       hostAction: () => undefined,
       getConnection: () => undefined,

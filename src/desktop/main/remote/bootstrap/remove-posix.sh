@@ -159,14 +159,14 @@ refresh_daemon_lock() {
 remove_socket_folder() {
   case "$(basename "$1")" in damocles-*) ;; *) return 0 ;; esac
   if [ -L "$1" ] || [ ! -d "$1" ] || [ -z "$(find "$1" -maxdepth 0 -user "$(id -u)" 2>/dev/null)" ]; then return 0; fi
-  rm -f "$1/daemon.sock" "$1/token" "$1/askpass.sock" "$1"/agent-*.sock
+  rm -f "$1/daemon.sock" "$1/token" "$1/askpass.sock" "$1"/agent-*.sock "$1"/cli-*.sock
   if ! rmdir "$1" 2>/dev/null; then
     notice deleteFailed "\"entry\":\"$(json_str "$1")\""
   fi
 }
 
 # Every socket folder the run folder $1 records: the pid file's endpoint folder and the daemon's socket-folders list, which
-# names a crashed daemon's agent and relay folders too. The lock is touched after each.
+# names a crashed daemon's agent, relay and CLI folders too. The lock is touched after each.
 remove_socket_folders() {
   endpoint_folder=$(sed -n 's/.*"socketFolder":"\([^"]*\)".*/\1/p' "$1/daemon.pid" 2>/dev/null)
   if [ -n "$endpoint_folder" ]; then

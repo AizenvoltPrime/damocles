@@ -635,6 +635,7 @@ describe('Delete with a dirty editor tab of the worktree', () => {
     });
     const pane: EditorPane = new EditorPane({
       authorityOs: () => process.platform,
+      wslDistro: () => undefined,
       documents,
       settings: platform.settings,
       ask,

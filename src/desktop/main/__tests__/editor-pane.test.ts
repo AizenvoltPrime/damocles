@@ -12,7 +12,7 @@ import { rootKey } from '../../preload/folder-root';
 import type { BackupRecord } from '../documents/backups';
 import type { Project } from '../../local-services/confine';
 import { DocumentService, type TextDocument } from '../documents/document-service';
-import { EditorPane, selectionText, settingLine, type BrowserTabSource, type PersistedEditor } from '../editor-pane';
+import { EditorPane, revealPathOf, selectionText, settingLine, type BrowserTabSource, type PersistedEditor } from '../editor-pane';
 import type { MessageQuestion } from '../message-dialog';
 import { projectKeyOf } from '../../../shared/project-location';
 import { englishText } from '../../../shared/localized-text';
@@ -101,6 +101,7 @@ beforeEach(() => {
   });
   pane = new EditorPane({
     authorityOs: (authority) => (authority === 'loopback' ? hostOs : process.platform),
+    wslDistro: () => undefined,
     documents,
     settings: platform.settings,
     ask,
@@ -204,6 +205,28 @@ describe('opens and focus', () => {
     pane.showReview({ ...review, reviewId: 'r2' }, { focus: false });
     await pane.closeReview('r2');
     expect(events.filter((event) => event.startsWith('reviewClosed:'))).toEqual(['reviewClosed:r1', 'reviewClosed:r2']);
+  });
+
+  it('shows two files\' patch as a read-only changes tab titled with both names, and releases the patch with the tab', async () => {
+    const patch = '===================================================================\n--- /srv/a.txt\n+++ /srv/b.txt\n@@ -1 +1 @@\n-one\n+two\n';
+    const tabId = pane.showPatch({ left: { name: 'a.txt', folder: '/srv', path: '/srv/a.txt' }, right: { name: 'b.txt', folder: '/srv', path: '/srv/b.txt' }, content: { kind: 'patch', patch } }, { focus: true });
+    const tab = pane.state().tabs.find((candidate) => candidate.id === tabId)!;
+    expect(tab).toMatchObject({ kind: 'changes', title: 'a.txt ↔ b.txt', displayPath: '/srv/a.txt ↔ /srv/b.txt', readOnly: true, dirty: false });
+    expect(tab.documentId).toBeUndefined();
+    const content = tab.patch?.content;
+    if (content?.kind !== 'patch') throw new Error('no patch document');
+    // the shell reads it through the pane, which serves only documents its tabs show
+    expect(pane.content(content.documentId)).toMatchObject({ kind: 'text', text: patch });
+    expect(pane.activeTabId()).toBe(tabId);
+    const closed = pane.whenClosed(tabId);
+    await pane.tabAction('close', tabId);
+    await closed;
+    expect(documents.get(content.documentId)).toBeUndefined();
+    expect(() => pane.content(content.documentId)).toThrow('Unknown document');
+    expect(asked).toEqual([]);
+
+    const binary = pane.showPatch({ left: { name: 'a.png', folder: 'C:\\x', path: 'C:\\x\\a.png' }, right: { name: 'b.png', folder: 'C:\\x', path: 'C:\\x\\b.png' }, content: { kind: 'binary' } }, { focus: false });
+    expect(pane.state().tabs.find((candidate) => candidate.id === binary)?.patch?.content).toEqual({ kind: 'binary' });
   });
 
   it('reuses the tab already showing a document, and opens markdown as a preview or its source on request', async () => {
@@ -356,6 +379,22 @@ describe('closing dirty tabs and quitting', () => {
     expect(await settled(byRoot)).toBe(false);
     expect(pane.closeRoot(project.key, new Map())).toBe(true);
     expect(await settled(byRoot)).toBe(true);
+  });
+
+  it('settles whenClosed for each waiter once its tab is gone, and at once for a tab that is not open', async () => {
+    write('a.ts', 'a');
+    write('b.ts', 'b');
+    const a = await pane.openFromUser(project.key, 'a.ts');
+    const b = await pane.openFromUser(project.key, 'b.ts');
+    if (!a.ok || !b.ok) throw new Error('not opened');
+    const settled = (closed: Promise<void>): Promise<boolean> => Promise.race([closed.then(() => true), new Promise<boolean>((resolve) => setImmediate(() => resolve(false)))]);
+    const first = pane.whenClosed(a.tabId);
+    const second = pane.whenClosed(a.tabId);
+    const other = pane.whenClosed(b.tabId);
+    expect(await settled(first)).toBe(false);
+    await pane.tabAction('close', a.tabId);
+    expect([await settled(first), await settled(second), await settled(other)]).toEqual([true, true, false]);
+    expect(await settled(pane.whenClosed(a.tabId))).toBe(true);
   });
 
   it('with Reopen where I left off, takes the shell\'s last edits, keeps the backups and asks nothing', async () => {
@@ -656,6 +695,29 @@ describe('a file of another host', () => {
     // source control resolves the place on the file's own authority, never as one of this computer's paths
     expect(events.find((event) => event.startsWith('openChanges:'))).toContain(`"projectKey":${JSON.stringify(remote.key)}`);
     expect(events.some((event) => event.startsWith('reveal:') && event.includes(projectDir))).toBe(false);
+  });
+
+  it('names the host a clicked link came from: a remote project file\'s, a host\'s markdown text\'s, else this computer', async () => {
+    write('README.md', '[dev](http://localhost:3000/)');
+    const local = await pane.openFromUser(project.key, 'README.md', { as: 'preview' });
+    const remote: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(projectDir)), fsPath: projectDir, name: 'proj' };
+    roots = [project, remote];
+    const onHost = await pane.openFromUser(remote.key, 'README.md', { as: 'preview' });
+    pane.openMarkdownText('prod-1: notes.md', '[dev](http://localhost:3000/)', false, 'ssh+h1');
+    if (!local.ok || !onHost.ok) throw new Error('not opened');
+    expect(pane.linkAuthority(local.tabId)).toBe('local');
+    expect(pane.linkAuthority(onHost.tabId)).toBe('loopback');
+    expect(pane.linkAuthority(pane.state().tabs.at(-1)!.id)).toBe('ssh+h1');
+    expect(pane.linkAuthority('no-such-tab')).toBeUndefined();
+  });
+
+  it('reveals a WSL distro\'s document under \\\\wsl.localhost, and no other host\'s', () => {
+    const distroOf = (authority: string): string | undefined => (authority === 'wsl+Ubuntu-24.04' ? 'Ubuntu-24.04' : undefined);
+    expect(revealPathOf({ path: '/home/me/app/src/a.ts', projectKey: 'wsl+Ubuntu-24.04|/home/me/app', relativePath: 'src/a.ts' } as never, distroOf)).toBe('\\\\wsl.localhost\\Ubuntu-24.04\\home\\me\\app\\src\\a.ts');
+    expect(revealPathOf({ path: '/home/me/.damocles/settings.json', host: 'wsl+Ubuntu-24.04' } as never, distroOf)).toBe('\\\\wsl.localhost\\Ubuntu-24.04\\home\\me\\.damocles\\settings.json');
+    expect(revealPathOf({ path: '/srv/app/a.ts', projectKey: 'ssh+h1|/srv/app' } as never, distroOf)).toBeUndefined();
+    expect(revealPathOf({ path: '/home/me/../etc/passwd', projectKey: 'wsl+Ubuntu-24.04|/home/me' } as never, distroOf)).toBeUndefined();
+    expect(revealPathOf({ path: projectDir, projectKey: project.key } as never, distroOf)).toBe(projectDir);
   });
 
   it('answers whether a file tab belongs to a project, as the tabs the shell gets name it', async () => {

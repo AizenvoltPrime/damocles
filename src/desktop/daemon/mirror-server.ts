@@ -1,14 +1,17 @@
 // The daemon side of control.mirror.sync: the project's session, agent and team files under its pi
-// session folder, newest first within the client's budget. The daemon opens only files it listed itself; a name the
-// client sends is only compared with that listing, never joined to a path.
+// session folder, newest first within the client's budget; and of mirror.syncSubcalls: the sub-call ledger. The daemon opens
+// only files it listed itself; a name the client sends is only compared with that listing, never joined to a path.
 import { createHash } from 'node:crypto';
 import { promises as fs, type Dirent } from 'node:fs';
 import * as path from 'node:path';
 import { piSessionDir } from '../../core/pi-session/session-store/session-dir';
-import type { MirrorChange, MirrorFile } from './control-messages';
+import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
+import type { MirrorChange, MirrorFile, MirrorHeld, MirrorLedgerChange } from './control-messages';
 
 // the head hash covers the first 4 KiB, the tail hash the 4 KiB before the client's size
 export const HASH_SPAN_BYTES = 4096;
+// watches one connection holds, the ledger's included: a client names any project key, and a follow past it is refused
+export const MAX_MIRROR_WATCHES = 256;
 const READ_CHUNK_BYTES = 256 * 1024;
 
 export interface ListedFile {
@@ -28,15 +31,18 @@ export interface MirrorStream {
   onDrain(listener: () => void): void;
 }
 
-export interface MirrorServerDeps {
-  // the pi agent folder whose sessions/ holds every project's session folder
-  readonly agentDir: string;
+export interface MirrorStreamDeps {
   // a stream id for the answer, and the stream under it once its bytes go out
   readonly reserveStream: () => number;
   readonly openStream: (reserved: number) => MirrorStream;
   // settles once every frame queued before the call went out (Mux.drained)
   readonly drained: () => Promise<void>;
   readonly log: (line: string) => void;
+}
+
+export interface MirrorServerDeps extends MirrorStreamDeps {
+  // the pi agent folder whose sessions/ holds every project's session folder
+  readonly agentDir: string;
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -101,8 +107,86 @@ export async function sessionFolder(agentDir: string, projectKey: string): Promi
   return found === undefined ? exact : path.join(parent, found);
 }
 
+/**
+ * The session folders and the sub-call ledger each connection mirrors, watched so it hears of every change it has not synced
+ * (control mirror.changed and mirror.subcallsChanged).
+ */
+export interface MirrorWatches {
+  // awaited before each mirror.sync of the project lists it, so no change after the listing goes unannounced; announces once
+  // until the next follow
+  follow(connectionId: string, projectKey: string, changed: () => void): Promise<void>;
+  // the same for the sub-call ledger, before each mirror.syncSubcalls reads it
+  followSubcalls(connectionId: string, changed: () => void): Promise<void>;
+  release(connectionId: string): void;
+}
+
+interface Followed {
+  // settles once the watch reports every later change
+  readonly ready: Promise<void>;
+  announced: boolean;
+  dispose(): void;
+}
+
+export function createMirrorWatches(deps: { readonly agentDir: string; readonly ledgerPath: string; readonly watchers: FileWatcherFactory }): MirrorWatches {
+  // per connection, keyed `project:<projectKey>` or `subcalls`, so no project key names the ledger's watch
+  const byConnection = new Map<string, Map<string, Followed>>();
+  const follow = (connectionId: string, key: string, place: () => Promise<{ readonly base: string; readonly glob: string }>, changed: () => void): Promise<void> => {
+    let watched = byConnection.get(connectionId);
+    if (!watched) {
+      watched = new Map();
+      byConnection.set(connectionId, watched);
+    }
+    const known = watched.get(key);
+    if (known) {
+      known.announced = false;
+      return known.ready;
+    }
+    if (watched.size >= MAX_MIRROR_WATCHES) return Promise.reject(new Error(`${connectionId} already follows ${MAX_MIRROR_WATCHES} session folders`));
+    const held = watched;
+    let watcher: FileWatcher | undefined;
+    let disposed = false;
+    const followed: Followed = {
+      announced: false,
+      ready: (async () => {
+        const { base, glob } = await place();
+        if (disposed) return;
+        watcher = deps.watchers.watch(base, glob);
+        const announce = (): void => {
+          if (followed.announced) return;
+          followed.announced = true;
+          changed();
+        };
+        watcher.onDidCreate(announce);
+        watcher.onDidChange(announce);
+        watcher.onDidDelete(announce);
+        await watcher.ready;
+      })().catch((err: unknown) => {
+        followed.dispose();
+        if (held.get(key) === followed) held.delete(key);
+        throw err;
+      }),
+      dispose: () => {
+        disposed = true;
+        watcher?.dispose();
+      },
+    };
+    held.set(key, followed);
+    return followed.ready;
+  };
+  return {
+    follow: (connectionId, projectKey, changed) => follow(connectionId, `project:${projectKey}`, async () => ({ base: await sessionFolder(deps.agentDir, projectKey), glob: '**' }), changed),
+    // the ledger alone: the usage index beside it changes on every /stats of a remote chat
+    followSubcalls: (connectionId, changed) => follow(connectionId, 'subcalls', () => Promise.resolve({ base: path.dirname(deps.ledgerPath), glob: path.basename(deps.ledgerPath) }), changed),
+    release(connectionId) {
+      const watched = byConnection.get(connectionId);
+      byConnection.delete(connectionId);
+      for (const followed of watched?.values() ?? []) followed.dispose();
+    },
+  };
+}
+
 // append when the client's head and tail still match the file, else the whole file
-async function changeFor(listed: ListedFile, held: MirrorFile | undefined): Promise<{ kind: 'append' | 'full'; offset: number } | undefined> {
+async function changeFor(listed: ListedFile, held: MirrorHeld | undefined): Promise<{ kind: 'append' | 'full'; offset: number } | undefined> {
   if (!held || held.size > listed.size) return { kind: 'full', offset: 0 };
   const head = await readRange(listed.path, 0, Math.min(HASH_SPAN_BYTES, held.size));
   const tailStart = Math.max(0, held.size - HASH_SPAN_BYTES);
@@ -150,9 +234,32 @@ export async function syncMirror(deps: MirrorServerDeps, request: { readonly pro
     sends.push(async () => pump(deps.openStream(id), file.path, change.offset, length));
   }
   for (const file of request.files) if (!keptNames.has(file.file)) changes.push({ file: file.file, kind: 'deleted', offset: 0, length: 0, stream: 0 });
+  sendAfterAnswer(deps, sends);
+  return { changes };
+}
+
+// The endpoint queues the answer in the microtasks after its handler resolves, so the streams open once it went out.
+function sendAfterAnswer(deps: MirrorStreamDeps, sends: ReadonlyArray<() => Promise<void>>): void {
   const failed = (err: unknown): void => deps.log(`[mirror] sending a file failed: ${err instanceof Error ? err.message : String(err)}`);
   const sendAll = (): Promise<void> => sends.reduce((chain, send) => chain.then(() => send().catch(failed)), Promise.resolve());
-  // the endpoint queues the answer in the microtasks after this resolves, so the streams open once it went out
   setImmediate(() => void deps.drained().then(sendAll));
-  return { changes };
+}
+
+/** The sub-call ledger by mirror.sync's rules for one file; a link or anything but a regular file counts as no ledger. */
+export async function syncSubcalls(deps: MirrorStreamDeps & { readonly ledgerPath: string }, request: { readonly budgetBytes: number; readonly held?: MirrorHeld }): Promise<{ change?: MirrorLedgerChange }> {
+  let listed: ListedFile | undefined;
+  try {
+    const stat = await fs.lstat(deps.ledgerPath);
+    if (stat.isFile()) listed = { file: path.basename(deps.ledgerPath), path: deps.ledgerPath, size: stat.size, mtimeMs: stat.mtimeMs };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  if (!listed || listed.size > request.budgetBytes) return request.held ? { change: { kind: 'deleted', offset: 0, length: 0, stream: 0 } } : {};
+  const change = await changeFor(listed, request.held);
+  if (!change) return {};
+  const length = listed.size - change.offset;
+  const id = deps.reserveStream();
+  const ledger = listed.path;
+  sendAfterAnswer(deps, [async () => pump(deps.openStream(id), ledger, change.offset, length)]);
+  return { change: { kind: change.kind, offset: change.offset, length, stream: id } };
 }

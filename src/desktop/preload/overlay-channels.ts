@@ -15,6 +15,8 @@ import type { PermissionMode } from '../../shared/types/settings';
 import type { TerminalColor, TerminalGlyph, TerminalProfileOption, TerminalProfileReport, TerminalProjectOption } from './terminal-channels';
 import { INPUT_VALIDATIONS, MAX_INPUT_VALUE_LENGTH, inputProblem, type InputPlatform, type InputValidation } from '../../shared/input-validation';
 import { visibleText } from '../../shared/visible-text';
+import { MAX_HELD_MEMORY_QUEUES, type HeldMemoryQueue } from '../../shared/remote-user';
+import type { ContainerEngine } from '../daemon/container-values';
 
 export const OVERLAY_CHANNELS = {
   // renderer → main, invoke
@@ -24,6 +26,8 @@ export const OVERLAY_CHANNELS = {
   shown: 'damocles:overlay:shown',
   answer: 'damocles:overlay:answer',
   resolveToast: 'damocles:overlay:resolve-toast',
+  // (id): Copy on a link request's toast; main copies the URL it holds, and the toast stays
+  toastCopy: 'damocles:overlay:toast-copy',
   toastArea: 'damocles:overlay:toast-area',
   // Escape in the toast stack: keyboard focus goes back to the part F6 took it from
   toastsLeave: 'damocles:overlay:toasts:leave',
@@ -118,6 +122,10 @@ export const OVERLAY_CHANNELS = {
   hostsSetSetting: 'damocles:overlay:hosts:set-setting',
   // { hostId, credentialHost }
   hostsRevokeCredential: 'damocles:overlay:hosts:revoke-credential',
+  // { hostId, queueId } -> HeldMemoryResult: the held queue goes to this computer's device on the host, which it then drains
+  hostsDeliverHeldMemory: 'damocles:overlay:hosts:deliver-held-memory',
+  // { hostId, queueId } -> HeldMemoryResult: the held queue is deleted; the overlay confirmed first
+  hostsDiscardHeldMemory: 'damocles:overlay:hosts:discard-held-memory',
   // { hostId } -> PasswordlessResult; a call while the host's setup runs joins it; progress follows on hostsOperationsChanged
   hostsSetUpPasswordless: 'damocles:overlay:hosts:set-up-passwordless',
   // { hostId } -> RemovalInfo of a connected host
@@ -129,6 +137,23 @@ export const OVERLAY_CHANNELS = {
   hostsRetryRemoval: 'damocles:overlay:hosts:retry-removal',
   // { hostId } -> HostOperations, the host's setup and removal as main holds them now
   hostsOperations: 'damocles:overlay:hosts:operations',
+  // { hostId } -> { runs: readonly RemovalRun[] }: the running work Convert to WSL 2 would stop, from a connected distro's daemon
+  hostsConversionInfo: 'damocles:overlay:hosts:conversion-info',
+  // { hostId } -> void: starts Convert to WSL 2 for a WSL 1 distro's host, or joins the one running; progress follows on
+  // hostsOperationsChanged
+  hostsConvertToWsl2: 'damocles:overlay:hosts:convert-to-wsl2',
+  // { hostId } -> { runs: readonly RemovalRun[] }: the chats and terminals Rebuild Container stops; empty when not connected
+  hostsRebuildInfo: 'damocles:overlay:hosts:rebuild-info',
+  // { hostId } -> void: starts Rebuild Container for a devcontainer record, or joins the one running; progress follows on
+  // hostsOperationsChanged
+  hostsRebuildContainer: 'damocles:overlay:hosts:rebuild-container',
+  // { via?: hostId } -> ContainerListResult: the running containers on this computer or on the SSH host; connect request only
+  containersList: 'damocles:overlay:containers:list',
+  // {} -> ContainerFolderPick | null: this computer's folder picker for a folder with a devcontainer configuration; null on
+  // cancel; connect request only
+  containersPickFolder: 'damocles:overlay:containers:pick-folder',
+  // { via: hostId, folder } -> ContainerFolderPick: a folder of the SSH host's folder browser; connect request only
+  containersCheckFolder: 'damocles:overlay:containers:check-folder',
   // { hostId }: forgets the host and everything this computer keeps of it
   hostsForget: 'damocles:overlay:hosts:forget',
   // { hostId }: ends the connect request and opens Settings > Remote hosts at the host; answers while a connect request is open
@@ -174,13 +199,16 @@ export const OVERLAY_CHANNELS = {
   hostsOperationsChanged: 'damocles:overlay:hosts:operations-changed',
   // main → renderer, readonly HostCardInfo[] after a host changed (renamed, connected, dropped) while a connect request is open
   connectHosts: 'damocles:overlay:connect:hosts',
+  // main -> renderer, readonly WslDistroInfo[] whenever connectHosts is pushed, while a connect request is open
+  connectDistros: 'damocles:overlay:connect:distros',
   // main → renderer, readonly CloseRemoteRow[], every row whole, after a status or token note changed while a closeRemote
   // request is open
   closeRemoteRows: 'damocles:overlay:close-remote:rows',
 } as const;
 
-// The steps of a connection attempt, in the order they run; an attempt may skip installing.
-export const CONNECT_STEPS = ['connecting', 'authenticating', 'checking', 'installing', 'starting'] as const;
+// The steps of a connection attempt, in the order they run; an attempt may skip installing. building runs only for a container
+// attempt that runs `devcontainer up`.
+export const CONNECT_STEPS = ['building', 'connecting', 'authenticating', 'checking', 'installing', 'starting'] as const;
 export type ConnectStep = (typeof CONNECT_STEPS)[number];
 
 // Why an attempt failed; the overlay localizes remote.failure.<code> with its params.
@@ -190,10 +218,19 @@ export const SSH_FAILURE_CODES = [
   'noexec', 'lowSpace', 'installFolderInvalid', 'installFolderUnsafe', 'hashMismatch', 'downloadAndUploadFailed', 'selfTestFailed', 'bridgeFailed',
   // the host's saved address holds something the parser's rules now refuse (params.setting); ssh did not start
   'destinationRefused', 'unknown',
+  // a container attempt: folderUntrusted and configRefused ran nothing; composeUnsupported: a dockerComposeFile configuration,
+  // whose Compose files the confirmation cannot show; devcontainerFailed {message}: the CLI's own text; containerNeedsBuild: the
+  // devcontainer is stopped or gone and nobody watched the attempt, which only a watched one builds; containerPaused {container,
+  // engine}: the engine's name of the paused container and the engine that unpauses it
+  'folderUntrusted', 'configRefused', 'composeUnsupported', 'noDevcontainerConfig', 'containerEngineMissing', 'devcontainerFailed',
+  'containerNotRunning', 'viaNotConnected', 'containerFeatureMissing', 'containerNeedsBuild', 'containerPaused',
+  // a WSL attempt: wsl.exe no longer lists the record's distro {distro}
+  'distroNotListed',
 ] as const;
 export type SshFailureCode = (typeof SSH_FAILURE_CODES)[number];
-// handshakeFailed: the bridge ran but hello, welcome or attach did not complete (params.reason)
-export type ConnectFailureCode = SshFailureCode | 'handshakeFailed';
+// handshakeFailed: the bridge ran but hello, welcome or attach did not complete (params.reason); containerFolderFailed, only as
+// a ConnectStepEvent's folderFailure: a devcontainer connected but its workspace folder did not open as a project (no params)
+export type ConnectFailureCode = SshFailureCode | 'handshakeFailed' | 'containerFolderFailed';
 
 // Text produced on a target or by main for one: a code plus parameters the overlay localizes (remote.notice.<code>).
 export interface HostNotice {
@@ -232,6 +269,8 @@ export interface CachedPlatform {
 export interface ConnectStepEvent {
   readonly attemptId: string;
   readonly hostId: string;
+  // a wsl or container attempt never enters 'authenticating' and never carries a prompt
+  readonly transport: 'ssh' | 'wsl' | 'container';
   readonly step: ConnectStep | 'connected' | 'failed';
   // the steps this attempt has entered, in order
   readonly visited: readonly ConnectStep[];
@@ -240,17 +279,64 @@ export interface ConnectStepEvent {
   // the question ssh waits on; answer it through connectAnswer with promptId
   readonly prompt?: { readonly promptId: string } & SshPrompt;
   readonly failure?: ConnectFailure;
+  // a devcontainer's connected attempt (step 'connected') whose workspace folder did not open; a start of it again retries
+  readonly folderFailure?: { readonly code: 'containerFolderFailed'; readonly params: Readonly<Record<string, never>> };
   // the probe's non-fatal findings
   readonly notices: readonly HostNotice[];
+  // a container attempt that ran `devcontainer up`: the text of its log lines, newest last
+  readonly buildLog?: BuildLog;
 }
 
-// A saved SSH host as the Connect dialog's card shows it; names and labels come from this computer's host store.
+// Lines of a build log an attempt or a Rebuild keeps, newest last; total counts every line seen, so total - lines.length
+// earlier lines were dropped. Each line is one line of text with no control characters.
+export interface BuildLog {
+  readonly lines: readonly string[];
+  readonly total: number;
+}
+export const MAX_BUILD_LOG_LINES = 1000;
+export const MAX_BUILD_LOG_LINE_CHARS = 2000;
+
+export type { ContainerEngine };
+export type ContainerState = 'running' | 'stopped' | 'missing' | 'unknown';
+
+// A container record as its card and Settings show it; via names the SSH host the container runs on.
+export interface ContainerHostInfo {
+  readonly origin: 'devcontainer' | 'attach';
+  readonly image?: string;
+  readonly state: ContainerState;
+  readonly via?: { readonly hostId: string; readonly name: string };
+  readonly engine: ContainerEngine;
+  // devcontainer: the workspace folder and config file as the machine running the CLI names them
+  readonly workspaceFolder?: string;
+  readonly configPath?: string;
+  // attach: the container's name and the user Damocles runs as
+  readonly containerName?: string;
+  readonly user?: 'configured' | 'root';
+  // devcontainer: the running container has no damocles-data volume, so ~/.damocles lives in it and a rebuild loses its chats and settings
+  readonly withoutDataVolume?: true;
+}
+
+// A WSL distro as `wsl.exe --list --verbose` lists it; docker-desktop* distros are never listed.
+export interface WslDistroInfo {
+  readonly distro: string;
+  readonly state: 'running' | 'stopped' | 'other';
+  readonly version: 1 | 2;
+  readonly isDefault: boolean;
+  // present once the distro has a host record
+  readonly hostId?: string;
+}
+
+// A saved host as the Connect dialog's card shows it; names and labels come from this computer's host store.
 export interface HostCardInfo {
   readonly hostId: string;
+  readonly kind: 'ssh' | 'wsl' | 'container';
+  readonly container?: ContainerHostInfo;
   readonly name: string;
   readonly color?: HostTone;
-  // the ssh alias, or user@host:port
+  // the ssh alias, or user@host:port; a distro's name for a WSL host
   readonly destinationLabel: string;
+  // a WSL host's distro as the last list showed it
+  readonly wsl?: { readonly distro: string; readonly version: 1 | 2; readonly state: WslDistroInfo['state']; readonly isDefault: boolean };
   readonly os?: ShellPlatform;
   readonly connection: ProjectConnection;
   // an attempt waits on a prompt the user has not seen yet
@@ -277,7 +363,9 @@ export interface HostCardInfo {
   // the safety profile the card's Safety line shows
   readonly defaultPermissionMode?: PermissionMode;
   readonly allowBypass: boolean;
-  // what Damocles changed on the host (RemoteHostFacts)
+  // whether the Forward my SSH agent switch is on; absent for a host the agent cannot reach (WSL, a Windows SSH host)
+  readonly agentForwarding?: boolean;
+  // what Damocles changed on the host (RemoteHostFacts); false for a WSL host
   readonly passwordless: boolean;
   readonly keyInstalledByDamocles: boolean;
   readonly lingerEnabledByDamocles: boolean;
@@ -357,11 +445,67 @@ export type HostParseResult =
   | { readonly ok: true; readonly destinationLabel: string; readonly options: readonly ParsedSshOption[]; readonly prefillName: string; readonly nameCheck: NameCheck }
   | { readonly ok: false; readonly refused: string; readonly reason: HostParseRefusal };
 
-// A saved host, an ssh config alias to save under name, or "+ New host"'s input to parse again and save under name.
+// A saved host, an ssh config alias to save under name, "+ New host"'s input to parse again and save under name, or a WSL
+// distro with no host record yet, saved under name.
 export type ConnectTarget =
   | { readonly hostId: string }
   | { readonly alias: string; readonly name: string }
-  | { readonly input: string; readonly name: string };
+  | { readonly input: string; readonly name: string }
+  | { readonly distro: string; readonly name: string }
+  // a running container from the attach list (its id as listed), on this computer or on the SSH host via
+  | { readonly attach: string; readonly via?: string; readonly user: 'configured' | 'root'; readonly name: string }
+  // a folder holding a devcontainer configuration, on this computer or on the SSH host via
+  | { readonly devcontainer: string; readonly via?: string; readonly name: string };
+
+// A running container as the attach list shows it; every text is the engine's own, untrusted and bounded. user: the user
+// "configured" attaches as (the devcontainer metadata's remoteUser, else the image's user); absent is root. hostId: the attach
+// record this container already has.
+export interface RunningContainer {
+  readonly id: string;
+  readonly name: string;
+  readonly image: string;
+  readonly status: string;
+  readonly state: 'running' | 'paused' | 'restarting' | 'other';
+  readonly prefillName: string;
+  readonly user?: string;
+  readonly hostId?: string;
+}
+export type ContainerListResult =
+  | { readonly ok: true; readonly engine: ContainerEngine; readonly containers: readonly RunningContainer[] }
+  | { readonly ok: false; readonly code: 'containerEngineMissing' | 'listFailed' | 'notConnected' | 'containerFeatureMissing'; readonly message?: string };
+// A folder that holds a devcontainer configuration; hostId: the container record it already has.
+export type ContainerFolderPick =
+  | { readonly ok: true; readonly folder: string; readonly configPath: string; readonly prefillName: string; readonly hostId?: string }
+  | { readonly ok: false; readonly code: 'noDevcontainerConfig' | 'notConnected'; readonly folder: string };
+
+// The fields the devcontainer confirmation lists, in display order (devcontainer-trust.ts reads them from the resolved
+// configuration).
+export const DEVCONTAINER_TRUST_FIELDS = ['initializeCommand', 'mounts', 'workspaceMount', 'runArgs', 'privileged', 'capAdd', 'securityOpt', 'features', 'otherHostAccess'] as const;
+export type DevcontainerTrustField = (typeof DEVCONTAINER_TRUST_FIELDS)[number];
+export interface DevcontainerTrustValue {
+  // verbatim from the configuration, shown in monospace
+  readonly text: string;
+  readonly danger?: 'privileged' | 'dockerSocket';
+}
+export interface DevcontainerTrustEntry {
+  readonly field: DevcontainerTrustField;
+  readonly values: readonly DevcontainerTrustValue[];
+}
+// only the fields that have values, in DEVCONTAINER_TRUST_FIELDS order
+export type DevcontainerTrustItems = readonly DevcontainerTrustEntry[];
+// Values one confirmation lists in all, and characters of one value.
+export const MAX_DEVCONTAINER_TRUST_VALUES = 500;
+export const MAX_DEVCONTAINER_TRUST_TEXT = 8192;
+
+// What the devcontainer confirmation shows: hostName absent is this computer; changed: a confirmed set exists and differs.
+export interface DevcontainerTrustRequest {
+  readonly hostName?: string;
+  readonly hostColor?: HostTone;
+  readonly folder: string;
+  readonly configPath: string;
+  readonly changed: boolean;
+  readonly items: DevcontainerTrustItems;
+}
 
 export type ConnectStartResult =
   | { readonly ok: true; readonly attemptId: string; readonly hostId: string }
@@ -440,9 +584,11 @@ export interface RemoteHostFacts {
   readonly alwaysCredentialHosts: readonly string[];
 }
 
-// A saved SSH host in Settings > Remote hosts, in saved order; every label from this computer's host store.
+// A saved SSH host, WSL distro or container in Settings > Remote hosts, in saved order; every label from this computer's host store.
 export interface RemoteHostEntry {
   readonly hostId: string;
+  readonly kind: 'ssh' | 'wsl' | 'container';
+  readonly container?: ContainerHostInfo;
   readonly authorityKey: string;
   readonly name: string;
   readonly destinationLabel: string;
@@ -452,7 +598,19 @@ export interface RemoteHostEntry {
   readonly connection: ProjectConnection;
   readonly settings: RemoteHostSettings;
   readonly facts: RemoteHostFacts;
+  // the host's held memory queues, oldest lastSeen first; empty while it is not connected
+  readonly heldMemoryQueues: readonly HeldMemoryQueue[];
 }
+
+// Memories a host's daemon holds for a device that has not attached for 30 days, which another device may take or discard;
+// count is at least 1, queueId within MAX_HELD_MEMORY_QUEUE_ID_LENGTH.
+export type { HeldMemoryQueue };
+export { MAX_HELD_MEMORY_QUEUES };
+export const MAX_HELD_MEMORY_QUEUE_ID_LENGTH = 128;
+
+// notConnected: the host is not connected, or its daemon holds no queues; gone: the queue is no longer held
+export type HeldMemoryFailureCode = 'notConnected' | 'gone';
+export type HeldMemoryResult = { readonly ok: true } | { readonly ok: false; readonly code: HeldMemoryFailureCode };
 
 export const HOST_SWITCH_KEYS = ['allowBypass', 'forwardAgent', 'rememberPassword', 'browserLocalNetwork', 'openLinksWithoutAsking'] as const;
 export type HostSwitchKey = (typeof HOST_SWITCH_KEYS)[number];
@@ -520,6 +678,33 @@ export interface ServerRemovalRun {
   readonly failed?: true;
   readonly prompt?: { readonly attemptId: string; readonly promptId: string } & Extract<SshPrompt, { readonly kind: 'secret' }>;
 }
+// Convert to WSL 2 as main runs it: stop the daemon, run `wsl.exe --set-version <distro> 2`, connect again.
+export const WSL_CONVERSION_STEPS = ['stopping', 'converting', 'reconnecting'] as const;
+export type WslConversionStep = (typeof WSL_CONVERSION_STEPS)[number];
+// Lines of wsl.exe output a conversion run keeps, newest last.
+export const MAX_WSL_CONVERSION_OUTPUT_LINES = 200;
+// setVersionFailed and shutdownFailed leave the distro on WSL 1; message is wsl.exe's own text, verbatim
+export type WslConversionFailureCode = 'setVersionFailed' | 'shutdownFailed' | 'reconnectFailed';
+export interface WslConversionRun {
+  readonly steps: Readonly<Record<WslConversionStep, PasswordlessStepState>>;
+  readonly output: readonly string[];
+  readonly result?: { readonly ok: true } | { readonly ok: false; readonly code: WslConversionFailureCode; readonly message?: string };
+  readonly failed?: true;
+}
+// Rebuild Container as main runs it, after the confirmation: the trust gate, stop the container's daemon, `devcontainer up
+// --remove-existing-container` with its log, connect again. configRefused and folderUntrusted stopped nothing.
+export const CONTAINER_REBUILD_STEPS = ['stopping', 'building', 'reconnecting'] as const;
+export type ContainerRebuildStep = (typeof CONTAINER_REBUILD_STEPS)[number];
+// configFailed {message}: the gate failed, so nothing stopped; stopFailed {message}: the daemon's shutdown failed, so nothing
+// was removed; buildFailed {message}: up failed after the stop and the old container is gone, the CLI's own text, verbatim;
+// buildFailedKept {message}: up failed after the stop and the engine still lists the old container
+export type ContainerRebuildFailureCode = 'configRefused' | 'folderUntrusted' | 'composeUnsupported' | 'configFailed' | 'stopFailed' | 'buildFailed' | 'buildFailedKept' | 'reconnectFailed' | 'containerEngineMissing';
+export interface ContainerRebuildRun {
+  readonly steps: Readonly<Record<ContainerRebuildStep, PasswordlessStepState>>;
+  readonly log: BuildLog;
+  readonly result?: { readonly ok: true } | { readonly ok: false; readonly code: ContainerRebuildFailureCode; readonly message?: string };
+  readonly failed?: true;
+}
 // A host's setup and removal, always whole. Main keeps a finished run while a Connect dialog or Settings shows, and drops it
 // once neither does. revision grows with every snapshot main builds, so a view keeps the highest it heard.
 export interface HostOperations {
@@ -527,6 +712,8 @@ export interface HostOperations {
   readonly revision: number;
   readonly passwordless?: PasswordlessRun;
   readonly removal?: ServerRemovalRun;
+  readonly conversion?: WslConversionRun;
+  readonly rebuild?: ContainerRebuildRun;
 }
 
 // Characters of a "+ New host" input, a remote path and an ssh prompt answer the Connect channels accept.
@@ -544,6 +731,7 @@ export const OVERLAY_ICONS = [
   'arrow-up-from-line',
   'arrow-up-right',
   'at-sign',
+  'box',
   'check',
   'check-check',
   'cherry',
@@ -559,6 +747,7 @@ export const OVERLAY_ICONS = [
   'copy',
   'copy-plus',
   'copy-x',
+  'download',
   'eraser',
   'eye',
   'eye-off',
@@ -604,6 +793,7 @@ export const OVERLAY_ICONS = [
   'replace',
   'replace-all',
   'rotate-cw',
+  'scissors',
   'scroll-text',
   'search',
   'shapes',
@@ -703,6 +893,8 @@ export type OverlayMenuItem =
       // tints the glyph with --d-ansi-<index of the color in TERMINAL_COLORS>
       readonly color?: TerminalColor;
       readonly shortcut?: string;
+      // a second line under the label, within MAX_OVERLAY_LABEL_LENGTH
+      readonly hint?: string;
       readonly danger?: boolean;
       readonly disabled?: boolean;
       // why the item is disabled, shown where the shortcut sits; only with disabled, within MAX_OVERLAY_LABEL_LENGTH
@@ -809,6 +1001,8 @@ export type OverlayRequest =
       readonly defaultAction?: number;
       // lines shown verbatim in the mono font under the detail, e.g. the start of a paste with its control characters as symbols
       readonly preview?: readonly string[];
+      // a box above the buttons ("Don't ask again"); the answer carries its state
+      readonly checkbox?: MessageCheckbox;
     }
   // the title bar bell's menu, under the bell
   | { readonly kind: 'notifications'; readonly anchor: OverlayRect }
@@ -849,20 +1043,28 @@ export type OverlayRequest =
   | {
       readonly kind: 'connect';
       readonly hostId?: string;
-      // with hostId: the host's card, with its name field open for rename, starting no connection
-      readonly card?: 'rename' | 'show';
+      // with hostId: the host's card, with its name field open for rename, or its Rebuild Container confirmation, starting no
+      // connection
+      readonly card?: 'rename' | 'show' | 'rebuild';
       readonly hosts: readonly HostCardInfo[];
+      // this computer's WSL distros; empty off Windows or without wsl.exe
+      readonly distros: readonly WslDistroInfo[];
       // Host aliases of ~/.ssh/config that are not saved hosts yet
       readonly sshConfigAliases: readonly string[];
       readonly attempt?: ConnectStepEvent;
       // with hostId: the folder browser alone, as a remote core's picker, answering the picked path
       readonly pick?: RemotePick;
+      // without hostId: the host search filled in as if typed (an unsaved host the damocles command named), starting nothing
+      readonly query?: string;
     }
   // A close or quit while remote chats run (only main asks it): Keep running, Stop agents or Cancel; it stacks as a message
   // does, and its rows follow on closeRemoteRows
   | { readonly kind: 'closeRemote'; readonly rows: readonly CloseRemoteRow[] }
   // A target asks for this computer's git credential (only main asks it); it stacks as a message does
-  | ({ readonly kind: 'gitCredentialConsent' } & GitCredentialConsent);
+  | ({ readonly kind: 'gitCredentialConsent' } & GitCredentialConsent)
+  // What a devcontainer configuration runs and mounts, before its first up and whenever it changed (only main asks it); it
+  // stacks as a message does
+  | ({ readonly kind: 'devcontainerTrust' } & DevcontainerTrustRequest);
 
 // The host's name and tone come from this computer's host store; credentialHost is the https host the target's git asked
 // for, as main validated it; targetHelper: the target's git has a credential helper of its own that would save the credential.
@@ -938,6 +1140,12 @@ export const MAX_WORKTREE_COMMIT_MESSAGE_CHARS: number = 64 * 1024;
 
 export type MessageSeverity = 'info' | 'warning' | 'danger';
 
+// checked: its state when the dialog opens
+export interface MessageCheckbox {
+  readonly label: string;
+  readonly checked: boolean;
+}
+
 export type { InputValidation };
 
 // VS Code's showInputBox options that Damocles uses. Labels are localized by main.
@@ -953,6 +1161,8 @@ export interface InputRequest {
   readonly valueSelection?: readonly [number, number];
   // checked as the user types; Enter is refused while it fails, and main checks the answer again
   readonly validation?: InputValidation;
+  // why main refused the last answer, shown in place of the prompt until the next edit; main asks again with the typed value
+  readonly error?: string;
   // a masked box with no autocomplete or spellcheck whose value is never logged; never together with validation or value
   readonly password?: boolean;
   // an inline folder button inside the box (VS Code's inline input button); its click asks main through inputBrowse, which
@@ -994,6 +1204,7 @@ export function parseInputRequest(raw: unknown): Extract<OverlayRequest, { kind:
   const validation = own(raw, 'validation');
   const password = own(raw, 'password');
   const browse = own(raw, 'browse');
+  const error = own(raw, 'error');
   const label = (text: unknown, max: number): boolean => typeof text === 'string' && text.length > 0 && text.length <= max;
   if (!label(prompt, MAX_OVERLAY_TEXT_LENGTH)) return undefined;
   if (title !== undefined && !label(title, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
@@ -1001,6 +1212,7 @@ export function parseInputRequest(raw: unknown): Extract<OverlayRequest, { kind:
   if (value !== undefined && !(typeof value === 'string' && value.length <= MAX_INPUT_VALUE_LENGTH)) return undefined;
   if (validation !== undefined && !(INPUT_VALIDATIONS as readonly unknown[]).includes(validation)) return undefined;
   if (password !== undefined && (typeof password !== 'boolean' || (password && (validation !== undefined || value !== undefined)))) return undefined;
+  if (error !== undefined && (!label(error, MAX_OVERLAY_TEXT_LENGTH) || password === true)) return undefined;
   let tooltip: string | undefined;
   if (browse !== undefined) {
     if (!isRecordValue(browse) || Object.keys(browse).length !== 1 || password === true) return undefined;
@@ -1021,6 +1233,7 @@ export function parseInputRequest(raw: unknown): Extract<OverlayRequest, { kind:
     ...(value !== undefined ? { value } : {}),
     ...(selection ? { valueSelection: selection } : {}),
     ...(validation !== undefined ? { validation: validation as InputValidation } : {}),
+    ...(error !== undefined ? { error: error as string } : {}),
     ...(password === true ? { password: true } : {}),
     ...(tooltip !== undefined ? { browse: { tooltip } } : {}),
   };
@@ -1098,8 +1311,8 @@ export type OverlayAnswer =
   | { readonly kind: 'refPicker'; readonly choice: OverlayRefChoice }
   // sent once the modal's exit animation ended
   | { readonly kind: 'settings'; readonly closed: true }
-  // the index of the chosen action; null is Cancel
-  | { readonly kind: 'message'; readonly action: number | null }
+  // the index of the chosen action; null is Cancel. checked: the checkbox's state, present exactly when the request has one
+  | { readonly kind: 'message'; readonly action: number | null; readonly checked?: boolean }
   | { readonly kind: 'notifications'; readonly action: 'open'; readonly entryId: string }
   // one of the actions of an entry awaiting its answer; main refuses any other
   | { readonly kind: 'notifications'; readonly action: 'answer'; readonly entryId: string; readonly index: number }
@@ -1129,7 +1342,9 @@ export type OverlayAnswer =
   | { readonly kind: 'connect'; readonly path: string }
   // dontAskAgain only with keep or stop; Escape and the scrim answer cancel
   | { readonly kind: 'closeRemote'; readonly choice: CloseRemoteChoice; readonly dontAskAgain: boolean }
-  | { readonly kind: 'gitCredentialConsent'; readonly choice: GitCredentialConsentChoice };
+  | { readonly kind: 'gitCredentialConsent'; readonly choice: GitCredentialConsentChoice }
+  // Escape, the scrim and Cancel refuse as accept: false does
+  | { readonly kind: 'devcontainerTrust'; readonly accept: boolean };
 
 // Each answers only the dialog of the same name.
 export type WorktreeDialogAnswer =
@@ -1236,11 +1451,12 @@ export interface OverlayToast {
   readonly sticky?: true;
 }
 
+// The Connect dialog's filled-in search, at most this many characters.
+export const MAX_CONNECT_QUERY_LENGTH = 1024;
+
 export interface OverlayState {
   readonly locale: ShellLocale;
   readonly platform: ShellPlatform;
-  // remote features are on in this build; Settings lists Remote hosts only then
-  readonly remoteEnabled: boolean;
 }
 
 // CSS px of the measured toast stack with its margin, 0×0 when no toast shows; the area's bottom-right corner is the popup
@@ -1295,6 +1511,8 @@ export interface DamoclesOverlayApi {
   onToastDismiss(listener: (id: string) => void): () => void;
   // undefined action = dismissed
   resolveToast(id: string, action?: ToastAnswer): void;
+  // Copy on a link request's toast
+  copyToast(id: string): void;
   reportToastArea(area: OverlayToastArea): void;
   // the pointer moved onto a toast or the "N more" pill (true) or off them (false)
   reportToastPointer(over: boolean): void;
@@ -1388,17 +1606,30 @@ export interface DamoclesOverlayApi {
   // returns the unsubscribe
   onConnectStep(listener: (event: ConnectStepEvent) => void): () => void;
   onConnectHosts(listener: (hosts: readonly HostCardInfo[]) => void): () => void;
+  onConnectDistros(listener: (distros: readonly WslDistroInfo[]) => void): () => void;
   // answers closed unless a connect or closeRemote request is open
   allowBackgroundWork(hostId: string): Promise<PopupAnswer<LingerResult>>;
   // Settings > Remote hosts and the host card's actions; each answers closed unless a connect or settings request is open
   listRemoteHosts(): Promise<PopupAnswer<readonly RemoteHostEntry[]>>;
   setHostSetting(hostId: string, change: HostSettingChange): Promise<PopupAnswer<void>>;
   revokeCredentialHost(hostId: string, credentialHost: string): Promise<PopupAnswer<void>>;
+  deliverHeldMemory(hostId: string, queueId: string): Promise<PopupAnswer<HeldMemoryResult>>;
+  discardHeldMemory(hostId: string, queueId: string): Promise<PopupAnswer<HeldMemoryResult>>;
   setUpPasswordless(hostId: string): Promise<PopupAnswer<PasswordlessResult>>;
   removalInfo(hostId: string): Promise<PopupAnswer<RemovalInfo>>;
   removeServer(hostId: string, options: RemoveServerOptions): Promise<PopupAnswer<RemoveServerResult>>;
   retryRemoval(hostId: string): Promise<PopupAnswer<RemoveServerResult>>;
   getHostOperations(hostId: string): Promise<PopupAnswer<HostOperations>>;
+  // Convert to WSL 2: the running work to list in the confirmation, then the run itself, which a second call joins
+  conversionInfo(hostId: string): Promise<PopupAnswer<{ readonly runs: readonly RemovalRun[] }>>;
+  convertToWsl2(hostId: string): Promise<PopupAnswer<void>>;
+  // Rebuild Container: the running work to list in the confirmation, then the run itself, which a second call joins
+  rebuildInfo(hostId: string): Promise<PopupAnswer<{ readonly runs: readonly RemovalRun[] }>>;
+  rebuildContainer(hostId: string): Promise<PopupAnswer<void>>;
+  // the attach list and the devcontainer folder pick; each answers closed unless a connect request is open
+  listContainers(via?: string): Promise<PopupAnswer<ContainerListResult>>;
+  pickContainerFolder(): Promise<PopupAnswer<ContainerFolderPick | null>>;
+  checkContainerFolder(via: string, folder: string): Promise<PopupAnswer<ContainerFolderPick>>;
   forgetHost(hostId: string): Promise<PopupAnswer<void>>;
   // answers closed unless a connect request is open
   openHostSettings(hostId: string): Promise<PopupAnswer<void>>;

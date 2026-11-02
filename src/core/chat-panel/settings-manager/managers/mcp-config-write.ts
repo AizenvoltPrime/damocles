@@ -137,6 +137,8 @@ async function writeDamoclesMcpServers(
  * that outrank `~/.damocles/mcp.json` can actually reach the message.
  */
 const FILE_BY_SOURCE: Record<McpServerSource, string> = {
+  // a client's personal server, defined in one of its own MCP files, none on this host
+  relayed: "your computer's MCP config",
   workspace: ".mcp.json",
   damocles: "~/.damocles/mcp.json",
   "damocles-local": ".damocles/mcp.local.json",

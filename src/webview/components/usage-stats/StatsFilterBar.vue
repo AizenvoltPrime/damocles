@@ -10,8 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/u
 import { Switch } from '@/components/ui/switch';
 import { IconChevronLeft, IconChevronRight } from '@/components/icons';
 import StatsMultiSelect, { type StatsSelectOption } from './StatsMultiSelect.vue';
-import { folderName } from '@/lib/folder-name';
 import { useUsageStatsStore } from '@/stores/useUsageStatsStore';
+import { useStatsLabels } from './stats-labels';
 import { useStatsFormat } from '@/composables/useStatsFormat';
 import { STATS_PRESETS, customSpec, firstDayMs, localDateOf, presetSpec } from '@/composables/useStatsRange';
 import { NO_PROJECT_KEY } from '@shared/types/usage-stats';
@@ -19,6 +19,7 @@ import { NO_PROJECT_KEY } from '@shared/types/usage-stats';
 const { t, locale } = useI18n();
 const store = useUsageStatsStore();
 const format = useStatsFormat();
+const labels = useStatsLabels();
 
 const presetOptions = computed(() => STATS_PRESETS.map((preset) => ({ preset, label: t(`usageStats.presets.${preset}`) })));
 
@@ -85,8 +86,8 @@ const modelOptions = computed<StatsSelectOption[]>(() =>
 const projectOptions = computed<StatsSelectOption[]>(() =>
   (store.report?.filterOptions.projects ?? []).map((p) =>
     p.key === NO_PROJECT_KEY || p.cwd === null
-      ? { key: p.key, label: t('usageStats.filters.noProject') }
-      : { key: p.key, label: folderName(p.cwd), title: p.cwd },
+      ? { key: p.key, label: labels.projectOnHost(p.key, null, p.hostId) }
+      : { key: p.key, label: labels.projectOnHost(p.key, p.cwd, p.hostId), title: p.cwd },
   ),
 );
 </script>

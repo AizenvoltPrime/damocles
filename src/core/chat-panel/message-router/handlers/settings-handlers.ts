@@ -1,9 +1,15 @@
 import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../shared/types/messages";
 import { updateConfigAtEffectiveScope } from "../../settings-manager/utils";
+import type { SettingsScope } from "../../../../platform/settings-store";
 import { parseCacheWarmingMode } from "../../../../shared/types/constants";
 import { McpWriteError } from "../../settings-manager/managers/mcp-config-write";
-import { MCP_RESOURCE_EXPOSURE_SETTING, MCP_TOOL_EXPOSURE_SETTING, type McpToolExposureScope } from "../../../../shared/types/mcp";
+import { MCP_REMOTE_AVAILABLE_SETTING, MCP_RESOURCE_EXPOSURE_SETTING, MCP_TOOL_EXPOSURE_SETTING, RELAYABLE_SOURCES, type McpToolExposureScope } from "../../../../shared/types/mcp";
+import { settingsViewScope } from "../../settings-view-scope";
+import { forEachDevice } from "../../device-hosts";
+import { installedPlatform } from "../../../platform-host";
+import { userScopeRemote } from "../../../user-scope";
+import { relaysPersonalMcp, remoteAvailableNames } from "../../../pi-session/mcp/relayed-mcp";
 import {
   isToolExposureSetting,
   resolveResourceExposure,
@@ -35,10 +41,10 @@ import { bypassAllowed } from "../../../client-snapshots";
 import { PERMISSION_MODES } from "../../../../shared/types/settings";
 import { MODEL_PICKER_SETTING } from "../../../../shared/model-vendor";
 
-const EXPOSURE_SCOPES: readonly string[] = ["user", "project", "local"] satisfies McpToolExposureScope[];
+const EXPOSURE_SCOPES: readonly string[] = ["user", "machine", "project", "local"] satisfies McpToolExposureScope[];
 
 function exposureScopeLabel(scope: McpToolExposureScope): LocalizedText {
-  return scope === "user" ? l("User") : scope === "project" ? l("Project") : l("Local");
+  return scope === "user" ? l("User") : scope === "machine" ? l("Host") : scope === "project" ? l("Project") : l("Local");
 }
 
 const MAX_REQUEST_ID_LENGTH = 128;
@@ -93,18 +99,38 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     }
   }
 
-  /** An exposure setting's layers in the chat's folder, where `scope` sits among them, and that scope's own map. */
+  /**
+   * An exposure setting's layers in the chat's folder, the layers below and above `scope`, and that scope's own map. The
+   * machine layer, a daemon's core's host file, applies to the host's own servers, above the asking device's user layer.
+   */
   function exposureLayersAt(setting: string, scope: McpToolExposureScope, ctx: HandlerContext) {
     const inspection = platform.settings.inspect<unknown>(setting);
-    const layers = toolExposureLayers(inspection, platform.trust.isTrusted(ctx.folder.fsPath));
-    const current = scope === "user" ? inspection.userValue : scope === "project" ? inspection.projectValue : inspection.localValue;
-    return { layers, index: layers.findIndex((layer) => layer.scope === scope), current };
+    const layers = toolExposureLayers(inspection, platform.trust.isTrusted(ctx.folder.fsPath), scope === "machine");
+    const index = layers.findIndex((layer) => layer.scope === scope);
+    const current = { user: inspection.userValue, machine: inspection.machineValue, project: inspection.projectValue, local: inspection.localValue }[scope];
+    return { below: layers.slice(0, index), above: layers.slice(index + 1), current };
+  }
+
+  /** The store scope an exposure scope is written at: a daemon's core keeps its machine settings in its user file. */
+  const storeScope = (scope: McpToolExposureScope): SettingsScope => (scope === "machine" ? "user" : scope);
+
+  /** The host's machine settings hold only the host's own servers' exposure. */
+  function requireHostServer(scope: McpToolExposureScope, serverName: string, ctx: HandlerContext): void {
+    if (scope !== "machine") return;
+    const row = settingsManager.getMcpServersForUI(ctx.folder.key).find((status) => status.name === serverName);
+    if (row?.placement !== "host") throw new LocalizedError(l('MCP server "{0}" does not run on this host, so its settings are not saved here.', resourceLabel(undefined, serverName)));
+  }
+
+  /** A daemon's core writes its machine MCP files and settings only from the settings overlay's host tab. */
+  function mcpWriteRefused(): boolean {
+    return userScopeRemote() && settingsViewScope() !== "machine";
   }
 
   async function writeToolExposure(
     msg: Extract<WebviewToExtensionMessage, { type: "mcpSetToolExposure" }>,
     ctx: HandlerContext,
   ): Promise<void> {
+    if (mcpWriteRefused()) throw new LocalizedError(l("On a remote host, MCP settings change in Settings, on the host's tab."));
     if (!isToolExposureSetting(msg.exposure) || !EXPOSURE_SCOPES.includes(msg.scope)) throw new LocalizedError(l("Invalid MCP tool setting."));
     if (!settingsManager.getMcpToolExposureScopes(ctx.folder.key).includes(msg.scope)) {
       throw new LocalizedError(l("This folder cannot save MCP tool settings at the {0} scope.", exposureScopeLabel(msg.scope)));
@@ -112,10 +138,11 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     const server = (await ctx.session.getMcpServerStatus()).find((status) => status.name === msg.serverName);
     const tool = server?.tools?.find((candidate) => candidate.name === msg.toolName);
     if (!tool) throw new LocalizedError(l('MCP server "{0}" has no tool "{1}".', resourceLabel(undefined, msg.serverName), resourceLabel(undefined, msg.toolName)));
-    const { layers, index, current } = exposureLayersAt(MCP_TOOL_EXPOSURE_SETTING, msg.scope, ctx);
-    const next = toolExposureMapForScope(current, layers.slice(0, index), msg.serverName, msg.toolName, msg.exposure, tool.configExposure ?? "deferred");
-    await platform.settings.update(MCP_TOOL_EXPOSURE_SETTING, next, msg.scope);
-    const above = resolveToolExposure(layers.slice(index + 1), msg.serverName, msg.toolName, msg.exposure);
+    requireHostServer(msg.scope, msg.serverName, ctx);
+    const layers = exposureLayersAt(MCP_TOOL_EXPOSURE_SETTING, msg.scope, ctx);
+    const next = toolExposureMapForScope(layers.current, layers.below, msg.serverName, msg.toolName, msg.exposure, tool.configExposure ?? "deferred");
+    await platform.settings.update(MCP_TOOL_EXPOSURE_SETTING, next, storeScope(msg.scope));
+    const above = resolveToolExposure(layers.above, msg.serverName, msg.toolName, msg.exposure);
     if (above.source !== "config" && above.exposure !== msg.exposure) {
       postMessage(ctx.reply, {
         type: "notification",
@@ -133,16 +160,18 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     msg: Extract<WebviewToExtensionMessage, { type: "mcpSetResourceExposure" }>,
     ctx: HandlerContext,
   ): Promise<void> {
+    if (mcpWriteRefused()) throw new LocalizedError(l("On a remote host, MCP settings change in Settings, on the host's tab."));
     if (!isToolExposureSetting(msg.exposure) || !EXPOSURE_SCOPES.includes(msg.scope)) throw new LocalizedError(l("Invalid MCP resource setting."));
     if (!settingsManager.getMcpToolExposureScopes(ctx.folder.key).includes(msg.scope)) {
       throw new LocalizedError(l("This folder cannot save MCP resource settings at the {0} scope.", exposureScopeLabel(msg.scope)));
     }
     const server = (await ctx.session.getMcpServerStatus()).find((status) => status.name === msg.serverName);
     if (!server) throw new LocalizedError(l('MCP server "{0}" is not available in this folder.', resourceLabel(undefined, msg.serverName)));
-    const { layers, index, current } = exposureLayersAt(MCP_RESOURCE_EXPOSURE_SETTING, msg.scope, ctx);
-    const next = resourceExposureMapForScope(current, layers.slice(0, index), msg.serverName, msg.exposure, server.configResourceExposure ?? "deferred");
-    await platform.settings.update(MCP_RESOURCE_EXPOSURE_SETTING, next, msg.scope);
-    const above = resolveResourceExposure(layers.slice(index + 1), msg.serverName, msg.exposure);
+    requireHostServer(msg.scope, msg.serverName, ctx);
+    const layers = exposureLayersAt(MCP_RESOURCE_EXPOSURE_SETTING, msg.scope, ctx);
+    const next = resourceExposureMapForScope(layers.current, layers.below, msg.serverName, msg.exposure, server.configResourceExposure ?? "deferred");
+    await platform.settings.update(MCP_RESOURCE_EXPOSURE_SETTING, next, storeScope(msg.scope));
+    const above = resolveResourceExposure(layers.above, msg.serverName, msg.exposure);
     if (above.source !== "config" && above.exposure !== msg.exposure) {
       postMessage(ctx.reply, {
         type: "notification",
@@ -159,7 +188,8 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
   /** Each panel gets its own folder's server list, config errors and leak warning, never another folder's. */
   function sendMcpConfigToPanels(): void {
     for (const [, instance] of getPanels()) {
-      postMessage(instance.host, settingsManager.buildMcpConfigUpdate(instance.folder.key));
+      // per device on a daemon's core, whose rows hold each device's own relayed servers
+      forEachDevice(installedPlatform()?.remote, instance.host, (device) => postMessage(device, settingsManager.buildMcpConfigUpdate(instance.folder.key)));
     }
   }
 
@@ -195,6 +225,11 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     what: string,
     apply: () => Promise<void>,
   ): Promise<void> {
+    if (mcpWriteRefused()) {
+      log("[MessageRouter] Refused %s MCP server %s outside the host tab of a remote host's settings", what, serverName);
+      postMessage(ctx.reply, { type: "mcpWriteResult", requestId, ok: false, error: { code: "hostTabOnly" } });
+      return;
+    }
     try {
       await apply();
       await applyMcpConfigChange(ctx);
@@ -505,6 +540,24 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       }
     },
 
+    /** A personal server's "Available on remote hosts" mark, which only this computer's desktop core keeps. */
+    mcpSetRemoteAvailable: async (msg, ctx) => {
+      if (msg.type !== "mcpSetRemoteAvailable") return;
+      const server = settingsManager.getMcpServersForUI(ctx.folder.key).find((status) => status.name === msg.serverName);
+      if (!relaysPersonalMcp(platform) || !server?.source || !RELAYABLE_SOURCES.has(server.source)) {
+        log("[MessageRouter] Refused marking MCP server %s for remote hosts: not a personal server of this computer's desktop core", msg.serverName);
+        postMessage(ctx.reply, { type: "notification", message: l("Only a personal MCP server of this computer can be made available on remote hosts."), notificationType: "error" });
+        return;
+      }
+      await settingsManager.serializeSettingWrite(async () => {
+        const marked = new Set(remoteAvailableNames(platform.settings));
+        if (msg.available) marked.add(msg.serverName);
+        else marked.delete(msg.serverName);
+        await platform.settings.update(MCP_REMOTE_AVAILABLE_SETTING, [...marked].sort(), "user");
+      });
+      await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
+    },
+
     /**
      * The three `~/.damocles/mcp.json` mutations. Each applies the change, reloads the merged config,
      * re-feeds the live session so it takes effect with no window reload, refreshes every panel, and
@@ -607,8 +660,10 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     setMcpEnabled: async (msg, ctx) => {
       if (msg.type !== "setMcpEnabled") return;
-      const saved = await writeSetting(deps, ctx, "damocles.mcp.enabled", (detail) => l("Failed to save MCP setting: {0}", detail), () =>
-        updateConfigAtEffectiveScope(platform, "damocles.mcp.enabled", msg.enabled));
+      const saved = await writeSetting(deps, ctx, "damocles.mcp.enabled", (detail) => l("Failed to save MCP setting: {0}", detail), () => {
+        if (mcpWriteRefused()) throw new LocalizedError(l("On a remote host, MCP settings change in Settings, on the host's tab."));
+        return updateConfigAtEffectiveScope(platform, "damocles.mcp.enabled", msg.enabled);
+      });
       // Feed the master-gated set: disabling returns {} so live connections are torn down, not just
       // hidden; re-enabling re-feeds the enabled servers so they reconnect (M6).
       if (saved) feedMcpScopes();

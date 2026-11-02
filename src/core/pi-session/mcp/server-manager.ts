@@ -17,6 +17,7 @@ import type {
   ResourceTemplate,
 } from '@earendil-works/pi-mcp';
 import type { McpServerErrorInfo } from '../../../shared/types/mcp';
+import type { RelayedMcpServer } from '../../../shared/remote-user';
 import { MCP_STDERR_TAIL_CHARS } from '../../../shared/types/mcp';
 import type { McpClientBundle } from './mcp-client-loader';
 import {
@@ -87,6 +88,8 @@ export interface McpServerManagerOptions {
   onConnectionLost?: (serverName: string) => void;
   /** Builds the transport from the resolved definition instead of stdio / streamable HTTP. */
   transportFactory?: (serverName: string, definition: McpServerDefinition) => McpTransport | Promise<McpTransport>;
+  /** A daemon's core: the transport of a relayed server, whose requests its client runs. */
+  relayTransport?: (serverName: string, server: RelayedMcpServer) => McpTransport;
 }
 
 /** Keeps line breaks, flattens every other control character, and keeps the tail. */
@@ -104,6 +107,7 @@ export class McpServerManager {
   private readonly onListChanged: ((serverName: string) => void) | undefined;
   private readonly onConnectionLost: ((serverName: string) => void) | undefined;
   private readonly transportFactory: McpServerManagerOptions['transportFactory'];
+  private readonly relayTransport: McpServerManagerOptions['relayTransport'];
   private elicitationHandler: McpElicitationHandler | undefined;
 
   private connections = new Map<string, ServerConnection>();
@@ -122,6 +126,7 @@ export class McpServerManager {
     this.onListChanged = options.onListChanged;
     this.onConnectionLost = options.onConnectionLost;
     this.transportFactory = options.transportFactory;
+    this.relayTransport = options.relayTransport;
   }
 
   /** Enable elicitation (form) capability + register the request handler on every client (US-014.7). */
@@ -160,6 +165,11 @@ export class McpServerManager {
 
   /** Resolve the spec's values for this connect (rotated tokens apply), then connect over the matching transport. */
   private async createConnection(name: string, spec: McpServerSpec): Promise<ServerConnection> {
+    // a relayed server has no values to resolve and nothing to start here: its client runs it
+    if (spec.relay) {
+      if (!this.relayTransport) throw new Error(`MCP server "${name}" is relayed, and this core relays no server`);
+      return this.establish(name, normalizeServerConfig(spec.config), this.relayTransport(name, spec.relay), false);
+    }
     const shellPath = this.shellPath?.();
     const resolution = await resolveMcpServerValues(spec.config, {
       format: spec.valueFormat,

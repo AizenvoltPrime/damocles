@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2016
 # deb postinst and rpm %post. electron-builder expands the ${...} macros at build time, so shell variables are written as $NAME only.
 # rpm runs scriptlets with /bin/sh, so this stays POSIX sh.
 
@@ -6,14 +7,20 @@ APP_DIR='/opt/${sanitizedProductName}'
 EXECUTABLE='${executable}'
 PROFILE_SOURCE="$APP_DIR/resources/apparmor-profile"
 PROFILE_TARGET="/etc/apparmor.d/$EXECUTABLE"
+# the damocles command, which starts the app when given no arguments, as the app's binary did
+CLI="$APP_DIR/resources/bin/damocles"
 
 if command -v update-alternatives >/dev/null 2>&1; then
   if [ -L "/usr/bin/$EXECUTABLE" ] && [ -e "/usr/bin/$EXECUTABLE" ] && [ "$(readlink "/usr/bin/$EXECUTABLE")" != "/etc/alternatives/$EXECUTABLE" ]; then
     rm -f "/usr/bin/$EXECUTABLE"
   fi
-  update-alternatives --install "/usr/bin/$EXECUTABLE" "$EXECUTABLE" "$APP_DIR/$EXECUTABLE" 100 || ln -sf "$APP_DIR/$EXECUTABLE" "/usr/bin/$EXECUTABLE"
+  # earlier versions registered the app's binary itself as the alternative
+  if update-alternatives --display "$EXECUTABLE" 2>/dev/null | grep -qF "$APP_DIR/$EXECUTABLE - "; then
+    update-alternatives --remove "$EXECUTABLE" "$APP_DIR/$EXECUTABLE" || echo "Damocles: could not remove the earlier $EXECUTABLE alternative." >&2
+  fi
+  update-alternatives --install "/usr/bin/$EXECUTABLE" "$EXECUTABLE" "$CLI" 100 || ln -sf "$CLI" "/usr/bin/$EXECUTABLE"
 else
-  ln -sf "$APP_DIR/$EXECUTABLE" "/usr/bin/$EXECUTABLE"
+  ln -sf "$CLI" "/usr/bin/$EXECUTABLE"
 fi
 
 # The setuid helper is the Chromium sandbox wherever unprivileged user namespaces are unavailable; the app never runs with --no-sandbox.

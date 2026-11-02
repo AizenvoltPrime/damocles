@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import { applyHostTheme } from './apply-theme';
 import type { PanelTheme } from './panel-channels';
 import type { OverlayAnswer } from './overlay-channels';
@@ -17,9 +17,13 @@ import {
   type EditorSaveResult,
   type FileRef,
   type FilesChanged,
+  type FilesClipboardChanged,
   type FilesDeleteResult,
   type FilesListResult,
   type FilesMutationResult,
+  type FilesPasteResult,
+  type FilesTransferProgress,
+  type FilesTransferStartResult,
   type SearchCommandMessage,
   type SearchDone,
   type SearchEditorConfig,
@@ -70,6 +74,7 @@ import {
   type ScmCommitDetailsResult,
   type ScmView,
 } from './scm-channels';
+import { PORTS_CHANNELS, type DamoclesPortsApi, type PortsView } from './ports-channels';
 import { REVIEW_CHANNELS, type ChatReviewFileDiffResult, type ChatReviewSendResult, type DamoclesReviewApi } from './review-channels';
 import {
   TERMINAL_CHANNELS,
@@ -173,6 +178,9 @@ const terminal: DamoclesTerminalApi = {
   openLink: (request) => {
     ipcRenderer.send(TERMINAL_CHANNELS.openLink, { id: request.id, path: request.path, line: request.line, column: request.column });
   },
+  openWebLink: (request) => {
+    ipcRenderer.send(TERMINAL_CHANNELS.openWebLink, { id: request.id, url: request.url });
+  },
   rename: (request) => {
     ipcRenderer.send(TERMINAL_CHANNELS.rename, { id: request.id, name: request.name });
   },
@@ -235,6 +243,21 @@ const review: DamoclesReviewApi = {
   setDrafts: (request) => ipcRenderer.invoke(REVIEW_CHANNELS.setDrafts, { reviewId: request.reviewId, comments: plain(request.comments) }) as Promise<void>,
 };
 
+const ports: DamoclesPortsApi = {
+  get: (hostId) => ipcRenderer.invoke(PORTS_CHANNELS.get, { hostId }) as Promise<PortsView | null>,
+  onState: (listener) => subscribe<PortsView>(PORTS_CHANNELS.state, listener),
+  forward: (projectKey) => ipcRenderer.invoke(PORTS_CHANNELS.forward, { projectKey }) as Promise<void>,
+  forwardDetected: (projectKey, key) => ipcRenderer.invoke(PORTS_CHANNELS.forwardDetected, { projectKey, key }) as Promise<void>,
+  stop: (projectKey, key) => ipcRenderer.invoke(PORTS_CHANNELS.stop, { projectKey, key }) as Promise<void>,
+  setLabel: (projectKey, key) => ipcRenderer.invoke(PORTS_CHANNELS.setLabel, { projectKey, key }) as Promise<void>,
+  changeLocalPort: (projectKey, key) => ipcRenderer.invoke(PORTS_CHANNELS.changeLocalPort, { projectKey, key }) as Promise<void>,
+  setOnDetect: (projectKey, port, onDetect) => ipcRenderer.invoke(PORTS_CHANNELS.setOnDetect, { projectKey, port, onDetect }) as Promise<void>,
+  openInPane: (projectKey, key) => ipcRenderer.invoke(PORTS_CHANNELS.openInPane, { projectKey, key }) as Promise<void>,
+  openInBrowser: (projectKey, key) => ipcRenderer.invoke(PORTS_CHANNELS.openInBrowser, { projectKey, key }) as Promise<void>,
+  copyAddress: (projectKey, key) => ipcRenderer.invoke(PORTS_CHANNELS.copyAddress, { projectKey, key }) as Promise<void>,
+  undoFallback: (projectKey) => ipcRenderer.invoke(PORTS_CHANNELS.undoFallback, { projectKey }) as Promise<void>,
+};
+
 const api: DamoclesShellApi = {
   getState: () => ipcRenderer.invoke(SHELL_CHANNELS.getState) as Promise<ShellState>,
   onState: (listener) => subscribe<ShellState>(SHELL_CHANNELS.state, listener),
@@ -273,6 +296,11 @@ const api: DamoclesShellApi = {
   reorderProjects: (order) => ipcRenderer.invoke(SHELL_CHANNELS.projectsReorder, { order: [...order] }) as Promise<boolean>,
   reorderProjectGroups: (groupOrder) => ipcRenderer.invoke(SHELL_CHANNELS.projectsReorderGroups, { groupOrder: [...groupOrder] }) as Promise<boolean>,
   openAsProject: (request) => ipcRenderer.invoke(SHELL_CHANNELS.projectsOpenAsProject, { projectKey: request.projectKey, relativePath: request.relativePath }) as ReturnType<DamoclesShellApi['openAsProject']>,
+  listWslDistros: () => ipcRenderer.invoke(SHELL_CHANNELS.wslListDistros, {}) as ReturnType<DamoclesShellApi['listWslDistros']>,
+  reopenInWsl: (projectKey, distro) => ipcRenderer.invoke(SHELL_CHANNELS.wslReopen, distro === undefined ? { projectKey } : { projectKey, distro }) as ReturnType<DamoclesShellApi['reopenInWsl']>,
+  dismissWslNotice: (projectKey) => ipcRenderer.invoke(SHELL_CHANNELS.wslDismissNotice, { projectKey }) as Promise<void>,
+  reopenInContainer: (projectKey) => ipcRenderer.invoke(SHELL_CHANNELS.containersReopen, { projectKey }) as ReturnType<DamoclesShellApi['reopenInContainer']>,
+  rebuildContainer: (projectKey) => ipcRenderer.invoke(SHELL_CHANNELS.containersRebuild, { projectKey }) as Promise<void>,
   toggleSidebar: () => ipcRenderer.invoke(SHELL_CHANNELS.toggleSidebar) as Promise<void>,
   showSidebar: () => ipcRenderer.invoke(SHELL_CHANNELS.showSidebar) as Promise<void>,
   windowControl: (control) => ipcRenderer.invoke(SHELL_CHANNELS.windowControl, control) as Promise<void>,
@@ -323,6 +351,9 @@ const api: DamoclesShellApi = {
   reportFormatFailure: (failure) => {
     ipcRenderer.send(SHELL_CHANNELS.editorFormatFailed, { documentId: failure.documentId, reason: failure.reason, timedOut: failure.timedOut, message: failure.message });
   },
+  openEditorLink: (request) => {
+    ipcRenderer.send(SHELL_CHANNELS.editorOpenLink, { tabId: request.tabId, url: request.url });
+  },
   reportSelection: (report) => {
     const range = report.selection;
     const selection = range ? { startLine: range.startLine, startColumn: range.startColumn, endLine: range.endLine, endColumn: range.endColumn } : null;
@@ -354,6 +385,31 @@ const api: DamoclesShellApi = {
   revealFile: (file) => ipcRenderer.invoke(SHELL_CHANNELS.filesReveal, { projectKey: file.projectKey, relativePath: file.relativePath }) as Promise<void>,
   mentionFile: (file) => ipcRenderer.invoke(SHELL_CHANNELS.filesMention, { projectKey: file.projectKey, relativePath: file.relativePath }) as Promise<void>,
   onFilesChanged: (listener) => subscribe<FilesChanged>(SHELL_CHANNELS.filesChanged, listener),
+  copyFilesIn: (request) =>
+    ipcRenderer.invoke(SHELL_CHANNELS.filesCopyIn, {
+      projectKey: request.projectKey,
+      relativeDir: request.relativeDir,
+      paths: [...request.paths],
+      withoutPath: request.withoutPath,
+      origin: request.origin,
+    }) as Promise<FilesTransferStartResult>,
+  pickFilesToCopyIn: (folder) => ipcRenderer.invoke(SHELL_CHANNELS.filesPickCopyIn, { projectKey: folder.projectKey, relativePath: folder.relativePath }) as Promise<FilesTransferStartResult>,
+  dropFilesRow: (request) =>
+    ipcRenderer.invoke(SHELL_CHANNELS.filesDropRow, {
+      from: { projectKey: request.from.projectKey, relativePath: request.from.relativePath },
+      toDir: { projectKey: request.toDir.projectKey, relativePath: request.toDir.relativePath },
+      copy: request.copy,
+    }) as Promise<FilesTransferStartResult>,
+  setFilesClipboard: (request) =>
+    ipcRenderer.invoke(SHELL_CHANNELS.filesClipboardSet, { op: request.op, ref: { projectKey: request.ref.projectKey, relativePath: request.ref.relativePath } }) as Promise<void>,
+  clearFilesClipboard: () => ipcRenderer.invoke(SHELL_CHANNELS.filesClipboardClear, {}) as Promise<void>,
+  pasteFiles: (request) => ipcRenderer.invoke(SHELL_CHANNELS.filesPaste, { toDir: { projectKey: request.toDir.projectKey, relativePath: request.toDir.relativePath } }) as Promise<FilesPasteResult>,
+  downloadFile: (file) => ipcRenderer.invoke(SHELL_CHANNELS.filesDownload, { projectKey: file.projectKey, relativePath: file.relativePath }) as Promise<FilesTransferStartResult>,
+  cancelFilesTransfer: (transferId) => ipcRenderer.invoke(SHELL_CHANNELS.filesTransferCancel, { transferId }) as Promise<void>,
+  onFilesTransferProgress: (listener) => subscribe<FilesTransferProgress>(SHELL_CHANNELS.filesTransferProgress, listener),
+  onFilesClipboardChanged: (listener) => subscribe<FilesClipboardChanged>(SHELL_CHANNELS.filesClipboardChanged, listener),
+  // Main checks every path; anything that is not a File has no path, like a File made in the page.
+  pathsForFiles: (files) => Array.from(files, (file) => (file instanceof File ? webUtils.getPathForFile(file) : '')),
   openQuickOpen: () => ipcRenderer.invoke(SHELL_CHANNELS.quickOpen) as Promise<void>,
   showCommands: () => ipcRenderer.invoke(SHELL_CHANNELS.showCommands) as Promise<void>,
   reportDropZonesPointer: (pointer) => {
@@ -397,6 +453,7 @@ const api: DamoclesShellApi = {
   terminal,
   scm,
   review,
+  ports,
 };
 
 contextBridge.exposeInMainWorld('damoclesShell', api);

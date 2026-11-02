@@ -90,6 +90,9 @@ export const MENU_IDS = {
   connectToHost: 'damocles.remote.connectToHost',
   disconnectHost: 'damocles.remote.disconnectHost',
   openFolderOnHost: 'damocles.remote.openFolderOnHost',
+  forwardPort: 'damocles.remote.forwardPort',
+  installCliCommand: 'damocles.shellCommand.install',
+  uninstallCliCommand: 'damocles.shellCommand.uninstall',
   openFolderThroughLocalDaemon: 'damocles.developer.openFolderThroughLocalDaemon',
   showLocalDaemonLog: 'damocles.developer.showLocalDaemonLog',
   openSettings: 'damocles.openSettings',
@@ -630,16 +633,36 @@ function loopbackCommands(loopback: NonNullable<MenuActions['loopback']>): Comma
   ];
 }
 
-// Only while remote features are enabled (MenuActions.remote): the Connect dialog, a saved host's folders, and ending the selected
-// project's host connection.
-function remoteCommands(remote: NonNullable<MenuActions['remote']>): Command[] {
+// The Connect dialog, a saved host's folders, and ending the selected project's host connection.
+function remoteCommands(remote: MenuActions['remote']): Command[] {
   const category = t('Remote');
   const hostSaved = (context: MenuState): boolean => context.remoteHostSaved;
   return [
     { id: MENU_IDS.connectToHost, title: t('Connect to Host...'), category, run: () => remote.connectToHost() },
     { id: MENU_IDS.openFolderOnHost, title: t('Open Folder on Host...'), category, enabled: hostSaved, palette: hostSaved, run: () => remote.openFolderOnHost() },
     { id: MENU_IDS.disconnectHost, title: t('Disconnect Host'), category, enabled: (context) => context.remoteHostConnected, run: () => remote.disconnectHost() },
+    // the Ports section's Forward a Port, for the selected project's host, which must be connected to reach the port
+    { id: MENU_IDS.forwardPort, title: t('Forward a Port...'), category: t('Ports'), enabled: (context) => context.remoteHostConnected, palette: (context) => context.remoteHostConnected, run: () => remote.forwardPort() },
   ];
+}
+
+// The damocles command on PATH, in the palette and beside About in the app or Help menu, in each OS's own words: Windows
+// edits the user's Path, macOS links /usr/local/bin.
+function cliCommands(cli: NonNullable<MenuActions['cliCommand']>, platform: NodeJS.Platform): Command[] {
+  const category = t('Shell Command');
+  if (platform === 'win32') {
+    return [
+      { id: MENU_IDS.installCliCommand, title: t('Add \'damocles\' command to PATH'), category, run: () => cli.install() },
+      { id: MENU_IDS.uninstallCliCommand, title: t('Remove \'damocles\' command from PATH'), category, run: () => cli.uninstall() },
+    ];
+  }
+  if (platform === 'darwin') {
+    return [
+      { id: MENU_IDS.installCliCommand, title: t('Install \'damocles\' command in PATH'), category, run: () => cli.install() },
+      { id: MENU_IDS.uninstallCliCommand, title: t('Uninstall \'damocles\' command from PATH'), category, run: () => cli.uninstall() },
+    ];
+  }
+  return [];
 }
 
 /** Every desktop command, the per-project ones included; ids are unique. */
@@ -804,7 +827,8 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
     { id: MENU_IDS.showLog, title: pkg('command.showLog.title'), category: chat, run: () => actions.showLog() },
     // VS Code's Restart Extension Host: a new engine replaces the running one, or the one left down after its fourth crash
     { id: MENU_IDS.restartEngine, title: t('Restart Engine'), category: chat, run: () => actions.restartEngine() },
-    ...(actions.remote ? remoteCommands(actions.remote) : []),
+    ...remoteCommands(actions.remote),
+    ...(actions.cliCommand ? cliCommands(actions.cliCommand, platform) : []),
     ...(actions.loopback ? loopbackCommands(actions.loopback) : []),
     { id: MENU_IDS.about, title: t('About Damocles'), category: help, run: () => actions.about() },
     { id: MENU_IDS.releaseNotes, title: t('Release Notes'), category: help, run: () => actions.releaseNotes() },

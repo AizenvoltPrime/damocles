@@ -26,6 +26,8 @@ export interface ArtifactCacheOptions {
 export interface ArtifactCache {
   /** The verified package of `target` on this computer, downloaded first when the cache lacks it. */
   packagePath(target: ServerTarget): Promise<string>;
+  /** The folder every packagePath answer lies in, whether or not it holds the package yet. */
+  packageFolder(): string;
 }
 
 async function digestOf(file: string): Promise<{ readonly sha256: string; readonly size: number } | undefined> {
@@ -134,6 +136,7 @@ export function createArtifactCache(options: ArtifactCacheOptions): ArtifactCach
   };
 
   return {
+    packageFolder: () => options.devDir ?? path.join(options.cacheRoot, manifest.version),
     packagePath: (target) => {
       let filling = pending.get(target);
       if (!filling) {

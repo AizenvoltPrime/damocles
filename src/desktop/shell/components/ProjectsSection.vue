@@ -2,7 +2,7 @@
 import { computed, getCurrentScope, nextTick, ref, shallowRef, useId, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useEventListener } from '@vueuse/core';
-import { FolderPlus, Plug } from 'lucide-vue-next';
+import { FolderPlus, LoaderCircle, Plug } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import SegmentedToggle, { type SegmentedOption } from '@/components/SegmentedToggle.vue';
 import { remPx } from '@/composables/useRemPx';
@@ -11,16 +11,16 @@ import { prefersReducedMotion } from '@/utils/reducedMotion';
 import type { DamoclesShellApi, ProjectConnection, ProjectsView, ShellHost, ShellPlatform, ShellProject, ShellProjectGroups } from '../../preload/shell-channels';
 import type { NameCheck, OverlayMenuItem, OverlayRect } from '../../preload/overlay-channels';
 import SidebarSection from './SidebarSection.vue';
-import ProjectRow from './ProjectRow.vue';
+import ProjectEntry from './ProjectEntry.vue';
 import ProjectGroup from './ProjectGroup.vue';
 import { moveGroup, moveProject, moveProjectInGroup, stepGroup, stepProject, type OrderedProject, type ReorderResult } from './project-reorder';
+import { distroHint, offersReopenInWsl, reopenFailureText, wslNoticeDistro } from './wsl-reopen';
 
 const props = defineProps<{
   api: DamoclesShellApi;
   projects: readonly ShellProject[];
   selectedKey: string | undefined;
-  // remote entry points show only while remote is enabled; hosts are the saved SSH hosts
-  remoteEnabled: boolean;
+  // the saved SSH hosts, WSL distros and containers
   hosts: readonly ShellHost[];
   view: ProjectsView;
   groups: ShellProjectGroups;
@@ -106,7 +106,7 @@ const activeRow = computed(() => {
 });
 
 // The inline line under the list: only the latest refusal shows, and any later action on the list clears it.
-interface Refusal { readonly text: string; readonly action?: { readonly label: string; readonly run: () => Promise<void> } }
+interface Refusal { readonly text: string; readonly code?: string; readonly action?: { readonly label: string; readonly run: () => Promise<void> } }
 const refusal = shallowRef<Refusal | undefined>();
 const announcement = ref('');
 
@@ -142,11 +142,6 @@ const addButton = ref<InstanceType<typeof Button> | null>(null);
 const addMenuOpen = ref(false);
 async function openAddMenu(): Promise<void> {
   refusal.value = undefined;
-  // Without remote features the only entry is a local folder, so the button opens the OS picker as it always did.
-  if (!props.remoteEnabled) {
-    await props.api.addProject();
-    return;
-  }
   if (addMenuOpen.value) return;
   addMenuOpen.value = true;
   try {
@@ -223,11 +218,80 @@ const moveItems = (up: ReorderResult, down: ReorderResult): OverlayMenuItem[] =>
   { kind: 'item', id: 'moveDown', label: t('projects.moveDown'), shortcut: props.platform === 'darwin' ? '⌥↓' : 'Alt+Down', disabled: !down.ok },
 ];
 
+// A WSL folder reopens in its own distro; a Windows folder in the distro the user picks, through /mnt, after saying what that costs.
+// A rejected reopen is an error main has already shown as a toast.
+const wslWrapped = (project: ShellProject): boolean => project.authority.kind === 'local' && project.wsl !== undefined;
+const reopening = ref<{ readonly name: string; readonly distro: string } | undefined>();
+
+async function reopenInWsl(project: ShellProject, distro: string, picked: boolean): Promise<void> {
+  if (reopening.value) return;
+  refusal.value = undefined;
+  reopening.value = { name: project.name, distro };
+  try {
+    const result = await (picked ? props.api.reopenInWsl(project.key, distro) : props.api.reopenInWsl(project.key));
+    if (!result.ok) refusal.value = { text: reopenFailureText(result, { name: project.name, distro }, t), code: result.code };
+  } catch (error) {
+    console.error('[projects] reopening the folder in WSL failed', error);
+  } finally {
+    reopening.value = undefined;
+  }
+}
+
+const DISTRO_ITEM = 'distro:';
+async function reopenFolderInWsl(project: ShellProject, anchor: OverlayRect): Promise<void> {
+  let distros: Awaited<ReturnType<DamoclesShellApi['listWslDistros']>>;
+  try {
+    distros = await props.api.listWslDistros();
+  } catch {
+    refusal.value = { text: t('projects.wsl.listFailed'), code: 'listFailed' };
+    return;
+  }
+  if (distros.length === 0) {
+    refusal.value = { text: t('projects.wsl.noDistros'), code: 'noDistros' };
+    return;
+  }
+  const items = distros.map((distro): OverlayMenuItem => ({ kind: 'item', id: `${DISTRO_ITEM}${distro.distro}`, label: distro.distro, icon: 'square-terminal', hint: distroHint(distro, t) }));
+  const picked = await props.api.requestOverlay({ kind: 'menu', label: t('projects.wsl.pickLabel', { name: project.name }), anchor, items });
+  if (picked.kind !== 'menu' || !picked.itemId.startsWith(DISTRO_ITEM)) return;
+  const distro = distros.find((candidate) => candidate.distro === picked.itemId.slice(DISTRO_ITEM.length));
+  if (!distro) return;
+  const confirmed = await props.api.requestOverlay({
+    kind: 'confirm',
+    title: t('projects.wsl.confirmTitle', { name: project.name, distro: distro.distro }),
+    message: t('projects.wsl.confirmMessage', { name: project.name, distro: distro.distro }),
+    detail: { label: t('projects.wsl.folder'), text: project.fsPath },
+    warning: { text: t('projects.wsl.confirmWarning', { distro: distro.distro }), running: false },
+    confirmLabel: t('projects.wsl.confirm'),
+    cancelLabel: t('projects.wsl.cancel'),
+    danger: false,
+  });
+  if (confirmed.kind === 'confirm' && confirmed.confirmed) await reopenInWsl(project, distro.distro, true);
+}
+
+// A local or SSH folder with a devcontainer configuration offers Reopen in Container; main opens the Connect dialog on its attempt.
+async function reopenInContainer(project: ShellProject): Promise<void> {
+  refusal.value = undefined;
+  try {
+    const result = await props.api.reopenInContainer(project.key);
+    // a failed or cancelled attempt is shown in the Connect dialog's timeline, which main opened
+    if (!result.ok && (result.code === 'noDevcontainerConfig' || result.code === 'notLocalOrSsh')) refusal.value = { text: t(`projects.container.failure.${result.code}`, { name: project.name }), code: result.code };
+  } catch (error) {
+    console.error('[projects] reopening the folder in a container failed', error);
+  }
+}
+
 async function openProjectMenu(project: ShellProject, anchor: OverlayRect): Promise<void> {
   activeId.value = `p:${project.key}`;
-  const hostId = props.remoteEnabled ? project.authority.hostId : undefined;
+  const hostId = project.authority.hostId;
+  const wslDistro = wslWrapped(project) ? project.wsl?.distro : undefined;
+  const devcontainerConfig = wslWrapped(project) ? undefined : project.devcontainerConfig;
+  const rebuildable = project.authority.kind === 'container' && hostOf(project.authority.key)?.container?.origin === 'devcontainer';
   const items: OverlayMenuItem[] = [
     ...(project.trusted ? [] : [{ kind: 'item', id: 'trust', label: t('projects.trust'), icon: 'shield-check' } as const, { kind: 'separator' } as const]),
+    ...(wslDistro === undefined ? [] : [{ kind: 'item', id: 'reopenInWslDistro', label: t('wsl.notice.reopen'), icon: 'square-terminal', hint: wslDistro } as const, { kind: 'separator' } as const]),
+    ...(offersReopenInWsl(project, props.platform) ? [{ kind: 'item', id: 'reopenInWsl', label: t('projects.reopenInWsl'), icon: 'square-terminal' } as const, { kind: 'separator' } as const] : []),
+    ...(devcontainerConfig === undefined ? [] : [{ kind: 'item', id: 'reopenInContainer', label: t('projects.container.reopen'), icon: 'box', hint: devcontainerConfig } as const, { kind: 'separator' } as const]),
+    ...(rebuildable ? [{ kind: 'item', id: 'rebuildContainer', label: t('projects.container.rebuild'), icon: 'rotate-cw' } as const, { kind: 'separator' } as const] : []),
     ...(hostId === undefined ? [] : [
       { kind: 'item', id: 'openFolder', label: t('projects.openAnotherFolder', { name: project.authority.name }), icon: 'folder-plus' } as const,
       { kind: 'item', id: 'rename', label: t('projects.renameHost', { name: project.authority.name }), icon: 'pencil' } as const,
@@ -241,6 +305,10 @@ async function openProjectMenu(project: ShellProject, anchor: OverlayRect): Prom
   if (answer.kind !== 'menu') return;
   const row = rows.value.find((candidate) => candidate.id === `p:${project.key}`);
   if (answer.itemId === 'trust') trust(project);
+  else if (answer.itemId === 'reopenInWsl') await reopenFolderInWsl(project, anchor);
+  else if (answer.itemId === 'reopenInWslDistro' && wslDistro !== undefined) await reopenInWsl(project, wslDistro, false);
+  else if (answer.itemId === 'reopenInContainer') await reopenInContainer(project);
+  else if (answer.itemId === 'rebuildContainer') await props.api.rebuildContainer(project.key);
   else if (answer.itemId === 'remove') await remove(project);
   else if (answer.itemId === 'moveUp' && row) await stepRow(row, -1);
   else if (answer.itemId === 'moveDown' && row) await stepRow(row, 1);
@@ -254,7 +322,7 @@ async function openProjectMenu(project: ShellProject, anchor: OverlayRect): Prom
 
 async function openGroupMenu(group: GroupView, anchor: OverlayRect): Promise<void> {
   activeId.value = `g:${group.key}`;
-  const hostId = props.remoteEnabled ? group.hostId : undefined;
+  const hostId = group.hostId;
   const items: OverlayMenuItem[] = [
     ...(hostId === undefined ? [] : [
       { kind: 'item', id: 'openFolder', label: t('projects.group.openFolder', { name: group.name }), icon: 'folder-plus' } as const,
@@ -471,7 +539,7 @@ function refuseDrop(project: ShellProject, target: GroupView): void {
   const hostId = target.hostId;
   const action = target.key === LOCAL_GROUP
     ? { label: t('projects.openLocalFolder'), run: () => props.api.addProject() }
-    : hostId !== undefined && props.remoteEnabled ? { label: t('projects.group.openFolder', { name: target.name }), run: () => props.api.openHostFolder(hostId) } : undefined;
+    : hostId !== undefined ? { label: t('projects.group.openFolder', { name: target.name }), run: () => props.api.openHostFolder(hostId) } : undefined;
   refusal.value = action ? { text, action } : { text };
 }
 
@@ -657,7 +725,6 @@ defineExpose({
     </template>
     <template #actions>
       <Button
-        v-if="remoteEnabled"
         type="button"
         variant="ghost"
         size="icon-sm"
@@ -679,8 +746,8 @@ defineExpose({
         size="icon-sm"
         data-testid="add-project"
         class="size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
-        :aria-haspopup="remoteEnabled ? 'menu' : undefined"
-        :aria-expanded="remoteEnabled ? addMenuOpen : undefined"
+        aria-haspopup="menu"
+        :aria-expanded="addMenuOpen"
         :aria-label="t('projects.add')"
         :title="t('projects.add')"
         @click="openAddMenu"
@@ -716,11 +783,14 @@ defineExpose({
       @transitionend="onDragEnd"
     >
       <template v-if="!grouped">
-        <ProjectRow
+        <ProjectEntry
           v-for="(project, index) in projects"
           :id="`${listId}-p${index}`"
           :key="project.key"
           v-bind="dragAttrs(`p:${project.key}`)"
+          :api="api"
+          :wrapped="wslWrapped(project)"
+          :notice-distro="wslNoticeDistro(project)"
           :project="project"
           :selected="project.key === selectedKey"
           :active="activeRow?.id === `p:${project.key}`"
@@ -759,11 +829,14 @@ defineExpose({
             v-bind="revealing.has(group.key) ? { enterActiveClass: 'd-row-reveal' } : {}"
             leave-active-class="t-tuck-leave-active"
           >
-            <ProjectRow
+            <ProjectEntry
               v-for="(project, at) in group.collapsed ? [] : group.projects"
               :id="`${listId}-p${projectIndex.get(project.key)}`"
               :key="project.key"
               v-bind="dragAttrs(`p:${project.key}`)"
+              :api="api"
+              :wrapped="wslWrapped(project)"
+              :notice-distro="wslNoticeDistro(project)"
               :project="project"
               :selected="project.key === selectedKey"
               :active="activeRow?.id === `p:${project.key}`"
@@ -786,10 +859,33 @@ defineExpose({
     >
       {{ t('projects.keyboardHelp') }}
     </p>
+    <!-- The status below says it; a live region inserted already filled may go unannounced. -->
+    <Transition name="t-tuck">
+      <p
+        v-if="reopening"
+        aria-hidden="true"
+        data-testid="projects-reopening"
+        class="flex items-center gap-1.5 px-3 pb-2 text-xs text-(--d-muted)"
+      >
+        <LoaderCircle
+          aria-hidden="true"
+          class="size-3 shrink-0 d-spinning"
+        />
+        {{ t('projects.wsl.reopening', { name: reopening.name, distro: reopening.distro }) }}
+      </p>
+    </Transition>
+    <p
+      role="status"
+      data-testid="projects-reopening-status"
+      class="sr-only"
+    >
+      {{ reopening ? t('projects.wsl.reopening', { name: reopening.name, distro: reopening.distro }) : '' }}
+    </p>
     <p
       v-if="refusal"
       role="alert"
       data-testid="projects-refusal"
+      :data-code="refusal.code"
       class="px-3 pb-2 text-xs text-(--d-danger-text)"
     >
       {{ refusal.text }}

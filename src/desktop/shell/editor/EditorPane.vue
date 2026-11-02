@@ -17,6 +17,7 @@ import ImagePreview from './ImagePreview.vue';
 import BrowserTab from './BrowserTab.vue';
 import SearchEditorTab from './SearchEditorTab.vue';
 import ScmChangesTab from './ScmChangesTab.vue';
+import PatchChangesTab from './PatchChangesTab.vue';
 import ChatReviewTab from './ChatReviewTab.vue';
 import TimelineTab from './TimelineTab.vue';
 import MergeEditor from './merge/MergeEditor.vue';
@@ -68,6 +69,7 @@ async function reconnect(hostId: string): Promise<void> {
 const diffTab = computed(() => (tab.value?.diff ? (tab.value as ShellEditorTab & { diff: NonNullable<ShellEditorTab['diff']> }) : undefined));
 const searchEditorTab = computed(() => (tab.value?.searchEditor && tab.value.documentId !== undefined ? (tab.value as ShellEditorTab & { searchEditor: NonNullable<ShellEditorTab['searchEditor']> }) : undefined));
 const changesTab = computed(() => (tab.value?.changes ? (tab.value as ShellEditorTab & { changes: NonNullable<ShellEditorTab['changes']> }) : undefined));
+const patchTab = computed(() => (tab.value?.patch ? (tab.value as ShellEditorTab & { patch: NonNullable<ShellEditorTab['patch']> }) : undefined));
 const browserTab = computed(() => (tab.value?.browser ? (tab.value as ShellEditorTab & { browser: NonNullable<ShellEditorTab['browser']> }) : undefined));
 const reviewTab = computed(() => (tab.value?.review ? (tab.value as ShellEditorTab & { review: NonNullable<ShellEditorTab['review']> }) : undefined));
 const timelineTab = computed(() => (tab.value?.timeline && tab.value.kind === 'timeline' ? (tab.value as ShellEditorTab & { timeline: NonNullable<ShellEditorTab['timeline']> }) : undefined));
@@ -333,6 +335,12 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
           v-else-if="changesTab"
           :key="changesTab.id"
           :tab="changesTab"
+        />
+        <PatchChangesTab
+          v-else-if="patchTab"
+          :key="patchTab.id"
+          :api="api"
+          :tab="patchTab"
         />
         <ChatReviewTab
           v-else-if="reviewTab"

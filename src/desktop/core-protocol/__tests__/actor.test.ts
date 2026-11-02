@@ -37,7 +37,7 @@ afterEach(() => {
 function daemon() {
   const coreLoop = createLoopback();
   const core = createCoreEndpoint(coreLoop.core, quiet, undefined, processActor);
-  router = createCoreRouter({ core: createMainEndpoint(coreLoop.main, quiet, undefined, processActor), state, registry: createRunRegistry(), mirrors: createClientMirrors(), secrets: new Map(), e2eHooks: false, reload: () => undefined, log: quiet });
+  router = createCoreRouter({ core: createMainEndpoint(coreLoop.main, quiet, undefined, processActor), state, registry: createRunRegistry(), mirrors: createClientMirrors(), secrets: new Map(), e2eHooks: false, reload: () => undefined, agentShellUrl: () => undefined, clientPolicyChanged: () => undefined, log: quiet });
   const attached = router;
   const client = (clientId: string): { readonly main: MainEndpoint; readonly raw: { post(message: unknown): void } } => {
     const loop = createLoopback();

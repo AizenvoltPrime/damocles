@@ -21,6 +21,9 @@ let openFailures: number;
 let copied: string[];
 let newPages: DesktopPanel[];
 let focusAway: number;
+// the typed addresses a remote chat's page asked main to move to their forward, and what main answers
+let remoteAddresses: string[];
+let remoteAddressAnswer: (url: string) => string | undefined | Promise<string | undefined>;
 
 // The editor pane as far as the browser tabs see it: one active tab, a file tab to fall back to, and the shell's focus requests.
 function fakeEditor(): BrowserTabsEditor & { active: string | null; focused: string[]; shown: number; republished: number; tabs: BrowserTabs | undefined; activateFile(): void; set(tabId: string | null): void } {
@@ -80,6 +83,11 @@ function setup(width = 1200) {
     focusAway: () => {
       focusAway++;
     },
+    remoteAddress: async (_chat, url) => {
+      remoteAddresses.push(url);
+      return remoteAddressAnswer(url);
+    },
+    forwardedFrom: (_chat, url) => ({ hostId: 'host-1', hostName: 'prod-1', targetUrl: url.replace(':5174', ':5173') }),
   });
   editor.tabs = tabs;
   const views = new PanelViews({
@@ -89,10 +97,12 @@ function setup(width = 1200) {
     pageStrings: () => { throw new Error('no page is built here'); },
     language: () => 'en',
     hostLabel: () => undefined,
+    hostNames: () => ({}),
     onHostAction: () => undefined,
     connection: () => undefined,
     onQueueAction: () => undefined,
     takeCoreMessage: () => false,
+    openRemoteLink: () => undefined,
     states,
     pages: tabs,
     log: () => undefined,
@@ -128,6 +138,8 @@ beforeEach(() => {
   copied = [];
   newPages = [];
   focusAway = 0;
+  remoteAddresses = [];
+  remoteAddressAnswer = (url) => url;
 });
 
 describe('ownership', () => {
@@ -141,7 +153,7 @@ describe('ownership', () => {
     expect(ids(tabs)).toEqual([bPage.panelId]);
     expect(tabs.tabs()[0]).toMatchObject({ kind: 'browser', title: 'page', displayPath: 'https://b.example/', browser: { url: 'https://b.example/', loading: false } });
     await expect(tabs.action(aPage.panelId, 'reload')).rejects.toThrow('Unknown page');
-    expect(() => tabs.navigate(aPage.panelId, 'https://x.example/')).toThrow('Unknown page');
+    await expect(tabs.navigate(aPage.panelId, 'https://x.example/')).rejects.toThrow('Unknown page');
     expect(() => tabs.close(aPage.panelId)).toThrow('Unknown page');
     expect(aPage.isDisposed).toBe(false);
 
@@ -377,6 +389,16 @@ describe('focus', () => {
     expect(focusAway).toBe(2);
   });
 
+  it('opens a chat page\'s own blank page in that chat only while it is still selected', async () => {
+    const { tabs, chat } = setup();
+    const a = chat();
+    const b = chat();
+    await tabs.newPage(a);
+    expect(newPages).toEqual([]);
+    await tabs.newPage(b);
+    expect(newPages).toEqual([b]);
+  });
+
   it('focuses the tab of a blank page a user asked for, and only that one', async () => {
     const { tabs, editor, chat } = setup();
     const a = chat();
@@ -397,7 +419,7 @@ describe('navigation bar and tab actions', () => {
     const delivered: unknown[] = [];
     shown.onMessage((message) => delivered.push(message));
     for (const action of ['back', 'forward', 'reload', 'pickElement', 'devTools'] as const) await tabs.action(shown.panelId, action);
-    expect(tabs.navigate(shown.panelId, 'example.com/x')).toBe(true);
+    expect(await tabs.navigate(shown.panelId, 'example.com/x')).toBe(true);
     expect(delivered).toEqual([
       { type: 'goBack' },
       { type: 'goForward' },
@@ -407,32 +429,77 @@ describe('navigation bar and tab actions', () => {
       { type: 'navigate', url: 'example.com/x' },
     ]);
     delivered.length = 0;
-    expect(tabs.navigate(shown.panelId, 'devbox:8080')).toBe(true);
-    expect(tabs.navigate(shown.panelId, 'https://example.com/y')).toBe(true);
+    expect(await tabs.navigate(shown.panelId, 'devbox:8080')).toBe(true);
+    expect(await tabs.navigate(shown.panelId, 'https://example.com/y')).toBe(true);
     expect(delivered).toEqual([{ type: 'navigate', url: 'devbox:8080' }, { type: 'navigate', url: 'https://example.com/y' }]);
   });
 
-  it('refuses whatever isNavigableUrl refuses and navigates nothing then', () => {
+  it('refuses whatever isNavigableUrl refuses and navigates nothing then', async () => {
     const { tabs, chat, page } = setup();
     const a = chat();
     const shown = page(a, 'https://a.example/');
     const delivered: unknown[] = [];
     shown.onMessage((message) => delivered.push(message));
     for (const refused of ['file:///c:/Windows/win.ini', 'javascript:alert(1)', 'data:text/html,x', 'chrome://settings', '   ', 'x'.repeat(8193)]) {
-      expect(tabs.navigate(shown.panelId, refused)).toBe(false);
+      expect(await tabs.navigate(shown.panelId, refused)).toBe(false);
     }
     expect(delivered).toEqual([]);
   });
 
   // Core reads the text it is sent with the same rule (src/core/browser/__tests__/panel-wiring.test.ts runs the same table).
-  it.each([...UPGRADED, ...HTTP_AT_ONCE, ...AS_TYPED])('sends %s to core as typed', (_kind, typed) => {
+  it.each([...UPGRADED, ...HTTP_AT_ONCE, ...AS_TYPED])('sends %s to core as typed', async (_kind, typed) => {
     const { tabs, chat, page } = setup();
     const shown = page(chat(), 'https://a.example/');
     const delivered: unknown[] = [];
     shown.onMessage((message) => delivered.push(message));
     expect(isTypedAddress(typed)).toBe(true);
-    expect(tabs.navigate(shown.panelId, typed)).toBe(true);
+    expect(await tabs.navigate(shown.panelId, typed)).toBe(true);
     expect(delivered).toEqual([{ type: 'navigate', url: typed.trim() }]);
+  });
+
+  it('moves a remote chat\'s typed address to its forward and navigates nothing when the guard refuses it', async () => {
+    const { tabs, views, page } = setup();
+    const remote = views.create({ options: CHAT, authority: 'ssh+host-1' });
+    views.show(remote.panelId, { focus: true });
+    const shown = page(remote, 'http://localhost:5174/');
+    const delivered: unknown[] = [];
+    shown.onMessage((message) => delivered.push(message));
+    remoteAddressAnswer = (url) => url.replace(':5173', ':5174');
+    expect(await tabs.navigate(shown.panelId, 'localhost:5173/app')).toBe(true);
+    remoteAddressAnswer = () => undefined;
+    expect(await tabs.navigate(shown.panelId, '192.168.1.1')).toBe(false);
+    expect(remoteAddresses).toEqual(['http://localhost:5173/app', 'http://192.168.1.1/']);
+    expect(delivered).toEqual([{ type: 'navigate', url: 'http://localhost:5174/app' }]);
+  });
+
+  it('navigates a remote chat\'s page to its latest typed address when an earlier one\'s forward resolves later', async () => {
+    const { tabs, views, page } = setup();
+    const remote = views.create({ options: CHAT, authority: 'ssh+host-1' });
+    views.show(remote.panelId, { focus: true });
+    const shown = page(remote, 'http://localhost:5174/');
+    const delivered: unknown[] = [];
+    shown.onMessage((message) => delivered.push(message));
+    const answers = new Map<string, (local: string) => void>();
+    remoteAddressAnswer = (url) => new Promise((resolve) => answers.set(url, resolve));
+    const first = tabs.navigate(shown.panelId, 'localhost:3000/');
+    const second = tabs.navigate(shown.panelId, 'localhost:4000/');
+    answers.get('http://localhost:4000/')!('http://localhost:4001/');
+    answers.get('http://localhost:3000/')!('http://localhost:3001/');
+    expect(await second).toBe(true);
+    expect(await first).toBe(false);
+    expect(delivered).toEqual([{ type: 'navigate', url: 'http://localhost:4001/' }]);
+  });
+
+  it('marks a remote chat\'s page with the host it is forwarded from and its address there, and no local one', () => {
+    const { tabs, views, page, chat } = setup();
+    const remote = views.create({ options: CHAT, authority: 'ssh+host-1' });
+    views.show(remote.panelId, { focus: true });
+    page(remote, 'http://localhost:5174/app');
+    expect(tabs.tabs()[0]?.browser?.forwardedFrom).toEqual({ hostId: 'host-1', hostName: 'prod-1', targetUrl: 'http://localhost:5173/app' });
+    page(remote, 'http://example.com:5174/app');
+    expect(tabs.tabs()[1]?.browser?.forwardedFrom).toBeUndefined();
+    page(chat(), 'http://localhost:5174/app');
+    expect(tabs.tabs()[0]?.browser?.forwardedFrom).toBeUndefined();
   });
 
   it('refuses what core would refuse, and an address past the length bound or not a string', () => {

@@ -6,6 +6,7 @@ import { isHostTone } from '../../shared/host-tones';
 import {
   MAX_OVERLAY_COORDINATE,
   MAX_COMMAND_ID_LENGTH,
+  MAX_CONNECT_QUERY_LENGTH,
   MAX_OVERLAY_ID_LENGTH,
   MAX_OVERLAY_ITEMS,
   MAX_MENU_ITEMS,
@@ -26,6 +27,7 @@ import {
   fitsQuickPick,
   type OverlayQuickPickIcon,
   type OverlayQuickPickItem,
+  type MessageCheckbox,
   type OverlayAnswer,
   type OverlayClipboardAction,
   type OverlayIcon,
@@ -51,6 +53,7 @@ import {
   type ConnectStep,
   type ConnectStepEvent,
   type HostCardInfo,
+  type WslDistroInfo,
   type HostDevice,
   type HostNotice,
   type RemotePick,
@@ -58,6 +61,9 @@ import {
   MAX_HOST_NAME_LENGTH,
   MAX_REMOTE_PATH_LENGTH,
   HOST_SWITCH_KEYS,
+  MAX_HELD_MEMORY_QUEUES,
+  MAX_HELD_MEMORY_QUEUE_ID_LENGTH,
+  type HeldMemoryQueue,
   type RemoteHostEntry,
   type RemoteHostFacts,
   type RemoteHostSettings,
@@ -74,7 +80,21 @@ import {
   type WorktreeDialogAnswer,
   type WorktreeDialogRequest,
   type WorktreeFile,
+  DEVCONTAINER_TRUST_FIELDS,
+  MAX_BUILD_LOG_LINE_CHARS,
+  MAX_BUILD_LOG_LINES,
+  MAX_DEVCONTAINER_TRUST_TEXT,
+  MAX_DEVCONTAINER_TRUST_VALUES,
+  type BuildLog,
+  type ContainerHostInfo,
+  type DevcontainerTrustEntry,
+  type DevcontainerTrustField,
+  type DevcontainerTrustRequest,
+  type DevcontainerTrustValue,
 } from '../preload/overlay-channels';
+import { isWslDistroName } from './remote/wsl/distro-name';
+import { CONTAINER_KEY } from './remote/containers/container-key';
+import { isContainerEngine } from '../daemon/container-values';
 import { isFullRefName, MAX_SCM_HISTORY_REFS } from '../preload/scm-channels';
 import { MAX_INPUT_VALUE_LENGTH } from '../../shared/input-validation';
 import type { PanelTheme } from '../preload/panel-channels';
@@ -183,7 +203,9 @@ function parseMenuItem(raw: unknown): OverlayMenuItem | undefined {
   const color = field(raw, 'color');
   const shortcut = field(raw, 'shortcut');
   const clipboard = field(raw, 'clipboard');
+  const hint = field(raw, 'hint') === undefined ? undefined : shownLabel(field(raw, 'hint'));
   if (!isNonEmptyText(id, MAX_OVERLAY_ID_LENGTH) || !label) return undefined;
+  if (field(raw, 'hint') !== undefined && !hint) return undefined;
   if (clipboard !== undefined && !OVERLAY_CLIPBOARD_ACTIONS.includes(clipboard as OverlayClipboardAction)) return undefined;
   if (icon !== undefined && !(typeof icon === 'string' && ICONS.has(icon))) return undefined;
   if (glyph !== undefined && !(typeof glyph === 'string' && GLYPHS.has(glyph))) return undefined;
@@ -206,6 +228,7 @@ function parseMenuItem(raw: unknown): OverlayMenuItem | undefined {
     ...(glyph !== undefined ? { glyph: glyph as TerminalGlyph } : {}),
     ...(color !== undefined ? { color: color as TerminalColor } : {}),
     ...(shortcut !== undefined ? { shortcut } : {}),
+    ...(hint !== undefined ? { hint } : {}),
     ...(danger.value !== undefined ? { danger: danger.value } : {}),
     ...(disabled.value !== undefined ? { disabled: disabled.value } : {}),
     ...(disabledReason !== undefined ? { disabledReason } : {}),
@@ -617,10 +640,76 @@ function parseDevice(raw: unknown): HostDevice | undefined {
   return isNonEmptyText(deviceName, MAX_DEVICE_NAME_LENGTH) && typeof self === 'boolean' ? { deviceName, self } : undefined;
 }
 
+const WSL_STATES: ReadonlySet<unknown> = new Set(['running', 'stopped', 'other']);
+
+function parseDistro(raw: unknown): WslDistroInfo | undefined {
+  if (!isRecord(raw)) return undefined;
+  const distro = field(raw, 'distro');
+  const state = field(raw, 'state');
+  const version = field(raw, 'version');
+  const isDefault = field(raw, 'isDefault');
+  const hostId = field(raw, 'hostId');
+  if (!isWslDistroName(distro) || !WSL_STATES.has(state) || (version !== 1 && version !== 2) || typeof isDefault !== 'boolean') return undefined;
+  if (hostId !== undefined && !isNonEmptyText(hostId, MAX_OVERLAY_ID_LENGTH)) return undefined;
+  return { distro, state: state as WslDistroInfo['state'], version, isDefault, ...(hostId !== undefined ? { hostId } : {}) };
+}
+
+/** The distros main pushes to an open Connect dialog, rebuilt field by field; undefined past the bounds. */
+export const parseConnectDistros = (raw: unknown): WslDistroInfo[] | undefined => parseList(raw, MAX_OVERLAY_ITEMS, parseDistro);
+
+function parseCardWsl(raw: unknown): HostCardInfo['wsl'] | undefined {
+  const parsed = isRecord(raw) && Object.keys(raw).length === 4 ? parseDistro(raw) : undefined;
+  return parsed && { distro: parsed.distro, version: parsed.version, state: parsed.state, isDefault: parsed.isDefault };
+}
+
+const CONTAINER_STATES: ReadonlySet<unknown> = new Set(['running', 'stopped', 'missing', 'unknown']);
+
+/** A container record's card or Settings detail, rebuilt field by field; undefined when a field fails. */
+export function parseContainerInfo(raw: unknown): ContainerHostInfo | undefined {
+  if (!isRecord(raw)) return undefined;
+  const origin = field(raw, 'origin');
+  const image = field(raw, 'image');
+  const state = field(raw, 'state');
+  const via = field(raw, 'via');
+  const engine = field(raw, 'engine');
+  const workspaceFolder = field(raw, 'workspaceFolder');
+  const configPath = field(raw, 'configPath');
+  const containerName = field(raw, 'containerName');
+  const user = field(raw, 'user');
+  const withoutDataVolume = field(raw, 'withoutDataVolume');
+  const allowed = ['origin', 'image', 'state', 'via', 'engine', 'workspaceFolder', 'configPath', 'containerName', 'user', 'withoutDataVolume'];
+  if (!Object.keys(raw).every((key) => allowed.includes(key))) return undefined;
+  if ((origin !== 'devcontainer' && origin !== 'attach') || !CONTAINER_STATES.has(state) || !isContainerEngine(engine)) return undefined;
+  if (image !== undefined && !isNonEmptyText(image, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
+  const viaHost = via === undefined ? undefined : isRecord(via) && Object.keys(via).length === 2 && isNonEmptyText(field(via, 'hostId'), MAX_OVERLAY_ID_LENGTH) && isNonEmptyText(field(via, 'name'), MAX_HOST_NAME_LENGTH * 2) ? { hostId: field(via, 'hostId') as string, name: field(via, 'name') as string } : null;
+  if (viaHost === null) return undefined;
+  for (const text of [workspaceFolder, configPath]) if (text !== undefined && !isNonEmptyText(text, MAX_REMOTE_PATH_LENGTH)) return undefined;
+  if (containerName !== undefined && !isNonEmptyText(containerName, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
+  if (user !== undefined && user !== 'configured' && user !== 'root') return undefined;
+  if (withoutDataVolume !== undefined && withoutDataVolume !== true) return undefined;
+  return {
+    origin,
+    ...(image !== undefined ? { image } : {}),
+    state: state as ContainerHostInfo['state'],
+    ...(viaHost ? { via: viaHost } : {}),
+    engine,
+    ...(workspaceFolder !== undefined ? { workspaceFolder: workspaceFolder as string } : {}),
+    ...(configPath !== undefined ? { configPath: configPath as string } : {}),
+    ...(containerName !== undefined ? { containerName } : {}),
+    ...(user !== undefined ? { user } : {}),
+    ...(withoutDataVolume === true ? { withoutDataVolume } : {}),
+  };
+}
+
 // Every optional field is present only with a valid value; a present field that fails refuses the card.
 function parseHostCard(raw: unknown): HostCardInfo | undefined {
   if (!isRecord(raw)) return undefined;
   const hostId = field(raw, 'hostId');
+  const kind = field(raw, 'kind');
+  const wsl = field(raw, 'wsl') === undefined ? undefined : parseCardWsl(field(raw, 'wsl'));
+  const container = field(raw, 'container') === undefined ? undefined : parseContainerInfo(field(raw, 'container'));
+  if ((kind !== 'ssh' && kind !== 'wsl' && kind !== 'container') || (field(raw, 'wsl') !== undefined && (!wsl || kind !== 'wsl'))) return undefined;
+  if ((kind === 'container') !== (field(raw, 'container') !== undefined) || (field(raw, 'container') !== undefined && !container)) return undefined;
   const name = field(raw, 'name');
   const color = field(raw, 'color');
   const destinationLabel = field(raw, 'destinationLabel');
@@ -634,6 +723,7 @@ function parseHostCard(raw: unknown): HostCardInfo | undefined {
   const clockSkewMs = field(raw, 'clockSkewMs');
   const installFolder = field(raw, 'installFolder');
   const defaultPermissionMode = field(raw, 'defaultPermissionMode');
+  const agentForwarding = field(raw, 'agentForwarding');
   const flags = ['allowBypass', 'passwordless', 'keyInstalledByDamocles', 'lingerEnabledByDamocles'].map((key) => field(raw, key));
   const failure = field(raw, 'failure') === undefined ? undefined : parseFailure(field(raw, 'failure'));
   const reconnect = field(raw, 'reconnect') === undefined ? undefined : parseReconnect(field(raw, 'reconnect'));
@@ -644,11 +734,14 @@ function parseHostCard(raw: unknown): HostCardInfo | undefined {
   if ((color !== undefined && !isHostTone(color)) || (os !== undefined && !SHELL_PLATFORMS.has(os)) || (lastUsed !== undefined && !isTime(lastUsed))) return undefined;
   if ((clockSkewMs !== undefined && !Number.isSafeInteger(clockSkewMs)) || (installFolder !== undefined && !isNonEmptyText(installFolder, MAX_REMOTE_PATH_LENGTH))) return undefined;
   if (defaultPermissionMode !== undefined && !(PERMISSION_MODES as readonly unknown[]).includes(defaultPermissionMode)) return undefined;
-  if (!flags.every((flag) => typeof flag === 'boolean')) return undefined;
+  if (!flags.every((flag) => typeof flag === 'boolean') || (agentForwarding !== undefined && typeof agentForwarding !== 'boolean')) return undefined;
   if ((field(raw, 'failure') !== undefined && !failure) || (field(raw, 'reconnect') !== undefined && !reconnect) || (field(raw, 'latency') !== undefined && !latency) || (field(raw, 'devices') !== undefined && !devices)) return undefined;
   const [allowBypass, passwordless, keyInstalledByDamocles, lingerEnabledByDamocles] = flags as boolean[];
   return {
     hostId,
+    kind,
+    ...(wsl ? { wsl } : {}),
+    ...(container ? { container } : {}),
     name,
     ...(color !== undefined ? { color } : {}),
     destinationLabel,
@@ -667,6 +760,7 @@ function parseHostCard(raw: unknown): HostCardInfo | undefined {
     ...(devices ? { devices } : {}),
     ...(defaultPermissionMode !== undefined ? { defaultPermissionMode: defaultPermissionMode as PermissionMode } : {}),
     allowBypass: allowBypass!,
+    ...(agentForwarding !== undefined ? { agentForwarding } : {}),
     passwordless: passwordless!,
     keyInstalledByDamocles: keyInstalledByDamocles!,
     lingerEnabledByDamocles: lingerEnabledByDamocles!,
@@ -700,19 +794,42 @@ function parseStepEvent(raw: unknown): ConnectStepEvent | undefined {
   const progress = field(raw, 'progress');
   const prompt = field(raw, 'prompt') === undefined ? undefined : parsePrompt(field(raw, 'prompt'));
   const failure = field(raw, 'failure') === undefined ? undefined : parseFailure(field(raw, 'failure'));
+  const transport = field(raw, 'transport');
+  const buildLog = field(raw, 'buildLog') === undefined ? undefined : parseBuildLog(field(raw, 'buildLog'));
+  const folderFailure = field(raw, 'folderFailure');
+  if (folderFailure !== undefined && !(isRecord(folderFailure) && Object.keys(folderFailure).length === 2 && field(folderFailure, 'code') === 'containerFolderFailed' && isRecord(field(folderFailure, 'params')) && Object.keys(field(folderFailure, 'params') as object).length === 0)) return undefined;
+  // only a container that connected opens its folder
+  if (folderFailure !== undefined && (transport !== 'container' || step !== 'connected')) return undefined;
   if (!isNonEmptyText(attemptId, MAX_OVERLAY_ID_LENGTH) || !isNonEmptyText(hostId, MAX_OVERLAY_ID_LENGTH) || !CONNECT_ATTEMPT_STEPS.has(step) || !visited || !notices) return undefined;
+  if (transport !== 'ssh' && transport !== 'wsl' && transport !== 'container') return undefined;
+  // a wsl or container attempt has no ssh questions to ask, and only a container builds
+  if (transport !== 'ssh' && (visited.includes('authenticating') || field(raw, 'prompt') !== undefined)) return undefined;
+  if (transport !== 'container' && (visited.includes('building') || field(raw, 'buildLog') !== undefined)) return undefined;
+  if (field(raw, 'buildLog') !== undefined && !buildLog) return undefined;
   if (progress !== undefined && !(isTime(progress) && progress <= 1)) return undefined;
   if ((field(raw, 'prompt') !== undefined && !prompt) || (field(raw, 'failure') !== undefined && !failure)) return undefined;
   return {
     attemptId,
     hostId,
+    transport,
     step: step as ConnectStepEvent['step'],
     visited,
     ...(progress !== undefined ? { progress } : {}),
     ...(prompt ? { prompt } : {}),
     ...(failure ? { failure } : {}),
+    ...(folderFailure !== undefined ? { folderFailure: { code: 'containerFolderFailed', params: {} } } : {}),
     notices,
+    ...(buildLog ? { buildLog } : {}),
   };
+}
+
+/** A build log within its bounds: at most MAX_BUILD_LOG_LINES lines of display text, and a total that counts them all. */
+export function parseBuildLog(raw: unknown): BuildLog | undefined {
+  if (!isRecord(raw) || Object.keys(raw).length !== 2) return undefined;
+  const lines = parseTextList(field(raw, 'lines'), MAX_BUILD_LOG_LINES, MAX_BUILD_LOG_LINE_CHARS);
+  const total = field(raw, 'total');
+  if (!lines || !Number.isSafeInteger(total) || (total as number) < lines.length) return undefined;
+  return { lines, total: total as number };
 }
 
 function parsePick(raw: unknown): RemotePick | undefined {
@@ -760,8 +877,18 @@ function parseHostFacts(raw: unknown): RemoteHostFacts | undefined {
   return { passwordless: passwordless!, keyInstalledByDamocles: keyInstalledByDamocles!, lingerEnabledByDamocles: lingerEnabledByDamocles!, alwaysCredentialHosts };
 }
 
+function parseHeldMemoryQueue(raw: unknown): HeldMemoryQueue | undefined {
+  if (!isRecord(raw)) return undefined;
+  const queueId = field(raw, 'queueId');
+  const count = field(raw, 'count');
+  const lastSeen = field(raw, 'lastSeen');
+  if (!isNonEmptyText(queueId, MAX_HELD_MEMORY_QUEUE_ID_LENGTH) || !Number.isSafeInteger(count) || (count as number) < 1 || !Number.isSafeInteger(lastSeen) || (lastSeen as number) < 0) return undefined;
+  return { queueId, count: count as number, lastSeen: lastSeen as number };
+}
+
 function parseHostEntry(raw: unknown): RemoteHostEntry | undefined {
   if (!isRecord(raw)) return undefined;
+  const heldMemoryQueues = parseList(field(raw, 'heldMemoryQueues'), MAX_HELD_MEMORY_QUEUES, parseHeldMemoryQueue);
   const hostId = field(raw, 'hostId');
   const authorityKey = field(raw, 'authorityKey');
   const name = field(raw, 'name');
@@ -771,12 +898,22 @@ function parseHostEntry(raw: unknown): RemoteHostEntry | undefined {
   const connection = field(raw, 'connection');
   const settings = parseHostSettings(field(raw, 'settings'));
   const facts = parseHostFacts(field(raw, 'facts'));
-  if (!isNonEmptyText(hostId, MAX_OVERLAY_ID_LENGTH) || authorityKey !== `ssh+${hostId}` || !isNonEmptyText(name, MAX_HOST_NAME_LENGTH * 2) || !isNonEmptyText(destinationLabel, MAX_OVERLAY_LABEL_LENGTH * 4)) return undefined;
+  const kind = field(raw, 'kind');
+  const container = field(raw, 'container') === undefined ? undefined : parseContainerInfo(field(raw, 'container'));
+  if (!isNonEmptyText(hostId, MAX_OVERLAY_ID_LENGTH) || !isNonEmptyText(name, MAX_HOST_NAME_LENGTH * 2) || !isNonEmptyText(destinationLabel, MAX_OVERLAY_LABEL_LENGTH * 4)) return undefined;
+  const authorityFits = kind === 'ssh'
+    ? authorityKey === `ssh+${hostId}`
+    : kind === 'wsl'
+      ? typeof authorityKey === 'string' && authorityKey.startsWith('wsl+') && isWslDistroName(authorityKey.slice('wsl+'.length))
+      : kind === 'container' && typeof authorityKey === 'string' && authorityKey.startsWith('container+') && CONTAINER_KEY.test(authorityKey.slice('container+'.length));
+  if (!authorityFits || (kind === 'container') !== (field(raw, 'container') !== undefined) || (field(raw, 'container') !== undefined && !container)) return undefined;
   if ((os !== undefined && !SHELL_PLATFORMS.has(os)) || (detectedOs !== undefined && !SHELL_PLATFORMS.has(detectedOs))) return undefined;
-  if (!(PROJECT_CONNECTIONS as readonly unknown[]).includes(connection) || !settings || !facts) return undefined;
+  if (!(PROJECT_CONNECTIONS as readonly unknown[]).includes(connection) || !settings || !facts || !heldMemoryQueues) return undefined;
   return {
     hostId,
-    authorityKey,
+    kind: kind as RemoteHostEntry['kind'],
+    ...(container ? { container } : {}),
+    authorityKey: authorityKey as string,
     name,
     destinationLabel,
     ...(os !== undefined ? { os: os as ShellPlatform } : {}),
@@ -784,6 +921,7 @@ function parseHostEntry(raw: unknown): RemoteHostEntry | undefined {
     connection: connection as ProjectConnection,
     settings,
     facts,
+    heldMemoryQueues,
   };
 }
 
@@ -805,12 +943,15 @@ export function parseConnectRequest(raw: unknown): Extract<OverlayRequest, { kin
   const hostId = field(raw, 'hostId');
   const card = field(raw, 'card');
   const hosts = parseConnectHosts(field(raw, 'hosts'));
+  const distros = parseConnectDistros(field(raw, 'distros'));
   const sshConfigAliases = parseTextList(field(raw, 'sshConfigAliases'), MAX_SSH_CONFIG_ALIASES, MAX_SSH_ALIAS_LENGTH);
   const attempt = field(raw, 'attempt') === undefined ? undefined : parseStepEvent(field(raw, 'attempt'));
   const pick = field(raw, 'pick') === undefined ? undefined : parsePick(field(raw, 'pick'));
+  const query = field(raw, 'query');
   if (hostId !== undefined && !isNonEmptyText(hostId, MAX_OVERLAY_ID_LENGTH)) return undefined;
-  if (card !== undefined && ((card !== 'rename' && card !== 'show') || hostId === undefined)) return undefined;
-  if (!hosts || !sshConfigAliases) return undefined;
+  if (query !== undefined && (!isNonEmptyText(query, MAX_CONNECT_QUERY_LENGTH) || /[\p{Cc}\p{Cf}\u2028\u2029]/u.test(query) || hostId !== undefined)) return undefined;
+  if (card !== undefined && ((card !== 'rename' && card !== 'show' && card !== 'rebuild') || hostId === undefined)) return undefined;
+  if (!hosts || !distros || !sshConfigAliases) return undefined;
   if ((field(raw, 'attempt') !== undefined && !attempt) || (field(raw, 'pick') !== undefined && !pick)) return undefined;
   if (pick && (hostId === undefined || card !== undefined || attempt)) return undefined;
   return {
@@ -818,9 +959,11 @@ export function parseConnectRequest(raw: unknown): Extract<OverlayRequest, { kin
     ...(hostId !== undefined ? { hostId } : {}),
     ...(card !== undefined ? { card } : {}),
     hosts,
+    distros,
     sshConfigAliases,
     ...(attempt ? { attempt } : {}),
     ...(pick ? { pick } : {}),
+    ...(query !== undefined ? { query } : {}),
   };
 }
 
@@ -877,6 +1020,42 @@ export function gitCredentialConsentChoice(answer: OverlayAnswer): GitCredential
   return answer.kind === 'gitCredentialConsent' ? answer.choice : 'deny';
 }
 
+/**
+ * The devcontainer confirmation (main/remote/containers/devcontainer-trust.ts) within the overlay's bounds; undefined otherwise,
+ * which runs nothing.
+ */
+export function parseDevcontainerTrustRequest(request: DevcontainerTrustRequest): Extract<OverlayRequest, { kind: 'devcontainerTrust' }> | undefined {
+  const { hostName, hostColor, folder, configPath, changed, items } = request;
+  if ((hostName !== undefined && !isNonEmptyText(hostName, MAX_HOST_NAME_LENGTH * 2)) || (hostColor !== undefined && !isHostTone(hostColor))) return undefined;
+  if (!isNonEmptyText(folder, MAX_REMOTE_PATH_LENGTH) || !isNonEmptyText(configPath, MAX_REMOTE_PATH_LENGTH) || typeof changed !== 'boolean') return undefined;
+  if (!Array.isArray(items) || items.length > DEVCONTAINER_TRUST_FIELDS.length) return undefined;
+  let values = 0;
+  const entries: DevcontainerTrustEntry[] = [];
+  for (const entry of items as readonly unknown[]) {
+    if (!isRecord(entry) || Object.keys(entry).length !== 2) return undefined;
+    const fieldName = field(entry, 'field');
+    const listed = field(entry, 'values');
+    if (!(DEVCONTAINER_TRUST_FIELDS as readonly unknown[]).includes(fieldName) || entries.some((other) => other.field === fieldName) || !Array.isArray(listed) || listed.length === 0) return undefined;
+    values += listed.length;
+    if (values > MAX_DEVCONTAINER_TRUST_VALUES) return undefined;
+    const parsed: DevcontainerTrustValue[] = [];
+    for (const value of listed as readonly unknown[]) {
+      if (!isRecord(value)) return undefined;
+      const text = field(value, 'text');
+      const danger = field(value, 'danger');
+      if (!Object.keys(value).every((key) => key === 'text' || key === 'danger') || !isNonEmptyText(text, MAX_DEVCONTAINER_TRUST_TEXT) || (danger !== undefined && danger !== 'privileged' && danger !== 'dockerSocket')) return undefined;
+      parsed.push({ text, ...(danger !== undefined ? { danger } : {}) });
+    }
+    entries.push({ field: fieldName as DevcontainerTrustField, values: parsed });
+  }
+  return { kind: 'devcontainerTrust', ...(hostName !== undefined ? { hostName } : {}), ...(hostColor !== undefined ? { hostColor } : {}), folder, configPath, changed, items: entries };
+}
+
+/** The confirmation's answer as the trust gate takes it: only an explicit accept proceeds; dismissed (Escape, the scrim, a withdrawn request) refuses. */
+export function devcontainerTrustAccepted(answer: OverlayAnswer): boolean {
+  return answer.kind === 'devcontainerTrust' && answer.accept;
+}
+
 /** A message dialog main asks (D41) within the overlay's bounds, or undefined, when main asks with the OS message box instead. */
 export function parseMessageRequest(raw: unknown): Extract<OverlayRequest, { kind: 'message' }> | undefined {
   if (!isRecord(raw) || field(raw, 'kind') !== 'message') return undefined;
@@ -887,6 +1066,7 @@ export function parseMessageRequest(raw: unknown): Extract<OverlayRequest, { kin
   const cancelLabel = field(raw, 'cancelLabel');
   const defaultAction = field(raw, 'defaultAction');
   const preview = field(raw, 'preview');
+  const checkbox = field(raw, 'checkbox');
   if (severity !== 'info' && severity !== 'warning' && severity !== 'danger') return undefined;
   if (!isNonEmptyText(message, MAX_OVERLAY_TEXT_LENGTH)) return undefined;
   if (cancelLabel !== undefined && !isNonEmptyText(cancelLabel, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
@@ -897,6 +1077,8 @@ export function parseMessageRequest(raw: unknown): Extract<OverlayRequest, { kin
   // Without a Cancel button the first focus must land on an action.
   if (cancelLabel === undefined && (actions.length === 0 || defaultAction === undefined)) return undefined;
   if (preview !== undefined && !(Array.isArray(preview) && preview.length <= MAX_MESSAGE_PREVIEW_LINES && (preview as unknown[]).every((line) => isText(line, MAX_OVERLAY_LABEL_LENGTH)))) return undefined;
+  const box = checkbox === undefined ? undefined : parseMessageCheckbox(checkbox);
+  if (checkbox !== undefined && !box) return undefined;
   return {
     kind: 'message',
     severity,
@@ -906,7 +1088,15 @@ export function parseMessageRequest(raw: unknown): Extract<OverlayRequest, { kin
     ...(cancelLabel !== undefined ? { cancelLabel } : {}),
     ...(defaultAction !== undefined ? { defaultAction } : {}),
     ...(preview !== undefined ? { preview: [...(preview as string[])] } : {}),
+    ...(box ? { checkbox: box } : {}),
   };
+}
+
+function parseMessageCheckbox(raw: unknown): MessageCheckbox | undefined {
+  if (!isRecord(raw)) return undefined;
+  const label = field(raw, 'label');
+  const checked = field(raw, 'checked');
+  return isNonEmptyText(label, MAX_OVERLAY_LABEL_LENGTH) && typeof checked === 'boolean' ? { label, checked } : undefined;
 }
 
 function parseNotificationsAnswer(raw: Record<string, unknown>): OverlayAnswer | undefined {
@@ -1004,8 +1194,11 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
   if (request.kind === 'settings') return field(raw, 'closed') === true ? { kind: 'settings', closed: true } : undefined;
   if (request.kind === 'message') {
     const action = field(raw, 'action');
-    if (action === null) return { kind: 'message', action: null };
-    return isIndexBelow(action, request.actions.length) ? { kind: 'message', action } : undefined;
+    const checked = field(raw, 'checked');
+    if (request.checkbox ? typeof checked !== 'boolean' : checked !== undefined) return undefined;
+    const box = typeof checked === 'boolean' ? { checked } : {};
+    if (action === null) return { kind: 'message', action: null, ...box };
+    return isIndexBelow(action, request.actions.length) ? { kind: 'message', action, ...box } : undefined;
   }
   if (request.kind === 'notifications') return parseNotificationsAnswer(raw);
   if (request.kind === 'quickOpen') return parseQuickOpenAnswer(raw);
@@ -1040,6 +1233,10 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
   if (request.kind === 'gitCredentialConsent') {
     const choice = field(raw, 'choice');
     return Object.keys(raw).length === 2 && (GIT_CREDENTIAL_CONSENT_CHOICES as readonly unknown[]).includes(choice) ? { kind: 'gitCredentialConsent', choice: choice as GitCredentialConsentChoice } : undefined;
+  }
+  if (request.kind === 'devcontainerTrust') {
+    const accept = field(raw, 'accept');
+    return Object.keys(raw).length === 2 && typeof accept === 'boolean' ? { kind: 'devcontainerTrust', accept } : undefined;
   }
   if (request.kind === 'closeRemote') {
     const choice = field(raw, 'choice');
@@ -1216,7 +1413,7 @@ type PageState = 'none' | 'loading' | 'loaded';
 
 // Main's questions, which only main asks: they stack above whatever is open, and only their own answer closes them.
 function stacks(request: OverlayRequest): boolean {
-  return request.kind === 'message' || request.kind === 'worktreeDialog' || request.kind === 'closeRemote' || request.kind === 'gitCredentialConsent';
+  return request.kind === 'message' || request.kind === 'worktreeDialog' || request.kind === 'closeRemote' || request.kind === 'gitCredentialConsent' || request.kind === 'devcontainerTrust';
 }
 
 interface PendingRaster {

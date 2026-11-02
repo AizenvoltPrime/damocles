@@ -8,7 +8,8 @@ import { createEndpoint, type CoreProtocolError, type CoreTransport, type Endpoi
 import type { Call, Contract, Tables } from '../core-protocol/messages';
 import { channelTransport } from '../../remote/channel-transport';
 import { acceptConnection, HANDSHAKE_MAX_BYTES, NONCE_BYTES, type Accepted, type Hello, type HelloAnswer, type HostFacts } from '../../remote/handshake';
-import { CHANNEL, createMux, MAX_FRAME_BYTES, MAX_HELD_BYTES, type Mux } from '../../remote/mux';
+import { CHANNEL, createMux, MAX_FRAME_BYTES, MAX_HELD_BYTES, type Mux, type StreamChannel } from '../../remote/mux';
+import { streamClaims } from '../../remote/tunnel-pipe';
 import { listeners } from '../../remote/listeners';
 import { createPersistentProtocol, type PersistentProtocol } from '../../remote/persistent-protocol';
 import { FEATURES, PROTOCOL_VERSION } from '../../remote/protocol-version';
@@ -26,9 +27,14 @@ import {
   type CoreState,
   type FrozenClientToControl,
 } from './control-messages';
+import type { AgentUpstream } from './agent-proxy';
+import { createAgentRelay, type AgentRelay } from './agent-relay';
 import type { ClientLink } from './core-routes';
+import type { MirrorWatches } from './mirror-server';
 import type { CoreConnection } from './remote-core-host';
 import type { WorkspaceHost } from './workspace-host';
+import type { PortsHost } from './ports/ports-host';
+import { PORTS_MAX_MESSAGE_BYTES } from './ports/ports-messages';
 
 // connections still authenticating at once; another is closed at once
 export const MAX_UNAUTHENTICATED = 16;
@@ -45,14 +51,19 @@ export interface ControlConnection {
   // the hello's
   readonly clientId: string;
   readonly mux: Mux;
+  // a stream the client opened on this connection and named in a request, taken once; undefined for any other id
+  readonly claimStream: (id: number) => StreamChannel | undefined;
   readonly core: CoreConnection | undefined;
   readonly close: (reason: string) => void;
   // closes once the socket wrote what it holds, so a reply sent just before reaches the client
   readonly end: (reason: string) => void;
 }
 
+// served by the connection itself, whose relay they name
+type ConnectionRequests = 'agent.relay' | 'agent.connect' | 'agent.refuse';
+
 export type ControlService = {
-  readonly [M in keyof ControlRequests]: (params: Params<M>, connection: ControlConnection) => Result<M> | Promise<Result<M>>;
+  readonly [M in Exclude<keyof ControlRequests, ConnectionRequests>]: (params: Params<M>, connection: ControlConnection) => Result<M> | Promise<Result<M>>;
 };
 
 /** The daemon's Damocles Core as connections see it (remote-core-host.ts). */
@@ -67,15 +78,20 @@ export interface ConnectionsDeps {
   readonly serverVersion: string;
   readonly facts: HostFacts;
   readonly workspace: WorkspaceHost;
+  readonly ports: PortsHost;
   readonly core: CoreHostAccess;
   readonly control: ControlService;
+  readonly mirrorWatches: MirrorWatches;
   // every welcomed connection, connected or dropped inside its grace; a refused connection is not one
   readonly connectionsChanged: (connections: readonly ConnectionPresence[]) => void;
-  // the forwarded agent socket the client's bridge named on its latest authenticated connection; undefined once it dropped
-  readonly agentSock: (clientId: string, agentSock: string | undefined) => void;
+  // where the client's agent is on its latest connection: the relay once that connection offered it, else the agent socket
+  // its bridge named; undefined once it dropped or closed
+  readonly agentUpstream: (clientId: string, upstream: AgentUpstream | undefined) => void;
   // RECONNECTION_GRACE_MS and MAX_HELD_BYTES unless the e2e hooks shorten them
   readonly graceMs?: number;
   readonly maxHeldBytes?: number;
+  // the welcome's serverTime; default Date.now
+  readonly now?: () => number;
   readonly log: (line: string) => void;
 }
 
@@ -101,7 +117,16 @@ interface Live {
   grace?: NodeJS.Timeout | undefined;
   // tells the core channel's link the connection resumed
   readonly resumed: () => void;
+  readonly relay: AgentRelay;
+  // set once the client called agent.relay on this connection
+  relaying: boolean;
 }
+
+// The relay wins over a bridge's agent socket: in a container that socket is the image's own agent, never the client's.
+const upstreamOf = (live: Live, agentSock: string | undefined): AgentUpstream | undefined => {
+  if (live.relaying) return { kind: 'relay', relay: live.relay };
+  return agentSock !== undefined ? { kind: 'socket', path: agentSock } : undefined;
+};
 
 export function createConnections(deps: ConnectionsDeps): Connections {
   const { log } = deps;
@@ -114,6 +139,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
   const clients = new Map<string, Live>();
   let nextId = 0;
   const graceMs = deps.graceMs ?? RECONNECTION_GRACE_MS;
+  const now = deps.now ?? Date.now;
   // once the daemon ends its connections, a dropped one is closed instead of held
   let ending = false;
 
@@ -135,13 +161,13 @@ export function createConnections(deps: ConnectionsDeps): Connections {
   };
 
   // The held protocol takes the new socket, each side replays what the other has not acknowledged, and the agent socket is the
-  // one the new ssh session's bridge names.
+  // one the new ssh session's bridge names, unless the connection relays.
   const resume = (socket: Duplex, handshake: PersistentProtocol, live: Live, agentSock: string | undefined): void => {
     const rest = handshake.detach();
     clearTimeout(live.grace);
     live.grace = undefined;
     socketIds.set(socket, live.id);
-    deps.agentSock(live.clientId, agentSock);
+    deps.agentUpstream(live.clientId, upstreamOf(live, agentSock));
     live.protocol.resume(streamSocket(socket), rest);
     live.resumed();
     presence();
@@ -156,7 +182,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     if (resumed) {
       return {
         kind: 'welcome',
-        welcome: { serverVersion: deps.serverVersion, protocolVersion: PROTOCOL_VERSION, features: FEATURES, facts: deps.facts, reconnectionToken: resumed.token, resumed: true, coreEpoch: deps.core.epoch(), serverTime: Date.now() },
+        welcome: { serverVersion: deps.serverVersion, protocolVersion: PROTOCOL_VERSION, features: FEATURES, facts: deps.facts, reconnectionToken: resumed.token, resumed: true, coreEpoch: deps.core.epoch(), serverTime: now() },
       };
     }
     return {
@@ -169,12 +195,12 @@ export function createConnections(deps: ConnectionsDeps): Connections {
         reconnectionToken: randomBytes(NONCE_BYTES),
         resumed: false,
         coreEpoch: deps.core.epoch(),
-        serverTime: Date.now(),
+        serverTime: now(),
       },
     };
   };
 
-  const serveControl = <C extends Contract>(id: string, clientId: string, mux: Mux, tables: Tables<C>, methods: ReadonlyArray<keyof ControlRequests & keyof C['requests']>, close: (reason: string) => void, end: (reason: string) => void, core: () => CoreConnection | undefined): Endpoint<ControlToClient, C> => {
+  const serveControl = <C extends Contract>(id: string, clientId: string, mux: Mux, claimStream: ControlConnection['claimStream'], tables: Tables<C>, methods: ReadonlyArray<keyof ControlRequests & keyof C['requests']>, close: (reason: string) => void, end: (reason: string) => void, core: () => CoreConnection | undefined): Endpoint<ControlToClient, C> => {
     const channel = mux.messageChannel(CHANNEL.control, CONTROL_MAX_MESSAGE_BYTES);
     const endpoint = createEndpoint<ControlToClient, C>({
       transport: channelTransport(channel, CONTROL_MAX_MESSAGE_BYTES, close),
@@ -184,8 +210,8 @@ export function createConnections(deps: ConnectionsDeps): Connections {
       onViolation: (error: CoreProtocolError) => close(error.message),
     });
     for (const method of methods) {
-      const handler = deps.control[method] as (params: unknown, connection: ControlConnection) => unknown;
-      (endpoint.serve as (name: string, serve: (params: unknown) => unknown) => void)(method, (params) => handler(params, { id, clientId, mux, core: core(), close, end }));
+      const handler = deps.control[method as Exclude<keyof ControlRequests, ConnectionRequests>] as (params: unknown, connection: ControlConnection) => unknown;
+      (endpoint.serve as (name: string, serve: (params: unknown) => unknown) => void)(method, (params) => handler(params, { id, clientId, mux, claimStream, core: core(), close, end }));
     }
     return endpoint;
   };
@@ -207,13 +233,19 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     const end = (reason: string): void => protocol.end(reason);
     protocol.setMaxBodyBytes(MAX_FRAME_BYTES);
     // an overflow drops the connection's state, so its token names nothing and the client attaches fresh
-    const mux = createMux({ protocol, side: 'daemon', acceptStreams: false, maxHeldBytes: deps.maxHeldBytes ?? MAX_HELD_BYTES, onOverflow: () => close('held frames passed the per-connection bound'), onViolation: close, log });
+    // a client of this protocol opens a tunnel stream per forwarded connection
+    const mux = createMux({ protocol, side: 'daemon', acceptStreams: accepted.answer.kind === 'welcome', maxHeldBytes: deps.maxHeldBytes ?? MAX_HELD_BYTES, onOverflow: () => close('held frames passed the per-connection bound'), onViolation: close, log });
     const disposables: Array<{ dispose(): void }> = [{ dispose: () => mux.dispose() }];
     if (accepted.answer.kind === 'refused') {
-      const endpoint = serveControl<FrozenClientToControl>(id, accepted.hello.clientId, mux, FROZEN_CLIENT_TO_CONTROL, ['listRuns', 'shutdownWhenIdle', 'shutdownNow', 'mirror.sync'], close, end, () => undefined);
+      const endpoint = serveControl<FrozenClientToControl>(id, accepted.hello.clientId, mux, () => undefined, FROZEN_CLIENT_TO_CONTROL, ['listRuns', 'shutdownWhenIdle', 'shutdownNow', 'mirror.sync'], close, end, () => undefined);
       disposables.push({ dispose: () => endpoint.close('the connection closed') });
       log(`[daemon] ${id} speaks protocol ${accepted.hello.protocolVersion}, not ${PROTOCOL_VERSION}: serving the frozen control commands only`);
     } else {
+      // streams the client opened and has not named in a request yet, with what arrived on them meanwhile; every request that
+      // names one, ports.connect's included, claims it here, so each has one owner
+      const claims = streamClaims(mux, close);
+      disposables.push(claims);
+      const claimStream = (streamId: number): StreamChannel | undefined => claims.claim(streamId);
       const coreChannel = mux.messageChannel(CHANNEL.core, CORE_MAX_MESSAGE_BYTES);
       const lostChanged = listeners<[]>(log);
       const core = deps.core.connect(id, accepted.hello.clientId, channelTransport(coreChannel, CORE_MAX_MESSAGE_BYTES, close), close, {
@@ -221,30 +253,60 @@ export function createConnections(deps: ConnectionsDeps): Connections {
         lost: () => protocol.lost(),
         onLostChange: lostChanged.add,
       });
-      // attach is served below, where it also learns whether the client watches the attached devices
-      const methods = (Object.keys(CLIENT_TO_CONTROL.requests) as Array<keyof ControlRequests>).filter((method) => method !== 'attach');
-      const endpoint = serveControl<ClientToControl>(id, accepted.hello.clientId, mux, CLIENT_TO_CONTROL, methods, close, end, () => core);
+      // attach is served below, where it also learns whether the client watches the attached devices, and mirror.sync and
+      // mirror.syncSubcalls, which also follow what they read for mirror.changed and mirror.subcallsChanged
+      const methods = (Object.keys(CLIENT_TO_CONTROL.requests) as Array<keyof ControlRequests>).filter((method) => method !== 'attach' && method !== 'mirror.sync' && method !== 'mirror.syncSubcalls' && method !== 'agent.relay' && method !== 'agent.connect' && method !== 'agent.refuse');
+      const endpoint = serveControl<ClientToControl>(id, accepted.hello.clientId, mux, claimStream, CLIENT_TO_CONTROL, methods, close, end, () => core);
       disposables.push(core, { dispose: () => endpoint.close('the connection closed') }, deps.core.onState((state) => endpoint.emit('coreState', state)));
+      // a watch that fails costs only the change events: the listing still answers, and the next sync follows again
+      const unwatched = (what: string) => (err: unknown): void => log(`[mirror] ${id}: watching ${what} failed, so its changes are not announced: ${err instanceof Error ? err.message : String(err)}`);
+      endpoint.serve('mirror.sync', async (params) => {
+        await deps.mirrorWatches.follow(id, params.projectKey, () => endpoint.emit('mirror.changed', { projectKey: params.projectKey })).catch(unwatched(params.projectKey));
+        return deps.control['mirror.sync'](params, { id, clientId: accepted.hello.clientId, mux, claimStream, core, close, end });
+      });
+      endpoint.serve('mirror.syncSubcalls', async (params) => {
+        await deps.mirrorWatches.followSubcalls(id, () => endpoint.emit('mirror.subcallsChanged', {})).catch(unwatched('the sub-call ledger'));
+        return deps.control['mirror.syncSubcalls'](params, { id, clientId: accepted.hello.clientId, mux, claimStream, core, close, end });
+      });
+      disposables.push({ dispose: () => deps.mirrorWatches.release(id) });
       const workspace = mux.messageChannel(CHANNEL.workspace, WORKSPACE_MAX_MESSAGE_BYTES);
-      disposables.push(deps.workspace.serve(id, accepted.hello.clientId, channelTransport(workspace, WORKSPACE_MAX_MESSAGE_BYTES, close), close));
+      disposables.push(deps.workspace.serve(id, accepted.hello.clientId, channelTransport(workspace, WORKSPACE_MAX_MESSAGE_BYTES, close), close, claimStream, () => protocol.lost()));
+      const ports = mux.messageChannel(CHANNEL.ports, PORTS_MAX_MESSAGE_BYTES);
+      disposables.push(deps.ports.serve(id, channelTransport(ports, PORTS_MAX_MESSAGE_BYTES, close), claimStream, close, (listener) => protocol.onLost(() => listener())));
       const { clientId, deviceName } = accepted.hello;
       const previous = clients.get(clientId);
-      const live: Live = { id, clientId, protocol, token: accepted.answer.welcome.reconnectionToken, deviceName, resumed: () => lostChanged.fire() };
+      const relay = createAgentRelay({ ask: (request) => endpoint.emit('agent.request', { request }), log });
+      const live: Live = { id, clientId, protocol, token: accepted.answer.welcome.reconnectionToken, deviceName, resumed: () => lostChanged.fire(), relay, relaying: false };
+      endpoint.serve('agent.relay', () => {
+        live.relaying = true;
+        if (clients.get(clientId) === live && !live.grace) deps.agentUpstream(clientId, upstreamOf(live, undefined));
+      });
+      endpoint.serve('agent.connect', ({ request, stream: streamId }) => {
+        const stream = claimStream(streamId);
+        if (!stream) {
+          // main sends no agent.refuse once it answered, so the held connection would wait paused until it hangs up
+          relay.refuse(request);
+          throw new Error(`Stream ${streamId} is not open on ${id}`);
+        }
+        return { ok: relay.connect(request, stream) };
+      });
+      endpoint.serve('agent.refuse', ({ request }) => relay.refuse(request));
       endpoint.serve('attach', async (params) => {
-        await deps.control.attach(params, { id, clientId, mux, core, close, end });
+        await deps.control.attach(params, { id, clientId, mux, claimStream, core, close, end });
         if (params.watchClients !== true || live.clientsEvents) return;
         live.clientsEvents = (list) => endpoint.emit('clients', { clients: list });
         live.clientsEvents(attachedFor(live));
       });
       clients.set(clientId, live);
       previous?.protocol.close(`client ${clientId} attached again on ${id}`);
-      deps.agentSock(clientId, accepted.agentSock);
+      deps.agentUpstream(clientId, upstreamOf(live, accepted.agentSock));
       disposables.push({
         dispose: () => {
           clearTimeout(live.grace);
+          relay.close();
           if (clients.get(clientId) !== live) return;
           clients.delete(clientId);
-          deps.agentSock(clientId, undefined);
+          deps.agentUpstream(clientId, undefined);
         },
       });
       protocol.holdOnDrop();
@@ -253,8 +315,8 @@ export function createConnections(deps: ConnectionsDeps): Connections {
           protocol.close(`the daemon is shutting down (${reason})`);
           return;
         }
-        // the agent socket died with the ssh session
-        deps.agentSock(clientId, undefined);
+        // the agent socket died with the ssh session, and a relay's client is out of reach until the resume
+        deps.agentUpstream(clientId, undefined);
         live.grace = setTimeout(() => {
           log(`[daemon] ${id}: the grace ended`);
           protocol.close('the reconnection grace ended');

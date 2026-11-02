@@ -147,7 +147,7 @@ function agentStatusText(agent: SteerTargetInfo): string | null {
               class="flex items-center justify-center gap-2 px-3 py-4 text-12.5 text-(--d-muted)"
             >
               <IconLoader
-                class="size-4 animate-[d-spin_.9s_linear_infinite] text-(--d-accent)"
+                class="size-4 d-spinning text-(--d-accent)"
               />
               <span>{{ mode === 'agent' ? t('steerCommand.loadingAgents') : t('slashCommand.loading') }}</span>
             </div>

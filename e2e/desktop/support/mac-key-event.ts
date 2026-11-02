@@ -19,6 +19,7 @@ const KEYS: Record<string, { code: number; functionKey?: boolean }> = {
   U: { code: 0x20 },
   V: { code: 0x09 },
   W: { code: 0x0d },
+  X: { code: 0x07 },
   '5': { code: 0x17 },
   ',': { code: 0x2b },
   '\\': { code: 0x2a },

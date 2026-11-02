@@ -93,7 +93,28 @@
     "otherGroupFromLocal": "{project} is on this computer. Open a folder on {target} instead?",
     "otherGroupToLocal": "{project} is on {host}. Open a folder on this computer instead?",
     "openLocalFolder": "Open a local folder...",
-    "orderFailed": "The order could not be saved. Try again."
+    "orderFailed": "The order could not be saved. Try again.",
+    "reopenInWsl": "Reopen in WSL...",
+    "wsl": {
+      "pickLabel": "Reopen {name} in WSL",
+      "noDistros": "No WSL distro is installed on this computer.",
+      "listFailed": "The WSL distros could not be listed. Try again.",
+      "confirmTitle": "Reopen {name} in {distro}?",
+      "confirmMessage": "Damocles opens this folder in {distro} through /mnt, as a new project. {name} stays in the list with its chats.",
+      "confirmWarning": "/mnt is slower than {distro}'s own file system, and Damocles checks it for changes every 5 seconds.",
+      "folder": "Folder",
+      "confirm": "Reopen in WSL",
+      "cancel": "Cancel",
+      "reopening": "Reopening {name} in {distro}…"
+    },
+    "container": {
+      "reopen": "Reopen in Container",
+      "rebuild": "Rebuild Container...",
+      "failure": {
+        "noDevcontainerConfig": "{name} has no dev container configuration any more.",
+        "notLocalOrSsh": "{name} cannot be reopened in a container."
+      }
+    }
   },
   "chats": {
     "heading": "Chats",
@@ -158,7 +179,15 @@
     "info": "Information",
     "warning": "Warning",
     "error": "Error",
-    "moreDismissAll": "{count} more · Dismiss all"
+    "moreDismissAll": "{count} more · Dismiss all",
+    "link": {
+      "where": "Open a link",
+      "title": "{host} wants to open",
+      "open": "Open",
+      "copy": "Copy",
+      "copied": "Copied",
+      "copiedStatus": "The link is copied."
+    }
   },
   "notifications": {
     "title": "Notifications",
@@ -696,6 +725,10 @@
         "label": "Install folder",
         "description": "Where the Damocles server lives on the host. Use this when your home folder is small or does not allow running programs."
       },
+      "remoteHostHeldMemory": {
+        "label": "Memories waiting for a device",
+        "description": "Global memories that chats on the host saved for a device that has not connected to it for 30 days."
+      },
       "remoteHostActions": {
         "label": "Host actions",
         "description": "Passwordless login, the host's log, removing the Damocles server and forgetting the host."
@@ -1080,7 +1113,9 @@
         "reload": "Reload page",
         "devTools": "Open DevTools",
         "copyUrl": "Copy URL"
-      }
+      },
+      "forwardedFrom": "Forwarded from {target}",
+      "forwardedFromPrefix": "Forwarded from"
     }
   },
   "files": {
@@ -1088,11 +1123,12 @@
     "newFile": "New file",
     "newFolder": "New folder",
     "collapseAll": "Collapse all",
+    "copyHere": "Copy files here...",
     "noProject": "Open a project to see its files.",
     "loadFailed": "Damocles could not list the files.",
     "empty": "{project} has no files to show.",
     "treeLabel": "Files of {project}",
-    "keyboardHelp": "Arrow keys move and open folders, Enter opens, F2 renames, Delete deletes, Shift+F10 opens the menu. Drag a file into the chat to mention it.",
+    "keyboardHelp": "Arrow keys move and open folders, Enter opens, F2 renames, Delete deletes, Shift+F10 opens the menu. Ctrl+X, Ctrl+C and Ctrl+V cut, copy and paste. Drag a file into the chat to mention it, or onto a folder to move it.",
     "inputLabel": {
       "newFile": "New file name",
       "newFolder": "New folder name",
@@ -1123,10 +1159,124 @@
       "reveal": "Reveal in File Explorer",
       "findInFolder": "Find in Folder...",
       "openTimeline": "Open Timeline",
-      "openAsProject": "Open as project"
+      "openAsProject": "Open as project",
+      "cut": "Cut",
+      "copy": "Copy",
+      "paste": "Paste",
+      "copyHere": "Copy files here...",
+      "download": "Download...",
+      "offline": "Offline",
+      "transfersUnsupported": "Server too old"
+    },
+    "drop": {
+      "copy": "Copy to {folder}",
+      "move": "Move to {folder}"
     },
     "decoration": {
       "submodule": "Submodule"
+    },
+    "transfer": {
+      "running": {
+        "copy": "Copying {done} of {total}",
+        "move": "Moving {done} of {total}",
+        "download": "Downloading {done} of {total}"
+      },
+      "bytes": "{bytesDone} of {bytesTotal}",
+      "valueText": "{done} of {total} items, {bytesDone} of {bytesTotal}",
+      "valueTextFiles": "{done} of {total} items",
+      "started": {
+        "copy": "Copying {count} item | Copying {count} items",
+        "move": "Moving {count} item | Moving {count} items",
+        "download": "Downloading {count} item | Downloading {count} items"
+      },
+      "done": {
+        "copy": "Copied {count} item | Copied {count} items",
+        "move": "Moved {count} item | Moved {count} items",
+        "download": "Downloaded {count} item | Downloaded {count} items"
+      },
+      "failed": {
+        "copy": "The copy failed",
+        "move": "The move failed",
+        "download": "The download failed"
+      },
+      "cancelled": {
+        "copy": "Copy cancelled",
+        "move": "Move cancelled",
+        "download": "Download cancelled"
+      },
+      "cancel": "Cancel",
+      "preparing": "Preparing ({count} item) | Preparing ({count} items)",
+      "preparingStarted": {
+        "copy": "Preparing to copy",
+        "move": "Preparing to move",
+        "download": "Preparing to download"
+      },
+      "preparingBytes": "{bytes} so far"
+    },
+    "transfersUnsupported": "The Damocles server on {host} is too old to copy files. Reconnect to update it."
+  },
+  "ports": {
+    "heading": "Ports",
+    "forward": "Forward a port",
+    "tableLabel": "Ports on {host}",
+    "column": {
+      "state": "State",
+      "port": "Port",
+      "actions": "Actions"
+    },
+    "empty": "No forwarded ports.",
+    "emptyHint": "Ports that programs on {host} listen on show up here.",
+    "emptyHintManual": "Automatic forwarding is off. Detected ports wait here for Forward.",
+    "outputOnly": "Only ports seen in terminal output are forwarded",
+    "undo": "Undo",
+    "forwardedTo": "forwarded to",
+    "state": {
+      "detected": "not forwarded",
+      "ignored": "ignored",
+      "error": "couldn't forward"
+    },
+    "dot": {
+      "live": "Forwarding, {count} open connection | Forwarding, {count} open connections",
+      "idle": "Forwarded, no open connections",
+      "detected": "Detected, not forwarded",
+      "ignored": "Ignored, never forwarded automatically",
+      "error": "Couldn't listen on this computer",
+      "direct": "Reached through WSL, no tunnel"
+    },
+    "action": {
+      "openInPane": "Open in pane",
+      "openInBrowser": "Open in browser",
+      "copyAddress": "Copy address",
+      "setLabel": "Set label…",
+      "changeLocalPort": "Change local port…",
+      "stop": "Stop forwarding",
+      "forward": "Forward"
+    },
+    "rowAction": {
+      "openInPane": "Open {port} in pane",
+      "openInBrowser": "Open {port} in browser",
+      "stop": "Stop forwarding {port}",
+      "more": "More actions for {port}"
+    },
+    "forwardRow": "Forward {port}",
+    "more": "More actions",
+    "whenDetected": "When detected",
+    "onDetect": {
+      "notify": "Notify",
+      "openPane": "Open in pane",
+      "openBrowser": "Open in browser",
+      "silent": "Silent",
+      "ignore": "Ignore"
+    },
+    "menuLabel": "Port {port}",
+    "copied": "Copied {address}",
+    "keysHelp": "Arrow keys move between ports. Enter opens or forwards, F2 sets the label, Delete stops forwarding, Shift+F10 opens the menu.",
+    "viaWsl": "via WSL",
+    "viaWslTitle": "WSL forwards this port to this computer itself: no tunnel, same port.",
+    "failed": {
+      "row": "Port {port}: that didn't work. Try again.",
+      "forward": "The port wasn't forwarded. Try again.",
+      "undo": "Forwarding every port didn't turn back on. Try again."
     }
   },
   "quickOpen": {
@@ -1388,7 +1538,12 @@
       "emptyFile": "The file is empty.",
       "noChanges": "This file has no line changes."
     },
-    "stashApplied": "Stash applied"
+    "stashApplied": "Stash applied",
+    "pair": {
+      "against": "compared with",
+      "noChanges": "The two files are identical.",
+      "binary": "One of the files is binary, so they have no line diff."
+    }
   },
   "repositories": {
     "heading": "Repositories",
@@ -1817,7 +1972,10 @@
       "backslash": "Use “/” to separate folders",
       "outside": "The path can't leave the repository",
       "notNormalized": "Remove empty and “.” parts and doubled “/” from the path",
-      "windowsName": "Windows can't use this name: no part can end with “.” or a space, contain < > : \" {'|'} ? *, or be a device name such as “CON”"
+      "windowsName": "Windows can't use this name: no part can end with “.” or a space, contain < > : \" {'|'} ? *, or be a device name such as “CON”",
+      "portTarget": "Enter a port such as 8080, or a host and port such as db:5432",
+      "portDigits": "Use digits only",
+      "portRange": "A port is a number from 1 to 65535"
     }
   },
   "quickDiff": {
@@ -2212,7 +2370,6 @@
         "command": "Remove the command after the host. Damocles starts its own server there."
       },
       "details": "Details for {name}",
-      "card": "{name}, {destination}, {state}",
       "aliasCard": "{alias}, from ~/.ssh/config",
       "noHosts": "No saved hosts yet. Type user{'@'}host or paste an ssh command to add one.",
       "noMatch": "No saved host matches. Type user{'@'}host or paste an ssh command to add one.",
@@ -2220,7 +2377,11 @@
       "keysConnect": "Enter connect",
       "keysDetails": "→ details",
       "keysClose": "Esc close",
-      "actionFailed": "That did not work. Try again, or see the log."
+      "actionFailed": "That did not work. Try again, or see the log.",
+      "distros": "WSL",
+      "distrosNote": "distros on this computer",
+      "containers": "Dev Containers",
+      "containersNote": "Docker or Podman"
     },
     "name": {
       "title": "Name this host",
@@ -2234,14 +2395,21 @@
       "bidiChars": "Remove the text direction characters.",
       "taken": "Another host is already called {name}",
       "checkFailed": "The name could not be checked. Try again.",
-      "saveFailed": "The name could not be saved. Try again."
+      "saveFailed": "The name could not be saved. Try again.",
+      "titleDistro": "Name this distro",
+      "noteDistro": "Saved in Damocles. Rename it any time.",
+      "titleContainer": "Name this container",
+      "noteContainer": "Saved in Damocles. Rename it any time."
     },
     "step": {
       "connecting": "Connecting",
       "authenticating": "Authenticating",
       "checking": "Checking server",
       "installing": "Installing",
-      "starting": "Starting"
+      "starting": "Starting",
+      "wslConnecting": "Starting {name}",
+      "building": "Building container",
+      "attaching": "Attaching"
     },
     "timeline": {
       "label": "Connecting to {name}",
@@ -2295,7 +2463,21 @@
       "handshakeFailed": "The Damocles server on {name} did not answer as expected.",
       "unknown": "The connection to {name} failed. Show log has the details.",
       "unknown_sshMissing": "No OpenSSH client was found on this computer. Install OpenSSH and try again.",
-      "unknown_noPackage": "This build of Damocles carries no server package for {name} ({target})."
+      "unknown_noPackage": "This build of Damocles carries no server package for {name} ({target}).",
+      "unknown_wslExited": "wsl.exe ended before Damocles started on {name} (exit code {exitCode}). Show log has the details.",
+      "folderUntrusted": "{folder} is not trusted on {name}, so nothing ran. Trust the folder, then try again.",
+      "configRefused": "The dev container configuration was not confirmed, so nothing ran.",
+      "composeUnsupported": "This configuration uses Docker Compose, which Damocles cannot open in a container yet.",
+      "noDevcontainerConfig": "{folder} has no .devcontainer/devcontainer.json or .devcontainer.json.",
+      "containerEngineMissing": "{engine} was not found. Install it or start it, then try again.",
+      "devcontainerFailed": "The dev container did not start: {message}",
+      "containerNotRunning": "The container {name} is stopped or was removed.",
+      "containerPaused": "The container {name} is paused. Run {engine} unpause {container}, then connect again.",
+      "viaNotConnected": "Connect to {host} first: the container runs there.",
+      "containerFeatureMissing": "The Damocles server on {host} is too old for containers. Reconnect to update it.",
+      "containerNeedsBuild": "The container of {name} is stopped or was removed. Retry to build it, after its configuration is checked.",
+      "containerFolderFailed": "Connected to {name}, but its workspace folder could not be opened as a project. Retry to open it again.",
+      "distroNotListed": "WSL no longer lists the distro {distro}, so Damocles did not connect to {name}."
     },
     "notice": {
       "noLinger": "{name} ends {user}'s processes at sign-out, so a running agent stops with your last session.",
@@ -2383,6 +2565,8 @@
       "yoloNotAllowed": "YOLO not allowed",
       "signsInWithKey": "Signs in with your SSH key",
       "signsInWithPassword": "Signs in with a password",
+      "forwardsAgent": "Forwards your SSH agent",
+      "doesNotForwardAgent": "Does not forward your SSH agent",
       "hostSettings": "Host settings"
     },
     "installFolder": {
@@ -2510,9 +2694,33 @@
       "open": "Forget host",
       "title": "Forget {name}?",
       "body": "Damocles removes this host, its saved password, its session mirror, its browser profile and its forwarded-port settings from this computer. Nothing changes on {name}.",
+      "bodyContainers": "Damocles removes this host, its saved password, its session mirror, its browser profile and its forwarded-port settings from this computer, and so too for every container opened through it. Nothing changes on {name}.",
       "cancel": "Cancel",
       "removeFirst": "Remove the server first...",
       "confirm": "Forget host"
+    },
+    "heldMemory": {
+      "description": "Chats on {name} saved these global memories for a device that has not connected to {name} for 30 days. Deliver them to this computer, or discard them.",
+      "noneLeft": "No memories are waiting for a device on {name} now.",
+      "queue": "{count} memory waiting for a device last seen {date} | {count} memories waiting for a device last seen {date}",
+      "deliver": "Deliver here",
+      "discard": "Discard",
+      "confirm": {
+        "title": "Discard {count} memory? | Discard {count} memories?",
+        "body": "Damocles deletes the global memory that chats on {name} saved for a device last seen {date}. It never reaches any device. | Damocles deletes the {count} global memories that chats on {name} saved for a device last seen {date}. They never reach any device.",
+        "cancel": "Cancel",
+        "discard": "Discard"
+      },
+      "delivered": "{count} memory is being delivered to this computer. | {count} memories are being delivered to this computer.",
+      "discarded": "{count} memory was discarded. | {count} memories were discarded.",
+      "gone": "These memories are no longer waiting. Their device came back, or another device delivered or discarded them.",
+      "failure": {
+        "notConnected": "{name} is not connected. Connect to it and try again."
+      },
+      "failed": {
+        "deliver": "The memories could not be delivered. Show log has the details.",
+        "discard": "The memories could not be discarded. Show log has the details."
+      }
     },
     "hostActions": {
       "failed": {
@@ -2520,6 +2728,192 @@
         "remove": "The Damocles server could not be removed from {name}. Show log has the details.",
         "forget": "{name} could not be forgotten."
       }
+    },
+    "distro": {
+      "default": "Default",
+      "defaultTitle": "wsl.exe starts this distro when none is named",
+      "wsl1Title": "WSL 1: file changes are checked every 5 seconds",
+      "state": {
+        "running": "Running",
+        "stopped": "Stopped",
+        "other": "State unknown"
+      }
+    },
+    "wsl": {
+      "note": "WSL 1: Damocles checks for file changes every 5 seconds, which uses more CPU in very large folders.",
+      "convert": "Convert to WSL 2...",
+      "dialogTitle": "Convert {distro} to WSL 2?",
+      "dialogBody": "Damocles stops its server on {name}, runs wsl.exe --set-version {distro} 2 and connects again. Converting can take several minutes.",
+      "runs": "These stop on {name}",
+      "nothingRuns": "Nothing runs on {name} now.",
+      "gain": "On WSL 2, file changes show up at once.",
+      "cancel": "Cancel",
+      "confirm": "Convert to WSL 2",
+      "steps": "Converting {name} to WSL 2",
+      "step": {
+        "stopping": "Stopping the Damocles server",
+        "converting": "Converting",
+        "reconnecting": "Connecting again"
+      },
+      "output": "wsl.exe output",
+      "outputLines": "{count} line | {count} lines",
+      "outputEmpty": "Waiting for wsl.exe…",
+      "running": "Converting {name} to WSL 2…",
+      "done": "{name} runs on WSL 2 now. File changes show up at once.",
+      "said": "wsl.exe said:",
+      "failure": {
+        "setVersionFailed": "wsl.exe could not convert {distro}, so it stays on WSL 1.",
+        "shutdownFailed": "The Damocles server on {name} did not stop, so nothing was converted. {distro} stays on WSL 1.",
+        "reconnectFailed": "{distro} runs on WSL 2 now, but Damocles could not connect to it again. Reconnect from this card.",
+        "call": "Converting {name} to WSL 2 failed. Show log has the details.",
+        "info": "Damocles could not list what runs on {name}. Try again."
+      },
+      "needsConnection": "Connect to {name} to convert it."
+    },
+    "buildLog": {
+      "tail": "Build log",
+      "lines": "{count} line | {count} lines",
+      "showFull": "Show full log",
+      "waiting": "Waiting for the build output…",
+      "title": "Build log: {name}",
+      "dropped": "The last {shown} of {total} lines; earlier lines were dropped.",
+      "fullLabel": "Build log of {name}"
+    },
+    "devcontainerTrust": {
+      "thisComputer": "This computer",
+      "firstTitle": "Run this dev container configuration?",
+      "changedTitle": "This dev container configuration changed",
+      "firstBody": "Building the container runs and mounts what this folder's configuration lists below, on {host}. Check it before you build.",
+      "changedBody": "It differs from the configuration you confirmed before. Check what it now runs and mounts on {host}.",
+      "danger": {
+        "privileged": "Privileged mode gives the container full control of {host}.",
+        "dockerSocket": "The Docker socket lets the container start any container on {host}, with full access to it.",
+        "privilegedLocal": "Privileged mode gives the container full control of this computer.",
+        "dockerSocketLocal": "The Docker socket lets the container start any container on this computer, with full access to it."
+      },
+      "runsOn": "Runs on",
+      "folder": "Folder",
+      "config": "Config",
+      "field": {
+        "initializeCommand": "Runs on the host first",
+        "mounts": "Mounts",
+        "workspaceMount": "Workspace mount",
+        "runArgs": "Docker run arguments",
+        "privileged": "Privileged mode",
+        "capAdd": "Added capabilities",
+        "securityOpt": "Security options",
+        "features": "Features",
+        "otherHostAccess": "Other host access"
+      },
+      "dangerTag": {
+        "privileged": "Full host access",
+        "dockerSocket": "Docker socket"
+      },
+      "nothing": "This configuration runs nothing on {host} and adds no mounts or permissions.",
+      "once": "Damocles asks again only when these change.",
+      "cancel": "Cancel",
+      "accept": "Build container",
+      "firstBodyLocal": "Building the container runs and mounts what this folder's configuration lists below, on this computer. Check it before you build.",
+      "changedBodyLocal": "It differs from the configuration you confirmed before. Check what it now runs and mounts on this computer.",
+      "nothingLocal": "This configuration runs nothing on this computer and adds no mounts or permissions.",
+      "listLabel": "What this configuration runs and mounts"
+    },
+    "rebuild": {
+      "title": "Rebuild {name}?",
+      "body": "Damocles stops its server in {name}, removes the container and builds it again from its configuration.",
+      "runs": "These stop in {name}",
+      "nothingRuns": "Nothing runs in {name} now.",
+      "keeps": "The project keeps its trust, layout and chats. Files outside the workspace folder are lost.",
+      "keepsWithoutVolume": "The project keeps its trust and layout. The chats and settings in {name} are lost, because this container has no Damocles data volume. The rebuilt container keeps its chats and settings from then on. Files outside the workspace folder are lost.",
+      "cancel": "Cancel",
+      "confirm": "Rebuild",
+      "heading": "Container",
+      "action": "Rebuild Container...",
+      "hint": "Rebuild after you change the configuration or the Dockerfile.",
+      "withoutVolume": "Chats and settings in {name} live inside this container, which Damocles did not create, so a rebuild removes them. A container rebuilt here keeps chats and settings made after the rebuild in Damocles' data volume.",
+      "steps": "Rebuilding {name}",
+      "step": {
+        "stopping": "Stopping the Damocles server",
+        "building": "Building container",
+        "reconnecting": "Connecting again"
+      },
+      "running": "Rebuilding {name}…",
+      "done": "{name} was rebuilt and is connected again.",
+      "failure": {
+        "info": "Damocles could not list what runs in {name}. Try again.",
+        "call": "Rebuilding {name} failed. Show log has the details.",
+        "configRefused": "The changed configuration was not confirmed, so nothing was stopped.",
+        "folderUntrusted": "The folder is not trusted, so nothing was stopped.",
+        "composeUnsupported": "This configuration uses Docker Compose, which Damocles cannot rebuild yet. Nothing was stopped.",
+        "configFailed": "The configuration could not be checked, so nothing was stopped.",
+        "stopFailed": "Damocles could not stop its server in {name}, so nothing was removed or rebuilt.",
+        "buildFailed": "The container did not build. The old one is gone; fix the configuration and rebuild.",
+        "buildFailedKept": "The container did not build. The old one is still there with its server stopped; reconnect from this card to use it, or fix the configuration and rebuild.",
+        "reconnectFailed": "{name} was rebuilt, but Damocles could not connect to it. Reconnect from this card.",
+        "containerEngineMissing": "Docker or Podman was not found, so nothing was stopped."
+      }
+    },
+    "container": {
+      "state": {
+        "running": "Running",
+        "stopped": "Stopped",
+        "missing": "Removed",
+        "unknown": "State unknown",
+        "paused": "Paused",
+        "restarting": "Restarting",
+        "other": "State unknown"
+      },
+      "origin": {
+        "devcontainer": "Dev container",
+        "attach": "Attach"
+      },
+      "via": "on {host}",
+      "openCard": "Open a folder in a container",
+      "openCardNote": "Reads .devcontainer/devcontainer.json",
+      "attachCard": "Attach to a running container",
+      "attachCardNote": "On this computer or an SSH host",
+      "thisComputer": "This computer",
+      "noConfig": "{folder} has no .devcontainer/devcontainer.json or .devcontainer.json.",
+      "notConnected": "The host disconnected. Connect to it and try again.",
+      "attachTitle": "Attach to a running container",
+      "openTitle": "Open a folder in a container",
+      "runningOn": "Running containers {where}",
+      "folderTitle": "Choose a folder with a dev container on {name}",
+      "openInContainer": "Open in container",
+      "whereAttach": "Where do the containers run?",
+      "whereOpen": "Where is the folder? Its container builds and runs on the same machine.",
+      "where": "Where",
+      "localAttachNote": "Docker or Podman here",
+      "localOpenNote": "Choose a folder…",
+      "attachAs": "Attach as",
+      "userConfigured": "Configured user",
+      "userRoot": "root",
+      "refresh": "Refresh",
+      "listing": "Listing the containers {where}…",
+      "listFailure": {
+        "containerEngineMissing": "Docker or Podman was not found {where}.",
+        "listFailed": "The containers {where} could not be listed.",
+        "notConnected": "The host disconnected. Connect to it and try again.",
+        "containerFeatureMissing": "The Damocles server {where} is too old for containers. Reconnect to update it."
+      },
+      "noneRunning": "No container runs {where}.",
+      "running": "Running containers",
+      "asUser": "as {user}",
+      "saved": "Saved",
+      "fact": {
+        "image": "Image",
+        "engine": "Engine",
+        "runsOn": "Runs on",
+        "folder": "Folder",
+        "config": "Config",
+        "container": "Container",
+        "user": "User"
+      },
+      "user": {
+        "configured": "The configured user",
+        "root": "root"
+      },
+      "onThisComputer": "on this computer"
     }
   },
   "closeRemote": {
@@ -2597,5 +2991,21 @@
     "once": "Allow once",
     "always": "Always for {host}",
     "deny": "Deny"
+  },
+  "wsl": {
+    "notice": {
+      "text": "This folder is in WSL ({distro}). Reopen in WSL to run its tools in Linux at full speed.",
+      "label": "Reopen {name} in WSL",
+      "reopen": "Reopen in WSL",
+      "reopening": "Reopening in {distro}…",
+      "dismiss": "Hide this notice for {name}",
+      "dismissFailed": "Damocles could not hide this notice. Try again."
+    },
+    "failure": {
+      "notWindowsFolder": "{name} is neither on a Windows drive nor in WSL, so it cannot be reopened in WSL.",
+      "wslpathFailed": "{distro} could not map {name} to a Linux path.",
+      "unknownDistro": "wsl.exe no longer lists {distro}.",
+      "connectFailed": "Damocles could not connect to {distro}."
+    }
   }
 }

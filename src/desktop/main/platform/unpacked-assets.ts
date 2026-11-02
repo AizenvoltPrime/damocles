@@ -18,6 +18,8 @@ export const ASAR_UNPACK: readonly string[] = [
   // git and ssh execute the askpass scripts, which run the helper under the app's binary as Node.
   'dist/askpass-main.js',
   'dist/askpass/**',
+  // resources/bin/damocles runs it under the app's binary as Node from outside the app (docs/invariants.md "The damocles command").
+  'dist/cli.js',
   'resources/grammars/**',
   // bash, zsh, fish and PowerShell read their integration scripts as real files.
   'resources/shell-integration/**',
@@ -33,6 +35,8 @@ export const ASAR_UNPACK: readonly string[] = [
   WATCHER_UNPACK,
   // node-pty's JS stays inside the asar: loaded from there, its spawn-helper path rewrite to app.asar.unpacked is correct.
   'node_modules/node-pty/prebuilds/**',
+  // The Dev Containers CLI runs under the app's binary as Node with ELECTRON_NO_ASAR=1, which reads no file inside app.asar.
+  'node_modules/@devcontainers/cli/**',
 ];
 
 /** The ASAR_UNPACK globs that match files in a package built for `platform`. */

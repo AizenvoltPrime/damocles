@@ -36,6 +36,9 @@ import type { ContextInjectionDetailsV1, LiveInjections, LiveMemory } from '../i
 import { QUALITY_AUDIT_FORGET_REASON } from '@shared/types/memory-audit';
 import { isStaleMemory } from '@shared/memory-staleness';
 import { userScopeRemote } from '../../user-scope';
+import type { GlobalMemoryResolution, RelayedGlobalMemory, SearchedGlobalMemory } from '../../../shared/remote-user';
+import { parseGlobalMemoryId, type GlobalMemoryRelay } from '../global-memory-relay';
+import { fuseRankedLists } from '../rank-fusion';
 import { localOnly } from '../local-only';
 import {
   BUDGETS,
@@ -50,6 +53,7 @@ import {
   splitTypedPaths,
   scoreGatedEntry,
   type LexicalMatch,
+  type TermAnalysis,
   type TierCandidate,
 } from '../injection/gate';
 import {
@@ -176,14 +180,56 @@ function readConfig(settings: SettingsStore): InjectionConfig {
   };
 }
 
-const MERGED_FORGET_REASON = 'merged';
+export const MERGED_FORGET_REASON = 'merged';
 /** A direct forget or an applied audit proposal: the only reasons a notice may say the user forgot a memory. */
-const USER_FORGET_REASONS: ReadonlySet<string | null> = new Set(['user_forget', QUALITY_AUDIT_FORGET_REASON]);
+export const USER_FORGET_REASONS: ReadonlySet<string | null> = new Set(['user_forget', QUALITY_AUDIT_FORGET_REASON]);
+
+/**
+ * The row a dedup merge folded `row` into, following merge `SUPERSEDES` edges through later merges.
+ * `undefined` when that row no longer exists; null for a merge recorded without an edge.
+ */
+export function mergeTargetOf(db: DatabaseInstance, row: MemoryRow): MemoryRow | undefined | null {
+  const seen = new Set<string>();
+  let current = row;
+  while (current.forgotten === 1 && current.forget_reason === MERGED_FORGET_REASON) {
+    if (seen.has(current.id)) return null;
+    seen.add(current.id);
+    const edge = db.prepare(
+      `SELECT source_id FROM memory_edges WHERE kind = 'SUPERSEDES' AND target_id = ? ORDER BY created_at DESC LIMIT 1`,
+    ).get(current.id) as { source_id: string } | undefined;
+    if (!edge) return null;
+    const next = db.prepare('SELECT * FROM memories WHERE id = ?').get(edge.source_id) as MemoryRow | undefined;
+    if (!next) return undefined;
+    current = next;
+  }
+  return current;
+}
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const RERANK_CANDIDATE_CAP = 30;
+// The rerank's cap, which also bounds each call to a client's global memory while a prompt's injection waits on it.
 const RERANK_TIMEOUT_MS = 2000;
 const RERANK_SNIPPET_CHARS = 160;
+
+const LATE = Symbol('late');
+
+/** A client's answer within RERANK_TIMEOUT_MS; a failure or a later answer is logged and that client is away for this prompt. */
+async function clientAsk<T>(what: string, ask: () => Promise<T>, away: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<typeof LATE>((resolve) => {
+    timer = setTimeout(() => resolve(LATE), RERANK_TIMEOUT_MS);
+  });
+  try {
+    const answer = await Promise.race([ask(), late]);
+    if (answer !== LATE) return answer;
+    log('[InjectionManager] the client\'s global memory %s took over %d ms; the client is away for this prompt', what, RERANK_TIMEOUT_MS);
+  } catch (err) {
+    log('[InjectionManager] the client\'s global memory %s failed; the client is away for this prompt: %O', what, err);
+  } finally {
+    clearTimeout(timer);
+  }
+  return away;
+}
 const SNIPPET_CHARS = 160;
 const MAX_MENTIONED = 10;
 const SESSION_CANDIDATE_LIMIT = 50;
@@ -217,6 +263,18 @@ UNION ALL SELECT m.rowid, m.id, m.kind, m.scope FROM memories m
   WHERE m.scope = 'global' AND +m.is_latest = 1 AND +m.forgotten = 0 ${LIVE_TAIL}
 UNION ALL SELECT m.rowid, m.id, m.kind, m.scope FROM memories m
   WHERE m.session_id = ? AND m.scope = 'session' AND +m.is_latest = 1 AND +m.forgotten = 0 ${LIVE_TAIL}`;
+
+/** Live global facts, preferences and episodes, which a remote core's injection gates in this store. Param: now. */
+const GLOBAL_GATED_SQL = `SELECT m.rowid AS rowid, m.id AS id, m.kind AS kind, m.scope AS scope FROM memories m
+  WHERE m.scope = 'global' AND +m.is_latest = 1 AND +m.forgotten = 0 AND m.kind IN ('fact','preference','episode')
+    AND (m.forget_after IS NULL OR m.forget_after >= ?)`;
+
+/** A global memory of this store that a remote core's prompt passes the lexical gate for. */
+export interface GatedGlobal {
+  readonly row: MemoryRow;
+  readonly fullAllowed: boolean;
+  readonly matchedTerms: readonly string[];
+}
 
 export interface BuildInjectionArgs {
   sessionId: string | null;
@@ -295,6 +353,23 @@ interface GatedCandidate {
 function toLoaded(row: MemoryRow): Loaded {
   return { row, entry: rowToEntry(row) };
 }
+
+/** A daemon's core's global memories, which its clients hold. */
+export type GlobalMemorySource = Pick<GlobalMemoryRelay, 'injectable' | 'resolve' | 'standing'>;
+
+/** A client's global memory as a live row of this store would read; forgotten when its client says it is gone. */
+function relayedRow(memory: Pick<RelayedGlobalMemory, 'id' | 'content' | 'contentHash' | 'createdAt' | 'updatedAt'> & Partial<RelayedGlobalMemory>, gone?: { readonly byUser: boolean }, pinned = false): MemoryRow {
+  return {
+    id: memory.id, kind: memory.kind ?? 'fact', observation_type: null, scope: 'global', content: memory.content, summary: null,
+    title: memory.title ?? null, tags: JSON.stringify(memory.tags ?? []), facts: '[]', observation_tags: '[]', search_terms: '[]',
+    content_hash: memory.contentHash, version: 1, is_latest: 1, parent_id: null, root_id: null, source_count: 1, is_inference: 0,
+    is_static: 0, forget_after: null, forgotten: gone ? 1 : 0, forget_reason: gone?.byUser ? 'user_forget' : null, reprocessed: 1,
+    session_id: null, workspace: null, files_read: '[]', files_modified: '[]', access_count: 0, file_change_count: 0, pinned: pinned ? 1 : 0,
+    needs_conflict_check: 0, created_at: memory.createdAt, updated_at: memory.updatedAt,
+  };
+}
+
+const NO_SCORE: MemoryScoreBreakdown = { relevance: 0, matchedIdf: 0, queryIdf: 0, fileProximity: 0, recency: 0, retrievalBoost: 0, sourceCountBoost: 0, stalenessPenalty: 0 };
 
 function lastSegments(filePath: string, count: number): string {
   const segments = normalizePath(filePath).split('/').filter(Boolean);
@@ -401,6 +476,8 @@ export class InjectionManager {
 
   private readonly settings: SettingsStore;
   private readonly notifications: NotificationService;
+  // a daemon's core: its clients' global memories, ranked against this store's by rank fusion
+  private readonly globals: GlobalMemorySource | undefined;
 
   constructor(
     db: DatabaseInstance,
@@ -408,8 +485,10 @@ export class InjectionManager {
     runner: MemorySubCallRunner,
     settings: SettingsStore,
     notifications: NotificationService,
+    globals?: GlobalMemorySource,
   ) {
     this.db = db;
+    this.globals = globals;
     this.profileManager = profileManager;
     this.runner = runner;
     this.settings = settings;
@@ -602,25 +681,8 @@ export class InjectionManager {
     return head ? toLoaded(head) : null;
   }
 
-  /**
-   * The row a dedup merge folded `row` into, following merge `SUPERSEDES` edges through later merges.
-   * `undefined` when that row no longer exists; null for a merge recorded without an edge.
-   */
   private mergeTarget(row: MemoryRow): MemoryRow | undefined | null {
-    const seen = new Set<string>();
-    let current = row;
-    while (current.forgotten === 1 && current.forget_reason === MERGED_FORGET_REASON) {
-      if (seen.has(current.id)) return null;
-      seen.add(current.id);
-      const edge = this.db.prepare(
-        `SELECT source_id FROM memory_edges WHERE kind = 'SUPERSEDES' AND target_id = ? ORDER BY created_at DESC LIMIT 1`,
-      ).get(current.id) as { source_id: string } | undefined;
-      if (!edge) return null;
-      const next = this.db.prepare('SELECT * FROM memories WHERE id = ?').get(edge.source_id) as MemoryRow | undefined;
-      if (!next) return undefined;
-      current = next;
-    }
-    return current;
+    return mergeTargetOf(this.db, row);
   }
 
   /** The current row a mentioned id stands for: its merge primary, then that row's chain head. */
@@ -629,6 +691,54 @@ export class InjectionManager {
     const row = merged ?? loaded.row;
     const base = row === loaded.row ? loaded : toLoaded(row);
     return row.is_latest === 1 ? base : this.chainHead(row) ?? base;
+  }
+
+  /** The terms' statistics over `visible` (n rows) and, per visible memory, the usable terms its own text matches. */
+  private lexicalMatches(terms: readonly string[], visible: ReadonlyMap<number, VisibleRow>, n: number): { analysis: TermAnalysis; matchedByCandidate: Map<string, Set<string>> } {
+    const idsByTerm = new Map<string, Set<string>>();
+    for (const term of terms) idsByTerm.set(term, this.matchVisible(`${GATE_COLUMNS} : ${quoteFtsTerm(term)}`, visible));
+    const analysis = analyzeTerms(terms, new Map([...idsByTerm].map(([t, ids]) => [t, ids.size])), n);
+    const matchedByCandidate = new Map<string, Set<string>>();
+    for (const t of analysis.usable) {
+      for (const id of idsByTerm.get(t.term) ?? []) {
+        let set = matchedByCandidate.get(id);
+        if (!set) matchedByCandidate.set(id, (set = new Set()));
+        set.add(t.term);
+      }
+    }
+    return { analysis, matchedByCandidate };
+  }
+
+  /**
+   * This store's live global facts, preferences and episodes that `prompt` passes the lexical gate for, with its statistics
+   * over those rows, at most `k`, ranked and allowed full as `buildInjection` ranks and allows its gated memories: a remote
+   * core's injection of this computer's global memory. No file gate: the prompt's paths name files on the remote host.
+   */
+  gatedGlobals(prompt: string, k: number): GatedGlobal[] {
+    const now = Date.now();
+    const { terms } = queryTerms(stripEnglishClitics(splitTypedPaths(prompt).text));
+    const rows = this.db.prepare(GLOBAL_GATED_SQL).all(now) as Array<VisibleRow & { rowid: number }>;
+    const visible = new Map(rows.map(r => [r.rowid, { id: r.id, kind: r.kind, scope: r.scope }]));
+    const { analysis, matchedByCandidate } = this.lexicalMatches(terms, visible, visible.size);
+    const passing = [...matchedByCandidate].flatMap(([id, matched]) => {
+      const lexical = evaluateLexical(matched, analysis);
+      return lexical.passed ? [{ id, lexical }] : [];
+    });
+    const loaded = this.loadRows(passing.map(p => p.id));
+    const retrievalCounts = this.getRetrievalCounts(GLOBAL_RETRIEVAL_WORKSPACE);
+    return passing
+      .flatMap(({ id, lexical }) => {
+        const row = loaded.get(id)?.row;
+        if (!row) return [];
+        const { score } = scoreGatedEntry({
+          lexical, fileProximity: 0, updatedAt: row.updated_at, now, retrievalCount: retrievalCounts.get(id) ?? 0,
+          sourceCount: row.source_count, kind: row.kind, fileChangeCount: row.file_change_count,
+        });
+        return [{ row, lexical, score }];
+      })
+      .sort((a, b) => compareRank({ score: a.score, scope: 'global', updatedAt: a.row.updated_at }, { score: b.score, scope: 'global', updatedAt: b.row.updated_at }))
+      .slice(0, k)
+      .map(({ row, lexical }) => ({ row, fullAllowed: lexical.fullAllowed, matchedTerms: lexical.matchedTerms }));
   }
 
   /** Visible ids whose FTS index matches `ftsQuery` (a column filter plus a quoted term or phrase). */
@@ -664,7 +774,9 @@ export class InjectionManager {
        ORDER BY updated_at DESC`,
     ).all(workspace, sessionId) as MemoryRow[];
     const remote = userScopeRemote();
-    return rows.filter((row) => !remote || row.scope !== 'global').map(toLoaded);
+    // a daemon's core holds no global row: its client's pinned globals come with that client's profile
+    const relayed = this.globals?.standing().pinned.map((memory) => toLoaded(relayedRow(memory, undefined, true))) ?? [];
+    return [...rows.filter((row) => !remote || row.scope !== 'global').map(toLoaded), ...relayed];
   }
 
   private loadVisibleWhere(visible: ReadonlyMap<number, VisibleRow>, keep: (v: VisibleRow) => boolean): Loaded[] {
@@ -686,11 +798,19 @@ export class InjectionManager {
   private loadPreferences(visible: ReadonlyMap<number, VisibleRow>, retrievalCounts: ReadonlyMap<string, number>): Loaded[] {
     const scopeRank = (l: Loaded): number => (l.row.scope === 'project' ? 0 : 1);
     const retrievals = (l: Loaded): number => retrievalCounts.get(l.row.id) ?? 0;
-    return this.loadVisibleWhere(visible, v => v.kind === 'preference' && v.scope !== 'session')
+    // a daemon's core's global preferences are its client's, after this store's project ones and in the order that client ranked them
+    const relayed = this.globals?.standing().preferences.map((memory) => toLoaded(relayedRow(memory))) ?? [];
+    const clientRank = new Map(relayed.map((l, index) => [l, index]));
+    const byClient = (a: Loaded, b: Loaded): number => {
+      const ra = clientRank.get(a), rb = clientRank.get(b);
+      return ra !== undefined && rb !== undefined ? ra - rb : 0;
+    };
+    return [...this.loadVisibleWhere(visible, v => v.kind === 'preference' && v.scope !== 'session'), ...relayed]
       .sort(
         (a, b) =>
           b.row.pinned - a.row.pinned ||
           scopeRank(a) - scopeRank(b) ||
+          byClient(a, b) ||
           b.row.source_count - a.row.source_count ||
           retrievals(b) - retrievals(a) ||
           b.row.updated_at - a.row.updated_at,
@@ -719,9 +839,7 @@ export class InjectionManager {
 
     const visible = this.loadVisible(now, sessionKey, workspace);
     const storeCounts = storeCountsOf(visible);
-    const idsByTerm = new Map<string, Set<string>>();
-    for (const term of terms) idsByTerm.set(term, this.matchVisible(`${GATE_COLUMNS} : ${quoteFtsTerm(term)}`, visible));
-    const analysis = analyzeTerms(terms, new Map([...idsByTerm].map(([t, ids]) => [t, ids.size])), storeCounts.total);
+    const { analysis, matchedByCandidate } = this.lexicalMatches(terms, visible, storeCounts.total);
     const retrievalCounts = this.getRetrievalCounts(workspace);
 
     const taken = new Set<string>();
@@ -731,6 +849,24 @@ export class InjectionManager {
 
     // Notices run first; the ids they handle are excluded from every other rule this prompt.
     const liveRows = this.loadRows([...live.memories.keys()]);
+    // a global the context holds resolves through the client that returned it; one whose client is away stays as it was shown
+    const unresolvedGlobals = new Set(this.globals ? [...live.memories.keys()].filter((id) => parseGlobalMemoryId(id) !== undefined) : []);
+    // both asks of the client run at once, each bounded; a failed or late one treats the client as away for this prompt
+    const globals = this.globals;
+    const resolving = globals && unresolvedGlobals.size > 0
+      ? clientAsk('resolve', () => globals.resolve([...unresolvedGlobals]), new Map<string, GlobalMemoryResolution>())
+      : Promise.resolve(new Map<string, GlobalMemoryResolution>());
+    const searching = globals && args.prompt
+      ? clientAsk('search', () => globals.injectable(args.prompt, cfg.fullLimit + cfg.compactLimit), [] as SearchedGlobalMemory[])
+      : Promise.resolve([] as SearchedGlobalMemory[]);
+    if (unresolvedGlobals.size > 0) {
+      // a live global its client pins shares the pinned budget, as a pinned row of this store does
+      const clientPinned = new Set(this.globals!.standing().pinned.map((memory) => memory.id));
+      for (const [id, answer] of await resolving) {
+        unresolvedGlobals.delete(id);
+        liveRows.set(id, toLoaded('memory' in answer ? relayedRow(answer.memory, undefined, clientPinned.has(answer.memory.id)) : relayedRow({ id, content: '', contentHash: '', createdAt: 0, updatedAt: 0 }, answer)));
+      }
+    }
     const noticeRenders: Array<{ notice: MemoryNotice; line: string; tracked?: Selected }> = [];
     const replacements: Selected[] = [];
     let noticeTokens = 0;
@@ -755,7 +891,7 @@ export class InjectionManager {
     };
     for (const [id, liveEntry] of live.memories) {
       if (noticeRenders.length >= BUDGETS.maxNotices) break;
-      if (taken.has(id)) continue;
+      if (taken.has(id) || unresolvedGlobals.has(id)) continue;
       const loaded = liveRows.get(id);
       const row = loaded?.row;
       const target = row?.forgotten === 1 && row.forget_reason === MERGED_FORGET_REASON ? this.mergeTarget(row) : row;
@@ -869,14 +1005,6 @@ export class InjectionManager {
     );
 
     // Rules 5-6: the lexical gate and the file gate.
-    const matchedByCandidate = new Map<string, Set<string>>();
-    for (const t of analysis.usable) {
-      for (const id of idsByTerm.get(t.term) ?? []) {
-        let set = matchedByCandidate.get(id);
-        if (!set) matchedByCandidate.set(id, (set = new Set()));
-        set.add(t.term);
-      }
-    }
     const fileCandidateIds = new Set<string>();
     for (const file of files) {
       for (const id of this.fileCandidateIds(file.path, visible)) if (!taken.has(id)) fileCandidateIds.add(id);
@@ -915,7 +1043,7 @@ export class InjectionManager {
     }
 
     const passingRows = this.loadRows(passingIds.filter(id => !fileRows.has(id)));
-    const gated: GatedCandidate[] = [];
+    let gated: GatedCandidate[] = [];
     for (const id of passingIds) {
       const loaded = fileRows.get(id) ?? passingRows.get(id);
       if (!loaded) continue;
@@ -940,13 +1068,40 @@ export class InjectionManager {
         fullAllowed: lexical.fullAllowed,
       });
     }
-    gate.passed = gated.filter(g => !g.liveCompact).length;
     gated.sort((a, b) =>
       compareRank(
         { score: a.score, scope: a.loaded.entry.scope ?? 'project', updatedAt: a.loaded.row.updated_at },
         { score: b.score, scope: b.loaded.entry.scope ?? 'project', updatedAt: b.loaded.row.updated_at },
       ),
     );
+    // a client's global memories come ranked and gated by its own store's statistics; scores of two stores do not compare,
+    // so ranks are fused
+    const relayed: GatedCandidate[] = [];
+    const theirs = await searching;
+    for (const memory of theirs) {
+      if (taken.has(memory.id)) continue;
+      const liveEntry = live.memories.get(memory.id);
+      if (liveEntry?.tier === 'full' && liveEntry.hash === memory.contentHash) {
+        gate.alreadyInContext++;
+        continue;
+      }
+      gate.considered++;
+      const fullAllowed = memory.fullAllowed === true;
+      relayed.push({
+        loaded: toLoaded(relayedRow(memory)),
+        lexical: { passed: true, fullAllowed, matchedTerms: [...(memory.matchedTerms ?? [])], relevance: 0, matchedIdf: 0, queryIdf: 0 },
+        fileReasons: [],
+        liveCompact: liveEntry?.tier === 'compact',
+        score: 0,
+        breakdown: NO_SCORE,
+        fullAllowed,
+      });
+    }
+    if (relayed.length > 0) {
+      const byId = new Map([...gated, ...relayed].map(g => [g.loaded.row.id, g]));
+      gated = fuseRankedLists([gated.map(g => g.loaded.row.id), relayed.map(g => g.loaded.row.id)]).map(id => byId.get(id)!);
+    }
+    gate.passed = gated.filter(g => !g.liveCompact).length;
 
     let rerankApplied = false;
     let ranked = gated;

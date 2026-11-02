@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Endpoint } from '../../../core-protocol/endpoint';
 import type { ClientToWorkspace, WorkspaceToClient } from '../../../workspace/messages';
-import { createRemoteWorkspace } from '../remote-workspace';
+import { createRemoteWorkspace, TransfersUnsupportedError } from '../remote-workspace';
 import { NotConnectedError } from '../workspaces';
 
 const notConnected = (): NotConnectedError => new NotConnectedError('Local daemon is not connected.');
@@ -25,6 +25,8 @@ const workspaceOver = (answers: Record<string, unknown>, sent: Array<[string, un
   onClose: () => ({ dispose: () => undefined }),
   notConnected,
   watchReady: false,
+  transfers: false,
+  openStream: () => { throw new Error('no transfer streams in this suite'); },
   log: () => undefined,
 });
 
@@ -69,6 +71,8 @@ describe('remote workspace client', () => {
       },
       notConnected,
       watchReady: false,
+      transfers: false,
+      openStream: () => { throw new Error('no transfer streams in this suite'); },
       log: () => undefined,
     });
     const host = workspace.terminals.startHost();
@@ -101,6 +105,8 @@ describe('remote workspace client', () => {
       },
       notConnected,
       watchReady: false,
+      transfers: false,
+      openStream: () => { throw new Error('no transfer streams in this suite'); },
       log: () => undefined,
     });
     const ends: unknown[] = [];
@@ -141,6 +147,8 @@ describe('remote workspace client', () => {
       },
       notConnected,
       watchReady: false,
+      transfers: false,
+      openStream: () => { throw new Error('no transfer streams in this suite'); },
       log: () => undefined,
     });
     const pending = workspace.files.writeInPlace(project, { path: '/srv/app/a.ts', projectKey: project.key, relativePath: 'a.ts' }, Buffer.from('x'));
@@ -156,7 +164,7 @@ describe('remote workspace client', () => {
       ...fakeEndpoint({}, []),
       request: (method: string) => (method === 'files.watch' ? new Promise<void>((resolve, reject) => answers.push({ resolve, reject })) : Promise.resolve()),
     } as unknown as Endpoint<ClientToWorkspace, WorkspaceToClient>;
-    const over = (watchReady: boolean) => createRemoteWorkspace({ endpoint, authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady, log: () => undefined });
+    const over = (watchReady: boolean) => createRemoteWorkspace({ endpoint, authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady, transfers: false, openStream: () => { throw new Error('no transfer streams in this suite'); }, log: () => undefined });
     const settled = (ready: Promise<void>): { done: boolean } => {
       const state = { done: false };
       void ready.then(() => {
@@ -180,5 +188,50 @@ describe('remote workspace client', () => {
   it('turns an entry\'s decimal identity back into bigints', async () => {
     const workspace = workspaceOver({ 'files.entry': { ok: true, path: '/srv/app/a.ts', folder: false, identity: { dev: '18446744073709551615', ino: '42', birthtimeNs: '1700000000000000000' } } });
     expect(await workspace.files.entry(project, 'a.ts')).toEqual({ ok: true, path: '/srv/app/a.ts', folder: false, identity: { dev: 18446744073709551615n, ino: 42n, birthtimeNs: 1700000000000000000n } });
+  });
+
+  it('sends no transfer request to a daemon that does not list the transfer features, and fails each with TransfersUnsupportedError', async () => {
+    const sent: Array<[string, unknown]> = [];
+    const { files } = workspaceOver({}, sent);
+    const identity = { dev: 1n, ino: 2n, birthtimeNs: 3n };
+    async function* none(): AsyncGenerator<Uint8Array> {}
+    const calls: Array<() => Promise<unknown>> = [
+      async () => {
+        for await (const page of files.walk(project, 'src')) return page;
+        return undefined;
+      },
+      () => files.clashes(project, 'src', ['a.ts']),
+      () => files.copy(project, 'a.ts', project, 'src', 'b.ts', false),
+      () => files.move(project, 'a.ts', project, 'src', 'b.ts', false),
+      () => files.makeFolder(project, '', 'lib', 0o755),
+      () => files.makeLink(project, '', 'to-a', 'a.ts', false, ''),
+      () => files.verifyLink(project, 'to-a', ''),
+      () => files.removeFolder(project, 'lib', identity),
+      () => files.receiveFile(project, 'src', 'b.ts', none(), { mode: 0o644, mtimeMs: 0, replace: false, size: 0 }),
+      () => files.readFile(project, 'a.ts'),
+    ];
+    for (const call of calls) await expect(call()).rejects.toBeInstanceOf(TransfersUnsupportedError);
+    expect(sent).toEqual([]);
+    expect(await files.realpath('/srv/app')).toBeUndefined();
+    expect(sent.map(([method]) => method)).toEqual(['files.realpath']);
+  });
+
+  it('sends a folder\'s mode and a copy\'s cancel to a daemon that carries transfers', async () => {
+    const requests: Array<[string, unknown, AbortSignal | undefined]> = [];
+    const endpoint = {
+      ...fakeEndpoint({}, []),
+      request: async (method: string, params: unknown, signal?: AbortSignal) => {
+        requests.push([method, params, signal]);
+        return { ok: true };
+      },
+    } as unknown as Endpoint<ClientToWorkspace, WorkspaceToClient>;
+    const { files } = createRemoteWorkspace({ endpoint, authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady: false, transfers: true, openStream: () => { throw new Error('no transfer streams in this suite'); }, log: () => undefined });
+    const controller = new AbortController();
+    await files.makeFolder(project, '', 'lib', 0o700);
+    await files.copy(project, 'a.ts', project, 'lib', 'a.ts', false, controller.signal);
+    expect(requests.map(([method, params, signal]) => [method, params, signal])).toEqual([
+      ['files.makeFolder', { project: { key: '/srv/app', fsPath: '/srv/app', name: 'app' }, relativeDir: '', name: 'lib', mode: 0o700 }, undefined],
+      ['files.copy', { from: { key: '/srv/app', fsPath: '/srv/app', name: 'app' }, relativePath: 'a.ts', to: { key: '/srv/app', fsPath: '/srv/app', name: 'app' }, toDir: 'lib', name: 'a.ts', replace: false }, controller.signal],
+    ]);
   });
 });

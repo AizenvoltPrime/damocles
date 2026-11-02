@@ -2,13 +2,13 @@
 import { computed, inject, nextTick, onBeforeUnmount, ref, shallowRef, triggerRef, useId, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useVirtualList } from '@vueuse/core';
-import { ChevronRight, CopyMinus, FilePlus, FolderPlus } from 'lucide-vue-next';
+import { Ban, ChevronRight, Copy, CopyMinus, FilePlus, FolderInput, FolderPlus } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { remPx } from '@/composables/useRemPx';
-import { FILE_DRAG_MIME, serializeFileDragPayload } from '@shared/file-drag';
+import { FILE_DRAG_MIME, FILES_ROW_DRAG_MIME, parseFileDragPayload, serializeFileDragPayload } from '@shared/file-drag';
 import { visibleText } from '@shared/visible-text';
-import { MAX_FILE_NAME_LENGTH, type DamoclesShellApi, type FileRef, type ShellPlatform, type ShownFolder } from '../../preload/shell-channels';
+import { MAX_FILE_NAME_LENGTH, type DamoclesShellApi, type FileRef, type FilesPasteResult, type FilesTransferStartResult, type ShellPlatform, type ShownFolder } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import type { ScmDecoration, ScmLetter, ScmResource, ScmTone } from '../../preload/scm-channels';
 import { parseRootKey } from '../../preload/folder-root';
@@ -22,6 +22,8 @@ import { TONE_TEXT } from '../scm/scm-list';
 import StatusLetter from '../scm/StatusLetter.vue';
 import SidebarSection from './SidebarSection.vue';
 import FilesBranchChip from './FilesBranchChip.vue';
+import WslNotice from './WslNotice.vue';
+import FilesTransferRow from './FilesTransferRow.vue';
 
 const props = defineProps<{
   api: DamoclesShellApi;
@@ -42,6 +44,14 @@ const props = defineProps<{
   bodySize?: number | undefined;
   // the project's host is away: the tree stays readable, dimmed
   away?: boolean | undefined;
+  // a local project in a WSL distro's file system, whose Reopen in WSL notice tops the tree
+  wslNotice?: { readonly projectKey: string; readonly projectName: string; readonly distro: string } | undefined;
+  // a project on another computer, whose menu offers Download...
+  remote?: boolean | undefined;
+  // the remote project's host is not connected: Download... is disabled
+  offline?: boolean | undefined;
+  // the host's name while its Damocles server cannot copy files: drops, Paste, Copy files here... and Download... are off
+  transfersUnsupportedOn?: string | undefined;
 }>();
 const emit = defineEmits<{ toggle: []; expand: [] }>();
 const { t } = useI18n();
@@ -62,6 +72,8 @@ const editTouched = ref(false);
 const focusedPath = ref<string | null>(null);
 const treeId = useId();
 const helpId = useId();
+const unsupportedId = useId();
+const unsupportedText = computed(() => (props.transfersUnsupportedOn === undefined ? '' : t('files.transfersUnsupported', { host: visibleText(props.transfersUnsupportedOn) })));
 
 const rows = computed(() => flattenTree(listings.value, expanded.value, edit.value));
 const rowKey = (row: TreeRow): string => (row.kind === 'entry' ? `entry:${row.path}` : `input:${row.edit.mode}`);
@@ -243,7 +255,18 @@ function onKeydown(event: KeyboardEvent): void {
   if (edit.value) return;
   const index = focusedIndex.value;
   const row = entryAt(index);
-  if (!row) return;
+  if (event.key === 'Escape' && cut.value?.projectKey === props.projectKey) {
+    event.preventDefault();
+    void props.api.clearFilesClipboard();
+    return;
+  }
+  if (!row) {
+    if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+      event.preventDefault();
+      void openRootMenu(containerProps.ref.value?.getBoundingClientRect());
+    }
+    return;
+  }
   // Shift+Alt+F: VS Code's Find in Folder... on a folder row of the explorer.
   if (row.directory && event.code === 'KeyF' && event.shiftKey && event.altKey && !event.ctrlKey && !event.metaKey) {
     event.preventDefault();
@@ -443,6 +466,7 @@ async function openMenu(row: Extract<TreeRow, { kind: 'entry' }>, rect: DOMRect 
     ? [
         item('newFile', t('files.newFile'), 'file-plus'),
         item('newFolder', t('files.newFolder'), 'folder-plus'),
+        copyHereItem(),
         separator,
         item('findInFolder', t('files.menu.findInFolder'), 'search', props.platform === 'darwin' ? '⇧⌥F' : 'Shift+Alt+F'),
         item('openAsProject', t('files.menu.openAsProject'), 'folder-plus'),
@@ -458,6 +482,9 @@ async function openMenu(row: Extract<TreeRow, { kind: 'entry' }>, rect: DOMRect 
         separator,
       ];
   items.push(
+    ...clipboardItems(true),
+    separator,
+    ...(props.remote ? [downloadItem(), separator] : []),
     item('rename', t('files.menu.rename'), 'pencil', 'F2'),
     { kind: 'item', id: 'delete', label: props.trash ? t('files.menu.delete') : t('files.menu.deletePermanently'), icon: 'trash-2', shortcut: 'Del', danger: true },
     separator,
@@ -489,7 +516,257 @@ async function openMenu(row: Extract<TreeRow, { kind: 'entry' }>, rect: DOMRect 
     case 'copyRelativePath': await props.api.copyFilePath(file, true); break;
     case 'reveal': await props.api.revealFile(file); break;
     case 'openTimeline': if (resource) await props.api.scm.run({ op: 'openTimeline', repoId: resource.repoId, path: resource.path }); break;
+    case 'copyHere': await pickCopyIn(row.path); break;
+    case 'download': await props.api.downloadFile(file); break;
   }
+}
+
+// Main runs a pick of these on the focused row or tree, as the cut, copy and paste events Ctrl+X, C and V send (Cmd on macOS).
+function clipboardItems(onEntry: boolean): OverlayMenuItem[] {
+  const key = (letter: string): string => (props.platform === 'darwin' ? `⌘${letter}` : `Ctrl+${letter}`);
+  const paste: OverlayMenuItem = { kind: 'item', id: 'paste', label: t('files.menu.paste'), icon: 'clipboard-paste', shortcut: key('V'), clipboard: 'paste', ...(unsupportedText.value ? { disabled: true } : {}) };
+  if (!onEntry) return [paste];
+  return [
+    { kind: 'item', id: 'cut', label: t('files.menu.cut'), icon: 'scissors', shortcut: key('X'), clipboard: 'cut' },
+    { kind: 'item', id: 'copy', label: t('files.menu.copy'), icon: 'copy', shortcut: key('C'), clipboard: 'copy' },
+    paste,
+  ];
+}
+
+const unsupportedItem = (): Partial<Extract<OverlayMenuItem, { kind: 'item' }>> => (unsupportedText.value ? { disabled: true, disabledReason: t('files.menu.transfersUnsupported') } : {});
+
+const downloadItem = (): OverlayMenuItem => ({
+  kind: 'item',
+  id: 'download',
+  label: t('files.menu.download'),
+  icon: 'download',
+  ...(props.offline ? { disabled: true, disabledReason: t('files.menu.offline') } : unsupportedItem()),
+});
+
+const copyHereItem = (): OverlayMenuItem => ({ kind: 'item', id: 'copyHere', label: t('files.menu.copyHere'), icon: 'folder-input', ...unsupportedItem() });
+
+// The project folder's menu, on the tree's empty space, or from the keyboard on a tree with no rows.
+async function openRootMenu(rect: DOMRect | { left: number; top: number; width: number; height: number } | undefined): Promise<void> {
+  if (props.projectKey === undefined || !rect) return;
+  const answer = await props.api.requestOverlay({
+    kind: 'menu',
+    label: t('files.menu.label', { name: props.projectName }),
+    anchor: { x: Math.max(0, rect.left), y: Math.max(0, rect.top), width: rect.width, height: rect.height },
+    items: [
+      { kind: 'item', id: 'newFile', label: t('files.newFile'), icon: 'file-plus' },
+      { kind: 'item', id: 'newFolder', label: t('files.newFolder'), icon: 'folder-plus' },
+      copyHereItem(),
+      { kind: 'separator' },
+      ...clipboardItems(false),
+    ],
+  });
+  if (answer.kind !== 'menu') return;
+  switch (answer.itemId) {
+    case 'newFile': await startCreate('newFile', ''); break;
+    case 'newFolder': await startCreate('newFolder', ''); break;
+    case 'copyHere': await pickCopyIn(''); break;
+  }
+}
+
+function onTreeContextMenu(event: MouseEvent): void {
+  const target = event.target;
+  if (event.defaultPrevented || !(target instanceof Element) || target.closest('[data-tree-path], input')) return;
+  event.preventDefault();
+  void openRootMenu({ left: event.clientX, top: event.clientY, width: 0, height: 0 });
+}
+
+// --- copy in, move and the Files clipboard --------------------------------------------------------------------------
+
+// A folder that took a transfer opens, so what arrives shows; main's FilesChanged refreshes it.
+async function revealArrival(dir: string, start: Promise<FilesTransferStartResult | FilesPasteResult>): Promise<void> {
+  if ((await start).ok && dir !== '') await expand(dir);
+}
+
+async function pickCopyIn(dir: string): Promise<void> {
+  const folder = fileRef(dir);
+  if (folder) await revealArrival(dir, props.api.pickFilesToCopyIn(folder));
+}
+
+// OS files from a drop or a paste: main checks each path, and refuses those with none (a web page's image), counted.
+async function copyIn(files: readonly File[], dir: string, origin: 'drop' | 'paste'): Promise<void> {
+  const key = props.projectKey;
+  if (key === undefined || files.length === 0) return;
+  const found = props.api.pathsForFiles(files);
+  const paths = found.filter((path) => path !== '');
+  await revealArrival(dir, props.api.copyFilesIn({ projectKey: key, relativeDir: dir, paths, withoutPath: found.length - paths.length, origin }));
+}
+
+// The window's cut item, whose row shows dimmed.
+const cut = ref<FileRef | undefined>();
+const stopClipboard = props.api.onFilesClipboardChanged((change) => {
+  cut.value = change.cut;
+});
+onBeforeUnmount(stopClipboard);
+const isCut = (path: string): boolean => cut.value !== undefined && cut.value.projectKey === props.projectKey && cut.value.relativePath === path;
+
+// The row path a clipboard event reached, '' for the tree itself (the project folder), undefined for the name box.
+function clipboardPlace(event: ClipboardEvent): string | undefined {
+  const target = event.target;
+  if (target === containerProps.ref.value) return '';
+  return target instanceof HTMLElement && target.dataset.treePath !== undefined ? target.dataset.treePath : undefined;
+}
+
+// Cancelled with no data, which empties the OS clipboard: the next paste takes this row, not files copied earlier in Explorer.
+function onClipboardSet(event: ClipboardEvent, op: 'cut' | 'copy'): void {
+  const path = clipboardPlace(event);
+  const file = path ? fileRef(path) : undefined;
+  if (!file) return;
+  event.preventDefault();
+  void props.api.setFilesClipboard({ op, ref: file });
+}
+
+const isDirectory = (path: string): boolean => rows.value.some((row) => row.kind === 'entry' && row.path === path && row.directory);
+
+// Into the row's folder, or the folder holding the row's file: OS files on the clipboard first, else the Files clipboard.
+function onPaste(event: ClipboardEvent): void {
+  const path = clipboardPlace(event);
+  const key = props.projectKey;
+  if (path === undefined || key === undefined) return;
+  event.preventDefault();
+  const dir = path === '' || isDirectory(path) ? path : parentOf(path);
+  const files = Array.from(event.clipboardData?.files ?? []);
+  if (files.length > 0) void copyIn(files, dir, 'paste');
+  else void revealArrival(dir, props.api.pasteFiles({ toDir: { projectKey: key, relativePath: dir } }));
+}
+
+// --- drop target ------------------------------------------------------------------------------------------------------
+
+const HOVER_OPEN_MS = 800;
+// The folder a drop lands in while an accepted drag is over the tree: '' is the project folder; null, no drag.
+const dropTarget = ref<string | null>(null);
+// What the drop will do, which the hint under the pointer names, as the dropEffect tells the OS.
+const dropCopies = ref(true);
+// An accepted drag kind over a project whose host cannot copy files: the hint says why nothing lands.
+const dropRefused = ref(false);
+const dropHint = computed(() => {
+  if (dropRefused.value) return unsupportedText.value;
+  const target = dropTarget.value;
+  if (target === null) return '';
+  return t(dropCopies.value ? 'files.drop.copy' : 'files.drop.move', { folder: target === '' ? props.projectName : visibleText(target) });
+});
+// The row this tree's own drag carries, set at dragstart: a row drop is taken only while it is live and names the same row.
+let rowDrag: FileRef | null = null;
+let hoverOpen: { readonly path: string; readonly timer: ReturnType<typeof setTimeout> } | undefined;
+
+// OS files and Files rows only: an editor tab or a source control row carries FILE_DRAG_MIME alone and stays a chat mention.
+function dragKind(event: DragEvent): 'row' | 'files' | undefined {
+  const types = event.dataTransfer?.types ?? [];
+  if (types.includes(FILES_ROW_DRAG_MIME)) return 'row';
+  return types.includes('Files') ? 'files' : undefined;
+}
+
+const copyHeld = (event: DragEvent): boolean => (props.platform === 'darwin' ? event.altKey : event.ctrlKey);
+
+// The row under the pointer, read from the DOM: a folder row is the one with aria-expanded.
+function rowUnder(event: DragEvent): { readonly path: string; readonly directory: boolean; readonly expanded: boolean } | undefined {
+  const element = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-tree-path]') : null;
+  const path = element?.dataset.treePath;
+  if (!element || path === undefined) return undefined;
+  const expanded = element.getAttribute('aria-expanded');
+  return { path, directory: expanded !== null, expanded: expanded === 'true' };
+}
+
+// A row never moves into the folder it is in, nor a folder into itself or a folder inside it; main refuses those too.
+function droppable(from: FileRef, target: string, copy: boolean): boolean {
+  if (from.projectKey !== props.projectKey) return true;
+  const path = from.relativePath;
+  if (target === path || target.startsWith(`${path}/`)) return false;
+  return copy || parentOf(path) !== target;
+}
+
+function stopHoverOpen(): void {
+  if (hoverOpen) clearTimeout(hoverOpen.timer);
+  hoverOpen = undefined;
+}
+
+// A closed folder held under a drag opens, as VS Code's explorer does.
+function holdToOpen(path: string | undefined): void {
+  if (hoverOpen?.path === path) return;
+  stopHoverOpen();
+  if (path === undefined) return;
+  hoverOpen = {
+    path,
+    timer: setTimeout(() => {
+      hoverOpen = undefined;
+      void expand(path, true);
+    }, HOVER_OPEN_MS),
+  };
+}
+
+function clearDrop(): void {
+  dropTarget.value = null;
+  dropRefused.value = false;
+  stopHoverOpen();
+}
+
+function onTreeDragOver(event: DragEvent): void {
+  const kind = dragKind(event);
+  // Another app or page can put FILES_ROW_DRAG_MIME on its own drag: only this tree's live row drag is taken.
+  if (!kind || (kind === 'row' && !rowDrag) || props.projectKey === undefined || !event.dataTransfer) return;
+  if (unsupportedText.value) {
+    stopHoverOpen();
+    dropTarget.value = null;
+    dropRefused.value = true;
+    event.dataTransfer.dropEffect = 'none';
+    return;
+  }
+  const under = rowUnder(event);
+  const target = !under ? '' : under.directory ? under.path : parentOf(under.path);
+  const copy = kind === 'files' || copyHeld(event);
+  if (kind === 'row' && rowDrag && !droppable(rowDrag, target, copy)) {
+    stopHoverOpen();
+    dropTarget.value = null;
+    event.dataTransfer.dropEffect = 'none';
+    return;
+  }
+  holdToOpen(under?.directory && !under.expanded ? under.path : undefined);
+  event.preventDefault();
+  event.dataTransfer.dropEffect = copy ? 'copy' : 'move';
+  dropCopies.value = copy;
+  dropTarget.value = target;
+}
+
+function onTreeDragLeave(event: DragEvent): void {
+  if (!containerProps.ref.value?.contains(event.relatedTarget as Node | null)) clearDrop();
+}
+
+function onTreeDrop(event: DragEvent): void {
+  const kind = dragKind(event);
+  const target = dropTarget.value;
+  const key = props.projectKey;
+  clearDrop();
+  if (!kind || target === null || key === undefined || !event.dataTransfer) return;
+  if (kind === 'files') {
+    event.preventDefault();
+    void copyIn(Array.from(event.dataTransfer.files), target, 'drop');
+    return;
+  }
+  const copy = copyHeld(event);
+  const from = parseFileDragPayload(event.dataTransfer.getData(FILES_ROW_DRAG_MIME));
+  const own = rowDrag;
+  if (!from || !own || from.projectKey !== own.projectKey || from.relativePath !== own.relativePath || !droppable(from, target, copy)) return;
+  event.preventDefault();
+  rowDrag = null;
+  void revealArrival(target, props.api.dropFilesRow({ from, toDir: { projectKey: key, relativePath: target }, copy }));
+}
+
+function onRowDragEnd(): void {
+  rowDrag = null;
+  clearDrop();
+}
+
+onBeforeUnmount(stopHoverOpen);
+
+// The transfer row's Cancel left with focus on it: the tree takes it back.
+function focusTree(): void {
+  const path = focusedPath.value;
+  if (path !== null && indexOf(path) >= 0) void focusRow(path);
+  else containerProps.ref.value?.focus({ preventScroll: true });
 }
 
 // Open Timeline is the one item that needs the lookup: when it fails the menu still opens, without that item.
@@ -507,18 +784,24 @@ function onContextMenu(event: MouseEvent, row: Extract<TreeRow, { kind: 'entry' 
   void openMenu(row, { left: event.clientX, top: event.clientY, width: 0, height: 0 });
 }
 
-// Dragging a file carries its project and relative path; the chat composer turns the drop into a mention (core resolves it).
+// Dragging a row carries its project and relative path: onto a folder of Files it moves or copies, and a file dropped on the
+// chat composer becomes a mention (core resolves it).
 const dragImage = ref<HTMLElement | null>(null);
 const dragLabel = ref('');
+const dragMention = ref(false);
 function onDragStart(event: DragEvent, row: Extract<TreeRow, { kind: 'entry' }>): void {
   const file = fileRef(row.path);
-  if (!file || !event.dataTransfer || row.directory) {
+  if (!file || !event.dataTransfer) {
     event.preventDefault();
     return;
   }
-  event.dataTransfer.setData(FILE_DRAG_MIME, serializeFileDragPayload(file));
-  event.dataTransfer.effectAllowed = 'copy';
+  const payload = serializeFileDragPayload(file);
+  event.dataTransfer.setData(FILES_ROW_DRAG_MIME, payload);
+  if (!row.directory) event.dataTransfer.setData(FILE_DRAG_MIME, payload);
+  event.dataTransfer.effectAllowed = 'copyMove';
+  rowDrag = file;
   dragLabel.value = visibleText(row.name);
+  dragMention.value = !row.directory;
   if (dragImage.value) event.dataTransfer.setDragImage(dragImage.value, remPx(0.75), remPx(0.75));
 }
 
@@ -619,6 +902,20 @@ defineExpose({ reveal, startCreate, collapseAll });
         type="button"
         variant="ghost"
         size="icon-sm"
+        data-testid="files-copy-here"
+        class="size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
+        :disabled="projectKey === undefined || !!unsupportedText"
+        :aria-label="t('files.copyHere')"
+        :aria-describedby="unsupportedText ? unsupportedId : undefined"
+        :title="unsupportedText || t('files.copyHere')"
+        @click="pickCopyIn(targetDir())"
+      >
+        <FolderInput aria-hidden="true" />
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
         data-testid="files-collapse-all"
         class="size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
         :disabled="expanded.size === 0"
@@ -630,6 +927,26 @@ defineExpose({ reveal, startCreate, collapseAll });
       </Button>
     </template>
 
+    <FilesTransferRow
+      :api="api"
+      :project-key="projectKey"
+      @release-focus="focusTree"
+    />
+    <Transition
+      name="t-banner"
+      appear
+    >
+      <WslNotice
+        v-if="wslNotice"
+        :key="wslNotice.projectKey"
+        :api="api"
+        :project-key="wslNotice.projectKey"
+        :project-name="wslNotice.projectName"
+        :distro="wslNotice.distro"
+        place="files"
+        class="mx-1.5 mb-1.5 shrink-0"
+      />
+    </Transition>
     <p
       v-if="projectKey === undefined"
       class="px-3 py-2 text-12 text-(--d-faint)"
@@ -657,135 +974,188 @@ defineExpose({ reveal, startCreate, collapseAll });
       {{ t('files.empty', { project: projectName }) }}
     </p>
 
-    <!-- A virtualized tree (flattened visible rows, roving tabindex); no shadcn part virtualizes a tree. -->
-    <div
-      v-bind="containerProps"
-      :id="treeId"
-      role="tree"
-      tabindex="-1"
-      data-testid="files-tree"
-      :aria-label="t('files.treeLabel', { project: projectName })"
-      :aria-describedby="helpId"
-      :data-away="away || undefined"
-      class="d-dim-transition min-h-0 flex-1 overflow-x-hidden pb-2 outline-none"
-      :class="{ 'opacity-(--d-opacity-disabled)': away }"
-      @keydown="onKeydown"
-    >
-      <div v-bind="wrapperProps">
-        <template
-          v-for="{ data: row, index } in visibleRows"
-          :key="rowKey(row)"
-        >
-          <div
-            v-if="row.kind === 'input'"
-            role="none"
-            class="flex items-center gap-1.25 pr-2.5"
-            :style="{ height: `${remPx(ROW_REM)}px`, paddingLeft: `${INDENT_START_REM + row.depth * INDENT_REM}rem` }"
+    <!-- The drop target: OS files and Files rows land in the folder under the pointer, or the project folder over empty space. -->
+    <div class="relative flex min-h-0 flex-1 flex-col">
+      <!-- A virtualized tree (flattened visible rows, roving tabindex); no shadcn part virtualizes a tree. -->
+      <div
+        v-bind="containerProps"
+        :id="treeId"
+        role="tree"
+        tabindex="-1"
+        data-testid="files-tree"
+        :aria-label="t('files.treeLabel', { project: projectName })"
+        :aria-describedby="helpId"
+        :data-away="away || undefined"
+        :data-drop-target="dropTarget ?? undefined"
+        class="d-dim-transition min-h-0 flex-1 overflow-x-hidden pb-2 outline-none"
+        :class="{ 'opacity-(--d-opacity-disabled)': away }"
+        @keydown="onKeydown"
+        @contextmenu="onTreeContextMenu"
+        @dragenter="onTreeDragOver"
+        @dragover="onTreeDragOver"
+        @dragleave="onTreeDragLeave"
+        @drop="onTreeDrop"
+        @cut="onClipboardSet($event, 'cut')"
+        @copy="onClipboardSet($event, 'copy')"
+        @paste="onPaste"
+      >
+        <div v-bind="wrapperProps">
+          <template
+            v-for="{ data: row, index } in visibleRows"
+            :key="rowKey(row)"
           >
-            <span class="w-3.5 shrink-0" />
-            <FileIcon
-              :path="inputIcon(row).path"
-              :directory="row.directory"
-              :open="inputIcon(row).open"
-              class="size-3.5 shrink-0"
-            />
-            <div class="relative min-w-0 flex-1">
-              <Input
-                v-model="editName"
-                data-testid="files-edit-input"
-                :maxlength="MAX_FILE_NAME_LENGTH"
-                :aria-label="t(`files.inputLabel.${row.edit.mode}`)"
-                :aria-invalid="editMessage !== null"
-                :aria-describedby="editMessage ? `${treeId}-edit-message` : undefined"
-                class="h-5.5 rounded-5 border-(--d-accent) bg-(--d-input) px-1.5 py-0 text-12.5 focus-visible:ring-0 focus-visible:ring-offset-0"
-                :class="editMessage ? 'border-(--d-danger)' : ''"
-                @input="editTouched = true"
-                @keydown="onEditKeydown"
-                @blur="onEditBlur"
+            <div
+              v-if="row.kind === 'input'"
+              role="none"
+              class="flex items-center gap-1.25 pr-2.5"
+              :style="{ height: `${remPx(ROW_REM)}px`, paddingLeft: `${INDENT_START_REM + row.depth * INDENT_REM}rem` }"
+            >
+              <span class="w-3.5 shrink-0" />
+              <FileIcon
+                :path="inputIcon(row).path"
+                :directory="row.directory"
+                :open="inputIcon(row).open"
+                class="size-3.5 shrink-0"
               />
-              <p
-                v-if="editMessage"
-                :id="`${treeId}-edit-message`"
-                role="alert"
-                data-testid="files-edit-message"
-                class="absolute inset-x-0 top-full z-10 mt-0.5 rounded-5 border border-(--d-danger) bg-(--d-card) px-1.5 py-0.5 text-11 text-(--d-danger-text) shadow-(--d-shadow)"
-              >
-                {{ editMessage }}
-              </p>
+              <div class="relative min-w-0 flex-1">
+                <Input
+                  v-model="editName"
+                  data-testid="files-edit-input"
+                  :maxlength="MAX_FILE_NAME_LENGTH"
+                  :aria-label="t(`files.inputLabel.${row.edit.mode}`)"
+                  :aria-invalid="editMessage !== null"
+                  :aria-describedby="editMessage ? `${treeId}-edit-message` : undefined"
+                  class="h-5.5 rounded-5 border-(--d-accent) bg-(--d-input) px-1.5 py-0 text-12.5 focus-visible:ring-0 focus-visible:ring-offset-0"
+                  :class="editMessage ? 'border-(--d-danger)' : ''"
+                  @input="editTouched = true"
+                  @keydown="onEditKeydown"
+                  @blur="onEditBlur"
+                />
+                <p
+                  v-if="editMessage"
+                  :id="`${treeId}-edit-message`"
+                  role="alert"
+                  data-testid="files-edit-message"
+                  class="absolute inset-x-0 top-full z-10 mt-0.5 rounded-5 border border-(--d-danger) bg-(--d-card) px-1.5 py-0.5 text-11 text-(--d-danger-text) shadow-(--d-shadow)"
+                >
+                  {{ editMessage }}
+                </p>
+              </div>
             </div>
-          </div>
-          <div
-            v-else
-            :id="`${treeId}-${index}`"
-            role="treeitem"
-            :data-tree-path="row.path"
-            data-testid="files-row"
-            :aria-level="row.depth + 1"
-            :aria-posinset="row.position"
-            :aria-setsize="row.setSize"
-            :aria-expanded="row.directory ? row.expanded : undefined"
-            :aria-selected="row.path === selectedPath"
-            :aria-busy="row.loading || undefined"
-            :tabindex="index === focusedIndex ? 0 : -1"
-            :title="visibleText(row.path)"
-            :draggable="!row.directory"
-            class="files-row flex cursor-pointer items-center gap-1.25 pr-2.5 outline-none select-none hover:bg-(--d-hover) focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
-            :class="row.path === selectedPath ? 'bg-(--d-accent-soft) hover:bg-(--d-accent-soft)' : ''"
-            :style="{ height: `${remPx(ROW_REM)}px`, paddingLeft: `${INDENT_START_REM + row.depth * INDENT_REM}rem` }"
-            @click="activate(row)"
-            @focus="focusedPath = row.path"
-            @contextmenu="onContextMenu($event, row)"
-            @dragstart="onDragStart($event, row)"
-          >
-            <span class="flex w-3.5 shrink-0 text-(--d-faint)">
-              <ChevronRight
-                v-if="row.directory"
+            <div
+              v-else
+              :id="`${treeId}-${index}`"
+              role="treeitem"
+              :data-tree-path="row.path"
+              data-testid="files-row"
+              :aria-level="row.depth + 1"
+              :aria-posinset="row.position"
+              :aria-setsize="row.setSize"
+              :aria-expanded="row.directory ? row.expanded : undefined"
+              :aria-selected="row.path === selectedPath"
+              :aria-busy="row.loading || undefined"
+              :tabindex="index === focusedIndex ? 0 : -1"
+              :title="visibleText(row.path)"
+              draggable="true"
+              :data-cut="isCut(row.path) || undefined"
+              class="files-row relative flex cursor-pointer items-center gap-1.25 pr-2.5 outline-none select-none hover:bg-(--d-hover) focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
+              :class="row.path === selectedPath ? 'bg-(--d-accent-soft) hover:bg-(--d-accent-soft)' : ''"
+              :style="{ height: `${remPx(ROW_REM)}px`, paddingLeft: `${INDENT_START_REM + row.depth * INDENT_REM}rem` }"
+              @click="activate(row)"
+              @focus="focusedPath = row.path"
+              @contextmenu="onContextMenu($event, row)"
+              @dragstart="onDragStart($event, row)"
+              @dragend="onRowDragEnd"
+            >
+              <!-- The drop highlight: the row's focus outline over the accent tint. -->
+              <span
+                v-if="dropTarget === row.path"
                 aria-hidden="true"
-                class="size-3 transition-transform duration-150 ease-out"
-                :class="row.expanded ? 'rotate-90' : ''"
+                data-testid="files-drop-highlight"
+                class="d-fade-in pointer-events-none absolute inset-0 bg-(--d-accent-soft) shadow-[inset_0_0_0_1px_var(--d-accent)]"
               />
-            </span>
-            <FileIcon
-              :path="row.path"
-              :directory="row.directory"
-              :open="row.expanded"
-              class="size-3.5 shrink-0"
-            />
-            <span
-              data-testid="files-name"
-              class="min-w-0 flex-1 truncate"
-              :data-ignored="decoration(row).ignored || undefined"
-              :class="decoration(row).ignored ? (row.path === selectedPath ? 'text-(--d-faint-text)' : 'text-(--d-faint)') : ''"
-              :style="decoration(row).letter && !row.directory && decoration(row).own ? { color: TONE_TEXT[decoration(row).own!.tone] } : undefined"
-            >{{ visibleText(row.name) }}</span>
-            <StatusLetter
-              v-if="decoration(row).letter"
-              data-testid="files-decoration"
-              aria-hidden="true"
-              :letter="decoration(row).letter!"
-              :tone="decoration(row).own!.tone"
-              :title="decoration(row).title"
-            />
-            <span
-              v-else-if="decoration(row).dot"
-              data-testid="files-folder-dot"
-              :data-tone="decoration(row).dot"
-              class="mx-1.25 size-1.5 shrink-0 rounded-full"
-              :style="{ backgroundColor: TONE_TEXT[decoration(row).dot!] }"
-            />
-            <span
-              v-if="decoration(row).title"
-              class="sr-only"
-            >{{ decoration(row).title }}</span>
-          </div>
-        </template>
+              <span class="flex w-3.5 shrink-0 text-(--d-faint)">
+                <ChevronRight
+                  v-if="row.directory"
+                  aria-hidden="true"
+                  class="size-3 transition-transform duration-150 ease-out"
+                  :class="row.expanded ? 'rotate-90' : ''"
+                />
+              </span>
+              <FileIcon
+                :path="row.path"
+                :directory="row.directory"
+                :open="row.expanded"
+                class="size-3.5 shrink-0"
+              />
+              <span
+                data-testid="files-name"
+                class="min-w-0 flex-1 truncate"
+                :data-ignored="decoration(row).ignored || undefined"
+                :class="decoration(row).ignored ? (row.path === selectedPath ? 'text-(--d-faint-text)' : 'text-(--d-faint)') : ''"
+                :style="decoration(row).letter && !row.directory && decoration(row).own ? { color: TONE_TEXT[decoration(row).own!.tone] } : undefined"
+              >{{ visibleText(row.name) }}</span>
+              <StatusLetter
+                v-if="decoration(row).letter"
+                data-testid="files-decoration"
+                aria-hidden="true"
+                :letter="decoration(row).letter!"
+                :tone="decoration(row).own!.tone"
+                :title="decoration(row).title"
+              />
+              <span
+                v-else-if="decoration(row).dot"
+                data-testid="files-folder-dot"
+                :data-tone="decoration(row).dot"
+                class="mx-1.25 size-1.5 shrink-0 rounded-full"
+                :style="{ backgroundColor: TONE_TEXT[decoration(row).dot!] }"
+              />
+              <span
+                v-if="decoration(row).title"
+                class="sr-only"
+              >{{ decoration(row).title }}</span>
+            </div>
+          </template>
+        </div>
       </div>
+      <span
+        v-if="dropTarget === ''"
+        aria-hidden="true"
+        data-testid="files-drop-root"
+        class="d-fade-in pointer-events-none absolute inset-0 bg-(--d-accent-soft) shadow-[inset_0_0_0_1px_var(--d-accent)]"
+      />
+      <!-- Says where the drop lands and whether it copies or moves; the drag is a pointer gesture, so it stays out of the tree. -->
+      <Transition name="t-pop">
+        <div
+          v-if="dropHint"
+          aria-hidden="true"
+          data-testid="files-drop-hint"
+          :data-action="dropRefused ? 'refused' : dropCopies ? 'copy' : 'move'"
+          class="pointer-events-none absolute inset-x-1.5 bottom-1.5 flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-11 font-semibold shadow-(--d-shadow)"
+          :class="dropRefused ? 'border border-(--d-border2) bg-(--d-card) text-(--d-text)' : 'bg-(--d-accent) text-(--d-on-accent)'"
+        >
+          <component
+            :is="dropRefused ? Ban : dropCopies ? Copy : FolderInput"
+            class="size-3.25 shrink-0"
+            :class="dropRefused ? 'text-(--d-danger-text)' : ''"
+          />
+          <span
+            class="min-w-0"
+            :class="dropRefused ? 'text-pretty' : 'truncate'"
+          >{{ dropHint }}</span>
+        </div>
+      </Transition>
     </div>
     <p
       :id="helpId"
       class="sr-only"
     >
       {{ t('files.keyboardHelp') }}
+      <span
+        v-if="unsupportedText"
+        :id="unsupportedId"
+        data-testid="files-transfers-unsupported"
+      >{{ unsupportedText }}</span>
     </p>
     <!-- The drag image: a chip naming the file, drawn off screen for setDragImage. -->
     <div
@@ -793,7 +1163,10 @@ defineExpose({ reveal, startCreate, collapseAll });
       aria-hidden="true"
       class="files-drag-image pointer-events-none fixed -top-40 left-0 flex items-center gap-1.5 rounded-7 border border-(--d-accent) bg-(--d-card) px-2 py-1 text-12 text-(--d-text) shadow-(--d-shadow)"
     >
-      <span class="text-(--d-accent-text)">@</span>{{ dragLabel }}
+      <span
+        v-if="dragMention"
+        class="text-(--d-accent-text)"
+      >@</span>{{ dragLabel }}
     </div>
   </SidebarSection>
 </template>

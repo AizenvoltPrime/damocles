@@ -163,6 +163,16 @@ describe('shell menu clipboard items', () => {
     expect(shown[0]!.kind === 'menu' && shown[0]!.items[4]).toEqual({ kind: 'item', id: 'paste', clipboard: 'paste', label: 'main paste' });
   });
 
+  it('keeps an icon on a clipboard item only when it is the one main draws for that action', async () => {
+    const { deps, shown } = shellMenu({ kind: 'dismissed' }, true);
+    await askShellMenu(menu([item('cut', { clipboard: 'cut', icon: 'scissors', shortcut: 'Ctrl+X' }), item('copy', { clipboard: 'copy', icon: 'trash-2' }), item('paste', { clipboard: 'paste', icon: 'clipboard-paste' })]), deps);
+    expect(shown[0]!.kind === 'menu' && shown[0]!.items).toEqual([
+      { kind: 'item', id: 'cut', clipboard: 'cut', label: 'main cut', icon: 'scissors', shortcut: 'Ctrl+X' },
+      { kind: 'item', id: 'copy', clipboard: 'copy', label: 'main copy' },
+      { kind: 'item', id: 'paste', clipboard: 'paste', label: 'main paste', icon: 'clipboard-paste' },
+    ]);
+  });
+
   it('drops the clipboard items of a menu no context-menu gesture opened, runs nothing on a forged pick, and logs it', async () => {
     const { deps, page, shown, lines } = shellMenu({ kind: 'menu', itemId: 'paste' }, false);
     await askShellMenu(EDITOR_MENU, deps);

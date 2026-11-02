@@ -1,7 +1,7 @@
 import type { Rectangle } from 'electron';
 import { isNavigableUrl } from '../../core/browser/net-guard';
 import { MAX_BROWSER_URL_LENGTH, typedAddress } from '../../shared/typed-address';
-import type { BrowserAction, ShellEditorTab } from '../preload/shell-channels';
+import type { BrowserAction, ShellBrowserPage, ShellEditorTab } from '../preload/shell-channels';
 import type { PersistedPages } from './panel-state-store';
 import { isHttpUrl } from './security';
 import type { DesktopPanel, PagesHost } from './views';
@@ -15,6 +15,10 @@ export function isTypedAddress(raw: unknown): raw is string {
   const address = typedAddress(raw);
   return address !== undefined && isNavigableUrl(address.url);
 }
+
+// a forward listens on this computer's loopback, so only a loopback page can be one
+const LOOPBACK_PAGE_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '[::1]']);
+const onLoopback = (url: string): boolean => URL.canParse(url) && LOOPBACK_PAGE_HOSTS.has(new URL(url).hostname);
 
 // The editor pane as the browser tabs drive it; every call leaves keyboard focus where it is, except focusTab.
 export interface BrowserTabsEditor {
@@ -45,6 +49,11 @@ export interface BrowserTabsDeps {
   readonly copy: (text: string) => Promise<void>;
   // a page view that held keyboard focus closed or hid; a hidden view keeps focus, so the owner moves it
   readonly focusAway: () => void;
+  // a remote chat's typed address in its local form, forwarded and checked by the client-network guard; undefined when the
+  // guard refused it, which the user was told
+  readonly remoteAddress: (chat: DesktopPanel, url: string) => Promise<string | undefined>;
+  // a remote chat's page on a forwarded port: the host and the address in the target's form, for the tab's chip
+  readonly forwardedFrom: (chat: DesktopPanel, url: string) => ShellBrowserPage['forwardedFrom'];
 }
 
 // One chat's pages in tab order.
@@ -73,6 +82,9 @@ export class BrowserTabs implements PagesHost {
   private bounds: Rectangle | undefined;
   // DIP corner radius of the card the page area sits in
   private radius = 0;
+  // each page's latest typed address, so a remote one whose forward resolves after a later one navigates nothing
+  private readonly typed = new WeakMap<DesktopPanel, number>();
+  private typedCount = 0;
 
   constructor(deps: BrowserTabsDeps) {
     this.deps = deps;
@@ -80,10 +92,12 @@ export class BrowserTabs implements PagesHost {
 
   /** The selected chat's pages as tabs, in order; none while the browser is off. */
   tabs(): ShellEditorTab[] {
-    const entry = this.selected && this.deps.browserEnabled() ? this.chats.get(this.selected) : undefined;
+    const chat = this.selected;
+    const entry = chat && this.deps.browserEnabled() ? this.chats.get(chat) : undefined;
     return (entry?.pages ?? []).map((page) => {
       const observed = page.page!;
       const url = observed.url.slice(0, MAX_BROWSER_URL_LENGTH);
+      const forwardedFrom = chat && chat.authority !== 'local' && onLoopback(url) ? this.deps.forwardedFrom(chat, url) : undefined;
       return {
         id: page.panelId,
         kind: 'browser',
@@ -99,6 +113,7 @@ export class BrowserTabs implements PagesHost {
           canGoForward: observed.canGoForward,
           picking: observed.picking,
           ...(page.iconDataUrl !== undefined ? { iconDataUrl: page.iconDataUrl } : {}),
+          ...(forwardedFrom ? { forwardedFrom } : {}),
         },
       };
     });
@@ -182,18 +197,33 @@ export class BrowserTabs implements PagesHost {
     }
   }
 
-  /** Navigates the page to the typed address; false, and nothing navigates, when isNavigableUrl refuses it. */
-  navigate(tabId: string, raw: unknown): boolean {
+  /**
+   * Navigates the page to the typed address; false, and nothing navigates, when isNavigableUrl refuses it, or for a remote
+   * chat's page when the client-network guard does. A remote chat's address goes to its local forward first.
+   */
+  async navigate(tabId: string, raw: unknown): Promise<boolean> {
     const page = this.pageOf(tabId);
     if (!isTypedAddress(raw)) return false;
-    page.deliver({ type: 'navigate', url: raw.trim() });
+    const typed = ++this.typedCount;
+    this.typed.set(page, typed);
+    const chat = page.chat;
+    if (!chat || chat.authority === 'local') {
+      page.deliver({ type: 'navigate', url: raw.trim() });
+      return true;
+    }
+    const local = await this.deps.remoteAddress(chat, typedAddress(raw)!.url);
+    if (local === undefined || page.isDisposed || this.typed.get(page) !== typed) return false;
+    page.deliver({ type: 'navigate', url: local });
     return true;
   }
 
-  // New Browser Page, a user's command: the blank page's tab takes focus, so its address field is ready.
-  async newPage(): Promise<void> {
+  /**
+   * New Browser Page, a user's command: the blank page's tab takes focus, so its address field is ready. A chat page's own
+   * open browser names its chat, and opens nothing once another chat is selected.
+   */
+  async newPage(from?: DesktopPanel): Promise<void> {
     const chat = this.selected;
-    if (!chat || !this.deps.browserEnabled()) return;
+    if (!chat || (from !== undefined && from !== chat) || !this.deps.browserEnabled()) return;
     await this.deps.newPage(chat);
     const page = this.activePage();
     if (page && this.selected === chat) this.deps.editor.focusTab(page.panelId);

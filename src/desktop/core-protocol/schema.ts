@@ -1,4 +1,5 @@
 // Parsers for the core protocol: each returns a fresh value holding only the fields it knows, or INVALID.
+import { FIRST_DYNAMIC } from '../../remote/mux';
 import { parseLocalizedText, type LocalizedText } from '../../shared/localized-text';
 
 export const INVALID: unique symbol = Symbol('invalid');
@@ -30,10 +31,16 @@ export const nonEmpty = (max: number): Parser<string> => (raw) => (typeof raw ==
 
 export const num: Parser<number> = (raw) => (typeof raw === 'number' ? raw : INVALID);
 
+// Neither NaN nor ±Infinity, but negative and fractional values pass (a file time before 1970).
+export const finite: Parser<number> = (raw) => (typeof raw === 'number' && Number.isFinite(raw) ? raw : INVALID);
+
 export const bool: Parser<boolean> = (raw) => (typeof raw === 'boolean' ? raw : INVALID);
 
 export const int = (min: number, max: number): Parser<number> => (raw) =>
   typeof raw === 'number' && Number.isInteger(raw) && raw >= min && raw <= max ? raw : INVALID;
+
+// A stream a request names: a dynamic mux channel id, which the mux reads only as a safe integer.
+export const streamId: Parser<number> = int(FIRST_DYNAMIC, Number.MAX_SAFE_INTEGER);
 
 // A Buffer arrives as a Uint8Array: structured cloning keeps the bytes, not the subclass.
 export const bytes = (maxBytes: number): Parser<Uint8Array> => (raw) => (raw instanceof Uint8Array && raw.byteLength <= maxBytes ? raw : INVALID);
@@ -54,9 +61,9 @@ export function maybe<T>(parser: Parser<T>): Parser<T | undefined> {
   return (raw) => (raw === undefined ? undefined : parser(raw));
 }
 
-export function arr<T>(parser: Parser<T>, maxItems: number): Parser<readonly T[]> {
+export function arr<T>(parser: Parser<T>, maxItems: number, minItems = 0): Parser<readonly T[]> {
   return (raw) => {
-    if (!Array.isArray(raw) || raw.length > maxItems) return INVALID;
+    if (!Array.isArray(raw) || raw.length < minItems || raw.length > maxItems) return INVALID;
     const out: T[] = [];
     for (const item of raw as unknown[]) {
       const parsed = parser(item);

@@ -327,6 +327,8 @@ describe('create validation', () => {
     expect(lastState(h)).toMatchObject({ canCreate: true, terminals: [{ id: 'term-1', projectKey: null, projectName: '', status: 'running' }] });
     expect(h.persisted.at(-1)!.terminals).toEqual([stored('pwsh', null)]);
     expect(h.service.linkBase('term-1')).toBeUndefined();
+    expect(h.service.authorityOf('term-1')).toBe('local');
+    expect(h.service.authorityOf('term-9')).toBeUndefined();
   });
 
   it('keeps a home folder terminal in the home folder when a project opens, and starts the next terminal in the project', async () => {
@@ -1017,6 +1019,8 @@ function fakeConnection(live: readonly LiveTerminal[] = []): FakeConnection {
     },
     notConnected: () => new NotConnectedError('Local daemon is not connected.'),
     watchReady: false,
+    transfers: false,
+    openStream: () => { throw new Error('no transfer streams in this suite'); },
     log: () => undefined,
   });
   const connection: FakeConnection = {

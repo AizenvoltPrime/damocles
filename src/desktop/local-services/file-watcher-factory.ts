@@ -23,6 +23,8 @@ import {
   type TrackWork,
 } from '../watch-worker/fs-watch-tree';
 import { Emitter } from './emitter';
+import { POLL_INTERVAL_MS, startPolling, startShallowPolling } from './polling-watcher';
+import { procWatchModeSources, watchModeOf, type WatchModeSources } from './watch-mode';
 
 // Bound on the synthetic create events replayed for a directory that appears after its watch started.
 const REPLAY_LIMIT = 10_000;
@@ -42,7 +44,8 @@ export function watchRoot(base: string, glob: string): { readonly root: string; 
 }
 
 // Linux watches recursively with startInotifyTree; @parcel/watcher's inotify backend never lists a directory created or moved in
-// after the watch started, so it misses what is inside and never watches its subdirectories (parcel-bundler/watcher#97).
+// after the watch started, so it misses what is inside and never watches its subdirectories (parcel-bundler/watcher#97). A
+// root watch-mode.ts marks for polling (WSL 1, a 9p or drvfs mount) polls instead and holds no inotify watch.
 const USE_INOTIFY_TREE = process.platform === 'linux';
 // Windows watches recursively on the FsWatchTreeHost and never loads @parcel/watcher: its Windows backend frees a subscription
 // while its ReadDirectoryChangesW read is still pending (parcel-bundler/watcher#262), which crashed the process on quit and unwatch.
@@ -69,20 +72,28 @@ function nearestExistingAncestor(dir: string): string | undefined {
   return current;
 }
 
-// start(appeared, lost) runs while dir exists; lost() hands the directory back to waiting, so a deleted root resumes once recreated.
-// Until then a non-recursive watch on its nearest existing ancestor waits for it. ready is the first start's, settled at once
-// when dir was missing or that start threw.
+// start(appeared, lost, failed) runs while dir exists; lost() hands the directory back to waiting, so a deleted root resumes once
+// recreated, and failed(err) ends a start that failed after it returned as one that threw does.
+// Until then a non-recursive watch on its nearest existing ancestor waits for it, or with poll a check every POLL_INTERVAL_MS.
+// ready is the first start's, settled at once when dir was missing or that start threw.
 function watchWhileExists(
   dir: string,
-  start: (appeared: boolean, lost: () => void) => StartedWatch,
+  start: (appeared: boolean, lost: () => void, failed: (err: unknown) => void) => StartedWatch,
   log: Log,
+  poll = false,
 ): StartedWatch {
   let disposed = false;
   let started: StartedWatch | undefined;
-  let waiting: { ancestor: string; watcher: fs.FSWatcher } | undefined;
+  let waiting: { ancestor: string; stop: () => void } | undefined;
   const stopWaiting = (): void => {
-    waiting?.watcher.close();
+    waiting?.stop();
     waiting = undefined;
+  };
+  const failed = (err: unknown): void => {
+    if (disposed || !started) return;
+    started.dispose();
+    started = undefined;
+    log(`[watcher] could not watch ${dir}: ${errorText(err)}`);
   };
   const lost = (): void => {
     if (disposed || !started) return;
@@ -97,7 +108,7 @@ function watchWhileExists(
       if (fs.existsSync(dir)) {
         stopWaiting();
         try {
-          started = start(appeared, lost);
+          started = start(appeared, lost, failed);
           return;
         } catch (err) {
           log(`[watcher] could not watch ${dir}: ${errorText(err)}`);
@@ -108,14 +119,20 @@ function watchWhileExists(
       const ancestor = nearestExistingAncestor(dir);
       if (ancestor === undefined || ancestor === waiting?.ancestor) return;
       stopWaiting();
+      if (poll) {
+        const timer = setInterval(() => check(true), POLL_INTERVAL_MS);
+        waiting = { ancestor, stop: () => clearInterval(timer) };
+        return;
+      }
       const watcher = fs.watch(ancestor, () => check(true));
+      const own = { ancestor, stop: () => watcher.close() };
       watcher.on('error', (err) => {
         log(`[watcher] waiting on ${ancestor} for ${dir} failed: ${err.message}`);
-        if (waiting?.watcher !== watcher) return;
+        if (waiting !== own) return;
         stopWaiting();
         check(true);
       });
-      waiting = { ancestor, watcher };
+      waiting = own;
       // The directory may have appeared between the existence check and the watch.
       if (fs.existsSync(dir)) check(true);
     } catch (err) {
@@ -505,7 +522,7 @@ class EventFan implements FileWatcher {
 
 /**
  * One watch shared per root, filtered by picomatch: recursive on the Windows tree host (Windows), startInotifyTree (Linux) or
- * @parcel/watcher (macOS), non-recursive fs.watch for direct-children globs.
+ * @parcel/watcher (macOS), non-recursive fs.watch for direct-children globs; a Linux root watch-mode.ts marks polls instead.
  */
 export class DesktopFileWatcherFactory implements FileWatcherFactory {
   private readonly roots = new Map<string, RootEntry>();
@@ -515,6 +532,8 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
   private readonly folders: WorkspaceFolders;
   private readonly log: Log;
   private readonly windowsTree: FsWatchTreeHost;
+  // where a Linux root's watch mode is read from
+  private readonly modeSources: WatchModeSources | undefined;
   // @parcel/watcher subscribes and unsubscribes still running.
   private readonly work = new Set<Promise<unknown>>();
   private closed = false;
@@ -528,10 +547,11 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
   };
 
   // windowsTree runs every recursive watch on Windows.
-  constructor(folders: WorkspaceFolders, log: Log, windowsTree: FsWatchTreeHost) {
+  constructor(folders: WorkspaceFolders, log: Log, windowsTree: FsWatchTreeHost, modeSources?: WatchModeSources) {
     this.folders = folders;
     this.log = log;
     this.windowsTree = windowsTree;
+    this.modeSources = USE_INOTIFY_TREE ? (modeSources ?? procWatchModeSources(log)) : undefined;
     this.limitReached = new Emitter('watcher', log);
   }
 
@@ -625,11 +645,14 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
         for (const each of [...listeners]) each(type, fsPath);
       };
       const { log, track, windowsTree } = this;
-      const source = watchWhileExists(root, (appeared, lost) => {
+      const poll = this.modeSources !== undefined && watchModeOf(root, this.modeSources) === 'poll';
+      if (poll) log(`[watcher] ${root} is polled every ${POLL_INTERVAL_MS} ms`);
+      const source = watchWhileExists(root, (appeared, lost, failed) => {
         // Its first scan reports what a root that appeared holds, and the events after it are diffed against that scan.
         if (recursive && USE_FS_WATCH_TREE) return windowsTree.start(root, appeared, emit, lost);
         let started: StartedWatch;
-        if (!recursive) started = startShallow(root, emit, lost, log);
+        if (!recursive) started = poll ? startShallowPolling(root, emit, lost, failed, log, track) : startShallow(root, emit, lost, log);
+        else if (poll) started = startPolling(root, emit, lost, failed, log, track);
         else started = USE_INOTIFY_TREE ? startInotifyTree(root, emit, lost, log, () => this.reachedLimit(root)) : startParcel(root, emit, lost, log, track);
         let live = true;
         // Deferred, so a watcher whose directory appears while watch() runs has its listeners before the replay.
@@ -643,7 +666,7 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
             started.dispose();
           },
         };
-      }, log);
+      }, log, poll);
       entry = { listeners, source };
       this.roots.set(key, entry);
     }

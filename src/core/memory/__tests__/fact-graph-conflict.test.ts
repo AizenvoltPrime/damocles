@@ -389,7 +389,7 @@ describe('Slice 8 C14 — identical created_at contradictions tiebreak by higher
 });
 
 /** Bump with each new memory-DB migration. */
-const LATEST_SCHEMA_VERSION = 7;
+const LATEST_SCHEMA_VERSION = 9;
 
 describe('Slice 8 — migration v3 schema (needs_conflict_check column, partial index, version bump)', () => {
   it('a fresh fully-migrated DB has the NOT NULL DEFAULT 0 column and the partial index', async () => {

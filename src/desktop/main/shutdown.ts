@@ -50,6 +50,8 @@ export interface RemoteDetachSteps {
   readonly mirrorsIdle: () => Promise<unknown>;
   // the graceful control.disconnect of every connected daemon
   readonly disconnect: () => Promise<unknown>;
+  // main's side of the connections (the ports, their forwards and timers), once every daemon heard goodbye or its wait ran out
+  readonly release: () => void;
   // each wait's bound, inside the teardown's own
   readonly waitMs: number;
   readonly log: (line: string) => void;
@@ -59,6 +61,7 @@ export interface RemoteDetachSteps {
 export async function detachRemotes(steps: RemoteDetachSteps): Promise<void> {
   await bounded(steps.mirrorsIdle(), steps.waitMs, () => steps.log(`[shutdown] a session mirror sync did not settle within ${steps.waitMs} ms; disconnecting anyway`));
   await bounded(steps.disconnect(), steps.waitMs, () => steps.log(`[shutdown] a daemon did not answer the disconnect within ${steps.waitMs} ms; closing anyway`));
+  steps.release();
 }
 
 // releasing: the quit asks about terminals and editors and can still be cancelled; disposing: it no longer can.

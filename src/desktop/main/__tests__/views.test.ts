@@ -30,6 +30,7 @@ let pageEvents: string[];
 let popupOpen: boolean;
 let hostActions: string[];
 let queueActions: string[];
+let remoteLinks: string[];
 
 // What PanelViews tells the browser tabs, in order; browser-tabs.test.ts covers what they do with it.
 const pages: PagesHost = {
@@ -50,10 +51,12 @@ function views(width = 1200): PanelViews {
     pageStrings: () => ({ error: ERROR_PAGE_STRINGS, browser: BROWSER_STRINGS }),
     language: () => 'el',
     hostLabel: () => undefined,
+    hostNames: () => ({}),
     onHostAction: (panel, action) => hostActions.push(`${panel.authority}:${action}`),
     connection: (panel) => (panel.authority === 'local' ? undefined : { state: { phase: 'offline' }, queued: [] }),
     onQueueAction: (panel, action) => queueActions.push(`${panel.authority}:${action.action}:${action.id}`),
     takeCoreMessage: (_panel, type) => type === 'promptReturned',
+    openRemoteLink: (authority, url) => remoteLinks.push(`${authority} ${url}`),
     states,
     pages,
     log: (line) => lines.push(line),
@@ -79,6 +82,7 @@ beforeEach(() => {
   states = fakeStates();
   hostActions = [];
   queueActions = [];
+  remoteLinks = [];
   gaveUp = [];
   lines = [];
   restacks = 0;
@@ -419,6 +423,39 @@ describe('panel IPC', () => {
     expect(contents.ipc.listenerCount(PANEL_CHANNELS.post)).toBe(0);
   });
 
+  it("opens a link clicked in a remote chat's page in main, never through its core, and leaves a local chat's to its core", () => {
+    const tabs = views();
+    const remote = tabs.create({ options: CHAT, authority: 'ssh+h1' });
+    const local = tabs.create({ options: CHAT });
+    const toCore: Array<[string, unknown]> = [];
+    remote.onMessage((message) => toCore.push(['remote', message]));
+    local.onMessage((message) => toCore.push(['local', message]));
+    const post = (panel: DesktopPanel, payload: unknown): void => {
+      const contents = contentsOf(panel);
+      contents.ipc.emit(PANEL_CHANNELS.post, { sender: contents, senderFrame: { url: panel.pageUrl, parent: null } }, payload);
+    };
+    post(remote, { type: 'openExternalUrl', url: 'http://localhost:5173/' });
+    post(remote, { type: 'openExternalUrl', url: 7 });
+    post(remote, { type: 'ready' });
+    post(local, { type: 'openExternalUrl', url: 'https://example.test/' });
+    expect(remoteLinks).toEqual(['ssh+h1 http://localhost:5173/']);
+    expect(toCore).toEqual([['remote', { type: 'ready' }], ['local', { type: 'openExternalUrl', url: 'https://example.test/' }]]);
+    expect(lines.filter((line) => line.includes('dropped an openExternalUrl without a URL'))).toHaveLength(1);
+  });
+
+  it("names a remote chat's authority by its page's webContents, for its window.open and navigations, and no other page's", () => {
+    const tabs = views();
+    const remote = tabs.create({ options: CHAT, authority: 'ssh+h1' });
+    const local = tabs.create({ options: CHAT });
+    const page = tabs.create({ options: pageOptions(remote) });
+    expect(tabs.remoteChatAuthority(remote.webContents)).toBe('ssh+h1');
+    expect(tabs.remoteChatAuthority(local.webContents)).toBeUndefined();
+    expect(tabs.remoteChatAuthority(page.webContents)).toBeUndefined();
+    const contents = remote.webContents;
+    remote.close();
+    expect(tabs.remoteChatAuthority(contents)).toBeUndefined();
+  });
+
   it("takes a held message's Cancel or Discard only from a remote chat's own page, well formed", () => {
     const tabs = views();
     const remote = tabs.create({ options: CHAT, authority: 'ssh+h1' });
@@ -435,6 +472,24 @@ describe('panel IPC', () => {
     send(local, { action: 'cancel', id: 'q1' });
     expect(queueActions).toEqual(['ssh+h1:cancel:q1', 'ssh+h1:discard:q2']);
     expect(lines.filter((line) => line.includes('dropped a malformed queue action'))).toHaveLength(4);
+  });
+
+  it("gives this computer's chat pages the saved hosts' names at init and after each change, and a remote chat's page none", () => {
+    const tabs = views();
+    const local = tabs.create({ options: CHAT });
+    const remote = tabs.create({ options: CHAT, authority: 'ssh+h1' });
+    const initOf = (panel: DesktopPanel): unknown => {
+      const contents = contentsOf(panel);
+      const init = { sender: contents, senderFrame: { url: panel.pageUrl, parent: null }, returnValue: undefined as unknown };
+      contents.ipc.emit(PANEL_CHANNELS.init, init);
+      return init.returnValue;
+    };
+    expect(initOf(local)).toMatchObject({ hostNames: {} });
+    expect(initOf(remote)).not.toHaveProperty('hostNames');
+    const renamed = { h1: { name: 'billing-prod', color: 'danger' as const } };
+    tabs.broadcastHostNames(renamed);
+    expect(contentsOf(local).send).toHaveBeenCalledWith(PANEL_CHANNELS.hostNames, renamed);
+    expect(contentsOf(remote).send).not.toHaveBeenCalledWith(PANEL_CHANNELS.hostNames, expect.anything());
   });
 
   it('gives a remote chat page its connection at init and keeps from it the core messages main takes', () => {

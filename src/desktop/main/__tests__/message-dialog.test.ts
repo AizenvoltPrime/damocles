@@ -10,8 +10,8 @@ vi.mock('electron', () => ({
 }));
 
 import type { OverlayAnswer, OverlayRequest } from '../../preload/overlay-channels';
-import { createMessageAsker, type MessageOverlay, type MessageQuestion } from '../message-dialog';
-import { parseMessageRequest } from '../overlay';
+import { createCheckedMessageAsker, createMessageAsker, type CheckedQuestion, type MessageOverlay, type MessageQuestion } from '../message-dialog';
+import { parseMessageRequest, parseOverlayAnswer } from '../overlay';
 
 // The editor's save prompt: Save and Don't Save only; Escape, the scrim or the box's close cancel.
 const SAVE_PROMPT: MessageQuestion = {
@@ -133,5 +133,54 @@ describe('a withdrawn question', () => {
     respond({ response: 0 });
     await expect(asked).resolves.toBeUndefined();
     expect(lines).toContain('[dialog] a withdrawn question shows in the OS message box, which cannot be closed; its answer is ignored');
+  });
+});
+
+describe('a question with a checkbox', () => {
+  const MOVE: CheckedQuestion = { severity: 'info', message: "Move 'app.ts' into 'src'?", actions: ['Move'], cancelLabel: 'Cancel', defaultAction: 0, checkbox: { label: "Don't ask again", checked: false } };
+  const checkedAsker = (overlay: MessageOverlay | undefined) =>
+    createCheckedMessageAsker({ overlay: () => overlay, window: () => undefined, focused: () => undefined, closing: () => false, log: () => undefined });
+
+  it('reaches the overlay with its box and resolves the action with the state of the box', async () => {
+    const requests: OverlayRequest[] = [];
+    const answers: OverlayAnswer[] = [{ kind: 'message', action: 0, checked: true }, { kind: 'message', action: null, checked: true }];
+    const ask = checkedAsker({ request: async (request) => { requests.push(request); return answers.shift()!; } });
+    await expect(ask(MOVE)).resolves.toEqual({ action: 0, checked: true });
+    await expect(ask(MOVE)).resolves.toEqual({ action: undefined, checked: true });
+    expect(requests[0]).toEqual({ kind: 'message', ...MOVE });
+  });
+
+  it('keeps the initial state of the box when nobody answered', async () => {
+    const gone = new AbortController();
+    gone.abort();
+    await expect(checkedAsker({ request: vi.fn() })({ ...MOVE, checkbox: { label: 'Apply to all', checked: true } }, gone.signal)).resolves.toEqual({ action: undefined, checked: true });
+    await expect(checkedAsker({ request: async () => ({ kind: 'dismissed' }) })(MOVE)).resolves.toEqual({ action: undefined, checked: false });
+  });
+
+  it('shows the box in the OS message box when the overlay cannot ask', async () => {
+    H.showMessageBox.mockResolvedValue({ response: 0, checkboxChecked: true });
+    await expect(checkedAsker(undefined)(MOVE)).resolves.toEqual({ action: 0, checked: true });
+    expect(H.showMessageBox.mock.calls[0]![0]).toMatchObject({ checkboxLabel: "Don't ask again", checkboxChecked: false, buttons: ['Move', 'Cancel'] });
+  });
+
+  it('leaves a question without a box as it was, in the overlay and the OS box', async () => {
+    H.showMessageBox.mockResolvedValue({ response: 0, checkboxChecked: false });
+    await expect(asker(undefined)(SAVE_PROMPT)).resolves.toBe(0);
+    expect(H.showMessageBox.mock.calls[0]![0]).not.toHaveProperty('checkboxLabel');
+    expect(parseMessageRequest({ kind: 'message', ...SAVE_PROMPT })).not.toHaveProperty('checkbox');
+  });
+
+  it('bounds the box and takes its state in the answer only when the request has one', () => {
+    const request = parseMessageRequest({ kind: 'message', ...MOVE })!;
+    expect(request.checkbox).toEqual({ label: "Don't ask again", checked: false });
+    for (const checkbox of [{ label: '', checked: false }, { label: 'a'.repeat(10_000), checked: false }, { label: 'x', checked: 'yes' }, { label: 'x' }, 'x']) {
+      expect(parseMessageRequest({ kind: 'message', ...MOVE, checkbox }), JSON.stringify(checkbox)).toBeUndefined();
+    }
+    expect(parseOverlayAnswer({ kind: 'message', action: 0, checked: true }, request)).toEqual({ kind: 'message', action: 0, checked: true });
+    expect(parseOverlayAnswer({ kind: 'message', action: null, checked: false }, request)).toEqual({ kind: 'message', action: null, checked: false });
+    expect(parseOverlayAnswer({ kind: 'message', action: 0 }, request)).toBeUndefined();
+    const plain = parseMessageRequest({ kind: 'message', ...SAVE_PROMPT })!;
+    expect(parseOverlayAnswer({ kind: 'message', action: 0, checked: true }, plain)).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'message', action: 0 }, plain)).toEqual({ kind: 'message', action: 0 });
   });
 });

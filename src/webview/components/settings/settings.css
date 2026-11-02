@@ -793,10 +793,6 @@ mark.sm-mark {
   animation: d-pulse 1.4s infinite;
 }
 
-.sm-spin {
-  animation: d-spin 0.8s linear infinite;
-}
-
 /* Embedded panels (auth, voice maintenance) */
 .sm-field {
   display: flex;

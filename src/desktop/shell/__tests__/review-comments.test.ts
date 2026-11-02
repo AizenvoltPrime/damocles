@@ -226,10 +226,10 @@ describe('the review tab\'s bar', () => {
   });
   const tabOf = (review: ChatReviewTab): ShellEditorTab & { review: ChatReviewTab } => ({ id: 't1', kind: 'review', title: review.title, displayPath: review.title, dirty: false, readOnly: true, conflict: false, review });
 
-  async function mountReview(review = reviewOf()) {
+  async function mountReview(review = reviewOf(), platform: 'win32' | 'linux' = 'win32') {
     const api = fakeShellApi();
     vi.mocked(api.review.fileDiff).mockResolvedValue({ kind: 'patch', patch: PATCH, revision: 'ab12' });
-    const wrapper = mount(ChatReviewTabView, { props: { api, tab: tabOf(review), platform: 'win32' }, global: { plugins: [shellI18n] }, attachTo: document.body });
+    const wrapper = mount(ChatReviewTabView, { props: { api, tab: tabOf(review), platform }, global: { plugins: [shellI18n] }, attachTo: document.body });
     mounted.push(wrapper);
     await flushPromises();
     return { api, wrapper };
@@ -238,6 +238,13 @@ describe('the review tab\'s bar', () => {
   async function oneComment(wrapper: VueWrapper): Promise<void> {
     await addComment(wrapper, lineRow(wrapper, 'addition'), 'Why?');
   }
+
+  it('splits a file outside the chat\'s folder at either separator on Windows, and at / alone elsewhere', async () => {
+    const outside = (path: string) => reviewOf({ entries: [{ path, status: 'M', added: 1, removed: 0, binary: false, outsideEdits: false, revision: 'ab12', commentable: true }] });
+    const parts = (wrapper: VueWrapper): string[] => wrapper.get('[data-testid="changes-entry"]').findAll('span').slice(0, 2).map((part) => part.text());
+    expect(parts((await mountReview(outside('C:\\notes\\todo.md'), 'win32')).wrapper)).toEqual(['todo.md', 'C:\\notes']);
+    expect(parts((await mountReview(outside('/srv/notes/a\\b.md'), 'linux')).wrapper)).toEqual(['a\\b.md', '/srv/notes']);
+  });
 
   it('marks a stale comment where it sits, lists one whose line left the diff above it, and shows the words of main for a stale send', async () => {
     const onLine = { path: 'a.ts', line: 1, side: 'added' as const, scope: 'chat' as const, text: 'Why new?', revision: 'ab12' };

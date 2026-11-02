@@ -70,7 +70,10 @@ const monacoModule = {
     },
   }),
   settingsModelUri: (scope: string, documentId: string) => `inmemory://damocles/settings/${scope}/${documentId}.json`,
+  setWebLinkOpener: (open: (url: string) => void) => { webLinkOpener = open; },
 } as unknown as ShellMonacoModule;
+// the handler the store set for the editors' web links
+let webLinkOpener: ((url: string) => void) | undefined;
 
 const tab = (overrides: Partial<ShellEditorTab> & { id: string }): ShellEditorTab => ({
   kind: 'code', title: 'a.ts', displayPath: 'a.ts', dirty: false, readOnly: false, conflict: false, documentId: `doc-${overrides.id}`, ...overrides,
@@ -111,6 +114,14 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('editor store', () => {
+  it('sends a web link an editor opens to main with the active tab, once Monaco loaded', async () => {
+    webLinkOpener = undefined;
+    const { api, store } = await setup(state([tab({ id: 't1' }), tab({ id: 't2', documentId: 'doc-t2' })], 't2'), { 'doc-t2': text('doc-t2', 'see http://localhost:3000/') });
+    await store.model('doc-t2');
+    webLinkOpener!('http://localhost:3000/');
+    expect(api.openEditorLink).toHaveBeenCalledWith({ tabId: 't2', url: 'http://localhost:3000/' });
+  });
+
   it('reports the first keystroke at once and later ones at most once per throttle window, with the version main gave', async () => {
     const { api, store } = await setup(state([tab({ id: 't1' })]), { 'doc-t1': text('doc-t1', 'a', 7) });
     const model = (await store.model('doc-t1')) as unknown as FakeModel;

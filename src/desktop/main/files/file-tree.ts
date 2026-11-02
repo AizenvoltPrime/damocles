@@ -14,6 +14,7 @@ import type { AskMessage } from '../message-dialog';
 import { isRelativeOrRoot, type Project } from '../../local-services/confine';
 import type { EntryIdentity, WorkspaceFileSystem } from '../../workspace/file-system';
 import type { ProjectWorkspace } from '../../workspace/project-workspace';
+import { linuxToWslUnc } from '../remote/wsl/wsl-paths';
 import { excludeTest, type ExcludeTest } from '../../workspace/tree-listing';
 import { NotConnectedError, type Workspaces } from '../workspace/workspaces';
 
@@ -40,6 +41,8 @@ export interface FileTreeDeps {
 export interface FilesTarget {
   readonly os: NodeJS.Platform;
   readonly host?: string;
+  // a WSL distro's project, whose folders this computer reaches under \\wsl.localhost\<distro>
+  readonly wslDistro?: string;
 }
 
 // Copy path and Reveal: a cancel never happens, every other failure is reported as a delete's is.
@@ -226,12 +229,19 @@ export class FileTree implements Disposable {
   async reveal(projectKey: string, relativePath: string): Promise<FilesActionResult> {
     const project = this.project(projectKey);
     if (!project) return { ok: false, reason: 'missing' };
-    // a path a daemon names is never handed to this computer's file manager
-    if (this.deps.target(projectKey).host !== undefined) return { ok: false, reason: 'failed', message: this.deps.t('The folder is not on this computer.') };
-    if (relativePath === '') return this.attempt('revealing', relativePath, () => this.deps.reveal(project.fsPath));
+    // a path a daemon names is never handed to this computer's file manager, except a WSL distro's through \\wsl.localhost
+    const target = this.deps.target(projectKey);
+    const notHere: FilesActionResult = { ok: false, reason: 'failed', message: this.deps.t('The folder is not on this computer.') };
+    if (target.host !== undefined && target.wslDistro === undefined) return notHere;
+    const shown = (targetPath: string): string | undefined => (target.wslDistro === undefined ? targetPath : linuxToWslUnc(target.wslDistro, targetPath));
+    if (relativePath === '') {
+      const root = shown(project.fsPath);
+      return root === undefined ? notHere : this.attempt('revealing', relativePath, () => this.deps.reveal(root));
+    }
     const entry = await this.files(projectKey).entry(project, relativePath).catch((): { ok: false; reason: 'failed' } => ({ ok: false, reason: 'failed' }));
     if (!entry.ok) return entry;
-    return this.attempt('revealing', relativePath, () => this.deps.reveal(entry.path));
+    const at = shown(entry.path);
+    return at === undefined ? notHere : this.attempt('revealing', relativePath, () => this.deps.reveal(at));
   }
 
   private async attempt(action: string, relativePath: string, run: () => Promise<void>): Promise<FilesActionResult> {

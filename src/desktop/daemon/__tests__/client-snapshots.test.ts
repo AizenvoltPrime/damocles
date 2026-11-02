@@ -29,7 +29,7 @@ function setUp() {
   const coreLoop = createLoopback();
   const daemonMain = createMainEndpoint(coreLoop.main, quiet);
   const core = createCoreEndpoint(coreLoop.core, quiet);
-  router = createCoreRouter({ core: daemonMain, state, registry: createRunRegistry(), mirrors: createClientMirrors(), secrets: new Map(), e2eHooks: false, reload: vi.fn(), log: quiet });
+  router = createCoreRouter({ core: daemonMain, state, registry: createRunRegistry(), mirrors: createClientMirrors(), secrets: new Map(), e2eHooks: false, reload: vi.fn(), agentShellUrl: () => undefined, clientPolicyChanged: () => undefined, log: quiet });
   const snapshots = createClientSnapshots(core, { mirrors: { clientAuth: {}, clientUser: {}, clientPolicy: {}, actingClient: {} } } as unknown as CoreInit);
   const remote = createRemoteHost(core, { remote: { hostId: 'h' } } as CoreInit & { remote: { hostId: string } }, snapshots, () => undefined);
   const attach = (id: string, mirrors: ReturnType<typeof values>): { main: MainEndpoint; detach(): void } => {

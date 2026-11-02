@@ -159,4 +159,17 @@ describe('launchBrowserContext — Chromium sandbox failures', () => {
     launchPersistentContext.mockRejectedValueOnce(launchError);
     await expect(launchBrowserContext({ ...baseOpts, headless: true })).rejects.toBe(launchError);
   });
+
+  it('keeps this computer\'s paths out of a remote context\'s launch failure, which reaches the target', async () => {
+    runAs(1000);
+    // Patchright's launch failure quotes Chrome's command line from its browser logs
+    const profile = 'C:\\Users\\someone\\.damocles\\browser-profiles\\ssh+host-1';
+    const launchError = new Error(`browserType.launchPersistentContext: Failed to launch the browser process.\nBrowser logs:\n<launching> C:\\Users\\someone\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe --user-data-dir=${profile} --remote-debugging-pipe`);
+    launchPersistentContext.mockRejectedValueOnce(launchError);
+    const err = await launchBrowserContext({ ...baseOpts, headless: true, network: { server: 'http://127.0.0.1:9', args: [] } }).then(() => null, (e: unknown) => e as Error);
+    if (!err) throw new Error('the launch was expected to fail');
+    expect(err.message).not.toMatch(/someone|\.damocles|chrome\.exe/);
+    expect(err.message).toMatch(/could not start on the computer that shows this chat/);
+    expect(err.cause).toBe(launchError);
+  });
 });

@@ -90,6 +90,7 @@ const NO_ELECTRON_CORE = 'Damocles Core reaches the host only through the core p
 const NO_MAIN_IN_CORE = 'Damocles Core never imports desktop main; it reaches main only through the core protocol.';
 const NO_CORE_HOST_IN_MAIN = 'Desktop main reaches Damocles Core only through the core protocol (core-client.ts); import a type.';
 const NO_HOST_IN_REMOTE = 'The wire (src/remote) runs in the app and on every target: it imports only Node built-ins, never vscode, electron, src/core or src/desktop.';
+const NO_ELECTRON_CLI = 'The damocles command runs as Node outside the app (dist/cli.js, dist/cli-remote.js), so it never imports electron or desktop main.';
 const NO_ELECTRON_NODE_HOST = 'The pty and formatter hosts also run as plain Node children of the daemon on a target, so they never import electron.';
 
 // no-restricted-imports misses dynamic import(), typeof import() and vi.mock, so these selectors close the same boundary.
@@ -125,6 +126,7 @@ const IN_SHELL = electronBan(NO_ELECTRON_SHELL);
 const IN_WORKER = electronBan(NO_ELECTRON_WORKER);
 const IN_CORE_HOST = electronBan(NO_ELECTRON_CORE);
 const IN_NODE_HOST = electronBan(NO_ELECTRON_NODE_HOST);
+const IN_CLI = electronBan(NO_ELECTRON_CLI);
 // desktop main by any relative path; an esquery regex cannot contain a raw slash, hence \u002F
 const MAIN_FROM_CORE = {
   pattern: { regex: '^(?:\\.\\./)+(?:desktop/)?main(?:/|$)', message: NO_MAIN_IN_CORE },
@@ -186,6 +188,8 @@ export const PROCESS_STARTERS_DESKTOP = ['src/desktop/formatter-host/**/*.ts', '
 const NODE_HOST_ROOTS = PROCESS_STARTERS_DESKTOP.map((glob) => glob.replace(/\/\*\*\/\*\.ts$/, ''));
 // the daemon's forks, whose IPC channel belongs to its main thread, and the bridge's detached daemon start (docs/perf.md)
 export const PROCESS_STARTERS_DAEMON = ['src/desktop/daemon/process-starts.ts'];
+// the damocles command on this computer, a program of its own that starts the app detached (docs/perf.md "Starts outside the launcher")
+export const PROCESS_STARTERS_CLI = ['src/desktop/cli/cli.ts'];
 const testsUnder = (root) => [`${root}/**/__tests__/**`, `${root}/**/*.test.ts`, `${root}/**/*.bench.ts`];
 const WORKER_ROOTS = ['src/desktop/quick-open-worker', 'src/desktop/watch-worker', 'src/desktop/askpass'];
 // Damocles Core, its protocol, the per-process services both main and Core load, the host-neutral workspace modules and the
@@ -199,6 +203,8 @@ const CORE_HOST_TREES = CORE_HOST_ROOTS.map((root) => `${root}/**/*.ts`);
 export const MAIN_CORE_IMPORTS = [
   // stateless helpers and constants, and per-process services main runs its own instance of (its log, launcher pool,
   // config writes and platform accessor)
+  // the client-network verdict main's navigation guard and core's proxy share
+  'browser/client-network-policy',
   'browser/net-guard',
   'chat-panel/ripgrep',
   'chat-panel/settings-file-editor',
@@ -215,6 +221,8 @@ export const MAIN_CORE_IMPORTS = [
   'pi-session/chat-changes',
   'pi-session/custom-providers',
   'pi-session/explore-providers',
+  // the MCP OAuth callback port, which main's forwards never bind
+  'pi-session/mcp/oauth-callback-port',
   'pi-session/openai-auth',
   // childEnv: git's environment without the repository-local variables
   'pi-session/checkpoints/exec',
@@ -518,6 +526,29 @@ export default [
     },
   },
   {
+    // the damocles command: its own programs, outside the app and its launcher
+    files: ['src/desktop/cli/**/*.ts'],
+    ignores: [...PROCESS_STARTERS_CLI, ...testsUnder('src/desktop/cli')],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_CLI.path, ...PROCESS_BAN.paths],
+        patterns: [IN_CLI.pattern, MAIN_FROM_CORE.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_CLI.syntax, ...MAIN_FROM_CORE.syntax, ...PROCESS_BAN.syntax, ...FS_BUILTIN_BAN],
+    },
+  },
+  {
+    // dist/cli.js starts the app detached and keeps its tree's electron, vscode and desktop-main bans
+    files: PROCESS_STARTERS_CLI,
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_CLI.path],
+        patterns: [IN_CLI.pattern, MAIN_FROM_CORE.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_CLI.syntax, ...MAIN_FROM_CORE.syntax, ...FS_BUILTIN_BAN],
+    },
+  },
+  {
     files: ['src/desktop/shell/**/*.{ts,vue}'],
     rules: {
       '@typescript-eslint/no-restricted-imports': ['error', {
@@ -551,7 +582,7 @@ export default [
   {
     files: testsUnder('src/desktop'),
     // the trees below keep their own electron and desktop-main bans
-    ignores: ['src/desktop/shell/**', ...[...WORKER_ROOTS, ...CORE_HOST_ROOTS, ...NODE_HOST_ROOTS].map((root) => `${root}/**`)],
+    ignores: ['src/desktop/shell/**', 'src/desktop/cli/**', ...[...WORKER_ROOTS, ...CORE_HOST_ROOTS, ...NODE_HOST_ROOTS].map((root) => `${root}/**`)],
     rules: {
       '@typescript-eslint/no-restricted-imports': ['error', {
         paths: [{ name: 'vscode', message: VSCODE_ONLY }],
@@ -568,6 +599,17 @@ export default [
         patterns: [IN_NODE_HOST.pattern],
       }],
       'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_NODE_HOST.syntax, ...FS_BUILTIN_BAN],
+    },
+  },
+  {
+    // the damocles command's tests keep its electron ban; they may import desktop main to test main's side of a request
+    files: testsUnder('src/desktop/cli'),
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_CLI.path],
+        patterns: [IN_CLI.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_CLI.syntax, ...FS_BUILTIN_BAN],
     },
   },
   {

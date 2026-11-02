@@ -4,7 +4,7 @@ import { settingsFolderOf, type FolderTarget } from "../../workspace-folders/fol
 import type { ChatSession } from "../../chat-session";
 import type { PermissionHandler } from "../../permission-handler";
 import type { PanelHost } from "../../../platform/window-service";
-import type { McpServerConfig, McpServerStatusInfo, McpToolExposureScope } from "../../../shared/types/mcp";
+import type { McpServerConfig, McpServerSource, McpServerStatusInfo, McpToolExposureScope } from "../../../shared/types/mcp";
 import type { McpScope } from "../../session-types";
 import type { PermissionMode, EffortLevel, AutoCompactConfig, CacheWarmingMode } from "../../../shared/types/settings";
 import type { PostMessageFn, SettingsManagerConfig } from "./types";
@@ -199,8 +199,14 @@ export class SettingsManager {
     };
   }
 
+  /** Built per device on a daemon's core, since each device's rows hold only the servers it relays. */
   sendMcpConfig(host: PanelHost, folderKey: string): void {
-    this.postMessage(host, this.buildMcpConfigUpdate(folderKey));
+    forEachDevice(this.platform.remote, host, (target) => this.postMessage(target, this.buildMcpConfigUpdate(folderKey)));
+  }
+
+  /** The source of the user-scope server of that name in any open folder, whichever folder's own servers shadow it. */
+  getUserMcpServerSource(name: string): McpServerSource | undefined {
+    return this.mcpManager.userServerSource(name);
   }
 
   loadBrowserState(): void {

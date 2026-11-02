@@ -8,7 +8,8 @@ import ConfirmDialogLayout from '@/components/ConfirmDialogLayout.vue';
 
 // Forget host, which offers Remove Damocles server first while the host is reachable. Mounted while closed so its exit plays;
 // Cancel is focused first, so Enter alone never forgets anything.
-defineProps<{ open: boolean; hostName: string; offerRemoval: boolean }>();
+// containers: an SSH host, whose containers' records go with it
+defineProps<{ open: boolean; hostName: string; offerRemoval: boolean; containers: boolean }>();
 const emit = defineEmits<{ choose: [choice: 'cancel' | 'removeFirst' | 'forget'] }>();
 const { t } = useI18n();
 
@@ -34,7 +35,7 @@ function focusCancel(event: Event): void {
         :icon="Trash2"
         tone="danger"
         :title="t('remote.forget.title', { name: hostName })"
-        :description="t('remote.forget.body', { name: hostName })"
+        :description="t(containers ? 'remote.forget.bodyContainers' : 'remote.forget.body', { name: hostName })"
       >
         <template #footer>
           <Button

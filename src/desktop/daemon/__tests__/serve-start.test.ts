@@ -1,13 +1,14 @@
 import { spawn } from 'node:child_process';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { build } from 'esbuild';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { logFileName } from '../../local-services/log-sink';
 import { DAEMON_LOG } from '../logs';
-import { dropInheritedVariables, EXIT_START_FAILED } from '../serve';
+import { daemonChildEnv } from '../child-env';
+import { dropInheritedVariables, EXIT_START_FAILED, shutdownOnSignals } from '../serve';
 import { localRunPaths } from '../token';
 import { REPO_ROOT } from './in-process-daemon';
 
@@ -64,10 +65,30 @@ describe('a daemon start that fails', () => {
   }, 60_000);
 });
 
+// Node's default handler ends the process with its socket folders still in /tmp, where no later start finds them
+describe('a stop signal', () => {
+  it.each(['SIGTERM', 'SIGINT'] as const)("runs the daemon's shutdown on %s, once, leaving a second signal to end the process", (signal) => {
+    const target = new EventEmitter();
+    const shutdown = vi.fn();
+    shutdownOnSignals(target as unknown as Pick<NodeJS.Process, 'once'>, shutdown);
+    target.emit(signal);
+    expect(shutdown.mock.calls).toEqual([[`it received ${signal}`]]);
+    expect(target.listenerCount(signal)).toBe(0);
+  });
+});
+
 describe('the daemon\'s own environment', () => {
   it('holds no Electron variable and no SSH_AUTH_SOCK, which only a client\'s agent proxy socket may replace', () => {
     const env: NodeJS.ProcessEnv = { PATH: '/bin', ELECTRON_RUN_AS_NODE: '1', electron_no_attach_console: '1', SSH_AUTH_SOCK: '/tmp/ssh-started-the-daemon/agent.1', SSH_CONNECTION: '1 2 3 4' };
     dropInheritedVariables(env);
     expect(env).toEqual({ PATH: '/bin', SSH_CONNECTION: '1 2 3 4' });
+  });
+
+  it('holds no DAMOCLES_CLI_HOOK, so Damocles Core, its agent shells, hooks and MCP servers never name a CLI socket', () => {
+    const env: NodeJS.ProcessEnv = { PATH: '/bin', DAMOCLES_CLI_HOOK: '/tmp/damocles-x/cli-1.sock', damocles_cli_hook: '\\\\.\\pipe\\damocles-cli-1' };
+    dropInheritedVariables(env);
+    expect(env).toEqual({ PATH: '/bin' });
+    // a fork's environment is the daemon's own
+    expect(Object.keys(daemonChildEnv('node', env, false)).filter((key) => key.toUpperCase() === 'DAMOCLES_CLI_HOOK')).toEqual([]);
   });
 });

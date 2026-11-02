@@ -141,8 +141,13 @@ export function windowsSystemDirectory(env: Env = process.env): string {
 }
 
 /** `%SystemRoot%\System32\<name>.exe`, as VS Code's killTree names taskkill. */
-export function windowsSystemTool(name: 'taskkill' | 'tasklist' | 'icacls' | 'whoami' | 'cmd' | 'tar' | 'reg', env: Env = process.env): string {
+export function windowsSystemTool(name: 'taskkill' | 'tasklist' | 'icacls' | 'whoami' | 'cmd' | 'tar' | 'reg' | 'wsl', env: Env = process.env): string {
   return path.win32.join(windowsSystemDirectory(env), `${name}.exe`);
+}
+
+/** `%SystemRoot%\explorer.exe`, File Explorer, which Windows keeps beside System32. */
+export function windowsExplorer(env: Env = process.env): string {
+  return path.win32.join(path.win32.dirname(windowsSystemDirectory(env)), 'explorer.exe');
 }
 
 /** Windows PowerShell 5.1, where every supported Windows installs it. */
@@ -151,9 +156,9 @@ export function windowsPowerShell(env: Env = process.env): string {
 }
 
 // Where the tool is installed when no absolute PATH folder holds it: a regular user's PATH often lacks /sbin.
-const POSIX_TOOL_FOLDERS: Readonly<Record<PosixToolName, readonly string[]>> = { ldconfig: ['/sbin', '/usr/sbin'], bash: ['/bin', '/usr/bin'], tar: ['/bin', '/usr/bin'], loginctl: ['/bin', '/usr/bin'], restorecon: ['/sbin', '/usr/sbin'] };
+const POSIX_TOOL_FOLDERS: Readonly<Record<PosixToolName, readonly string[]>> = { ldconfig: ['/sbin', '/usr/sbin'], bash: ['/bin', '/usr/bin'], ps: ['/bin', '/usr/bin'], tar: ['/bin', '/usr/bin'], loginctl: ['/bin', '/usr/bin'], restorecon: ['/sbin', '/usr/sbin'] };
 
-type PosixToolName = 'ldconfig' | 'bash' | 'tar' | 'loginctl' | 'restorecon';
+type PosixToolName = 'ldconfig' | 'bash' | 'ps' | 'tar' | 'loginctl' | 'restorecon';
 
 /** A POSIX tool from an absolute PATH folder, else from the folders it is installed in, or undefined when none holds it. */
 export function posixTool(name: PosixToolName, env: Env = process.env, folders: readonly string[] = POSIX_TOOL_FOLDERS[name]): string | undefined {

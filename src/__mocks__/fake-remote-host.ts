@@ -2,7 +2,7 @@ import { vi } from 'vitest';
 import type { ActiveEditorContext } from '../platform/editor-service';
 import type { ClientSnapshots, ClientTopic, RemoteHost } from '../platform/remote-host';
 import type { PanelHost, TerminalToggle } from '../platform/window-service';
-import type { BrokerAnswer, ClientPolicy, ClientUser, HeldAuth } from '../shared/remote-user';
+import type { BrokerAnswer, ClientPolicy, ClientUser, HeldAuth, RelayedMcpServer } from '../shared/remote-user';
 
 type Change = { readonly topic: ClientTopic; readonly clientId?: string; readonly before?: unknown; readonly detached?: true };
 
@@ -17,6 +17,7 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
     clientEditor: new Map<string, { readonly context?: ActiveEditorContext }>(),
     clientTerminal: new Map<string, TerminalToggle>(),
     clientLanguage: new Map<string, { readonly language: 'en' | 'el' }>(),
+    clientMcp: new Map<string, readonly RelayedMcpServer[]>(),
   };
   const listeners = new Set<(change: Change) => void>();
   const attached = new Set<string>(['client-a']);
@@ -28,12 +29,16 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
     actor: () => actor,
     acting: () => (actor !== undefined && attached.has(actor) ? actor : acting),
     attached: (id) => attached.has(id),
+    anyAttached: () => attached.size > 0,
+    attachedClients: () => [...attached],
     auth: (id) => maps.clientAuth.get(id),
     user: (id) => maps.clientUser.get(id),
     policy: (id) => maps.clientPolicy.get(id),
     editor: (id) => maps.clientEditor.get(id)?.context,
     terminal: (id) => maps.clientTerminal.get(id),
     language: (id) => maps.clientLanguage.get(id)?.language,
+    mcp: (id) => maps.clientMcp.get(id),
+    mcpClients: () => [...maps.clientMcp.keys()],
     onDidChange: (cb) => {
       listeners.add(cb);
       return { dispose: () => { listeners.delete(cb); } };
@@ -46,7 +51,26 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
   });
   // a target with no agent proxy until setAgentFolder names one
   let agentFolder: string | undefined;
-  const remote: RemoteHost = { hostId: 'host-1', clients, agentSocket: (clientId) => (agentFolder === undefined ? undefined : `${agentFolder}/agent-of-${clientId}.sock`), credentials: vi.fn(answer), speak, runProviders: vi.fn() };
+  const remote: RemoteHost = {
+    hostId: 'host-1',
+    clients,
+    agentSocket: (clientId) => (agentFolder === undefined ? undefined : `${agentFolder}/agent-of-${clientId}.sock`),
+    credentials: vi.fn(answer),
+    speak,
+    runProviders: vi.fn(),
+    browserTool: vi.fn(async () => ({ content: [] })),
+    browserRelease: vi.fn(async () => {}),
+    browserDiscard: vi.fn(async () => {}),
+    shellOutput: () => ({ write: () => undefined, end: () => undefined }),
+    memorySearch: vi.fn(async () => []),
+    memoryProfile: vi.fn(async () => ({ profile: { static: '', dynamic: '' }, pinned: [], preferences: [] })),
+    memoryResolve: vi.fn(async () => []),
+    memoryApply: vi.fn(async (_clientId: string, entries: readonly { readonly end: number; readonly write: { readonly uuid: string } }[]) => ({ through: entries.at(-1)?.end ?? 0, ids: entries.map((entry) => entry.write.uuid) })),
+    heldMemoryChanged: vi.fn(),
+    mcpCall: vi.fn(async () => ({ content: [] })),
+    mcpResources: vi.fn(async () => ({ resources: [] })),
+    mcpReadResource: vi.fn(async () => ({ contents: [] })),
+  };
   const set = <K extends keyof typeof maps>(topic: K, clientId: string, value: (typeof maps)[K] extends Map<string, infer V> ? V | undefined : never): void => {
     const map = maps[topic] as Map<string, unknown>;
     const before = map.get(clientId);
@@ -54,9 +78,9 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
       if (value === undefined) attached.delete(clientId);
       else attached.add(clientId);
     }
-    // a detached client's clientAuth stays, as clients.ts keeps it
+    // a detached client's clientAuth and clientMcp stay, as clients.ts keeps them
     if (value !== undefined) map.set(clientId, value);
-    else if (topic !== 'clientAuth') map.delete(clientId);
+    else if (topic !== 'clientAuth' && topic !== 'clientMcp') map.delete(clientId);
     fire({ topic, clientId, before, ...(value === undefined ? { detached: true as const } : {}) });
   };
   return {

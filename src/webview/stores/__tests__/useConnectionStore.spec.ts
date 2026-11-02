@@ -20,6 +20,8 @@ beforeEach(() => {
     setState: () => undefined,
     getHost: () => undefined,
     onHost: () => () => undefined,
+    getHostNames: () => undefined,
+    onHostNames: () => () => undefined,
     getOffline: () => undefined,
     hostAction: () => undefined,
     getConnection: () => current,

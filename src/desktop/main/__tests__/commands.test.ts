@@ -514,12 +514,16 @@ describe('editor git and chat review commands', () => {
 });
 
 describe('remote commands', () => {
-  it('exist only while MenuActions.remote does, and Disconnect Host needs a connected remote project', () => {
-    const remote = { connectToHost: vi.fn(), disconnectHost: vi.fn(), openFolderOnHost: vi.fn() };
-    // an object without remote, as main builds the actions while the remote gate is closed
-    const local = {} as MenuActions;
-    expect(desktopCommands(PROJECTS, local, 'win32').some((command) => command.id === MENU_IDS.connectToHost)).toBe(false);
-    const byId = new Map(desktopCommands(PROJECTS, { ...local, remote }, 'win32').map((command) => [command.id, command]));
+  it('exist in every build, in the palette and the File menu, and Disconnect Host needs a connected remote project', () => {
+    const remote = { connectToHost: vi.fn(), disconnectHost: vi.fn(), openFolderOnHost: vi.fn(), forwardPort: vi.fn() };
+    for (const platform of PLATFORMS) {
+      const ids = palette(en, platform).list({ ...CHAT, remoteHostConnected: true, remoteHostSaved: true }).map((entry) => entry.id);
+      expect(ids, platform).toEqual(expect.arrayContaining([MENU_IDS.connectToHost, MENU_IDS.openFolderOnHost, MENU_IDS.disconnectHost, MENU_IDS.forwardPort]));
+      const file = menuItems(platform).find((item) => item.id === 'damocles.menu.file')!;
+      const fileIds = (file.submenu as MenuItemConstructorOptions[]).map((item) => item.id);
+      expect(fileIds, platform).toEqual(expect.arrayContaining([MENU_IDS.connectToHost, MENU_IDS.openFolderOnHost, MENU_IDS.disconnectHost, MENU_IDS.forwardPort]));
+    }
+    const byId = new Map(desktopCommands(PROJECTS, { ...({} as MenuActions), remote }, 'win32').map((command) => [command.id, command]));
     const disconnect = byId.get(MENU_IDS.disconnectHost)!;
     expect(isEnabled(disconnect, CHAT)).toBe(false);
     expect(isEnabled(disconnect, { ...CHAT, remoteHostConnected: true })).toBe(true);
@@ -527,11 +531,23 @@ describe('remote commands', () => {
     expect(remote.connectToHost).toHaveBeenCalled();
   });
 
-  it('lists Remote: Open Folder on Host... only while remote features are enabled and a host is saved', () => {
-    const remote = { connectToHost: vi.fn(), disconnectHost: vi.fn(), openFolderOnHost: vi.fn() };
-    const local = {} as MenuActions;
-    expect(desktopCommands(PROJECTS, local, 'win32').some((command) => command.id === MENU_IDS.openFolderOnHost)).toBe(false);
-    const command = desktopCommands(PROJECTS, { ...local, remote }, 'win32').find((candidate) => candidate.id === MENU_IDS.openFolderOnHost)!;
+  it('lists Ports: Forward a Port... only while the selected project\'s host is connected, and runs the section\'s flow', () => {
+    const remote = { connectToHost: vi.fn(), disconnectHost: vi.fn(), openFolderOnHost: vi.fn(), forwardPort: vi.fn() };
+    const command = desktopCommands(PROJECTS, { ...({} as MenuActions), remote }, 'win32').find((candidate) => candidate.id === MENU_IDS.forwardPort)!;
+    expect(command.title).toMatchObject({ message: 'Forward a Port...' });
+    expect(command.category).toMatchObject({ message: 'Ports' });
+    const connected = { ...CHAT, remoteHostConnected: true };
+    expect(isEnabled(command, CHAT)).toBe(false);
+    expect(command.palette!(CHAT)).toBe(false);
+    expect(isEnabled(command, connected)).toBe(true);
+    expect(command.palette!(connected)).toBe(true);
+    command.run(connected, 'palette');
+    expect(remote.forwardPort).toHaveBeenCalledOnce();
+  });
+
+  it('lists Remote: Open Folder on Host... only while a host is saved', () => {
+    const remote = { connectToHost: vi.fn(), disconnectHost: vi.fn(), openFolderOnHost: vi.fn(), forwardPort: vi.fn() };
+    const command = desktopCommands(PROJECTS, { ...({} as MenuActions), remote }, 'win32').find((candidate) => candidate.id === MENU_IDS.openFolderOnHost)!;
     expect(command.title).toMatchObject({ message: 'Open Folder on Host...' });
     expect(command.category).toMatchObject({ message: 'Remote' });
     const saved = { ...CHAT, remoteHostSaved: true };
@@ -541,5 +557,44 @@ describe('remote commands', () => {
     expect(command.palette!(saved)).toBe(true);
     command.run(saved, 'palette');
     expect(remote.openFolderOnHost).toHaveBeenCalledOnce();
+  });
+});
+
+describe('shell commands: the damocles command on PATH', () => {
+  const remote = { connectToHost: vi.fn(), disconnectHost: vi.fn(), openFolderOnHost: vi.fn(), forwardPort: vi.fn() };
+  const cliCommand = { install: vi.fn(), uninstall: vi.fn() };
+  const shellCommands = (platform: NodeJS.Platform, withCli = true): string[] => new CommandPalette({
+    commands: () => desktopCommands(PROJECTS, { ...({} as MenuActions), remote, ...(withCli ? { cliCommand } : {}) }, platform),
+    l10n: en,
+    english: en,
+    platform,
+    log: () => undefined,
+  }).list(CHAT).filter((entry) => entry.category === 'Shell Command').map((entry) => entry.label).sort();
+
+  it('offers Add and Remove on Windows, Install and Uninstall on macOS, and nothing on Linux', () => {
+    expect(shellCommands('win32')).toEqual(['Shell Command: Add \'damocles\' command to PATH', 'Shell Command: Remove \'damocles\' command from PATH']);
+    expect(shellCommands('darwin')).toEqual(['Shell Command: Install \'damocles\' command in PATH', 'Shell Command: Uninstall \'damocles\' command from PATH']);
+    expect(shellCommands('linux')).toEqual([]);
+  });
+
+  it('offers none where main passes no cliCommand (a development build), and sits beside About in the app menu or Help', () => {
+    for (const platform of PLATFORMS) expect(shellCommands(platform, false), platform).toEqual([]);
+    const ids = (platform: NodeJS.Platform, withCli: boolean, menu: string): Array<string | undefined> => {
+      installApplicationMenu(PROJECTS, { ...({} as MenuActions), remote, ...(withCli ? { cliCommand } : {}) }, en, CHAT, platform);
+      return (electron.template.find((item) => item.id === menu)!.submenu as MenuItemConstructorOptions[]).map((item) => item.id ?? item.type);
+    };
+    expect(ids('win32', true, 'damocles.menu.help')).toEqual([MENU_IDS.about, MENU_IDS.releaseNotes, MENU_IDS.checkForUpdates, 'separator', MENU_IDS.installCliCommand, MENU_IDS.uninstallCliCommand]);
+    expect(ids('darwin', true, 'damocles.menu.app').slice(0, 6)).toEqual([MENU_IDS.about, MENU_IDS.releaseNotes, MENU_IDS.checkForUpdates, 'separator', MENU_IDS.installCliCommand, MENU_IDS.uninstallCliCommand]);
+    expect(ids('linux', true, 'damocles.menu.help')).toEqual([MENU_IDS.about, MENU_IDS.releaseNotes, MENU_IDS.checkForUpdates]);
+    expect(ids('win32', false, 'damocles.menu.help')).toEqual([MENU_IDS.about, MENU_IDS.releaseNotes, MENU_IDS.checkForUpdates]);
+  });
+
+  it('runs the install or the removal, each named in Greek too', () => {
+    const greek = new CommandPalette({ commands: () => desktopCommands(PROJECTS, { ...({} as MenuActions), remote, cliCommand }, 'win32'), l10n: el, english: en, platform: 'win32', log: () => undefined });
+    expect(greek.list(CHAT).filter((entry) => entry.id === MENU_IDS.installCliCommand).map((entry) => entry.label)).toEqual(['Εντολή κελύφους: Προσθήκη της εντολής \'damocles\' στο PATH']);
+    greek.run(MENU_IDS.installCliCommand, CHAT);
+    greek.run(MENU_IDS.uninstallCliCommand, CHAT);
+    expect(cliCommand.install).toHaveBeenCalledOnce();
+    expect(cliCommand.uninstall).toHaveBeenCalledOnce();
   });
 });

@@ -33,7 +33,7 @@ import SettingsNav from './SettingsNav.vue';
 import SettingsPage from './SettingsPage.vue';
 import SettingButton from './controls/SettingButton.vue';
 import { normalizeQuery, SETTINGS_ROWS, type HostSettings, type SettingsRowMeta, type SettingsScopeView, type SettingsSectionMeta } from './settings-rows';
-import { provideSettingsBanner, provideSettingsChatHost, provideSettingsFiles, provideSettingsTarget, type SettingsBanner } from './settings-view';
+import { provideSettingsBanner, provideSettingsChatHost, provideSettingsFiles, provideSettingsMachineHost, provideSettingsTarget, type SettingsBanner, type SettingsMachineHost } from './settings-view';
 import { prefersReducedMotion } from '@/utils/reducedMotion';
 import './settings.css';
 
@@ -59,6 +59,8 @@ const props = defineProps<{
   scopeView?: SettingsScopeView | undefined;
   /** The attached chat's host when it is a remote chat. */
   chatHost?: string | undefined;
+  /** The host whose machine scope the shown tab edits (a remote chat's host tab). */
+  machineHost?: SettingsMachineHost | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -109,6 +111,7 @@ const narrowPage = ref<'nav' | 'section'>(props.target?.section ? 'section' : 'n
 const request = shallowRef<SettingsTarget | null>(props.target ?? null);
 provideSettingsTarget(request);
 provideSettingsChatHost(() => props.chatHost);
+provideSettingsMachineHost(() => props.machineHost);
 const typed = ref('');
 const query = computed(() => normalizeQuery(typed.value));
 const matches = ref(0);

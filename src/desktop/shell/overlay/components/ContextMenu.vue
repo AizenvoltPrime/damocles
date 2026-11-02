@@ -336,6 +336,18 @@ const reasonClass = 'shrink-0 whitespace-nowrap text-11 text-(--d-faint) group-h
             class="size-3.25 shrink-0"
           />
           <span
+            v-if="row.hint"
+            class="flex min-w-0 flex-1 flex-col"
+            :class="dimmed(row)"
+          >
+            <span class="truncate">{{ row.label }}</span>
+            <span
+              data-testid="overlay-menu-hint"
+              class="truncate text-10.5 text-(--d-faint) group-hover/item:text-(--d-faint-text) group-focus/item:text-(--d-faint-text)"
+            ><span class="sr-only">, </span>{{ row.hint }}</span>
+          </span>
+          <span
+            v-else
             class="min-w-0 flex-1 truncate"
             :class="dimmed(row)"
           >{{ row.label }}</span>
@@ -415,6 +427,18 @@ const reasonClass = 'shrink-0 whitespace-nowrap text-11 text-(--d-faint) group-h
           class="size-3.25 shrink-0"
         />
         <span
+          v-if="row.hint"
+          class="flex min-w-0 flex-1 flex-col"
+          :class="dimmed(row)"
+        >
+          <span class="truncate">{{ row.label }}</span>
+          <span
+            data-testid="overlay-menu-hint"
+            class="truncate text-10.5 text-(--d-faint) group-hover/item:text-(--d-faint-text) group-focus/item:text-(--d-faint-text)"
+          ><span class="sr-only">, </span>{{ row.hint }}</span>
+        </span>
+        <span
+          v-else
           class="min-w-0 flex-1 truncate"
           :class="dimmed(row)"
         >{{ row.label }}</span>

@@ -67,6 +67,14 @@ export const settingsViewHandlers: SettingsViewHandlers = {
     ctx.stores.settingsStore.setMcpLocalUnignored(msg.localMcpUnignored);
     ctx.stores.settingsStore.setMcpToolExposureScopes(msg.toolExposureScopes);
   },
+  mcpConfigUpdate: (msg, ctx) => {
+    ctx.stores.settingsStore.reconcileMcpServers(msg.servers);
+    ctx.stores.settingsStore.setMcpConfigErrors(msg.configErrors);
+    ctx.stores.settingsStore.setMcpLocalUnignored(msg.localMcpUnignored);
+  },
+  mcpWriteResult: (msg, ctx) => {
+    ctx.stores.settingsStore.settleMcpWrite(msg.requestId, msg.ok ? null : msg.error);
+  },
   toolStatus: (msg, ctx) => {
     ctx.stores.settingsStore.setToolsSnapshot(msg.data);
   },
@@ -175,18 +183,8 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       ctx.stores.sessionStore.updateStats({ contextWindowSize: msg.contextWindowSize });
     },
 
-    mcpConfigUpdate: (msg, ctx) => {
-      ctx.stores.settingsStore.reconcileMcpServers(msg.servers);
-      ctx.stores.settingsStore.setMcpConfigErrors(msg.configErrors);
-      ctx.stores.settingsStore.setMcpLocalUnignored(msg.localMcpUnignored);
-    },
-
     mcpRenamedToolRules: (msg, ctx) => {
       ctx.stores.settingsStore.addMcpRenamedToolRules(msg.notices);
-    },
-
-    mcpWriteResult: (msg, ctx) => {
-      ctx.stores.settingsStore.settleMcpWrite(msg.requestId, msg.ok ? null : msg.error);
     },
 
     systemInit: (msg, ctx) => {

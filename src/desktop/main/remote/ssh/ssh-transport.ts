@@ -3,6 +3,7 @@
 // is the same Duplex the loopback transport gives Authorities, past the bridge's authentication with the daemon.
 import { createReadStream, promises as fs } from 'node:fs';
 import * as os from 'node:os';
+import * as path from 'node:path';
 import { Duplex } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { processLauncher, type LaunchedProcess, type Launcher, type ProcessExit } from '../../../../core/process-launcher';
@@ -132,14 +133,14 @@ export interface SshTransportDeps {
 
 const defaultDeps: SshTransportDeps = { resolveSsh: () => resolveSshExecutable(), launcher: processLauncher, run: runSsh, env: process.env, userInfo: () => os.userInfo() };
 
-type Failure = (code: SshFailureCode, params?: Readonly<Record<string, string | number>>) => SshConnectError;
+export type Failure = (code: SshFailureCode, params?: Readonly<Record<string, string | number>>) => SshConnectError;
 
-interface Tail {
+export interface Tail {
   append(text: string): void;
   text(): string;
 }
 
-function createTail(max: number): Tail {
+export function createTail(max: number): Tail {
   let tail = '';
   return {
     append: (text) => {
@@ -396,7 +397,7 @@ export async function startSshTransport(options: SshTransportOptions, deps: SshT
     const stage1 = platform.os === 'win32' ? buildWindowsStage1(stageParams) : buildPosixStage1(stageParams);
     const { child, sshStderr } = spawn(platform.os === 'win32' ? windowsStage0(platform.windowsShell ?? 'cmd') : POSIX_STAGE0);
     const ended = (code: number | null): SshConnectError => endedFailure(code, sshStderr(), signal.aborted, state, failure);
-    const result = await whileAttempting(child, runStage(child, stage1, options, failure, ended, proven, log));
+    const result = await whileAttempting(child, runStage(child, stage1, { ...options, cache: 'none' }, failure, ended, proven, log));
     bridged = true;
     registration.dispose();
     return {
@@ -412,13 +413,27 @@ export async function startSshTransport(options: SshTransportOptions, deps: SshT
   }
 }
 
-interface StageResult {
+export interface StageResult {
   readonly stream: Duplex;
   readonly probe: ProbeReport;
 }
 
+// Where a stage's cache request is answered from: none (SSH, whose target may ask nothing of this computer's cache, so a
+// request is a protocol failure), the artifact cache's own folder (WSL), or a function that puts the target's package where
+// the stage copies it from and resolves whether it is there (a container).
+export type StageCache = 'none' | 'artifactFolder' | ((target: ServerTarget) => Promise<boolean>);
+
+// What stage 1 asks of the app while it runs: the package to upload, or on WSL and in a container to fill the cache it copies from.
+export type StageRunOptions = Pick<SshTransportOptions, 'manifest' | 'artifacts' | 'installFolderSettled'> & {
+  readonly hooks: Pick<SshAttemptHooks, 'step' | 'progress' | 'notice'>;
+  readonly cache: StageCache;
+};
+
+// The parts of a started stage 0 runStage drives: a local process, or an exec stream through an SSH host's daemon.
+export type StageProcess = Pick<LaunchedProcess, 'onData' | 'write' | 'end' | 'kill' | 'exited' | 'closed'>;
+
 /** A started bridge's stdout and stdin as one Duplex; ending it ends the bridge and leaves the daemon running. */
-function bridgeDuplex(child: LaunchedProcess): { readonly stream: Duplex; readonly ended: () => void } {
+function bridgeDuplex(child: StageProcess): { readonly stream: Duplex; readonly ended: () => void } {
   let ended = false;
   const stream = new Duplex({
     read: () => undefined,
@@ -440,10 +455,14 @@ function bridgeDuplex(child: LaunchedProcess): { readonly stream: Duplex; readon
   return { stream, ended: () => { ended = true; } };
 }
 
-function runStage(
-  child: LaunchedProcess,
+/**
+ * Writes stage 1 to the started stage 0 and follows its status lines until the bridge takes stdout over; resolves the bridge's
+ * stream and the probe's report, rejects with the stage's failure or ended(code) for a stage 0 that exited first.
+ */
+export function runStage(
+  child: StageProcess,
   stage1: string,
-  options: SshTransportOptions,
+  options: StageRunOptions,
   failure: Failure,
   ended: (code: number | null) => SshConnectError,
   authenticated: () => void,
@@ -472,6 +491,7 @@ function runStage(
       const { size } = await fs.stat(file);
       // the stage reads exactly the announced length, and every byte after it is the protocol's
       if (size !== pkg.size) throw new Error(`${file} holds ${size} bytes where the manifest names ${pkg.size}`);
+      log(`uploading the ${target} package from this computer`);
       await child.write(`${pkg.size}\n`);
       let sent = 0;
       for await (const chunk of createReadStream(file, { end: pkg.size - 1 })) {
@@ -479,6 +499,20 @@ function runStage(
         sent += (chunk as Buffer).length;
         hooks.progress(Math.min(1, sent / pkg.size));
       }
+    };
+
+    // the stage copies from the cache folder it was given, so the package must be in exactly that folder
+    const fillCache = async (): Promise<void> => {
+      const { cache } = options;
+      if (cache === 'none') throw new StageProtocolError('a cache request from a stage that copies from no cache');
+      if (!target || !options.manifest.packages[target]) throw new StageProtocolError('a cache request before the probe named a packaged target');
+      let ready = false;
+      try {
+        ready = cache === 'artifactFolder' ? path.dirname(await options.artifacts.packagePath(target)) === options.artifacts.packageFolder() : await cache(target);
+      } catch (err) {
+        log(`the package for ${target} is not in the cache: ${messageOf(err)}`);
+      }
+      await child.write(ready ? 'ready\n' : 'none\n');
     };
 
     const handle = (message: StageMessage): void => {
@@ -506,6 +540,16 @@ function runStage(
             log(`the upload failed: ${messageOf(err)}`);
             fail(err instanceof StageProtocolError ? failure('bridgeFailed', { reason: 'stageProtocol' }) : failure('downloadAndUploadFailed'));
           });
+          return;
+        case 'cache':
+          fillCache().catch((err: unknown) => {
+            if (settled) return;
+            log(`answering the cache request failed: ${messageOf(err)}`);
+            fail(failure('bridgeFailed', { reason: 'stageProtocol' }));
+          });
+          return;
+        case 'copyFailed':
+          log(`copying the package from the cache failed at ${message.reason}; the stage asks for the upload`);
           return;
         case 'downloadFailed':
           log(`download try ${message.attempt} failed: ${message.reason}`);

@@ -49,19 +49,23 @@ function onClick(event: MouseEvent): void {
   const href = anchor?.getAttribute('href');
   if (!anchor || href === null || href === undefined) return;
   const link = previewLink(href, props.tab.relativePath);
-  // An http(s) link opens a window, which main denies and hands to the system browser.
+  event.preventDefault();
+  // main opens an http(s) link: a remote file's through the link checks and port forwarding its host's links take
   if (link?.kind === 'external') {
-    anchor.setAttribute('target', '_blank');
-    anchor.setAttribute('rel', 'noopener noreferrer');
+    props.api.openEditorLink({ tabId: props.tab.id, url: href });
     return;
   }
-  event.preventDefault();
   if (link?.kind === 'anchor') {
     const heading = [...(root.value?.querySelectorAll('h1, h2, h3, h4, h5, h6') ?? [])].find((element) => slug(element.textContent ?? '') === link.id);
     heading?.scrollIntoView({ block: 'start' });
   } else if (link?.kind === 'file' && props.tab.projectKey !== undefined) {
     void props.api.openEditor({ projectKey: props.tab.projectKey, relativePath: link.relativePath });
   }
+}
+
+// A middle click on a link would open a window of its own, around main's link checks.
+function onAuxClick(event: MouseEvent): void {
+  if (event.button === 1) onClick(event);
 }
 </script>
 
@@ -81,6 +85,7 @@ function onClick(event: MouseEvent): void {
       ref="root"
       class="md-preview"
       @click="onClick"
+      @auxclick="onAuxClick"
       v-html="html"
     />
     <!-- eslint-enable vue/no-v-html -->

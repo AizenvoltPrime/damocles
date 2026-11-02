@@ -19,7 +19,7 @@ export function createWindowProxy(endpoint: CoreEndpoint, init: CoreInit, panels
     createPanel: (options) => panels.create(options),
     // a desktop chat's own column is a new chat (main/platform/window-service.ts)
     createPanelInOwnColumn: async (options) => panels.create(options),
-    openAppSettings: (section, account) => endpoint.emit('window.openAppSettings', { ...(section !== undefined ? { section } : {}), ...(account !== undefined ? { account } : {}) }),
+    openAppSettings: (section, account, scope) => endpoint.emit('window.openAppSettings', { ...(section !== undefined ? { section } : {}), ...(account !== undefined ? { account } : {}), ...(scope !== undefined ? { scope } : {}) }),
     toggleTerminal: () => endpoint.emit('window.toggleTerminal', {}),
     terminalToggle: (clientId) => (clients ? (clientId === undefined ? undefined : clients.terminal(clientId)) ?? NO_TERMINAL : terminal),
     dispose: () => subscription?.dispose(),

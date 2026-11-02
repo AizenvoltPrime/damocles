@@ -42,7 +42,7 @@ BLOCKED_RANGES.addSubnet('fe80::', 10, 'ipv6'); // link-local
 BLOCKED_RANGES.addSubnet('ff00::', 8, 'ipv6'); // multicast
 
 /** True if `ip` (an IP literal) is in a blocked range. A non-IP string is blocked conservatively. */
-function isBlockedIp(ip: string): boolean {
+export function isBlockedIp(ip: string): boolean {
   const version = isIP(ip);
   if (version === 0) return true;
   return BLOCKED_RANGES.check(ip, version === 6 ? 'ipv6' : 'ipv4');

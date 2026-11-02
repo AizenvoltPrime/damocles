@@ -64,6 +64,8 @@ beforeEach(() => {
       hostListeners.add(listener);
       return () => hostListeners.delete(listener);
     },
+    getHostNames: () => undefined,
+    onHostNames: () => () => undefined,
     getOffline: () => undefined,
     hostAction: (action) => void actions.push(action),
     getConnection: () => connection,

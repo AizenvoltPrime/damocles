@@ -308,9 +308,10 @@ describe('the release workflow limits what a compromised action or token can rea
     expect(unpinned).toEqual([]);
   });
 
-  it('widens the read-only token only for sign-windows, attest and release', () => {
+  it('widens the read-only token only for sign-browser-helper, sign-windows, attest and release', () => {
     expect((parse(workflowText) as { permissions?: unknown }).permissions).toEqual({ contents: 'read' });
     expect(Object.fromEntries(jobs.filter(([, job]) => job.permissions).map(([name, job]) => [name, job.permissions]))).toEqual({
+      'sign-browser-helper': { contents: 'read', actions: 'read' },
       'sign-windows': { contents: 'read', actions: 'read' },
       attest: { contents: 'read', 'id-token': 'write', attestations: 'write' },
       release: { contents: 'write' },
@@ -322,6 +323,7 @@ describe('the release workflow limits what a compromised action or token can rea
       const installs = workflow.jobs[name]!.steps.filter((step) => /\bnpm (ci|install)\b/.test(step.run ?? ''));
       expect(installs.map((step) => step.run!.trim())).toEqual(['npm ci --ignore-scripts']);
     }
+    expect(JSON.stringify(workflow.jobs['sign-browser-helper']!.steps)).not.toMatch(/npm (ci|install)|npx /);
   });
 
   it('keeps the OIDC-capable attest job free of secrets and package installs', () => {
@@ -480,6 +482,43 @@ describe('sign-windows signs the Windows legs (docs/desktop-signing.md)', () => 
   });
 });
 
+// The Windows server packages' SHA-256 is sealed into app.asar before sign-windows, so their browser.exe is signed before package-server.
+describe('sign-browser-helper signs the Windows server packages\' browser.exe (docs/desktop-signing.md)', () => {
+  const job = workflow.jobs['sign-browser-helper']!;
+  const requests = job.steps.filter((step) => step.uses?.startsWith('signpath/github-action-submit-signing-request@'));
+
+  it('submits the two browser.exe files with the browser-helpers configuration and the package.json version', () => {
+    expect(requests.map((step) => step.with!['artifact-configuration-slug'])).toEqual(['browser-helpers']);
+    expect(requests[0]!.with!['signing-policy-slug']).toBe('${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}');
+    expect(requests[0]!.with!['github-artifact-id']).toBe('${{ steps.upload-unsigned-browser-helpers.outputs.artifact-id }}');
+    expect(requests[0]!.with!.parameters?.trim()).toBe('version: "${{ steps.version.outputs.version }}"');
+    expect(job.steps.find((step) => step.id === 'build-browser-helpers')?.run).toBe('node scripts/browser-helper.mjs --out browser-helpers');
+    expect(job.env).toMatchObject({ SIGNPATH_SIGNING_POLICY_SLUG: workflow.jobs['sign-windows']!.env!.SIGNPATH_SIGNING_POLICY_SLUG, SIGN_WINDOWS: workflow.jobs['sign-windows']!.env!.SIGN_WINDOWS });
+  });
+
+  it('signs only when sign-windows does, and checks the signatures', () => {
+    const signing = job.steps.filter((step) => step.uses?.startsWith('signpath/') || step.uses?.startsWith('actions/upload-artifact@') || step.run?.includes('check-authenticode.ps1') || step.id === 'build-browser-helpers');
+    expect(signing).toHaveLength(5);
+    for (const step of signing) expect({ name: step.name, if: step.if }).toEqual({ name: step.name, if: "env.SIGN_WINDOWS == 'true'" });
+    expect(job.steps.find((step) => step.run?.includes('check-authenticode.ps1'))?.run).toContain('signed-browser-helpers/x64/browser.exe, signed-browser-helpers/arm64/browser.exe');
+  });
+
+  it('feeds each Windows package leg its architecture\'s signed browser.exe, which the build and the check both take', () => {
+    const server = workflow.jobs['package-server']!;
+    expect([server.needs].flat()).toContain('sign-browser-helper');
+    expect(server.env?.SIGN_WINDOWS).toBe(job.env!.SIGN_WINDOWS);
+    const windowsLegs = include('package-server').filter((leg) => String(leg.target).startsWith('win32-'));
+    expect(windowsLegs.map((leg) => [leg.target, leg.browserHelper])).toEqual([['win32-x64', 'x64'], ['win32-arm64', 'arm64']]);
+    expect(include('package-server').filter((leg) => !String(leg.target).startsWith('win32-') && leg.browserHelper !== undefined)).toEqual([]);
+    const download = server.steps.find((step) => step.with?.name === 'signed-browser-helpers');
+    expect(download?.if).toBe("matrix.browserHelper && env.SIGN_WINDOWS == 'true'");
+    const build = server.steps.find((step) => step.if === '${{ !matrix.alpine }}' && step.run?.includes('build:server'))!;
+    expect(build.run).toContain('helper=(--signed-browser-helper "signed-browser-helpers/$BROWSER_HELPER_ARCH/browser.exe")');
+    expect(build.run).toMatch(/npm run build:server -- [^\n]*"\$\{helper\[@\]\}"/);
+    expect(build.run).toMatch(/verify-server-package\.mjs [^\n]*"\$\{helper\[@\]\}"/);
+  });
+});
+
 describe('desktopArtifactProblems', () => {
   it('passes a complete leg and ignores files that are not release artifacts', () => {
     const present = [...desktopArtifacts('win-x64', '2.0.0'), 'builder-debug.yml', 'builder-effective-config.yaml', 'win-unpacked'];
@@ -550,6 +589,7 @@ const limitedMinutes = (job: Job): number => job.steps.reduce((total, step) => t
 describe('the remote suites keep a hung run\'s report (docs/release.md "Time limits")', () => {
   const jobs: [string, Job][] = [
     ['pr.yml ssh', prWorkflow.jobs.ssh!],
+    ['pr.yml devcontainer', prWorkflow.jobs.devcontainer!],
     ['release.yml reference-e2e', workflow.jobs['reference-e2e']!],
     ['remote-e2e-nightly.yml windows-target', nightlyWorkflow.jobs['windows-target']!],
     ['remote-e2e-nightly.yml darwin-target', nightlyWorkflow.jobs['darwin-target']!],

@@ -18,12 +18,12 @@ vi.mock('electron', () => ({
   protocol: {},
 }));
 
-import { MAX_EDITOR_TEXT_CHARS, MAX_FORMAT_ERROR_CHARS, MAX_ID_LENGTH, SHELL_CHANNELS, type ShellChatList, type ShellState } from '../../preload/shell-channels';
+import { MAX_COPY_IN_PATH_LENGTH, MAX_COPY_IN_PATHS, MAX_EDITOR_LINK_CHARS, MAX_EDITOR_TEXT_CHARS, MAX_FORMAT_ERROR_CHARS, MAX_ID_LENGTH, SHELL_CHANNELS, type ShellChatList, type ShellState } from '../../preload/shell-channels';
 import { DEFAULT_SHELL_LAYOUT } from '../window-layout-store';
 import { MAX_PROJECT_KEY_LENGTH, parseRootKey, rootKey } from '../../preload/folder-root';
 import { parseFileDragPayload, serializeFileDragPayload } from '../../../shared/file-drag';
 import { SHELL_PAGE_URL, resolveAppRequest } from '../protocol';
-import { ShellHost, browserPageAreaToDip, chatName, chatTag, contentBoundsToDip, isShellId, parseTerminalCreate, reportFailure, shellHtml, shellPoint, type ShellActions } from '../shell';
+import { ShellHost, browserPageAreaToDip, chatName, chatTag, contentBoundsToDip, isShellId, parseFilesClipboardSet, parseFilesCopyIn, parseFilesDropRow, parseTerminalCreate, reportFailure, shellHtml, shellPoint, type ShellActions } from '../shell';
 import { MAX_TERMINAL_ATTACHMENT_CHARS, MAX_TERMINAL_ATTACHMENT_OMITTED_LINES } from '../../preload/terminal-attachment-cap';
 import {
   MAX_TERMINAL_GROUP_PANES,
@@ -32,6 +32,7 @@ import {
   MAX_TERMINAL_LINK_PATHS,
   MAX_TERMINAL_LINK_POSITION,
   MAX_TERMINAL_NAME_LENGTH,
+  MAX_TERMINAL_WEB_LINK_CHARS,
   TERMINAL_CHANNELS,
   isTerminalPasteChord,
 } from '../../preload/terminal-channels';
@@ -344,6 +345,55 @@ describe('ShellHost', () => {
     expect(vi.mocked(actions.openAsProject).mock.calls).toEqual([[{ projectKey: 'p', relativePath: 'src/api' }]]);
   });
 
+  it('takes the WSL and container calls only from the window page and only well-formed, passing exactly what they name', async () => {
+    actions.listWslDistros = vi.fn(async () => []);
+    actions.reopenInWsl = vi.fn(async () => ({ ok: true as const, projectKey: 'wsl+Ubuntu|/home/me/app' }));
+    actions.dismissWslNotice = vi.fn(async () => undefined);
+    actions.reopenInContainer = vi.fn(async () => ({ ok: true as const, projectKey: 'container+k|/workspaces/app' }));
+    actions.rebuildContainer = vi.fn(async () => undefined);
+    host();
+    const foreign = { sender: { id: 2 }, senderFrame: { url: SHELL_PAGE_URL, parent: null } };
+    const subframe = { sender: own.sender, senderFrame: { url: SHELL_PAGE_URL, parent: {} } };
+    const call = (channel: string, raw: unknown, sender: unknown = own): Promise<unknown> => Promise.resolve().then(() => ipc.handlers.get(channel)!(sender, raw));
+    const calls = [
+      [SHELL_CHANNELS.wslListDistros, {}],
+      [SHELL_CHANNELS.wslReopen, { projectKey: 'p', distro: 'Ubuntu' }],
+      [SHELL_CHANNELS.wslDismissNotice, { projectKey: 'p' }],
+      [SHELL_CHANNELS.containersReopen, { projectKey: 'p' }],
+      [SHELL_CHANNELS.containersRebuild, { projectKey: 'p' }],
+    ] as const;
+    for (const [channel, raw] of calls) {
+      for (const sender of [foreign, subframe]) await expect(call(channel, raw, sender), channel).rejects.toThrow('Rejected');
+    }
+    expect(actions.listWslDistros).not.toHaveBeenCalled();
+    expect(actions.reopenInWsl).not.toHaveBeenCalled();
+    expect(actions.dismissWslNotice).not.toHaveBeenCalled();
+    expect(actions.reopenInContainer).not.toHaveBeenCalled();
+    expect(actions.rebuildContainer).not.toHaveBeenCalled();
+
+    await expect(call(SHELL_CHANNELS.wslListDistros, {})).resolves.toEqual([]);
+    for (const raw of [undefined, null, 'list', { distro: 'Ubuntu' }]) await expect(call(SHELL_CHANNELS.wslListDistros, raw)).rejects.toThrow('Malformed');
+    expect(actions.listWslDistros).toHaveBeenCalledTimes(1);
+
+    await call(SHELL_CHANNELS.wslReopen, { projectKey: 'p' });
+    await call(SHELL_CHANNELS.wslReopen, { projectKey: 'p', distro: 'Ubuntu-24.04' });
+    // a distro name wsl.exe would read as an option, a path or nothing, an unknown field, a key out of bounds
+    for (const raw of [{ projectKey: 'p', distro: '-u' }, { projectKey: 'p', distro: '../x' }, { projectKey: 'p', distro: 'a b' }, { projectKey: 'p', distro: '' }, { projectKey: 'p', distro: 3 }, { projectKey: 'p', distro: 'Ubuntu', folder: '/' }, { projectKey: 'p', more: 1 }, { projectKey: '' }, { projectKey: 'x'.repeat(MAX_ID_LENGTH + 1) }, { distro: 'Ubuntu' }, 'p']) {
+      await expect(call(SHELL_CHANNELS.wslReopen, raw), JSON.stringify(raw)).rejects.toThrow('Malformed');
+    }
+    expect(vi.mocked(actions.reopenInWsl).mock.calls).toEqual([['p', undefined], ['p', 'Ubuntu-24.04']]);
+
+    for (const channel of [SHELL_CHANNELS.wslDismissNotice, SHELL_CHANNELS.containersReopen, SHELL_CHANNELS.containersRebuild]) {
+      await call(channel, { projectKey: 'p' });
+      for (const raw of [{ projectKey: '' }, { projectKey: 3 }, { projectKey: 'x'.repeat(MAX_ID_LENGTH + 1) }, { projectKey: 'p', distro: 'Ubuntu' }, {}, 'p', null]) {
+        await expect(call(channel, raw), `${channel} ${JSON.stringify(raw)}`).rejects.toThrow('Malformed');
+      }
+    }
+    expect(vi.mocked(actions.dismissWslNotice).mock.calls).toEqual([['p']]);
+    expect(vi.mocked(actions.reopenInContainer).mock.calls).toEqual([['p']]);
+    expect(vi.mocked(actions.rebuildContainer).mock.calls).toEqual([['p']]);
+  });
+
   it('runs only a known update action from the page, and pushes the update state once the page has loaded', async () => {
     actions.update = vi.fn(() => ({ state: { kind: 'idle' as const }, lastCheckedAt: null, platform: 'win32' as const }));
     actions.runUpdateAction = vi.fn(async () => undefined);
@@ -547,7 +597,7 @@ describe('editor, Files, layout and Quick Open channels', () => {
     ipc.listeners.clear();
     contents.removeAllListeners();
     lines = [];
-    editor = Object.fromEntries(['state', 'content', 'open', 'tab', 'edit', 'save', 'conflict', 'format', 'formatFailed', 'selection', 'mention', 'setFocusOverlay', 'flushed', 'clipboard'].map((name) => [name, vi.fn(async () => ({ ok: true }))]));
+    editor = Object.fromEntries(['state', 'content', 'open', 'tab', 'edit', 'save', 'conflict', 'format', 'formatFailed', 'openLink', 'selection', 'mention', 'setFocusOverlay', 'flushed', 'clipboard'].map((name) => [name, vi.fn(async () => ({ ok: true }))]));
     files = Object.fromEntries(['list', 'create', 'rename', 'delete', 'copyPath', 'reveal', 'mention'].map((name) => [name, vi.fn(async () => ({ ok: true }))]));
     actions = {
       editor,
@@ -657,6 +707,18 @@ describe('editor, Files, layout and Quick Open channels', () => {
     expect(lines).toContain('[shell] ignoring a malformed format failure');
   });
 
+  it('passes a web link clicked in an editor tab with the tab\'s id, bounded, and drops a malformed one or another page\'s', () => {
+    const url = `http://localhost:3000/${'a'.repeat(MAX_EDITOR_LINK_CHARS - 22)}`;
+    send(SHELL_CHANNELS.editorOpenLink, { tabId: 'tab-1', url }, foreign);
+    for (const payload of [{ tabId: 'tab-1', url: `${url}a` }, { tabId: 'tab-1', url: '' }, { tabId: 'x'.repeat(MAX_ID_LENGTH + 1), url }, { tabId: 'tab-1', url, projectKey: 'ssh+h|/srv' }, { tabId: 'tab-1', url: 7 }, null]) {
+      send(SHELL_CHANNELS.editorOpenLink, payload);
+    }
+    expect(editor['openLink']).not.toHaveBeenCalled();
+    send(SHELL_CHANNELS.editorOpenLink, { tabId: 'tab-1', url });
+    expect(editor['openLink']).toHaveBeenCalledWith({ tabId: 'tab-1', url });
+    expect(lines).toContain('[shell] ignoring a malformed editor link');
+  });
+
   it('has no channel through which the page could run cut, copy or paste itself', () => {
     expect([...ipc.handlers.keys(), ...ipc.listeners.keys()].filter((channel) => /clipboard/i.test(channel))).toEqual([]);
   });
@@ -715,7 +777,7 @@ describe('terminal channels', () => {
     contents.paste.mockClear();
     lines = [];
     terminal = Object.fromEntries([
-      'state', 'create', 'openNew', 'input', 'resize', 'ack', 'kill', 'restart', 'select', 'split', 'unsplit', 'resizePanes', 'setListWidth', 'shellLoaded', 'paste', 'setInputFocused', 'openLink', 'rename', 'pickIcon', 'pickColor', 'selectDefaultProfile',
+      'state', 'create', 'openNew', 'input', 'resize', 'ack', 'kill', 'restart', 'select', 'split', 'unsplit', 'resizePanes', 'setListWidth', 'shellLoaded', 'paste', 'setInputFocused', 'openLink', 'openWebLink', 'rename', 'pickIcon', 'pickColor', 'selectDefaultProfile',
     ].map((name) => [name, vi.fn(() => ({ ok: true, id: 'term-1' }))]));
     terminal['resolveLinks'] = vi.fn(async () => ['file']);
     terminal['has'] = vi.fn((id: string) => id === 'term-1');
@@ -758,6 +820,16 @@ describe('terminal channels', () => {
       [{ profileId: 'wsl:Ubuntu', target: { project: 'c:\\work\\alpha' } }],
       [{ profileId: 'pwsh', target: { home: true } }],
     ]);
+  });
+
+  it('passes a clicked web link with its terminal id, bounded, and drops a malformed one', () => {
+    const url = `https://example.test/${'a'.repeat(MAX_TERMINAL_WEB_LINK_CHARS - 21)}`;
+    for (const payload of [{ id: 'term-1', url: `${url}a` }, { id: 'term-1', url: '' }, { id: '../term-1', url: 'https://example.test/' }, { id: 'term-1', url: 'https://example.test/', path: 'x' }, { id: 'term-1', url: 7 }]) {
+      send(TERMINAL_CHANNELS.openWebLink, payload);
+    }
+    expect(terminal['openWebLink']).not.toHaveBeenCalled();
+    send(TERMINAL_CHANNELS.openWebLink, { id: 'term-1', url });
+    expect(terminal['openWebLink']).toHaveBeenCalledWith({ id: 'term-1', url });
   });
 
   it('bounds input, resize, ack, ids and the list width, dropping and logging a malformed payload', () => {
@@ -1119,5 +1191,36 @@ describe('ShellHost source control channels', () => {
     for (const action of [...Object.values(scm), ...Object.values(review)]) expect(action).not.toHaveBeenCalled();
     await ipc.handlers.get(SCM_CHANNELS.commitInput)!(own, { repoId: 'repo-1' });
     expect(scm['commitInput']).toHaveBeenCalledWith({ repoId: 'repo-1' });
+  });
+});
+
+describe('Files transfer payloads', () => {
+  it('takes a copy-in with exactly its fields and bounded paths, and refuses anything else', () => {
+    const request = { projectKey: 'p', relativeDir: 'src', paths: ['/a', '/b'], withoutPath: 1, origin: 'drop' };
+    expect(parseFilesCopyIn(request)).toEqual(request);
+    expect(parseFilesCopyIn({ ...request, relativeDir: '' })).toEqual({ ...request, relativeDir: '' });
+    for (const bad of [
+      { ...request, extra: 1 },
+      { ...request, relativeDir: '../x' },
+      { ...request, paths: [''] },
+      { ...request, paths: ['x'.repeat(MAX_COPY_IN_PATH_LENGTH + 1)] },
+      { ...request, paths: '/a' },
+      { ...request, withoutPath: -1 },
+      { ...request, withoutPath: 1.5 },
+      { ...request, origin: 'target' },
+    ]) expect(parseFilesCopyIn(bad), JSON.stringify(bad).slice(0, 80)).toBeUndefined();
+    // a drop past MAX_COPY_IN_PATHS parses, so main can refuse it with a notice
+    expect(parseFilesCopyIn({ ...request, paths: Array.from({ length: MAX_COPY_IN_PATHS + 1 }, () => '/a') })?.paths).toHaveLength(MAX_COPY_IN_PATHS + 1);
+  });
+
+  it('takes a row drop and a clipboard set with exact file refs only', () => {
+    const from = { projectKey: 'p', relativePath: 'src/app.ts' };
+    expect(parseFilesDropRow({ from, toDir: { projectKey: 'p', relativePath: '' }, copy: false })).toEqual({ from, toDir: { projectKey: 'p', relativePath: '' }, copy: false });
+    expect(parseFilesDropRow({ from: { ...from, relativePath: '' }, toDir: from, copy: false })).toBeUndefined();
+    expect(parseFilesDropRow({ from: { ...from, extra: 1 }, toDir: from, copy: true })).toBeUndefined();
+    expect(parseFilesDropRow({ from, toDir: from, copy: 'yes' })).toBeUndefined();
+    expect(parseFilesClipboardSet({ op: 'cut', ref: from })).toEqual({ op: 'cut', ref: from });
+    expect(parseFilesClipboardSet({ op: 'move', ref: from })).toBeUndefined();
+    expect(parseFilesClipboardSet({ op: 'copy', ref: { ...from, relativePath: '' } })).toBeUndefined();
   });
 });

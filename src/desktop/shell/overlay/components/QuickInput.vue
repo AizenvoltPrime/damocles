@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue';
 import type { Component } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { CircleAlert, Cloud, CornerDownLeft, FilePen, Folder, GitBranchPlus, LockKeyhole, Tag, TextCursorInput } from 'lucide-vue-next';
+import { ArrowLeftRight, CircleAlert, Cloud, CornerDownLeft, FilePen, Folder, GitBranchPlus, Laptop, LockKeyhole, Tag, TextCursorInput } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import { inputProblem, MAX_INPUT_VALUE_LENGTH, type InputValidation } from '@shared/input-validation';
 import type { InputBrowseResult, OverlayAnswer, OverlayRequest } from '../../../preload/overlay-channels';
@@ -18,7 +18,7 @@ const props = defineProps<{
 const emit = defineEmits<{ answer: [answer: OverlayAnswer] }>();
 const { t } = useI18n();
 
-const ICONS: Readonly<Record<InputValidation, Component>> = { branchName: GitBranchPlus, path: FilePen, remoteName: Cloud, tagName: Tag };
+const ICONS: Readonly<Record<InputValidation, Component>> = { branchName: GitBranchPlus, path: FilePen, remoteName: Cloud, tagName: Tag, portTarget: ArrowLeftRight, localPort: Laptop };
 
 const value = ref(props.request.password ? '' : props.request.value ?? '');
 // A prompt can carry text another program wrote, so its control and bidi characters show as escapes.
@@ -35,13 +35,16 @@ const messageId = useId();
 const problem = computed(() => (props.request.validation ? inputProblem(props.request.validation, value.value, { windows: props.platform === 'win32' }) : undefined));
 // the browse button's call failed, which the message line says until the next edit
 const browseFailed = ref(false);
+// main refused the last answer of this box; it says why until the next edit
+const refusal = ref(props.request.error);
 const problemText = computed(() => {
   const current = touched.value ? problem.value : undefined;
   if (!current) return '';
   return current.code === 'char' ? t('quickInput.invalid.char', { char: current.char }) : t(`quickInput.invalid.${current.code}`);
 });
 // what the line under the box says in place of the prompt
-const messageText = computed(() => (browseFailed.value ? t('quickInput.browseFailed') : problemText.value));
+const messageText = computed(() => (browseFailed.value ? t('quickInput.browseFailed') : refusal.value ?? problemText.value));
+const invalid = computed(() => problemText.value !== '' || refusal.value !== undefined);
 
 // set once the box answered or left, so a browse result arriving later is dropped
 let ended = false;
@@ -156,7 +159,7 @@ onMounted(() => {
     </p>
     <label
       class="flex h-8 shrink-0 items-center gap-2 rounded-lg border border-(--d-accent) bg-(--d-input) px-2.5 shadow-[0_0_0_3px_var(--d-accent-soft)] transition-[border-color,box-shadow] duration-150 data-invalid:border-(--d-danger) data-invalid:shadow-[0_0_0_3px_color-mix(in_srgb,var(--d-danger)_16%,transparent)]"
-      :data-invalid="problemText ? '' : undefined"
+      :data-invalid="invalid ? '' : undefined"
     >
       <component
         :is="request.password ? LockKeyhole : request.validation ? ICONS[request.validation] : TextCursorInput"
@@ -174,13 +177,13 @@ onMounted(() => {
         autocorrect="off"
         data-testid="quick-input-field"
         :aria-label="request.title ?? prompt"
-        :aria-invalid="problemText ? 'true' : 'false'"
+        :aria-invalid="invalid ? 'true' : 'false'"
         :aria-describedby="messageId"
         :placeholder="request.placeholder"
         :maxlength="MAX_INPUT_VALUE_LENGTH"
         class="min-w-0 flex-1 border-0 bg-transparent text-(--d-text) outline-none placeholder:text-(--d-faint)"
         :class="request.validation ? 'font-mono text-12.5' : 'text-13'"
-        @input="touched = true; browseFailed = false"
+        @input="touched = true; browseFailed = false; refusal = undefined"
         @keydown="onKeydown"
       >
       <Button
@@ -218,7 +221,7 @@ onMounted(() => {
           v-if="messageText"
           :key="`${messageText}:${refusals}`"
           data-testid="quick-input-problem"
-          :data-code="browseFailed ? 'browseFailed' : problem?.code"
+          :data-code="browseFailed ? 'browseFailed' : refusal !== undefined ? 'refused' : problem?.code"
           class="min-w-0 text-(--d-danger-text) [grid-area:1/1]"
         >
           <span class="flex items-start gap-1.5"><CircleAlert

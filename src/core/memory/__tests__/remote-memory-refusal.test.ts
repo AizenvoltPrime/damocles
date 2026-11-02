@@ -27,13 +27,18 @@ import { MemoryService } from '../index';
 import { createFakePlatform, type FakeFileWatcherFactory } from '../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { installPlatform } from '../../platform-host';
-import { USER_SCOPE_UNAVAILABLE } from '../../../shared/remote-user';
-import { globalMemoryUnavailableReason } from '../../user-scope';
+import { CREDENTIAL_CLIENT_ABSENT, USER_SCOPE_UNAVAILABLE } from '../../../shared/remote-user';
+import { globalMemoryChangeReason, globalMemoryClosedReason, globalMemoryReadReason, globalMemoryUnavailableReason } from '../../user-scope';
+import { buildMemoryPiTools } from '../../pi-session/tools/memory-tools';
+import type { PiCodingAgentModule } from '../../pi-session/pi-loader';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { englishText } from '../../../shared/localized-text';
 import { createTestDbPath } from './test-helpers';
 import { applyDecaySweep, promoteEpisodes, purgeForgottenRows, EPISODE_PROMOTE_ACCESS } from '../dedup-decay';
 import { getUnexpandedMemoryRows } from '../database';
-import { gradesToProposals } from '../audit';
+import { beginAuditRun, gradesToProposals, runAudit, type AuditRunDeps } from '../audit';
 import { QUALITY_AUDIT_FORGET_REASON } from '../../../shared/types/memory-audit';
 import { readLiveInjections } from '../../pi-session/live-injections';
 import type { DatabaseInstance, MemoryRow } from '../types';
@@ -41,11 +46,14 @@ import type { MemoryWriteQueue } from '../write-queue';
 import type { FactGraphManager } from '../managers/fact-graph-manager';
 import type { ObservationManager } from '../managers/observation-manager';
 import type { FileChangeTracker } from '../managers/file-change-tracker';
+import type { ProfileManager } from '../managers/profile-manager';
 
-// On a daemon's core global memory is the client's, so it is refused with the coded reason and never written here.
+// On a daemon's core global memory is the client's: it relays there or waits in the client's outbox, and is never written here.
 const WORKSPACE = '/srv/app';
 let service: MemoryService;
 let fileWatchers: FakeFileWatcherFactory;
+let fake: ReturnType<typeof createFakeRemoteHost>;
+let outboxDir: string;
 
 const globalRows = (): number => {
   const raw = new DatabaseSync(dbHolder.path);
@@ -58,10 +66,12 @@ const globalRows = (): number => {
 
 beforeEach(async () => {
   dbHolder.path = createTestDbPath();
-  const platform = { ...createFakePlatform(), remote: createFakeRemoteHost().remote };
+  fake = createFakeRemoteHost();
+  const platform = { ...createFakePlatform(), remote: fake.remote };
   fileWatchers = platform.fileWatchers;
   installPlatform(platform);
-  service = new MemoryService(platform);
+  outboxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'outbox-'));
+  service = new MemoryService({ ...platform, outboxDir });
   service.setWorkspaceRoots([WORKSPACE]);
   await service.ensureInitialized();
 });
@@ -69,12 +79,24 @@ beforeEach(async () => {
 afterEach(async () => {
   await service.dispose();
   installPlatform(createFakePlatform());
+  fs.rmSync(outboxDir, { recursive: true, force: true });
 });
 
 describe('global memory on a daemon\'s core', () => {
-  it('refuses a global save and a note with the user-scope reason, and writes no global row', async () => {
-    await expect(service.saveMemory({ content: 'the user prefers tabs', kind: 'preference', scope: 'global' })).rejects.toThrow(USER_SCOPE_UNAVAILABLE);
-    await expect(service.addNote('a note')).rejects.toThrow(USER_SCOPE_UNAVAILABLE);
+  it('writes a global save and a note on the attached client, and no global row here', async () => {
+    const saved = await service.saveMemory({ content: 'the user prefers tabs', kind: 'preference', scope: 'global' });
+    await service.addNote('a note');
+    const writes = vi.mocked(fake.remote.memoryApply).mock.calls.map(([clientId, entries]) => [clientId, entries.map((entry) => [entry.write.kind, entry.write.content])]);
+    expect(writes).toEqual([['client-a', [['preference', 'the user prefers tabs']]], ['client-a', [['note', 'a note']]]]);
+    expect(saved?.id).toBe(`global:client-a:${vi.mocked(fake.remote.memoryApply).mock.calls[0]![1][0]!.write.uuid}`);
+    expect(globalRows()).toBe(0);
+  });
+
+  it('holds a global save in the client\'s outbox while the client is away, and no global row here', async () => {
+    fake.set('clientAuth', 'client-a', undefined);
+    await service.saveMemory({ content: 'the user prefers tabs', kind: 'preference', scope: 'global' });
+    expect(fake.remote.memoryApply).not.toHaveBeenCalled();
+    expect(fs.readFileSync(path.join(outboxDir, 'client-a.jsonl'), 'utf8')).toContain('the user prefers tabs');
     expect(globalRows()).toBe(0);
   });
 
@@ -109,13 +131,14 @@ describe('global memory on a daemon\'s core', () => {
     expect(globalRows()).toBe(1);
   });
 
-  it('refuses a global-only search and reads no global row the target already holds', async () => {
+  it('answers a global-only search with the closed reason while no client is attached, and reads no global row the target holds', async () => {
     const raw = new DatabaseSync(dbHolder.path);
     const now = Date.now();
     raw.prepare("INSERT INTO memories (id, scope, kind, content, content_hash, created_at, updated_at) VALUES (?, 'global', 'fact', 'kiwi orchard notes', 'h1', ?, ?)").run(crypto.randomUUID(), now, now);
     raw.close();
     await service.saveMemory({ content: 'kiwi build cache', kind: 'fact', scope: 'project', workspace: WORKSPACE });
-    await expect(service.searchMemories({ query: 'kiwi', tiers: ['global'] })).rejects.toThrow(USER_SCOPE_UNAVAILABLE);
+    fake.set('clientAuth', 'client-a', undefined);
+    await expect(service.searchMemories({ query: 'kiwi', tiers: ['global'] })).rejects.toThrow(englishText(globalMemoryClosedReason()));
     const results = await service.searchMemories({ query: 'kiwi', workspace: WORKSPACE });
     expect(results.map((result) => result.tier)).toEqual(['project']);
     expect(service.getPanelMemories(null, WORKSPACE).map((entry) => entry.scope)).toEqual(['project']);
@@ -187,6 +210,69 @@ describe('global memory on a daemon\'s core', () => {
     it('gives a search the project results it asks for, with no global row taking a slot', async () => {
       const results = await service.searchMemories({ query: 'kiwi', workspace: WORKSPACE, limit: 1 });
       expect(results.map((result) => result.id)).toEqual([projectId]);
+    });
+  });
+
+  describe('a relayed global id, which names a row of the client', () => {
+    const relayed = `global:client-a:${crypto.randomUUID()}`;
+    const reason = englishText(globalMemoryChangeReason());
+    let target: string;
+    const state = (): Record<string, unknown> => {
+      const raw = new DatabaseSync(dbHolder.path);
+      try {
+        return raw.prepare('SELECT content, forgotten, pinned FROM memories WHERE id = ?').get(target) as Record<string, unknown>;
+      } finally {
+        raw.close();
+      }
+    };
+
+    beforeEach(async () => {
+      // a target row the content match of "global" would hit
+      target = (await service.saveMemory({ content: 'the global npm install lives in /usr/local', kind: 'fact', scope: 'project', workspace: WORKSPACE }))!.id;
+    });
+
+    afterEach(() => {
+      expect(state()).toEqual({ content: 'the global npm install lives in /usr/local', forgotten: 0, pinned: 0 });
+    });
+
+    it('forgets nothing on the target and answers the reason', async () => {
+      await expect(service.forgetMemory(relayed, 'chain')).rejects.toThrow(reason);
+      await expect(service.forgetMemory(relayed, 'version', true)).rejects.toThrow(reason);
+    });
+
+    it('edits nothing and answers the reason', async () => {
+      await expect(service.updateMemory(relayed, 'rewritten')).rejects.toThrow(reason);
+    });
+
+    it('restores nothing and answers the reason', async () => {
+      await expect(service.unforgetMemory(relayed)).rejects.toThrow(reason);
+    });
+
+    it('pins and unpins nothing and answers the reason', async () => {
+      await expect(service.pinMemory(relayed)).rejects.toThrow(reason);
+      await expect(service.unpinMemory(relayed)).rejects.toThrow(reason);
+    });
+
+    it('answers its history with the reason to look at it on the computer', () => {
+      expect(() => service.getMemoryHistory(relayed)).toThrow(englishText(globalMemoryReadReason()));
+    });
+
+    it('answers its neighbours with the reason to look at it on the computer', () => {
+      expect(() => service.getRelatedMemories(relayed)).toThrow(englishText(globalMemoryReadReason()));
+    });
+
+    it('resets no staleness and answers the reason', async () => {
+      await expect(service.resetObservationStaleness(relayed)).rejects.toThrow(reason);
+    });
+
+    it('deletes nothing and answers the reason', async () => {
+      await expect(service.deleteMemory(relayed)).rejects.toThrow(reason);
+    });
+
+    it('answers the model\'s forget_memory with the reason', async () => {
+      const tools = buildMemoryPiTools({ pi: { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule, memoryService: service, getSessionId: () => 'sess-1', workspace: WORKSPACE }) as unknown as Array<{ name: string; execute: (id: string, input: Record<string, unknown>) => Promise<unknown> }>;
+      const forget = tools.find((tool) => tool.name === 'ForgetMemory')!;
+      await expect(forget.execute('call-1', { target: relayed })).rejects.toThrow(reason);
     });
   });
 
@@ -319,6 +405,14 @@ describe('global memory on a daemon\'s core', () => {
       expect(result?.mentionedIds).toEqual([oldVersion]);
     });
 
+    it('injects only the project rows this target pins, never a global row it holds pinned', async () => {
+      insertMemory({ scope: 'global', pinned: 1, content: 'kiwi pinned global' });
+      insertMemory({ scope: 'project', workspace: WORKSPACE, pinned: 1, content: 'kiwi pinned project' });
+      const result = await service.buildInjectionContext({ sessionId: null, workspace: WORKSPACE, activeFile: null, prompt: 'unrelated words', live: readLiveInjections([]), promptIndex: 0 });
+      expect(result?.text).toContain('kiwi pinned project');
+      expect(result?.text).not.toContain('kiwi pinned global');
+    });
+
     describe('the quality audit', () => {
       let project: string;
       let global: string;
@@ -357,9 +451,98 @@ describe('global memory on a daemon\'s core', () => {
         expect(service.getAuditSummary()?.eligibleCount).toBe(1);
       });
 
-      it('proposes no rescope to global', () => {
-        const grades = { grades: [{ id: project, verdict: 'rescope', targetScope: 'global', reason: 'r' }] };
-        expect(gradesToProposals([row(project)!], grades, [WORKSPACE])).toEqual([]);
+      describe('a rescope to global', () => {
+        const auditInternals = (): Internals & { profileManager: ProfileManager } => service as unknown as Internals & { profileManager: ProfileManager };
+        const globals = (): { drain(clientId: string): Promise<void> } => (service as unknown as { globals: { drain(clientId: string): Promise<void> } }).globals;
+        const outbox = (): string => fs.readFileSync(path.join(outboxDir, 'client-a.jsonl'), 'utf8');
+        const rescope = (): string => insertProposal(memoryProposal(project, 'rescope_global', { row: state('project'), toClient: true }));
+
+        it('is proposed, and recorded as a write to the accepting client', async () => {
+          const grades = { grades: [{ id: project, verdict: 'rescope', targetScope: 'global', reason: 'about the user' }] };
+          expect(gradesToProposals([row(project)!], grades, [WORKSPACE])).toMatchObject([{ action: 'rescope_global' }]);
+          const { db, writeQueue, profileManager } = auditInternals();
+          const deps: AuditRunDeps = { db, writeQueue, profileManager, runner: { run: async <T>() => ({ value: grades as T }) }, holder: 'this-core', knownWorkspaces: [WORKSPACE] };
+          const plan = await beginAuditRun(deps);
+          await runAudit(deps, plan!, new AbortController().signal, () => {});
+          const proposal = raw((db) => db.prepare("SELECT before_state FROM memory_audit_proposals WHERE action = 'rescope_global' AND run_id = ?").get(plan!.runId)) as { before_state: string };
+          expect(JSON.parse(proposal.before_state)).toMatchObject({ toClient: true, row: { scope: 'project' } });
+          expect((await service.getAuditState())?.proposals).toMatchObject([{ action: 'rescope_global', memoryId: project, status: 'pending' }]);
+        });
+
+        it('writes the row on the attached client under the proposal\'s id and forgets the target\'s chain', async () => {
+          const before = globalRows();
+          const id = rescope();
+          expect(await service.applyAudit('run-1', [id], [])).toEqual({ applied: 1, stale: 0, rejected: 0 });
+          expect(vi.mocked(fake.remote.memoryApply).mock.calls).toEqual([['client-a', [{ end: 0, write: { uuid: id, kind: 'fact', content: `memory ${project}` } }]]]);
+          expect(row(project)).toMatchObject({ scope: 'project', forgotten: 1, forget_reason: QUALITY_AUDIT_FORGET_REASON });
+          expect(row(sibling)?.forgotten).toBe(0);
+          expect(globalRows()).toBe(before);
+          expect((await service.getAuditState())?.proposals).toMatchObject([{ id, status: 'applied' }]);
+        });
+
+        it('queues the row in the client\'s outbox while the client is away and forgets the target\'s chain', async () => {
+          fake.set('clientAuth', 'client-a', undefined);
+          const id = rescope();
+          expect(await service.applyAudit('run-1', [id], [])).toEqual({ applied: 1, stale: 0, rejected: 0 });
+          expect(fake.remote.memoryApply).not.toHaveBeenCalled();
+          expect(outbox().trim().split('\n').map((line) => JSON.parse(line) as unknown)).toEqual([{ uuid: id, kind: 'fact', content: `memory ${project}` }]);
+          expect(row(project)).toMatchObject({ forgotten: 1, forget_reason: QUALITY_AUDIT_FORGET_REASON });
+        });
+
+        it('reaches the client once however often it is applied and however its drain is cut', async () => {
+          fake.set('clientAuth', 'client-a', undefined);
+          const id = rescope();
+          const results = await Promise.all([service.applyAudit('run-1', [id], []), service.applyAudit('run-1', [id], [])]);
+          expect(results.sort((a, b) => a.applied - b.applied)).toEqual([{ applied: 0, stale: 0, rejected: 0 }, { applied: 1, stale: 0, rejected: 0 }]);
+          // the client applies each uuid once, as memory_applied_writes makes it; the first drain is cut before its acknowledgement
+          const applied = new Map<string, string>();
+          let cut = true;
+          vi.mocked(fake.remote.memoryApply).mockImplementation(async (_clientId, entries) => {
+            for (const entry of entries) if (!applied.has(entry.write.uuid)) applied.set(entry.write.uuid, entry.write.content);
+            if (cut) {
+              cut = false;
+              fake.set('clientAuth', 'client-a', undefined);
+              throw new Error(CREDENTIAL_CLIENT_ABSENT);
+            }
+            return { through: entries.at(-1)!.end };
+          });
+          fake.set('clientAuth', 'client-a', { providers: {} });
+          await globals().drain('client-a');
+          expect(outbox()).toContain(id);
+          fake.set('clientAuth', 'client-a', { providers: {} });
+          await globals().drain('client-a');
+          expect(vi.mocked(fake.remote.memoryApply)).toHaveBeenCalledTimes(2);
+          expect([...applied]).toEqual([[id, `memory ${project}`]]);
+          expect(fs.existsSync(path.join(outboxDir, 'client-a.jsonl'))).toBe(false);
+        });
+
+        it('records only the client and whether the write was queued as where it went', async () => {
+          const id = rescope();
+          await service.applyAudit('run-1', [id], []);
+          const proposal = raw((db) => db.prepare('SELECT before_state FROM memory_audit_proposals WHERE id = ?').get(id)) as { before_state: string };
+          expect((JSON.parse(proposal.before_state) as { wroteTo: unknown }).wroteTo).toEqual({ clientId: 'client-a', queued: false });
+        });
+
+        it('counts a proposal whose write the client refused as failed, keeps it pending, and applies the rest', async () => {
+          const refused = rescope();
+          const other = insertMemory({ scope: 'project', workspace: WORKSPACE, created_at: now, updated_at: now });
+          const accepted = insertProposal(memoryProposal(other, 'rescope_global', { row: state('project'), toClient: true }));
+          vi.mocked(fake.remote.memoryApply).mockRejectedValueOnce(new Error('the client refused the write'));
+          expect(await service.applyAudit('run-1', [refused, accepted], [])).toEqual({ applied: 1, stale: 0, rejected: 0, failed: 1 });
+          expect((await service.getAuditState())?.proposals).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: refused, status: 'pending' }),
+            expect.objectContaining({ id: accepted, status: 'applied' }),
+          ]));
+          expect(row(project)?.forgotten).toBe(0);
+          expect(row(other)?.forgotten).toBe(1);
+        });
+
+        it('is left in place by a revert, since the row lives on the client now', async () => {
+          const id = rescope();
+          await service.applyAudit('run-1', [id], []);
+          expect(await service.revertAudit('run-1')).toEqual({ reverted: 0, skipped: 1 });
+          expect(row(project)?.forgotten).toBe(1);
+        });
       });
 
       it('shows, counts and applies only another core\'s proposals that touch no global row or profile', async () => {

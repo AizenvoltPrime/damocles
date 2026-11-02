@@ -255,7 +255,7 @@ export class RemoteCore {
     const client = new CoreClient(endpoint, (view, attach) => services.adopt(view, attach), authorityProjectKeys(authority, (error) => connection.close(error.message)));
     const closed = connection.onClose((reason) => end(`the connection closed: ${reason}`));
     // a delta published before the attach opens waits in the transport, after the values the attach names
-    const relayed = this.deps.relays.attach((topic, value) => endpoint.publish(topic, { value } as MirrorTopics[typeof topic]), this.deps.authority, this.deps.sharedLoopback);
+    const relayed = this.deps.relays.attach((topic, value) => endpoint.publish(topic, { value } as MirrorTopics[typeof topic]), this.deps.authority, this.deps.sharedLoopback, connection.features);
     subscriptions = [relayed.subscription, ...this.deps.subscribe(client)];
     const mirrors = services.init.mirrors;
     const payload: CoreAttach = {

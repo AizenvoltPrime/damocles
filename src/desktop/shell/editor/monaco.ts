@@ -64,6 +64,22 @@ jsonDefaults.setDiagnosticsOptions({
 
 const monacoApi = useMonaco();
 monacoApi.languages.register({ id: SEARCH_RESULT_LANGUAGE_ID });
+
+// A web link an editor opens (Ctrl+click) goes to main through the handler the editor store sets, never through window.open,
+// which would open a target's loopback address unforwarded.
+let webLinkOpener: ((url: string) => void) | undefined;
+monacoApi.editor.registerLinkOpener({
+  open: (uri) => {
+    if (uri.scheme !== 'http' && uri.scheme !== 'https') return false;
+    webLinkOpener?.(uri.toString(true));
+    return true;
+  },
+});
+
+/** Where the editors' web links go: main, with the tab whose text holds the link. */
+export function setWebLinkOpener(open: (url: string) => void): void {
+  webLinkOpener = open;
+}
 monacoApi.languages.setMonarchTokensProvider(SEARCH_RESULT_LANGUAGE_ID, searchResultLanguage);
 
 /** The workers behind the built-in formatters; the JSON worker's typings omit the format method its provider calls. */

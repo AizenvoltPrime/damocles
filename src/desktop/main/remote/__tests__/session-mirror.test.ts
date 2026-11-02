@@ -3,13 +3,16 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { piSessionDir } from '../../../../core/pi-session/session-store/session-dir';
-import { syncMirror, type MirrorStream } from '../../../daemon/mirror-server';
-import type { MirrorChange, MirrorFile } from '../../../daemon/control-messages';
-import { isMirrorName, MIRROR_QUOTA_BYTES, mirrorPath, projectMirrorFolder, SessionMirror } from '../session-mirror';
+import { createMirrorWatches, syncMirror, syncSubcalls, type MirrorStream } from '../../../daemon/mirror-server';
+import type { FileWatcherFactory } from '../../../../platform/file-watcher';
+import type { RemoteConnection } from '../connection';
+import type { MirrorChange, MirrorFile, MirrorHeld, MirrorLedgerChange } from '../../../daemon/control-messages';
+import { MIRROR_CLOCK_FILE, MIRROR_SUBCALLS_FILE } from '../../../../shared/remote-mirror';
+import { connectionMirrorChannel, followMirrorChanges, frozenMirrorChannel, isMirrorName, MIRROR_CHANGED_FEATURE, MIRROR_QUOTA_BYTES, MIRROR_SUBCALLS_FEATURE, mirrorPath, projectMirrorFolder, SessionMirror, type MirrorChannel } from '../session-mirror';
 
-// The daemon's own syncMirror over an in-memory stream hub that delivers like the connection's inbox: buffered from the
-// open until claimed, in order, then ended.
-function daemon(agentDir: string) {
+// The daemon's own syncMirror and syncSubcalls over an in-memory stream hub that delivers like the connection's inbox:
+// buffered from the open until claimed, in order, then ended.
+function daemon(agentDir: string, ledgerPath = path.join(agentDir, '..', 'usage', 'subcalls.jsonl')) {
   const streams = new Map<number, { chunks: Uint8Array[]; ended: boolean; sink?: (chunk: Uint8Array | null) => void }>();
   let next = 2;
   const slot = (id: number) => {
@@ -28,18 +31,28 @@ function daemon(agentDir: string) {
   };
   const requests: Array<{ projectKey: string; budgetBytes: number; files: readonly MirrorFile[] }> = [];
   const answers: Array<readonly MirrorChange[]> = [];
+  const ledgerRequests: Array<{ budgetBytes: number; held?: MirrorHeld }> = [];
+  const ledgerAnswers: Array<MirrorLedgerChange | undefined> = [];
+  const streamDeps = {
+    reserveStream: () => (next += 2),
+    openStream: (id: number): MirrorStream => ({ id, closed: false, write: (bytes) => { push(id, Uint8Array.from(bytes)); return true; }, end: () => push(id, null), onDrain: () => undefined }),
+    drained: () => Promise.resolve(),
+    log: () => undefined,
+  };
   return {
     requests,
     answers,
+    ledgerRequests,
+    ledgerAnswers,
+    syncSubcalls: async (request: { readonly budgetBytes: number; readonly held?: MirrorHeld }) => {
+      ledgerRequests.push({ ...request });
+      const answer = await syncSubcalls({ ...streamDeps, ledgerPath }, request);
+      ledgerAnswers.push(answer.change);
+      return answer;
+    },
     sync: async (request: { readonly projectKey: string; readonly budgetBytes: number; readonly files: readonly MirrorFile[] }) => {
       requests.push({ ...request });
-      const answer = await syncMirror({
-        agentDir,
-        reserveStream: () => (next += 2),
-        openStream: (id): MirrorStream => ({ id, closed: false, write: (bytes) => { push(id, Uint8Array.from(bytes)); return true; }, end: () => push(id, null), onDrain: () => undefined }),
-        drained: () => Promise.resolve(),
-        log: () => undefined,
-      }, request);
+      const answer = await syncMirror({ agentDir, ...streamDeps }, request);
       answers.push(answer.changes);
       return answer;
     },
@@ -304,6 +317,136 @@ describe('SessionMirror', () => {
   });
 });
 
+describe('the sub-call ledger in the session mirror', () => {
+  const ledgerPath = (): string => path.join(base, 'target', 'usage', 'subcalls.jsonl');
+  const writeLedger = (text: string): void => {
+    fs.mkdirSync(path.dirname(ledgerPath()), { recursive: true });
+    fs.writeFileSync(ledgerPath(), text);
+  };
+  const mirroredLedger = (): string => path.join(root, MIRROR_SUBCALLS_FILE);
+  const ledgerChannel = (target: ReturnType<typeof daemon>, extra: Partial<MirrorChannel> = {}): MirrorChannel => ({ sync: target.sync, receive: target.receive, syncSubcalls: target.syncSubcalls, ...extra });
+
+  it('copies the target\'s ledger to its fixed place under the root, then only appended bytes, the whole of a truncated one, and deletes it with the target\'s', async () => {
+    const target = daemon(agentDir, ledgerPath());
+    const mirror = new SessionMirror({ root, channel: () => ledgerChannel(target), log: () => undefined });
+    writeLedger('{"a":1}\n');
+    expect(await mirror.syncSubcalls(MIRROR_QUOTA_BYTES)).toBe(8);
+    expect(fs.readFileSync(mirroredLedger(), 'utf8')).toBe('{"a":1}\n');
+    fs.appendFileSync(ledgerPath(), '{"b":2}\n');
+    await mirror.syncSubcalls(MIRROR_QUOTA_BYTES);
+    expect(target.ledgerAnswers[1]).toEqual(expect.objectContaining({ kind: 'append', offset: 8, length: 8 }));
+    expect(fs.readFileSync(mirroredLedger(), 'utf8')).toBe('{"a":1}\n{"b":2}\n');
+    writeLedger('{"c":3}\n');
+    await mirror.syncSubcalls(MIRROR_QUOTA_BYTES);
+    expect(target.ledgerAnswers[2]).toEqual(expect.objectContaining({ kind: 'full', offset: 0, length: 8 }));
+    expect(fs.readFileSync(mirroredLedger(), 'utf8')).toBe('{"c":3}\n');
+    fs.rmSync(ledgerPath());
+    expect(await mirror.syncSubcalls(MIRROR_QUOTA_BYTES)).toBe(0);
+    expect(fs.existsSync(mirroredLedger())).toBe(false);
+  });
+
+  it('syncs the ledger first with the whole quota and leaves the projects what it holds, and syncs it with no project', async () => {
+    const target = daemon(agentDir, ledgerPath());
+    const sync = vi.fn(target.sync);
+    const mirror = new SessionMirror({ root, channel: () => ledgerChannel(target, { sync }), log: () => undefined });
+    writeLedger('x'.repeat(300));
+    await mirror.syncAll([projectKey]);
+    expect(target.ledgerRequests.map((request) => request.budgetBytes)).toEqual([MIRROR_QUOTA_BYTES]);
+    expect(sync.mock.calls.map(([request]) => request.budgetBytes)).toEqual([MIRROR_QUOTA_BYTES - 300]);
+    fs.appendFileSync(ledgerPath(), 'y');
+    await mirror.syncAll([]);
+    expect(fs.statSync(mirroredLedger()).size).toBe(301);
+  });
+
+  it('counts the ledger it holds against the quota while the daemon cannot sync it', async () => {
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, MIRROR_SUBCALLS_FILE), 'z'.repeat(500));
+    const target = daemon(agentDir);
+    const sync = vi.fn(target.sync);
+    const mirror = new SessionMirror({ root, channel: () => ({ sync, receive: target.receive }), log: () => undefined });
+    await mirror.syncAll([projectKey]);
+    expect(sync.mock.calls.map(([request]) => request.budgetBytes)).toEqual([MIRROR_QUOTA_BYTES - 500]);
+    expect(fs.readFileSync(path.join(root, MIRROR_SUBCALLS_FILE), 'utf8')).toBe('z'.repeat(500));
+  });
+
+  it('drops the ledger the daemon no longer keeps within the budget, and is not sent it again', async () => {
+    const target = daemon(agentDir, ledgerPath());
+    const mirror = new SessionMirror({ root, channel: () => ledgerChannel(target), log: () => undefined });
+    writeLedger('l'.repeat(200));
+    await mirror.syncSubcalls(1000);
+    await mirror.syncSubcalls(100);
+    expect(fs.existsSync(mirroredLedger())).toBe(false);
+    await mirror.syncSubcalls(100);
+    expect(target.ledgerAnswers).toEqual([expect.objectContaining({ kind: 'full' }), expect.objectContaining({ kind: 'deleted' }), undefined]);
+  });
+
+  it('writes nothing for a change past the budget or not starting at 0, drains its stream, and drops an append that does not follow what it holds', async () => {
+    const log = vi.fn();
+    const received: number[] = [];
+    const changes: MirrorLedgerChange[] = [
+      { kind: 'full', offset: 0, length: 101, stream: 2 },
+      { kind: 'full', offset: 5, length: 4, stream: 4 },
+      { kind: 'append', offset: 0, length: 4, stream: 6 },
+    ];
+    const mirror = new SessionMirror({
+      root,
+      channel: () => ({
+        sync: async () => ({ changes: [] }),
+        syncSubcalls: async () => ({ change: changes.shift()! }),
+        receive: async (stream, _max, onChunk) => {
+          received.push(stream);
+          await onChunk(new TextEncoder().encode('data'));
+          return 4;
+        },
+      }),
+      log,
+    });
+    await mirror.syncSubcalls(100);
+    await mirror.syncSubcalls(100);
+    expect(fs.existsSync(root)).toBe(false);
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(mirroredLedger(), 'held');
+    await mirror.syncSubcalls(100);
+    expect(received).toEqual([2, 4, 6]);
+    expect(fs.existsSync(mirroredLedger())).toBe(false);
+    expect(fs.readdirSync(root)).toEqual([]);
+    expect(log.mock.calls.map(([line]) => String(line))).toEqual([
+      expect.stringContaining('refused a full of 101 bytes at 0'),
+      expect.stringContaining('refused a full of 4 bytes at 5'),
+      expect.stringContaining('does not follow the 4 bytes held'),
+    ]);
+  });
+
+  it('records the clock skew of the channel it syncs over, rounded, before the ledger, and none for a daemon of another protocol', async () => {
+    const target = daemon(agentDir, ledgerPath());
+    let skewMs: number | undefined = 600_000.4;
+    const mirror = new SessionMirror({ root, channel: () => ({ ...ledgerChannel(target), ...(skewMs !== undefined ? { skewMs } : {}) }), log: () => undefined });
+    await mirror.syncAll([]);
+    expect(JSON.parse(fs.readFileSync(path.join(root, MIRROR_CLOCK_FILE), 'utf8'))).toEqual({ skewMs: 600_000 });
+    skewMs = -600_000;
+    await mirror.syncAll([]);
+    expect(JSON.parse(fs.readFileSync(path.join(root, MIRROR_CLOCK_FILE), 'utf8'))).toEqual({ skewMs: -600_000 });
+    skewMs = undefined;
+    await mirror.syncAll([]);
+    expect(JSON.parse(fs.readFileSync(path.join(root, MIRROR_CLOCK_FILE), 'utf8'))).toEqual({ skewMs: -600_000 });
+    expect(fs.readdirSync(root).sort()).toEqual([MIRROR_CLOCK_FILE]);
+  });
+
+  it('syncs the ledger and carries the skew only over a connection whose daemon lists mirror.subcalls', async () => {
+    const request = vi.fn(async () => ({}));
+    const connection = (features: readonly string[]) => ({ features, skewMs: 1234, control: { request }, receiveStream: async () => 0 }) as unknown as Parameters<typeof connectionMirrorChannel>[0];
+    const listed = connectionMirrorChannel(connection([MIRROR_SUBCALLS_FEATURE]));
+    expect(listed.skewMs).toBe(1234);
+    await listed.syncSubcalls!({ budgetBytes: 10 });
+    expect(request).toHaveBeenCalledWith('mirror.syncSubcalls', { budgetBytes: 10 });
+    const unlisted = connectionMirrorChannel(connection([]));
+    expect(unlisted.syncSubcalls).toBeUndefined();
+    expect(unlisted.skewMs).toBe(1234);
+    const frozen = frozenMirrorChannel({ control: { request }, receiveStream: async () => 0 } as unknown as Parameters<typeof frozenMirrorChannel>[0]);
+    expect([frozen.syncSubcalls, frozen.skewMs]).toEqual([undefined, undefined]);
+  });
+});
+
 describe('SessionMirror.schedule', () => {
   it('coalesces requests made during a sync into one more sync that reads the projects anew, and idle settles after it', async () => {
     const target = daemon(agentDir);
@@ -362,5 +505,76 @@ describe('SessionMirror.schedule', () => {
     release();
     await first;
     expect(sync.mock.calls.map(([request]) => request.projectKey)).toEqual([projectKey, '/srv/b', projectKey]);
+  });
+});
+
+describe('following the daemon\'s mirror.changed', () => {
+  // the daemon's own mirror watches over a watcher factory the test fires, and the connection's control events
+  function followedHost(features: readonly string[]) {
+    const target = daemon(agentDir);
+    const watchers: Array<{ base: string; change: Array<(fsPath: string) => void> }> = [];
+    const factory: FileWatcherFactory = {
+      watch: (base) => {
+        const entry = { base, change: [] as Array<(fsPath: string) => void> };
+        watchers.push(entry);
+        const none = () => ({ dispose: () => undefined });
+        return { ready: Promise.resolve(), onDidCreate: none, onDidDelete: none, onDidChange: (cb) => { entry.change.push(cb); return { dispose: () => undefined }; }, dispose: () => undefined };
+      },
+      watchWorkspace: () => { throw new Error('no workspace watch in this test'); },
+      onDidRenameFiles: () => ({ dispose: () => undefined }),
+    };
+    const watches = createMirrorWatches({ agentDir, ledgerPath: path.join(base, 'target', 'usage', 'subcalls.jsonl'), watchers: factory });
+    const listeners = new Set<(event: { projectKey: string }) => void>();
+    const connection = {
+      features,
+      control: { onEvent: (_name: 'mirror.changed', cb: (event: { projectKey: string }) => void) => { listeners.add(cb); return { dispose: () => { listeners.delete(cb); } }; } },
+    } as unknown as Pick<RemoteConnection, 'features' | 'control'>;
+    // as connections.ts serves mirror.sync: the project is followed before it is listed
+    const sync = async (request: Parameters<typeof target.sync>[0]) => {
+      await watches.follow('connection-1', request.projectKey, () => { for (const cb of [...listeners]) cb({ projectKey: request.projectKey }); });
+      return target.sync(request);
+    };
+    const mirror = new SessionMirror({ root, channel: () => ({ sync, receive: target.receive }), log: () => undefined });
+    const changed = (fsPath: string): void => {
+      for (const watcher of watchers) for (const cb of watcher.change) cb(fsPath);
+    };
+    return { mirror, connection, changed };
+  }
+
+  it('receives the bytes core appends to a session file after its turn settled', async () => {
+    const { mirror, connection, changed } = followedHost([MIRROR_CHANGED_FEATURE]);
+    followMirrorChanges(connection, () => void mirror.schedule(() => [projectKey]));
+    writeTarget('s1.jsonl', 'header\nprompt\nreply\n');
+    // the sync the turn's chat.turnSettled starts
+    void mirror.schedule(() => [projectKey]);
+    await mirror.idle();
+    expect(fs.readFileSync(mirrored('s1.jsonl'), 'utf8')).toBe('header\nprompt\nreply\n');
+    // the turn's checkpoint record lands after the turn settled
+    fs.appendFileSync(targetFile('s1.jsonl'), 'checkpoint\n');
+    changed(targetFile('s1.jsonl'));
+    await mirror.idle();
+    expect(fs.readFileSync(mirrored('s1.jsonl'), 'utf8')).toBe('header\nprompt\nreply\ncheckpoint\n');
+  });
+
+  it('syncs again on mirror.subcallsChanged from a daemon that lists mirror.subcalls, and stops at dispose', () => {
+    const listeners = new Map<string, () => void>();
+    const onEvent = vi.fn((name: string, cb: () => void) => {
+      listeners.set(name, cb);
+      return { dispose: () => { listeners.delete(name); } };
+    });
+    const sync = vi.fn();
+    const following = followMirrorChanges({ features: [MIRROR_SUBCALLS_FEATURE], control: { onEvent } } as unknown as Pick<RemoteConnection, 'features' | 'control'>, sync);
+    expect([...listeners.keys()]).toEqual(['mirror.subcallsChanged']);
+    listeners.get('mirror.subcallsChanged')!();
+    expect(sync).toHaveBeenCalledTimes(1);
+    following.dispose();
+    expect(listeners.size).toBe(0);
+  });
+
+  it('follows nothing on a daemon that does not list mirror.changed', () => {
+    const onEvent = vi.fn();
+    const following = followMirrorChanges({ features: [], control: { onEvent } } as unknown as Pick<RemoteConnection, 'features' | 'control'>, () => undefined);
+    expect(onEvent).not.toHaveBeenCalled();
+    following.dispose();
   });
 });

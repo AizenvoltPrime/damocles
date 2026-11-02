@@ -126,6 +126,9 @@ export interface EndpointOptions<Out extends Contract, In extends Contract> {
   // set: served requests, panel messages and event listeners run as the actor their envelope names, and requests, panel
   // envelopes and events this side sends carry the current one; unset: an envelope's actor is ignored and none is sent
   readonly actor?: ActorContext;
+  // set: a request this side sends, or an answer it gives, that the tables refuse fails that one call here, logged as a bug,
+  // instead of reaching the other side as a violation that ends the channel; events, mirrors and panel posts are not checked
+  readonly checkOutgoing?: boolean;
 }
 
 interface LooseTables {
@@ -200,6 +203,15 @@ export function createEndpoint<Out extends Contract, In extends Contract>(option
     return { ok: false, error: errorText(err), ...(fault ? { fault } : {}) };
   };
 
+  // the answer a served request gives, unless the tables refuse it (checkOutgoing)
+  const answer = (method: string, value: unknown): { ok: true; result: unknown } | { ok: false; error: string } => {
+    if (options.checkOutgoing && !parseWith(own(incoming.requests, method)?.result, value).ok) {
+      log(`[core-protocol] Bug: the answer to ${method} is outside the contract; it is sent as an error`);
+      return { ok: false, error: `Core protocol violation: the answer to ${method}` };
+    }
+    return { ok: true, result: value };
+  };
+
   const respond = (id: number, outcome: { ok: true; result: unknown } | { ok: false; error: string; fault?: Fault }): void => {
     inflight.delete(id);
     if (closed !== undefined) return;
@@ -234,7 +246,7 @@ export function createEndpoint<Out extends Contract, In extends Contract>(option
       return;
     }
     Promise.resolve(result).then(
-      (value) => respond(envelope.id, { ok: true, result: value }),
+      (value) => respond(envelope.id, answer(envelope.method, value)),
       (err: unknown) => respond(envelope.id, failure(err)),
     );
   };
@@ -326,6 +338,10 @@ export function createEndpoint<Out extends Contract, In extends Contract>(option
   return {
     request: (method, params, signal) => {
       if (closed !== undefined) return Promise.reject(new Error(closed));
+      if (options.checkOutgoing && !parseWith(own(outgoing.requests, method)?.params, params).ok) {
+        log(`[core-protocol] Bug: a ${method} request outside the contract was not sent`);
+        return Promise.reject(new CoreProtocolError(`Core protocol violation: request ${method} was not sent`));
+      }
       const id = ++nextId;
       return new Promise((resolve, reject) => {
         const abort = (): void => {

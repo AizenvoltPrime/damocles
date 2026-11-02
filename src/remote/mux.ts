@@ -16,8 +16,9 @@ export const STREAM_WINDOW_BYTES: number = 256 * 1024;
 export const MAX_HELD_BYTES: number = 64 * 1024 * 1024;
 // the largest frame body: a fragment, its channel id and its two bytes
 export const MAX_FRAME_BYTES: number = FRAGMENT_BYTES + 16;
-// streams open at once on one connection, both sides' together
-export const MAX_OPEN_STREAMS = 1024;
+// streams one side has opened and not yet closed in both directions; each side checks only the opener's own, so opens that
+// cross never refuse each other
+export const MAX_OPEN_STREAMS = 512;
 
 const KIND = { open: 0, data: 1, credit: 2, close: 3 } as const;
 const MORE = 1;
@@ -40,6 +41,9 @@ export interface StreamChannel {
   onData(listener: (bytes: Uint8Array) => void): Disposable;
   onEnd(listener: () => void): Disposable;
   onDrain(listener: () => void): Disposable;
+  // paused: the bytes received are not granted back, so the peer stops once its window is spent; resume grants them
+  pause(): void;
+  resume(): void;
 }
 
 export interface MuxOptions {
@@ -169,13 +173,17 @@ export function createMux(options: MuxOptions): Mux {
     joinedBytes: number;
     readonly data: Listeners<[Uint8Array]>;
     readonly ended?: Listeners<[]>;
+    // streams only: credit is withheld until resume
+    paused?: boolean;
   }
   const incoming = new Map<number, Incoming>();
 
-  // a stream counts until both directions closed
-  const openStreams = (): number => {
+  const ownParity = options.side === 'client' ? 0 : 1;
+  const peerParity = 1 - ownParity;
+  // the streams the side of that id parity opened; a stream counts until both directions closed
+  const openStreams = (parity: number): number => {
     let open = 0;
-    for (const id of new Set([...outgoing.keys(), ...incoming.keys()])) if (id >= FIRST_DYNAMIC) open++;
+    for (const id of new Set([...outgoing.keys(), ...incoming.keys()])) if (id >= FIRST_DYNAMIC && id % 2 === parity) open++;
     return open;
   };
 
@@ -301,7 +309,7 @@ export function createMux(options: MuxOptions): Mux {
 
   const grant = (id: number, entry: Incoming, bytes: number): void => {
     entry.consumed += bytes;
-    if (entry.consumed < entry.window / 4) return;
+    if (entry.paused === true || entry.consumed < entry.window / 4) return;
     queueControl(frame(id, KIND.credit, 0, vqlBody(entry.consumed)));
     entry.available += entry.consumed;
     entry.consumed = 0;
@@ -331,6 +339,14 @@ export function createMux(options: MuxOptions): Mux {
     onData: entry.data.add,
     onEnd: entry.ended!.add,
     onDrain: out.drained.add,
+    pause: () => {
+      entry.paused = true;
+    },
+    resume: () => {
+      if (entry.paused !== true) return;
+      entry.paused = false;
+      if (!disposed && incoming.get(id) === entry) grant(id, entry, 0);
+    },
   });
 
   const addStream = (id: number): StreamChannel => {
@@ -401,9 +417,8 @@ export function createMux(options: MuxOptions): Mux {
     }
     switch (kind) {
       case KIND.open: {
-        const peerParity = options.side === 'client' ? 1 : 0;
         // an id opens again only once both directions of its last stream closed
-        if (!options.acceptStreams || id < FIRST_DYNAMIC || id % 2 !== peerParity || incoming.has(id) || outgoing.has(id) || payload.length !== 0 || openStreams() >= MAX_OPEN_STREAMS) {
+        if (!options.acceptStreams || id < FIRST_DYNAMIC || id % 2 !== peerParity || incoming.has(id) || outgoing.has(id) || payload.length !== 0 || openStreams(peerParity) >= MAX_OPEN_STREAMS) {
           violation(`an open of channel ${id}`);
           return;
         }
@@ -497,7 +512,7 @@ export function createMux(options: MuxOptions): Mux {
     },
     openStream: (reserved) => {
       if (reserved !== undefined && !reservations.delete(reserved)) throw new Error(`stream ${reserved} was not reserved`);
-      if (openStreams() >= MAX_OPEN_STREAMS) throw new Error(`more than ${MAX_OPEN_STREAMS} streams are open`);
+      if (openStreams(ownParity) >= MAX_OPEN_STREAMS) throw new Error(`more than ${MAX_OPEN_STREAMS} streams are open`);
       const id = reserved ?? nextStream;
       if (reserved === undefined) nextStream += 2;
       queueControl(frame(id, KIND.open, 0, new Uint8Array(0)));

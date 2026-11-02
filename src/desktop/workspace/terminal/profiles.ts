@@ -23,6 +23,9 @@ export interface ProfileProbe {
   readonly homedir: string;
   // Windows' build number, 0 elsewhere
   readonly windowsBuild: number;
+  // the account's login shell from its passwd entry, for a process started without $SHELL (docker exec sets none); undefined
+  // on Windows or without an entry
+  readonly accountShell: string | undefined;
   // isFile, readDir and readText reject on an error other than a missing entry; detection logs that entry and skips it
   isFile(file: string): Promise<boolean>;
   // a missing directory lists nothing
@@ -158,14 +161,19 @@ async function windowsProfiles(probe: ProfileProbe): Promise<TerminalProfile[]> 
   return profiles;
 }
 
+// shells that end a session at once
+const NO_LOGIN_SHELLS = new Set(['nologin', 'false']);
+
 function posixIcon(name: string): TerminalIcon {
   return name === 'zsh' || name === 'bash' || name === 'fish' ? name : 'shell';
 }
 
-// $SHELL first, then zsh, bash and fish from /etc/shells or PATH; one profile per shell name. macOS terminals start login shells.
+// $SHELL (else the account's passwd shell) first, then zsh, bash and fish from /etc/shells or PATH; one profile per shell
+// name. macOS terminals start login shells.
 async function posixProfiles(probe: ProfileProbe): Promise<TerminalProfile[]> {
   const posix = path.posix;
-  const listed = ((await orAbsent(probe, '/etc/shells', () => probe.readText('/etc/shells'), undefined)) ?? '').split('\n').map((line) => line.trim()).filter((line) => line.startsWith('/'));
+  const shells = await orAbsent(probe, '/etc/shells', () => probe.readText('/etc/shells'), undefined);
+  const listed = (shells ?? '').split('\n').map((line) => line.trim()).filter((line) => line.startsWith('/'));
   const onPath = searchPathEntries(probe.platform, probe.env);
   const args = probe.platform === 'darwin' ? ['-l'] : [];
   const profiles: TerminalProfile[] = [];
@@ -173,8 +181,10 @@ async function posixProfiles(probe: ProfileProbe): Promise<TerminalProfile[]> {
     const name = posix.basename(file);
     if (!profiles.some((profile) => profile.id === name)) profiles.push({ id: name, name, file, args, icon: posixIcon(name) });
   };
-  const loginShell = probe.env['SHELL'];
-  if (loginShell && posix.isAbsolute(loginShell) && (await fileExists(probe, loginShell))) add(loginShell);
+  // a service account's passwd shell refuses a login (nologin, false), so it counts only when /etc/shells, if any, lists it
+  const accountShell = probe.accountShell && (shells === undefined || listed.includes(probe.accountShell)) ? probe.accountShell : undefined;
+  const loginShell = probe.env['SHELL'] || accountShell;
+  if (loginShell && posix.isAbsolute(loginShell) && !NO_LOGIN_SHELLS.has(posix.basename(loginShell)) && (await fileExists(probe, loginShell))) add(loginShell);
   for (const name of POSIX_SHELLS) {
     const file = await firstFile(probe, [...listed.filter((entry) => posix.basename(entry) === name), ...onPath.map((entry) => posix.join(entry, name))]);
     if (file) add(file);
@@ -221,5 +231,16 @@ export function windowsBuildNumber(release: string = os.release(), platform: Nod
 
 /** The probe over this machine's file system and environment. */
 export function systemProfileProbe(env: Readonly<Record<string, string | undefined>>, log: (line: string) => void): ProfileProbe {
-  return { platform: process.platform, env, homedir: os.homedir(), windowsBuild: windowsBuildNumber(), isFile: isFileOrAppAlias, readDir, readText, run, log };
+  return { platform: process.platform, env, homedir: os.homedir(), windowsBuild: windowsBuildNumber(), accountShell: accountShell(log), isFile: isFileOrAppAlias, readDir, readText, run, log };
+}
+
+// os.userInfo throws for an account with no passwd entry, which then has no login shell to offer
+function accountShell(log: (line: string) => void): string | undefined {
+  if (process.platform === 'win32') return undefined;
+  try {
+    return os.userInfo().shell ?? undefined;
+  } catch (err) {
+    log(`[terminal] this account has no passwd entry, so no login shell: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
 }

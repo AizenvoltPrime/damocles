@@ -162,7 +162,7 @@ describe('migration v6', () => {
     const v5 = createDatabaseWrapper(new DatabaseSync(':memory:'));
     runMigrations(v5);
     v5.exec(
-      'DROP INDEX idx_candidates_set_aside; DROP INDEX idx_candidates_claimable; ALTER TABLE memory_candidates DROP COLUMN set_aside_at; ' +
+      'ALTER TABLE memory_candidates DROP COLUMN client_id; DROP TABLE memory_applied_writes; DROP INDEX idx_candidates_set_aside; DROP INDEX idx_candidates_claimable; ALTER TABLE memory_candidates DROP COLUMN set_aside_at; ' +
         'ALTER TABLE memory_candidates DROP COLUMN failed_attempts; DELETE FROM schema_version WHERE version >= 6',
     );
     v5.prepare(`INSERT INTO memory_candidates (id, user_text, assistant_text, created_at) VALUES ('kept', 'q', 'a', 1)`).run();
@@ -182,7 +182,7 @@ describe('migration v6', () => {
       .all() as Array<{ detail: string }>).map(r => r.detail).join('\n');
     expect(plan).toContain('idx_candidates_claimable');
     expect(plan).not.toContain('TEMP B-TREE');
-    expect((v5.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(7);
+    expect((v5.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(9);
     v5.close();
   });
 });
@@ -191,7 +191,7 @@ describe('migration v7', () => {
   it('adds a partial index the set-aside count reads instead of scanning every candidate', () => {
     const v6 = createDatabaseWrapper(new DatabaseSync(':memory:'));
     runMigrations(v6);
-    v6.exec('DROP INDEX idx_candidates_set_aside; DELETE FROM schema_version WHERE version = 7');
+    v6.exec('DROP INDEX idx_candidates_set_aside; DROP TABLE memory_applied_writes; ALTER TABLE memory_candidates DROP COLUMN client_id; DELETE FROM schema_version WHERE version >= 7');
     v6.prepare(`INSERT INTO memory_candidates (id, user_text, assistant_text, created_at, set_aside_at) VALUES ('aside', 'q', 'a', 1, 5)`).run();
 
     runMigrations(v6);
@@ -202,7 +202,7 @@ describe('migration v7', () => {
     expect(plan).toContain('idx_candidates_set_aside');
     expect(plan).not.toMatch(/SCAN memory_candidates(?! USING)/);
     expect((v6.prepare('SELECT COUNT(*) AS n FROM memory_candidates WHERE set_aside_at IS NOT NULL').get() as { n: number }).n).toBe(1);
-    expect((v6.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(7);
+    expect((v6.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(9);
     v6.close();
   });
 });

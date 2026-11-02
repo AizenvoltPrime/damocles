@@ -1,8 +1,13 @@
 import { promises as fsp } from 'fs';
 import { createHash } from 'crypto';
+import { request as httpRequest, type IncomingMessage } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { connect as netConnect, isIP, type LookupFunction, type Socket } from 'node:net';
+import { connect as tlsConnect } from 'node:tls';
 import { join } from 'path';
-import type { Page } from 'patchright';
-import { isBlockedFaviconHost } from './net-guard';
+import type { APIRequestContext, Page } from 'patchright';
+import { publicAddresses } from './net-guard';
+import type { AddressResolver, ResolvedAddress } from './client-network-policy';
 import { log } from '../logger';
 
 // Collects favicon candidate URLs from the page. This is a pure DOM read (no fetch): downloading
@@ -84,7 +89,7 @@ export interface FaviconTarget {
 
 /**
  * Resolves a page's favicon and hands the cached file path to `applyIcon`: candidate URLs come from
- * a page-context DOM scan, the bytes are downloaded extension side (immune to the page's CSP
+ * a page-context DOM scan, the bytes are downloaded outside the page by `fetchIcon` (immune to the page's CSP
  * connect-src), and cached to a local file (VS Code tab icons require a file path, not a URL). A
  * per-entry token guards against a slow resolution from a superseded same-page navigation
  * overwriting a newer one.
@@ -96,6 +101,7 @@ export function resolveFavicon(
   cacheDir: string,
   entry: FaviconTarget,
   applyIcon: (icon: string | undefined) => void,
+  fetchIcon: IconFetch,
 ): void {
   const token = ++entry.faviconToken;
   // DOM-only read → Patchright's ISOLATED world via page.evaluate; the value comes back DIRECTLY.
@@ -112,7 +118,7 @@ export function resolveFavicon(
       }
       for (const href of candidates) {
         if (token !== entry.faviconToken) return;
-        const icon = await downloadFavicon(href);
+        const icon = await downloadFavicon(href, fetchIcon);
         if (!icon) continue;
         const name = createHash('sha1').update(icon.bytes).digest('hex').slice(0, 16);
         const filePath = join(cacheDir, `${name}.${icon.ext}`);
@@ -132,14 +138,97 @@ export function resolveFavicon(
     .catch(() => { /* page closed or eval blocked; keep the previous icon */ });
 }
 
-// Downloads one favicon candidate from the extension host. Returns null on any failure so the
-// caller can try the next candidate. Sniffs ICO/PNG signatures when the server omits or mislabels
-// the content type (common for /favicon.ico served as application/octet-stream or text/plain).
+/** One candidate's answer: its bytes and declared content type, or null for any failure, a non-2xx answer included. */
+export type IconFetch = (url: URL) => Promise<{ readonly bytes: Buffer; readonly contentType: string } | null>;
+
+const FAVICON_FETCH_TIMEOUT_MS = 10_000;
+
+/**
+ * A remote authority's context fetches through its own request API, which goes through the context's proxy
+ * (Playwright's BrowserContextAPIRequestContext), so the host's client-network policy applies as it does to the page.
+ */
+export function fetchIconThroughContext(request: () => APIRequestContext | undefined): IconFetch {
+  return async (url) => {
+    const context = request();
+    if (!context) return null;
+    try {
+      // a Cookie header of its own keeps the profile's cookies off a request the page chose, as Chrome's SameSite rules would
+      const response = await context.get(url.href, { headers: { cookie: '' }, maxRedirects: 0, timeout: FAVICON_FETCH_TIMEOUT_MS, failOnStatusCode: false });
+      try {
+        if (!response.ok()) return null;
+        const bytes = await response.body();
+        return bytes.length > FAVICON_MAX_BYTES ? null : { bytes, contentType: response.headers()['content-type'] ?? '' };
+      } finally {
+        await response.dispose();
+      }
+    } catch {
+      return null;
+    }
+  };
+}
+
+// Connects to `url`'s port at one of the checked addresses, never resolving its name again.
+export type IconConnector = (url: URL, addresses: readonly ResolvedAddress[]) => Socket;
+
+// Several checked addresses race as Happy Eyeballs (RFC 8305) through a lookup that answers only them; TLS still checks
+// the certificate against the name.
+export const connectPinned: IconConnector = (url, addresses) => {
+  const host = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname;
+  const https = url.protocol === 'https:';
+  const port = url.port === '' ? (https ? 443 : 80) : Number(url.port);
+  const lookup: LookupFunction = (_hostname, options, callback) => {
+    if (options.all === true) callback(null, addresses.map(({ address, family }) => ({ address, family })));
+    else callback(null, addresses[0]!.address, addresses[0]!.family);
+  };
+  const options = { host, port, lookup, autoSelectFamily: true };
+  return https ? tlsConnect({ ...options, ...(isIP(host) === 0 ? { servername: host } : {}) }) : netConnect(options);
+};
+
+/**
+ * The local context's fetch from Node: the name resolves once, every answer is checked with isBlockedIp, and the
+ * connection goes to those checked addresses only, never through a second resolution. No redirect is followed, so only
+ * the checked host is contacted.
+ */
+export function fetchIconPinned(resolve?: AddressResolver, connect: IconConnector = connectPinned): IconFetch {
+  return async (url) => {
+    const addresses = await publicAddresses(url.hostname, resolve);
+    if (!addresses) return null;
+    try {
+      const response = await new Promise<IncomingMessage>((answered, failed) => {
+        const request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, { createConnection: () => connect(url, addresses), signal: AbortSignal.timeout(FAVICON_FETCH_TIMEOUT_MS) }, answered);
+        request.on('error', failed);
+        request.end();
+      });
+      const status = response.statusCode ?? 0;
+      if (status < 200 || status >= 300) {
+        response.destroy();
+        return null;
+      }
+      const chunks: Buffer[] = [];
+      let size = 0;
+      for await (const chunk of response as AsyncIterable<Buffer>) {
+        size += chunk.length;
+        if (size > FAVICON_MAX_BYTES) {
+          response.destroy();
+          return null;
+        }
+        chunks.push(chunk);
+      }
+      return { bytes: Buffer.concat(chunks), contentType: response.headers['content-type'] ?? '' };
+    } catch {
+      return null;
+    }
+  };
+}
+
+// Downloads one favicon candidate. Returns null on any failure so the caller can try the next candidate. Sniffs ICO/PNG
+// signatures when the server omits or mislabels the content type (common for /favicon.ico served as
+// application/octet-stream or text/plain).
 //
 // The chosen extension follows the SERVER's content type (falling back to a signature sniff), so a
 // server can name the cached file's extension. Harmless today — the path is only ever handed to VS
 // Code as a tab icon, which does not execute SVG script — but it is server-controlled input.
-async function downloadFavicon(href: string): Promise<{ bytes: Buffer; ext: string } | null> {
+async function downloadFavicon(href: string, fetchIcon: IconFetch): Promise<{ bytes: Buffer; ext: string } | null> {
   let url: URL;
   try {
     url = new URL(href);
@@ -147,33 +236,22 @@ async function downloadFavicon(href: string): Promise<{ bytes: Buffer; ext: stri
     return null;
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-  // SSRF guard: the candidate URLs come from an untrusted page's DOM, so refuse hosts that resolve
-  // to loopback/link-local/private ranges before issuing the extension-host GET. `redirect: 'error'`
-  // closes the redirect bypass — only the validated host is ever contacted, so a 3xx to
-  // 169.254.169.254/localhost can't slip past the guard. A favicon served via redirect just won't show.
-  if (await isBlockedFaviconHost(url.hostname)) return null;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
-    const res = await fetch(url, { signal: controller.signal, redirect: 'error' }).finally(() => clearTimeout(timer));
-    if (!res.ok) return null;
-    const bytes = Buffer.from(await res.arrayBuffer());
-    if (bytes.length === 0 || bytes.length > FAVICON_MAX_BYTES) return null;
-    const declaredType = (res.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
-    // `Object.hasOwn` before the lookup: `declaredType` is server-controlled, so a content type of
-    // `__proto__` or `constructor` otherwise resolves to an inherited Object.prototype member and
-    // becomes the file extension — a junk filename built from a prototype property.
-    let ext = Object.hasOwn(FAVICON_EXTENSIONS, declaredType) ? FAVICON_EXTENSIONS[declaredType] : undefined;
-    if (!ext) {
-      if (bytes.length >= 8 && bytes.readUInt32BE(0) === 0x89504e47) ext = 'png';
-      else if (bytes.length >= 4 && bytes.readUInt16LE(0) === 0 && bytes.readUInt16LE(2) === 1) ext = 'ico';
-      else if (bytes.length >= 5 && bytes.toString('ascii', 0, 5).toLowerCase() === '<svg ') ext = 'svg';
-      else return null;
-    }
-    return { bytes, ext };
-  } catch {
-    return null;
+  const answer = await fetchIcon(url);
+  if (!answer) return null;
+  const { bytes } = answer;
+  if (bytes.length === 0 || bytes.length > FAVICON_MAX_BYTES) return null;
+  const declaredType = answer.contentType.split(';')[0]!.trim().toLowerCase();
+  // `Object.hasOwn` before the lookup: `declaredType` is server-controlled, so a content type of
+  // `__proto__` or `constructor` otherwise resolves to an inherited Object.prototype member and
+  // becomes the file extension — a junk filename built from a prototype property.
+  let ext = Object.hasOwn(FAVICON_EXTENSIONS, declaredType) ? FAVICON_EXTENSIONS[declaredType] : undefined;
+  if (!ext) {
+    if (bytes.length >= 8 && bytes.readUInt32BE(0) === 0x89504e47) ext = 'png';
+    else if (bytes.length >= 4 && bytes.readUInt16LE(0) === 0 && bytes.readUInt16LE(2) === 1) ext = 'ico';
+    else if (bytes.length >= 5 && bytes.toString('ascii', 0, 5).toLowerCase() === '<svg ') ext = 'svg';
+    else return null;
   }
+  return { bytes, ext };
 }
 
 // Content-addressed favicon files accumulate one per distinct icon across every site visited. Cap

@@ -2,9 +2,12 @@ import type { Disposable } from '../../../platform/disposable';
 import { EDITOR_MAX_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { authorityKeyOfProject, targetFolderKeyOf } from '../../../shared/project-location';
 import type { Endpoint } from '../../core-protocol/endpoint';
+import type { StreamChannel } from '../../../remote/mux';
+import { streamBytes, writeBytes } from '../../../remote/tunnel-pipe';
 import type { Project } from '../../local-services/confine';
 import type { PtyHostExit, PtyHostProcess } from '../../workspace/host-starters';
-import type { ClientToWorkspace, WireFileBytes, WireIdentity, WorkspaceToClient } from '../../workspace/messages';
+import type { ClientToWorkspace, WireFileBytes, WireIdentity, WireTransferEntry, WorkspaceToClient } from '../../workspace/messages';
+import type { TransferEntry } from '../../workspace/transfer-ops';
 import type { FileBytes } from '../../local-services/file-bytes';
 import type { EntryIdentity, WatchEvent } from '../../workspace/file-system';
 import type { ProjectWorkspace } from '../../workspace/project-workspace';
@@ -15,6 +18,24 @@ import type { NotConnectedError } from './workspaces';
 
 // the daemon answers files.watch only once the watch is ready
 export const WATCH_READY_FEATURE = 'files.watchReady';
+// what a transfer to or from a host needs its daemon to list: files.walk to files.removeFolder and their bulk streams,
+// files.makeLink's within, files.verifyLink and files.makeFolder's mode
+export const TRANSFER_FEATURES: readonly string[] = ['files.transfer', 'files.makeLinkWithin', 'files.verifyLink', 'files.folderMode'];
+
+export function carriesTransfers(features: readonly string[]): boolean {
+  return TRANSFER_FEATURES.every((feature) => features.includes(feature));
+}
+
+/** A transfer method of a host whose daemon does not list TRANSFER_FEATURES; nothing was sent. */
+export class TransfersUnsupportedError extends Error {
+  override readonly name = 'TransfersUnsupportedError';
+  readonly authorityKey: string;
+
+  constructor(authorityKey: string) {
+    super(`The Damocles server on ${authorityKey} does not carry file transfers`);
+    this.authorityKey = authorityKey;
+  }
+}
 
 export interface RemoteWorkspaceDeps {
   // the workspace channel's endpoint, whose results and events its tables parse before they arrive here
@@ -28,12 +49,18 @@ export interface RemoteWorkspaceDeps {
   readonly notConnected: () => NotConnectedError;
   // the daemon's welcome lists WATCH_READY_FEATURE; without it a watch's ready settles at once
   readonly watchReady: boolean;
+  // the daemon lists TRANSFER_FEATURES; without it every transfer method throws TransfersUnsupportedError before sending
+  readonly transfers: boolean;
+  // a stream for a transfer's bytes, held until its reader subscribes
+  readonly openStream: () => StreamChannel;
   readonly log: (line: string) => void;
 }
 
 const asBuffer = (bytes: Uint8Array): Buffer => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
 const toWireIdentity = (identity: EntryIdentity): WireIdentity => ({ dev: identity.dev.toString(), ino: identity.ino.toString(), birthtimeNs: identity.birthtimeNs.toString() });
+const fromWireIdentity = (identity: WireIdentity): EntryIdentity => ({ dev: BigInt(identity.dev), ino: BigInt(identity.ino), birthtimeNs: BigInt(identity.birthtimeNs) });
+const fromWireEntry = (entry: WireTransferEntry): TransferEntry => ({ ...entry, identity: fromWireIdentity(entry.identity) });
 
 // More bytes than the read asked for are refused as the local read refuses a file over the limit.
 function fromWireBytes(read: WireFileBytes, limitBytes: number): FileBytes {
@@ -66,6 +93,16 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
     return endpoint.request(method, params, signal).catch((err: unknown) => {
       throw closed ? deps.notConnected() : err;
     });
+  };
+
+  // a daemon without a request ends the connection as a violation, so nothing is sent to one that does not list it
+  const requireTransfers = (): void => {
+    if (closed) throw deps.notConnected();
+    if (!deps.transfers) throw new TransfersUnsupportedError(authorityKey);
+  };
+  const transferStream = (): StreamChannel => {
+    requireTransfers();
+    return deps.openStream();
   };
 
   let nextId = 1;
@@ -130,6 +167,82 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
       isDirectory: (target) => call('files.isDirectory', { target }),
       mtimes: (folder, relativePaths) => call('files.mtimes', { folder, relativePaths }),
       browse: (folder) => call('files.browse', { folder }),
+      // pages pulled one request at a time; an early return ends the walk on the host
+      walk: (project, relativePath) => ({
+        [Symbol.asyncIterator]: () => {
+          const walkId = nextId++;
+          let started = false;
+          let done = false;
+          return {
+            next: async () => {
+              if (done) return { done: true, value: undefined };
+              requireTransfers();
+              const page = started ? await call('files.walkNext', { walkId }) : await call('files.walk', { walkId, project: toWire(project), relativePath });
+              started = true;
+              if (page.done) done = true;
+              if (page.entries.length === 0 && page.done) return { done: true, value: undefined };
+              return { done: false, value: page.entries.map(fromWireEntry) };
+            },
+            return: async () => {
+              if (started && !done) await call('files.walkEnd', { walkId });
+              done = true;
+              return { done: true, value: undefined };
+            },
+          };
+        },
+      }),
+      clashes: async (project, relativeDir, names) => {
+        requireTransfers();
+        return call('files.clashes', { project: toWire(project), relativeDir, names });
+      },
+      // the bytes go out on their own stream within its credit while the host writes them; a source that throws or a signal that
+      // aborts (a cancel) ends the stream short, which the host answers by removing its part
+      receiveFile: async (project, relativeDir, name, source, options, signal) => {
+        const stream = transferStream();
+        const answer = call('files.receiveFile', { project: toWire(project), relativeDir, name, stream: stream.id, ...options });
+        const sent = writeBytes(stream, source, signal).then(() => undefined, (err: unknown) => err);
+        const result = await answer.finally(() => stream.end());
+        const thrown = await sent;
+        if (thrown !== undefined) throw thrown;
+        return result;
+      },
+      readFile: async (project, relativePath) => {
+        const stream = transferStream();
+        const read = await call('files.readFile', { project: toWire(project), relativePath, stream: stream.id }).catch((err: unknown) => {
+          stream.end();
+          throw err;
+        });
+        if (!read.ok) {
+          stream.end();
+          return read;
+        }
+        return { ok: true, size: read.size, chunks: streamBytes(stream) };
+      },
+      // a signal that aborts sends the request's cancel, which stops the host's copy and removes its part
+      copy: async (from, relativePath, to, toDir, name, replace, signal) => {
+        requireTransfers();
+        return call('files.copy', { from: toWire(from), relativePath, to: toWire(to), toDir, name, replace }, signal);
+      },
+      move: async (from, relativePath, to, toDir, name, replace, signal) => {
+        requireTransfers();
+        return call('files.move', { from: toWire(from), relativePath, to: toWire(to), toDir, name, replace }, signal);
+      },
+      makeFolder: async (project, relativeDir, name, mode) => {
+        requireTransfers();
+        return call('files.makeFolder', { project: toWire(project), relativeDir, name, ...(mode !== undefined ? { mode } : {}) });
+      },
+      makeLink: async (project, relativeDir, name, target, replace, within) => {
+        requireTransfers();
+        return call('files.makeLink', { project: toWire(project), relativeDir, name, target, replace, ...(within !== undefined ? { within } : {}) });
+      },
+      verifyLink: async (project, relativePath, within) => {
+        requireTransfers();
+        return call('files.verifyLink', { project: toWire(project), relativePath, within });
+      },
+      removeFolder: async (project, relativePath, confirmed) => {
+        requireTransfers();
+        return call('files.removeFolder', { project: toWire(project), relativePath, confirmed: toWireIdentity(confirmed) });
+      },
       watch: (base, glob, listener) => {
         const watchId = nextId++;
         watches.set(watchId, listener);

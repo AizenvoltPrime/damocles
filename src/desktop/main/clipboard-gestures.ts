@@ -1,5 +1,5 @@
 import type { Input, MouseInputEvent, WebContents } from 'electron';
-import { tidyMenu, type OverlayAnswer, type OverlayClipboardAction, type OverlayMenuItem, type OverlayRequest } from '../preload/overlay-channels';
+import { tidyMenu, type OverlayAnswer, type OverlayClipboardAction, type OverlayIcon, type OverlayMenuItem, type OverlayRequest } from '../preload/overlay-channels';
 import { tickDeadline } from './tick-deadline';
 
 // How long a grant waits for the request it allows; counted in main's timer ticks, so a stall of main cannot expire it.
@@ -62,6 +62,9 @@ export function isPrimaryClick(mouse: Pick<MouseInputEvent, 'type' | 'button' | 
   return mouse.type === 'mouseUp' && mouse.button === 'left' && !isContextMenuMouse({ ...mouse, type: 'mouseDown' }, platform);
 }
 
+// The one icon each clipboard item may show; a terminal's Paste always shows its own, the others only where the menu asks for icons.
+const CLIPBOARD_ICONS: Readonly<Record<OverlayClipboardAction, OverlayIcon>> = { cut: 'scissors', copy: 'copy', paste: 'clipboard-paste', terminalPaste: 'clipboard-paste' };
+
 const isClipboardItem = (item: OverlayMenuItem): item is Extract<OverlayMenuItem, { kind: 'item' }> & { clipboard: OverlayClipboardAction } =>
   item.kind === 'item' && item.clipboard !== undefined;
 
@@ -91,12 +94,13 @@ export async function askShellMenu(request: OverlayRequest, deps: ShellMenuDeps)
     ? request.items.map((item): OverlayMenuItem => {
       if (!isClipboardItem(item)) return item;
       const { id, clipboard, shortcut, disabled } = item;
+      const icon = CLIPBOARD_ICONS[clipboard];
       return {
         kind: 'item',
         id,
         clipboard,
         label: deps.label(clipboard),
-        ...(clipboard === 'terminalPaste' ? { icon: 'clipboard-paste' } : {}),
+        ...(clipboard === 'terminalPaste' || item.icon === icon ? { icon } : {}),
         ...(shortcut !== undefined ? { shortcut } : {}),
         ...(disabled !== undefined ? { disabled } : {}),
       };

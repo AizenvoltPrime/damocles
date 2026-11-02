@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
-import { MAX_REPOSITORY_ROW_ID_LENGTH, MAX_REPOSITORY_VIEW_STATES, type ContentBounds, type DamoclesShellApi, type ShellChat, type ShellEditorTab, type ShellHost, type ShellState } from '../../preload/shell-channels';
+import { MAX_REPOSITORY_ROW_ID_LENGTH, MAX_REPOSITORY_VIEW_STATES, SIDEBAR_SECTIONS, type ContentBounds, type DamoclesShellApi, type ShellChat, type ShellEditorTab, type ShellHost, type ShellState } from '../../preload/shell-channels';
 import type { OverlayRequest } from '../../preload/overlay-channels';
 import App from '../App.vue';
 import ChatsSection from '../components/ChatsSection.vue';
@@ -17,7 +17,7 @@ import { avatarHue, avatarInitial } from '../project-avatar';
 import { providerLogoSvg } from '@/components/icons/provider-logos';
 import { createEditorStore, EDITOR_STORE } from '../editor/editor-store';
 import { createScmStore, SCM_STORE } from '../scm/scm-store';
-import { EDITOR_STATE, FakeResizeObserver, STATE, chat, fakeShellApi } from './fakes';
+import { EDITOR_STATE, FakeResizeObserver, STATE, chat, fakePortsApi, fakeShellApi } from './fakes';
 
 // The sidebar's Files and Search sections read the editor store App provides.
 const sidebarGlobal = (api: DamoclesShellApi) => ({ plugins: [shellI18n], provide: { [EDITOR_STORE]: createEditorStore(api), [SCM_STORE]: createScmStore(api.scm) } });
@@ -180,10 +180,9 @@ describe('Reveal in Files', () => {
 });
 
 describe('a remote host that is not connected', () => {
-  const HOST: ShellHost = { hostId: 'h1', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'offline', signInNeeded: false };
+  const HOST: ShellHost = { hostId: 'h1', kind: 'ssh', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'offline', signInNeeded: false };
   const REMOTE: ShellState = {
     ...STATE,
-    remoteEnabled: true,
     hosts: [HOST],
     projects: [{ ...STATE.projects[0]!, key: 'ssh:h1|/srv/app', authority: { kind: 'ssh', key: 'ssh+h1', hostId: 'h1', name: 'prod-1' }, platform: 'linux', connection: 'offline', trash: false }],
     selected: { projectKey: 'ssh:h1|/srv/app', chatId: 'c1' },
@@ -418,9 +417,9 @@ describe('App and title bar', () => {
   });
 });
 
-function mountProjects(api: DamoclesShellApi, selectedKey = 'p1', remoteEnabled = false, hosts: readonly ShellHost[] = []) {
+function mountProjects(api: DamoclesShellApi, selectedKey = 'p1', hosts: readonly ShellHost[] = []) {
   return track(mount(ProjectsSection, {
-    props: { api, projects: STATE.projects, selectedKey, remoteEnabled, hosts, view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
+    props: { api, projects: STATE.projects, selectedKey, hosts, view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
     global: { plugins: [shellI18n] },
     attachTo: document.body,
   }));
@@ -479,10 +478,10 @@ describe('projects section', () => {
     expect(wrapper.get('[role="alert"]').text()).toBe('Could not remove project beta: a chat is running');
   });
 
-  const PROD: ShellHost = { hostId: 'h1', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'connected', signInNeeded: false };
-  const STAGING: ShellHost = { hostId: 'h2', authorityKey: 'ssh+h2', name: 'staging', connection: 'offline', signInNeeded: false };
-  const addMenu = async (api: ReturnType<typeof fakeShellApi>, remoteEnabled: boolean): Promise<string[]> => {
-    const wrapper = mountProjects(api, 'p1', remoteEnabled, [PROD, STAGING]);
+  const PROD: ShellHost = { hostId: 'h1', kind: 'ssh', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'connected', signInNeeded: false };
+  const STAGING: ShellHost = { hostId: 'h2', kind: 'ssh', authorityKey: 'ssh+h2', name: 'staging', connection: 'offline', signInNeeded: false };
+  const addMenu = async (api: ReturnType<typeof fakeShellApi>): Promise<string[]> => {
+    const wrapper = mountProjects(api, 'p1', [PROD, STAGING]);
     await wrapper.get('[data-testid="add-project"]').trigger('click');
     await flushPromises();
     const request = api.overlayRequests.at(-1);
@@ -492,48 +491,49 @@ describe('projects section', () => {
   it('opens the add menu: a local folder, a remote folder and a folder on each saved host', async () => {
     const api = fakeShellApi();
     api.answerNext({ kind: 'menu', itemId: 'host:h2' });
-    expect(await addMenu(api, true)).toEqual(['Local folder...', 'Remote folder...', '-', 'Folder on prod-1...', 'Folder on staging...']);
+    expect(await addMenu(api)).toEqual(['Local folder...', 'Remote folder...', '-', 'Folder on prod-1...', 'Folder on staging...']);
     expect(api.openHostFolder).toHaveBeenCalledWith('h2');
     expect(api.openConnect).not.toHaveBeenCalled();
     expect(api.addProject).not.toHaveBeenCalled();
   });
 
-  it('shows no remote entry while remote is disabled: the add button opens the OS folder picker with no menu', async () => {
+  it('shows every remote entry point in every build: the add button opens its menu, with no gate', async () => {
     const api = fakeShellApi();
-    const wrapper = mountProjects(api, 'p1', false, [PROD, STAGING]);
+    const wrapper = mountProjects(api, 'p1');
     const button = wrapper.get('[data-testid="add-project"]');
-    expect(button.attributes('aria-haspopup')).toBeUndefined();
+    expect(button.attributes('aria-haspopup')).toBe('menu');
+    expect(button.attributes('aria-expanded')).toBe('false');
+    expect(wrapper.find('[data-testid="connect-host"]').exists()).toBe(true);
     await button.trigger('click');
     await flushPromises();
-    expect(api.overlayRequests).toEqual([]);
-    expect(api.addProject).toHaveBeenCalledOnce();
-    expect(api.openConnect).not.toHaveBeenCalled();
+    const request = api.overlayRequests.at(-1);
+    expect(request?.kind === 'menu' && request.items.map((item) => (item.kind === 'item' ? item.label : '-'))).toEqual(['Local folder...', 'Remote folder...']);
+    expect(api.addProject).not.toHaveBeenCalled();
   });
 
   it('opens the OS folder picker from Local folder...', async () => {
     const api = fakeShellApi();
     api.answerNext({ kind: 'menu', itemId: 'local' });
-    await addMenu(api, true);
+    await addMenu(api);
     expect(api.addProject).toHaveBeenCalledOnce();
     expect(api.openConnect).not.toHaveBeenCalled();
   });
 
-  it('puts Connect to host before the add button while remote is enabled, opening the Connect dialog on its host list', async () => {
+  it('puts Connect to host before the add button, opening the Connect dialog on its host list', async () => {
     const api = fakeShellApi();
-    const wrapper = mountProjects(api, 'p1', true, [PROD]);
+    const wrapper = mountProjects(api, 'p1', [PROD]);
     const actions = wrapper.findAll('[data-testid="sidebar-section-actions"] button');
     expect(actions.map((button) => button.attributes('data-testid'))).toEqual(['connect-host', 'add-project']);
     expect(actions[0]!.attributes()).toMatchObject({ 'aria-label': 'Connect to host', title: 'Connect to host' });
     await actions[0]!.trigger('click');
     expect(api.openConnect).toHaveBeenCalledWith();
     expect(api.overlayRequests).toEqual([]);
-    expect(mountProjects(fakeShellApi(), 'p1', false, [PROD]).find('[data-testid="connect-host"]').exists()).toBe(false);
   });
 
   it('opens the Connect dialog on its host list from Remote folder...', async () => {
     const api = fakeShellApi();
     api.answerNext({ kind: 'menu', itemId: 'remote' });
-    await addMenu(api, true);
+    await addMenu(api);
     expect(api.openConnect).toHaveBeenCalledWith();
   });
 });
@@ -949,9 +949,9 @@ describe('sidebar layout', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     try {
       vi.setSystemTime(1_000_000);
-      const host: ShellHost = { hostId: 'h1', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'connected', signInNeeded: false };
+      const host: ShellHost = { hostId: 'h1', kind: 'ssh', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'connected', signInNeeded: false };
       const project = { ...STATE.projects[0]!, key: 'ssh+h1|/srv/app', authority: { kind: 'ssh' as const, key: 'ssh+h1', hostId: 'h1', name: 'prod-1' }, platform: 'linux' as const, connection: 'connected' as const, trash: false };
-      const remote: ShellState = { ...STATE, remoteEnabled: true, hosts: [host], projects: [project], selected: { projectKey: project.key, chatId: 'c1' } };
+      const remote: ShellState = { ...STATE, hosts: [host], projects: [project], selected: { projectKey: project.key, chatId: 'c1' } };
       const api = fakeShellApi(CHATS);
       const wrapper = track(mount(Sidebar, { props: { api, state: remote }, global: sidebarGlobal(api), attachTo: document.body }));
       await flushPromises();
@@ -974,6 +974,33 @@ describe('sidebar layout', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('tells Files when the selected project\'s host cannot copy files, naming the host', async () => {
+    const host: ShellHost = { hostId: 'h1', kind: 'ssh', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'connected', signInNeeded: false };
+    const project = { ...STATE.projects[0]!, key: 'ssh+h1|/srv/app', authority: { kind: 'ssh' as const, key: 'ssh+h1', hostId: 'h1', name: 'prod-1' }, platform: 'linux' as const, connection: 'connected' as const, trash: false };
+    const remote: ShellState = { ...STATE, hosts: [host], projects: [project], selected: { projectKey: project.key, chatId: 'c1' } };
+    const api = fakeShellApi(CHATS);
+    const wrapper = track(mount(Sidebar, { props: { api, state: remote }, global: sidebarGlobal(api), attachTo: document.body }));
+    await flushPromises();
+    const explanation = () => wrapper.find('[data-testid="files-transfers-unsupported"]');
+    expect(explanation().exists()).toBe(false);
+    await wrapper.setProps({ state: { ...remote, projects: [{ ...project, transfersUnsupported: true }] } });
+    expect(explanation().text()).toBe('The Damocles server on prod-1 is too old to copy files. Reconnect to update it.');
+    expect(wrapper.get('[data-testid="files-copy-here"]').attributes('disabled')).toBeDefined();
+  });
+
+  // reading-flow covers Tab and assistive technology, but the default layout keeps DOM order equal to visual order anyway
+  it("lists a remote project's docked Ports section last in the DOM, where it shows, after every ordered section", async () => {
+    const host: ShellHost = { hostId: 'h1', kind: 'ssh', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'connected', signInNeeded: false };
+    const project = { ...STATE.projects[0]!, key: 'ssh+h1|/srv/app', authority: { kind: 'ssh' as const, key: 'ssh+h1', hostId: 'h1', name: 'prod-1' }, platform: 'linux' as const, connection: 'connected' as const, trash: false };
+    const remote: ShellState = { ...STATE, hosts: [host], projects: [project], selected: { projectKey: project.key, chatId: 'c1' } };
+    const api = fakeShellApi(CHATS, { ports: fakePortsApi(async () => ({ hostId: 'h1', autoForwardMode: 'all', autoForward: true, connected: true, rows: [] })) });
+    const wrapper = track(mount(Sidebar, { props: { api, state: remote }, global: sidebarGlobal(api), attachTo: document.body }));
+    await flushPromises();
+    const sections = wrapper.findAll('section[data-section]').map((found) => ({ name: found.attributes('data-section'), order: Number((found.element as HTMLElement).style.order) }));
+    expect(sections.map((found) => found.name)).toEqual([...SIDEBAR_SECTIONS, 'ports']);
+    expect(sections.map((found) => found.order)).toEqual([...sections.map((found) => found.order)].sort((a, b) => a - b));
   });
 
   // jsdom has no DataTransfer; the one a header drag fills is the one each drop target reads.

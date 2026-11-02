@@ -3,11 +3,9 @@ import * as path from 'node:path';
 import type { Locator, Page } from '@playwright/test';
 import { LINUX_TARGET, serverPackage } from './support/release-mirror';
 import { expectNoAxeViolations } from '../desktop/support/axe';
-import { filesRow, quickPick } from '../desktop/support/editor';
-import { confirmDialog, menuItem } from '../desktop/support/overlay';
-import { groupHeader, LOCAL_GROUP, showInFiles, showView, shownProjectOrder, storedSidebar, THIS_COMPUTER } from '../desktop/support/projects';
+import { quickPick } from '../desktop/support/editor';
 import { overlayPage, shellPage, shellState } from '../desktop/support/shell';
-import { projectRow, projectsList } from '../desktop/support/shell-ui';
+import { projectRow } from '../desktop/support/shell-ui';
 import { answerDialogs } from '../desktop/support/ui';
 import { announcedSteps, browseTo, connectDialog, connectDialogClosed, CONNECT_TO_HOST_MENU, folderBrowser, hostCard, hostSearch, installPercents, openConnect, openInBrowser, recordTimeline, STEP_LABELS, stepOrder, stepRow, timeline, trustQuestion } from './support/connect-ui';
 import { shutdownHostDaemon } from './support/daemon-teardown';
@@ -126,84 +124,41 @@ test('the Connect dialog, the step timeline and the folder browser pass an axe s
 
 // A saved SSH host with one project: what a user who connected before has in remote-hosts.json.
 function seedRemoteProject(userData: string): void {
-  const hostId = 'h0e2egate';
+  const hostId = 'h0e2esaved';
   fs.writeFileSync(path.join(userData, 'remote-hosts.json'), JSON.stringify({
     version: 1,
     authorities: { [`ssh+${hostId}`]: { projects: [{ path: '/srv/app', folderKey: '/srv/app', os: 'linux' }], trusted: ['/srv/app'] } },
     order: [`ssh+${hostId}|/srv/app`],
-    hosts: { [hostId]: { id: hostId, kind: 'ssh', destination: { kind: 'alias', alias: 'gated-host' }, name: 'gated-host', recentFolders: ['/srv/app'], settings: {} } },
+    hosts: { [hostId]: { id: hostId, kind: 'ssh', destination: { kind: 'alias', alias: 'saved-host' }, name: 'saved-host', recentFolders: ['/srv/app'], settings: {} } },
     groupOrder: [],
   }, null, 2));
 }
 
-test('a remote project saved in remote-hosts.json is restored in a development build, where the remote gate is open', { tag: SSH_TAG }, async ({ home, launch, mirror, ssh }) => {
+test('a remote project saved in remote-hosts.json is restored in a development build', { tag: SSH_TAG }, async ({ home, launch, mirror, ssh }) => {
   seedRemoteProject(home.userData);
   const { app } = await launch({ env: remoteEnv(ssh, mirror) });
   await expect.poll(async () => (await shellState(app)).projects.filter((project) => project.authority.kind === 'ssh').map((project) => project.fsPath)).toEqual(['/srv/app']);
-  expect((await shellState(app)).remoteEnabled).toBe(true);
 });
 
-test('a packaged build without DAMOCLES_REMOTE=1 shows no Connect to Host, no Remote folder... and no remote project', { tag: PACKAGED_TAG }, async ({ home, launch }) => {
+test('a packaged build with no extra environment shows Connect to Host, Remote folder... and the saved remote project', { tag: PACKAGED_TAG }, async ({ home, launch }) => {
   seedRemoteProject(home.userData);
   fs.writeFileSync(path.join(home.userData, 'projects.json'), `${JSON.stringify({ version: 1, projects: [home.project] }, null, 2)}\n`);
   const { app } = await launch();
   const shell = await shellPage(app);
-  // the local project shows once main has restored the project list, the hidden remote one with it
-  await expect.poll(() => shell.evaluate(async () => (await window.damoclesShell!.getState()).projects.map((project) => project.name))).toEqual(['alpha']);
+  await expect.poll(() => shell.evaluate(async () => (await window.damoclesShell!.getState()).projects.map((project) => project.fsPath).sort())).toEqual([home.project, '/srv/app'].sort());
   const state = await shell.evaluate(() => window.damoclesShell!.getState());
-  expect(state.remoteEnabled).toBe(false);
-  expect(state.projects.filter((project) => project.authority.kind !== 'local')).toEqual([]);
-  expect(state.hosts).toEqual([]);
-  // The Projects add button opens no menu (no Remote folder...): it goes straight to the OS picker, which a packaged run cannot answer.
+  expect(state.hosts.map((host) => host.name)).toEqual(['saved-host']);
+  // The Projects add button opens its menu, which holds Remote folder... and the saved host.
   const overlay = await overlayPage(app);
   const add = shell.getByTestId('add-project');
-  await expect(add).toHaveCount(1);
-  await expect(add).not.toHaveAttribute('aria-haspopup');
-  // Show All Commands lists no Connect to Host.
+  await expect(add).toHaveAttribute('aria-haspopup', 'menu');
+  // Show All Commands lists Connect to Host.
   // showCommands settles only once the palette closes, so the page does not wait for it
   await shell.evaluate(() => { void window.damoclesShell!.showCommands(); });
   await expect(quickPick(overlay)).toBeVisible();
   await overlay.getByTestId('quick-pick-input').fill('>connect to host');
-  await expect(overlay.locator(`[data-testid="quick-pick-item"][data-item-id="${CONNECT_TO_HOST_MENU}"]`)).toHaveCount(0);
-  await expect(overlay.getByTestId('quick-pick-item').filter({ hasText: 'Connect to Host' })).toHaveCount(0);
+  await expect(overlay.locator(`[data-testid="quick-pick-item"][data-item-id="${CONNECT_TO_HOST_MENU}"]`)).toHaveCount(1);
   // closed before the quit, which would otherwise end the palette's request with the window
   await overlay.keyboard.press('Escape');
   await expect(quickPick(overlay)).toHaveCount(0);
-});
-
-test('a packaged build without DAMOCLES_REMOTE=1 still offers the views, reordering and Open as project on local projects', { tag: PACKAGED_TAG }, async ({ home, launch }) => {
-  seedRemoteProject(home.userData);
-  const beta = path.join(path.dirname(home.project), 'beta');
-  fs.mkdirSync(path.join(home.project, 'src', 'packages', 'api'), { recursive: true });
-  fs.mkdirSync(beta, { recursive: true });
-  fs.writeFileSync(path.join(home.userData, 'projects.json'), `${JSON.stringify({ version: 1, projects: [home.project, beta] }, null, 2)}\n`);
-  const { app } = await launch();
-  const shell = await shellPage(app);
-  const overlay = await overlayPage(app);
-  const names = (): Promise<string[]> => shell.evaluate(async () => (await window.damoclesShell!.getState()).projects.map((project) => project.name));
-  await expect.poll(names).toEqual(['alpha', 'beta']);
-  expect(await shell.evaluate(async () => (await window.damoclesShell!.getState()).remoteEnabled)).toBe(false);
-
-  // By host: only This computer, never the saved host's group
-  await showView(shell, 'grouped');
-  await expect(projectsList(shell).getByTestId('project-group')).toHaveCount(1);
-  await expect(groupHeader(shell, LOCAL_GROUP)).toHaveAttribute('aria-label', `${THIS_COMPUTER}, expanded`);
-  const keys = Object.fromEntries((await shell.evaluate(async () => (await window.damoclesShell!.getState()).projects)).map((project) => [project.name, project.key]));
-
-  // Alt+Down moves alpha below beta, and the hidden remote project keeps its slot in the stored order
-  await projectRow(shell, keys.alpha!).click();
-  await shell.keyboard.press('Alt+ArrowDown');
-  await expect.poll(() => shownProjectOrder(shell)).toEqual([keys.beta, keys.alpha]);
-  expect(storedSidebar(home.userData).order.filter((key) => key === keys.alpha || key === keys.beta)).toEqual([keys.beta, keys.alpha]);
-  expect(storedSidebar(home.userData).order).toContain('ssh+h0e2egate|/srv/app');
-
-  // Files Open as project: the trust question, then the subfolder right after alpha, selected
-  await showInFiles(shell, 'src/packages/api');
-  await filesRow(shell, 'src/packages/api').click({ button: 'right' });
-  await menuItem(overlay, 'openAsProject').click();
-  const question = confirmDialog(overlay);
-  await expect(question).toContainText('Do you trust the authors of the files in');
-  await question.getByRole('button', { name: 'Trust Folder' }).click();
-  await expect.poll(names).toEqual(['beta', 'alpha', 'api']);
-  await expect.poll(() => shell.evaluate(async () => { const state = await window.damoclesShell!.getState(); return state.projects.find((project) => project.key === state.selected.projectKey)?.name; })).toBe('api');
 });

@@ -37,6 +37,9 @@ export const PANEL_HOST_ACTIONS: readonly PanelHostAction[] = ['reconnect', 'sig
 
 export type { ChatConnection as PanelConnection, HeldMessage as PanelQueuedMessage, HeldMessageAction as PanelQueueAction } from '../../shared/host-connection';
 
+// Every saved host's name and color by host id, as this computer's host store keeps them.
+export type PanelHostNames = Readonly<Record<string, { readonly name: string; readonly color?: HostTone }>>;
+
 // Answer to the synchronous init request the preload sends once at load.
 export interface PanelInit {
   readonly state: unknown;
@@ -47,6 +50,8 @@ export interface PanelInit {
   readonly offline?: { readonly hostId: string; readonly hostName: string };
   // present only for a chat of a remote core: its connection and held messages, which PANEL_CHANNELS.connection updates
   readonly connection?: ChatConnection;
+  // present only for a chat of this computer's core, whose /stats rows and MCP rows may name a host by id
+  readonly hostNames?: PanelHostNames;
 }
 
 export const PANEL_CHANNELS = {
@@ -68,4 +73,6 @@ export const PANEL_CHANNELS = {
   connection: 'damocles:panel:connection',
   // renderer → main, a PanelQueueAction on one of the page's held messages
   queueAction: 'damocles:panel:queue-action',
+  // main → renderer, PanelHostNames after a host was added, renamed, recolored or forgotten; this computer's chats only
+  hostNames: 'damocles:panel:host-names',
 } as const;

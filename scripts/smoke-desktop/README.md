@@ -21,6 +21,8 @@ The launch copies, read only, from your home:
 
 It never copies your sessions, worktree registry, memory, plans, global hooks or MCP servers, and it never follows a linked folder (it could lead back into your home). A linked file it copies by name, such as a stow- or chezmoi-managed `~/.gitconfig`, arrives as a plain file holding its content; links inside a copied folder are skipped, and each folder's skipped links are named in one notice. A smoke test that needs hooks or MCP servers puts them in its scratch project, or writes them under `h.home()` before it relies on them.
 
+SSH is not hermetic on Windows: Win32-OpenSSH finds `~/.ssh` through the Windows profile folder, not `HOME`, so connecting the smoke app to a test host adds that host's key to your real `~/.ssh/known_hosts` and offers your default keys to it. Remove the test host's line when you finish, for example `ssh-keygen -R "[127.0.0.1]:<port>"`.
+
 When a copied access token would expire within 30 minutes after pi's 5-minute refresh window, `--launch` returns a notice naming the provider: send one message with that provider in your own Damocles app once the notice's time has passed (that app refreshes a token in its last five minutes), or sign in again there, then `--quit` and `--launch` again. A test that does not use that provider can ignore it; the launch never fails on it.
 
 Keys you saved in Damocles itself live in your profile's `secrets.json` (safeStorage), and the smoke app has its own profile, so it never has them; give a test a key through its own settings if it needs one.

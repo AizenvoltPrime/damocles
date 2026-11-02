@@ -1,6 +1,9 @@
 import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { NO_USER_RELAYS } from '../../core-services/host-services';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
+import type { SpawnSpec } from '../../../../core/process-launcher';
+import { windowsExplorer } from '../../../../core/system-tools';
 import type { Disposable } from '../../../../platform/disposable';
 import { hostExtras } from '../../core-services/__tests__/host-deps';
 import { createDesktopNotificationService } from '../../platform/notification-service';
@@ -9,7 +12,7 @@ import { namespacedSecrets, remoteServices } from '../remote-services';
 const none = (): Disposable => ({ dispose: () => undefined });
 const PROJECT = { key: 'loopback|/srv/app', fsPath: '/srv/app', name: 'app' };
 
-function services() {
+function services(wslDistro?: string) {
   const main = createFakePlatform({ chatBrowserPane: true });
   const logged: string[] = [];
   const reviews: unknown[] = [];
@@ -20,11 +23,21 @@ function services() {
   const notices: unknown[] = [];
   const diffs: unknown[] = [];
   const picks: unknown[] = [];
+  const links: string[] = [];
+  const runs: SpawnSpec[] = [];
   const deps = remoteServices({
     authority: 'loopback',
     hostId: 'loopback',
+    ...(wslDistro !== undefined ? { wslDistro } : {}),
     hostName: () => 'Local daemon',
+    openLink: async (url) => {
+      links.push(url);
+      return false;
+    },
     platform: main,
+    runProcess: async (spec) => {
+      runs.push(spec);
+    },
     projects: () => [PROJECT],
     fileRoots: () => [PROJECT],
     onProjectsChanged: none,
@@ -66,11 +79,11 @@ function services() {
       t: (message) => message,
       log: () => undefined,
     }),
-    user: { credentials: async () => ({ type: 'none' }), speak: async () => undefined, gitCredential: async () => ({ kind: 'none' }) },
+    user: { ...NO_USER_RELAYS, credentials: async () => ({ type: 'none' }), speak: async () => undefined, gitCredential: async () => ({ kind: 'none' }), browserTool: async () => ({ content: [] }) },
     base: { terminalToggle: () => ({ shown: false, shortcut: '' }), createView: () => { throw new Error('no view'); }, git: { available: true }, e2eHooks: false, ...hostExtras(), log: (line) => logged.push(line) },
     t: (message, ...args) => args.reduce((text, arg, index) => text.replace(`{${index}}`, arg), message),
   });
-  return { deps, main, opened, shown, notices, diffs, logged, reviews, previews, settingsFiles, picks };
+  return { deps, main, opened, shown, notices, diffs, logged, reviews, previews, settingsFiles, picks, links, runs };
 }
 
 describe('a remote core\'s services', () => {
@@ -82,8 +95,16 @@ describe('a remote core\'s services', () => {
     await expect(deps.resolveProxy('https://example.com')).rejects.toThrow('not available');
   });
 
+  it("sends the core's own openExternal to the link checks that always ask, never straight to this computer's browser", async () => {
+    const { deps, main, links } = services();
+    const openExternal = vi.spyOn(main.shell, 'openExternal');
+    await expect(deps.platform.shell.openExternal('http://localhost:8085/cb')).resolves.toBe(false);
+    expect(links).toEqual(['http://localhost:8085/cb']);
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
   it('answers false for a folder or path of the target the OS file manager would show, and a picker opens the folder browser of the host, never a native dialog', async () => {
-    const { deps, main, notices, picks } = services();
+    const { deps, main, notices, picks, runs } = services();
     const openFolder = vi.spyOn(main.shell, 'openFolder');
     const revealPath = vi.spyOn(main.shell, 'revealPath');
     const pickFolder = vi.spyOn(main.dialogs, 'pickFolder');
@@ -101,6 +122,25 @@ describe('a remote core\'s services', () => {
     expect(openFolder).not.toHaveBeenCalled();
     expect(revealPath).not.toHaveBeenCalled();
     expect(pickFolder).not.toHaveBeenCalled();
+    expect(runs).toEqual([]);
+  });
+
+  // Explorer runs a file named on its command line, even after /e, or /root,; /select only selects it
+  it('selects a WSL distro\'s folder inside its projects in File Explorer through \\\\wsl.localhost, never opening the path, and no other target path', async () => {
+    const { deps, main, runs } = services('Ubuntu-24.04');
+    const openFolder = vi.spyOn(main.shell, 'openFolder').mockResolvedValue(true);
+    const revealPath = vi.spyOn(main.shell, 'revealPath').mockResolvedValue();
+    await expect(deps.platform.shell.openFolder('/srv/app')).resolves.toBe(true);
+    await deps.platform.shell.revealPath('/srv/app/src/a.ts');
+    expect(runs).toEqual([{ file: windowsExplorer(), args: ['/select,"\\\\wsl.localhost\\Ubuntu-24.04\\srv\\app"'], windowsVerbatimArguments: true, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore'] }]);
+    expect(revealPath).toHaveBeenCalledWith('\\\\wsl.localhost\\Ubuntu-24.04\\srv\\app\\src\\a.ts');
+    await expect(deps.platform.shell.openFolder('/etc')).resolves.toBe(false);
+    await deps.platform.shell.revealPath('/srv/app/../../etc/passwd');
+    // a quote would end the verbatim argument
+    await expect(deps.platform.shell.openFolder('/srv/app/x" /root,"C:')).resolves.toBe(false);
+    expect(runs).toHaveLength(1);
+    expect(openFolder).not.toHaveBeenCalled();
+    expect(revealPath).toHaveBeenCalledTimes(1);
   });
 
   it('shows the active editor\'s context only while it shows a file of this host, at attach and on every change', () => {

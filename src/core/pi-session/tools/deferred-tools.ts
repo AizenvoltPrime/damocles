@@ -3,6 +3,7 @@ import { COMPASS_PI_TOOL_NAMES } from './compass-tools';
 import { WEB_PI_TOOL_NAMES } from '../web-access/web-tool-specs';
 import { IMAGE_PI_TOOL_NAMES } from './image-tool-specs';
 import { MCP_RESOURCE_TOOL_NAMES } from '../../../shared/tool-names';
+import { relayedToolNames, relayedToolOf, type RelayedTool } from '../mcp/relayed-tool-names';
 
 /**
  * Which tools are deferrable, and what group names address them. A leaf module by design: it composes
@@ -74,17 +75,25 @@ export function deferredToolNames(eligible: Iterable<string>, mcpNames: Iterable
   return [...new Set(eligible)].filter((name) => deferrable.has(name));
 }
 
-/** Groups whose service is the client's user scope, which a daemon's core cannot reach yet. */
+/** Groups whose service is the client's user scope, which a daemon's core reaches only while a client is attached. */
 const USER_SCOPE_GROUPS: ReadonlySet<BuiltinDeferredGroup> = new Set(['browser']);
 
+/** What a core reaches of its client's user scope now (user-scope.ts userScopeReach). */
+export interface UserScopeReach {
+  readonly browser: boolean;
+  readonly relayedTool: (relayed: RelayedTool) => boolean;
+}
+
 /** The deferred tools whose user-scope service is unavailable on this core: they stay eligible and deferred, never loadable. */
-export function userScopeToolNames(userScopeReachable: boolean): ReadonlySet<string> {
-  return new Set(userScopeReachable ? [] : BUILTIN_DEFERRED_GROUPS.filter((g) => USER_SCOPE_GROUPS.has(g.group)).flatMap((g) => [...g.names]));
+export function userScopeToolNames(reach: UserScopeReach): ReadonlySet<string> {
+  const browser = reach.browser ? [] : BUILTIN_DEFERRED_GROUPS.filter((g) => USER_SCOPE_GROUPS.has(g.group)).flatMap((g) => [...g.names]);
+  const relayed = relayedToolNames().filter((name) => !reach.relayedTool(relayedToolOf(name)!));
+  return new Set([...browser, ...relayed]);
 }
 
 /** The loadable snapshot: the deferred tools ToolSearch may list and load, those with an unavailable service left out. */
-export function loadableToolNames(deferred: readonly string[], userScopeReachable: boolean): string[] {
-  const unavailable = userScopeToolNames(userScopeReachable);
+export function loadableToolNames(deferred: readonly string[], reach: UserScopeReach): string[] {
+  const unavailable = userScopeToolNames(reach);
   return deferred.filter((name) => !unavailable.has(name));
 }
 

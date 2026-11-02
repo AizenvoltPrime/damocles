@@ -22,8 +22,8 @@ import type { CoreLocalServices, CoreShared } from './platform';
 
 /** Core's app paths, rebuilt from the ones main sent: main alone maps worker names to bundles. */
 export function coreAppPaths(init: CoreInit): AppPaths {
-  const { resourceRoot, unpackedRoot, workers } = init.paths;
-  return { resourceRoot, unpackedRoot, workerEntry: (name) => workers[name] };
+  const { resourceRoot, unpackedRoot, workers, remoteMirrors } = init.paths;
+  return { resourceRoot, unpackedRoot, workerEntry: (name) => workers[name], ...(remoteMirrors !== undefined ? { remoteMirrors } : {}) };
 }
 
 /** The folders loaded chats read their settings from, which the running core service reports (settingsFolderOf). */

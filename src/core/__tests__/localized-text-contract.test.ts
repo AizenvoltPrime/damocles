@@ -157,6 +157,18 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'CoreRequests.askpass.prompt.params.text': THIRD_PARTY,
   'CoreRequests.clipboard.writeText.params.text': USER,
   'CoreRequests.user.voice.speak.params.text': MODEL,
+  // a browser tool's result for the remote chat's model, which the model reads in English
+  'MainRequests.user.browser.tool.result.content[][type="text"].text': MODEL,
+  // a global memory's title, written by the user or the model, which crosses as data between the two cores
+  'CoreRequests.user.memory.apply.params.entries[].write.title': NAME,
+  'MainRequests.user.memory.resolve.result[].memory.title': NAME,
+  'MainRequests.user.memory.search.result[].title': NAME,
+  'MainRequests.user.memory.profile.result.pinned[].title': NAME,
+  'MainRequests.user.memory.profile.result.preferences[].title': NAME,
+  // a personal MCP server's own words, relayed for the remote chat's model
+  'MainRequests.user.mcp.servers.result[].description': THIRD_PARTY,
+  'MainRequests.user.mcp.servers.result[].tools[].description': THIRD_PARTY,
+  'MainRequests.user.mcp.servers.result[].tools[].title': THIRD_PARTY,
   'CoreEvents.chat.worktreeState.event.state.heldPrompt.text': USER,
   'CoreMirrorTopics.chats.entry.folder.label': NAME,
   'CoreMirrorTopics.folderTargets.targets[].label': NAME,

@@ -24,7 +24,7 @@ beforeEach(() => {
   host = new OverlayHost({
     window: fakeOverlayWindow() as never,
     preloadPath: 'preload-overlay.js',
-    state: () => ({ locale: 'en', platform: 'win32', remoteEnabled: false }),
+    state: () => ({ locale: 'en', platform: 'win32' }),
     focusOutside: () => {},
     awaitActivation: () => {},
     popupsClosed: () => {},

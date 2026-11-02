@@ -66,6 +66,9 @@ function row(section: SettingsSectionId, id: string, name: string, keys?: readon
   };
 }
 
+/** The host tab's row that opens the MCP servers of the host's own ~/.damocles/mcp.json; it writes no setting key. */
+export const MCP_HOST_SERVERS_ROW = 'mcpHostServers';
+
 const teamKeys = (role: string): readonly string[] => [`damocles.team.${role}Model`, `damocles.team.${role}Effort`];
 
 export const SETTINGS_ROWS: readonly SettingsRowMeta[] = [
@@ -106,6 +109,7 @@ export const SETTINGS_ROWS: readonly SettingsRowMeta[] = [
   row('application', 'damocles.assetSourcePrecedence', 'assetSourcePrecedence', ['damocles.assetSourcePrecedence']),
 
   row('integrations', 'damocles.mcp.enabled', 'mcp', ['damocles.mcp.enabled']),
+  row('integrations', MCP_HOST_SERVERS_ROW, 'mcpHostServers'),
   row('integrations', 'damocles.memory.enabled', 'memory', ['damocles.memory.enabled']),
   row('integrations', 'damocles.memory.autoExtract.enabled', 'memoryAutoExtract', ['damocles.memory.autoExtract.enabled']),
   row('integrations', 'damocles.memory.profile.enabled', 'memoryProfile', ['damocles.memory.profile.enabled']),

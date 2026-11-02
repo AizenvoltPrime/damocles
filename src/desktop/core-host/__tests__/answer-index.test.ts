@@ -39,10 +39,10 @@ describe('an answer main gives core', () => {
     expect(violations).toHaveLength(2);
   });
 
-  it('a default action past the last index any question can offer is a protocol violation', () => {
+  it('a default action past the last index any question can offer is outside the contract, so core never sends it', async () => {
     const { main, core, violations } = channel();
     main.serve('dialogs.ask', () => undefined);
-    void core.request('dialogs.ask', { severity: 'info', message: { message: 'x' }, actions: [], defaultAction: MAX_ACTIONS }).catch(quiet);
-    expect(violations.map((violation) => violation.message)).toEqual(['Core protocol violation: request dialogs.ask (1)']);
+    await expect(core.request('dialogs.ask', { severity: 'info', message: { message: 'x' }, actions: [], defaultAction: MAX_ACTIONS })).rejects.toThrow('Core protocol violation: request dialogs.ask was not sent');
+    expect(violations).toEqual([]);
   });
 });

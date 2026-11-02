@@ -111,9 +111,22 @@ export const CORE_REQUEST_ROUTES: { readonly [M in keyof CoreRequests]: CoreRequ
   'worktrees.showApplyConflicts': { to: 'client', noClient: nothing },
   'user.credentials': { to: 'pinnedClient' },
   'user.voice.speak': { to: 'viewClient', noClient: nothing },
+  // core refuses a browser tool itself while no client is attached; one that detached meanwhile fails here
+  'user.browser.tool': { to: 'viewClient', noClient: noClientFor('run a browser tool') },
+  // with no client showing the view, the scope's tabs close with the view's proxy there
+  'user.browser.release': { to: 'viewClient', noClient: nothing },
+  // a client's global memory and personal MCP servers are its own, so only that client answers
+  'user.memory.search': { to: 'pinnedClient' },
+  'user.memory.profile': { to: 'pinnedClient' },
+  'user.memory.resolve': { to: 'pinnedClient' },
+  'user.memory.apply': { to: 'pinnedClient' },
+  'user.mcp.call': { to: 'pinnedClient' },
+  'user.mcp.resources': { to: 'pinnedClient' },
+  'user.mcp.readResource': { to: 'pinnedClient' },
   'views.drained': { to: 'daemon' },
 };
 
+// registry: the daemon's own (the run registry, the port detector)
 export type CoreEventRoute = 'allClients' | 'actingClient' | 'attachmentClient' | 'registry' | 'dropped';
 
 export const CORE_EVENT_ROUTES: Readonly<Record<keyof CoreEvents, CoreEventRoute>> = {
@@ -138,6 +151,8 @@ export const CORE_EVENT_ROUTES: Readonly<Record<keyof CoreEvents, CoreEventRoute
   // this computer's core only
   'panel.foreignPost': 'dropped',
   'user.clientAuthChanged': 'dropped',
+  'user.mcpChanged': 'dropped',
+  'ports.urlSeen': 'registry',
 };
 
 // each attach gets a snapshot as deltas from version 1, then live deltas; chats only of the panels that client views
@@ -146,6 +161,7 @@ export const CORE_MIRROR_ROUTES: Readonly<Record<keyof CoreMirrorTopics, 'materi
   folderTargets: 'materialized',
   worktrees: 'materialized',
   scm: 'materialized',
+  heldMemory: 'materialized',
 };
 
 export const CORE_PANEL_OP_ROUTES: Readonly<Record<keyof CorePanelOps, 'actingClient' | 'views'>> = {
@@ -235,12 +251,26 @@ export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainReques
   'e2e.fakeVoice': 'e2e',
   'e2e.voiceRecorder': 'e2e',
   'e2e.stubOAuth': 'e2e',
+  'e2e.clientNetworkAnswers': 'e2e',
   // served by the client's own core
   'user.resolveCredential': 'refused',
   'user.clientAuth': 'refused',
   // lands only in the pushing client's cache (the request's actor)
   'user.credentials.push': 'core',
   'user.voice.speak': 'refused',
+  'user.browser.tool': 'refused',
+  'user.browser.release': 'refused',
+  'user.memory.search': 'refused',
+  'user.memory.profile': 'refused',
+  'user.memory.resolve': 'refused',
+  'user.memory.apply': 'refused',
+  // the request's actor is the device that takes a held queue
+  'memory.deliverHeld': 'core',
+  'memory.discardHeld': 'core',
+  'user.mcp.servers': 'refused',
+  'user.mcp.call': 'refused',
+  'user.mcp.resources': 'refused',
+  'user.mcp.readResource': 'refused',
   'panels.attachForeign': 'refused',
   'panels.detachForeign': 'refused',
   'panels.foreignMessage': 'refused',
@@ -274,9 +304,11 @@ export const MIRROR_TOPIC_ROUTES: Readonly<Record<keyof MirrorTopics, 'union' | 
   clientPolicy: 'perClient',
   actingClient: 'daemonOwned',
   hostSockets: 'daemonOwned',
+  clientNetwork: 'daemonOwned',
   clientEditor: 'daemonOwned',
   clientTerminal: 'daemonOwned',
   clientLanguage: 'daemonOwned',
+  clientMcp: 'perClient',
 };
 
 // daemon: the daemon sends it itself, and a client's is dropped
@@ -299,6 +331,7 @@ export interface ClientMirrors {
   readonly clientEditor: Map<string, EditorMirror>;
   readonly clientTerminal: Map<string, TerminalToggle>;
   readonly clientLanguage: Map<string, MirrorTopics['language']>;
+  readonly clientMcp: Map<string, MirrorTopics['clientMcp']['value'] & object>;
   actingClient: MirrorTopics['actingClient'];
 }
 
@@ -313,13 +346,14 @@ export function createClientMirrors(): ClientMirrors {
     clientEditor: new Map(),
     clientTerminal: new Map(),
     clientLanguage: new Map(),
+    clientMcp: new Map(),
     actingClient: {},
   };
 }
 
-type PerClientTopic = 'clientAuth' | 'clientUser' | 'clientPolicy' | 'clientEditor' | 'clientTerminal' | 'clientLanguage';
-type PerClientValue = ClientAuth | ClientUser | ClientPolicy | EditorMirror | TerminalToggle | MirrorTopics['language'];
-const PER_CLIENT_TOPICS: readonly PerClientTopic[] = ['clientAuth', 'clientUser', 'clientPolicy', 'clientEditor', 'clientTerminal', 'clientLanguage'];
+type PerClientTopic = 'clientAuth' | 'clientUser' | 'clientPolicy' | 'clientEditor' | 'clientTerminal' | 'clientLanguage' | 'clientMcp';
+type PerClientValue = ClientAuth | ClientUser | ClientPolicy | EditorMirror | TerminalToggle | MirrorTopics['language'] | (MirrorTopics['clientMcp']['value'] & object);
+const PER_CLIENT_TOPICS: readonly PerClientTopic[] = ['clientAuth', 'clientUser', 'clientPolicy', 'clientEditor', 'clientTerminal', 'clientLanguage', 'clientMcp'];
 
 /** What the router learns of a client's connection besides its channel. */
 export interface ClientLink {
@@ -362,6 +396,10 @@ export interface CoreRouterDeps {
   readonly e2eHooks: boolean;
   // lifecycle.reload: the daemon restarts core within its budget
   readonly reload: () => void;
+  // a URL an agent shell printed (ports.urlSeen)
+  readonly agentShellUrl: (hit: CoreEvents['ports.urlSeen']) => void;
+  // a client's clientPolicy changed in mirrors
+  readonly clientPolicyChanged: () => void;
   readonly log: (line: string) => void;
 }
 
@@ -414,6 +452,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   const titles = new Map<string, string>();
   let folderTargets: CoreMirrorTopics['folderTargets'] | undefined;
   let worktrees: CoreMirrorTopics['worktrees'] | undefined;
+  let heldMemory: CoreMirrorTopics['heldMemory'] | undefined;
   const scmViews = new Map<string, ScmPatch>();
   const scmRepositories = new Map<string, ScmPatch>();
   const scmStates = new Map<string, ScmPatch>();
@@ -466,6 +505,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     if (value === undefined) map.delete(clientId);
     else map.set(clientId, value);
     if (!ended) (core.publish as (name: string, patch: unknown) => void)(topic, value === undefined ? { clientId } : { clientId, value });
+    if (topic === 'clientPolicy') deps.clientPolicyChanged();
   };
   const panelIdOfView = (viewId: string): string | undefined => [...chats.values()].find((entry) => entry.viewId === viewId)?.panelId;
 
@@ -619,13 +659,14 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       if (!handler) throw new Error(`No daemon handler for ${method}`);
       serveCore(method, handler as never);
     } else if (route.to === 'pinnedClient') {
-      serveCore(method, (async (params: { provider: string; clientId: string }, signal: AbortSignal) => {
+      serveCore(method, (async (params: { provider?: string; clientId: string }, signal: AbortSignal) => {
         const session = sessions.get(params.clientId);
+        const what = params.provider === undefined ? method : `${method} for ${params.provider}`;
         if (!present(session)) {
-          log(`[core-host] ${method} for ${params.provider}: client ${params.clientId} is not attached`);
+          log(`[core-host] ${what}: client ${params.clientId} is not attached`);
           throw new Error(CREDENTIAL_CLIENT_ABSENT);
         }
-        log(`[core-host] ${method} for ${params.provider} from client ${params.clientId} (${session.client.id})`);
+        log(`[core-host] ${what} from client ${params.clientId} (${session.client.id})`);
         // a client lost while it answers is absent at once: its answer would arrive only on its resume
         const asking = new AbortController();
         const cancel = (): void => asking.abort();
@@ -701,6 +742,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     core.onEvent('chat.activity', ({ panelId, activity }) => deps.registry.panelActivity(runOf(panelId), activity, processActor.current() ?? actingPresent()?.client.clientId)),
     core.onEvent('chat.turnSettled', ({ panelId }) => deps.registry.panelSettled(panelId)),
     core.onEvent('chat.providers', ({ panelId, providers }) => deps.registry.panelProviders(panelId, providers)),
+    core.onEvent('ports.urlSeen', (hit) => deps.agentShellUrl(hit)),
   );
 
   // ---- core's mirrors, materialized
@@ -748,6 +790,10 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     core.onMirror('worktrees', (patch) => {
       worktrees = patch;
       for (const session of sessions.values()) deliver(session, (endpoint) => endpoint.publish('worktrees', patch));
+    }),
+    core.onMirror('heldMemory', (patch) => {
+      heldMemory = patch;
+      for (const session of sessions.values()) deliver(session, (endpoint) => endpoint.publish('heldMemory', patch));
     }),
     core.onMirror('scm', (patch) => {
       scmMaps(patch);
@@ -798,6 +844,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   const snapshot = (session: Session): void => deliver(session, (endpoint) => {
     if (folderTargets) endpoint.publish('folderTargets', folderTargets);
     if (worktrees) endpoint.publish('worktrees', worktrees);
+    if (heldMemory) endpoint.publish('heldMemory', heldMemory);
     for (const panelId of chats.keys()) publishChat(session, panelId);
     for (const map of [scmViews, scmRepositories, scmStates, scmDecorations]) for (const patch of map.values()) endpoint.publish('scm', patch);
     if (scmClone) endpoint.publish('scm', scmClone);
@@ -992,8 +1039,9 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
             return;
           case 'clientAuth':
           case 'clientUser':
-          case 'clientPolicy': {
-            const { value } = patch as { value?: ClientAuth | ClientUser | ClientPolicy };
+          case 'clientPolicy':
+          case 'clientMcp': {
+            const { value } = patch as { value?: ClientAuth | ClientUser | ClientPolicy | MirrorTopics['clientMcp']['value'] };
             if (value === undefined) {
               log(`[core-host] dropped ${client.id}'s ${topic} without a value`);
               return;
@@ -1004,11 +1052,16 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
           case 'state':
           case 'actingClient':
           case 'hostSockets':
+          case 'clientNetwork':
           case 'clientEditor':
           case 'clientTerminal':
           case 'clientLanguage':
             log(`[core-host] dropped ${client.id}'s ${topic}, which the daemon publishes`);
             return;
+          default: {
+            const unrouted: never = topic;
+            log(`[core-host] dropped ${client.id}'s ${String(unrouted)}, which has no route`);
+          }
         }
       })));
     }

@@ -16,6 +16,8 @@ export interface UsageStatsPaths {
   sessionsDir: string;
   ledgerPath: string;
   dbPath: string;
+  /** This computer's `<userData>/remote`, whose `<hostId>/mirror` folders hold each host's mirrored sessions; absent off the desktop. */
+  remoteMirrorsDir?: string;
 }
 
 /** One pi registry model. */

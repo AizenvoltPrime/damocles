@@ -60,7 +60,7 @@ describe('panel preload', () => {
     expect(bridge.getState()).toBeNull();
     expect(heard).toEqual(['prod-1']);
     expect(bridge.getHost()).toEqual({ hostId: 'h1', name: 'prod-1', computer: 'laptop' });
-    expect([...H.handlers.keys()].sort()).toEqual([PANEL_CHANNELS.message, PANEL_CHANNELS.theme, PANEL_CHANNELS.host, PANEL_CHANNELS.connection].sort());
+    expect([...H.handlers.keys()].sort()).toEqual([PANEL_CHANNELS.message, PANEL_CHANNELS.theme, PANEL_CHANNELS.host, PANEL_CHANNELS.connection, PANEL_CHANNELS.hostNames].sort());
   });
 
   it('takes a renamed host main pushes, telling the page, and reads the offline transcript flag from the init', async () => {
@@ -91,6 +91,21 @@ describe('panel preload', () => {
     expect(bridge.getConnection()).toEqual(back);
     bridge.queueAction({ action: 'cancel', id: 'q1', extra: 'dropped' });
     expect(H.sent).toEqual([[PANEL_CHANNELS.queueAction, { action: 'cancel', id: 'q1' }]]);
+  });
+
+  it('gives a page of this computer\'s core the saved hosts\' names from its init, and each new map main sends', async () => {
+    vi.resetModules();
+    await import('../panel');
+    const bridge = H.exposed! as NonNullable<typeof H.exposed> & { getHostNames(): unknown; onHostNames(listener: (names: unknown) => void): () => void };
+    const heard: unknown[] = [];
+    bridge.onHostNames((names) => heard.push(names));
+    const first = { h1: { name: 'prod-1', color: 'danger' } };
+    H.initAnswers.push({ state: null, theme: { kind: 'dark', css: '', reducedMotion: false }, hostNames: first });
+    expect(bridge.getHostNames()).toEqual(first);
+    const renamed = { h1: { name: 'billing-prod', color: 'danger' } };
+    H.handlers.get(PANEL_CHANNELS.hostNames)!({}, renamed);
+    expect(heard).toEqual([first, renamed]);
+    expect(bridge.getHostNames()).toEqual(renamed);
   });
 
   it("sends the banner's Reconnect or Sign in to main on its own channel", async () => {

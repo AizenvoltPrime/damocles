@@ -703,6 +703,13 @@ export class TerminalService {
     return terminal && project && { project, baseDir: terminal.shell.cwd, style: this.pathStyle(terminal) };
   }
 
+  /** The authority whose host runs the terminal, 'local' for this computer; undefined once the terminal is gone. */
+  authorityOf(id: string): string | undefined {
+    const terminal = this.find(id);
+    if (!terminal) return undefined;
+    return terminal.projectKey === null ? 'local' : authorityKeyOfProject(terminal.projectKey);
+  }
+
   /** The working directory the shell last reported (else the one it started in); null when it reported one main refused. */
   cwdOf(id: string): string | null | undefined {
     return this.find(id)?.shell.cwd;

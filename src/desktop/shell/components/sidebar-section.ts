@@ -1,12 +1,17 @@
 import type { InjectionKey, Ref } from 'vue';
-import type { SidebarSectionId } from '../../preload/shell-channels';
+import { SIDEBAR_SECTIONS, type SidebarSectionId } from '../../preload/shell-channels';
 import type { DropEdge } from '../layout/section-order';
 
 /** damocles.desktop.sidebar.alwaysShowHeaderActions (VS Code's workbench.view.alwaysShowHeaderActions), provided by the sidebar. */
 export const ALWAYS_SHOW_SECTION_ACTIONS: InjectionKey<Readonly<Ref<boolean>>> = Symbol('always-show-section-actions');
 
+// Ports shows only for a remote project and is docked below the user's order: never moved, resized or stored in the layout.
+export type SidebarPanelId = SidebarSectionId | 'ports';
+// CSS `order` past every ordered section (odd) and sash (even).
+export const DOCKED_SECTION_ORDER: number = 2 * SIDEBAR_SECTIONS.length + 1;
+
 /** Each section's title, the locale key its header, its menu, its sashes' labels and the move announcements all read. */
-export const SECTION_TITLES: Readonly<Record<SidebarSectionId, string>> = {
+export const SECTION_TITLES: Readonly<Record<SidebarPanelId, string>> = {
   projects: 'projects.heading',
   chats: 'chats.heading',
   files: 'files.heading',
@@ -14,6 +19,7 @@ export const SECTION_TITLES: Readonly<Record<SidebarSectionId, string>> = {
   repos: 'repositories.heading',
   scm: 'scm.heading',
   graph: 'graph.heading',
+  ports: 'ports.heading',
 };
 
 // The data type a section header drag carries, so a section ignores file drags and drags from other windows.

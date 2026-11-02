@@ -296,12 +296,12 @@ describe('overlay settings', () => {
     const error = (key: string): string | undefined => document.querySelector(`[data-testid="settings-row-${key}"] [data-testid="setting-error"]`)?.textContent?.trim();
 
     try {
-      api.pushState({ locale: 'el', platform: 'win32', remoteEnabled: true });
+      api.pushState({ locale: 'el', platform: 'win32' });
       await flushPromises();
       expect(error('damocles.desktop.reduceMotion')).toBe(shellI18n.global.t('settingsHost.prefWriteFailed', {}, { locale: 'el' }));
       expect(error('damocles.desktop.theme')).toBe(inGreek(coreText));
     } finally {
-      api.pushState({ locale: 'en', platform: 'win32', remoteEnabled: true });
+      api.pushState({ locale: 'en', platform: 'win32' });
       await flushPromises();
     }
   });

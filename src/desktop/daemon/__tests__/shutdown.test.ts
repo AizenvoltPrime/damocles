@@ -3,9 +3,11 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { sendCliRequest, type CliAnswer } from '../../cli/cli-protocol';
 import { agentSocketFile } from '../../core-protocol/agent-sockets';
 import type { HostStarters, PtyHostProcess } from '../../workspace/host-starters';
 import type { TerminalPost } from '../../workspace/messages';
+import { CLI_HOOK_ENV } from '../../workspace/terminal/terminal-env';
 import { daemonAnswers } from '../attach';
 import type { CoreAttach } from '../control-messages';
 import type { ForkedChild } from '../process-starts';
@@ -14,7 +16,9 @@ import { LOCK_UPDATE_MS } from '../lock-timing';
 import { acquireDaemonLock } from '../singleton';
 import { makeRunDir, readPidFile, runPaths, tokenPath, writePidFile, type PidRecord, type RunPaths } from '../token';
 import { REPO_ROOT, startInProcessDaemon, TEST_FACTS, type InProcessDaemon } from './in-process-daemon';
-import { connectClient } from './test-client';
+import { connectClient, type TestClient } from './test-client';
+
+const NOT_CONNECTED: CliAnswer = { ok: false, code: 'notConnected', language: 'en' };
 
 const NO_HOSTS: HostStarters = {
   startPtyHost: () => { throw new Error('no pty host in this test'); },
@@ -83,6 +87,26 @@ function stubbornCore(): { fork: () => ForkedChild; posted: unknown[]; started: 
   };
 }
 
+// a Damocles Core that answers core.shutdown and ends when killed, as a real one does
+function answeringCore(): { fork: () => ForkedChild } {
+  return {
+    fork: () => {
+      let receive: (message: unknown) => void = () => undefined;
+      let exit: (end: { code: number; signal: string | null; error: string | null }) => void = () => undefined;
+      return {
+        pid: 4243,
+        postMessage: (message) => {
+          const envelope = message as { kind?: string; id?: number; method?: string };
+          if (envelope.kind === 'request' && envelope.method === 'core.shutdown') receive({ kind: 'response', id: envelope.id, ok: true, result: undefined });
+        },
+        onMessage: (listener) => { receive = listener; },
+        onExit: (listener) => { exit = listener; },
+        kill: () => exit({ code: 0, signal: null, error: null }),
+      };
+    },
+  };
+}
+
 let home: string;
 let paths: RunPaths;
 
@@ -142,8 +166,8 @@ describe('daemon shutdown', () => {
     expect(ownFolders).toHaveLength(process.platform === 'win32' ? 0 : 2);
     const client = await connectClient(await daemon.connect());
     await client.control.request('attachCore', CORE_ATTACH);
-    client.workspace.emit('terminals.post', { request: SPAWN });
-    await vi.waitFor(() => expect(pty.started()).toBe(true));
+    // a damocles --wait whose client never answers holds no step
+    const { answer } = await waitingCliRequest(client, pty.posted);
     expect(core.started()).toBe(true);
     // the new owner's lock has its own mtime, and its pid file names it
     const newer: PidRecord = { ...(await readPidFile(daemon.paths.pidFile))!, pid: process.pid + 1, updatedAt: Date.now() };
@@ -153,6 +177,7 @@ describe('daemon shutdown', () => {
     // proper-lockfile finds the mtime changed at its next refresh
     expect(await daemon.exitCode).toBe(EXIT_LOCK_LOST);
     expect(await daemon.exited).toBe('the daemon lock was compromised');
+    await expect(answer).resolves.toEqual(NOT_CONNECTED);
     expect(await client.closed).toBeTruthy();
     expect(pty.killed() && core.killed()).toBe(true);
     expect(pty.posted).not.toContainEqual({ type: 'shutdown' });
@@ -194,7 +219,58 @@ describe('daemon shutdown', () => {
     if (lock.held) await lock.release();
     await shutdown;
   }, 20_000);
+
+  it('ends while a terminal\'s damocles --wait waits for its client, answering it not connected', async () => {
+    const pty = stubbornPtyHost();
+    const daemon = await startInProcessDaemon({ starters: { ...NO_HOSTS, startPtyHost: pty.start } });
+    const client = await connectClient(await daemon.connect());
+    const { answer } = await waitingCliRequest(client, pty.posted);
+    await daemon.shutdown();
+    expect(await daemon.exitCode).toBe(0);
+    await expect(answer).resolves.toEqual(NOT_CONNECTED);
+  }, 20_000);
+
+  it('gives a checkout daemon\'s terminals the damocles and BROWSER the desktop build writes', async () => {
+    const pty = stubbornPtyHost();
+    const daemon = await startInProcessDaemon({ starters: { ...NO_HOSTS, startPtyHost: pty.start } });
+    const client = await connectClient(await daemon.connect());
+    client.workspace.emit('terminals.post', { request: SPAWN });
+    const env = await vi.waitFor(() => {
+      expect(spawnEnv(pty.posted)).toBeDefined();
+      return spawnEnv(pty.posted)!;
+    });
+    try {
+      const bin = path.join(REPO_ROOT, 'dist', 'server-bin');
+      expect(env['BROWSER']).toBe(path.join(bin, 'helpers', process.platform === 'win32' ? 'browser.exe' : 'browser.sh'));
+      const searchPath = Object.entries(env).find(([key]) => key.toUpperCase() === 'PATH')?.[1];
+      expect(searchPath?.split(path.delimiter)[0]).toBe(path.join(bin, 'remote-cli'));
+    } finally {
+      await daemon.shutdown();
+    }
+  }, 20_000);
 });
+
+// the environment of the spawn the daemon posted to its pty host
+function spawnEnv(posted: readonly unknown[]): Record<string, string> | undefined {
+  return posted.find((message): message is { type: 'spawn'; env: Record<string, string> } => (message as { type?: string }).type === 'spawn')?.env;
+}
+
+// Spawns a terminal through client and sends `damocles --wait` on its socket; client takes the relay and never answers.
+async function waitingCliRequest(client: TestClient, posted: readonly unknown[]): Promise<{ readonly answer: Promise<CliAnswer> }> {
+  const relayed: unknown[] = [];
+  client.workspace.serve('cli.request', (relay) => {
+    relayed.push(relay);
+    return new Promise(() => undefined);
+  });
+  client.workspace.emit('terminals.post', { request: SPAWN });
+  const hook = await vi.waitFor(() => {
+    expect(spawnEnv(posted)?.[CLI_HOOK_ENV]).toBeDefined();
+    return spawnEnv(posted)![CLI_HOOK_ENV]!;
+  });
+  const answer = sendCliRequest(() => net.connect(hook), { kind: 'open', cwd: '/srv', items: [{ path: '/srv/COMMIT_EDITMSG' }], wait: true });
+  await vi.waitFor(() => expect(relayed).toHaveLength(1));
+  return { answer };
+}
 
 describe.runIf(process.platform !== 'win32')('a shutdown on POSIX', () => {
   it('removes every socket folder the daemon made, a client\'s agent socket included, and exits 0', async () => {
@@ -203,9 +279,11 @@ describe.runIf(process.platform !== 'win32')('a shutdown on POSIX', () => {
     const agent = net.createServer((socket) => socket.end());
     await new Promise<void>((resolve) => agent.listen(agentSock, resolve));
     try {
-      const daemon = await startInProcessDaemon({ starters: NO_HOSTS, credentialRelay: true });
+      const daemon = await startInProcessDaemon({ starters: NO_HOSTS, credentialRelay: true, forkCore: answeringCore().fork });
       const client = await connectClient(await daemon.connect(agentSock), { clientId: 'laptop' });
       expect(client.outcome.kind).toBe('welcome');
+      // the agent proxy opens a client's socket only while its policy forwards the agent
+      await client.control.request('attachCore', { ...CORE_ATTACH, mirrors: { ...CORE_ATTACH.mirrors, clientPolicy: { ...CORE_ATTACH.mirrors.clientPolicy, agentForwarding: true } } });
       await daemon.daemon.agentProxy.settled();
       const agentFolder = daemon.daemon.agentProxy.folder()!;
       expect(existsSync(agentSocketFile(agentFolder, 'laptop'))).toBe(true);

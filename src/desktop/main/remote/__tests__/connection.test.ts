@@ -1,8 +1,10 @@
+import * as net from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { MAX_OPEN_STREAMS } from '../../../../remote/mux';
 import { MAX_TERMINAL_IDLE_DAYS } from '../../../daemon/control-messages';
 import type { HostStarters } from '../../../workspace/host-starters';
 import { startInProcessDaemon, TEST_FACTS, type InProcessDaemon } from '../../../daemon/__tests__/in-process-daemon';
-import { connect, OtherProtocolError, type OtherProtocolDaemon } from '../connection';
+import { connect, OtherProtocolError, TunnelConnectError, type OtherProtocolDaemon } from '../connection';
 
 const NO_HOSTS: HostStarters = {
   startPtyHost: () => { throw new Error('no pty host in this test'); },
@@ -29,6 +31,32 @@ describe('connect', () => {
     expect(await handed!.control.request('listRuns', {})).toEqual({ runs: [] });
     expect(await handed!.control.request('mirror.sync', { projectKey: '/srv/none', budgetBytes: 1024, files: [] })).toEqual({ changes: [] });
     handed!.close('done');
+  });
+
+  it('closes a tunnel stream the daemon could not connect, so refused connects never use up the open streams', async () => {
+    const connection = await connect({ ...options, stream: await daemon.connect() });
+    // a port nothing listens on
+    const server = net.createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as net.AddressInfo).port;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const batch = 128;
+    for (let done = 0; done <= MAX_OPEN_STREAMS; done += batch) {
+      const refused = await Promise.all(Array.from({ length: batch }, () => connection.openTunnel('127.0.0.1', port).catch((err: unknown) => err)));
+      expect(refused.every((err) => err instanceof TunnelConnectError)).toBe(true);
+    }
+    expect(connection.openStream().id).toBeGreaterThan(0);
+    connection.close('done');
+  });
+
+  it('fails only the tunnel whose ports.connect the daemon would refuse, never the connection', async () => {
+    const connection = await connect({ ...options, stream: await daemon.connect() });
+    let closed: string | undefined;
+    connection.onClose((reason) => { closed = reason; });
+    await expect(connection.openTunnel('-db', 5432)).rejects.toThrow(/was not sent/);
+    expect(await connection.control.request('listRuns', {})).toEqual({ runs: [] });
+    expect(closed).toBeUndefined();
+    connection.close('done');
   });
 
   it('hands back the daemon\'s facts once it welcomed the client and took its attach', async () => {
@@ -72,6 +100,21 @@ describe('connect', () => {
     expect(await connection.resume(await daemon.connect())).toBe('resumed');
     expect(connection.lost()).toBe(false);
     expect(await runs).toEqual({ runs: [] });
+    connection.close('done');
+  });
+
+  it('measures the clock skew again when it resumes, so the mirror reads the host clock as it is now', async () => {
+    await daemon.shutdown();
+    let offsetMs = 600_000;
+    daemon = await startInProcessDaemon({ starters: NO_HOSTS, now: () => Date.now() + offsetMs });
+    const connection = await connect({ ...options, clientId: 'drifting', stream: await daemon.connect() });
+    expect(Math.abs(connection.skewMs - 600_000)).toBeLessThan(5_000);
+    const lost = new Promise<string>((resolve) => connection.onLost(resolve));
+    connection.cutTransport();
+    await lost;
+    offsetMs = -300_000;
+    expect(await connection.resume(await daemon.connect())).toBe('resumed');
+    expect(Math.abs(connection.skewMs + 300_000)).toBeLessThan(5_000);
     connection.close('done');
   });
 

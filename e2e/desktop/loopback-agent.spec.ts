@@ -6,14 +6,17 @@ import { corePid } from './support/app';
 import { expect, test } from './support/fixtures';
 import { git, initRepo } from './support/git';
 import { writeAuth, writeUserSettings, type HermeticHome } from './support/hermetic';
+import { activePageTab, browserTabs, chromeEnv, PAGE_TIMEOUT } from './support/browser';
+import { openInEditor } from './support/editor';
 import { attachDaemonLogs, credentialRequests, filesHolding, mergeJson, newLoopbackChat, sendPrompt, servedProviders, startLoopbackStub, systemPrompts, targetAgentDir, targetDamoclesDir, witnessCommand, witnessed, WITNESS } from './support/loopback-agent';
 import { cleanUp, daemonPid, endLeftoverDaemon, filesUnder, listRuns, LOCAL_DAEMON, loopbackHome, LOOPBACK_ENV, LOOPBACK_TAG, processTree, REVIEW_SHOTS, shutdownDaemon } from './support/loopback';
 import { chatRequests, type OpenAIStub, type StubReply } from './support/openai-stub';
 import { readyOverlay } from './support/overlay';
 import { openProjectChat, setReducedMotion, showShellTheme, THEMES } from './support/screenshots';
-import { holdToast, overlayPage, popupPage, popupToasts, recordToasts, setWindowFocused, shellPage, shellState } from './support/shell';
+import { holdToast, overlayPage, popupPage, popupToasts, recordedToasts, recordToasts, setWindowFocused, shellPage, shellState } from './support/shell';
 import { awaitTurnEnd, chatInput, clickMenu, hostMessages, postFromWebview, recordHostMessages } from './support/ui';
 import { openTerminal } from './support/terminal';
+import { openedExternally, recordOpenExternal } from './support/updates';
 import { optIn, setupReview } from './support/worktree-chat';
 import { FILE_DRAG_MIME } from '../../src/shared/file-drag';
 import { loadOsName } from '../../src/core/pi-session/os-name';
@@ -24,8 +27,8 @@ const PROMPT_REGION = 'Permission request';
 const REFRESH_TOKEN = 'e2e-refresh-token-0f3c9a';
 const STUB_KEY = 'stub-key';
 // The reason a remote core gives for a user-scope service, which runs on the client (agent-core's constant, English text).
-const BROWSER_REFUSAL = 'The browser is not available in a chat on a remote host yet: it runs on your computer (user-scope-unavailable).';
-const MEMORY_REFUSAL = 'Global memory is not available in a chat on a remote host yet: it runs on your computer (user-scope-unavailable).';
+const BROWSER_CLOSED = 'The browser runs on your computer and Damocles is closed.';
+const MEMORY_CLOSED = 'Your global memories live on your computer and Damocles is closed.';
 
 // the shown card: one that answered leaves through a transition while the next one enters
 const prompt = (tab: Page): Locator => tab.locator(`section[role="region"][aria-label="${PROMPT_REGION}"]:not([class*="-leave-"])`);
@@ -608,7 +611,7 @@ interface VoiceHooks {
   __damoclesE2e: { voice: { fake(transcript: string): Promise<{ pid: number }>; recorder(): Promise<{ starts: number; recorderPid: number | null }> } };
 }
 
-test('on a loopback chat voice records in this computer\'s core and fills the remote composer; browser tools and global memory give the user-scope reason; a local file drop is refused naming both places, the host\'s own file is mentioned, and a pasted image and a local terminal\'s output attach', { tag: LOOPBACK_TAG }, async ({ home, launch }, testInfo) => {
+test('on a loopback chat voice records in this computer\'s core and fills the remote composer; browser tools load and global memory saves on this computer; a local file drop is refused naming both places, the host\'s own file is mentioned, and a pasted image and a local terminal\'s output attach', { tag: LOOPBACK_TAG }, async ({ foreground: _foreground, home, launch }, testInfo) => {
   test.setTimeout(360_000);
   const stub = await startLoopbackStub(home);
   const folder = remoteFolder(home);
@@ -617,7 +620,7 @@ test('on a loopback chat voice records in this computer\'s core and fills the re
   let app: ElectronApplication | undefined;
   let failure: unknown;
   try {
-    ({ app } = await launch(LOOPBACK_ENV));
+    ({ app } = await launch({ env: { ...LOOPBACK_ENV.env, ...chromeEnv() } }));
     // a local project whose file the drop below carries
     fs.writeFileSync(path.join(home.project, 'notes.md'), '# Notes\n');
     await openProjectChat(app, home.project);
@@ -650,38 +653,89 @@ test('on a loopback chat voice records in this computer\'s core and fills the re
       await chatInput(tab).fill('');
     }
 
-    // Browser tools: off the ToolSearch menu of the remote chat; loading one answers with the user-scope reason.
+    // Browser tools: with this computer attached they stay deferred, ToolSearch's menu lists them, and loading one succeeds,
+    // since they run in this computer's browser (remote-browser.spec.ts drives a page).
     stub.replies.push(
       { chunks: [], toolCalls: [{ name: 'ToolSearch', arguments: { tools: ['BrowserNavigate'] } }] },
-      { chunks: [], toolCalls: [{ name: 'BrowserNavigate', arguments: { url: 'https://example.com' } }] },
       { chunks: ['Browser checked.'] },
     );
     await sendPrompt(tab, 'Open a page');
     await expect(tab.getByText('Browser checked.')).toBeVisible({ timeout: 60_000 });
     await awaitTurnEnd(tab);
-    const [load, direct] = toolResults(stub).slice(-2);
-    expect(load).toContain(`Not available: BrowserNavigate. ${BROWSER_REFUSAL}`);
-    // a deferred tool that was never loaded is unknown to pi, which answers before any Damocles hook runs
-    expect(direct).toBe('Tool BrowserNavigate not found');
-    // the tools offered with the prompt: no browser tool, and ToolSearch's menu lists none to load
+    const [load] = toolResults(stub).slice(-1);
+    expect(load).toContain('Loaded 1 tool: BrowserNavigate');
+    expect(load).not.toContain(BROWSER_CLOSED);
+    // the tools offered with the prompt: no browser tool loaded yet, and ToolSearch's menu offers them
     const tools = ((chatRequests(stub).find((request) => JSON.stringify(request.body).includes('Open a page'))?.body as { tools?: { function?: { name?: string; description?: string } }[] } | undefined)?.tools ?? []).map((tool) => tool.function ?? {});
     expect(tools.map((tool) => tool.name).filter((name) => /^Browser/.test(name ?? ''))).toEqual([]);
     const toolSearch = tools.find((tool) => tool.name === 'ToolSearch');
     expect(toolSearch).toBeDefined();
-    expect(toolSearch!.description).not.toMatch(/BrowserNavigate|BrowserScreenshot|BrowserClick/);
+    expect(toolSearch!.description).toMatch(/BrowserNavigate/);
 
-    // Global memory: search and save refuse with the user-scope reason, and the target's database holds no global row.
+    // The chat header's open browser opens a page of this remote chat, and an address typed there takes its host's rewrite
+    // and guard, a refusal naming its reason. The loopback daemon's ports forward as any host's: a typed address of its
+    // loopback opens on the forward with the forwarded-from chip, a clicked link opens on this computer once its port is
+    // forwarded, and a link whose forward cannot be had says so. None does nothing.
+    await recordToasts(app);
+    await recordOpenExternal(app);
+    const warnings = async (): Promise<string[]> => (await recordedToasts(app!)).filter((toast) => toast.severity === 'warning').map((toast) => toast.message);
+    await postFromWebview(tab, { type: 'openBrowser' });
+    await expect.poll(async () => (await browserTabs(app!)).length, { timeout: PAGE_TIMEOUT }).toBe(1);
+    await expect.poll(async () => (await activePageTab(app!))?.browser.loading, { timeout: PAGE_TIMEOUT }).toBe(false);
+    const address = (await shellPage(app)).getByTestId('browser-address');
+    await address.fill('10.0.0.5');
+    await address.press('Enter');
+    await expect.poll(warnings).toContainEqual(expect.stringContaining('10.0.0.5 is on this computer or its local network'));
+    // the stub listens on this computer, which is the loopback daemon's too, so its port's forward listens on another one
+    await address.fill(`localhost:${stub.port}`);
+    await address.press('Enter');
+    await expect.poll(async () => (await activePageTab(app!))?.browser.forwardedFrom?.targetUrl, { timeout: PAGE_TIMEOUT }).toBe(`http://localhost:${stub.port}/`);
+    expect(new URL((await activePageTab(app))!.browser.url).port).not.toBe(String(stub.port));
+    await expect((await shellPage(app)).getByTestId('browser-forwarded-from')).toContainText(`${LOCAL_DAEMON}:${stub.port}`);
+    const linksOpened = async (pathname: string): Promise<number> => (await openedExternally(app!)).filter((url) => URL.canParse(url) && new URL(url).hostname === 'localhost' && new URL(url).pathname === pathname).length;
+    await postFromWebview(tab, { type: 'openExternalUrl', url: 'http://localhost:3999/callback' });
+    await expect.poll(() => linksOpened('/callback')).toBe(1);
+    // an OAuth redirect keeps its port, which the stub holds on this computer
+    await postFromWebview(tab, { type: 'openExternalUrl', url: `http://localhost:3999/login?redirect_uri=${encodeURIComponent(`http://localhost:${stub.port}/cb`)}` });
+    const portInUse = `Port ${stub.port} is in use on this computer. Free it and try again.`;
+    await expect.poll(warnings).toContain(portInUse);
+    expect(await linksOpened('/login')).toBe(0);
+    // a link in the Markdown preview of the host's file takes the same forward, never straight to the system browser
+    fs.writeFileSync(path.join(folder, 'README.md'), '[dev server](http://localhost:3998/)\n');
+    expect(await openInEditor(app, { projectKey: remoteKey, relativePath: 'README.md', as: 'preview' })).toMatchObject({ ok: true });
+    await (await shellPage(app)).getByTestId('markdown-preview').getByRole('link', { name: 'dev server' }).click();
+    await expect.poll(() => linksOpened('/')).toBe(1);
+    // and so does a Ctrl+click on a link in the file's source, which Monaco would otherwise open as a window of its own
+    expect(await openInEditor(app, { projectKey: remoteKey, relativePath: 'README.md', as: 'source' })).toMatchObject({ ok: true });
+    await (await shellPage(app)).locator('.monaco-editor .detected-link').first().click({ modifiers: [process.platform === 'darwin' ? 'Meta' : 'Control'] });
+    await expect.poll(() => linksOpened('/')).toBe(2);
+    if (REVIEW_SHOTS !== undefined) {
+      const popup = await popupPage(app);
+      const toast = popupToasts(popup).filter({ hasText: portInUse });
+      await holdToast(app, toast);
+      fs.mkdirSync(REVIEW_SHOTS, { recursive: true });
+      for (const theme of THEMES) {
+        await showShellTheme(app, theme);
+        await toast.screenshot({ path: path.join(REVIEW_SHOTS, `link-port-in-use-${theme}.png`), animations: 'disabled' });
+      }
+      await showShellTheme(app, 'dark');
+    }
+
+    // Global memory: save and search go to this computer, so the save lands in this computer's database, the search finds it
+    // there, and the target's holds no global row (remote-memory.spec.ts covers ranking and the outbox).
     stub.replies.push(
-      { chunks: [], toolCalls: [{ name: 'SearchMemories', arguments: { query: 'anything', tiers: ['global'] } }] },
       { chunks: [], toolCalls: [{ name: 'SaveMemory', arguments: { content: 'e2e global preference', kind: 'preference', scope: 'global' } }] },
+      { chunks: [], toolCalls: [{ name: 'SearchMemories', arguments: { query: 'e2e global preference', tiers: ['global'] } }] },
       { chunks: ['Memory checked.'] },
     );
     await sendPrompt(tab, 'Use global memory');
     await expect(tab.getByText('Memory checked.')).toBeVisible({ timeout: 60_000 });
     await awaitTurnEnd(tab);
-    const [search, save] = toolResults(stub).slice(-2);
-    expect(search).toContain(MEMORY_REFUSAL);
-    expect(save).toContain(MEMORY_REFUSAL);
+    const [save, search] = toolResults(stub).slice(-2);
+    const savedId = /^Saved preference memory \(global\): (global:\S+)$/.exec(save ?? '')?.[1];
+    expect(savedId, save).toBeDefined();
+    expect(search).not.toContain(MEMORY_CLOSED);
+    expect(search).toContain(JSON.stringify(savedId));
 
     // A drop of this computer's file is refused with a toast naming both places; nothing reaches the composer.
     const composer = tab.getByTestId('composer');
@@ -715,14 +769,14 @@ test('on a loopback chat voice records in this computer\'s core and fills the re
     await expect(tab.getByTestId('composer').getByRole('img')).toHaveCount(1);
     await shutdownDaemon(app, home);
 
-    // Read once the daemon's core closed it: the target's memory database holds no global row and not the refused text.
+    // Read once the daemon's core closed it: the target's memory database holds no global row and not the saved text.
     const db = new DatabaseSync(path.join(targetDamoclesDir(home), 'memory.v3.db'), { readOnly: true });
     try {
       expect(db.prepare("SELECT count(*) AS n FROM memories WHERE scope = 'global'").get()).toEqual({ n: 0 });
     } finally {
       db.close();
     }
-    // the conversation records the refused call; the memory database files never hold its text
+    // the conversation records the call; the target's memory database files never hold its text
     expect(filesHolding(targetDamoclesDir(home), ['e2e global preference']).filter((hit) => hit.startsWith('memory'))).toEqual([]);
   } catch (error) {
     failure = error;

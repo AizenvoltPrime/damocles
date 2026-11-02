@@ -9,6 +9,7 @@ import { useCostLabel } from '@/composables/useCostLabel';
 import { useStatsFormat } from '@/composables/useStatsFormat';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useUsageStatsStore } from '@/stores/useUsageStatsStore';
+import HostBadge from '@/components/HostBadge.vue';
 import { useStatsLabels } from './stats-labels';
 
 const props = defineProps<{
@@ -33,7 +34,9 @@ function titleOf(s: UsageStatsTopSession): string {
 
 function blockedReason(s: UsageStatsTopSession): string | undefined {
   if (s.openable) return undefined;
-  return t(s.missing ? 'usageStats.topSessions.deletedHint' : 'usageStats.topSessions.otherFolderHint');
+  if (s.missing) return t('usageStats.topSessions.deletedHint');
+  const host = labels.host(s.hostId);
+  return host ? t('usageStats.topSessions.remoteHint', { host: host.name }) : t('usageStats.topSessions.otherFolderHint');
 }
 
 const sort = ref<{ column: Column; desc: boolean }>({ column: 'cost', desc: true });
@@ -41,7 +44,7 @@ const sort = ref<{ column: Column; desc: boolean }>({ column: 'cost', desc: true
 function sortKey(s: UsageStatsTopSession, column: Column): number | string {
   switch (column) {
     case 'title': return titleOf(s).toLocaleLowerCase(locale.value);
-    case 'project': return labels.project(s.projectKey, s.cwd).toLocaleLowerCase(locale.value);
+    case 'project': return labels.projectOnHost(s.projectKey, s.cwd, s.hostId).toLocaleLowerCase(locale.value);
     case 'cost': return s.cost;
     case 'tokens': return tokensOf(s);
     case 'lastActive': return s.lastActiveMs;
@@ -55,7 +58,7 @@ const rows = computed(() => {
     const kb = sortKey(b, column);
     const order = typeof ka === 'string' ? ka.localeCompare(kb as string, locale.value) : ka - (kb as number);
     return desc ? -order : order;
-  });
+  }).map((s) => ({ s, host: labels.host(s.hostId) }));
 });
 
 function toggleSort(column: Column): void {
@@ -126,7 +129,7 @@ function open(s: UsageStatsTopSession): void {
       </TableHeader>
       <TableBody>
         <TableRow
-          v-for="s in rows"
+          v-for="{ s, host } in rows"
           :key="s.sessionId"
           :data-session="s.sessionId"
           :class="s.openable ? 'cursor-pointer' : 'text-(--d-muted)'"
@@ -158,10 +161,20 @@ function open(s: UsageStatsTopSession): void {
             </div>
           </TableCell>
           <TableCell
-            class="max-w-32 truncate px-2 py-1.5"
+            class="max-w-32 px-2 py-1.5"
             :title="s.cwd ?? undefined"
           >
-            {{ labels.project(s.projectKey, s.cwd) }}
+            <div class="flex min-w-0 items-center gap-1.5">
+              <span class="min-w-6 truncate">{{ labels.project(s.projectKey, s.cwd) }}</span>
+              <HostBadge
+                v-if="host"
+                :name="host.name"
+                :tone="host.color"
+                :title="t('usageStats.onHost', { host: host.name })"
+                class="min-w-10 shrink"
+                data-stats-host
+              />
+            </div>
           </TableCell>
           <TableCell
             class="whitespace-nowrap px-2 py-1.5 text-right tabular-nums"

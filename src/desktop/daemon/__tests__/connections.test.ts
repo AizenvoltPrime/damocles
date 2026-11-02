@@ -13,7 +13,7 @@ import { createPersistentProtocol } from '../../../remote/persistent-protocol';
 import { streamSocket } from '../../../remote/stream-transport';
 import { WriteRefusedError } from '../../workspace/file-system';
 import type { HostStarters } from '../../workspace/host-starters';
-import { createConnections, MAX_UNAUTHENTICATED, type ConnectionPresence } from '../connections';
+import { createConnections, MAX_UNAUTHENTICATED, type ConnectionPresence, type ConnectionsDeps } from '../connections';
 import type { CoreTransport } from '../../core-protocol/endpoint';
 import type { ClientLink } from '../core-routes';
 import { authenticateBridge } from '../../../remote/handshake';
@@ -22,6 +22,8 @@ import { TEST_FACTS } from './in-process-daemon';
 import { readPidFile, runPaths, SHARED_HOME_WINDOW_MS, writePidFile } from '../token';
 import { startInProcessDaemon, type InProcessDaemon } from './in-process-daemon';
 import { connectClient, resumeClient } from './test-client';
+import { holdStream } from '../../../remote/tunnel-pipe';
+import type { AgentRelay } from '../agent-relay';
 
 // no terminal or formatter runs in these tests
 const NO_HOSTS: HostStarters = {
@@ -260,7 +262,7 @@ describe('daemon connections', () => {
 describe('daemon connections inside the grace', () => {
   const token = randomBytes(32);
 
-  function harness(maxHeldBytes: number) {
+  function harness(maxHeldBytes: number, overrides: Partial<Pick<ConnectionsDeps, 'control' | 'mirrorWatches' | 'agentUpstream'>> = {}) {
     let core: CoreTransport | undefined;
     let coreDrained: (() => Promise<void>) | undefined;
     const links: ClientLink[] = [];
@@ -270,6 +272,7 @@ describe('daemon connections inside the grace', () => {
       serverVersion: '0.0.0-test',
       facts: TEST_FACTS,
       workspace: { serve: () => ({ dispose: () => undefined }) },
+      ports: { serve: () => ({ dispose: () => undefined }) },
       core: {
         epoch: () => null,
         onState: () => ({ dispose: () => undefined }),
@@ -281,10 +284,12 @@ describe('daemon connections inside the grace', () => {
         },
       },
       control: {} as never,
+      mirrorWatches: { follow: () => Promise.resolve(), followSubcalls: () => Promise.resolve(), release: () => undefined },
       connectionsChanged: (connected) => presence.push(connected),
-      agentSock: () => undefined,
+      agentUpstream: () => undefined,
       maxHeldBytes,
       log: (line) => lines.push(line),
+      ...overrides,
     });
     // what the attach bridge hands the app: a socket past the bridge's authentication
     // a duplexPair side's destroy never reaches the other, so a drop destroys both
@@ -293,18 +298,199 @@ describe('daemon connections inside the grace', () => {
       ours.destroy();
       ends.get(ours)?.destroy();
     };
-    const socket = async (): Promise<Duplex> => {
+    // agentSock: the forwarded agent socket the bridge names
+    const socket = async (agentSock?: string): Promise<Duplex> => {
       const [ours, theirs] = duplexPair();
       ends.set(ours, theirs);
       connections.accept(theirs, token);
       const bridge = createPersistentProtocol({ socket: streamSocket(ours), maxBodyBytes: HANDSHAKE_MAX_BYTES, log: () => undefined });
-      await authenticateBridge(bridge, token);
+      await authenticateBridge(bridge, token, agentSock);
       const rest = bridge.detach();
       if (rest.length > 0) ours.unshift(Buffer.from(rest));
       return ours;
     };
     return { connections, socket, drop, presence, lines, links, core: () => core!, coreDrained: () => coreDrained!() };
   }
+
+  it('relays a client\'s agent only once that connection offers it, asks that client alone, and holds the process until its answer', async () => {
+    const upstreams: Array<[string, string | undefined]> = [];
+    let relay: AgentRelay | undefined;
+    const { connections, socket, drop } = harness(64 * 1024, {
+      agentUpstream: (clientId, upstream) => {
+        upstreams.push([clientId, upstream?.kind]);
+        if (upstream?.kind === 'relay') relay = upstream.relay;
+      },
+    });
+    const server = net.createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const accepted: net.Socket[] = [];
+    server.on('connection', (incoming) => accepted.push(incoming));
+    // a process in the container connecting to the client's proxy socket, whose daemon side the proxy hands the relay
+    const process = async (): Promise<{ socket: net.Socket; incoming: net.Socket; received: () => string; closed: Promise<void> }> => {
+      const before = accepted.length;
+      const socket = net.connect((server.address() as net.AddressInfo).port, '127.0.0.1');
+      let text = '';
+      socket.on('data', (chunk) => { text += chunk.toString('utf8'); });
+      socket.on('error', () => undefined);
+      const closed = new Promise<void>((resolve) => socket.on('close', () => resolve()));
+      await vi.waitFor(() => expect(accepted.length).toBe(before + 1));
+      return { socket, incoming: accepted[before]!, received: () => text, closed };
+    };
+    try {
+      const laptopSocket = await socket();
+      const laptop = await connectClient(laptopSocket, { clientId: 'laptop' });
+      const desktopSocket = await socket();
+      const desktop = await connectClient(desktopSocket, { clientId: 'desktop' });
+      const laptopAsked: number[] = [];
+      const desktopAsked: number[] = [];
+      laptop.control.onEvent('agent.request', ({ request }) => laptopAsked.push(request));
+      desktop.control.onEvent('agent.request', ({ request }) => desktopAsked.push(request));
+      expect(upstreams).toEqual([['laptop', undefined], ['desktop', undefined]]);
+      await laptop.control.request('agent.relay', {});
+      expect(upstreams.at(-1)).toEqual(['laptop', 'relay']);
+
+      const first = await process();
+      relay!.request(first.incoming);
+      await vi.waitFor(() => expect(laptopAsked).toEqual([1]));
+      // nothing the process writes leaves the daemon before the client answers
+      first.socket.write('request');
+      const stream = holdStream(laptop.mux.openStream());
+      const carried: string[] = [];
+      stream.onData((bytes) => carried.push(Buffer.from(bytes).toString('utf8')));
+      expect(first.incoming.isPaused()).toBe(true);
+      expect(carried).toEqual([]);
+      expect(await laptop.control.request('agent.connect', { request: 1, stream: stream.id })).toEqual({ ok: true });
+      await vi.waitFor(() => expect(carried.join('')).toBe('request'));
+      stream.write(Buffer.from('answer'));
+      await vi.waitFor(() => expect(first.received()).toBe('answer'));
+
+      // a request already taken, or one never drawn: the named stream is claimed and ended, so it stops counting
+      for (const request of [1, 99]) {
+        const late = holdStream(laptop.mux.openStream());
+        const ended = new Promise<void>((resolve) => late.onEnd(() => resolve()));
+        expect(await laptop.control.request('agent.connect', { request, stream: late.id })).toEqual({ ok: false });
+        await ended;
+        late.end();
+      }
+
+      // a refusal closes the waiting process at once
+      const second = await process();
+      relay!.request(second.incoming);
+      await vi.waitFor(() => expect(laptopAsked).toEqual([1, 2]));
+      await laptop.control.request('agent.refuse', { request: 2 });
+      await second.closed;
+      expect(desktopAsked).toEqual([]);
+
+      // an answer naming a stream the daemon no longer holds (main ended it before the request arrived) refuses the process too
+      const third = await process();
+      relay!.request(third.incoming);
+      await vi.waitFor(() => expect(laptopAsked).toEqual([1, 2, 3]));
+      await expect(laptop.control.request('agent.connect', { request: 3, stream: 999_999 })).rejects.toThrow('is not open');
+      await third.closed;
+
+      // the client out of reach: no upstream until it resumes, and then the relay again, whatever agent socket the new bridge names
+      drop(laptopSocket);
+      await vi.waitFor(() => expect(upstreams.at(-1)).toEqual(['laptop', undefined]));
+      expect((await resumeClient(laptop, await socket('/tmp/ssh-image/agent.1'), 'laptop')).kind).toBe('welcome');
+      await vi.waitFor(() => expect(upstreams.at(-1)).toEqual(['laptop', 'relay']));
+      // a connection that never offered the relay takes its new bridge's agent socket
+      drop(desktopSocket);
+      await vi.waitFor(() => expect(upstreams.at(-1)).toEqual(['desktop', undefined]));
+      expect((await resumeClient(desktop, await socket('/tmp/ssh-session/agent.2'), 'desktop')).kind).toBe('welcome');
+      await vi.waitFor(() => expect(upstreams.at(-1)).toEqual(['desktop', 'socket']));
+      desktop.protocol.close('done');
+      laptop.protocol.close('done');
+    } finally {
+      await connections.endAll();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('follows a project before it serves the project\'s mirror.sync, sends mirror.changed for it, and lets go of it with the connection', async () => {
+    const order: string[] = [];
+    let announce: (() => void) | undefined;
+    let watching!: () => void;
+    const released: string[] = [];
+    const { connections, socket } = harness(64 * 1024, {
+      mirrorWatches: {
+        follow: (_id, projectKey, changed) => {
+          order.push(`follow ${projectKey}`);
+          announce = changed;
+          return new Promise<void>((resolve) => { watching = resolve; });
+        },
+        followSubcalls: () => Promise.resolve(),
+        release: (id) => released.push(id),
+      },
+      control: { 'mirror.sync': () => { order.push('sync'); return { changes: [] }; } } as never,
+    });
+    const client = await connectClient(await socket());
+    const answer = client.control.request('mirror.sync', { projectKey: '/srv/app', budgetBytes: 1024, files: [] });
+    await vi.waitFor(() => expect(order).toEqual(['follow /srv/app']));
+    // the listing waits for the watch
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(order).toEqual(['follow /srv/app']);
+    watching();
+    expect(await answer).toEqual({ changes: [] });
+    expect(order).toEqual(['follow /srv/app', 'sync']);
+    const heard = new Promise((resolve) => client.control.onEvent('mirror.changed', resolve));
+    announce!();
+    expect(await heard).toEqual({ projectKey: '/srv/app' });
+    expect(released).toEqual([]);
+    client.protocol.close('done');
+    await connections.endAll();
+    expect(released).toHaveLength(1);
+  });
+
+  it('answers mirror.sync and mirror.syncSubcalls when their watch fails, and logs it', async () => {
+    const { connections, socket, lines } = harness(64 * 1024, {
+      mirrorWatches: {
+        follow: () => Promise.reject(new Error('no watch for you')),
+        followSubcalls: () => Promise.reject(new Error('no ledger watch')),
+        release: () => undefined,
+      },
+      control: { 'mirror.sync': () => ({ changes: [] }), 'mirror.syncSubcalls': () => ({}) } as never,
+    });
+    const client = await connectClient(await socket());
+    expect(await client.control.request('mirror.sync', { projectKey: '/srv/app', budgetBytes: 1024, files: [] })).toEqual({ changes: [] });
+    expect(await client.control.request('mirror.syncSubcalls', { budgetBytes: 1024 })).toEqual({});
+    expect(lines.filter((line) => line.startsWith('[mirror]'))).toEqual([
+      '[mirror] connection-1: watching /srv/app failed, so its changes are not announced: no watch for you',
+      '[mirror] connection-1: watching the sub-call ledger failed, so its changes are not announced: no ledger watch',
+    ]);
+    client.protocol.close('done');
+    await connections.endAll();
+  });
+
+  it('follows the sub-call ledger before it serves mirror.syncSubcalls, and sends mirror.subcallsChanged for it', async () => {
+    const order: string[] = [];
+    let announce: (() => void) | undefined;
+    let watching!: () => void;
+    const { connections, socket } = harness(64 * 1024, {
+      mirrorWatches: {
+        follow: () => Promise.resolve(),
+        followSubcalls: (_id, changed) => {
+          order.push('follow');
+          announce = changed;
+          return new Promise<void>((resolve) => { watching = resolve; });
+        },
+        release: () => undefined,
+      },
+      control: { 'mirror.syncSubcalls': () => { order.push('sync'); return {}; } } as never,
+    });
+    const client = await connectClient(await socket());
+    const answer = client.control.request('mirror.syncSubcalls', { budgetBytes: 1024 });
+    await vi.waitFor(() => expect(order).toEqual(['follow']));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(order).toEqual(['follow']);
+    watching();
+    expect(await answer).toEqual({});
+    expect(order).toEqual(['follow', 'sync']);
+    const heard = new Promise((resolve) => client.control.onEvent('mirror.subcallsChanged', resolve));
+    announce!();
+    expect(await heard).toEqual({});
+    client.protocol.close('done');
+    await connections.endAll();
+  });
 
   it('drops a dropped connection whose held frames pass the bound, so the next resume is refused unknown-token', async () => {
     const { connections, socket, drop, presence, lines, core } = harness(64 * 1024);

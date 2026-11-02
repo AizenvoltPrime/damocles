@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import * as esbuild from 'esbuild';
 // @ts-expect-error -- plain .mjs helper, no types
-import { launchers, modeOf, nodeEntries, npmPackageEntries, packageEntries, serverClosure, serverFlavor, serverRoots, selfTestExternals } from '../build-server.mjs';
+import { clampsLoadAlign, launchers, modeOf, nodeEntries, npmPackageEntries, packageEntries, serverClosure, serverFlavor, serverRoots, selfTestExternals } from '../build-server.mjs';
 // @ts-expect-error -- plain .mjs helper, no types
 import { FIXED_MTIME, gzipHeader, readTarGz, readZip, tarGz, zip } from '../server-archive.mjs';
 // @ts-expect-error -- plain .mjs helper, no types
@@ -14,6 +14,7 @@ import { SERVER_TARGETS } from '../server-targets.mjs';
 import { DESKTOP_ONLY_PACKAGES } from '../sync-vscodeignore.mjs';
 // @ts-expect-error -- plain .mjs helper, no types
 import { EXTENSION_EXTERNALS } from '../extension-externals.mjs';
+import { aligns, elf, NODE_LINUX_X64 } from './elf-fixture';
 
 type Entry = { path: string; mode: number; data?: Buffer; source?: string; type?: string };
 type Spec = { platform: string; arch: string; libc: string | null; natives: string[]; ptyPrebuild: string };
@@ -44,7 +45,8 @@ describe('the node_modules closure', () => {
     for (const spec of [FAKE_LINUX, FAKE_WINDOWS]) {
       const roots = serverRoots(spec) as string[];
       expect(roots.filter((name) => ['electron', 'electron-updater', 'node:sqlite', '@earendil-works/pi-mcp/*'].includes(name))).toEqual([]);
-      expect(selfTestExternals(spec)).toEqual(roots.filter((name) => name !== 'node-pty'));
+      expect(roots).toContain('@devcontainers/cli');
+      expect(selfTestExternals(spec)).toEqual(roots.filter((name) => name !== 'node-pty' && name !== '@devcontainers/cli'));
     }
     expect(serverRoots(FAKE_WINDOWS)).not.toContain('@parcel/watcher');
   });
@@ -90,7 +92,7 @@ describe('the package file list', () => {
   it('lists the launchers, dist without maps, the portable closure with one node-pty prebuild, and the root files', () => {
     const entries = packageEntries({ spec: FAKE_LINUX, target: 'linux-x64', version: '1.0.0', nodeVersion: '24.22.0', distDir: dist(), nodeModules: nodeModules(), root: repo(), portable: ['node-pty', 'zod'], externals: ['zod'] }) as Entry[];
     expect(entries.map((entry) => entry.path).sort()).toEqual([
-      'LICENSE', 'THIRD-PARTY-NOTICES.md', 'bin/damocles-server', 'dist/askpass/askpass.sh', 'dist/core-host.js', 'dist/daemon.js',
+      'LICENSE', 'THIRD-PARTY-NOTICES.md', 'bin/damocles-server', 'bin/helpers/browser.sh', 'bin/remote-cli/damocles', 'dist/askpass/askpass.sh', 'dist/core-host.js', 'dist/daemon.js',
       'l10n/bundle.l10n.json', 'node_modules/node-pty/lib/index.js', 'node_modules/node-pty/package.json', 'node_modules/node-pty/prebuilds/linux-x64/pty.node',
       'node_modules/zod/index.js', 'node_modules/zod/package.json', 'package.json', 'package.nls.el.json', 'package.nls.json',
       'resources/grammars/tree-sitter-go.wasm', 'resources/shell-integration/shellIntegration-bash.sh', 'server-package.json',
@@ -102,22 +104,25 @@ describe('the package file list', () => {
     });
   });
 
-  it('keeps the Windows prebuild without its debug symbols, and adds the .cmd launcher', () => {
+  it('keeps the Windows prebuild without its debug symbols, and adds the .cmd launcher and the damocles command\'s sh forms for Git Bash', () => {
     const entries = packageEntries({ spec: FAKE_WINDOWS, target: 'win32-x64', version: '1.0.0', nodeVersion: '24.22.0', distDir: dist(), nodeModules: nodeModules(), root: repo(), portable: ['node-pty'], externals: [] }) as Entry[];
     const paths = entries.map((entry) => entry.path);
     expect(paths.filter((path) => path.startsWith('node_modules/node-pty/prebuilds/'))).toEqual(['node_modules/node-pty/prebuilds/win32-x64/conpty.node']);
     expect(paths).toContain('bin/damocles-server.cmd');
+    // from resources/server-bin: the sh forms Git Bash, MSYS2 and Cygwin run, the .cmd, and no .cmd BROWSER (targetEntries adds browser.exe)
+    expect(paths.filter((path) => /^bin\/(remote-cli|helpers)\//.test(path))).toEqual(['bin/remote-cli/damocles', 'bin/remote-cli/damocles.cmd', 'bin/helpers/browser.sh']);
+    expect(entries.find((entry) => entry.path === 'bin/remote-cli/damocles')?.source).toMatch(/resources[\\/]server-bin[\\/]remote-cli[\\/]damocles$/);
     expect(launchers(FAKE_WINDOWS)[0].data.toString()).toContain('node/node.exe');
   });
 
   it('marks only the launcher, Node, rg, spawn-helper and the askpass scripts executable', () => {
-    for (const path of ['bin/damocles-server', 'node/node', 'node_modules/@vscode/ripgrep-linux-x64/bin/rg', 'node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper', 'dist/askpass/askpass.sh', 'dist/git-credential/git-credential-relay.sh']) expect({ path, mode: modeOf(path) }).toEqual({ path, mode: 0o755 });
-    for (const path of ['bin/damocles-server.cmd', 'node/node.exe', 'dist/daemon.js', 'node_modules/node-pty/prebuilds/linux-x64/pty.node', 'resources/shell-integration/shellIntegration-bash.sh', 'dist/git-credential/git-credential-relay.cmd']) expect({ path, mode: modeOf(path) }).toEqual({ path, mode: 0o644 });
+    for (const path of ['bin/damocles-server', 'bin/remote-cli/damocles', 'bin/helpers/browser.sh', 'node/node', 'node_modules/@vscode/ripgrep-linux-x64/bin/rg', 'node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper', 'dist/askpass/askpass.sh', 'dist/git-credential/git-credential-relay.sh']) expect({ path, mode: modeOf(path) }).toEqual({ path, mode: 0o755 });
+    for (const path of ['bin/damocles-server.cmd', 'bin/remote-cli/damocles.cmd', 'bin/helpers/browser.exe', 'node/node.exe', 'dist/daemon.js', 'node_modules/node-pty/prebuilds/linux-x64/pty.node', 'resources/shell-integration/shellIntegration-bash.sh', 'dist/git-credential/git-credential-relay.cmd']) expect({ path, mode: modeOf(path) }).toEqual({ path, mode: 0o644 });
   });
 
   it('takes node and its license from a Node archive, and an npm tarball\'s files under node_modules', () => {
     const top = 'node-v24.22.0-linux-x64';
-    const archive = tarGz([{ path: `${top}/bin/node`, mode: 0o755, data: Buffer.from('ELF') }, { path: `${top}/LICENSE`, mode: 0o644, data: Buffer.from('MIT') }, { path: `${top}/bin/npm`, mode: 0o755, data: Buffer.from('') }]);
+    const archive = tarGz([{ path: `${top}/bin/node`, mode: 0o755, data: elf(NODE_LINUX_X64) }, { path: `${top}/LICENSE`, mode: 0o644, data: Buffer.from('MIT') }, { path: `${top}/bin/npm`, mode: 0o755, data: Buffer.from('') }]);
     expect((nodeEntries(FAKE_LINUX, `${top}.tar.gz`, archive) as Entry[]).map((entry) => [entry.path, entry.mode])).toEqual([['node/LICENSE', 0o644], ['node/node', 0o755]]);
     const winTop = 'node-v24.22.0-win-x64';
     const winArchive = zip([{ path: `${winTop}/node.exe`, mode: 0o644, data: Buffer.from('MZ') }, { path: `${winTop}/LICENSE`, mode: 0o644, data: Buffer.from('MIT') }]);
@@ -126,6 +131,24 @@ describe('the package file list', () => {
     expect((npmPackageEntries('@vscode/ripgrep-linux-x64', tarball) as Entry[]).map((entry) => [entry.path, entry.mode])).toEqual([
       ['node_modules/@vscode/ripgrep-linux-x64/bin/rg', 0o755], ['node_modules/@vscode/ripgrep-linux-x64/package.json', 0o644],
     ]);
+  });
+
+  it('clamps the PT_LOAD alignment of the x64 Linux and Alpine Node to 4 KiB, which WSL 1 needs, and of no other target\'s', () => {
+    const shipped = elf(NODE_LINUX_X64);
+    const nodeOf = (target: string) => {
+      const top = `node-${target}`;
+      const archive = tarGz([{ path: `${top}/bin/node`, mode: 0o755, data: shipped }, { path: `${top}/LICENSE`, mode: 0o644, data: Buffer.from('MIT') }]);
+      return (nodeEntries(SERVER_TARGETS[target], `${top}.tar.gz`, archive) as Entry[]).find((entry) => entry.path === 'node/node')!.data!;
+    };
+    for (const target of ['linux-x64', 'alpine-x64']) expect({ target, aligns: aligns(nodeOf(target)) }).toEqual({ target, aligns: [0x1, 0x1000, 0x1000, 0x1000, 0x1000, 0x1000, 0x1000, 0x10] });
+    for (const target of ['linux-arm64', 'alpine-arm64', 'darwin-x64', 'darwin-arm64']) expect({ target, same: nodeOf(target).equals(shipped) }).toEqual({ target, same: true });
+    expect(clampsLoadAlign(SERVER_TARGETS['win32-x64'])).toBe(false);
+  });
+
+  it('fails the build when the x64 Linux Node is not an executable it can clamp', () => {
+    const top = 'node-v24.22.0-linux-x64';
+    const archive = tarGz([{ path: `${top}/bin/node`, mode: 0o755, data: Buffer.from('#!/bin/sh\n'.padEnd(80)) }, { path: `${top}/LICENSE`, mode: 0o644, data: Buffer.from('MIT') }]);
+    expect(() => nodeEntries(FAKE_LINUX, `${top}.tar.gz`, archive)).toThrow(`${top}.tar.gz ${top}/bin/node: not an ELF file`);
   });
 });
 
@@ -175,7 +198,7 @@ describe('the server flavor', () => {
     const text = result.outputFiles[0]!.text;
     expect(text).toContain('SERVER_PACKAGE = true');
     const loaded: { exports: { daemonE2eHooks?: (env: Record<string, string>) => boolean } } = { exports: {} };
-    new Function('module', 'exports', text)(loaded, loaded.exports);
+    new Function('module', 'exports', 'require', text)(loaded, loaded.exports, require);
     expect(loaded.exports.daemonE2eHooks!({ DAMOCLES_E2E_HOOKS: '1' })).toBe(false);
   });
 });

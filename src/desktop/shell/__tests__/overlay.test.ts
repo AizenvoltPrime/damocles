@@ -631,7 +631,7 @@ describe('overlay locale', () => {
     const wrapper = mountOverlay();
     await flushPromises();
     expect(document.documentElement.lang).toBe('en');
-    api.pushState({ locale: 'el', platform: 'win32', remoteEnabled: true });
+    api.pushState({ locale: 'el', platform: 'win32' });
     await flushPromises();
     expect(document.documentElement.lang).toBe('el');
     await open(wrapper, 'r1', MENU);
@@ -641,7 +641,7 @@ describe('overlay locale', () => {
   it('labels the popup page\'s stack and its collapsed toasts in Greek after a language change', async () => {
     const wrapper = mountNotifier();
     await flushPromises();
-    api.pushState({ locale: 'el', platform: 'win32', remoteEnabled: true });
+    api.pushState({ locale: 'el', platform: 'win32' });
     for (const id of ['t1', 't2', 't3', 't4']) api.toast(notice(id, 'info', `toast ${id}`, []));
     await flushPromises();
 
@@ -1076,7 +1076,7 @@ describe('command palette', () => {
   });
 
   it('in Greek finds a command by its English title', async () => {
-    vi.mocked(api.getState).mockResolvedValue({ locale: 'el', platform: 'win32', remoteEnabled: true });
+    vi.mocked(api.getState).mockResolvedValue({ locale: 'el', platform: 'win32' });
     api.commands.list = [{ ...COMMANDS[1]!, label: 'Συνομιλία: Χρήση περιβάλλοντος', category: 'Συνομιλία' }];
     const wrapper = mountOverlay();
     await flushPromises();

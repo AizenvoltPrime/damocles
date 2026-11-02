@@ -31,6 +31,13 @@ const WINDOWS_RESERVED_DEVICE_NAME = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\
  * would race two launches onto one directory assignment.
  */
 export class DownloadManager {
+  // the folder this manager's launch dirs live in and its pruning reads; each authority's context has its own
+  private readonly root: string;
+
+  constructor(root: string = DAMOCLES_BROWSER_DOWNLOADS_DIR) {
+    this.root = root;
+  }
+
   private downloadsDir: string | null = null;
   private downloads: DownloadEntry[] = [];
   // Saved download paths reserved this launch, so concurrent same-name downloads never collide on disk.
@@ -58,7 +65,7 @@ export class DownloadManager {
     // new one is never a prune target). Best-effort — never blocks a launch.
     await this.pruneOldDownloadDirs();
     const launchId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const downloadsDir = join(DAMOCLES_BROWSER_DOWNLOADS_DIR, launchId);
+    const downloadsDir = join(this.root, launchId);
     await fsp.mkdir(downloadsDir, { recursive: true });
     this.downloadsDir = downloadsDir;
   }
@@ -89,12 +96,12 @@ export class DownloadManager {
    */
   private async pruneOldDownloadDirs(): Promise<void> {
     try {
-      const entries = await fsp.readdir(DAMOCLES_BROWSER_DOWNLOADS_DIR, { withFileTypes: true });
+      const entries = await fsp.readdir(this.root, { withFileTypes: true });
       const dirs = entries.filter((e) => e.isDirectory());
       if (dirs.length <= DOWNLOAD_DIR_RETENTION) return;
       const withMtime = await Promise.all(
         dirs.map(async (d) => {
-          const full = join(DAMOCLES_BROWSER_DOWNLOADS_DIR, d.name);
+          const full = join(this.root, d.name);
           try {
             return { full, mtime: (await fsp.stat(full)).mtimeMs };
           } catch {

@@ -14,6 +14,8 @@ import { clickSectionAction } from './support/shell-ui';
 import { writeUserSettings } from './support/hermetic';
 import { colouredPixelsPerFrame } from './support/frames';
 
+const clipboardKey = (letter: string): string => (process.platform === 'darwin' ? `⌘${letter}` : `Ctrl+${letter}`);
+
 test('the Files tree lists the project lazily, hides files.exclude matches, and opens a file in the editor on click', async ({ foreground: _foreground, home, launch }) => {
   fs.mkdirSync(path.join(home.project, '.git'), { recursive: true });
   fs.writeFileSync(path.join(home.project, '.git', 'HEAD'), 'ref: refs/heads/main\n');
@@ -134,7 +136,9 @@ test('New file, New folder and Rename use inline inputs, Delete moves to the tra
   await expect(overlayMenu(overlay)).toBeVisible();
   await expect(overlay.getByTestId('overlay-menu-caption')).toHaveText('src/renamed.ts');
   expect(await overlayMenu(overlay).locator('[data-menu-item]').allTextContents()).toEqual([
-    'OpenClick', 'Open in focus overlay', 'Mention in chatDrag', 'RenameF2', 'DeleteDel', 'Copy path', 'Copy relative path', 'Reveal in File Explorer',
+    'OpenClick', 'Open in focus overlay', 'Mention in chatDrag',
+    `Cut${clipboardKey('X')}`, `Copy${clipboardKey('C')}`, `Paste${clipboardKey('V')}`,
+    'RenameF2', 'DeleteDel', 'Copy path', 'Copy relative path', 'Reveal in File Explorer',
   ]);
   await menuItem(overlay, 'copyRelativePath').click();
   await expect.poll(() => clipboard.readText(app)).toBe(path.join('src', 'renamed.ts'));

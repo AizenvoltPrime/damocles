@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { DamoclesShellApi } from '../shell-channels';
+import { SHELL_CHANNELS, type DamoclesShellApi } from '../shell-channels';
 
 const H = vi.hoisted(() => ({
   exposed: undefined as DamoclesShellApi | undefined,
@@ -52,6 +52,32 @@ describe('shell preload', () => {
       ['damocles:shell:hosts:open-folder', { hostId: 'h' }],
       ['damocles:shell:hosts:rename-on-card', { hostId: 'h' }],
       ['damocles:shell:connect:open', {}],
+    ]);
+  });
+
+  it('sends the Files transfer calls as their own fields only, on their own channels', async () => {
+    await import('../shell');
+    const api = H.exposed!;
+    H.invoked.length = 0;
+    const ref = { projectKey: 'p', relativePath: 'src', extra: 1 } as never;
+    await api.copyFilesIn({ projectKey: 'p', relativeDir: 'src', paths: ['C:\\a.png'], withoutPath: 1, origin: 'drop', extra: 1 } as never);
+    await api.pickFilesToCopyIn(ref);
+    await api.dropFilesRow({ from: ref, toDir: ref, copy: true, extra: 1 } as never);
+    await api.setFilesClipboard({ op: 'cut', ref, extra: 1 } as never);
+    await api.clearFilesClipboard();
+    await api.pasteFiles({ toDir: ref, extra: 1 } as never);
+    await api.downloadFile(ref);
+    await api.cancelFilesTransfer(7);
+    const folder = { projectKey: 'p', relativePath: 'src' };
+    expect(H.invoked).toEqual([
+      ['damocles:shell:files:copy-in', { projectKey: 'p', relativeDir: 'src', paths: ['C:\\a.png'], withoutPath: 1, origin: 'drop' }],
+      ['damocles:shell:files:pick-copy-in', folder],
+      ['damocles:shell:files:drop-row', { from: folder, toDir: folder, copy: true }],
+      [SHELL_CHANNELS.filesClipboardSet, { op: 'cut', ref: folder }],
+      [SHELL_CHANNELS.filesClipboardClear, {}],
+      ['damocles:shell:files:paste', { toDir: folder }],
+      ['damocles:shell:files:download', folder],
+      ['damocles:shell:files:transfer-cancel', { transferId: 7 }],
     ]);
   });
 });

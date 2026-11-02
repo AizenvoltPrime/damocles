@@ -41,3 +41,13 @@ export function isSendableAddress(address: string): boolean {
   const url = typedAddress(address)?.url;
   return url === undefined || url === BLANK || /^https?:/.test(url);
 }
+
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/** Where a forwarded page lives, as its tab's chip names it: "prod-1:5173", or "prod-1 · db:5432" for another target address. */
+export function forwardedTarget(from: { readonly hostName: string; readonly targetUrl: string }): string {
+  if (!URL.canParse(from.targetUrl)) return pageText(from.hostName);
+  const url = new URL(from.targetUrl);
+  const port = url.port || (url.protocol === 'https:' ? '443' : '80');
+  return LOOPBACK_HOSTS.has(url.hostname) ? `${pageText(from.hostName)}:${port}` : `${pageText(from.hostName)} · ${url.hostname}:${port}`;
+}

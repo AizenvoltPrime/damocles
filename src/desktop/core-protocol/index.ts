@@ -53,5 +53,6 @@ export function createMainEndpoint(transport: CoreTransport, log: (line: string)
 }
 
 export function createCoreEndpoint(transport: CoreTransport, log: (line: string) => void, onViolation?: (error: CoreProtocolError) => void, actor?: ActorContext): CoreEndpoint {
-  return createEndpoint({ transport, outgoing: CORE_TO_MAIN, incoming: MAIN_TO_CORE, log, errors: ERROR_CODEC, ...(onViolation ? { onViolation } : {}), ...(actor ? { actor } : {}) });
+  // a request or answer of core outside the contract would end core where the other side parses it
+  return createEndpoint({ transport, outgoing: CORE_TO_MAIN, incoming: MAIN_TO_CORE, log, errors: ERROR_CODEC, checkOutgoing: true, ...(onViolation ? { onViolation } : {}), ...(actor ? { actor } : {}) });
 }

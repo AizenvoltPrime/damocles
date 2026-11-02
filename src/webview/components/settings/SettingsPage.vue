@@ -71,7 +71,7 @@ watch(() => page.shown.value.size, (count) => emit('matches', count), { immediat
     data-testid="settings-scope-loading"
   >
     <LoaderCircle
-      class="sm-spin size-3.5"
+      class="d-spinning [--spin-duration:.8s] size-3.5"
       aria-hidden="true"
     />
     {{ scopeView.loading }}

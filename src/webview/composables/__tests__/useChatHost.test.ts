@@ -20,6 +20,8 @@ function bridge(initial: { hostId: string; name: string; computer: string } | un
       listener = next;
       return () => {};
     }),
+    getHostNames: () => undefined,
+    onHostNames: () => () => undefined,
     getOffline: vi.fn(),
     hostAction: vi.fn(),
     getConnection: vi.fn(),

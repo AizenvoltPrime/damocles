@@ -11,6 +11,12 @@ export interface BridgeHost {
   readonly update?: { readonly serverVersion: string; readonly runningAgents: number; readonly phase: 'offer' | 'waiting' };
 }
 
+/** A saved host as this computer's host store names it, for pages of this computer's core that show remote data. */
+export interface BridgeHostName {
+  readonly name: string;
+  readonly color?: HostTone;
+}
+
 /** `window.damoclesBridge`, exposed by the desktop panel preload through contextBridge; payloads are untyped at that boundary. */
 export interface DamoclesBridge {
   postMessage(message: unknown): void;
@@ -32,4 +38,8 @@ export interface DamoclesBridge {
   queueAction(action: HeldMessageAction): void;
   // a remote chat shown read-only from its session mirror while its host is not connected; undefined otherwise
   getOffline(): { readonly hostId: string; readonly hostName: string } | undefined;
+  // a page of this computer's core: every saved host's name and color by host id, from main's init; undefined on a remote
+  // chat's page and before the init, after which onHostNames hears it, and again after a host is added, renamed, recolored or forgotten
+  getHostNames(): Readonly<Record<string, BridgeHostName>> | undefined;
+  onHostNames(listener: (hostNames: Readonly<Record<string, BridgeHostName>>) => void): () => void;
 }

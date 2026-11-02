@@ -133,7 +133,7 @@ describe.skipIf(!runnable)('startSshTransport against a Docker sshd (needs Docke
     // a build without the target's package: the attempt runs to the probe's report and stops there
     manifest: { version: '3.7.0', protocolVersion: 1, packages: {} } satisfies ServerManifest,
     releasesUrl: 'http://127.0.0.1:9/releases',
-    artifacts: { packagePath: async () => { throw new Error('no upload in this test'); } },
+    artifacts: { packageFolder: () => 'unused', packagePath: async () => { throw new Error('no upload in this test'); } },
     sshConfigFile: config,
     log: () => undefined,
     ...overrides,
@@ -207,7 +207,7 @@ describe.skipIf(!runnable)('startSshTransport against a Docker sshd (needs Docke
     const stub = stubPackage('3.7.1');
     const progress: number[] = [];
     const steps: string[] = [];
-    const result = await startSshTransport(options(quietHooks(progress, steps), { manifest: stub.manifest, artifacts: { packagePath: async () => stub.file }, cachedPlatform: { os: 'linux' } }));
+    const result = await startSshTransport(options(quietHooks(progress, steps), { manifest: stub.manifest, artifacts: { packageFolder: () => 'unused', packagePath: async () => stub.file }, cachedPlatform: { os: 'linux' } }));
     try {
       expect(result.probe).toEqual({ target: 'alpine-x64', installDir: '/home/dev/.damocles/server', notices: [] });
       // a key that needs no question still passes Authenticating, once the remote command runs
@@ -236,7 +236,7 @@ describe.skipIf(!runnable)('startSshTransport against a Docker sshd (needs Docke
     const bytes = Buffer.from(stub.data);
     bytes.writeUInt8(bytes.readUInt8(bytes.length - 20) ^ 0xff, bytes.length - 20);
     writeFileSync(tampered, bytes);
-    const failure = await startSshTransport(options(quietHooks(), { manifest: stub.manifest, artifacts: { packagePath: async () => tampered }, cachedPlatform: { os: 'linux' } })).then(() => undefined, (err: unknown) => err as SshConnectError);
+    const failure = await startSshTransport(options(quietHooks(), { manifest: stub.manifest, artifacts: { packageFolder: () => 'unused', packagePath: async () => tampered }, cachedPlatform: { os: 'linux' } })).then(() => undefined, (err: unknown) => err as SshConnectError);
     expect(failure?.code).toBe('hashMismatch');
     const listing = await run(['exec', name, 'ls', '-a', '/home/dev/.damocles/server']);
     expect(listing).not.toMatch(/3\.7\.2/);
@@ -248,7 +248,7 @@ describe.skipIf(!runnable)('startSshTransport against a Docker sshd (needs Docke
     const stub = stubPackage('3.7.3');
     const folder = "/tmp/my 'odd' $dir";
     await run(['exec', name, 'sh', '-c', `mkdir -p "/tmp/my 'odd' \\$dir" && chmod 777 "/tmp/my 'odd' \\$dir" && mkdir -p /home/dev/.damocles/server/run-0123456789abcdef /home/dev/.damocles/server/.staging-left && chown -R dev /home/dev/.damocles`]);
-    const attempt = options(quietHooks(), { manifest: stub.manifest, artifacts: { packagePath: async () => stub.file }, cachedPlatform: { os: 'linux' }, installFolder: folder, previousInstallFolder: null });
+    const attempt = options(quietHooks(), { manifest: stub.manifest, artifacts: { packageFolder: () => 'unused', packagePath: async () => stub.file }, cachedPlatform: { os: 'linux' }, installFolder: folder, previousInstallFolder: null });
     const result = await startSshTransport(attempt);
     result.dispose();
     expect(result.probe.installDir).toBe(`${folder}/dev`);

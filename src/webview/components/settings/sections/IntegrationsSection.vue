@@ -8,10 +8,12 @@ import SettingSelect from '../controls/SettingSelect.vue';
 import SettingSwitch from '../controls/SettingSwitch.vue';
 import { useSettingWrite } from '../settings-writes';
 import { useToolGroupSwitch, type SwitchableToolGroup } from '../tool-groups';
-import { useSettingsPage } from '../settings-view';
+import { useSettingsMachineHost, useSettingsPage } from '../settings-view';
+import McpHostServers from '../McpHostServers.vue';
 
 const { t } = useI18n();
 const page = useSettingsPage();
+const machineHost = useSettingsMachineHost();
 const settingsStore = useSettingsStore();
 const { mcpEnabled, imageGeneration, currentSettings } = storeToRefs(settingsStore);
 const write = useSettingWrite();
@@ -86,6 +88,10 @@ function setImageModel(model: string): void {
       @update:model-value="setMcp"
     />
   </SettingsRow>
+  <McpHostServers
+    v-if="machineHost()"
+    :host="machineHost()!"
+  />
   <template
     v-for="entry in switches"
     :key="entry.id"

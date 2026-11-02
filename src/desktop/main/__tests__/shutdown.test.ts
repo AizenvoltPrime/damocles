@@ -228,6 +228,7 @@ describe('a quit\'s detach from its daemons', () => {
     const detached = detachRemotes({
       mirrorsIdle: () => sync.promise.then(() => order.push('mirror idle')),
       disconnect: async () => { order.push('disconnect'); },
+      release: () => order.push('release'),
       waitMs: 1000,
       log: () => undefined,
     });
@@ -235,18 +236,22 @@ describe('a quit\'s detach from its daemons', () => {
     expect(order).toEqual([]);
     sync.resolve();
     await detached;
-    expect(order).toEqual(['mirror idle', 'disconnect']);
+    expect(order).toEqual(['mirror idle', 'disconnect', 'release']);
   });
 
-  it('waits for neither past its bound', async () => {
+  // the ports' forwards and timers would otherwise outlive the connections they forward over
+  it("waits for neither past its bound, and then releases main's side of the connections", async () => {
     vi.useFakeTimers();
     const lines: string[] = [];
     let done = false;
-    void detachRemotes({ mirrorsIdle: () => new Promise(() => undefined), disconnect: () => new Promise(() => undefined), waitMs: 1000, log: (line) => lines.push(line) }).then(() => { done = true; });
+    const release = vi.fn();
+    void detachRemotes({ mirrorsIdle: () => new Promise(() => undefined), disconnect: () => new Promise(() => undefined), release, waitMs: 1000, log: (line) => lines.push(line) }).then(() => { done = true; });
     await vi.advanceTimersByTimeAsync(1999);
     expect(done).toBe(false);
+    expect(release).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(done).toBe(true);
+    expect(release).toHaveBeenCalledTimes(1);
     expect(lines).toHaveLength(2);
   });
 });

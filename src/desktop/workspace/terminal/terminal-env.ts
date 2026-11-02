@@ -3,6 +3,9 @@
 import { hostEnvironment } from '../../local-services/host-environment';
 import { SCRIPT_STATE_ENV } from './shell-integration-injection';
 
+// The damocles command's socket in a target's user terminal; never in agent shells, hooks or MCP servers.
+export const CLI_HOOK_ENV = 'DAMOCLES_CLI_HOOK';
+
 export interface TerminalEnvironmentOptions {
   // the app's locale (app.getLocale()), which LANG follows when the inherited one is missing or not UTF-8
   readonly locale: string;
@@ -42,7 +45,80 @@ const isUtf8Lang = (lang: string | undefined): boolean => !!lang && (/\.UTF-8$/.
 export function terminalEnvironment(env: NodeJS.ProcessEnv, options: TerminalEnvironmentOptions): Record<string, string> {
   const result = hostEnvironment(env);
   for (const key of SCRIPT_STATE_ENV) delete result[key];
+  // only the terminal's own CLI socket may be named, which cliTerminalEnvironment adds for a target's user terminal; Windows
+  // names variables in any case
+  for (const key of Object.keys(result)) if (key.toUpperCase() === CLI_HOOK_ENV) delete result[key];
   if (result['ZDOTDIR'] === options.zshDotDir) delete result['ZDOTDIR'];
   if (!isUtf8Lang(result['LANG'])) result['LANG'] = langFromLocale(options.locale);
   return { ...result, COLORTERM: 'truecolor' };
+}
+
+// One string value of a Windows environment key in the registry.
+export interface EnvironmentValue {
+  readonly name: string;
+  readonly type: 'REG_SZ' | 'REG_EXPAND_SZ';
+  readonly data: string;
+}
+
+const PATH_NAME = 'PATH';
+
+/**
+ * env with the machine's environment values, then the user's, over it, as Windows builds a new logon's environment and Windows
+ * Terminal rebuilds one for each new tab (reloadEnvironmentVariables): each key's REG_SZ values first, then its REG_EXPAND_SZ
+ * values with %NAME% expanded against what is set so far (an unknown name stays as written), and Path the machine's with the
+ * user's appended, both expanded. Windows names variables in any case, so a value replaces the variable of its name in any case.
+ */
+export function registryEnvironment(env: Readonly<Record<string, string | undefined>>, machine: readonly EnvironmentValue[], user: readonly EnvironmentValue[]): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) if (value !== undefined) result[key] = value;
+  const keyOf = (name: string): string | undefined => Object.keys(result).find((key) => key.toUpperCase() === name.toUpperCase());
+  const set = (name: string, value: string): void => {
+    const existing = keyOf(name);
+    result[existing ?? name] = value;
+  };
+  const expand = (value: string): string => value.replace(/%([^%]+)%/g, (whole, name: string) => {
+    const key = keyOf(name);
+    return key === undefined ? whole : result[key]!;
+  });
+  let machinePath: string | undefined;
+  for (const [values, isUser] of [[machine, false], [user, true]] as const) {
+    for (const type of ['REG_SZ', 'REG_EXPAND_SZ'] as const) {
+      for (const value of values) {
+        if (value.type !== type) continue;
+        const isPath = value.name.toUpperCase() === PATH_NAME;
+        const text = type === 'REG_EXPAND_SZ' || isPath ? expand(value.data) : value.data;
+        if (!isPath) set(value.name, text);
+        else if (!isUser) set(value.name, (machinePath = text));
+        else set(value.name, machinePath === undefined || machinePath === '' ? text : `${machinePath}${machinePath.endsWith(';') ? '' : ';'}${text}`);
+      }
+    }
+  }
+  return result;
+}
+
+export interface CliTerminalOptions {
+  // the terminal's CLI socket (a socket path, or a named pipe on Windows)
+  readonly hook: string;
+  // the server package's bin/remote-cli folder, put first on PATH
+  readonly remoteCliDir: string;
+  // the server package's bin/helpers/browser.sh, or browser.exe on Windows
+  readonly browser: string;
+  readonly platform: NodeJS.Platform;
+}
+
+/**
+ * A target's user terminal's environment with the damocles command: its socket in DAMOCLES_CLI_HOOK, bin/remote-cli first on
+ * PATH, and BROWSER sending URLs to this computer, as VS Code's server sets PATH and BROWSER. Windows names a variable in any
+ * case, so there each replaces the one it finds whatever its case.
+ */
+export function cliTerminalEnvironment(env: Readonly<Record<string, string>>, options: CliTerminalOptions): Record<string, string> {
+  const result = { ...env };
+  const keyOf = (name: string, fallback: string): string => (options.platform === 'win32' ? (Object.keys(result).find((key) => key.toUpperCase() === name) ?? fallback) : name);
+  const pathKey = keyOf('PATH', 'Path');
+  const delimiter = options.platform === 'win32' ? ';' : ':';
+  const current = result[pathKey];
+  result[pathKey] = current ? `${options.remoteCliDir}${delimiter}${current}` : options.remoteCliDir;
+  result[keyOf(CLI_HOOK_ENV, CLI_HOOK_ENV)] = options.hook;
+  result[keyOf('BROWSER', 'BROWSER')] = options.browser;
+  return result;
 }

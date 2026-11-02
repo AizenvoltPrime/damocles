@@ -96,11 +96,13 @@ export interface ToolExposureLayer {
 }
 
 /**
- * The setting's layers as `inspect()` reports them: user, then project, then local, the last two only
- * in a trusted folder. Read per layer because the host's own object merge differs between hosts.
+ * The setting's layers as `inspect()` reports them: user, then (for a host's own server) its machine value, then project,
+ * then local, the last two only in a trusted folder. Read per layer because the host's own object merge differs between
+ * hosts. `machineValue` exists only on a daemon's core.
  */
-export function toolExposureLayers(inspection: SettingInspection<unknown>, trusted: boolean): ToolExposureLayer[] {
+export function toolExposureLayers(inspection: SettingInspection<unknown>, trusted: boolean, hostServer = false): ToolExposureLayer[] {
   const layers: ToolExposureLayer[] = [{ scope: 'user', value: inspection.userValue }];
+  if (hostServer) layers.push({ scope: 'machine', value: inspection.machineValue });
   if (trusted) layers.push({ scope: 'project', value: inspection.projectValue }, { scope: 'local', value: inspection.localValue });
   return layers;
 }

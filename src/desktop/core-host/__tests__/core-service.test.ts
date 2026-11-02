@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Disposable } from '../../../platform/disposable';
 import type { PanelHost } from '../../../platform/window-service';
-import { createCoreEndpoint, createLoopback, createMainEndpoint, processActor, type ChatEntry, type ChatPermissions, type MainEndpoint } from '../../core-protocol';
+import { createCoreEndpoint, createLoopback, createMainEndpoint, processActor, type ChatEntry, type ChatPermissions, type CoreInit, type MainEndpoint } from '../../core-protocol';
 import { createActorContext, type ActorContext } from '../../core-protocol/actor';
 import type { CorePlatform } from '../platform';
 
@@ -17,8 +17,43 @@ const H = vi.hoisted(() => ({
   restored: [] as unknown[][],
   foreignDispatched: [] as unknown[][],
   clientAuthListeners: [] as Array<() => void>,
+  relayedMcpListeners: [] as Array<() => void>,
+  // each relayed MCP request this core ran, with the signal it got
+  relayedRuns: [] as Array<{ request: unknown; signal: AbortSignal | undefined }>,
   attached: [] as Array<{ panelId: string; view: { clientId?: string } }>,
   dispatched: [] as unknown[][],
+  clientNetwork: [] as unknown[][],
+  // each page open and restore: the authority whose context ran it, then its arguments
+  pages: [] as unknown[][],
+  // each release main asked of the remote chats' browser relay, and the browser setting the relay reads
+  browserReleases: [] as unknown[][],
+  browserEnabled: undefined as (() => boolean) | undefined,
+}));
+
+// a context's page calls, recorded under its authority
+const browserOf = (authority: string) => ({
+  openNewPageForChat: async (chat: unknown, url?: string) => void H.pages.push([authority, chat, url]),
+  restoreChatPages: async (chat: unknown, urls: readonly string[], active?: number) => void H.pages.push([authority, chat, urls, active]),
+});
+
+vi.mock('../../../core/browser', async (importOriginal) => ({
+  ...await importOriginal<Record<string, unknown>>(),
+  BrowserServices: class {
+    setClientNetwork = (authority: string, policy: unknown) => void H.clientNetwork.push([authority, policy]);
+    forAuthority = browserOf;
+    dispose = async () => undefined;
+  },
+}));
+
+vi.mock('../browser-relay', () => ({
+  createRemoteBrowsers: (deps: { readonly enabled: () => boolean }) => {
+    H.browserEnabled = deps.enabled;
+    return {
+      tool: async () => ({ content: [] }),
+      release: (authority: string, agentScope: unknown) => void H.browserReleases.push(['scope', authority, agentScope]),
+      releaseAuthority: async (authority: string) => void H.browserReleases.push(['authority', authority]),
+    };
+  },
 }));
 
 vi.mock('../../../core/logger', () => ({ log: (line: string) => H.order.push(`log: ${line}`) }));
@@ -78,7 +113,16 @@ vi.mock('../../../core/chat-panel', () => {
       getSessionCatalog = () => ({ onDidChange: none });
       getWebviewPrompts = () => ({});
       getVoiceService = () => ({});
-      getBrowserService = () => ({ holdsPages: (chat: unknown) => H.holdsPages(chat) });
+      getBrowserService = () => ({ holdsPages: (chat: unknown) => H.holdsPages(chat), ...browserOf('local') });
+      getMemoryService = () => ({});
+      onRelayedMcpChange = (listener: () => void) => {
+        H.relayedMcpListeners.push(listener);
+        return { dispose: () => undefined };
+      };
+      runRelayedMcp = (request: unknown, signal?: AbortSignal) => {
+        H.relayedRuns.push({ request, signal });
+        return new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(new Error('stopped'))));
+      };
       restorePanel = async (...args: unknown[]) => void H.restored.push(args);
       dispatchForeign = async (...args: unknown[]) => void H.foreignDispatched.push(args);
       dispose = () => {
@@ -116,24 +160,31 @@ afterEach(() => {
   H.restored.length = 0;
   H.foreignDispatched.length = 0;
   H.clientAuthListeners.length = 0;
+  H.relayedMcpListeners.length = 0;
+  H.relayedRuns.length = 0;
   H.attached.length = 0;
   H.dispatched.length = 0;
+  H.clientNetwork.length = 0;
+  H.pages.length = 0;
+  H.browserReleases.length = 0;
   H.disposeProvider = () => Promise.resolve();
   H.disposeRuntime = () => Promise.resolve();
   H.holdsPages = () => false;
 });
 
 // actors: the forwarding side's actor context, as a daemon stamps a client's requests; core then serves them as that client
-function start(teardown: () => Promise<void> = async () => void H.order.push('teardown'), remote?: object, actors?: ActorContext): { main: MainEndpoint; addChat(panelId: string, viewId: string): Chat; foreign: Map<string, PanelHost> } {
+// clientNetwork: the init's mirror of each remote authority's network policy
+function start(teardown: () => Promise<void> = async () => void H.order.push('teardown'), remote?: object, actors?: ActorContext, clientNetwork?: CoreInit['mirrors']['clientNetwork']): { main: MainEndpoint; addChat(panelId: string, viewId: string): Chat; foreign: Map<string, PanelHost>; authorities: Map<string, string> } {
   const loopback = createLoopback();
   const core = createCoreEndpoint(loopback.core, () => undefined, undefined, actors ? processActor : undefined);
   const main = createMainEndpoint(loopback.main, () => undefined, undefined, actors);
   const hosts = new Map<string, PanelHost>();
   const foreign = new Map<string, PanelHost>();
+  const authorities = new Map<string, string>();
   const platform = {
     endpoint: core,
-    panels: { get: (viewId: string) => hosts.get(viewId), attach: (viewId: string) => hosts.get(viewId), idOf: (host: PanelHost) => [...hosts].find(([, candidate]) => candidate === host)?.[0], foreign: (viewId: string) => foreign.get(viewId) },
-    init: { git: { available: true }, e2eHooks: false },
+    panels: { get: (viewId: string) => hosts.get(viewId), attach: (viewId: string) => hosts.get(viewId), idOf: (host: PanelHost) => [...hosts].find(([, candidate]) => candidate === host)?.[0], foreign: (viewId: string) => foreign.get(viewId), foreignAuthority: (viewId: string) => authorities.get(viewId) },
+    init: { git: { available: true }, e2eHooks: false, mirrors: clientNetwork ? { clientNetwork } : {} },
     secrets: {},
     settings: { get: <T>(_key: string, fallback: T) => fallback, onDidChange: () => ({ dispose: () => void H.order.push('subscription disposed') }) },
     setChatPrompts: () => undefined,
@@ -150,6 +201,7 @@ function start(teardown: () => Promise<void> = async () => void H.order.push('te
   return {
     main,
     foreign,
+    authorities,
     addChat: (panelId, viewId) => {
       const host = { close: vi.fn(), onDispose: () => ({ dispose: () => undefined }) } as unknown as Chat['host'];
       hosts.set(viewId, host);
@@ -320,6 +372,40 @@ describe('panels.foreignMessage', () => {
   });
 });
 
+describe('user.mcpChanged', () => {
+  it('reports a change of this computer\'s relayed MCP servers, and a daemon\'s core sends none', async () => {
+    const { main } = start();
+    const heard = vi.fn();
+    main.onEvent('user.mcpChanged', heard);
+    for (const listener of H.relayedMcpListeners) listener();
+    await vi.waitFor(() => expect(heard).toHaveBeenCalledTimes(1));
+    H.relayedMcpListeners.length = 0;
+    start(undefined, { hostId: 'h', clients: { onDidChange: () => ({ dispose: () => undefined }) } });
+    expect(H.relayedMcpListeners).toEqual([]);
+  });
+});
+
+describe('a remote chat\'s relayed MCP request on this computer\'s core', () => {
+  it('ends the call, the resource listing and the read when the remote caller stops', async () => {
+    const { main } = start();
+    const requests = [
+      () => ['user.mcp.call', { server: 'notes', tool: 'search', args: {} }] as const,
+      () => ['user.mcp.resources', { server: 'notes', kind: 'resources' }] as const,
+      () => ['user.mcp.readResource', { server: 'notes', uri: 'notes://a' }] as const,
+    ];
+    for (const [index, request] of requests.entries()) {
+      const stop = new AbortController();
+      const [method, params] = request();
+      const pending = (main.request as (name: string, value: unknown, signal: AbortSignal) => Promise<unknown>)(method, params, stop.signal);
+      pending.catch(() => undefined);
+      await vi.waitFor(() => expect(H.relayedRuns).toHaveLength(index + 1));
+      expect(H.relayedRuns[index]!.signal?.aborted).toBe(false);
+      stop.abort();
+      await vi.waitFor(() => expect(H.relayedRuns[index]!.signal?.aborted).toBe(true));
+    }
+  });
+});
+
 describe('user.clientAuthChanged', () => {
   it('reports this computer\'s sign-in changes, and a daemon\'s core sends none', async () => {
     const { main } = start();
@@ -330,5 +416,62 @@ describe('user.clientAuthChanged', () => {
     H.clientAuthListeners.length = 0;
     start(undefined, { hostId: 'h', clients: { onDidChange: () => ({ dispose: () => undefined }) } });
     expect(H.clientAuthListeners).toEqual([]);
+  });
+});
+
+describe('a remote authority\'s browser network policy', () => {
+  it('reaches its context from the init, then from every clientNetwork delta main publishes', () => {
+    const { main } = start(undefined, undefined, undefined, { 'ssh-a': { allowedPorts: [3000], allowLocalNetwork: false } });
+    main.publish('clientNetwork', { authority: 'ssh-b', allowedPorts: [8080], allowLocalNetwork: true });
+    main.publish('clientNetwork', { authority: 'ssh-a', allowedPorts: [], allowLocalNetwork: false });
+    expect(H.clientNetwork).toEqual([
+      ['ssh-a', { allowedPorts: [3000], allowLocalNetwork: false }],
+      ['ssh-b', { allowedPorts: [8080], allowLocalNetwork: true }],
+      ['ssh-a', { allowedPorts: [], allowLocalNetwork: false }],
+    ]);
+  });
+});
+
+describe('a remote chat\'s browser on this core', () => {
+  it('releases an agent\'s scope and Forget host\'s authority through the relay, which reads this computer\'s browser setting', async () => {
+    const { main } = start();
+    await main.request('user.browser.release', { authority: 'ssh-a', agentScope: { viewId: 'view-1', scope: 'agent-1', closeTabs: true, discard: true } });
+    await main.request('user.browser.release', { authority: 'ssh-a' });
+    expect(H.browserReleases).toEqual([
+      ['scope', 'ssh-a', { viewId: 'view-1', scope: 'agent-1', closeTabs: true, discard: true }],
+      ['authority', 'ssh-a'],
+    ]);
+    // the test platform's settings answer every default, and the browser is off by default
+    expect(H.browserEnabled?.()).toBe(false);
+  });
+});
+
+describe('a chat\'s browser pages', () => {
+  it('open and restore in this core\'s context for its own chat, and in the authority\'s context for a remote chat it shows', async () => {
+    const { main, addChat, foreign, authorities } = start();
+    const chat = addChat('panel-1', 'view-1');
+    const proxy = {} as PanelHost;
+    foreign.set('remote-view', proxy);
+    authorities.set('remote-view', 'ssh-h1');
+    await main.request('browser.newPage', { chatViewId: 'view-1', url: 'https://example.com/' });
+    await main.request('browser.newPage', { chatViewId: 'remote-view', url: 'http://localhost:3000/' });
+    await main.request('chats.restorePages', { viewId: 'view-1', urls: ['https://a.test/'] });
+    await main.request('chats.restorePages', { viewId: 'remote-view', urls: ['http://localhost:3000/', 'http://localhost:4000/'], activePage: 1 });
+    expect(H.pages).toEqual([
+      ['local', chat.host, 'https://example.com/'],
+      ['ssh-h1', proxy, 'http://localhost:3000/'],
+      ['local', chat.host, ['https://a.test/'], undefined],
+      ['ssh-h1', proxy, ['http://localhost:3000/', 'http://localhost:4000/'], 1],
+    ]);
+  });
+
+  it('open nowhere for a view core neither holds nor holds a remote proxy with an authority for', async () => {
+    const { main, foreign } = start();
+    foreign.set('no-authority', {} as PanelHost);
+    for (const chatViewId of ['gone', 'no-authority']) {
+      await expect(main.request('browser.newPage', { chatViewId })).rejects.toThrow('The chat is not loaded');
+      await main.request('chats.restorePages', { viewId: chatViewId, urls: ['https://a.test/'] });
+    }
+    expect(H.pages).toEqual([]);
   });
 });

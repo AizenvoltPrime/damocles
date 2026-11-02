@@ -544,6 +544,19 @@ describe('OverlaySettings scope tabs', () => {
     expect(await send(2)).toEqual([local.panelId]);
   });
 
+  it("moves an open modal to the host's tab for a host-tab target, whichever tab it showed", async () => {
+    const { fake, settings, remote, attachedEvents, send } = await scoped();
+    void settings.show({});
+    await tick();
+    await fake.invoke(OVERLAY_CHANNELS.settingsScope, { scope: 'user' });
+    expect(attachedEvents().at(-1)).toMatchObject({ scopes: { active: 'user' } });
+    await settings.show({ section: 'integrations' });
+    expect(attachedEvents().at(-1)).toMatchObject({ scopes: { active: 'user' } });
+    await settings.show({ section: 'integrations' }, 'machine');
+    expect(attachedEvents().at(-1)).toMatchObject({ scopes: { active: 'machine' } });
+    expect(await send(attachedEvents().length + 1)).toEqual([remote.panelId]);
+  });
+
   it("opens on the User tab while the host's core is unavailable", async () => {
     const { fake, settings, local, hooks, send } = await scoped();
     hooks.remoteUp = false;

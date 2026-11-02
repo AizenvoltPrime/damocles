@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2016
 # deb postrm and rpm %postun. electron-builder expands the ${...} macros at build time, so shell variables are written as $NAME only.
 # rpm runs scriptlets with /bin/sh, so this stays POSIX sh.
 
@@ -13,9 +14,13 @@ EXECUTABLE='${executable}'
 PROFILE_TARGET="/etc/apparmor.d/$EXECUTABLE"
 
 if command -v update-alternatives >/dev/null 2>&1; then
-  update-alternatives --remove "$EXECUTABLE" "$APP_DIR/$EXECUTABLE" || echo "Damocles: could not remove the $EXECUTABLE alternative." >&2
-else
-  rm -f "/usr/bin/$EXECUTABLE"
+  update-alternatives --remove "$EXECUTABLE" "$APP_DIR/resources/bin/damocles" || echo "Damocles: could not remove the $EXECUTABLE alternative." >&2
+fi
+# the plain link after-install.sh makes when update-alternatives is missing or fails; a link elsewhere is another program's
+if [ -L "/usr/bin/$EXECUTABLE" ]; then
+  case $(readlink "/usr/bin/$EXECUTABLE") in
+    "$APP_DIR"/*) rm -f "/usr/bin/$EXECUTABLE" ;;
+  esac
 fi
 
 if [ -f "$PROFILE_TARGET" ]; then

@@ -112,7 +112,7 @@ export class OverlaySettings {
    * Opens the modal on the target's section, with its account or release expanded there, attached to the selected chat;
    * resolves once it has closed. While it shows, the modal goes to the target instead.
    */
-  async show(request: SettingsTarget): Promise<void> {
+  async show(request: SettingsTarget, scope?: 'machine'): Promise<void> {
     const { section, account, release, host } = request;
     if (section !== undefined && !isSettingsSectionId(section)) throw new Error('Unknown settings section');
     if (account !== undefined && !isSettingsAccountId(account)) throw new Error('Unknown settings account');
@@ -128,6 +128,8 @@ export class OverlaySettings {
     if (this.open) {
       this.deps.overlay.send(OVERLAY_CHANNELS.settingsTarget, target);
       if (userTab && this.scope !== undefined && this.scope !== 'user') await this.reattach('user');
+      // a host-tab target moves the open modal of a remote chat to that tab, whichever tab it shows
+      else if (scope === 'machine' && this.scope !== undefined && this.scope !== 'machine') await this.reattach('machine');
       return;
     }
     this.open = true;

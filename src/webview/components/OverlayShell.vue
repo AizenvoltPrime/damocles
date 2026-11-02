@@ -71,7 +71,11 @@ const follow = useStickToBottom(
       :class="fill && 'h-full'"
       :style="{ maxWidth }"
     >
-      <header class="flex flex-none items-center gap-3 border-b border-(--d-border) pt-3.5 pr-3.5 pb-3 pl-4.5">
+      <!-- a div, not <header>: a dialog's title bar is no page banner landmark beside the chat's own header -->
+      <div
+        class="flex flex-none items-center gap-3 border-b border-(--d-border) pt-3.5 pr-3.5 pb-3 pl-4.5"
+        data-testid="overlay-header"
+      >
         <span
           class="flex size-8 flex-none items-center justify-center rounded-10 bg-[color-mix(in_srgb,currentColor_14%,transparent)]"
           :class="iconClass ?? 'text-(--d-accent)'"
@@ -143,7 +147,7 @@ const follow = useStickToBottom(
             aria-hidden="true"
           />
         </button>
-      </header>
+      </div>
 
       <div
         ref="body"

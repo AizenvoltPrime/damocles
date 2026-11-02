@@ -5,8 +5,9 @@ export const OFFLINE_GRACE_MS = 2000;
 // A host that came back after it showed its banner shows green for this long, then the banner collapses.
 export const RECONNECTED_MS = 1500;
 
-// destination: the saved address holds something Damocles now refuses, which only forgetting and adding the host changes
-export const PERMANENT_FAILURE_CODES = ['hostKeyChanged', 'hostRemoved', 'prerequisites', 'install', 'authFailed', 'destination'] as const;
+// destination: the saved address holds something Damocles now refuses, which only forgetting and adding the host changes;
+// containerBuild: the devcontainer must be built, which only an attempt a user watches does
+export const PERMANENT_FAILURE_CODES = ['hostKeyChanged', 'hostRemoved', 'prerequisites', 'install', 'authFailed', 'destination', 'containerBuild'] as const;
 export type PermanentFailureCode = (typeof PERMANENT_FAILURE_CODES)[number];
 
 // The reconnect loop's phase for a host that is not connected. since and retryAt are this computer's epoch ms; since is when

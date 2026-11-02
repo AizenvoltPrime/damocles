@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, useId } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { ArrowLeft, FileText, FolderPlus, KeyRound, Laptop, Pencil, Plug, Server, Settings2, Shield, SquareTerminal, TriangleAlert, Users } from 'lucide-vue-next';
+import { ArrowLeft, Box, FileText, FolderPlus, Key, KeyRound, Laptop, Pencil, Plug, Server, Settings2, Shield, SquareTerminal, TriangleAlert, Users } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import { visibleText } from '@shared/visible-text';
 import type { HostCardInfo, HostRun, InstallFolderResult, LingerResult, NameCheck, RemoteBrowseResult } from '../../../preload/overlay-channels';
@@ -11,10 +11,10 @@ import LatencySparkline from './LatencySparkline.vue';
 import HostNameField from './HostNameField.vue';
 import InstallFolderField from './InstallFolderField.vue';
 import AllowBackgroundWork from './AllowBackgroundWork.vue';
-import { devicesDiffer, failureText, hostNotices, needsInstallFolder, otherDeviceCount } from '../connect-text';
+import { devicesDiffer, distroDetail, failureText, hostNotices, needsInstallFolder, otherDeviceCount } from '../connect-text';
 
 // One saved host: its state, the probe's notices, what runs on it, its safety settings, Rename in place and its install
-// folder. Every action goes through the props, events and the actions slot, so any parent can show it.
+// folder. Every action goes through the props, events and the wsl and actions slots, so any parent can show it.
 const props = defineProps<{
   host: HostCardInfo;
   // undefined while loading; 'failed' when main could not list them
@@ -29,7 +29,7 @@ const props = defineProps<{
   startRenaming?: boolean;
 }>();
 const emit = defineEmits<{ back: []; connect: []; openFolder: []; showLog: []; openSettings: []; kill: [runId: string]; openRun: [runId: string] }>();
-defineSlots<{ actions?: () => unknown }>();
+defineSlots<{ wsl?: () => unknown; container?: () => unknown; actions?: () => unknown }>();
 const { t, locale } = useI18n();
 
 const headingId = useId();
@@ -44,6 +44,20 @@ const statusText = computed(() => (props.host.reconnect || (props.host.connectio
 const notices = computed(() => hostNotices(props.host, t, locale.value));
 const failure = computed(() => (props.host.failure ? failureText(props.host.failure, props.host.name, t) : undefined));
 const others = computed(() => otherDeviceCount(props.host.devices));
+// A container's image, engine, where it runs and what it was made from, each only when known.
+const containerFacts = computed(() => {
+  const container = props.host.container;
+  if (!container) return [];
+  const facts: Array<{ key: string; value: string }> = [];
+  if (container.image !== undefined) facts.push({ key: 'image', value: visibleText(container.image) });
+  facts.push({ key: 'engine', value: container.engine });
+  facts.push({ key: 'runsOn', value: container.via ? container.via.name : t('remote.container.thisComputer') });
+  if (container.workspaceFolder !== undefined) facts.push({ key: 'folder', value: visibleText(container.workspaceFolder) });
+  if (container.configPath !== undefined) facts.push({ key: 'config', value: visibleText(container.configPath) });
+  if (container.containerName !== undefined) facts.push({ key: 'container', value: visibleText(container.containerName) });
+  if (container.user !== undefined) facts.push({ key: 'user', value: t(`remote.container.user.${container.user}`) });
+  return facts;
+});
 const safety = computed(() => [
   props.host.defaultPermissionMode ? t('remote.card.mode', { mode: t(`remoteHosts.mode.${props.host.defaultPermissionMode}`) }) : t('remote.card.hostMode'),
   props.host.allowBypass ? t('remote.card.yoloAllowed') : t('remote.card.yoloNotAllowed'),
@@ -98,7 +112,18 @@ async function save(name: string): Promise<void> {
         class="grid size-8.5 shrink-0 place-items-center rounded-10 bg-(--tone)/15"
         :class="`d-tone-${host.color ?? 'muted'}`"
       >
-        <Server class="size-4.5" />
+        <SquareTerminal
+          v-if="host.kind === 'wsl'"
+          class="size-4.5"
+        />
+        <Box
+          v-else-if="host.kind === 'container'"
+          class="size-4.5"
+        />
+        <Server
+          v-else
+          class="size-4.5"
+        />
       </span>
       <div class="flex min-w-0 flex-1 flex-col gap-0.5">
         <div class="flex min-w-0 items-center gap-1.5">
@@ -152,8 +177,9 @@ async function save(name: string): Promise<void> {
         </div>
         <span
           dir="ltr"
+          data-testid="host-card-destination"
           class="truncate font-mono text-11 text-(--d-faint-text)"
-        >{{ host.destinationLabel }}</span>
+        >{{ host.wsl ? distroDetail(host.name, host.wsl) : host.destinationLabel }}</span>
       </div>
     </div>
 
@@ -184,6 +210,32 @@ async function save(name: string): Promise<void> {
       >
         {{ failure }}
       </p>
+
+      <slot name="wsl" />
+
+      <dl
+        v-if="host.container"
+        data-testid="host-card-container"
+        class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 rounded-10 bg-(--d-panel) px-3 py-2.5 text-12"
+      >
+        <template
+          v-for="fact in containerFacts"
+          :key="fact.key"
+        >
+          <dt class="text-(--d-muted)">
+            {{ t(`remote.container.fact.${fact.key}`) }}
+          </dt>
+          <dd
+            dir="ltr"
+            :data-fact="fact.key"
+            class="min-w-0 font-mono text-11.5 break-all text-(--d-text)"
+          >
+            {{ fact.value }}
+          </dd>
+        </template>
+      </dl>
+
+      <slot name="container" />
 
       <ul
         v-if="notices.length > 0"
@@ -349,6 +401,7 @@ async function save(name: string): Promise<void> {
           <span class="min-w-0 truncate">{{ safety }}</span>
         </p>
         <p
+          v-if="host.kind === 'ssh'"
           class="flex h-7 items-center gap-2 text-12"
           data-testid="host-card-sign-in"
         >
@@ -357,6 +410,17 @@ async function save(name: string): Promise<void> {
             class="size-3.5 shrink-0 text-(--d-muted)"
           />
           <span class="min-w-0 truncate">{{ host.passwordless ? t('remote.card.signsInWithKey') : t('remote.card.signsInWithPassword') }}</span>
+        </p>
+        <p
+          v-if="host.agentForwarding !== undefined"
+          class="flex h-7 items-center gap-2 text-12"
+          data-testid="host-card-agent"
+        >
+          <Key
+            aria-hidden="true"
+            class="size-3.5 shrink-0 text-(--d-muted)"
+          />
+          <span class="min-w-0 truncate">{{ host.agentForwarding ? t('remote.card.forwardsAgent') : t('remote.card.doesNotForwardAgent') }}</span>
         </p>
         <slot name="actions" />
       </section>

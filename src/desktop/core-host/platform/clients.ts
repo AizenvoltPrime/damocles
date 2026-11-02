@@ -1,11 +1,12 @@
 import type { Disposable } from '../../../platform/disposable';
 import type { ClientSnapshots, ClientTopic, RemoteHost } from '../../../platform/remote-host';
 import type { PanelHost, TerminalToggle } from '../../../platform/window-service';
-import { heldClientAuth, type HeldAuth } from '../../../shared/remote-user';
+import { heldClientAuth, type HeldAuth, type RelayedMcpServer } from '../../../shared/remote-user';
 import type { ClientAuth, ClientPolicy, ClientUser, CoreEndpoint, CoreInit, EditorMirror, MirrorTopics } from '../../core-protocol';
 import { currentActor } from '../../core-protocol/actor';
 import { agentSocketFile } from '../../core-protocol/agent-sockets';
 import { Listeners } from './listeners';
+import { createUrlFinder } from '../../local-services/url-finder';
 
 /** The per-client mirrors the daemon publishes (core-routes.ts perClient and actingClient), read synchronously. */
 export function createClientSnapshots(endpoint: CoreEndpoint, init: CoreInit): ClientSnapshots & Disposable {
@@ -15,6 +16,7 @@ export function createClientSnapshots(endpoint: CoreEndpoint, init: CoreInit): C
   const editor = new Map<string, EditorMirror>(Object.entries(init.mirrors.clientEditor ?? {}));
   const terminal = new Map<string, TerminalToggle>(Object.entries(init.mirrors.clientTerminal ?? {}));
   const language = new Map<string, MirrorTopics['language']>(Object.entries(init.mirrors.clientLanguage ?? {}));
+  const mcp = new Map<string, readonly RelayedMcpServer[]>(Object.entries(init.mirrors.clientMcp ?? {}).map(([clientId, value]) => [clientId, value.servers]));
   // the daemon publishes clientAuth on every attach and without a value on every detach
   const attached = new Set(Object.keys(init.mirrors.clientAuth));
   let acting = init.mirrors.actingClient.clientId;
@@ -41,6 +43,8 @@ export function createClientSnapshots(endpoint: CoreEndpoint, init: CoreInit): C
     track('clientEditor', editor, (value: EditorMirror) => value),
     track('clientTerminal', terminal, (value: TerminalToggle) => value),
     track('clientLanguage', language, (value: MirrorTopics['language']) => value),
+    // a detached client's servers stay, so their tools stay eligible while only their calls are refused
+    track('clientMcp', mcp, (value: { readonly servers: readonly RelayedMcpServer[] }) => value.servers, true),
     endpoint.onMirror('actingClient', (patch) => {
       acting = patch.clientId;
       changed.fire({ topic: 'actingClient' });
@@ -54,12 +58,16 @@ export function createClientSnapshots(endpoint: CoreEndpoint, init: CoreInit): C
       return actor !== undefined && attached.has(actor) ? actor : acting;
     },
     attached: (clientId) => attached.has(clientId),
+    anyAttached: () => attached.size > 0,
+    attachedClients: () => [...attached],
     auth: (clientId) => auth.get(clientId),
     user: (clientId) => user.get(clientId),
     policy: (clientId) => policy.get(clientId),
     editor: (clientId) => editor.get(clientId)?.context,
     terminal: (clientId) => terminal.get(clientId),
     language: (clientId) => language.get(clientId)?.language,
+    mcp: (clientId) => mcp.get(clientId),
+    mcpClients: () => [...mcp.keys()],
     onDidChange: (cb) => changed.add(cb),
     dispose: () => {
       for (const subscription of subscriptions) subscription.dispose();
@@ -85,6 +93,40 @@ export function createRemoteHost(endpoint: CoreEndpoint, init: CoreInit & { read
       await endpoint.request('user.voice.speak', { viewId, text });
     },
     runProviders: (panelId, providers) => endpoint.emit('chat.providers', { panelId, providers }),
+    browserTool: async (host, scope, tool, input, signal) => {
+      const viewId = viewIdOf(host);
+      if (viewId === undefined) throw new Error('The chat has no view');
+      return endpoint.request('user.browser.tool', { viewId, scope, tool, input }, signal);
+    },
+    browserRelease: async (host, scope, closeTabs) => {
+      const viewId = viewIdOf(host);
+      if (viewId === undefined) throw new Error('The chat has no view');
+      await endpoint.request('user.browser.release', { viewId, scope, closeTabs });
+    },
+    browserDiscard: async (host, scope) => {
+      const viewId = viewIdOf(host);
+      if (viewId === undefined) throw new Error('The chat has no view');
+      await endpoint.request('user.browser.release', { viewId, scope, closeTabs: true, discard: true });
+    },
+    memorySearch: (clientId, query, k, tiers, injection, filters) => endpoint.request('user.memory.search', { clientId, query, k, tiers, ...(injection === true ? { injection } : {}), ...filters }),
+    memoryProfile: (clientId) => endpoint.request('user.memory.profile', { clientId }),
+    memoryResolve: (clientId, ids) => endpoint.request('user.memory.resolve', { clientId, ids }),
+    memoryApply: (clientId, entries) => endpoint.request('user.memory.apply', { clientId, entries }),
+    heldMemoryChanged: (queues) => endpoint.publish('heldMemory', { queues }),
+    mcpCall: (clientId, server, tool, args, signal) => endpoint.request('user.mcp.call', { clientId, server, tool, args }, signal),
+    mcpResources: (clientId, server, kind, cursor, signal) => endpoint.request('user.mcp.resources', { clientId, server, kind, ...(cursor !== undefined ? { cursor } : {}) }, signal),
+    mcpReadResource: (clientId, server, uri, signal) => endpoint.request('user.mcp.readResource', { clientId, server, uri }, signal),
+    shellOutput: () => {
+      const decoder = new TextDecoder();
+      const finder = createUrlFinder((hit) => endpoint.emit('ports.urlSeen', hit));
+      return {
+        write: (chunk) => finder.push(decoder.decode(chunk, { stream: true })),
+        end: () => {
+          finder.push(decoder.decode());
+          finder.end();
+        },
+      };
+    },
     dispose: () => moved.dispose(),
   };
 }

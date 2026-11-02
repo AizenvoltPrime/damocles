@@ -28,11 +28,13 @@ const EXCLUDED_ROOTS = /^(node_modules|dist[^/]*)\//;
 // release.yml's Linux step; the worker count comes from playwright.desktop.config.ts.
 const XVFB = `xvfb-run -a -s '-screen 0 1920x1080x24'`;
 
-const USAGE = `Usage: node scripts/test-desktop-wsl.mjs [--distro <name>] [specs...]
+const USAGE = `Usage: node scripts/test-desktop-wsl.mjs [--distro <name>] [--unit] [specs...]
 
   --distro   WSL distro to run in (default: the default distro). It needs Node 24 through nvm, xvfb-run, openbox,
              xauth, rsync and Electron's runtime libraries.
-  specs      Playwright spec filters such as e2e/desktop/quit.spec.ts (default: the whole desktop suite).
+  --unit     run the specs as vitest test files instead, with no build and no Electron (Linux-side unit tests)
+  specs      Playwright spec filters such as e2e/desktop/quit.spec.ts (default: the whole desktop suite), or with --unit
+             the vitest files to run (required).
 
 The copy lives at ~/${E2E_DIR_NAME} in the distro and is updated incrementally; npm ci runs only when
 package-lock.json changed. Results and the HTML report stay under ~/${E2E_DIR_NAME}/dist/e2e-results and
@@ -92,12 +94,15 @@ if (argv.includes('--help') || argv.includes('-h')) {
   process.exit(0);
 }
 let distro;
+let unit = false;
 const specs = [];
 for (let i = 0; i < argv.length; i++) {
   const arg = argv[i];
   if (arg === '--distro') {
     distro = argv[++i];
     if (!distro || distro.startsWith('-')) fail('--distro requires a value');
+  } else if (arg === '--unit') {
+    unit = true;
   } else if (arg.startsWith('-')) {
     fail(`unknown flag "${arg}"\n\n${USAGE}`);
   } else {
@@ -105,6 +110,7 @@ for (let i = 0; i < argv.length; i++) {
   }
 }
 if (process.platform !== 'win32') fail('this script shells out to WSL; on Linux run `npm run test:desktop` under xvfb-run directly');
+if (unit && specs.length === 0) fail('--unit needs the vitest files to run');
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const distroName = distro ?? 'the default distro';
@@ -151,6 +157,23 @@ wsl(
   ].join('\n'),
   { distro, timeoutMs: SYNC_TIMEOUT_MS, hint: 'rsync needs read access to the Windows working tree through /mnt.' },
 );
+
+if (unit) {
+  console.log(`Installing and running ${specs.join(' ')} with vitest in WSL`);
+  wsl(
+    [
+      'set -euo pipefail',
+      `cd "$HOME"/${E2E_DIR_NAME}`,
+      ...NODE_SETUP,
+      `LOCK_HASH="$(sha256sum package-lock.json | cut -d' ' -f1)"`,
+      `if [ ! -d node_modules ] || [ "$(cat ${LOCK_STAMP} 2>/dev/null)" != "$LOCK_HASH" ]; then rm -f ${LOCK_STAMP}; npm ci; echo "$LOCK_HASH" > ${LOCK_STAMP}; fi`,
+      ['npx', '--no', 'vitest', 'run', ...specs].map(sh).join(' '),
+    ].join('\n'),
+    { distro, timeoutMs: BUILD_TIMEOUT_MS, hint: keptHint },
+  );
+  console.log(`\nOK  ${specs.length} vitest file(s) passed in WSL (${distroName}).`);
+  process.exit(0);
+}
 
 console.log('Installing and building in WSL');
 wsl(

@@ -70,7 +70,8 @@ export interface WindowService {
   createPanelInOwnColumn(opts: Omit<PanelOptions, 'column'>): Promise<PanelHost>;
   // Shows the settings modal outside the chat pages (desktop: the overlay). Only a host whose capabilities say
   // settingsInPanel false is asked; one that shows the modal inside the chat page has nowhere else to show it.
-  openAppSettings(section: SettingsSectionId | undefined, account?: SettingsAccountId): void;
+  // scope 'machine': a remote chat's settings open on its host's tab, whichever tab the open modal shows
+  openAppSettings(section: SettingsSectionId | undefined, account?: SettingsAccountId, scope?: 'machine'): void;
   // Shows or hides the window's terminal pane as the Toggle Terminal command does; only a host whose capabilities say
   // windowLayout true is asked.
   toggleTerminal(): void;

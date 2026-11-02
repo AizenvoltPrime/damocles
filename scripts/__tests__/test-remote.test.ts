@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { resolve } from 'node:path';
 // @ts-expect-error -- plain .mjs helper, no types
-import { fixtureImagesIn, fixturesToRemove, grepOf, playwrightArgs, prebuiltParts, selection, serverPackageTargets, serverTargetsFor, specFilesOf } from '../test-remote.mjs';
+import { fixtureImagesIn, fixturesToRemove, grepOf, playwrightArgs, prebuiltParts, selection, serverPackageTargets, serverTargetsFor, specFilesOf, sshdSources } from '../test-remote.mjs';
 // @ts-expect-error -- plain .mjs helper, no types
 import { npmCliPath } from '../npm-cli.mjs';
 
@@ -45,9 +45,36 @@ describe('what test-remote builds', () => {
     expect(serverTargetsFor([], ['@windows-target'], 'x64')).toEqual(['win32-x64']);
   });
 
-  it('reads the selected spec files from Playwright\'s JSON listing, each once', () => {
-    const report = { config: { rootDir: '/repo/e2e/remote' }, suites: [{ file: 'ssh-install.spec.ts' }, { file: 'ssh-install.spec.ts' }, { file: 'reconnect.spec.ts' }] };
-    expect(specFilesOf(report)).toEqual([resolve('/repo/e2e/remote', 'ssh-install.spec.ts'), resolve('/repo/e2e/remote', 'reconnect.spec.ts')]);
+  it('builds the Linux and Alpine packages a @wsl spec\'s distros copy from the cache', () => {
+    expect(serverTargetsFor([], [], 'x64', true)).toEqual(['linux-x64', 'alpine-x64']);
+    expect(serverTargetsFor(['ubuntu', 'alpine'], [], 'x64', true)).toEqual(['linux-x64', 'alpine-x64']);
+  });
+
+  it('builds the Linux and Alpine packages a @devcontainer spec\'s containers copy from the cache, and an sshd image only for a spec that starts one', () => {
+    expect(serverTargetsFor([], [], 'x64', false, true)).toEqual(['linux-x64', 'alpine-x64']);
+    expect(sshdSources(["await sshd('prod-1')", 'await launch()', "copyFixture('dc')"])).toEqual(["await sshd('prod-1')"]);
+  });
+
+  it('reads the selected spec files from Playwright\'s JSON listing, each once, a file with a test tagged @wsl among the WSL specs', () => {
+    const root = '/repo/e2e/remote';
+    const spec = (tags: string[]) => ({ title: 't', tags });
+    // the listing's shape: a file's suite, its describes as nested suites, tags without the @
+    const report = {
+      config: { rootDir: root },
+      suites: [
+        { file: 'ssh-install.spec.ts', specs: [spec(['ssh'])] },
+        { file: 'ssh-install.spec.ts', specs: [spec([])] },
+        { file: 'reconnect.spec.ts', specs: [spec(['ssh'])] },
+        { file: 'wsl.spec.ts', suites: [{ title: 'WSL', specs: [spec(['wsl']), spec(['wsl'])] }] },
+        { file: 'mixed.spec.ts', specs: [spec(['wsl'])], suites: [{ title: 'ssh', specs: [spec(['ssh'])] }] },
+        { file: 'devcontainer-local.spec.ts', specs: [spec(['devcontainer']), spec(['devcontainer'])] },
+      ],
+    };
+    expect(specFilesOf(report)).toEqual({
+      docker: ['ssh-install.spec.ts', 'reconnect.spec.ts', 'mixed.spec.ts'].map((file) => resolve(root, file)),
+      wsl: ['wsl.spec.ts', 'mixed.spec.ts'].map((file) => resolve(root, file)),
+      devcontainer: [resolve(root, 'devcontainer-local.spec.ts')],
+    });
   });
 
   it('skips only the parts DAMOCLES_E2E_PREBUILT names, and refuses a name it does not know', () => {

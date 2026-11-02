@@ -2331,6 +2331,38 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.dispose();
   });
 
+  it('records the device whose message started the turn on its memory candidate on a daemon\'s core', async () => {
+    const host = createFakeRemoteHost();
+    host.set('clientAuth', 'client-b', { providers: {} });
+    host.setActor('client-b');
+    // pi's own prompt, before a daemon's core wraps it to pin the run
+    H.setSessionSetup((built) => {
+      const live = built as unknown as { prompt: ReturnType<typeof vi.fn>; sessionManager: { getBranch: ReturnType<typeof vi.fn> } };
+      live.sessionManager.getBranch.mockReturnValue([]);
+      live.prompt.mockImplementation(async (_text: string, promptOpts: unknown) => {
+        piRuns(promptOpts, live.sessionManager.getBranch, [
+          { type: 'message', id: 'u1', message: { role: 'user', content: 'hi' } },
+          { type: 'message', id: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+        ]);
+      });
+    });
+    try {
+      const opts = makeOptions([], { platform: { ...testPlatform, remote: host.remote }, panelId: 'panel-1' });
+      const memory = memorySpy();
+      opts.memoryService = memory as never;
+      const session = new PiSession(opts);
+      await session.initializeEarly();
+      forceAgentRun(session);
+
+      await session.sendMessage('hi', undefined, 'corr', { content: 'hi' });
+
+      expect(memory.enqueueTurnCandidate).toHaveBeenCalledWith(expect.objectContaining({ userText: 'hi', clientId: 'client-b' }));
+      await session.dispose();
+    } finally {
+      H.setSessionSetup(null);
+    }
+  });
+
   it('does NOT enqueue a memory candidate when the turn ran no LLM agent (extension command)', async () => {
     const opts = makeOptions([]);
     const memory = memorySpy();
@@ -3997,6 +4029,46 @@ describe('PiSession subagent records', () => {
     await session.dispose();
   });
 
+  it('disposes a settled agent\'s browser scope on the client showing the chat on a daemon\'s core, and in its own browser here', async () => {
+    type ScopeEngine = { disposeBrowserScope: (scopeId: string, closeTabs: boolean) => void };
+    const scopeEngineOf = (session: PiSession): ScopeEngine =>
+      (session as unknown as { buildSubagentEngine: (pi: unknown) => ScopeEngine }).buildSubagentEngine(getPiCodingAgent());
+    const browserService = { disposeScope: vi.fn() } as unknown as NonNullable<SessionOptions['browserService']>;
+    const browserChat = {} as NonNullable<SessionOptions['browserChat']>;
+    const fake = createFakeRemoteHost();
+    const remote = new PiSession(makeOptions([], { platform: { ...testPlatform, remote: fake.remote }, browserService, browserChat }));
+    await remote.initializeEarly();
+    scopeEngineOf(remote).disposeBrowserScope('agent-1', true);
+    expect(fake.remote.browserRelease).toHaveBeenCalledWith(browserChat, 'agent-1', true);
+    expect(browserService.disposeScope).not.toHaveBeenCalled();
+    await remote.dispose();
+    await PiRuntime.disposeInstance();
+    const local = new PiSession(makeOptions([], { browserService, browserChat }));
+    await local.initializeEarly();
+    scopeEngineOf(local).disposeBrowserScope('agent-2', false);
+    expect(browserService.disposeScope).toHaveBeenCalledWith('agent-2', false);
+    await local.dispose();
+  });
+
+  it('discards the agents\' browser scopes it handed out on the client showing the chat when its conversation ends on a daemon\'s core, and in its own browser here', async () => {
+    const owned = (session: PiSession): Set<string> => (session as unknown as { ownedBrowserScopes: Set<string> }).ownedBrowserScopes;
+    const browserService = { discardScope: vi.fn() } as unknown as NonNullable<SessionOptions['browserService']>;
+    const browserChat = {} as NonNullable<SessionOptions['browserChat']>;
+    const fake = createFakeRemoteHost();
+    const remote = new PiSession(makeOptions([], { platform: { ...testPlatform, remote: fake.remote }, browserService, browserChat }));
+    await remote.initializeEarly();
+    owned(remote).add('agent-1');
+    await remote.dispose();
+    expect(fake.remote.browserDiscard).toHaveBeenCalledWith(browserChat, 'agent-1');
+    expect(browserService.discardScope).not.toHaveBeenCalled();
+    await PiRuntime.disposeInstance();
+    const local = new PiSession(makeOptions([], { browserService, browserChat }));
+    await local.initializeEarly();
+    owned(local).add('agent-2');
+    await local.dispose();
+    expect(browserService.discardScope).toHaveBeenCalledWith('agent-2');
+  });
+
   it('warns the user when the invocation entry cannot be written', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const session = new PiSession(makeOptions(messages));
@@ -5363,9 +5435,11 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     await session.dispose();
   });
 
-  it('on a daemon\'s core keeps the browser tools eligible, but off the snapshot and off what a reopened chat restores, since the browser is the client\'s', async () => {
+  it('on a daemon\'s core with no client attached keeps the browser tools eligible, but off the snapshot and off what a reopened chat restores, and loadable once a client attaches', async () => {
     const cfg = subsystemsOn();
-    installPlatform({ ...testPlatform, remote: createFakeRemoteHost().remote });
+    const fake = createFakeRemoteHost();
+    fake.set('clientAuth', 'client-a', undefined);
+    installPlatform({ ...testPlatform, remote: fake.remote });
     try {
       const session = new PiSession(makeOptions([]));
       await session.initializeEarly();
@@ -5377,6 +5451,8 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
         expect(names, n).not.toContain(n);
         expect(internals.deferrableNow().has(n), n).toBe(false);
       }
+      fake.set('clientAuth', 'client-a', { providers: {} });
+      for (const n of BROWSER_PI_TOOL_NAMES) expect(session.deferrableToolsSnapshot().names, n).toContain(n);
       await session.dispose();
     } finally {
       installPlatform(testPlatform);
@@ -5508,9 +5584,11 @@ describe('PiSession.buildTeamEngine — team agents get uniform deferral (Slice 
     await session.dispose();
   });
 
-  it('on a daemon\'s core a team agent\'s ToolSearch cannot load the browser, which is the client\'s', async () => {
+  it('on a daemon\'s core with no client attached a team agent\'s ToolSearch cannot load the browser, which runs on the client', async () => {
     const cfg = configWith({ browser: true, team: true });
-    installPlatform({ ...testPlatform, remote: createFakeRemoteHost().remote });
+    const fake = createFakeRemoteHost();
+    fake.set('clientAuth', 'client-a', undefined);
+    installPlatform({ ...testPlatform, remote: fake.remote });
     try {
       const session = await teamSession();
       const nested = nestedPi(['read', TOOL_TOOL_SEARCH]);

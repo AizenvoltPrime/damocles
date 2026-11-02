@@ -8,12 +8,14 @@ vi.mock('electron', () => ({}));
 import { HostStore } from '../host-store';
 import { failureOf, RemoteConnections } from '../connections';
 import { permanentFailureOf } from '../reconnect';
-import { OVERLAY_CHANNELS, type ConnectFailure, type HostOperations, type OverlayRequest } from '../../../preload/overlay-channels';
+import { MAX_HELD_MEMORY_QUEUES, OVERLAY_CHANNELS, type ConnectFailure, type HostOperations, type OverlayRequest } from '../../../preload/overlay-channels';
 import type { InstallKeyResult } from '../../../daemon/control-messages';
-import { macPrivacyFolder, RemoteHosts, sshDestination, type RemoteHostsDeps } from '../remote-hosts';
+import { macPrivacyFolder, RemoteHosts, sshDestination, type HeldMemoryHost, type RemoteHostsDeps } from '../remote-hosts';
 import { parseSshCommand } from '../ssh';
 import type { RemoteConnection } from '../connection';
 import type { ProjectWorkspace } from '../../../workspace/project-workspace';
+import { forgetHostData } from '../forget-host-data';
+import { RemoteState } from '../remote-state';
 
 let userData: string;
 
@@ -30,6 +32,8 @@ async function setup(overrides: Partial<RemoteHostsDeps> = {}, connect: () => Pr
   const connections = new RemoteConnections({
     host: (id) => store.host(id),
     startSsh: () => new Promise(() => undefined),
+    startWsl: () => new Promise(() => undefined),
+    startContainer: () => new Promise(() => undefined),
     savePlatform: async () => undefined,
     installFolderSettled: async () => undefined,
     connect,
@@ -42,6 +46,7 @@ async function setup(overrides: Partial<RemoteHostsDeps> = {}, connect: () => Pr
   const hosts = new RemoteHosts({
     store,
     connections,
+    heldMemory: () => undefined,
     update: () => undefined,
     state: () => 'offline',
     connection: () => undefined,
@@ -72,6 +77,17 @@ async function setup(overrides: Partial<RemoteHostsDeps> = {}, connect: () => Pr
     keySetup: { folder: path.join(userData, 'ssh'), clientName: 'laptop', resolveKeygen: async () => undefined, resolveSsh: async () => undefined, run: vi.fn(), sshQuery: vi.fn(), askpass: vi.fn(), sshVersion: vi.fn(), env: {}, log: () => undefined },
     runRemovalStage: vi.fn(async () => ({ code: 0, lines: ['{"kind":"removed"}'] })),
     exitControlMaster: vi.fn(async () => undefined),
+    listDistros: async () => ({ ok: true, distros: [] }),
+    setWslVersion: async () => 0,
+    containerSide: () => {
+      throw new Error('no containers in this test');
+    },
+    cliFolderKey: async (_via, target) => target,
+    containerEngine: () => 'docker',
+    pickLocalFolder: async () => undefined,
+    containerGate: async () => undefined,
+    containerUp: async () => undefined,
+    openContainerFolder: async () => '',
     ...overrides,
   });
   return { store, connections, hosts, writeClipboard, renamed };
@@ -182,11 +198,11 @@ describe('RemoteHosts', () => {
     const { hosts, store, connections } = await setup({ overlay: () => overlay, latency: () => latency as never, log: (line) => logs.push(line) });
     const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
     if (!added.ok) throw new Error('setup');
-    const step = { attemptId: 'a1', hostId: added.host.id, step: 'connecting', visited: ['connecting'], notices: [], extra: 'dropped' };
+    const step = { attemptId: 'a1', hostId: added.host.id, transport: 'ssh', step: 'connecting', visited: ['connecting'], notices: [], extra: 'dropped' };
     const attempt = vi.spyOn(connections, 'attempt').mockReturnValue(step as never);
     hosts.hostChanged(added.host.id);
-    expect(sent.map(([channel]) => channel)).toEqual(['damocles:overlay:connect:step', 'damocles:overlay:connect:hosts']);
-    expect(sent[0]![1]).toEqual({ attemptId: 'a1', hostId: added.host.id, step: 'connecting', visited: ['connecting'], notices: [] });
+    expect(sent.map(([channel]) => channel)).toEqual(['damocles:overlay:connect:step', 'damocles:overlay:connect:hosts', 'damocles:overlay:connect:distros']);
+    expect(sent[0]![1]).toEqual({ attemptId: 'a1', hostId: added.host.id, transport: 'ssh', step: 'connecting', visited: ['connecting'], notices: [] });
     expect((sent[1]![1] as Array<{ latency: unknown }>)[0]!.latency).toEqual({ latencyMs: 38, slow: false, history: [38], measurements: 1 });
     sent.length = 0;
     // a card or a step the request's bounds refuse is not pushed, and the dialog keeps what it shows
@@ -194,7 +210,8 @@ describe('RemoteHosts', () => {
     attempt.mockReturnValue({ ...step, prompt: { promptId: 'p1', kind: 'secret', secretKind: 'bogus', text: 'Password:' } } as never);
     hosts.hostChanged(added.host.id);
     hosts.hostsChanged();
-    expect(sent.map(([channel]) => channel)).toEqual(['damocles:overlay:hosts:entries']);
+    // the distros are pushed whole on their own, a refused card withholding none of them
+    expect(sent.map(([channel]) => channel)).toEqual(['damocles:overlay:connect:distros', 'damocles:overlay:connect:distros', 'damocles:overlay:hosts:entries']);
     expect(logs).toEqual([
       `[remote] ${added.host.id}: the attempt's step exceeds the overlay bounds; the Connect dialog keeps the last one`,
       '[remote] the host list exceeds the overlay bounds; the Connect dialog keeps the last one',
@@ -220,6 +237,45 @@ describe('RemoteHosts', () => {
     hosts.hostsChanged();
     expect(sent).toEqual([]);
     expect(logs).toEqual(Array(2).fill('[remote] the saved hosts exceed the overlay bounds; the overlay keeps the last list'));
+  });
+
+  it('lists a connected host\'s held memory queues, none while it is not connected, and at most MAX_HELD_MEMORY_QUEUES', async () => {
+    const queues = Array.from({ length: MAX_HELD_MEMORY_QUEUES + 2 }, (_, n) => ({ queueId: `device-${n}`, count: n + 1, lastSeen: 1_700_000_000_000 + n }));
+    let state: 'connected' | 'offline' = 'connected';
+    const logs: string[] = [];
+    const { hosts, store } = await setup({
+      state: () => state,
+      heldMemory: () => ({ queues: () => queues, deliver: async () => true, discard: async () => true }),
+      log: (line) => logs.push(line),
+    });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    expect(hosts.entries()[0]!.heldMemoryQueues).toEqual(queues.slice(0, MAX_HELD_MEMORY_QUEUES));
+    expect(logs).toEqual([`[remote] ${added.host.id}: 2 held memory queues past the ${MAX_HELD_MEMORY_QUEUES} the overlay shows are left out`]);
+    state = 'offline';
+    expect(hosts.entries()[0]!.heldMemoryQueues).toEqual([]);
+  });
+
+  it('delivers or discards a held queue on the host\'s core, answering notConnected and gone as codes and logging a failure', async () => {
+    let state: 'connected' | 'offline' = 'connected';
+    let held: HeldMemoryHost | undefined = undefined;
+    const deliver = vi.fn(async (queueId: string) => queueId === 'device-old');
+    const discard = vi.fn(async () => { throw new Error('the outbox is locked'); });
+    const logs: string[] = [];
+    const { hosts, store } = await setup({ state: () => state, heldMemory: () => held, log: (line) => logs.push(line) });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    const id = added.host.id;
+    expect(await hosts.deliverHeldMemory(id, 'device-old')).toEqual({ ok: false, code: 'notConnected' });
+    held = { queues: () => [], deliver, discard };
+    expect(await hosts.deliverHeldMemory(id, 'device-old')).toEqual({ ok: true });
+    expect(await hosts.deliverHeldMemory(id, 'device-other')).toEqual({ ok: false, code: 'gone' });
+    expect(deliver.mock.calls).toEqual([['device-old'], ['device-other']]);
+    await expect(hosts.discardHeldMemory(id, 'device-old')).rejects.toThrow('the outbox is locked');
+    expect(logs).toContain(`[remote] ${id}: held memory queue device-old failed: the outbox is locked`);
+    state = 'offline';
+    expect(await hosts.discardHeldMemory(id, 'device-old')).toEqual({ ok: false, code: 'notConnected' });
+    await expect(hosts.deliverHeldMemory('no-such-host', 'device-old')).rejects.toThrow();
   });
 
   it('renames through the store\'s rule and tells the shell with the previous name', async () => {
@@ -330,7 +386,7 @@ describe('RemoteHosts', () => {
     await store.savePlatform(added.host.id, { os: 'linux' });
     expect(hosts.entries()[0]?.facts.lingerEnabledByDamocles).toBe(false);
     await hosts.allowBackground(added.host.id);
-    expect(store.host(added.host.id)?.lingerEnabledByDamocles).toBe(true);
+    expect(store.sshHost(added.host.id)?.lingerEnabledByDamocles).toBe(true);
     (connection.control.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ runs: [{ kind: 'chat', id: 'c1', projectKey: '', title: 'Fix it', state: 'running', providers: [] }] });
     expect(await hosts.removalInfo(added.host.id)).toEqual({ runs: [{ kind: 'chat', id: 'c1', title: 'Fix it', state: 'running' }], offerRemoveKey: false, offerDisableLinger: true });
   });
@@ -343,7 +399,7 @@ describe('RemoteHosts', () => {
     if (!added.ok) throw new Error('setup');
     await store.savePlatform(added.host.id, { os: 'linux' });
     expect(await hosts.allowBackground(added.host.id)).toEqual({ result: 'alreadyEnabled' });
-    expect(store.host(added.host.id)?.lingerEnabledByDamocles).toBeUndefined();
+    expect(store.sshHost(added.host.id)?.lingerEnabledByDamocles).toBeUndefined();
     expect(hosts.entries()[0]?.facts.lingerEnabledByDamocles).toBe(false);
     expect(dropNotice).toHaveBeenCalledWith(added.host.id, 'noLinger');
     dropNotice.mockRestore();
@@ -379,11 +435,11 @@ describe('RemoteHosts', () => {
     // Damocles' master connection ends once the stage ran, the key box checked or not
     expect(exitControlMaster.mock.calls).toEqual([[id]]);
     expect(exitControlMaster.mock.invocationCallOrder[0]).toBeGreaterThan(runRemovalStage.mock.invocationCallOrder[0]!);
-    expect(store.host(id)?.installedKeyFingerprint).toBeDefined();
+    expect(store.sshHost(id)?.installedKeyFingerprint).toBeDefined();
     await hosts.removeServer(id, { removeKey: true, disableLinger: false });
     expect(runRemovalStage.mock.calls[1]![1]).toContain(`D_KEY='${entry}'\nD_KEY_FILE='/home/dev/.ssh/authorized_keys'`);
-    expect(store.host(id)?.installedKeyFingerprint).toBeUndefined();
-    expect(store.host(id)?.identityFile).toBeUndefined();
+    expect(store.sshHost(id)?.installedKeyFingerprint).toBeUndefined();
+    expect(store.sshHost(id)?.identityFile).toBeUndefined();
   });
 
   it('runs the same removal stage again on Try again after daemonRunning, with no connection, and forgets the key once it removed it', async () => {
@@ -418,13 +474,13 @@ describe('RemoteHosts', () => {
     expect(await hosts.removeServer(id, { removeKey: true, disableLinger: false })).toEqual({ ok: false, code: 'daemonRunning', params: {} });
     expect(connected).toBe(false);
     expect(await hosts.retryRemoval(id)).toEqual({ ok: false, code: 'daemonRunning', params: {} });
-    expect(store.host(id)?.installedKeyFingerprint).toBeDefined();
+    expect(store.sshHost(id)?.installedKeyFingerprint).toBeDefined();
     expect(await hosts.retryRemoval(id)).toEqual({ ok: true, notices: [] });
     // one shutdown; each try ran the same script with the run key the daemon answered
     expect(request).toHaveBeenCalledTimes(1);
     expect(new Set(stages).size).toBe(1);
     expect(stages[0]).toContain("D_RUN_KEY='0123456789abcdef'");
-    expect(store.host(id)?.installedKeyFingerprint).toBeUndefined();
+    expect(store.sshHost(id)?.installedKeyFingerprint).toBeUndefined();
     // every try ends Damocles' master, a refused one too
     expect(exitControlMaster).toHaveBeenCalledTimes(3);
     await expect(hosts.retryRemoval(id)).rejects.toThrow('No removal of this host waits to be tried again');
@@ -515,7 +571,7 @@ describe('RemoteHosts', () => {
     const retry = hosts.retryRemoval(id);
     expect(hosts.operations(id).removal).toEqual({});
     const prompt = { promptId: 'p9', kind: 'secret', secretKind: 'password', text: "deploy@prod-1's password:" } as const;
-    const attempt = vi.spyOn(connections, 'attempt').mockReturnValue({ attemptId: 'a9', hostId: id, step: 'authenticating', visited: ['authenticating'], notices: [], prompt });
+    const attempt = vi.spyOn(connections, 'attempt').mockReturnValue({ attemptId: 'a9', hostId: id, transport: 'ssh', step: 'authenticating', visited: ['authenticating'], notices: [], prompt });
     hosts.hostChanged(id);
     expect(snapshots.at(-1)).toMatchObject({ hostId: id, removal: { prompt: { attemptId: 'a9', ...prompt } } });
     expect(hosts.operations(id).removal).toEqual({ prompt: { attemptId: 'a9', ...prompt } });
@@ -629,7 +685,7 @@ describe('RemoteHosts', () => {
   it('forgets a host: disconnects it, deletes its remembered answers and local data, then its record', async () => {
     const order: string[] = [];
     const { hosts, store } = await setup({
-      disconnect: () => order.push('disconnect'),
+      disconnect: async () => void order.push('disconnect'),
       deleteRememberedSecrets: async () => { order.push('secrets'); },
       forgetLocalData: async () => { order.push('local'); },
     });
@@ -640,10 +696,64 @@ describe('RemoteHosts', () => {
     expect(store.hosts()).toEqual([]);
   });
 
+  // Forget host needs no engine: a halted one refuses every request, holds no browser context, and the profile still goes.
+  it('forgets every local datum and the record of a host while the engine is halted', async () => {
+    const state = await RemoteState.open(userData, () => undefined);
+    const releaseBrowser = vi.fn(() => Promise.reject(new Error('The Damocles engine is not running')));
+    const deleteRememberedSecrets = vi.fn(async () => undefined);
+    const folders = (hostId: string) => ({ mirror: path.join(userData, 'remote', hostId), profile: path.join(userData, 'browser-profiles', `ssh+${hostId}`) });
+    const { hosts, store } = await setup({
+      deleteRememberedSecrets,
+      forgetLocalData: (hostId) => forgetHostData({
+        dropEngine: async () => undefined,
+        exitControlMaster: async () => undefined,
+        mirrorIdle: async () => undefined,
+        mirrorFolder: folders(hostId).mirror,
+        forgetPorts: () => undefined,
+        engineHalted: () => true,
+        releaseBrowser,
+        profileFolder: folders(hostId).profile,
+        forgetChats: () => undefined,
+        forgetRemoteState: () => state.forgetAuthority(`ssh+${hostId}`),
+        log: () => undefined,
+      }),
+    });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    const { id } = added.host;
+    for (const folder of Object.values(folders(id))) fs.mkdirSync(folder, { recursive: true });
+    await state.setLastChats(`ssh+${id}`, [{ projectKey: `ssh+${id}|/srv/app`, sessionId: 's1' }]);
+    await hosts.forget(id);
+    expect(releaseBrowser).not.toHaveBeenCalled();
+    expect(deleteRememberedSecrets).toHaveBeenCalledWith(id);
+    for (const folder of Object.values(folders(id))) expect(fs.existsSync(folder)).toBe(false);
+    expect(state.lastChats(`ssh+${id}`)).toEqual([]);
+    expect(store.hosts()).toEqual([]);
+  });
+
+  it('keeps the records after a failed step, runs the steps after it, and finishes on a second Forget host', async () => {
+    let failing = true;
+    const forgotten: string[] = [];
+    const deleteRememberedSecrets = vi.fn(async (hostId: string) => {
+      if (failing) throw new Error('keyring locked');
+      forgotten.push(`secrets ${hostId}`);
+    });
+    const { hosts, store } = await setup({ deleteRememberedSecrets, forgetLocalData: async (hostId) => void forgotten.push(`local ${hostId}`) });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    await expect(hosts.forget(added.host.id)).rejects.toThrow('keyring locked');
+    expect(forgotten).toEqual([`local ${added.host.id}`]);
+    expect(store.hosts().map((host) => host.id)).toEqual([added.host.id]);
+    failing = false;
+    await hosts.forget(added.host.id);
+    expect(forgotten).toEqual([`local ${added.host.id}`, `secrets ${added.host.id}`, `local ${added.host.id}`]);
+    expect(store.hosts()).toEqual([]);
+  });
+
   it('forgets a connecting host: its attempt in flight ends and its connection state goes', async () => {
     const order: string[] = [];
     const { hosts, store, connections } = await setup({
-      disconnect: () => order.push('disconnect'),
+      disconnect: async () => void order.push('disconnect'),
       deleteRememberedSecrets: async () => { order.push('secrets'); },
     });
     const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });

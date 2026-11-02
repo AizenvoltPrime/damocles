@@ -48,6 +48,7 @@ export interface InProcessOptions {
   readonly watchWorker?: string;
   readonly graceMs?: number;
   readonly maxHeldBytes?: number;
+  readonly now?: () => number;
   // makes the daemon's git credential relay, as serve does
   readonly credentialRelay?: boolean;
 }
@@ -84,6 +85,7 @@ export async function startInProcessDaemon(options: InProcessOptions = {}): Prom
       ...(options.watchWorker !== undefined ? { watchWorker: options.watchWorker } : {}),
       ...(options.graceMs !== undefined ? { graceMs: options.graceMs } : {}),
       ...(options.maxHeldBytes !== undefined ? { maxHeldBytes: options.maxHeldBytes } : {}),
+      ...(options.now !== undefined ? { now: options.now } : {}),
       ...(relay ? { credentialRelay: relay } : {}),
       ...endpoint,
       releaseLock: lock.release,

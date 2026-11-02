@@ -87,7 +87,7 @@ describe('title bar safety stripe', () => {
 
 describe('host badge tone', () => {
   const mountProjects = (project: ShellProject): VueWrapper => track(mount(ProjectsSection, {
-    props: { api: fakeShellApi(), projects: [project], selectedKey: project.key, remoteEnabled: true, hosts: [], view: 'flat', groups: STATE.projectGroups, platform: 'win32', collapsed: false, bodySize: 150 },
+    props: { api: fakeShellApi(), projects: [project], selectedKey: project.key, hosts: [], view: 'flat', groups: STATE.projectGroups, platform: 'win32', collapsed: false, bodySize: 150 },
     global: { plugins: [shellI18n] },
     attachTo: document.body,
   }));

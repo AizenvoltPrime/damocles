@@ -2,7 +2,7 @@
  * Checks one server package, in the checkout that built it:
  *
  *   node scripts/verify-server-package.mjs --target <target> <archive> [--node-version <v>] [--node-pty-binary <pty.node>]
- *     [--require-self-test | --skip-self-test]
+ *     [--signed-browser-helper <browser.exe>] [--require-self-test | --skip-self-test]
  *
  * - the bytes: the same inputs assemble the identical archive, so the file list is exact and the build reproducible;
  * - the Node it bundles is the version Electron embeds;
@@ -11,7 +11,11 @@
  * - dist/subscription-plugin/ holds the subscription plugin whose digest subscription-pin.ts pins, with its LICENSE;
  * - on glibc targets, no ELF file needs a symbol version newer than GLIBC_2.28 or GLIBCXX_3.4.25 (readelf);
  * - on Alpine, Node, node-pty and the watcher link against musl;
+ * - on x64 Linux and Alpine, no executable ELF file has a PT_LOAD aligned past 4 KiB, which WSL 1 refuses to run (readelf);
  * - dist/git-credential/ holds the git credential relay helpers, the .sh with LF line ends and the .cmd with CRLF;
+ * - dist/cli-remote.js, bin/remote-cli/damocles and bin/helpers/browser.sh (LF sh scripts), and on Windows bin/remote-cli/damocles.cmd
+ *   (CRLF, delayed expansion off) and bin/helpers/browser.exe, a PE executable for the target's architecture;
+ * - node_modules/@devcontainers/cli holds the CLI's entry and bundle at the version package-lock.json pins;
  * - the launcher and every other executable are mode 0755, and the gzip header is normalized;
  * - on the machine's own target, `bin/damocles-server self-test` passes; --require-self-test fails on another machine, and
  *   --skip-self-test leaves it to the caller (the release's Alpine legs run it in a clean container).
@@ -20,12 +24,17 @@
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
-import { archiveOf, loaded, modeOf, STAGE_DIR, targetEntries } from './build-server.mjs';
+import { basename, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { PE_MACHINES, peMachine } from './browser-helper.mjs';
+import { archiveOf, BROWSER_HELPER_PATH, clampsLoadAlign, loaded, modeOf, STAGE_DIR, targetEntries } from './build-server.mjs';
+import { PAGE_SIZE } from './elf-load-align.mjs';
 import { isEntryPoint } from './entry-point.mjs';
 import { gzipHeader, readTarGz, readZip, sha256 } from './server-archive.mjs';
-import { SERVER_TARGETS, serverNodeVersion } from './server-targets.mjs';
+import { DEVCONTAINERS_CLI, DEVCONTAINERS_CLI_ENTRY, SERVER_TARGETS, serverNodeVersion } from './server-targets.mjs';
 import { subscriptionPluginProblems } from './subscription-plugin.mjs';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 export const GLIBC_CEILING = '2.28';
 export const GLIBCXX_CEILING = '3.4.25';
@@ -39,6 +48,9 @@ function newer(version, ceiling) {
   return false;
 }
 
+// A registry DelayedExpansion=1 would eat a ! in a .cmd's arguments unless the script turns it off before using them.
+const DISABLES_DELAYED_EXPANSION = /^setlocal DisableDelayedExpansion\r$/im;
+
 /** Problems with the git credential relay helpers a daemon's core gives git (src/core/scm/askpass/credential-relay.ts). */
 export function credentialRelayProblems(entries) {
   const problems = [];
@@ -49,6 +61,47 @@ export function credentialRelayProblems(entries) {
   if (!cmd || cmd.data.length === 0) problems.push('no dist/git-credential/git-credential-relay.cmd');
   // .gitattributes keeps it CRLF: cmd.exe misparses a batch file with LF line ends, a label search above all
   else if (/(?<!\r)\n/.test(cmd.data.toString('utf8'))) problems.push('dist/git-credential/git-credential-relay.cmd is not a CRLF batch file');
+  else if (!DISABLES_DELAYED_EXPANSION.test(cmd.data.toString('utf8'))) problems.push('dist/git-credential/git-credential-relay.cmd does not turn delayed expansion off');
+  return problems;
+}
+
+/** Problems with the damocles command of a target's user terminals: dist/cli-remote.js, and its scripts as the platform runs them. */
+export function cliScriptProblems(spec, entries) {
+  const problems = [];
+  const at = (path) => entries.find((entry) => entry.path === path);
+  if (!at('dist/cli-remote.js') || at('dist/cli-remote.js').data.length === 0) problems.push('no dist/cli-remote.js');
+  const scripts = ['bin/remote-cli/damocles', 'bin/helpers/browser.sh', ...(spec.platform === 'win32' ? ['bin/remote-cli/damocles.cmd'] : [])];
+  for (const path of scripts) {
+    const entry = at(path);
+    if (!entry || entry.data.length === 0) problems.push(`no ${path}`);
+    else if (path.endsWith('.cmd') ? /(?<!\r)\n/.test(entry.data.toString('utf8')) : entry.data.includes(0x0d) || !entry.data.toString('utf8').startsWith('#!/bin/sh\n')) {
+      problems.push(`${path} is not ${path.endsWith('.cmd') ? 'a CRLF batch file' : 'an LF sh script'}`);
+    } else if (path.endsWith('.cmd') && !DISABLES_DELAYED_EXPANSION.test(entry.data.toString('utf8'))) {
+      problems.push(`${path} does not turn delayed expansion off`);
+    }
+  }
+  return problems;
+}
+
+/** Problems with a Windows target's BROWSER (bin/helpers/browser.exe): present only on Windows, as a PE executable for its architecture. */
+export function browserHelperProblems(spec, entries) {
+  const helper = entries.find((entry) => entry.path === BROWSER_HELPER_PATH);
+  if (spec.platform !== 'win32') return helper ? [`${BROWSER_HELPER_PATH} in a ${spec.platform} package`] : [];
+  if (!helper) return [`no ${BROWSER_HELPER_PATH}`];
+  const machine = peMachine(helper.data);
+  if (machine === undefined) return [`${BROWSER_HELPER_PATH} is not a PE executable`];
+  const expected = PE_MACHINES[spec.arch];
+  return machine === expected ? [] : [`${BROWSER_HELPER_PATH} is built for machine 0x${machine.toString(16)}, ${spec.arch} needs 0x${expected.toString(16)}`];
+}
+
+/** Problems with the Dev Containers CLI a daemon runs for `containers.up`: its entry and bundle, at the version package-lock.json pins. */
+export function devcontainersCliProblems(entries, pinned) {
+  const problems = [];
+  const at = (path) => entries.find((entry) => entry.path === path);
+  for (const path of [DEVCONTAINERS_CLI_ENTRY, `node_modules/${DEVCONTAINERS_CLI}/dist/spec-node/devContainersSpecCLI.js`]) if (!at(path) || at(path).data.length === 0) problems.push(`no ${path}`);
+  const manifest = at(`node_modules/${DEVCONTAINERS_CLI}/package.json`);
+  const version = manifest ? JSON.parse(manifest.data.toString('utf8')).version : undefined;
+  if (version !== pinned) problems.push(`${DEVCONTAINERS_CLI} is ${version ?? 'missing'}, package-lock.json pins ${pinned}`);
   return problems;
 }
 
@@ -108,6 +161,14 @@ export function muslLinkageProblems(path, { interpreter, needed, versionNeeds })
   return problems;
 }
 
+/** Why `path`, by its `readelf -l --wide` output, would not run on WSL 1: a PT_LOAD aligned past 4 KiB, or none listed. */
+export function loadAlignProblems(path, readelfOutput) {
+  const aligns = [...readelfOutput.matchAll(/^\s*LOAD\s+(?:0x[0-9a-f]+\s+){5}[RWE ]+?\s(0x[0-9a-f]+)\s*$/gim)].map((match) => Number.parseInt(match[1], 16));
+  if (aligns.length === 0) return [`readelf lists no PT_LOAD of ${path}`];
+  const over = aligns.filter((align) => align > PAGE_SIZE);
+  return over.length ? [`${path} has PT_LOAD alignments ${over.map((align) => `0x${align.toString(16)}`).join(', ')}, above the 4 KiB WSL 1 loads`] : [];
+}
+
 function readelf(args, file) {
   const result = spawnSync('readelf', [...args, file], { encoding: 'utf8' });
   if (result.error || result.status !== 0) throw new Error(`readelf ${args.join(' ')} ${file} failed: ${result.error?.message ?? result.stderr}`);
@@ -127,6 +188,8 @@ function elfProblems(spec, entries) {
         const found = symbolVersionProblems(readelf(['-V', '--wide'], file));
         if (found.length) problems.push(`${entry.path} needs ${found.join(', ')}`);
       }
+      // the kernel loads only executables; ld.so maps a shared object itself
+      if (clampsLoadAlign(spec) && modeOf(entry.path) === 0o755) problems.push(...loadAlignProblems(entry.path, readelf(['-l', '--wide'], file)));
     }
     if (spec.libc === 'musl') {
       const linked = entries.filter((entry) => entry.path === 'node/node' || /\/(pty|watcher)\.node$/.test(entry.path));
@@ -183,7 +246,7 @@ function selfTest(spec, archive) {
   }
 }
 
-const VALUE_OPTIONS = ['--target', '--node-version', '--node-pty-binary'];
+const VALUE_OPTIONS = ['--target', '--node-version', '--node-pty-binary', '--signed-browser-helper'];
 
 function option(name) {
   const at = process.argv.indexOf(name);
@@ -205,7 +268,9 @@ async function main() {
   if (info.target !== target) problems.push(`server-package.json names target ${info.target}`);
   if (info.node !== nodeVersion) problems.push(`the package bundles Node ${info.node}, Electron embeds ${nodeVersion}`);
 
-  const rebuilt = loaded(await targetEntries(target, { version: info.version, nodeVersion, distDir: join(STAGE_DIR, 'dist'), nodePtyBinary: option('--node-pty-binary') }));
+  const signedHelper = option('--signed-browser-helper');
+  const signedBrowserHelper = signedHelper ? readFileSync(signedHelper) : undefined;
+  const rebuilt = loaded(await targetEntries(target, { version: info.version, nodeVersion, distDir: join(STAGE_DIR, 'dist'), nodePtyBinary: option('--node-pty-binary'), signedBrowserHelper }));
   const again = archiveOf(target, rebuilt);
   if (sha256(again) !== sha256(data)) {
     const expected = new Set(rebuilt.map((entry) => entry.path));
@@ -217,6 +282,9 @@ async function main() {
   problems.push(...prebuildProblems(spec, paths));
   problems.push(...subscriptionPluginProblems(entries));
   problems.push(...credentialRelayProblems(entries));
+  problems.push(...cliScriptProblems(spec, entries));
+  problems.push(...browserHelperProblems(spec, entries));
+  problems.push(...devcontainersCliProblems(entries, JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8')).packages[`node_modules/${DEVCONTAINERS_CLI}`]?.version));
   for (const entry of entries) if (entry.mode !== modeOf(entry.path)) problems.push(`${entry.path} has mode ${entry.mode.toString(8)}, expected ${modeOf(entry.path).toString(8)}`);
   if (spec.platform !== 'win32') {
     const header = gzipHeader(data);

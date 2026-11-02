@@ -2,6 +2,7 @@
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { ArrowLeft, ArrowRight, CircleAlert, ExternalLink, Globe, LoaderCircle, Lock, RotateCw, SquareCode, SquareMousePointer, TriangleAlert } from 'lucide-vue-next';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
@@ -9,7 +10,7 @@ import { isNotSecurePage, MAX_BROWSER_URL_LENGTH } from '@shared/typed-address';
 import type { BrowserAction, DamoclesShellApi, ShellEditorTab } from '../../preload/shell-channels';
 import { watchContentBounds } from '../content-bounds';
 import { EDITOR_STORE } from './editor-store';
-import { isBlankPage, isSecurePage, isSendableAddress, isWebUrl, pageText, pageTitle } from './browser-page';
+import { forwardedTarget, isBlankPage, isSecurePage, isSendableAddress, isWebUrl, pageText, pageTitle } from './browser-page';
 
 const props = defineProps<{ api: DamoclesShellApi; tab: ShellEditorTab & { browser: NonNullable<ShellEditorTab['browser']> } }>();
 const { t } = useI18n();
@@ -30,6 +31,7 @@ const shownAddress = (): string => (isBlankPage(page.value.url) ? '' : pageText(
 const canOpenExternally = computed(() => isWebUrl(page.value.url));
 const notSecure = computed(() => isNotSecurePage(page.value.url));
 const title = computed(() => pageTitle(props.tab, t('editor.browser.newPage')));
+const forwarded = computed(() => (page.value.forwardedFrom ? { target: forwardedTarget(page.value.forwardedFrom), tone: page.value.forwardedFrom.hostTone } : undefined));
 
 // The field shows the page's address except while the user is typing over it.
 watch(() => props.tab.id, () => {
@@ -280,6 +282,21 @@ const BUTTON = 'd-press size-6.5 shrink-0 rounded-md text-(--d-muted) hover:bg-(
           @input="onInput"
           @keydown="onKeydown"
         />
+        <!-- A remote chat's forwarded page: the target address the agent and the page see, tinted with its host's color. -->
+        <Transition name="t-chip">
+          <Badge
+            v-if="forwarded"
+            as="span"
+            variant="tone"
+            data-testid="browser-forwarded-from"
+            class="h-4.5 max-w-40 shrink-0 border-0 bg-(--tone)/15 px-1.75 text-10 font-semibold whitespace-nowrap"
+            :class="forwarded.tone ? `d-tone-${forwarded.tone}` : 'd-tone-muted'"
+            :title="t('editor.browser.forwardedFrom', { target: forwarded.target })"
+          >
+            <span class="sr-only">{{ `${t('editor.browser.forwardedFromPrefix')} ` }}</span>
+            <span class="truncate">{{ forwarded.target }}</span>
+          </Badge>
+        </Transition>
         <span
           id="browser-address-error"
           role="status"

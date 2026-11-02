@@ -9,6 +9,7 @@ import {
   checkAppUpdate,
   checkAsarEntries,
   checkAskpassScripts,
+  checkCliScripts,
   checkAskpassTrampoline,
   checkChangelog,
   checkCoreHost,
@@ -46,9 +47,10 @@ afterEach(() => {
 });
 
 describe('WORKERS', () => {
-  it('names every top-level dist script the build writes but the extension, Damocles Core, which stays packed, and the loopback daemon, which never ships', () => {
+  it('names every top-level dist script the build writes but the extension, Damocles Core, which stays packed, the loopback daemon, which never ships, and a target terminal\'s damocles command, which only a server package carries', () => {
     const config = readFileSync(join(__dirname, '..', '..', 'esbuild.config.mjs'), 'utf8');
-    const outfiles = [...config.matchAll(/outfile: 'dist\/([^/']+\.js)'/g)].map((match) => match[1]).filter((name) => name !== 'extension.js' && name !== 'core-host.js' && name !== 'daemon.js');
+    const outfiles = [...config.matchAll(/outfile: 'dist\/([^/']+\.js)'/g)].map((match) => match[1]).filter((name) => name !== 'extension.js' && name !== 'core-host.js' && name !== 'daemon.js' && name !== 'cli-remote.js');
+    expect(outfiles).toContain('cli.js');
     expect(outfiles).toContain('process-launcher-worker.js');
     expect([...WORKERS].sort()).toEqual(outfiles.sort());
   });
@@ -207,6 +209,31 @@ describe('checkShellIntegrationScripts', () => {
   it('passes the repository\'s own scripts', () => {
     const dir = join(__dirname, '..', '..', 'resources', 'shell-integration');
     expect(failures(checkShellIntegrationScripts((file: string) => readFileSync(join(dir, file))))).toEqual([]);
+  });
+});
+
+describe('checkCliScripts', () => {
+  const mode = (value: number) => () => ({ mode: value });
+  const files = (sh: string | undefined, cmd: string | undefined) => (file: string) => {
+    const text = file === 'damocles' ? sh : cmd;
+    return text === undefined ? undefined : Buffer.from(text);
+  };
+  it('requires resources/bin/damocles as an LF sh script, 0755 where modes are kept, and damocles.cmd as CRLF', () => {
+    const sh = '#!/bin/sh\nexec app\n';
+    const cmd = '@echo off\r\nsetlocal DisableDelayedExpansion\r\nexit /b\r\n';
+    expect(failures(checkCliScripts(files(sh, cmd), mode(0o100755), true))).toEqual([]);
+    // a registry DelayedExpansion=1 would eat a ! in the arguments
+    expect(failures(checkCliScripts(files(sh, '@echo off\r\nsetlocal\r\nexit /b\r\n'), mode(0o100755), true))).toEqual(['damocles.cmd']);
+    expect(failures(checkCliScripts(files(sh, cmd), mode(0o100644), false))).toEqual([]);
+    expect(failures(checkCliScripts(files(sh, cmd), mode(0o100644), true))).toEqual(['damocles command mode']);
+    expect(failures(checkCliScripts(files('#!/bin/sh\r\nexec app\r\n', cmd), mode(0o100755), true))).toEqual(['damocles command']);
+    expect(failures(checkCliScripts(files(undefined, cmd), () => undefined, false))).toEqual(['damocles command']);
+    expect(failures(checkCliScripts(files(sh, '@echo off\nexit /b\n'), mode(0o100755), true))).toEqual(['damocles.cmd']);
+  });
+
+  it('passes the repository\'s own scripts', () => {
+    const dir = join(__dirname, '..', '..', 'resources', 'bin');
+    expect(failures(checkCliScripts((file: string) => readFileSync(join(dir, file)), mode(0o100755), false))).toEqual([]);
   });
 });
 
@@ -383,6 +410,7 @@ describe('verifyPackage', () => {
       'dist/watch-worker.js',
       'dist/askpass-main.js',
       ...ASKPASS_SCRIPTS.map((file) => `dist/askpass/${file}`),
+      'dist/cli.js',
       'resources/grammars/tree-sitter-go.wasm',
       ...SHELL_INTEGRATION_FILES.map((file) => `resources/shell-integration/${file}`),
       'python/damocles_voice_sidecar/damocles_voice_sidecar/__main__.py',
@@ -390,6 +418,7 @@ describe('verifyPackage', () => {
       ...Object.keys(WAKE_FILES).map((file) => `python/damocles_voice_sidecar/damocles_voice_sidecar/models/wake/${file}`),
       'node_modules/web-tree-sitter/tree-sitter.wasm',
       'node_modules/koffi/package.json',
+      'node_modules/@devcontainers/cli/devcontainer.js',
       `node_modules/@vscode/ripgrep-${target}/bin/${platform === 'win32' ? 'rg.exe' : 'rg'}`,
       `node_modules/@koromix/koffi-${target}/${target.replace('-', '_')}/koffi.node`,
       ...(platform === 'win32' ? [] : [`node_modules/@parcel/watcher-${target}/watcher.node`]),
@@ -401,6 +430,9 @@ describe('verifyPackage', () => {
     if (platform === 'win32') put(join(unpacked, 'dist', 'askpass', 'ssh-askpass.exe'), 'MZ trampoline');
     // the desktop build gives the askpass scripts 0755 for every target, and a POSIX host checks it
     for (const file of ASKPASS_SCRIPTS) chmodSync(join(unpacked, 'dist', 'askpass', file), 0o755);
+    put(join(resources, 'bin', 'damocles'), '#!/bin/sh\nexec app\n');
+    chmodSync(join(resources, 'bin', 'damocles'), 0o755);
+    put(join(resources, 'bin', 'damocles.cmd'), '@echo off\r\nsetlocal DisableDelayedExpansion\r\nexit /b\r\n');
     if (platform === 'darwin') {
       chmodSync(join(app, 'Contents', 'MacOS', 'Damocles'), 0o755);
       chmodSync(join(unpacked, 'node_modules', '@vscode', `ripgrep-${target}`, 'bin', 'rg'), 0o755);

@@ -24,7 +24,12 @@ const BACKEND_TREES: readonly SourceTree[] = [
 ];
 
 /** The backend trees plus the host-neutral code esbuild bundles into the same CJS outputs. */
-export const BUNDLED_TREES: readonly SourceTree[] = [...BACKEND_TREES, { dir: 'src/shared', minFiles: 30 }, { dir: 'src/platform', minFiles: 10 }];
+export const BUNDLED_TREES: readonly SourceTree[] = [
+  ...BACKEND_TREES,
+  { dir: 'src/shared', minFiles: 30 },
+  { dir: 'src/platform', minFiles: 10 },
+  { dir: 'src/remote', minFiles: 5 },
+];
 
 function walk(dir: string, out: string[]): void {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {

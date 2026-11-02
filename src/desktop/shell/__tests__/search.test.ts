@@ -434,7 +434,7 @@ describe('search-result tokenizer (VS Code extensions/search-result)', () => {
 let monacoModule: ShellMonacoModule;
 beforeAll(async () => {
   const monaco = await import('monaco-editor/editor/editor.api');
-  monacoModule = { useMonaco: () => monaco, settingsModelUri: () => '' } as unknown as ShellMonacoModule;
+  monacoModule = { useMonaco: () => monaco, settingsModelUri: () => '', setWebLinkOpener: () => undefined } as unknown as ShellMonacoModule;
 }, 120_000);
 
 const codeTab = (relativePath: string, overrides: Partial<ShellEditorTab> = {}): ShellEditorTab => ({

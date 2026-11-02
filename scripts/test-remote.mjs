@@ -11,7 +11,11 @@
  *
  * A target suite (@windows-target, @darwin-target) runs only when --grep names its tag. The specs Playwright selects (its own
  * --list, so --grep, --shard and file arguments apply) decide the fixture images and server packages: ubuntu and the Linux
- * package for any Docker spec, the Alpine package with the alpine image.
+ * package for any Docker spec, the Alpine package with the alpine image; for a @wsl spec, which starts no fixture container,
+ * the Linux and Alpine packages its distros install from the app's cache; and for a @devcontainer spec the same two packages,
+ * which its dev containers install, with the sshd fixture images only for a spec that starts one (`sshd(`). Building the
+ * Alpine package compiles node-pty in the pinned Alpine build image with docker, once per node-pty and Node version
+ * (dist/server-packages/.cache), so a run on a machine without Docker needs that file or DAMOCLES_E2E_PREBUILT=server-packages.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -39,6 +43,12 @@ const PTY_CACHE = join(SERVER_PACKAGES_DIR, '.cache');
 const MANIFEST_PATH = join(ROOT, 'dist', 'desktop', 'server-manifest.json');
 const PREBUILT_PARTS = ['app', 'server-packages'];
 const BUILD_SERVER_PACKAGES = '--build-server-packages';
+// e2e/remote/support/wsl.ts WSL_TAG as Playwright's JSON listing names it: a test carrying it reaches WSL distros through
+// wsl.exe, never a Docker fixture
+const WSL_TAG = 'wsl';
+// e2e/remote/support/devcontainer.ts DEVCONTAINER_TAG: a test carrying it builds containers on an engine, which install the
+// Linux or Alpine package from the app's cache; it starts an sshd fixture only when its spec calls sshd(
+const DEVCONTAINER_TAG = 'devcontainer';
 
 /** The --grep pattern among Playwright's arguments, in any of its spellings; undefined without one. */
 export function grepOf(args) {
@@ -81,9 +91,28 @@ export function serverPackageTargets(list = '') {
   return targets;
 }
 
-/** The spec files of a Playwright JSON report, absolute. */
+function reportTests(suite) {
+  return [...(suite.specs ?? []), ...(suite.suites ?? []).flatMap(reportTests)];
+}
+
+/**
+ * The spec files of a Playwright JSON report, absolute and each once: `wsl`, those with a test tagged @wsl; `devcontainer`,
+ * those with one tagged @devcontainer; `docker`, those with any other test.
+ */
 export function specFilesOf(report) {
-  return [...new Set(report.suites.map((suite) => resolve(report.config.rootDir, suite.file)))];
+  const docker = new Set();
+  const wsl = new Set();
+  const devcontainer = new Set();
+  for (const suite of report.suites) {
+    const file = resolve(report.config.rootDir, suite.file);
+    for (const test of reportTests(suite)) (test.tags?.includes(WSL_TAG) ? wsl : test.tags?.includes(DEVCONTAINER_TAG) ? devcontainer : docker).add(file);
+  }
+  return { docker: [...docker], wsl: [...wsl], devcontainer: [...devcontainer] };
+}
+
+/** The sources of the @devcontainer specs that start an sshd fixture, whose images the run builds. */
+export function sshdSources(sources) {
+  return sources.filter((source) => /\bsshd\(/.test(source));
 }
 
 /** The fixture images specs with these sources start: ubuntu, the default, and every image an `image: '<name>'` option names. */
@@ -93,13 +122,16 @@ export function fixtureImagesIn(sources) {
   return FIXTURE_IMAGES.filter((image) => images.has(image));
 }
 
-/** The server packages a run needs: the Linux one for the fixtures, the Alpine one for its image, and each target suite's. */
-export function serverTargetsFor(images, targets, cpu = arch()) {
-  return [
-    ...(images.length ? [`linux-${cpu}`] : []),
-    ...(images.includes('alpine') ? [`alpine-${cpu}`] : []),
+/**
+ * The server packages a run needs: the Linux one for the fixtures, the Alpine one for its image, both for WSL distros and for
+ * dev containers, and each target suite's.
+ */
+export function serverTargetsFor(images, targets, cpu = arch(), wsl = false, devcontainer = false) {
+  return [...new Set([
+    ...(images.length || wsl || devcontainer ? [`linux-${cpu}`] : []),
+    ...(images.includes('alpine') || wsl || devcontainer ? [`alpine-${cpu}`] : []),
     ...targets.map((tag) => `${TARGET_SUITES[tag]}-${cpu}`),
-  ];
+  ])];
 }
 
 /**
@@ -183,7 +215,7 @@ function checkPrebuiltPackages(targets) {
   if (missing.length) throw new Error(`DAMOCLES_E2E_PREBUILT names server-packages, but ${relative(ROOT, SERVER_PACKAGES_DIR)} or ${relative(ROOT, MANIFEST_PATH)} lacks ${missing.join(', ')}`);
 }
 
-/** The specs Playwright selects for `args`, by its own --list. */
+/** The specs Playwright selects for `args`, by its own --list: `{ docker, wsl, devcontainer }` as specFilesOf splits them. */
 function selectedSpecs(cli, args, env) {
   return specFilesOf(JSON.parse(output(process.execPath, [cli, 'test', ...args, '--list', '--reporter=json'], { env })));
 }
@@ -216,10 +248,11 @@ function main() {
   const playwright = playwrightArgs(args, packaged);
   const runId = String(process.pid);
   const env = { ...process.env, DAMOCLES_E2E_REMOTE_TARGETS: targets.join(','), [RUN_ENV]: runId };
-  const images = docker && !packaged ? fixtureImagesIn(selectedSpecs(cli, playwright, env).map((file) => readFileSync(file, 'utf8'))) : [];
+  const specs = docker && !packaged ? selectedSpecs(cli, playwright, env) : { docker: [], wsl: [], devcontainer: [] };
+  const images = fixtureImagesIn([...specs.docker, ...specs.devcontainer.filter((file) => sshdSources([readFileSync(file, 'utf8')]).length > 0)].map((file) => readFileSync(file, 'utf8')));
   if (!packaged) {
     if (!prebuilt.has('app')) desktopSetup();
-    const packages = serverTargetsFor(images, targets);
+    const packages = serverTargetsFor(images, targets, arch(), specs.wsl.length > 0, specs.devcontainer.length > 0);
     if (prebuilt.has('server-packages')) checkPrebuiltPackages(packages);
     else serverPackages(packages);
   }

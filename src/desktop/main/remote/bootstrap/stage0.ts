@@ -1,8 +1,12 @@
 // Stage 0 is the remote command ssh runs: fixed text carrying no user data, which reads an exact-length stage 1 from stdin
 // without reading ahead, so the protocol can take stdin over once stage 1 hands it on.
 
+import { POSIX_STAGE0_SCRIPT } from '../../../../remote/stage0-script';
+
+export { POSIX_STAGE0_SCRIPT };
+
 // The login shell runs this line (sh, bash, zsh, csh or fish), so it holds nothing but one single-quoted argument.
-export const POSIX_STAGE0 = `/bin/sh -c 'IFS= read -r n; s=$(dd bs=1 count="$n" 2>/dev/null); eval "$s"'`;
+export const POSIX_STAGE0: string = `/bin/sh -c '${POSIX_STAGE0_SCRIPT}'`;
 
 // Win32-OpenSSH gives a session's command overlapped pipes, on which [Console]::OpenStandardInput()'s synchronous ReadFile
 // loses bytes, so stdin and stdout open as unbuffered FileStreams in the handle's own mode (FileModeInformation, as .NET 6+

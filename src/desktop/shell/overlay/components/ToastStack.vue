@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { X } from 'lucide-vue-next';
+import { Check, Copy, ExternalLink, X } from 'lucide-vue-next';
 import type { DamoclesOverlayApi, OverlayRect, OverlayToast, OverlayToastArea } from '../../../preload/overlay-channels';
 import { TOAST_OPEN_ACTION, type ToastAnswer } from '../../../preload/notifications';
 import { trapTab } from '../focus-trap';
 import { notificationView, relativeTime, TONE_CLASSES, type NotificationView } from '../notification-view';
+import { linkUrlParts } from '../link-url';
 import NotificationAvatar from './NotificationAvatar.vue';
 import HostBadge from '@/components/HostBadge.vue';
 import ToastLife from './ToastLife.vue';
@@ -59,7 +60,10 @@ const announcements = shallowRef<Readonly<Record<Politeness, readonly Announceme
 function announce(toast: OverlayToast): void {
   const shown = viewOf(toast);
   const live: Politeness = shown.urgent ? 'assertive' : 'polite';
-  const text = [shown.where, shown.host ?? '', shown.title, `${shown.lead} ${shown.message}`.trim()].filter((part) => part !== '').join(': ');
+  // a link request reads as its sentence: "prod-1 wants to open https://…"
+  const text = shown.kind === 'link'
+    ? `${shown.title} ${shown.message}`
+    : [shown.where, shown.host ?? '', shown.title, `${shown.lead} ${shown.message}`.trim()].filter((part) => part !== '').join(': ');
   announcements.value = { ...announcements.value, [live]: [...announcements.value[live], { id: toast.id, text }] };
 }
 
@@ -72,15 +76,19 @@ function toastElement(id: string): HTMLElement | undefined {
 // The DOM typings predate FocusOptions.focusVisible, which Chromium supports.
 type VisibleFocusOptions = NonNullable<Parameters<HTMLElement['focus']>[0]> & { readonly focusVisible?: boolean };
 
-function focusNewest(options: VisibleFocusOptions = {}): void {
+// moved: focus follows a card that went rather than the user's F6, so it never lands on a link request's Open, where an
+// Enter meant for the card that went would open a page the user has not read.
+function focusNewest(options: VisibleFocusOptions = {}, moved = false): void {
   const newest = visible.value.at(-1);
   const element = newest ? toastElement(newest.id) : undefined;
-  (element?.querySelector<HTMLElement>('[data-toast-primary]') ?? element?.querySelector<HTMLElement>('button'))?.focus(options);
+  const target = moved && newest?.body.kind === 'link' ? '[data-testid="link-copy"]' : '[data-toast-primary]';
+  (element?.querySelector<HTMLElement>(target) ?? element?.querySelector<HTMLElement>('button'))?.focus(options);
 }
 
 function remove(keep: (toast: OverlayToast) => boolean): void {
   const kept = toasts.value.filter(keep);
   for (const toast of toasts.value) if (!kept.includes(toast)) clocks.delete(toast.id);
+  if (copied.value.size > 0) copied.value = new Set([...copied.value].filter((id) => kept.some((toast) => toast.id === id)));
   toasts.value = kept;
   const ids = new Set(kept.map((toast) => toast.id));
   const still = (list: readonly Announcement[]): readonly Announcement[] => list.filter((announcement) => ids.has(announcement.id));
@@ -98,7 +106,7 @@ watch(toasts, (list) => {
   const stays = card === undefined ? hiddenCount.value > 0 : visible.value.some((toast) => toast.id === card);
   if (stays) return;
   if (list.length === 0) props.api.leaveToasts();
-  else void nextTick(() => focusNewest());
+  else void nextTick(() => focusNewest({}, true));
 });
 
 function drop(id: string): void {
@@ -117,9 +125,17 @@ function dismissAll(): void {
   remove(() => false);
 }
 
-// A click on a kind's card is its action, as in the reference; a core notice has no action of its own.
+// A click on a kind's card is its action, as in the reference; a core notice has no action of its own, and a link request
+// opens its page only from its Open button.
 function openFromCard(toast: OverlayToast): void {
-  if (toast.body.kind !== 'notice') resolve(toast.id, TOAST_OPEN_ACTION);
+  if (toast.body.kind !== 'notice' && toast.body.kind !== 'link') resolve(toast.id, TOAST_OPEN_ACTION);
+}
+
+// Copy on a link request: main copies the URL it holds and the toast stays, its button saying Copied.
+const copied = shallowRef<ReadonlySet<string>>(new Set());
+function copyLink(id: string): void {
+  props.api.copyToast(id);
+  copied.value = new Set([...copied.value, id]);
 }
 
 // The pointer or keyboard focus on a toast holds its life; main pauses its timer and the bar pauses with :hover and :focus-within.
@@ -165,7 +181,11 @@ function onFocusOut(id: string, event: FocusEvent): void {
 function onKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     event.preventDefault();
-    props.api.leaveToasts();
+    // Escape on a link request dismisses it without opening; anywhere else it hands focus back
+    const id = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-toast-id]')?.dataset.toastId : undefined;
+    const toast = toasts.value.find((candidate) => candidate.id === id);
+    if (toast?.body.kind === 'link') resolve(toast.id);
+    else props.api.leaveToasts();
     return;
   }
   if (stack.value) trapTab(event, stack.value);
@@ -331,7 +351,7 @@ onBeforeUnmount(() => {
         :data-kind="shown.kind"
         :data-severity="toast.body.kind === 'notice' ? toast.body.severity : undefined"
         class="toast-card pointer-events-auto relative flex w-full gap-3 overflow-hidden rounded-[0.875rem] border border-(--d-border2) bg-(--d-card) p-3 pb-3.25 text-(--d-text) shadow-[0_1px_2px_rgb(0_0_0/0.12),0_4px_12px_-2px_rgb(0_0_0/0.24)]"
-        :class="shown.kind === 'notice' ? '' : 'cursor-pointer'"
+        :class="shown.kind === 'notice' || shown.kind === 'link' ? '' : 'cursor-pointer'"
         @mouseenter="hold(toast.id, 'pointer', true)"
         @mouseleave="hold(toast.id, 'pointer', false)"
         @focusin="hold(toast.id, 'focus', true)"
@@ -391,6 +411,34 @@ onBeforeUnmount(() => {
               <span class="sr-only">{{ shown.where }}: </span>{{ shown.message }}
             </p>
           </template>
+          <template v-else-if="toast.body.kind === 'link'">
+            <i18n-t
+              keypath="toasts.link.title"
+              tag="span"
+              scope="global"
+              data-testid="link-title"
+              class="text-13.5 font-semibold wrap-break-word"
+            >
+              <template #host>
+                <HostBadge
+                  :name="toast.body.host"
+                  :tone="toast.body.hostTone"
+                />
+              </template>
+            </i18n-t>
+            <!-- The whole URL, never cut: it wraps anywhere and scrolls past ten lines, its host and port in the text color. -->
+            <p
+              data-testid="link-url"
+              class="mt-1 max-h-40 overflow-y-auto rounded-7 border border-(--d-border) bg-(--d-code) px-2 py-1.5 font-mono text-11.5 break-all text-(--d-muted)"
+            >
+              <span
+                v-for="(part, index) in linkUrlParts(toast.body.url)"
+                :key="index"
+                :data-role="part.role"
+                :class="part.role === 'host' ? 'font-semibold text-(--d-text)' : undefined"
+              >{{ part.text }}</span>
+            </p>
+          </template>
           <template v-else>
             <div class="flex min-w-0 items-center gap-1.5">
               <span class="truncate text-13.5 font-semibold">{{ shown.title }}</span>
@@ -408,7 +456,61 @@ onBeforeUnmount(() => {
             </p>
           </template>
           <div
-            v-if="shown.action || shown.actions.length > 0"
+            v-if="toast.body.kind === 'link'"
+            class="mt-2 flex flex-wrap items-center gap-1.5"
+          >
+            <button
+              type="button"
+              data-toast-primary
+              data-testid="link-open"
+              class="d-press flex h-7 items-center gap-1.5 rounded-lg px-2.75 text-xs font-semibold whitespace-nowrap hover:brightness-115"
+              :class="[TONE_CLASSES[shown.tone].pill, TONE_CLASSES[shown.tone].pillText]"
+              @click.stop="resolve(toast.id, TOAST_OPEN_ACTION)"
+            >
+              <ExternalLink
+                aria-hidden="true"
+                class="size-3"
+              />
+              {{ t('toasts.link.open') }}
+            </button>
+            <button
+              type="button"
+              data-testid="link-copy"
+              :data-copied="copied.has(toast.id) || undefined"
+              class="d-press flex h-7 items-center gap-1.5 rounded-lg border border-(--d-border2) px-2.75 text-xs whitespace-nowrap text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text)"
+              @click.stop="copyLink(toast.id)"
+            >
+              <span class="inline-flex size-3 items-center justify-center">
+                <Transition
+                  name="t-icon"
+                  mode="out-in"
+                >
+                  <Check
+                    v-if="copied.has(toast.id)"
+                    aria-hidden="true"
+                    class="size-3 text-(--d-success-text)"
+                  />
+                  <Copy
+                    v-else
+                    aria-hidden="true"
+                    class="size-3"
+                  />
+                </Transition>
+              </span>
+              <Transition
+                name="t-swap"
+                mode="out-in"
+              >
+                <span :key="copied.has(toast.id) ? 'copied' : 'copy'">{{ copied.has(toast.id) ? t('toasts.link.copied') : t('toasts.link.copy') }}</span>
+              </Transition>
+            </button>
+            <span
+              role="status"
+              class="sr-only"
+            >{{ copied.has(toast.id) ? t('toasts.link.copiedStatus') : '' }}</span>
+          </div>
+          <div
+            v-else-if="shown.action || shown.actions.length > 0"
             class="mt-2 flex flex-wrap gap-1.5"
           >
             <button

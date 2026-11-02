@@ -13,7 +13,7 @@ on:
         type: boolean
         default: false
 
-# The workflow token is read-only; only `attest` and `release` widen it, each in its own job.
+# The workflow token is read-only; only `sign-browser-helper`, `sign-windows`, `attest` and `release` widen it, each in its own job.
 permissions:
   contents: read
 
@@ -252,8 +252,91 @@ jobs:
   # only; `release` publishes them. Keep this matrix in step with SERVER_TARGETS in scripts/server-targets.mjs
   # (server-targets.test.ts fails on drift). The Alpine legs build in the pinned node:<derived>-alpine image, where node-pty is
   # compiled for musl, and self-test in a clean pinned Alpine.
-  package-server:
+  # Signs bin/helpers/browser.exe of both Windows server packages (scripts/browser-helper.mjs builds it, x64 and arm64, with the
+  # pinned zig) through SignPath before package-server builds them, because each package's SHA-256 is sealed into app.asar before
+  # sign-windows runs (docs/desktop-signing.md "The browser helper"). A failing later check therefore still spends this one request.
+  # A manual run with `sign` off skips every SignPath step and package-server builds the helper unsigned.
+  sign-browser-helper:
     needs: verify
+    runs-on: windows-latest
+    # The zig download and build, and one signing request waiting up to an hour for a human approval.
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      # The SignPath action reads this run's job details and downloads its artifacts with the job token.
+      actions: read
+    env:
+      SIGNPATH_ORGANIZATION_ID: 567f8646-d332-4f0e-88a9-7f2a21e285d9
+      SIGNPATH_PROJECT_SLUG: damocles
+      SIGNPATH_SIGNING_POLICY_SLUG: ${{ github.event_name == 'push' && 'release-signing' || 'test-signing' }}
+      SIGN_WINDOWS: ${{ github.event_name == 'push' || inputs.sign }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No npm cache and no npm ci: browser-helper.mjs imports only Node built-ins, and this job holds the SignPath token.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      # SignPath's artifact configuration restricts the signed file's product version to this one.
+      - name: Read the release version
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      # The zip holds x64/ and arm64/, the layout of the browser-helpers artifact configuration.
+      - name: Build the browser helpers to sign
+        id: build-browser-helpers
+        if: env.SIGN_WINDOWS == 'true'
+        run: node scripts/browser-helper.mjs --out browser-helpers
+
+      - name: Upload the unsigned browser helpers for SignPath
+        id: upload-unsigned-browser-helpers
+        if: env.SIGN_WINDOWS == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-win-browser-helpers
+          path: browser-helpers/
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Sign the browser helpers
+        if: env.SIGN_WINDOWS == 'true'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: browser-helpers
+          github-artifact-id: ${{ steps.upload-unsigned-browser-helpers.outputs.artifact-id }}
+          parameters: |
+            version: "${{ steps.version.outputs.version }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed-browser-helpers
+
+      - name: Check the browser helpers are signed
+        if: env.SIGN_WINDOWS == 'true'
+        shell: pwsh
+        run: ./scripts/check-authenticode.ps1 -Path signed-browser-helpers/x64/browser.exe, signed-browser-helpers/arm64/browser.exe -RequireTrusted:($env:SIGNPATH_SIGNING_POLICY_SLUG -eq 'release-signing')
+
+      # package-server's Windows legs check each one is the browser.exe they build, signed, before they pack it.
+      - name: Upload the signed browser helpers
+        if: env.SIGN_WINDOWS == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-browser-helpers
+          path: signed-browser-helpers/
+          retention-days: 7
+          if-no-files-found: error
+
+  package-server:
+    needs: [verify, sign-browser-helper]
     strategy:
       fail-fast: false
       matrix:
@@ -275,8 +358,10 @@ jobs:
             runner: macos-latest
           - target: win32-x64
             runner: windows-latest
+            browserHelper: x64
           - target: win32-arm64
             runner: windows-11-arm
+            browserHelper: arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     defaults:
@@ -284,6 +369,7 @@ jobs:
         shell: bash
     env:
       NODE_VERSION: ${{ needs.verify.outputs.server-node-version }}
+      SIGN_WINDOWS: ${{ github.event_name == 'push' || inputs.sign }}
       ALPINE_BUILD_IMAGE: ${{ needs.verify.outputs.server-alpine-build-image }}
       ALPINE_TARGET_IMAGE: ${{ needs.verify.outputs.server-alpine-target-image }}
     steps:
@@ -302,12 +388,23 @@ jobs:
         with:
           name: fetched-assets
 
+      # sign-browser-helper's signed bin/helpers/browser.exe; the build packs it only once it proves to be the one it builds, signed.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: matrix.browserHelper && env.SIGN_WINDOWS == 'true'
+        with:
+          name: signed-browser-helpers
+          path: signed-browser-helpers
+
       - name: Build, verify and self-test the package
         if: ${{ !matrix.alpine }}
+        env:
+          BROWSER_HELPER_ARCH: ${{ matrix.browserHelper }}
         run: |
+          helper=()
+          if [ -n "$BROWSER_HELPER_ARCH" ] && [ "$SIGN_WINDOWS" = true ]; then helper=(--signed-browser-helper "signed-browser-helpers/$BROWSER_HELPER_ARCH/browser.exe"); fi
           npm ci
-          npm run build:server -- --target ${{ matrix.target }} --node-version "$NODE_VERSION"
-          node scripts/verify-server-package.mjs --target ${{ matrix.target }} --node-version "$NODE_VERSION" --require-self-test dist/server-packages/damocles-server-*-${{ matrix.target }}.*
+          npm run build:server -- --target ${{ matrix.target }} --node-version "$NODE_VERSION" "${helper[@]}"
+          node scripts/verify-server-package.mjs --target ${{ matrix.target }} --node-version "$NODE_VERSION" "${helper[@]}" --require-self-test dist/server-packages/damocles-server-*-${{ matrix.target }}.*
 
       - name: Build and verify the package in an Alpine container
         if: ${{ matrix.alpine }}
@@ -981,8 +1078,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends xvfb x11-utils
           deb=$(ls installers/damocles_*_amd64.deb)
+          version=${deb#installers/damocles_}
+          version=${version%_amd64.deb}
           sudo apt-get install -y "./$deb"
           test -x /opt/Damocles/damocles
+          # The /usr/bin alternative after-install.sh registers runs resources/bin/damocles, which runs dist/cli.js under the app's binary as Node.
+          cli_version=$(/usr/bin/damocles --version)
+          if [ "$cli_version" != "$version" ]; then
+            echo "ERROR: /usr/bin/damocles --version printed '$cli_version', not '$version'" >&2
+            exit 1
+          fi
           grep -q '^provider: github' /opt/Damocles/resources/app-update.yml
           # electron-updater picks its Linux installer (dpkg or rpm) from this file.
           grep -qx deb /opt/Damocles/resources/package-type
@@ -1051,6 +1156,10 @@ jobs:
           kill "$app"
           EOF
           xvfb-run -a bash "$work/launch.sh" "$work" "$apparmor"
+          # after-remove.sh removes the alternative; -L also catches a link left dangling
+          sudo apt-get remove -y damocles
+          test ! -e /usr/bin/damocles
+          test ! -L /usr/bin/damocles
 
       - name: Install the rpm in Fedora and check its files
         if: matrix.check == 'rpm'
@@ -1060,6 +1169,8 @@ jobs:
           set -euo pipefail
           docker run --rm -v "$PWD/installers:/installers:ro" fedora:latest bash -euo pipefail -c '
             rpm=$(ls /installers/damocles-*.x86_64.rpm)
+            version=${rpm#/installers/damocles-}
+            version=${version%.x86_64.rpm}
             # Captured before grep -q reads it: under pipefail, grep -q exiting at its first match kills rpm with SIGPIPE (exit 141).
             scripts=$(rpm -qp --scripts "$rpm")
             grep -q apparmor <<<"$scripts"
@@ -1071,10 +1182,19 @@ jobs:
             test -d /opt/Damocles/resources/app.asar.unpacked
             grep -q "^provider: github" /opt/Damocles/resources/app-update.yml
             grep -qx rpm /opt/Damocles/resources/package-type
+            # The /usr/bin alternative after-install.sh registers runs resources/bin/damocles, which runs dist/cli.js under the app binary as Node.
+            cli_version=$(/usr/bin/damocles --version)
+            if [ "$cli_version" != "$version" ]; then
+              echo "ERROR: /usr/bin/damocles --version printed \"$cli_version\", not \"$version\"" >&2
+              exit 1
+            fi
             files=$(rpm -ql damocles)
             grep -q apparmor <<<"$files"
             dnf remove -y damocles
             test ! -e /opt/Damocles
+            # after-remove.sh removes the alternative; -L also catches a link left dangling
+            test ! -e /usr/bin/damocles
+            test ! -L /usr/bin/damocles
           '
 
       # CGWindowList reports window owners without accessibility or screen recording permission, and needs no npm install on the fresh runner.
@@ -1120,7 +1240,7 @@ jobs:
           fi
           pkill -x Damocles
 
-      - name: Install the NSIS installer per user and launch it to its first window
+      - name: Install the NSIS installer per user, check the damocles command's Path entry and launch it to its first window
         if: matrix.check == 'nsis'
         shell: pwsh
         run: |
@@ -1129,6 +1249,13 @@ jobs:
           $marker = Join-Path $env:USERPROFILE '.damocles\install-check-marker'
           New-Item -ItemType Directory -Force -Path (Split-Path $marker) | Out-Null
           Set-Content -Path $marker -Value 'kept'
+          $version = $installer.BaseName -replace '^Damocles-Setup-(.+)-x64$', '$1'
+          # The user's Path read raw, so the %USERPROFILE% entry seeded here must survive install and uninstall unexpanded.
+          $environment = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+          $raw = [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+          $original = ([string]$environment.GetValue('Path', '', $raw)).TrimEnd(';')
+          $seeded = (@($original, '%USERPROFILE%\damocles-path-check') | Where-Object { $_ }) -join ';'
+          $environment.SetValue('Path', $seeded, [Microsoft.Win32.RegistryValueKind]::ExpandString)
           $install = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "The installer exited with $($install.ExitCode)" }
           $entry = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object { $_.DisplayName -like 'Damocles*' }
@@ -1142,6 +1269,22 @@ jobs:
           if (-not (Test-Path $exe)) { throw "$exe is missing after install" }
           $feed = Get-Content -Raw (Join-Path $installDir 'resources\app-update.yml')
           if ($feed -notmatch '(?m)^provider: github' -or $feed -notmatch '(?m)^channel: latest-x64') { throw "resources\app-update.yml does not name the GitHub feed on channel latest-x64: $feed" }
+          $binDir = Join-Path $installDir 'resources\bin'
+          $kind = $environment.GetValueKind('Path')
+          if ($kind -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) { throw "The installer left the user Path as $kind, not ExpandString" }
+          $installed = [string]$environment.GetValue('Path', '', $raw)
+          # -ne compares ignoring case, as Path does
+          if (-not $installed.StartsWith("$seeded;", [System.StringComparison]::Ordinal) -or $installed.Substring($seeded.Length + 1).TrimEnd('\') -ne $binDir) { throw "The installer did not append only $binDir to the user Path '$seeded': '$installed'" }
+          # A terminal opened now builds its Path from the registry, not from this step's environment.
+          $terminal = [System.Diagnostics.ProcessStartInfo]::new('cmd.exe', '/d /c damocles --version')
+          $terminal.Environment['Path'] = "$([Environment]::GetEnvironmentVariable('Path', 'Machine'));$([Environment]::ExpandEnvironmentVariables($installed))"
+          $terminal.RedirectStandardOutput = $true
+          $terminal.RedirectStandardError = $true
+          $cli = [System.Diagnostics.Process]::Start($terminal)
+          $cliOut = $cli.StandardOutput.ReadToEndAsync()
+          $cliErr = $cli.StandardError.ReadToEnd()
+          $cli.WaitForExit()
+          if ($cli.ExitCode -ne 0 -or $cliOut.Result.Trim() -ne $version) { throw "damocles --version from a new terminal exited with $($cli.ExitCode), printed '$($cliOut.Result.Trim())', not '$version': $cliErr" }
           $userData = Join-Path $env:RUNNER_TEMP 'user-data'
           $app = Start-Process -FilePath $exe -ArgumentList "--user-data-dir=`"$userData`"" -PassThru
           $shown = $false
@@ -1158,6 +1301,10 @@ jobs:
           for ($i = 0; $i -lt 60 -and (Test-Path $exe); $i++) { Start-Sleep -Seconds 1 }
           if (Test-Path $exe) { throw "$exe is still present after uninstall" }
           if (-not (Test-Path $marker)) { throw 'The uninstaller removed ~/.damocles' }
+          $kind = $environment.GetValueKind('Path')
+          if ($kind -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) { throw "The uninstaller left the user Path as $kind, not ExpandString" }
+          $uninstalled = [string]$environment.GetValue('Path', '', $raw)
+          if ($uninstalled -cne $seeded) { throw "The uninstaller left the user Path as '$uninstalled', not '$seeded'" }
 
   # verify-desktop-install's steps on the installer sign-windows signed.
   verify-desktop-install-windows:

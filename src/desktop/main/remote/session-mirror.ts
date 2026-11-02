@@ -3,7 +3,10 @@ import { promises as fs, type Dirent } from 'node:fs';
 import * as path from 'node:path';
 import { renameWithRetry } from '../../../core/config/json-config-write';
 import { isSafeAgentPathId } from '../../../shared/agent-path-id';
-import type { MirrorChange, MirrorFile } from '../../daemon/control-messages';
+import { MIRROR_CLOCK_FILE, MIRROR_SUBCALLS_FILE, type MirrorClock } from '../../../shared/remote-mirror';
+import type { MirrorChange, MirrorFile, MirrorHeld, MirrorLedgerChange } from '../../daemon/control-messages';
+import type { Disposable } from '../../../platform/disposable';
+import type { OtherProtocolDaemon, RemoteConnection } from './connection';
 
 // The session mirror of one host may hold this many bytes across all its projects.
 export const MIRROR_QUOTA_BYTES: number = 1024 * 1024 * 1024;
@@ -19,6 +22,29 @@ export interface MirrorChannel {
   readonly sync: (request: { readonly projectKey: string; readonly budgetBytes: number; readonly files: readonly MirrorFile[] }) => Promise<{ readonly changes: readonly MirrorChange[] }>;
   // the change's bytes from the stream it names, in order
   readonly receive: (stream: number, maxBytes: number, onChunk: (bytes: Uint8Array) => Promise<void>) => Promise<number>;
+  // the target's sub-call ledger; absent on a daemon that does not list mirror.subcalls
+  readonly syncSubcalls?: (request: { readonly budgetBytes: number; readonly held?: MirrorHeld }) => Promise<{ readonly change?: MirrorLedgerChange }>;
+  // the host's clock minus this computer's, as the connection's handshake measured it; absent on a daemon of another protocol,
+  // whose refusal carries no time
+  readonly skewMs?: number;
+}
+
+// The daemon serves control mirror.syncSubcalls and sends mirror.subcallsChanged.
+export const MIRROR_SUBCALLS_FEATURE = 'mirror.subcalls';
+
+/** A connection of this protocol as a mirror channel: the sub-call ledger only when its daemon lists it. */
+export function connectionMirrorChannel(connection: Pick<RemoteConnection, 'control' | 'receiveStream' | 'features' | 'skewMs'>): MirrorChannel {
+  return {
+    sync: (request) => connection.control.request('mirror.sync', request),
+    receive: (stream, maxBytes, onChunk) => connection.receiveStream(stream, maxBytes, onChunk),
+    ...(connection.features.includes(MIRROR_SUBCALLS_FEATURE) ? { syncSubcalls: (request) => connection.control.request('mirror.syncSubcalls', request) } : {}),
+    skewMs: connection.skewMs,
+  };
+}
+
+/** A daemon of another protocol as a mirror channel: its frozen mirror.sync alone. */
+export function frozenMirrorChannel(daemon: Pick<OtherProtocolDaemon, 'control' | 'receiveStream'>): MirrorChannel {
+  return { sync: (request) => daemon.control.request('mirror.sync', request), receive: (stream, maxBytes, onChunk) => daemon.receiveStream(stream, maxBytes, onChunk) };
 }
 
 export interface SessionMirrorDeps {
@@ -78,6 +104,13 @@ async function readRange(file: string, offset: number, length: number): Promise<
   }
 }
 
+async function heldOf(full: string, size: number): Promise<MirrorHeld> {
+  const head = await readRange(full, 0, Math.min(HASH_SPAN_BYTES, size));
+  const tailStart = Math.max(0, size - HASH_SPAN_BYTES);
+  const tail = await readRange(full, tailStart, size - tailStart);
+  return { size, headHash: sha256(head), tailHash: sha256(tail) };
+}
+
 // What the mirror holds for a project, links never followed; a file whose name fails isMirrorName is never reported, and a
 // partial file a crash left is removed.
 async function heldFiles(folder: string): Promise<Array<MirrorFile & { readonly path: string }>> {
@@ -97,15 +130,23 @@ async function heldFiles(folder: string): Promise<Array<MirrorFile & { readonly 
       else if (entry.isFile() && entry.name.endsWith(TEMP_SUFFIX)) await fs.rm(full, { force: true });
       else if (entry.isFile() && isMirrorName(name)) {
         const { size } = await fs.lstat(full);
-        const head = await readRange(full, 0, Math.min(HASH_SPAN_BYTES, size));
-        const tailStart = Math.max(0, size - HASH_SPAN_BYTES);
-        const tail = await readRange(full, tailStart, size - tailStart);
-        out.push({ file: name, size, headHash: sha256(head), tailHash: sha256(tail), path: full });
+        out.push({ file: name, ...(await heldOf(full, size)), path: full });
       }
     }
   };
   await walk(folder, '');
   return out;
+}
+
+// The daemon sends control mirror.changed for each project a mirror.sync of this connection named.
+export const MIRROR_CHANGED_FEATURE = 'mirror.changed';
+
+/** Runs sync on each mirror.changed and mirror.subcallsChanged the connection's daemon sends, of those it lists. */
+export function followMirrorChanges(connection: Pick<RemoteConnection, 'features' | 'control'>, sync: () => void): Disposable {
+  const followed: Disposable[] = [];
+  if (connection.features.includes(MIRROR_CHANGED_FEATURE)) followed.push(connection.control.onEvent('mirror.changed', () => sync()));
+  if (connection.features.includes(MIRROR_SUBCALLS_FEATURE)) followed.push(connection.control.onEvent('mirror.subcallsChanged', () => sync()));
+  return { dispose: () => { for (const each of followed) each.dispose(); } };
 }
 
 /** The client side of control mirror.sync for one host: docs/invariants.md "Remote daemon and wire", the session mirror. */
@@ -114,6 +155,8 @@ export class SessionMirror {
   // the sync running, and the projects of the one asked for meanwhile
   private running: Promise<void> | undefined;
   private again: (() => readonly string[]) | undefined;
+  // the skew this instance last wrote to the clock file
+  private recordedSkewMs: number | undefined;
 
   constructor(deps: SessionMirrorDeps) {
     this.deps = deps;
@@ -152,12 +195,23 @@ export class SessionMirror {
   }
 
   /**
-   * Syncs the projects in order of last use, each given the quota the ones before it left as budgetBytes, so the daemon keeps
-   * the newest sessions that fit and answers deleted for the rest; a file dropped that way is not sent again while the budget
-   * stays. A project that fails is logged and the next one still syncs within what is left.
+   * Syncs the target's sub-call ledger with the whole quota, then the projects in order of last use, each given the quota the
+   * ones before it left as budgetBytes, so the daemon keeps the newest sessions that fit and answers deleted for the rest; a
+   * file dropped that way is not sent again while the budget stays. A part that fails is logged and the next one still syncs
+   * within what is left.
    */
   async syncAll(folderKeys: readonly string[]): Promise<void> {
     let left = MIRROR_QUOTA_BYTES;
+    try {
+      left -= await this.syncSubcalls(left);
+    } catch (err) {
+      this.deps.log(`[mirror] syncing the sub-call ledger failed: ${err instanceof Error ? err.message : String(err)}`);
+      left -= await this.subcallsBytes().catch((readErr: unknown) => {
+        this.deps.log(`[mirror] reading what the sub-call ledger's mirror holds failed: ${readErr instanceof Error ? readErr.message : String(readErr)}`);
+        return 0;
+      });
+    }
+    left = Math.max(0, left);
     for (const folderKey of folderKeys) {
       try {
         left -= await this.syncProject(folderKey, left);
@@ -184,23 +238,92 @@ export class SessionMirror {
     const channel = this.deps.channel();
     const { changes } = await channel.sync({ projectKey: folderKey, budgetBytes, files: held.map(({ file, size, headHash, tailHash }) => ({ file, size, headHash, tailHash })) });
     const named = new Set<string>();
-    for (const change of changes) {
-      let claimed = change.kind === 'deleted';
-      const receive: Receive = (onChunk) => {
-        claimed = true;
-        return channel.receive(change.stream, change.length, onChunk);
-      };
-      try {
-        await this.apply(folder, byName, named, change, receive);
-      } catch (err) {
-        this.deps.log(`[mirror] the change to ${JSON.stringify(change.file).slice(0, 200)} failed: ${err instanceof Error ? err.message : String(err)}`);
-        if (claimed) continue;
-        await receive(async () => undefined).catch((drainErr: unknown) => {
-          this.deps.log(`[mirror] draining stream ${change.stream} failed: ${drainErr instanceof Error ? drainErr.message : String(drainErr)}`);
-        });
-      }
-    }
+    for (const change of changes) await this.land(channel, change, JSON.stringify(change.file).slice(0, 200), (receive) => this.apply(folder, byName, named, change, receive));
     return this.heldBytes(folderKey);
+  }
+
+  /**
+   * The target's sub-call ledger within budgetBytes; resolves the bytes its mirror holds afterwards. It first records the
+   * channel's clock skew, so the usage index places what this sync brings on this computer's clock. The daemon names no path:
+   * the copy's place is fixed under the root, and a change must follow what is held and fit the budget, else its stream is
+   * drained and nothing is written.
+   */
+  async syncSubcalls(budgetBytes: number): Promise<number> {
+    const channel = this.deps.channel();
+    if (channel.skewMs !== undefined) await this.recordSkew(Math.round(channel.skewMs));
+    if (!channel.syncSubcalls) return this.subcallsBytes();
+    const target = path.join(this.deps.root, MIRROR_SUBCALLS_FILE);
+    const held = await this.subcallsHeld(target);
+    const { change } = await channel.syncSubcalls({ budgetBytes, ...(held ? { held } : {}) });
+    if (change) await this.land(channel, change, MIRROR_SUBCALLS_FILE, (receive) => this.applySubcalls(target, held, budgetBytes, change, receive));
+    return this.subcallsBytes();
+  }
+
+  // A change that fails is logged and its stream drained if nothing claimed it, so no stream stays unclaimed.
+  private async land(channel: MirrorChannel, change: MirrorLedgerChange, label: string, apply: (receive: Receive) => Promise<void>): Promise<void> {
+    let claimed = change.kind === 'deleted';
+    const receive: Receive = (onChunk) => {
+      claimed = true;
+      return channel.receive(change.stream, change.length, onChunk);
+    };
+    try {
+      await apply(receive);
+    } catch (err) {
+      this.deps.log(`[mirror] the change to ${label} failed: ${err instanceof Error ? err.message : String(err)}`);
+      if (claimed) return;
+      await receive(async () => undefined).catch((drainErr: unknown) => {
+        this.deps.log(`[mirror] draining stream ${change.stream} failed: ${drainErr instanceof Error ? drainErr.message : String(drainErr)}`);
+      });
+    }
+  }
+
+  private async applySubcalls(target: string, held: MirrorHeld | undefined, budgetBytes: number, change: MirrorLedgerChange, receive: Receive): Promise<void> {
+    if (change.kind === 'deleted') {
+      await fs.rm(target, { force: true });
+      return;
+    }
+    if (change.kind === 'append' && held?.size !== change.offset) {
+      this.deps.log(`[mirror] an append to ${MIRROR_SUBCALLS_FILE} at ${change.offset} does not follow the ${held?.size ?? 0} bytes held; dropping it`);
+      await receive(async () => undefined);
+      await fs.rm(target, { force: true });
+      return;
+    }
+    if ((change.kind === 'full' && change.offset !== 0) || change.offset + change.length > budgetBytes) {
+      this.deps.log(`[mirror] refused a ${change.kind} of ${change.length} bytes at ${change.offset} to ${MIRROR_SUBCALLS_FILE} within a budget of ${budgetBytes}`);
+      await receive(async () => undefined);
+      return;
+    }
+    await this.write(target, change, receive);
+  }
+
+  // anything but a regular file in the ledger's place is not held
+  private async subcallsHeld(target: string): Promise<MirrorHeld | undefined> {
+    try {
+      const stat = await fs.lstat(target);
+      return stat.isFile() ? await heldOf(target, stat.size) : undefined;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw err;
+    }
+  }
+
+  private async subcallsBytes(): Promise<number> {
+    return (await this.subcallsHeld(path.join(this.deps.root, MIRROR_SUBCALLS_FILE)))?.size ?? 0;
+  }
+
+  // a partial file renamed into place, so the usage index never reads half of it
+  private async recordSkew(skewMs: number): Promise<void> {
+    if (this.recordedSkewMs === skewMs) return;
+    const file = path.join(this.deps.root, MIRROR_CLOCK_FILE);
+    const partial = `${file}${TEMP_SUFFIX}`;
+    const clock: MirrorClock = { skewMs };
+    await fs.mkdir(this.deps.root, { recursive: true });
+    await fs.writeFile(partial, JSON.stringify(clock));
+    await renameWithRetry(partial, file).catch(async (err: unknown) => {
+      await fs.rm(partial, { force: true });
+      throw err;
+    });
+    this.recordedSkewMs = skewMs;
   }
 
   /** The folder one project's mirror lives in, which may not exist yet. */
@@ -252,7 +375,7 @@ export class SessionMirror {
 
   // A full copy goes to a partial file renamed into place once whole; an append writes after the bytes held. A stream the
   // daemon ends short (the file shrank meanwhile) leaves a copy whose tail hash fails, so the next sync sends it whole.
-  private async write(target: string, change: MirrorChange, receive: Receive): Promise<void> {
+  private async write(target: string, change: Pick<MirrorChange, 'kind' | 'offset'>, receive: Receive): Promise<void> {
     await fs.mkdir(path.dirname(target), { recursive: true });
     const destination = change.kind === 'full' ? `${target}${TEMP_SUFFIX}` : target;
     const handle = await fs.open(destination, change.kind === 'full' ? 'w' : 'r+');

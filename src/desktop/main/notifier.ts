@@ -37,6 +37,8 @@ export interface NotifierDeps {
   readonly state: () => OverlayState;
   // an answer from a popup: a notice action's index or TOAST_OPEN_ACTION, or undefined for a dismissal
   readonly resolveToast: (id: string, action: ToastAnswer | undefined) => void;
+  // Copy on a link request's toast
+  readonly copyToast: (id: string) => void;
   readonly holdToast: (id: string, held: boolean) => void;
   // Escape in the popups, or their last card going while they hold focus
   readonly leave: () => void;
@@ -264,6 +266,10 @@ export class NotifierHost implements ToastSink {
       if (typeof id !== 'string' || id.length === 0 || id.length > MAX_OVERLAY_ID_LENGTH) return this.deps.log('[notifier] ignoring a malformed toast answer');
       if (!(action === undefined || action === TOAST_OPEN_ACTION || (typeof action === 'number' && Number.isInteger(action) && action >= 0))) return this.deps.log('[notifier] ignoring a malformed toast answer');
       this.deps.resolveToast(id, action);
+    });
+    this.on(contents, OVERLAY_CHANNELS.toastCopy, (id) => {
+      if (typeof id !== 'string' || id.length === 0 || id.length > MAX_OVERLAY_ID_LENGTH) return this.deps.log('[notifier] ignoring a malformed toast copy');
+      this.deps.copyToast(id);
     });
     this.on(contents, OVERLAY_CHANNELS.toastHold, (id, held) => {
       if (typeof id !== 'string' || id.length === 0 || id.length > MAX_OVERLAY_ID_LENGTH || typeof held !== 'boolean') return this.deps.log('[notifier] ignoring a malformed toast hold');

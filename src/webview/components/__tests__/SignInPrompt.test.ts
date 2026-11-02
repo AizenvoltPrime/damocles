@@ -25,6 +25,8 @@ beforeEach(() => {
     setState: () => undefined,
     getHost: () => ({ hostId: 'h1', name: 'prod-1', computer: 'ALEXIOS-PC' }),
     onHost: () => () => undefined,
+    getHostNames: () => undefined,
+    onHostNames: () => () => undefined,
     getOffline: () => undefined,
     hostAction: () => undefined,
     getConnection: () => undefined,

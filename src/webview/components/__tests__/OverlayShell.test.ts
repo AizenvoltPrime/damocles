@@ -41,6 +41,15 @@ describe('OverlayShell', () => {
     expect(dialog!.querySelector('.o-panel')!.className).toContain('rounded-2xl');
   });
 
+  // axe's landmark-no-duplicate-banner: the page under it has its own header
+  it('adds no banner landmark beside the page\'s own header', () => {
+    host();
+    const [dialog] = dialogs();
+
+    expect(dialog!.querySelector('header, [role="banner"]')).toBeNull();
+    expect(dialog!.querySelector('[data-testid="overlay-header"]')!.textContent).toContain('overlay 0');
+  });
+
   it('plays its exit before it leaves the page', async () => {
     const { open } = host();
 

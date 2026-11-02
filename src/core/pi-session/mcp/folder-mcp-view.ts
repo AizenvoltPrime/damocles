@@ -22,6 +22,9 @@ import {
 } from './exposure';
 import { log } from '../../logger';
 
+/** One server's exposure layers, by the manager that serves it. */
+type ServerLayers = (manager: McpClientManager, name: string) => ToolExposureLayer[];
+
 /**
  * This folder's `damocles.mcp.toolExposure` and `damocles.mcp.resourceExposure` layers and whether the
  * folder is trusted, read on every call.
@@ -101,13 +104,16 @@ export class FolderMcpView implements McpToolSource {
     const userTools = this.user.getAllToolDescriptors().filter((d) => this.isVisibleUserServer(d.serverName));
     const conflicts = conflictingNames(folderTools, userTools);
     const layers = this.exposureLayers();
-    return [...userTools, ...folderTools].filter((d) => !conflicts.has(d.piName)).map((d) => withExposure(d, layers));
+    return [
+      ...userTools.filter((d) => !conflicts.has(d.piName)).map((d) => withExposure(d, layers(this.user, d.serverName))),
+      ...folderTools.filter((d) => !conflicts.has(d.piName)).map((d) => withExposure(d, layers(this.folder, d.serverName))),
+    ];
   }
 
   getToolDescriptor(piName: string): McpToolDescriptor | undefined {
     const owner = this.toolOwner(piName);
     const descriptor = owner?.getToolDescriptor(piName);
-    return descriptor && withExposure(descriptor, this.exposureLayers());
+    return descriptor && owner && withExposure(descriptor, this.exposureLayers()(owner, descriptor.serverName));
   }
 
   allToolNames(): string[] {
@@ -129,7 +135,7 @@ export class FolderMcpView implements McpToolSource {
     const pending = (manager: McpClientManager, names: readonly string[]): string[] =>
       names.filter((name) =>
         manager.serverConfigMayExposeDirect(name) ||
-        layersExposeDirect(layers, name) ||
+        layersExposeDirect(layers(manager, name), name) ||
         descriptors.some((d) => d.serverName === name && d.exposure === 'direct') ||
         manager.mayExposeResourcesDirect(name, this.resourceExposureOf(manager, name, resourceLayers).exposure));
     return [
@@ -146,12 +152,13 @@ export class FolderMcpView implements McpToolSource {
     const userStatuses = this.user.getServerStatuses().filter((status) => this.isVisibleUserServer(status.name));
     const layers = this.exposureLayers();
     const resourceLayers = this.resourceExposureLayers();
-    return [...userStatuses, ...this.folder.getServerStatuses()].map((status) => {
-      const resources = resolveResourceExposure(resourceLayers, status.name, status.configResourceExposure ?? 'deferred');
+    const owned = [...userStatuses.map((status) => [this.user, status] as const), ...this.folder.getServerStatuses().map((status) => [this.folder, status] as const)];
+    return owned.map(([manager, status]) => {
+      const resources = resolveResourceExposure(resourceLayers(manager, status.name), status.name, status.configResourceExposure ?? 'deferred');
       const withResources = { ...status, resourceExposure: resources.exposure, resourceExposureSource: resources.source };
       if (!status.tools) return withResources;
       const tools = status.tools.map((tool) => {
-        const resolved = resolveToolExposure(layers, status.name, tool.name, tool.configExposure ?? 'deferred');
+        const resolved = resolveToolExposure(layers(manager, status.name), status.name, tool.name, tool.configExposure ?? 'deferred');
         return { ...tool, exposure: resolved.exposure, exposureSource: resolved.source };
       });
       return { ...withResources, tools };
@@ -225,8 +232,8 @@ export class FolderMcpView implements McpToolSource {
     return this.folderHas(server) ? this.folder : this.isVisibleUserServer(server) ? this.user : undefined;
   }
 
-  private resourceExposureOf(manager: McpClientManager, name: string, layers: readonly ToolExposureLayer[]): ResolvedToolExposure {
-    return resolveResourceExposure(layers, name, manager.configResourceExposureOf(name));
+  private resourceExposureOf(manager: McpClientManager, name: string, layers: ServerLayers): ResolvedToolExposure {
+    return resolveResourceExposure(layers(manager, name), name, manager.configResourceExposureOf(name));
   }
 
   callTool(piName: string, args: Record<string, unknown>, opts?: McpToolCallOptions): Promise<McpCallResult> {
@@ -256,16 +263,23 @@ export class FolderMcpView implements McpToolSource {
     this.listeners.clear();
   }
 
-  private exposureLayers(): ToolExposureLayer[] {
-    if (!this.exposureContext) return [];
+  private exposureLayers(): ServerLayers {
+    if (!this.exposureContext) return () => [];
     const { inspection, trusted } = this.exposureContext();
-    return toolExposureLayers(inspection, trusted);
+    return this.serverLayers(inspection, trusted);
   }
 
-  private resourceExposureLayers(): ToolExposureLayer[] {
-    if (!this.exposureContext) return [];
+  private resourceExposureLayers(): ServerLayers {
+    if (!this.exposureContext) return () => [];
     const { resourceInspection, trusted } = this.exposureContext();
-    return toolExposureLayers(resourceInspection, trusted);
+    return this.serverLayers(resourceInspection, trusted);
+  }
+
+  /** A host's own servers (the user manager's, but for a client's relayed ones) also take its machine layer. */
+  private serverLayers(inspection: SettingInspection<unknown>, trusted: boolean): ServerLayers {
+    const folderLayers = toolExposureLayers(inspection, trusted);
+    const hostLayers = toolExposureLayers(inspection, trusted, true);
+    return (manager, name) => (manager === this.user && !this.user.isRelayed(name) ? hostLayers : folderLayers);
   }
 
   private folderHas(name: string): boolean {

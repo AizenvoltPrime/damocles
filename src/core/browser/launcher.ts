@@ -98,6 +98,9 @@ export interface LaunchBrowserOptions {
   viewport: { width: number; height: number };
   deviceScaleFactor: number;
   devToolsPort: boolean;
+  // a remote authority's context: every connection goes through its client-network proxy, with Chrome's loopback bypass,
+  // QUIC and non-proxied WebRTC UDP off (client-network-proxy.ts); a local context has none
+  network?: { server: string; args: readonly string[] };
 }
 
 // Extra flags Patchright does NOT manage that we still want. The flags Patchright's launch patch owns
@@ -134,13 +137,14 @@ const CURATED_EXTRA_ARGS = [
  *    enables it.
  */
 export async function launchBrowserContext(opts: LaunchBrowserOptions): Promise<BrowserContext> {
-  const { userDataDir, headless, viewport, deviceScaleFactor, devToolsPort } = opts;
+  const { userDataDir, headless, viewport, deviceScaleFactor, devToolsPort, network } = opts;
   if (process.getuid?.() === 0) throw new LocalizedError(runningAsRootMessage());
 
   const args = [
     '--window-position=-32000,-32000',
     '--window-size=1920,1080',
     ...CURATED_EXTRA_ARGS,
+    ...(network?.args ?? []),
   ];
 
   if (devToolsPort) {
@@ -175,14 +179,21 @@ export async function launchBrowserContext(opts: LaunchBrowserOptions): Promise<
       deviceScaleFactor,
       acceptDownloads: true,
       args,
+      ...(network ? { proxy: { server: network.server } } : {}),
       ...(ignoreDefaultArgs.length > 0 ? { ignoreDefaultArgs } : {}),
       ...(executablePath ? { executablePath } : {}),
     });
   } catch (err) {
     const sandboxMessage = sandboxFailureMessage(err instanceof Error ? err.message : String(err));
-    if (!sandboxMessage) throw err;
-    log(`[Browser] Chromium could not start its sandbox — ${err instanceof Error ? err.message : String(err)}`);
-    throw new LocalizedError(sandboxMessage, { cause: err });
+    if (sandboxMessage) {
+      log(`[Browser] Chromium could not start its sandbox — ${err instanceof Error ? err.message : String(err)}`);
+      throw new LocalizedError(sandboxMessage, { cause: err });
+    }
+    if (!network) throw err;
+    // Patchright's launch error quotes Chrome's command line and its logs, which name this computer's paths (the profile,
+    // the executable); a remote context's error reaches the target, so only this log keeps them
+    log(`[Browser] Chromium could not start for a remote host — ${err instanceof Error ? err.message : String(err)}`);
+    throw new LocalizedError(l('The browser could not start on the computer that shows this chat. Damocles\' log there has the details.'), { cause: err });
   }
 }
 

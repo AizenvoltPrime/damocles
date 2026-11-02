@@ -1,8 +1,10 @@
 import type { ChatReviewComment, ChatReviewFileDiffResult } from '../../preload/review-channels';
 import type { ScmFileDiffResult, ScmLetter, ScmTone } from '../../preload/scm-channels';
+import type { ShellPatchSide } from '../../preload/shell-channels';
 
 // What ChangesTab.vue shows: a list of files and one file's unified diff, from whatever source the tab is. Source control's
-// changes, View Stash and every Compare (ScmChangesTab.vue) and the chat review (ChatReviewTab.vue) each build one.
+// changes, View Stash and every Compare (ScmChangesTab.vue), the chat review (ChatReviewTab.vue) and a two-file patch
+// (PatchChangesTab.vue) each build one.
 
 export interface ChangesEntry {
   // the source's own path for the file: repo-relative for source control, the review's entry path for a chat
@@ -48,4 +50,8 @@ export interface ChangesSource {
   readonly openFile?: (path: string) => void;
   // line comments, the chat review's alone
   readonly comments?: ChangesComments;
+  // two files compared (the damocles command's --diff): their one diff alone, under a header naming both paths, with no files list
+  readonly pair?: { readonly left: ShellPatchSide; readonly right: ShellPatchSide };
+  // the entries' paths may be Windows paths, split at either separator (the chat review's on Windows)
+  readonly windowsPaths?: boolean;
 }

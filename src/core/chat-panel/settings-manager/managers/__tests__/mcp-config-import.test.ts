@@ -180,6 +180,7 @@ describe("mergeMcpEntries", () => {
     );
     const readonlyBySource = Object.fromEntries(entries.map(e => [e.source, e.readonly]));
     expect(readonlyBySource).toEqual({
+      relayed: true,
       codex: true,
       claude: true,
       pi: true,
@@ -650,9 +651,10 @@ describe("readClaudeMcpScopes (~/.claude.json: the user scope and projects[<ws>]
   });
 });
 
-describe("precedence fold order across all eight sources", () => {
+describe("precedence fold order across all nine sources", () => {
   /** One distinguishable command per source, so only precedence decides which survives the fold. */
   const COMMAND_BY_SOURCE: Record<McpServerSource, string> = {
+    relayed: "relayed-cmd",
     claude: "claude-cmd",
     codex: "codex-cmd",
     pi: "pi-cmd",
@@ -749,28 +751,30 @@ describe("precedence fold order across all eight sources", () => {
 
   it("declares the order the brief fixes, lowest precedence first", () => {
     expect(mcpSourceOrder("claude")).toEqual([
-      "codex", "claude", "pi", "pi-project", "claude-local", "damocles", "workspace", "damocles-local",
+      "relayed", "codex", "claude", "pi", "pi-project", "claude-local", "damocles", "workspace", "damocles-local",
     ]);
     expect(mcpSourceOrder("codex")).toEqual([
-      "claude", "codex", "pi", "pi-project", "claude-local", "damocles", "workspace", "damocles-local",
+      "relayed", "claude", "codex", "pi", "pi-project", "claude-local", "damocles", "workspace", "damocles-local",
     ]);
   });
 
-  it("holds exactly eight sources, the same eight under either tie-break", () => {
+  it("holds exactly nine sources, the same nine under either tie-break", () => {
     // `McpServerSource` is derived from the claude-first tuple, so a member added to one tuple and
     // forgotten in the other cannot be caught by reading the union back. Both are compared here.
     const claudeFirst = mcpSourceOrder("claude");
     const codexFirst = mcpSourceOrder("codex");
 
     expect([...claudeFirst].sort()).toEqual([
-      "claude", "claude-local", "codex", "damocles", "damocles-local", "pi", "pi-project", "workspace",
+      "claude", "claude-local", "codex", "damocles", "damocles-local", "pi", "pi-project", "relayed", "workspace",
     ]);
     expect([...codexFirst].sort()).toEqual([...claudeFirst].sort());
-    expect(new Set(claudeFirst).size).toBe(8);
-    expect(new Set(codexFirst).size).toBe(8);
+    expect(new Set(claudeFirst).size).toBe(9);
+    expect(new Set(codexFirst).size).toBe(9);
 
-    // The tie-break permutes `claude` and `codex` and moves nothing else.
-    expect(claudeFirst.slice(2)).toEqual(codexFirst.slice(2));
+    // The tie-break permutes `claude` and `codex` and moves nothing else; `relayed` stays lowest.
+    expect(claudeFirst[0]).toBe("relayed");
+    expect(codexFirst[0]).toBe("relayed");
+    expect(claudeFirst.slice(3)).toEqual(codexFirst.slice(3));
   });
 
   it("hands back the same array every call, since a sort comparator asks for it per comparison", () => {
@@ -808,7 +812,8 @@ describe("precedence fold order across all eight sources", () => {
         winners.push((entry?.config as McpStdioServerConfig | undefined)?.command);
       }
 
-      expect(winners).toEqual([...order].reverse().map(source => COMMAND_BY_SOURCE[source]));
+      // no file holds a relayed server: its client sends it to a daemon's core
+      expect(winners).toEqual([...order].reverse().map(source => (source === "relayed" ? undefined : COMMAND_BY_SOURCE[source])));
     },
   );
 
@@ -922,6 +927,7 @@ describe("pi sources", () => {
     expect(MCP_SCOPE_BY_SOURCE.pi).toBe("user");
     expect(MCP_SCOPE_BY_SOURCE["pi-project"]).toBe("folder");
     expect(VALUE_FORMAT_BY_SOURCE).toEqual({
+      relayed: "pi",
       pi: "pi",
       "pi-project": "pi",
       damocles: "pi",

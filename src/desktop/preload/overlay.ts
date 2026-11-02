@@ -5,6 +5,8 @@ import {
   OVERLAY_CHANNELS,
   type CloseRemoteRow,
   type ConnectStartResult,
+  type ContainerFolderPick,
+  type ContainerListResult,
   type ConnectStepEvent,
   type DamoclesOverlayApi,
   type HostCardInfo,
@@ -19,6 +21,7 @@ import {
   type RemoveServerResult,
   type PasswordlessResult,
   type HostOperations,
+  type HeldMemoryResult,
   type InputBrowseResult,
   type OverlayPrefs,
   type OverlayPrefWrite,
@@ -32,6 +35,8 @@ import {
   type PaletteCommand,
   type PopupAnswer,
   type QuickOpenResponse,
+  type RemovalRun,
+  type WslDistroInfo,
 } from './overlay-channels';
 import type { ChatsContinueWorktree, ChatsWorktreeOptions, DropZonesPointer } from './shell-channels';
 import type { ChimeTone, NotificationCenterState } from './notifications';
@@ -75,6 +80,9 @@ const api: DamoclesOverlayApi = {
   onToastDismiss: (listener) => subscribe<string>(OVERLAY_CHANNELS.toastDismiss, listener),
   resolveToast: (id, action) => {
     ipcRenderer.send(OVERLAY_CHANNELS.resolveToast, id, action);
+  },
+  copyToast: (id) => {
+    ipcRenderer.send(OVERLAY_CHANNELS.toastCopy, id);
   },
   reportToastArea: (area) => {
     const parts = area.parts.map((part) => ({ x: part.x, y: part.y, width: part.width, height: part.height }));
@@ -135,7 +143,13 @@ const api: DamoclesOverlayApi = {
   renameHost: (hostId, name) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsRename, { hostId, name }) as Promise<PopupAnswer<NameCheck>>,
   parseHost: (input) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsParse, { input }) as Promise<PopupAnswer<HostParseResult>>,
   startConnect: (target) => {
-    const plain = 'hostId' in target ? { hostId: target.hostId } : 'alias' in target ? { alias: target.alias, name: target.name } : { input: target.input, name: target.name };
+    const via = (value: string | undefined): { via?: string } => (value === undefined ? {} : { via: value });
+    const plain = 'hostId' in target ? { hostId: target.hostId }
+      : 'alias' in target ? { alias: target.alias, name: target.name }
+        : 'distro' in target ? { distro: target.distro, name: target.name }
+          : 'attach' in target ? { attach: target.attach, user: target.user, name: target.name, ...via(target.via) }
+            : 'devcontainer' in target ? { devcontainer: target.devcontainer, name: target.name, ...via(target.via) }
+              : { input: target.input, name: target.name };
     return ipcRenderer.invoke(OVERLAY_CHANNELS.connectStart, { target: plain }) as Promise<PopupAnswer<ConnectStartResult>>;
   },
   answerConnect: (attemptId, promptId, answer, remember) => ipcRenderer.invoke(OVERLAY_CHANNELS.connectAnswer, remember === true ? { attemptId, promptId, answer, remember } : { attemptId, promptId, answer }) as Promise<PopupAnswer<void>>,
@@ -150,16 +164,26 @@ const api: DamoclesOverlayApi = {
   copyHostKeyCommand: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsCopyHostKeyCommand, { hostId }) as Promise<PopupAnswer<void>>,
   onConnectStep: (listener) => subscribe<ConnectStepEvent>(OVERLAY_CHANNELS.connectStep, listener),
   onConnectHosts: (listener) => subscribe<readonly HostCardInfo[]>(OVERLAY_CHANNELS.connectHosts, listener),
+  onConnectDistros: (listener) => subscribe<readonly WslDistroInfo[]>(OVERLAY_CHANNELS.connectDistros, listener),
   allowBackgroundWork: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsAllowBackground, { hostId }) as Promise<PopupAnswer<LingerResult>>,
   onCloseRemoteRows: (listener) => subscribe<readonly CloseRemoteRow[]>(OVERLAY_CHANNELS.closeRemoteRows, listener),
   listRemoteHosts: () => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsList, {}) as Promise<PopupAnswer<readonly RemoteHostEntry[]>>,
   setHostSetting: (hostId, change) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsSetSetting, { hostId, change: { key: change.key, value: change.value } }) as Promise<PopupAnswer<void>>,
   revokeCredentialHost: (hostId, credentialHost) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsRevokeCredential, { hostId, credentialHost }) as Promise<PopupAnswer<void>>,
+  deliverHeldMemory: (hostId, queueId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsDeliverHeldMemory, { hostId, queueId }) as Promise<PopupAnswer<HeldMemoryResult>>,
+  discardHeldMemory: (hostId, queueId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsDiscardHeldMemory, { hostId, queueId }) as Promise<PopupAnswer<HeldMemoryResult>>,
   setUpPasswordless: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsSetUpPasswordless, { hostId }) as Promise<PopupAnswer<PasswordlessResult>>,
   removalInfo: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsRemovalInfo, { hostId }) as Promise<PopupAnswer<RemovalInfo>>,
   removeServer: (hostId, options) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsRemoveServer, { hostId, options: { removeKey: options.removeKey, disableLinger: options.disableLinger } }) as Promise<PopupAnswer<RemoveServerResult>>,
   retryRemoval: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsRetryRemoval, { hostId }) as Promise<PopupAnswer<RemoveServerResult>>,
   getHostOperations: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsOperations, { hostId }) as Promise<PopupAnswer<HostOperations>>,
+  conversionInfo: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsConversionInfo, { hostId }) as Promise<PopupAnswer<{ readonly runs: readonly RemovalRun[] }>>,
+  convertToWsl2: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsConvertToWsl2, { hostId }) as Promise<PopupAnswer<void>>,
+  rebuildInfo: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsRebuildInfo, { hostId }) as Promise<PopupAnswer<{ readonly runs: readonly RemovalRun[] }>>,
+  rebuildContainer: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsRebuildContainer, { hostId }) as Promise<PopupAnswer<void>>,
+  listContainers: (via) => ipcRenderer.invoke(OVERLAY_CHANNELS.containersList, via === undefined ? {} : { via }) as Promise<PopupAnswer<ContainerListResult>>,
+  pickContainerFolder: () => ipcRenderer.invoke(OVERLAY_CHANNELS.containersPickFolder, {}) as Promise<PopupAnswer<ContainerFolderPick | null>>,
+  checkContainerFolder: (via, folder) => ipcRenderer.invoke(OVERLAY_CHANNELS.containersCheckFolder, { via, folder }) as Promise<PopupAnswer<ContainerFolderPick>>,
   forgetHost: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsForget, { hostId }) as Promise<PopupAnswer<void>>,
   openHostSettings: (hostId) => ipcRenderer.invoke(OVERLAY_CHANNELS.hostsOpenSettings, { hostId }) as Promise<PopupAnswer<void>>,
   onHostEntries: (listener) => subscribe<readonly RemoteHostEntry[]>(OVERLAY_CHANNELS.hostsEntries, listener),

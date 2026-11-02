@@ -9,7 +9,7 @@ import { browserPageHtml, type BrowserPageStrings } from '../../shared/browser-p
 import { chatPageHtml, errorPageHtml, type ErrorPageStrings, type PageSpec } from '../../shared/panel-html';
 import { CHAT_WORKER_SRC } from '../app-urls';
 import { PAGE_STATE_TYPES } from '../core-protocol';
-import { PANEL_CHANNELS, PANEL_HOST_ACTIONS, type PanelConnection, type PanelHostAction, type PanelHostLabel, type PanelInit, type PanelQueueAction, type PanelTheme } from '../preload/panel-channels';
+import { PANEL_CHANNELS, PANEL_HOST_ACTIONS, type PanelConnection, type PanelHostAction, type PanelHostLabel, type PanelHostNames, type PanelInit, type PanelQueueAction, type PanelTheme } from '../preload/panel-channels';
 import { onWindowActivated, onWindowDeactivated } from './activation-focus';
 import type { PanelStateStore } from './panel-state-store';
 import { APP_ORIGIN, isPanelId, panelPageUrl } from './protocol';
@@ -164,6 +164,8 @@ interface PanelViewsDeps {
   readonly language: () => string;
   // the host of a remote chat's authority as this computer's host store names it, never as its core does; undefined for a local chat
   readonly hostLabel: (authority: string) => PanelHostLabel | undefined;
+  // every saved host's name and color by host id, which a page of this computer's core labels remote rows with
+  readonly hostNames: () => PanelHostNames;
   // a remote chat page's banner asked to reconnect, sign in, show the log or edit its own host
   readonly onHostAction: (panel: DesktopPanel, action: PanelHostAction) => void;
   // a remote chat's connection and held messages, which its page reads at init; undefined for a local chat
@@ -172,6 +174,8 @@ interface PanelViewsDeps {
   readonly onQueueAction: (panel: DesktopPanel, action: PanelQueueAction) => void;
   // a core message on its way to a remote chat's page; true when main took it (a held message core refused)
   readonly takeCoreMessage: (panel: DesktopPanel, type: string, json: string) => boolean;
+  // a link the user clicked in a remote chat's page (OpenUrl.userClick); a local chat's goes to its core, which opens it
+  readonly openRemoteLink: (authority: string, url: string) => void;
   readonly preloadPath: string;
   readonly states: PanelStateStore;
   readonly pages: PagesHost;
@@ -270,13 +274,21 @@ export class DesktopPanel implements PanelHost {
     this.onIpc(PANEL_CHANNELS.init, (event) => {
       const host = this.authority === 'local' ? undefined : deps.hostLabel(this.authority);
       const connection = this.kind === 'chat' && this.authority !== 'local' ? deps.connection(this) : undefined;
-      const init: PanelInit = { state: this.state, theme: currentTheme(), ...(host ? { host } : {}), ...(this.offline ? { offline: this.offline } : {}), ...(connection ? { connection } : {}) };
+      const hostNames = this.kind === 'chat' && this.authority === 'local' ? deps.hostNames() : undefined;
+      const init: PanelInit = { state: this.state, theme: currentTheme(), ...(host ? { host } : {}), ...(this.offline ? { offline: this.offline } : {}), ...(connection ? { connection } : {}), ...(hostNames ? { hostNames } : {}) };
       event.returnValue = init;
     }, (event) => { event.returnValue = null; });
     this.onIpc(PANEL_CHANNELS.post, (_event, payload) => {
       const message = asJsonValue(payload, MAX_MESSAGE_JSON_CHARS)?.value;
       if (!isWebviewMessage(message)) {
         deps.log(`[views] panel ${this.panelId}: dropped a malformed webview message`);
+        return;
+      }
+      // a remote core would open it on this computer only after asking, and forwards no port for it
+      if (this.kind === 'chat' && this.authority !== 'local' && message.type === 'openExternalUrl') {
+        const { url } = message as { readonly url?: unknown };
+        if (typeof url === 'string') deps.openRemoteLink(this.authority, url);
+        else deps.log(`[views] panel ${this.panelId}: dropped an openExternalUrl without a URL`);
         return;
       }
       this.messages.fire(message);
@@ -451,6 +463,11 @@ export class DesktopPanel implements PanelHost {
   // the chat's host was renamed or recolored on this computer
   sendHost(host: PanelHostLabel): void {
     if (!this.webContents.isDestroyed() && !this.webContents.isCrashed()) this.webContents.send(PANEL_CHANNELS.host, host);
+  }
+
+  // a saved host was added, renamed, recolored or forgotten
+  sendHostNames(hostNames: PanelHostNames): void {
+    if (!this.webContents.isDestroyed() && !this.webContents.isCrashed()) this.webContents.send(PANEL_CHANNELS.hostNames, hostNames);
   }
 
   // the chat's host changed phase, or its held messages changed
@@ -636,6 +653,12 @@ export class PanelViews {
     return [...this.order];
   }
 
+  /** The authority of the remote chat whose page `contents` is; undefined for a local chat and every other page. */
+  remoteChatAuthority(contents: WebContents): string | undefined {
+    const chat = [...this.panels.values()].find((panel) => panel.kind === 'chat' && panel.webContents === contents);
+    return chat && chat.authority !== 'local' ? chat.authority : undefined;
+  }
+
   // In load order.
   chats(): readonly DesktopPanel[] {
     return this.order.flatMap((panelId) => this.panels.get(panelId) ?? []);
@@ -683,6 +706,11 @@ export class PanelViews {
   /** Every chat page of the authority hears its host's new label. */
   broadcastHost(authority: string, host: PanelHostLabel): void {
     for (const panel of this.panels.values()) if (panel.kind === 'chat' && panel.authority === authority) panel.sendHost(host);
+  }
+
+  /** Every chat page of this computer's core hears the saved hosts' new names and colors. */
+  broadcastHostNames(hostNames: PanelHostNames): void {
+    for (const panel of this.panels.values()) if (panel.kind === 'chat' && panel.authority === 'local') panel.sendHostNames(hostNames);
   }
 
   broadcastTheme(theme: PanelTheme): void {

@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { CONNECT_STEPS, type ConnectStep, type ConnectStepEvent, type InstallFolderResult } from '../../../preload/overlay-channels';
 import InstallFolderField from './InstallFolderField.vue';
 import SecretPrompt from './SecretPrompt.vue';
+import BuildLogTail from './BuildLogTail.vue';
 import { failureText, needsInstallFolder } from '../connect-text';
 
 type RowState = 'pending' | 'active' | 'done' | 'failed';
@@ -27,11 +28,19 @@ const current = computed<ConnectStep | undefined>(() => {
   return step === 'connected' || step === 'failed' ? props.event.visited.at(-1) : step;
 });
 
+// wsl.exe and docker exec need no sign-in, so only ssh authenticates; only a container builds.
+const steps = computed((): readonly ConnectStep[] => CONNECT_STEPS.filter((name) => (name !== 'authenticating' || props.event.transport === 'ssh') && (name !== 'building' || props.event.transport === 'container')));
+// A WSL attempt starts its distro and a container attempt attaches where an ssh one connects.
+const stepLabel = (step: ConnectStep): string => {
+  if (step !== 'connecting' || props.event.transport === 'ssh') return t(`remote.step.${step}`);
+  return props.event.transport === 'wsl' ? t('remote.step.wslConnecting', { name: props.hostName }) : t('remote.step.attaching');
+};
+
 // Every visited step, then the steps still to come; installing is gone once the attempt went past it without installing.
 const rows = computed(() => {
   const { visited, step } = props.event;
-  const at = current.value === undefined ? -1 : CONNECT_STEPS.indexOf(current.value);
-  return CONNECT_STEPS.flatMap((name, index): Array<{ name: ConnectStep; state: RowState }> => {
+  const at = current.value === undefined ? -1 : steps.value.indexOf(current.value);
+  return steps.value.flatMap((name, index): Array<{ name: ConnectStep; state: RowState }> => {
     if (visited.includes(name)) {
       const last = name === current.value;
       const state: RowState = !last || step === 'connected' ? 'done' : step === 'failed' ? 'failed' : 'active';
@@ -48,14 +57,17 @@ const doneCount = computed(() => rows.value.filter((row) => row.state === 'done'
 const valueText = computed(() => {
   if (props.event.step === 'connected') return t('remote.timeline.connected');
   const step = current.value;
-  if (step === undefined) return t('remote.step.connecting');
-  const label = t(`remote.step.${step}`);
+  const label = stepLabel(step ?? 'connecting');
+  if (step === undefined) return label;
   if (props.event.step === 'failed') return t('remote.timeline.failedAt', { step: label });
   return step === 'installing' && percent.value !== undefined ? t('remote.timeline.progress', { step: label, percent: percent.value }) : label;
 });
 
-const failure = computed(() => (props.event.failure ? failureText(props.event.failure, props.hostName, t) : undefined));
-const canRetry = computed(() => props.event.failure?.code !== 'hostKeyChanged');
+// A failed step's failure, or a connected dev container whose folder main could not open, shown under the last step.
+const shownFailure = computed(() => (props.event.step === 'failed' ? props.event.failure : props.event.step === 'connected' ? props.event.folderFailure : undefined));
+const failureRow = computed(() => (props.event.step === 'failed' ? current.value : rows.value.at(-1)?.name));
+const failure = computed(() => (shownFailure.value ? failureText(shownFailure.value, props.hostName, t) : undefined));
+const canRetry = computed(() => shownFailure.value?.code !== 'hostKeyChanged');
 const choosingFolder = ref(false);
 
 const prompt = computed(() => (props.event.prompt?.kind === 'secret' ? props.event.prompt : undefined));
@@ -140,7 +152,7 @@ const prompt = computed(() => (props.event.prompt?.kind === 'secret' ? props.eve
           <span
             class="text-13/6  font-medium"
             :class="row.state === 'pending' ? 'text-(--d-faint-text)' : row.state === 'failed' ? 'text-(--d-danger-text)' : ''"
-          >{{ t(`remote.step.${row.name}`) }}</span>
+          >{{ stepLabel(row.name) }}</span>
           <template v-if="row.state === 'active' && row.name === 'installing' && percent !== undefined">
             <span class="text-11.5 text-(--d-muted) tabular-nums">{{ t('remote.timeline.percent', { percent }) }}</span>
             <!-- Drawn, not a second progressbar: the timeline's progressbar carries this value in its text. -->
@@ -155,6 +167,14 @@ const prompt = computed(() => (props.event.prompt?.kind === 'secret' ? props.eve
               />
             </span>
           </template>
+          <!-- The build's output while it runs, and under its failure; a finished build leaves only its check mark. -->
+          <BuildLogTail
+            v-if="row.name === 'building' && row.state !== 'done' && event.buildLog"
+            class="timeline-grow"
+            :lines="event.buildLog.lines"
+            :total="event.buildLog.total"
+            :host-name="hostName"
+          />
           <SecretPrompt
             v-if="row.state === 'active' && prompt"
             :key="prompt.promptId"
@@ -162,11 +182,11 @@ const prompt = computed(() => (props.event.prompt?.kind === 'secret' ? props.eve
             :prompt="prompt"
             @answer="(answer, remember) => emit('answer', prompt!.promptId, answer, remember)"
           />
-          <template v-if="row.state === 'failed' && failure">
+          <template v-if="row.name === failureRow && failure">
             <p
               role="alert"
               data-testid="connect-failure"
-              :data-code="event.failure?.code"
+              :data-code="shownFailure?.code"
               class="timeline-grow mt-1.5 rounded-8 bg-(--d-danger)/12 px-2.5 py-2 font-mono text-11.5 text-(--d-danger-text)"
             >
               {{ failure }}
@@ -177,9 +197,12 @@ const prompt = computed(() => (props.event.prompt?.kind === 'secret' ? props.eve
               :save="setInstallFolder"
               @saved="choosingFolder = false; emit('retry')"
             />
-            <span class="mt-2.5 flex flex-wrap items-center gap-1.5">
+            <span
+              data-failure-actions
+              class="mt-2.5 flex flex-wrap items-center gap-1.5"
+            >
               <Button
-                v-if="needsInstallFolder(event.failure) && !choosingFolder"
+                v-if="needsInstallFolder(shownFailure) && !choosingFolder"
                 type="button"
                 size="sm"
                 class="h-6 rounded-7 px-2 text-11 font-semibold"
@@ -190,7 +213,7 @@ const prompt = computed(() => (props.event.prompt?.kind === 'secret' ? props.eve
               <Button
                 v-if="canRetry"
                 type="button"
-                :variant="needsInstallFolder(event.failure) ? 'outline' : 'default'"
+                :variant="needsInstallFolder(shownFailure) ? 'outline' : 'default'"
                 size="sm"
                 class="h-6 rounded-7 px-2 text-11 font-semibold"
                 @click="emit('retry')"

@@ -273,6 +273,8 @@ describe('a remote terminal reattached after a relaunch', () => {
     await h.service.open(h.backend, 'loopback', id);
     h.send({ type: 'screen', id, data: '$ sleep 120', cols: 80, rows: 24, marks: keptMarks, sequences: 15, shellSequences: keptSession(nonce) });
     expect(h.screens.at(-1)!.marks).toEqual(keptEvents);
+    // a web link it prints opens through the link checks of its host's authority
+    expect(h.service.authorityOf(id)).toBe('loopback');
     expect(h.info(id)).toMatchObject({ integrated: true, running: 'sleep 120', description: 'sub' });
   });
 

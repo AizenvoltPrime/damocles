@@ -76,3 +76,15 @@ describe('a broker answer from this computer\'s core', () => {
     }
   });
 });
+
+describe('the relayed MCP servers a client publishes', () => {
+  const server = { name: 'notes', tools: [{ name: 'search', exposure: 'direct' }], resources: false, timeoutMs: 600_000 };
+
+  it('carry each tool\'s config exposure and the server\'s timeout, in the answer main reads and the timeout bounded as a Node timer', () => {
+    const servers = MAIN_TO_CORE.requests['user.mcp.servers'].result;
+    expect(servers([server])).toEqual([server]);
+    expect(servers([{ ...server, tools: [{ name: 'search', exposure: 'hidden' }] }])).toBe(INVALID);
+    expect(servers([{ ...server, timeoutMs: 0 }])).toBe(INVALID);
+    expect(servers([{ ...server, timeoutMs: 2_147_483_648 }])).toBe(INVALID);
+  });
+});

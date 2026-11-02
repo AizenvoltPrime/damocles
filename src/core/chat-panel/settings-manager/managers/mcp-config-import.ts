@@ -71,7 +71,8 @@ export interface GlobalMcpSources {
  * read-only too. Keyed by the full union, so adding a source without deciding its editability fails to
  * compile.
  */
-const READONLY_BY_SOURCE: Record<McpServerSource, boolean> = {
+export const READONLY_BY_SOURCE: Record<McpServerSource, boolean> = {
+  relayed: true,
   workspace: false,
   damocles: false,
   claude: true,
@@ -88,6 +89,7 @@ const READONLY_BY_SOURCE: Record<McpServerSource, boolean> = {
  * server the user configured in their own home directory because of a repo that had no hand in it.
  */
 export const REPO_AUTHORED_BY_SOURCE: Record<McpServerSource, boolean> = {
+  relayed: false,
   workspace: true,
   damocles: false,
   claude: false,
@@ -100,6 +102,7 @@ export const REPO_AUTHORED_BY_SOURCE: Record<McpServerSource, boolean> = {
 
 /** `folder` sources are read once per open folder; `user` sources once per window. */
 export const MCP_SCOPE_BY_SOURCE: Record<McpServerSource, McpServerScope> = {
+  relayed: "user",
   workspace: "folder",
   damocles: "user",
   claude: "user",
@@ -116,6 +119,7 @@ export const MCP_SCOPE_BY_SOURCE: Record<McpServerSource, McpServerScope> = {
  * `$env:VAR` with a leading `!` literal.
  */
 export const VALUE_FORMAT_BY_SOURCE: Record<McpServerSource, "pi" | "legacy"> = {
+  relayed: "pi",
   workspace: "legacy",
   damocles: "pi",
   claude: "legacy",

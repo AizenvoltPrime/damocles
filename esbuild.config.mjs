@@ -1,5 +1,5 @@
 import * as esbuild from 'esbuild';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { EXTENSION_EXTERNALS } from './scripts/extension-externals.mjs';
 import { DESKTOP_EXTERNALS } from './scripts/desktop-externals.mjs';
 import { originalFs } from './scripts/esbuild-original-fs.mjs';
@@ -247,6 +247,22 @@ const askpassMainOptions = {
   outfile: 'dist/askpass-main.js',
 };
 
+/** @type {esbuild.BuildOptions} */
+const cliOptions = {
+  ...formatterHostOptions,
+  entryPoints: ['src/desktop/cli/cli.ts'],
+  // resources/bin/damocles runs it under the app's binary as Node, from app.asar.unpacked
+  outfile: 'dist/cli.js',
+};
+
+/** @type {esbuild.BuildOptions} */
+const cliRemoteOptions = {
+  ...formatterHostOptions,
+  entryPoints: ['src/desktop/cli/cli-remote.ts'],
+  // a server package's bin/remote-cli and bin/helpers run it under the package's own Node, a checkout's dist/server-bin under the Node on PATH
+  outfile: 'dist/cli-remote.js',
+};
+
 // git and ssh execute the askpass scripts, so the packaged mode comes from here, never from the checkout's file mode. The
 // folder's .sh files are the list: verify-desktop-package.mjs's ASKPASS_SCRIPTS is tested against it.
 export function copyAskpassScripts(dir = 'dist/askpass') {
@@ -268,9 +284,20 @@ export function copyCredentialRelayScripts(dir = 'dist/git-credential') {
   }
 }
 
+// electron-builder ships dist/bin as <install>/resources/bin (extraResources); the sh script runs from PATH, so its packaged
+// mode comes from here, never from the checkout's file mode.
+export const CLI_SCRIPTS = ['damocles', 'damocles.cmd'];
+export function copyCliScripts(dir = 'dist/bin') {
+  mkdirSync(dir, { recursive: true });
+  for (const name of CLI_SCRIPTS) {
+    copyFileSync(`resources/bin/${name}`, `${dir}/${name}`);
+    chmodSync(`${dir}/${name}`, name.endsWith('.cmd') ? 0o644 : 0o755);
+  }
+}
+
 /**
  * The bundles a server package carries in dist/ (scripts/build-server.mjs): the daemon, Damocles Core, the hosts the daemon
- * forks, every worker in CoreInit.paths.workers, the watch worker and the askpass helper.
+ * forks, every worker in CoreInit.paths.workers, the watch worker, the askpass helper and the terminals' damocles command.
  */
 export const SERVER_BUNDLES = [
   daemonOptions,
@@ -286,33 +313,89 @@ export const SERVER_BUNDLES = [
   voiceExtractWorkerOptions,
   watchWorkerOptions,
   askpassMainOptions,
+  cliRemoteOptions,
 ];
 
+/** What the desktop build writes in dist/: the app's bundles, and every bundle the loopback daemon runs from it as a server package's. */
+export const DESKTOP_BUNDLES = [
+  formatterHostOptions,
+  ptyHostOptions,
+  quickOpenWorkerOptions,
+  watchWorkerOptions,
+  askpassMainOptions,
+  cliOptions,
+  cliRemoteOptions,
+  desktopMainOptions,
+  coreHostOptions,
+  daemonOptions,
+  desktopPreloadOptions,
+  desktopShellPreloadOptions,
+  desktopOverlayPreloadOptions,
+  workerOptions,
+  usageStatsWorkerOptions,
+  memoryIntegrityWorkerOptions,
+  sessionMetaIndexWorkerOptions,
+  voiceExtractWorkerOptions,
+  processLauncherWorkerOptions,
+  sentinelOptions,
+];
+
+// A checkout's stand-in for a server package's bin/ (daemon/server-package.ts terminalBinFolder): a checkout has no Node of its
+// own, so these run dist/cli-remote.js under the Node on PATH; their mode comes from here, never from the checkout's. On Windows
+// the BROWSER is browser.exe (writeCheckoutBrowserHelper), as a server package's is.
+export const CHECKOUT_SERVER_BIN = 'dist/server-bin';
+export function writeCheckoutServerBin(dir = CHECKOUT_SERVER_BIN) {
+  const sh = (what, args) => [
+    '#!/bin/sh',
+    `# ${what} in a terminal of this checkout's loopback daemon: the Node on PATH runs this checkout's dist/cli-remote.js`,
+    `cli=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)/cli-remote.js || exit 1`,
+    '# Windows Node reads it only by its Windows path, which Git Bash, MSYS2 and Cygwin name with cygpath',
+    'case $(uname -s) in',
+    '  MINGW* | MSYS* | CYGWIN*) if command -v cygpath > /dev/null 2>&1; then cli=$(cygpath -m "$cli") || exit 1; fi ;;',
+    'esac',
+    `exec node "$cli"${args} "$@"`,
+    '',
+  ].join('\n');
+  const cmd = (what, args) => [
+    '@echo off',
+    `rem ${what} in a terminal of this checkout's loopback daemon: the Node on PATH runs this checkout's dist\\cli-remote.js`,
+    'rem DisableDelayedExpansion: a registry DelayedExpansion=1 would eat a ! in the arguments.',
+    'setlocal DisableDelayedExpansion',
+    `node "%~dp0..\\..\\cli-remote.js"${args} %*`,
+    'endlocal & exit /b %ERRORLEVEL%',
+    '',
+  ].join('\r\n');
+  const scripts = [
+    ['remote-cli/damocles', sh('damocles', '')],
+    ['remote-cli/damocles.cmd', cmd('damocles', '')],
+    ['helpers/browser.sh', sh('BROWSER', ' --open-external')],
+  ];
+  // drops a script an earlier build wrote and this one no longer does
+  rmSync(dir, { recursive: true, force: true });
+  for (const [name, text] of scripts) {
+    mkdirSync(`${dir}/${name.split('/')[0]}`, { recursive: true });
+    writeFileSync(`${dir}/${name}`, text);
+    chmodSync(`${dir}/${name}`, name.endsWith('.cmd') ? 0o644 : 0o755);
+  }
+}
+
+// helpers/browser.exe of the checkout's bin, built for this machine like a server package's with the pinned zig
+// (scripts/browser-helper.mjs), which runs the Node on PATH.
+export async function writeCheckoutBrowserHelper(dir = CHECKOUT_SERVER_BIN, arch = process.arch) {
+  const { compileBrowserHelper } = await import('./scripts/browser-helper.mjs');
+  mkdirSync(`${dir}/helpers`, { recursive: true });
+  writeFileSync(`${dir}/helpers/browser.exe`, await compileBrowserHelper({ arch, checkout: true }));
+}
+
 async function buildDesktop() {
-  await Promise.all([
-    esbuild.build(formatterHostOptions),
-    esbuild.build(ptyHostOptions),
-    esbuild.build(quickOpenWorkerOptions),
-    esbuild.build(watchWorkerOptions),
-    esbuild.build(askpassMainOptions),
-    esbuild.build(desktopMainOptions),
-    esbuild.build(coreHostOptions),
-    esbuild.build(daemonOptions),
-    esbuild.build(desktopPreloadOptions),
-    esbuild.build(desktopShellPreloadOptions),
-    esbuild.build(desktopOverlayPreloadOptions),
-    esbuild.build(workerOptions),
-    esbuild.build(usageStatsWorkerOptions),
-    esbuild.build(memoryIntegrityWorkerOptions),
-    esbuild.build(sessionMetaIndexWorkerOptions),
-    esbuild.build(voiceExtractWorkerOptions),
-    esbuild.build(processLauncherWorkerOptions),
-    esbuild.build(sentinelOptions),
-  ]);
+  await Promise.all(DESKTOP_BUNDLES.map((options) => esbuild.build(options)));
   // Settings › About's What's new reads it next to main.js (src/desktop/main/release-notes.ts).
   copyFileSync('CHANGELOG.md', 'dist/desktop/CHANGELOG.md');
   copyAskpassScripts();
   copyCredentialRelayScripts();
+  copyCliScripts();
+  writeCheckoutServerBin();
+  if (process.platform === 'win32') await writeCheckoutBrowserHelper();
   const { compileAskpassTrampoline } = await import('./scripts/askpass-trampoline.mjs');
   compileAskpassTrampoline();
   // the loopback daemon's core loads it from the checkout's dist/, as a server package's core does from its own

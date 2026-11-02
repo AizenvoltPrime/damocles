@@ -24,7 +24,7 @@ import {
   retrySetAsideCandidates,
   type ConsolidationCtx,
 } from '../consolidation';
-import { maybeVacuum, VACUUM_FREELIST_RATIO, VACUUM_MIN_PAGES } from '../dedup-decay';
+import { APPLIED_WRITE_RETENTION_MS, maybeVacuum, VACUUM_FREELIST_RATIO, VACUUM_MIN_PAGES } from '../dedup-decay';
 import type { ConsolidationExtractedMemory, ConsolidationPhaseEvent, ConsolidationResult } from '@shared/types/consolidation';
 import { subCallSpy, type SubCallSpy } from './subcall-spy';
 import { USEFULNESS_RUBRIC } from '../rubric';
@@ -981,6 +981,59 @@ describe('runConsolidation — C2 hostile extraction shapes never strand a batch
     expect(counts.stranded).toBe(0);
     expect(counts.committed).toBe(1);
     expect((db.prepare("SELECT COUNT(*) AS count FROM memories WHERE kind = 'observation'").get() as CountRow).count).toBe(0);
+  });
+
+  it('hands a global extraction to the client through globalWrite and writes it nowhere in this store', async () => {
+    db.prepare('UPDATE memory_candidates SET client_id = ? WHERE id = ?').run('client-b', seedCandidate(db, SESSION_ID, 'q1', 'a1'));
+    const { runner } = makeRunner({
+      memories: [
+        { kind: 'preference', content: 'The user prefers tabs.', scope: 'global', tags: ['style'] },
+        { kind: 'fact', content: 'The project bundles with esbuild.', scope: 'project' },
+      ],
+    });
+    const globalWrite = vi.fn(async () => undefined);
+    const result = await runConsolidation(makeCtx(db, runner, { globalWrite }));
+    expect(globalWrite).toHaveBeenCalledWith({ kind: 'preference', content: 'The user prefers tabs.', tags: ['style'] }, 'client-b');
+    expect(result.extracted.map((memory) => [memory.scope, memory.outcome])).toEqual([['global', 'inserted'], ['project', 'inserted']]);
+    expect(countLiveMemories(db, 'global')).toBe(0);
+    expect(countLiveMemories(db, 'project')).toBe(1);
+  });
+
+  it('drops the global extractions of a turn recorded before its device was (migration 9), writing them to no device', async () => {
+    seedCandidate(db, SESSION_ID, 'q1', 'a1');
+    const { runner } = makeRunner({
+      memories: [
+        { kind: 'preference', content: 'The user prefers tabs.', scope: 'global' },
+        { kind: 'fact', content: 'The project bundles with esbuild.', scope: 'project' },
+      ],
+    });
+    const globalWrite = vi.fn(async () => undefined);
+    const result = await runConsolidation(makeCtx(db, runner, { globalWrite }));
+    expect(globalWrite).not.toHaveBeenCalled();
+    expect(result.extracted.map((memory) => [memory.scope, memory.outcome])).toEqual([['global', 'invalid'], ['project', 'inserted']]);
+    expect(countLiveMemories(db, 'global')).toBe(0);
+    expect(candidateCounts(db).committed).toBe(1);
+  });
+
+  it('prunes the applied uuids of relayed writes older than a year in its maintenance, and keeps newer ones', async () => {
+    const now = Date.now();
+    db.prepare('INSERT INTO memory_applied_writes (uuid, applied_at) VALUES (?, ?), (?, ?)').run('old', now - APPLIED_WRITE_RETENTION_MS - 60_000, 'new', now - APPLIED_WRITE_RETENTION_MS + 60_000);
+    const { runner } = makeRunner({ memories: [] });
+    await runConsolidation(makeCtx(db, runner));
+    expect(db.prepare('SELECT uuid FROM memory_applied_writes').all()).toEqual([{ uuid: 'new' }]);
+  });
+
+  it('writes a global extraction to the device whose turn it came from, one device per batch', async () => {
+    const stamp = (id: string, clientId: string): void => void db.prepare('UPDATE memory_candidates SET client_id = ? WHERE id = ?').run(clientId, id);
+    stamp(seedCandidate(db, SESSION_ID, 'q1', 'a1'), 'client-b');
+    stamp(seedCandidate(db, SESSION_ID, 'q2', 'a2'), 'client-c');
+    const { runner } = makeRunner({ memories: [{ kind: 'preference', content: 'The user prefers tabs.', scope: 'global' }] });
+    const globalWrite = vi.fn(async () => undefined);
+    const result = await runConsolidation(makeCtx(db, runner, { globalWrite }));
+    expect(result.candidatesReviewed).toBe(1);
+    expect(globalWrite).toHaveBeenCalledWith({ kind: 'preference', content: 'The user prefers tabs.' }, 'client-b');
+    await runConsolidation(makeCtx(db, runner, { globalWrite }));
+    expect(globalWrite).toHaveBeenLastCalledWith({ kind: 'preference', content: 'The user prefers tabs.' }, 'client-c');
   });
 
   it('the isExtractionResult guard itself: accepts a well-formed shape, rejects the hostile ones', () => {

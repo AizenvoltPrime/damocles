@@ -105,7 +105,7 @@ export function createHelpers(getApp, dir, getHome) {
   }
 
   /** Picks `model` and `effort` from the model button's dropdown menu. */
-  async function setModel(t, model = 'Sonnet 5.5', effort = 'Medium') {
+  async function setModel(t, model = 'Haiku 5.5', effort = 'Low') {
     const label = () => modelBtn(t).getAttribute('aria-label');
     const pick = async (name) => {
       if ((await modelBtn(t).getAttribute('data-state')) !== 'open') {

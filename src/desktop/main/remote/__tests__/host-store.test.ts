@@ -84,7 +84,7 @@ describe('HostStore', () => {
     void store.grantTrust(LOOPBACK, folderKey(app));
     await store.flush();
     const text = fs.readFileSync(path.join(userData, HOST_STORE_FILE), 'utf8');
-    expect(JSON.parse(text)).toEqual({ version: 1, authorities: { loopback: { projects: [record(app)], trusted: [folderKey(app)] } }, order: [keyOf(app)], hosts: {}, groupOrder: [], collapsedGroups: [] });
+    expect(JSON.parse(text)).toEqual({ version: 1, authorities: { loopback: { projects: [record(app)], trusted: [folderKey(app)] } }, order: [keyOf(app)], hosts: {}, groupOrder: [], collapsedGroups: [], wslNoticeDismissed: [] });
   });
 
   it('ignores an unreadable file and drops invalid entries', async () => {
@@ -171,7 +171,7 @@ describe('HostStore', () => {
     await store.touchHost(id, '/srv/billing');
     await store.touchHost(id, '/srv/app');
     const reread = await HostStore.open(userData, () => undefined);
-    const host = reread.host(id)!;
+    const host = reread.sshHost(id)!;
     expect(host.destination).toEqual({ kind: 'address', host: '10.0.0.9', user: 'deploy', port: 2222, options: [{ name: 'IdentityFile', value: '~/.ssh/id_deploy' }] });
     expect(destinationLabel(host.destination)).toBe('deploy@10.0.0.9:2222');
     // an IPv6 host is bracketed, so the label reads back as the same address and port
@@ -232,7 +232,7 @@ describe('HostStore', () => {
     await store.setHostSetting(id, { key: 'color', value: null });
     await store.clearInstalledKey(id);
     await store.clearLingerEnabled(id);
-    const cleared = store.host(id)!;
+    const cleared = store.sshHost(id)!;
     expect(cleared.color).toBeUndefined();
     expect(cleared.settings).toEqual({ defaultPermissionMode: 'plan', forwardAgent: true, rememberPassword: true, installFolder: '/opt/damocles' });
     expect([cleared.identityFile, cleared.installedKeyFingerprint, cleared.installedKeyEntry, cleared.lingerEnabledByDamocles]).toEqual([undefined, undefined, undefined, undefined]);
@@ -314,7 +314,7 @@ describe('HostStore', () => {
       expect(store.order(listed)).toEqual(['a', 'b', 'c']);
     });
 
-    it('keeps the slots of stored keys that are not listed, as the remote gate hides them', async () => {
+    it('keeps the slots of stored keys that are not listed, as a run without the loopback daemon hides its projects', async () => {
       const store = await HostStore.open(userData, () => undefined);
       await store.setOrder(['a', 'ssh+h|/srv', 'b'], () => ['a', 'ssh+h|/srv', 'b']);
       expect(await store.setOrder(['b', 'a'], () => ['a', 'b'])).toBe(true);

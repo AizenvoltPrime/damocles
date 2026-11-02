@@ -1,0 +1,9 @@
+{
+  "name": "damocles-e2e",
+  "build": { "dockerfile": "Dockerfile" },
+  "runArgs": ["--label", "damocles.e2e=devcontainer", "--add-host", "host.docker.internal:host-gateway"],
+  "initializeCommand": "echo ran > init-ran.txt",
+  "mounts": ["type=bind,source=${localWorkspaceFolder}/.devcontainer,target=/devcontainer-config,readonly"],
+  "remoteUser": "node",
+  "updateRemoteUserUID": false
+}

@@ -1,4 +1,5 @@
 import {
+  MAX_HELD_MEMORY_QUEUE_ID_LENGTH,
   MAX_HOST_INPUT_LENGTH,
   MAX_HOST_NAME_LENGTH,
   MAX_PROMPT_ANSWER_LENGTH,
@@ -6,7 +7,10 @@ import {
   OVERLAY_CHANNELS,
   type ConnectStartResult,
   type ConnectTarget,
+  type ContainerFolderPick,
+  type ContainerListResult,
   type HostParseResult,
+  type HeldMemoryResult,
   type HostOperations,
   type HostRun,
   type InstallFolderResult,
@@ -16,6 +20,7 @@ import {
   type RemoteBrowseResult,
   type RemoteHostEntry,
   type RemovalInfo,
+  type RemovalRun,
   type RemoveServerOptions,
   type RemoveServerResult,
   type HostSettingChange,
@@ -24,6 +29,9 @@ import {
 import { isHostTone } from '../../../shared/host-tones';
 import { PERMISSION_MODES, type PermissionMode } from '../../../shared/types/settings';
 import { isCredentialHost } from './host-store';
+import { isWslDistroName } from './wsl/distro-name';
+import { isContainerId } from '../../daemon/container-values';
+import { isCliPath } from '../../daemon/container-commands';
 import { parseHostEntries } from '../overlay';
 
 // What the Connect dialog may ask; every id is resolved against main's own lists by the implementation.
@@ -46,8 +54,17 @@ export interface ConnectActions {
   entries(): readonly RemoteHostEntry[];
   setSetting(hostId: string, change: HostSettingChange): Promise<void>;
   revokeCredentialHost(hostId: string, credentialHost: string): Promise<void>;
+  deliverHeldMemory(hostId: string, queueId: string): Promise<HeldMemoryResult>;
+  discardHeldMemory(hostId: string, queueId: string): Promise<HeldMemoryResult>;
   setUpPasswordless(hostId: string): Promise<PasswordlessResult>;
   removalInfo(hostId: string): Promise<RemovalInfo>;
+  conversionInfo(hostId: string): Promise<{ readonly runs: readonly RemovalRun[] }>;
+  convertToWsl2(hostId: string): Promise<void>;
+  rebuildInfo(hostId: string): Promise<{ readonly runs: readonly RemovalRun[] }>;
+  rebuildContainer(hostId: string): Promise<void>;
+  listContainers(via: string | undefined): Promise<ContainerListResult>;
+  pickContainerFolder(): Promise<ContainerFolderPick | null>;
+  checkContainerFolder(via: string, folder: string): Promise<ContainerFolderPick>;
   removeServer(hostId: string, options: RemoveServerOptions): Promise<RemoveServerResult>;
   retryRemoval(hostId: string): Promise<RemoveServerResult>;
   operations(hostId: string): HostOperations;
@@ -104,6 +121,16 @@ export function parseConnectTarget(raw: unknown): ConnectTarget | undefined {
   if (exactFields(target, ['hostId']) && isToken((target as Record<string, unknown>)['hostId'])) return { hostId: (target as Record<string, string>)['hostId']! };
   const alias = exactFields(target, ['alias', 'name']);
   if (alias && isBounded(alias['alias'], MAX_HOST_INPUT_LENGTH) && alias['alias'] !== '' && isBounded(alias['name'], MAX_TYPED_NAME_LENGTH)) return { alias: alias['alias'], name: alias['name'] };
+  const distro = exactFields(target, ['distro', 'name']);
+  if (distro && isWslDistroName(distro['distro']) && isBounded(distro['name'], MAX_TYPED_NAME_LENGTH)) return { distro: distro['distro'], name: distro['name'] };
+  const attach = exactFields(target, ['attach', 'user', 'name'], ['via']);
+  if (attach && isContainerId(attach['attach']) && (attach['user'] === 'configured' || attach['user'] === 'root') && isBounded(attach['name'], MAX_TYPED_NAME_LENGTH) && (attach['via'] === undefined || isToken(attach['via']))) {
+    return { attach: attach['attach'], user: attach['user'], name: attach['name'], ...(attach['via'] !== undefined ? { via: attach['via'] as string } : {}) };
+  }
+  const devcontainer = exactFields(target, ['devcontainer', 'name'], ['via']);
+  if (devcontainer && isCliPath(devcontainer['devcontainer']) && isBounded(devcontainer['name'], MAX_TYPED_NAME_LENGTH) && (devcontainer['via'] === undefined || isToken(devcontainer['via']))) {
+    return { devcontainer: devcontainer['devcontainer'], name: devcontainer['name'], ...(devcontainer['via'] !== undefined ? { via: devcontainer['via'] as string } : {}) };
+  }
   const input = exactFields(target, ['input', 'name']);
   if (input && isBounded(input['input'], MAX_HOST_INPUT_LENGTH) && isBounded(input['name'], MAX_TYPED_NAME_LENGTH)) return { input: input['input'], name: input['name'] };
   return undefined;
@@ -141,8 +168,41 @@ export function registerConnectChannels(overlay: ConnectOverlay, actions: Connec
     if (!call || !isToken(call['hostId']) || !isCredentialHost(call['credentialHost'])) throw malformed('hosts.revokeCredential');
     return actions.revokeCredentialHost(call['hostId'], call['credentialHost']);
   });
+  const heldMemoryCall = (raw: unknown, name: string): { readonly hostId: string; readonly queueId: string } => {
+    const call = exactFields(raw, ['hostId', 'queueId']);
+    if (!call || !isToken(call['hostId']) || !isBounded(call['queueId'], MAX_HELD_MEMORY_QUEUE_ID_LENGTH) || call['queueId'] === '') throw malformed(name);
+    return { hostId: call['hostId'], queueId: call['queueId'] };
+  };
+  onHosts(OVERLAY_CHANNELS.hostsDeliverHeldMemory, (raw) => {
+    const { hostId, queueId } = heldMemoryCall(raw, 'hosts.deliverHeldMemory');
+    return actions.deliverHeldMemory(hostId, queueId);
+  });
+  onHosts(OVERLAY_CHANNELS.hostsDiscardHeldMemory, (raw) => {
+    const { hostId, queueId } = heldMemoryCall(raw, 'hosts.discardHeldMemory');
+    return actions.discardHeldMemory(hostId, queueId);
+  });
   onHosts(OVERLAY_CHANNELS.hostsSetUpPasswordless, (raw) => actions.setUpPasswordless(hostCall(raw, 'hosts.setUpPasswordless')));
   onHosts(OVERLAY_CHANNELS.hostsRemovalInfo, (raw) => actions.removalInfo(hostCall(raw, 'hosts.removalInfo')));
+  // Convert to WSL 2: the work to list, then the run, which a second call joins; its progress follows on hostsOperationsChanged
+  onHosts(OVERLAY_CHANNELS.hostsConversionInfo, (raw) => actions.conversionInfo(hostCall(raw, 'hosts.conversionInfo')));
+  onHosts(OVERLAY_CHANNELS.hostsConvertToWsl2, (raw) => actions.convertToWsl2(hostCall(raw, 'hosts.convertToWsl2')));
+  // Rebuild Container: the work to list, then the run, which a second call joins; its progress follows on hostsOperationsChanged
+  onHosts(OVERLAY_CHANNELS.hostsRebuildInfo, (raw) => actions.rebuildInfo(hostCall(raw, 'hosts.rebuildInfo')));
+  onHosts(OVERLAY_CHANNELS.hostsRebuildContainer, (raw) => actions.rebuildContainer(hostCall(raw, 'hosts.rebuildContainer')));
+  on(OVERLAY_CHANNELS.containersList, (raw) => {
+    const call = exactFields(raw, [], ['via']);
+    if (!call || (call['via'] !== undefined && !isToken(call['via']))) throw malformed('containers.list');
+    return actions.listContainers(call['via'] as string | undefined);
+  });
+  on(OVERLAY_CHANNELS.containersPickFolder, (raw) => {
+    if (!exactFields(raw, [])) throw malformed('containers.pickFolder');
+    return actions.pickContainerFolder();
+  });
+  on(OVERLAY_CHANNELS.containersCheckFolder, (raw) => {
+    const call = exactFields(raw, ['via', 'folder']);
+    if (!call || !isToken(call['via']) || !isPath(call['folder'])) throw malformed('containers.checkFolder');
+    return actions.checkContainerFolder(call['via'], call['folder']);
+  });
   onHosts(OVERLAY_CHANNELS.hostsRemoveServer, (raw) => {
     const call = exactFields(raw, ['hostId', 'options']);
     const options = call && exactFields(call['options'], ['removeKey', 'disableLinger']);

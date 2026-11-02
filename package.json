@@ -1314,6 +1314,7 @@
     "sync:profiles": "node scripts/sync-agent-profiles.mjs"
   },
   "dependencies": {
+    "@devcontainers/cli": "0.90.0",
     "@earendil-works/pi-agent-core": "1.4.0",
     "@earendil-works/pi-ai": "1.4.0",
     "@earendil-works/pi-coding-agent": "1.4.0",

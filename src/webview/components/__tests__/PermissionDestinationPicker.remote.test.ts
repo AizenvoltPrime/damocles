@@ -15,6 +15,8 @@ window.damoclesBridge = {
   setState: () => {},
   getHost: () => ({ hostId: 'h1', name: 'prod-1', computer: 'ALEXIOS-PC' }),
   onHost: () => () => {},
+  getHostNames: () => undefined,
+  onHostNames: () => () => undefined,
   getOffline: () => undefined,
   hostAction: () => undefined,
   getConnection: () => undefined,

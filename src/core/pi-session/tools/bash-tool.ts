@@ -5,6 +5,7 @@ import { Type } from 'typebox';
 import type { BashOperations, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AnyToolDefinition } from './any-tool-definition';
 import type { PiCodingAgentModule } from '../pi-loader';
+import { withUrlWatch } from './shell-url-watch';
 import { processLauncher, type LaunchedProcess, type SessionJob } from '../../process-launcher';
 import { findBash } from '../../system-tools';
 
@@ -139,6 +140,8 @@ export function createTrackedBashOperations(
       let timeoutHandle: NodeJS.Timeout | undefined;
       // Once the shell has exited, a tree kill would reach the jobs it deliberately left running.
       const killShell = (): void => shell.kill({ tree: true, whileRunning: true });
+      const stdout = withUrlWatch(onData);
+      const stderr = withUrlWatch(onData);
       try {
         if (timeoutMs !== undefined) {
           timeoutHandle = setTimeout(() => {
@@ -146,8 +149,8 @@ export function createTrackedBashOperations(
             killShell();
           }, timeoutMs);
         }
-        shell.onData('stdout', onData);
-        shell.onData('stderr', onData);
+        shell.onData('stdout', stdout.onData);
+        shell.onData('stderr', stderr.onData);
         if (signal) {
           if (signal.aborted) killShell();
           else signal.addEventListener('abort', killShell, { once: true });
@@ -159,6 +162,8 @@ export function createTrackedBashOperations(
         // convention stands in for it.
         return { exitCode: code ?? (exitSignal ? 128 + (osConstants.signals[exitSignal] ?? 0) : 1) };
       } finally {
+        stdout.end();
+        stderr.end();
         if (timeoutHandle) clearTimeout(timeoutHandle);
         if (signal) signal.removeEventListener('abort', killShell);
       }

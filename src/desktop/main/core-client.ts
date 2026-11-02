@@ -9,7 +9,7 @@ import type { ChatAttachmentInput } from '../../shared/types/chat-attachment';
 import type { UserContentBlock } from '../../shared/types/content';
 import type { ChatPlace, ChatReviewScope, ExtensionToWebviewMessage, WebviewToExtensionMessage, WorktreeFinishAction } from '../../shared/types/messages';
 import type { StoredSession } from '../../shared/types/session';
-import type { BrokerAnswer, HeldAuth } from '../../shared/remote-user';
+import type { BrokerAnswer, GlobalMemorySearchFilters, HeldAuth, HeldMemoryQueue } from '../../shared/remote-user';
 import type { PushedCredential } from '../core-protocol/messages';
 import type { ChatEntry, ChatPermissions, FolderTargetEntry, MainRequests, MentionTargetData, RepositoryCall, ScmCall, ScmMirrorPatch, WorktreeCall } from '../core-protocol';
 import { parsedCallText, SCM_CALL_LOCALIZED_TEXT, WORKTREE_CALL_LOCALIZED_TEXT, type MainEndpoint, type ScmCommitOutcome } from '../core-protocol';
@@ -36,6 +36,8 @@ export class CoreClient implements Disposable {
   private folders: { readonly defaultKey: string; readonly targets: ReadonlyMap<string, FolderTargetEntry> } | undefined;
   private readonly subscriptions: Disposable[];
   private readonly foldersListeners = new Set<() => void>();
+  private heldMemory: readonly HeldMemoryQueue[] = [];
+  private readonly heldMemoryListeners = new Set<() => void>();
 
   constructor(endpoint: MainEndpoint, adoptView: <T>(view: RelayView, attach: () => Promise<T>) => Promise<T>, keys: ProjectKeys) {
     this.endpoint = endpoint;
@@ -58,12 +60,17 @@ export class CoreClient implements Disposable {
         this.folders = { defaultKey: keys.toShell(defaultKey), targets: new Map(shown.map((target) => [target.key, target])) };
         for (const listener of [...this.foldersListeners]) listener();
       }),
+      endpoint.onMirror('heldMemory', ({ queues }) => {
+        this.heldMemory = queues;
+        for (const listener of [...this.heldMemoryListeners]) listener();
+      }),
     ];
   }
 
   dispose(): void {
     for (const subscription of this.subscriptions) subscription.dispose();
     this.foldersListeners.clear();
+    this.heldMemoryListeners.clear();
   }
 
   // ---- the chats mirror
@@ -295,8 +302,18 @@ export class CoreClient implements Disposable {
     return this.request('folders.setDefault', { key: this.keys.toCore(key) });
   }
 
-  newBrowserPage(chatViewId: string): Promise<void> {
-    return this.request('browser.newPage', { chatViewId });
+  newBrowserPage(chatViewId: string, url?: string): Promise<void> {
+    return this.request('browser.newPage', { chatViewId, ...(url !== undefined ? { url } : {}) });
+  }
+
+  // this computer's core: a remote chat's browser tool in its authority's context
+  browserTool(params: Params<'user.browser.tool'>, signal: AbortSignal): Promise<Result<'user.browser.tool'>> {
+    return this.endpoint.request('user.browser.tool', params, signal);
+  }
+
+  // this computer's core: the authority's browser context and proxy close (Forget host), or only one agent's scope of a remote chat
+  releaseBrowser(authority: string, agentScope?: Params<'user.browser.release'>['agentScope']): Promise<void> {
+    return this.request('user.browser.release', { authority, ...(agentScope !== undefined ? { agentScope } : {}) });
   }
 
   retrySetup(worktreeId: string): Promise<void> {
@@ -442,6 +459,64 @@ export class CoreClient implements Disposable {
     return this.endpoint.onEvent('user.clientAuthChanged', () => listener());
   }
 
+  // this computer's core: its global memory and personal MCP servers, for a remote core through main's checks
+  memorySearch(query: string, k: number, tiers: readonly ('global' | 'note')[], injection: boolean, filters: GlobalMemorySearchFilters): Promise<Result<'user.memory.search'>> {
+    return this.request('user.memory.search', { query, k, tiers, ...(injection ? { injection } : {}), ...filters });
+  }
+
+  // ---- a daemon's core: the outboxes it holds for devices long away
+
+  heldMemoryQueues(): readonly HeldMemoryQueue[] {
+    return this.heldMemory;
+  }
+
+  onHeldMemoryChanged(listener: () => void): Disposable {
+    this.heldMemoryListeners.add(listener);
+    return { dispose: () => { this.heldMemoryListeners.delete(listener); } };
+  }
+
+  // false: the queue is no longer held
+  deliverHeldMemory(queueId: string): Promise<boolean> {
+    return this.request('memory.deliverHeld', { queueId });
+  }
+
+  discardHeldMemory(queueId: string): Promise<boolean> {
+    return this.request('memory.discardHeld', { queueId });
+  }
+
+  memoryProfile(): Promise<Result<'user.memory.profile'>> {
+    return this.request('user.memory.profile', {});
+  }
+
+  memoryResolve(ids: readonly string[]): Promise<Result<'user.memory.resolve'>> {
+    return this.request('user.memory.resolve', { ids });
+  }
+
+  memoryApply(writes: Params<'user.memory.apply'>['writes']): Promise<Result<'user.memory.apply'>> {
+    return this.request('user.memory.apply', { writes });
+  }
+
+  mcpServers(): Promise<Result<'user.mcp.servers'>> {
+    return this.request('user.mcp.servers', {});
+  }
+
+  // the remote caller's signal ends the request on this computer's core
+  mcpCall(server: string, tool: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<unknown> {
+    return this.endpoint.request('user.mcp.call', { server, tool, args }, signal);
+  }
+
+  mcpResources(server: string, kind: 'resources' | 'templates', cursor: string | undefined, signal: AbortSignal): Promise<unknown> {
+    return this.endpoint.request('user.mcp.resources', { server, kind, ...(cursor !== undefined ? { cursor } : {}) }, signal);
+  }
+
+  mcpReadResource(server: string, uri: string, signal: AbortSignal): Promise<unknown> {
+    return this.endpoint.request('user.mcp.readResource', { server, uri }, signal);
+  }
+
+  onRelayedMcpChanged(listener: () => void): Disposable {
+    return this.endpoint.onEvent('user.mcpChanged', () => listener());
+  }
+
   speak(viewId: string, text: string): Promise<void> {
     return this.request('user.voice.speak', { viewId, text });
   }
@@ -470,6 +545,10 @@ export class CoreClient implements Disposable {
 
   e2eInputBox(options: InputBoxOptions): Promise<string | undefined> {
     return this.request('e2e.inputBox', options);
+  }
+
+  e2eClientNetworkAnswers(answers: Readonly<Record<string, readonly (readonly string[])[]>>): Promise<void> {
+    return this.request('e2e.clientNetworkAnswers', { answers });
   }
 
   e2eRouteBrowser(pattern: string, toHost: string): Promise<void> {

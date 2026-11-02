@@ -124,7 +124,14 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
   const activeTab = computed(() => tabs.value.find((tab) => tab.id === state.value?.activeTabId) ?? null);
   const settings = computed(() => state.value?.settings);
 
-  const monaco = (): Promise<ShellMonacoModule> => (monacoModule ??= loadMonaco());
+  const monaco = (): Promise<ShellMonacoModule> => (monacoModule ??= loadMonaco().then((module) => {
+    // a link opens from the shown editor, the active tab's
+    module.setWebLinkOpener((url) => {
+      const shown = activeTab.value;
+      if (shown) api.openEditorLink({ tabId: shown.id, url });
+    });
+    return module;
+  }));
 
   function documentIdsOf(tab: ShellEditorTab): string[] {
     if (tab.diff) return [tab.diff.originalId, tab.diff.modifiedId];

@@ -10,6 +10,8 @@ import { useUsageStatsStore } from '@/stores/useUsageStatsStore';
 import { cacheHitRate } from '@shared/usage-accounting';
 import { USAGE_STATS_SOURCES, type UsageStatsAggregate, type UsageStatsReport, type UsageStatsSource } from '@shared/types/usage-stats';
 import ProviderLogo from '@/components/icons/ProviderLogo.vue';
+import HostBadge from '@/components/HostBadge.vue';
+import type { HostName } from '@/composables/useHostNames';
 import { chartColor, modelProvider, type StatsMetric } from './stats-chart-data';
 import { useStatsLabels } from './stats-labels';
 
@@ -31,6 +33,8 @@ interface Row {
   provider?: string | null;
   /** Set on project rows; a click drills into the project. */
   projectKey?: string;
+  /** Set on a remote project's row: its host, named on this computer, beside the folder name. */
+  host?: HostName;
   /** Set on source rows that have more than their own single detail to show. */
   children?: Row[];
 }
@@ -80,15 +84,24 @@ const modelRows = computed<Row[]>(() =>
 );
 
 const projectRows = computed<Row[]>(() =>
-  (props.report.byProject ?? []).map((p, rank) => ({
-    id: `project:${p.key}`,
-    label: labels.project(p.key, p.cwd),
-    title: p.cwd ?? undefined,
-    color: chartColor(rank),
-    agg: p,
-    projectKey: p.key,
-  })),
+  (props.report.byProject ?? []).map((p, rank) => {
+    const host = labels.host(p.hostId);
+    return {
+      id: `project:${p.key}`,
+      label: labels.project(p.key, p.cwd),
+      title: p.cwd ?? undefined,
+      color: chartColor(rank),
+      agg: p,
+      projectKey: p.key,
+      ...(host ? { host } : {}),
+    };
+  }),
 );
+
+/** A row's name with its host, for text that cannot carry the host chip. */
+function rowText(row: Row): string {
+  return row.host ? t('usageStats.projectOnHost', { project: row.label, host: row.host.name }) : row.label;
+}
 
 const sourceRows = computed<Row[]>(() => {
   const groups = new Map<UsageStatsSource, UsageStatsAggregate[]>();
@@ -115,14 +128,13 @@ const sourceRows = computed<Row[]>(() => {
   });
 });
 
-// Shown once any spend ran on a remote host's own credential; until then every row is the user's sign-in.
+// Shown once any spend ran on a remote host's own credential, one row per host; until then every row is the user's sign-in.
 const credentialRows = computed<Row[]>(() => {
   const rows = props.report.byCredential ?? [];
   if (!rows.some((r) => r.credential === 'host')) return [];
   return [...rows].sort(byCost).map((r, rank) => ({
-    id: `credential:${r.credential}`,
-    label: t(`usageStats.breakdown.credential.${r.credential}`),
-    title: t(`usageStats.breakdown.credential.${r.credential}Title`),
+    id: r.hostId === undefined ? `credential:${r.credential}` : `credential:${r.credential}:${r.hostId}`,
+    ...labels.credential(r),
     color: chartColor(rank),
     agg: r,
   }));
@@ -192,8 +204,11 @@ function drillInto(row: Row): void {
 }
 
 const projectChips = computed(() => {
-  const options = new Map((props.report.filterOptions.projects ?? []).map((p) => [p.key, p.cwd]));
-  return store.projectKeys.map((key) => ({ key, label: labels.project(key, options.get(key) ?? null), title: options.get(key) ?? undefined }));
+  const options = new Map((props.report.filterOptions.projects ?? []).map((p) => [p.key, p]));
+  return store.projectKeys.map((key) => {
+    const option = options.get(key);
+    return { key, label: labels.projectOnHost(key, option?.cwd ?? null, option?.hostId), title: option?.cwd ?? undefined };
+  });
 });
 
 function removeProject(key: string): void {
@@ -218,7 +233,7 @@ function barSegments(rows: readonly Row[]): Array<{ id: string; color: string; w
   return rows
     .map((r) => ({ r, s: share(r.agg) }))
     .filter((x): x is { r: Row; s: number } => x.s !== null && x.s > 0)
-    .map(({ r, s }) => ({ id: r.id, color: r.color, width: `${s * 100}%`, title: `${r.label}: ${format.percent(s)}` }));
+    .map(({ r, s }) => ({ id: r.id, color: r.color, width: `${s * 100}%`, title: `${rowText(r)}: ${format.percent(s)}` }));
 }
 </script>
 
@@ -350,7 +365,7 @@ function barSegments(rows: readonly Row[]): Array<{ id: string; color: string; w
                   <button
                     v-if="row.projectKey !== undefined"
                     type="button"
-                    class="cursor-pointer truncate text-left hover:underline"
+                    class="min-w-6 cursor-pointer truncate text-left hover:underline"
                     :title="row.title ? `${row.title}\n${t('usageStats.breakdown.drillHint')}` : t('usageStats.breakdown.drillHint')"
                   >
                     {{ row.label }}
@@ -360,6 +375,14 @@ function barSegments(rows: readonly Row[]): Array<{ id: string; color: string; w
                     class="truncate"
                     :title="row.title"
                   >{{ row.label }}</span>
+                  <HostBadge
+                    v-if="row.host"
+                    :name="row.host.name"
+                    :tone="row.host.color"
+                    :title="t('usageStats.onHost', { host: row.host.name })"
+                    class="min-w-10 shrink"
+                    data-stats-host
+                  />
                   <Badge
                     v-if="row.agg.unpricedTokens > 0"
                     variant="outline"

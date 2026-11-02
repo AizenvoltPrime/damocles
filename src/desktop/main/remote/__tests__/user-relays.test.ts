@@ -2,8 +2,9 @@ import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { FEATURES } from '../../../../remote/protocol-version';
 import { MAX_BROKER_EXPIRES_IN_MS, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, type BrokerAnswer, type HeldAuth } from '../../../../shared/remote-user';
-import { brokerAnswerOf, checkProvider, clientAuthOf, clientUserOf, UserRelays, type UserRelaysDeps } from '../user-relays';
+import { brokerAnswerOf, checkProvider, clientAuthOf, clientUserOf, UserRelays, type UserRelaysDeps, type LocalUserScope } from '../user-relays';
 
 const KNOWN: HeldAuth = { providers: { anthropic: { type: 'oauth', expires: 1, hasKey: false, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false } } };
 
@@ -149,6 +150,7 @@ describe('UserRelays', () => {
         userSettingKeys: () => ['damocles.language'],
         userValue: () => 'en',
         hostPolicy: () => ({ allowBypass: false }),
+        local: {} as LocalUserScope,
         log: (line) => lines.push(line),
         ...overrides,
       }),
@@ -183,21 +185,23 @@ describe('UserRelays', () => {
   it('starts each attach from its values and publishes later changes to every attach, with YOLO refused', async () => {
     const { relays: user } = await relays();
     const published: Array<[string, unknown]> = [];
-    const attach = user.attach((topic, value) => published.push([topic, value]), 'ssh+h1', false);
+    const attach = user.attach((topic, value) => published.push([topic, value]), 'ssh+h1', false, FEATURES);
     expect(attach.mirrors.clientPolicy).toEqual({ voice: true, allowBypass: false });
     // a host on this computer reaches this computer's loopback endpoints
-    expect(user.attach(() => undefined, 'loopback', true).mirrors.clientPolicy).toEqual({ voice: true, allowBypass: false, sharedLoopback: true });
+    expect(user.attach(() => undefined, 'loopback', true, FEATURES).mirrors.clientPolicy).toEqual({ voice: true, allowBypass: false, sharedLoopback: true });
     await user.authChanged();
     await user.userChanged();
+    // the relayed MCP servers go with every attach, none here
     expect(published).toEqual([
+      ['clientMcp', { servers: [] }],
       ['clientAuth', { providers: { anthropic: { type: 'oauth', expiresIn: 0, hasKey: false, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false } } }],
       ['clientUser', { settings: { 'damocles.language': 'en' }, permissionRules: [{ allow: [], ask: [], deny: ['Bash(rm:*)'], dir: '.claude' }] }],
     ]);
     await user.authChanged();
-    expect(published).toHaveLength(2);
+    expect(published).toHaveLength(3);
     attach.subscription.dispose();
     await user.userChanged();
-    expect(published).toHaveLength(2);
+    expect(published).toHaveLength(3);
   });
 
   it('gives each attach its host\'s configured policy and publishes a change only to that host\'s attaches', async () => {
@@ -208,14 +212,14 @@ describe('UserRelays', () => {
     const { relays: user } = await relays({ hostPolicy: (authority) => settings.get(authority) ?? { allowBypass: false } });
     const prod: Array<[string, unknown]> = [];
     const dev: Array<[string, unknown]> = [];
-    expect(user.attach((topic, value) => prod.push([topic, value]), 'ssh+prod', false).mirrors.clientPolicy).toEqual({ voice: true, allowBypass: false, defaultPermissionMode: 'plan' });
-    expect(user.attach((topic, value) => dev.push([topic, value]), 'ssh+dev', false).mirrors.clientPolicy).toEqual({ voice: true, allowBypass: true, agentForwarding: true });
+    expect(user.attach((topic, value) => prod.push([topic, value]), 'ssh+prod', false, FEATURES).mirrors.clientPolicy).toEqual({ voice: true, allowBypass: false, defaultPermissionMode: 'plan' });
+    expect(user.attach((topic, value) => dev.push([topic, value]), 'ssh+dev', false, FEATURES).mirrors.clientPolicy).toEqual({ voice: true, allowBypass: true, agentForwarding: true });
     settings.set('ssh+prod', { allowBypass: true, defaultPermissionMode: 'acceptEdits' });
     user.policyChanged('ssh+prod');
     // an unchanged policy publishes nothing
     user.policyChanged('ssh+dev');
-    expect(prod).toEqual([['clientPolicy', { voice: true, allowBypass: true, defaultPermissionMode: 'acceptEdits' }]]);
-    expect(dev).toEqual([]);
+    expect(prod).toEqual([['clientMcp', { servers: [] }], ['clientPolicy', { voice: true, allowBypass: true, defaultPermissionMode: 'acceptEdits' }]]);
+    expect(dev).toEqual([['clientMcp', { servers: [] }]]);
   });
 
   it('publishes the snapshot read last when refreshes overlap, however their reads finish', async () => {
@@ -230,7 +234,7 @@ describe('UserRelays', () => {
       },
     });
     const published: unknown[] = [];
-    user.attach((_topic, value) => published.push(value), 'ssh+h1', false);
+    user.attach((_topic, value) => published.push(value), 'ssh+h1', false, FEATURES);
     let settled = 0;
     const first = user.authChanged().then(() => settled++);
     current = newer;
@@ -249,11 +253,11 @@ describe('UserRelays', () => {
     const held: HeldAuth = { providers: { anthropic: { type: 'oauth', expires: 1_000_000 + 3_600_000, hasKey: false, flatFee: false } } };
     const { relays: user } = await relays({ clientAuth: async () => held });
     const published: unknown[] = [];
-    user.attach((_topic, value) => published.push(value), 'ssh+h1', false);
+    user.attach((_topic, value) => published.push(value), 'ssh+h1', false, FEATURES);
     await user.authChanged();
     now.mockReturnValue(1_000_000 + 60_000);
-    expect(user.attach(() => undefined, 'ssh+h1', false).mirrors.clientAuth).toEqual({ providers: { anthropic: { type: 'oauth', expiresIn: 3_540_000, hasKey: false, flatFee: false } } });
-    expect(published).toEqual([{ providers: { anthropic: { type: 'oauth', expiresIn: 3_600_000, hasKey: false, flatFee: false } } }]);
+    expect(user.attach(() => undefined, 'ssh+h1', false, FEATURES).mirrors.clientAuth).toEqual({ providers: { anthropic: { type: 'oauth', expiresIn: 3_540_000, hasKey: false, flatFee: false } } });
+    expect(published).toEqual([{ servers: [] }, { providers: { anthropic: { type: 'oauth', expiresIn: 3_600_000, hasKey: false, flatFee: false } } }]);
     now.mockRestore();
   });
 });

@@ -86,6 +86,21 @@ describe('motion source', () => {
     expect(offenders).toEqual([]);
   });
 
+  // motion.css is unlayered, so its position beats any Tailwind position utility on the same element whatever the order
+  it('puts no other Tailwind position utility on an element whose motion class sets position', () => {
+    const motion = read('src/webview/styles/motion.css');
+    const positioned = new Map([...motion.matchAll(/(?:^|[},])\s*\.([\w-]+)\{[^}]*\bposition:(\w+)/gm)].map(([, name, value]) => [name!, value!]));
+    const utility = /^(?:static|relative|absolute|fixed|sticky)$/;
+    const offenders = [...files(join(ROOT, 'src/webview')), ...files(join(ROOT, 'src/desktop'))].filter((path) => path.endsWith('.vue')).flatMap((path) =>
+      [...readFileSync(path, 'utf8').matchAll(/<[a-zA-Z][\s\S]*?(?<![=-])>/g)]
+        .map(([tag]) => [...tag.matchAll(/\s:?class="([^"]*)"/g)].flatMap(([, value = '']) => value.replace(/[{}'`,:[\]]/g, ' ').split(/\s+/)))
+        .flatMap((names) => names.filter((name) => positioned.has(name)).flatMap((motionClass) =>
+          names.filter((name) => utility.test(name) && name !== positioned.get(motionClass)).map((name) => `${relative(ROOT, path)}: ${motionClass} ${name}`))));
+    expect(positioned.get('d-ring')).toBe('relative');
+    expect(positioned.get('d-sweep-bar')).toBe('relative');
+    expect(offenders).toEqual([]);
+  });
+
   it('keeps the easing curves outside the --d- token family', () => {
     const motion = read('src/webview/styles/motion.css');
     expect(motion).toContain('--ease-out: cubic-bezier(.2,.8,.2,1);');

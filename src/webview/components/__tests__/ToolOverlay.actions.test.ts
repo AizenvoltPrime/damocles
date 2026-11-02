@@ -24,7 +24,7 @@ function overlay(tool: ToolCall): VueWrapper {
   return wrapper;
 }
 
-const headerButton = (wrapper: VueWrapper, label: string) => wrapper.findAll('header button').find((b) => b.text() === label);
+const headerButton = (wrapper: VueWrapper, label: string) => wrapper.findAll('[data-testid="overlay-header"] button').find((b) => b.text() === label);
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -93,7 +93,7 @@ describe('ToolOverlay status', () => {
   it('names a call that waits for approval and offers no Stop', () => {
     const wrapper = overlay({ id: 't-5', name: 'PowerShell', input: { command: 'npm install' }, status: 'awaiting_approval' });
 
-    expect(wrapper.get('header').text()).toContain(i18n.global.t('toolCall.awaitingApproval'));
+    expect(wrapper.get('[data-testid="overlay-header"]').text()).toContain(i18n.global.t('toolCall.awaitingApproval'));
     expect(wrapper.find(`button[aria-label="${i18n.global.t('toolCall.stopWithNote')}"]`).exists()).toBe(false);
   });
 });

@@ -2,6 +2,7 @@
 import { ATTACH_DEADLINE_MS } from '../../../daemon/lock-timing';
 import { AUTH_TIMEOUT_MS } from '../../../../remote/handshake';
 import { releaseAssetUrl } from '../artifact-cache';
+import { CONTAINER_DATA_FOLDER } from '../../../daemon/container-commands';
 import type { ServerManifest, ServerTarget } from '../server-manifest-format';
 import { psQuote, shellQuote } from './quote';
 import POSIX_STAGE1 from './stage1-posix.sh';
@@ -36,6 +37,30 @@ export interface StageParameters {
   readonly installFolder?: string;
   // null: the default folder; absent: nothing to clean
   readonly previousInstallFolder?: string | null;
+  // WSL only: the Windows folder of the app's cache that holds the packages, which the stage copies from through wslpath
+  readonly wslCacheFolder?: string;
+  // a container only: the private folder the stage makes, the app copies the package into, and the stage copies it from
+  readonly containerCacheFolder?: string;
+  // a devcontainer only: the data volume's folder, which ~/.damocles links to when the home has none
+  readonly containerDataFolder?: string;
+}
+
+// /tmp/damocles-cache-<hex>: a fresh name per connect, created by the stage itself
+const CONTAINER_CACHE = /^\/tmp\/damocles-cache-[0-9a-f]{16,64}$/;
+
+function containerDataFolder(params: StageParameters): string {
+  const folder = params.containerDataFolder;
+  if (folder === undefined) return '';
+  if (folder !== CONTAINER_DATA_FOLDER) throw new RangeError('a container data folder other than the data volume one');
+  return folder;
+}
+
+function containerCacheFolder(params: StageParameters): string {
+  const folder = params.containerCacheFolder;
+  if (folder === undefined) return '';
+  if (!CONTAINER_CACHE.test(folder)) throw new RangeError('a container cache folder that is not /tmp/damocles-cache-<hex>');
+  if (params.wslCacheFolder !== undefined) throw new RangeError('a stage copies from one cache');
+  return folder;
 }
 
 const POSIX_TARGETS = ['linux-x64', 'linux-arm64', 'alpine-x64', 'alpine-arm64', 'darwin-x64', 'darwin-arm64'] as const satisfies readonly ServerTarget[];
@@ -60,6 +85,18 @@ function folders(params: StageParameters): { install: string; previousKind: 'non
   };
 }
 
+const WSL_MAPPABLE = /^[A-Za-z]:\\[^\0\r\n]*$/;
+
+/** A drive-letter path on one line, which wslpath -u maps; a UNC path (a network --user-data-dir, a redirected profile) is not. */
+export const isWslMappableFolder = (folder: string): boolean => WSL_MAPPABLE.test(folder);
+
+function wslCacheFolder(params: StageParameters): string {
+  const folder = params.wslCacheFolder;
+  if (folder === undefined) return '';
+  if (!isWslMappableFolder(folder)) throw new RangeError('a WSL cache folder that is not a drive path on one line');
+  return folder;
+}
+
 function withParameters(template: string, block: string): string {
   if (!PARAMETERS.test(template)) throw new Error('the stage 1 template has no parameter block');
   return template.replace(PARAMETERS, () => `# BEGIN PARAMETERS\n${block}\n# END PARAMETERS`);
@@ -72,6 +109,9 @@ export function buildPosixStage1(params: StageParameters, template: string = POS
     `D_INSTALL_FOLDER=${shellQuote(install)}`,
     `D_PREVIOUS_KIND=${shellQuote(previousKind)}`,
     `D_PREVIOUS_FOLDER=${shellQuote(previous)}`,
+    `D_WSL_CACHE=${shellQuote(wslCacheFolder(params))}`,
+    `D_CONTAINER_CACHE=${shellQuote(containerCacheFolder(params))}`,
+    `D_DATA_FOLDER=${shellQuote(containerDataFolder(params))}`,
     ...POSIX_TARGETS.map((target) => `D_${target.replace('-', '_').toUpperCase()}=${shellQuote(packageField(params, target))}`),
   ];
   return withParameters(template, lines.join('\n'));

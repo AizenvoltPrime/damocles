@@ -178,16 +178,34 @@ describe('a Damocles Core main forked', () => {
     await expect(desktop.client.projectBusy('/p')).rejects.toThrow(/broke the protocol/);
   });
 
+  // core's endpoint refuses to send this answer itself, so the envelope goes out raw, as a broken core would send it
   it('kills core for a result outside the contract, rejecting the request', async () => {
     const crashed = vi.fn();
     const desktop = startDesktopCore(deps(), { endedCores: [], worktreeRecords: [], crashed, leftLeases: vi.fn() });
     const core = H.cores[0] as FakeCore;
     const endpoint = await coreSide(core);
-    endpoint.serve('chats.unload', () => 'yes' as unknown as boolean);
+    core.raw.listen((raw) => {
+      const message = raw as { kind?: unknown; method?: unknown; id?: unknown };
+      if (message.kind === 'request' && message.method === 'chats.unload') core.raw.post({ kind: 'response', id: message.id, ok: true, result: 'yes' });
+    });
     publishTargets(endpoint);
     await desktop.ready;
     await expect(desktop.client.unload('view-1', false)).rejects.toThrow(/Core protocol violation/);
     await vi.waitFor(() => expect(crashed).toHaveBeenCalledWith(4242, 'protocol violation'));
+  });
+
+  it('keeps core running when core refuses to send its own answer outside the contract', async () => {
+    const crashed = vi.fn();
+    const desktop = startDesktopCore(deps(), { endedCores: [], worktreeRecords: [], crashed, leftLeases: vi.fn() });
+    const core = H.cores[0] as FakeCore;
+    const endpoint = await coreSide(core);
+    endpoint.serve('chats.unload', () => 'yes' as unknown as boolean);
+    endpoint.serve('chats.projectBusy', () => false);
+    publishTargets(endpoint);
+    await desktop.ready;
+    await expect(desktop.client.unload('view-1', false)).rejects.toThrow('the answer to chats.unload');
+    expect(await desktop.client.projectBusy('/p')).toBe(false);
+    expect(crashed).not.toHaveBeenCalled();
   });
 
   it('takes the crash path for an exit main did not ask for, rejecting what was pending and a ready not reached', async () => {

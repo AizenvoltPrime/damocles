@@ -17,6 +17,8 @@ const PASSTHROUGH_ENV = [
   'PATH', 'Path', 'PATHEXT', 'SystemRoot', 'SYSTEMROOT', 'windir', 'ComSpec', 'COMSPEC', 'SystemDrive',
   'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
   'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS', 'OS',
+  // Win32-OpenSSH's ssh.exe exits 255 without a word when ProgramData is missing.
+  'ProgramData',
   'DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'LANG', 'LC_ALL', 'SHELL', 'TERM',
   'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy',
   'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR',

@@ -18,6 +18,8 @@ window.damoclesBridge = {
     pushHost = listener;
     return () => {};
   },
+  getHostNames: () => undefined,
+  onHostNames: () => () => undefined,
   getOffline: () => undefined,
   hostAction: () => undefined,
   getConnection: () => undefined,

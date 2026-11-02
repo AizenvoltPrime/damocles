@@ -9,3 +9,13 @@ export function parseUserDataDir(argv: readonly string[]): string | undefined {
   }
   return undefined;
 }
+
+const CLI_PATH_FLAG = '--cli-path';
+
+/** `--cli-path add|remove`, which the Windows installer and uninstaller run; invalid for any other value, undefined without one. */
+export function parseCliPathAction(argv: readonly string[]): 'add' | 'remove' | 'invalid' | undefined {
+  const at = argv.indexOf(CLI_PATH_FLAG);
+  if (at === -1) return undefined;
+  const action = argv[at + 1];
+  return action === 'add' || action === 'remove' ? action : 'invalid';
+}

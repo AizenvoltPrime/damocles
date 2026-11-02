@@ -6,7 +6,7 @@ import type { SettingsAccountId, SettingsSectionId, SettingsTarget } from '@shar
 import type { ExtensionToWebviewMessage, SettingsFileScope } from '@shared/types/messages';
 import SettingsModal, { type SettingsFooter } from '@/components/settings/SettingsModal.vue';
 import ExtensionUiDialog from '@/components/ExtensionUiDialog.vue';
-import { NO_HOST_SETTINGS, type HostSettings, type HostSettingsSection, type SettingsScopeView } from '@/components/settings/settings-rows';
+import { MCP_HOST_SERVERS_ROW, NO_HOST_SETTINGS, type HostSettings, type HostSettingsSection, type SettingsScopeView } from '@/components/settings/settings-rows';
 import { useSettingWritesStore } from '@/components/settings/settings-writes';
 import { settingsViewHandlers, type SettingsHandlerContext, type SettingsViewHandlers } from '@/composables/message-handler/handlers/settings-handlers';
 import { useSettingsStore } from '@/stores/useSettingsStore';
@@ -215,6 +215,7 @@ const GIT_SETTINGS = [
 // Remote hosts' rows after the idle-terminal limit, in the order RemoteHostsSection renders them: [row id, settingsHost.rows name].
 const REMOTE_HOST_ROWS = [
   ['remote-hosts', 'remoteHosts'],
+  ['remote-host-held-memory', 'remoteHostHeldMemory'],
   ['remote-host-name', 'remoteHostName'],
   ['remote-host-color', 'remoteHostColor'],
   ['remote-host-mode', 'remoteHostMode'],
@@ -307,7 +308,7 @@ const DESKTOP_SETTINGS = computed((): HostSettings => ({
       const name = gitRowName(key);
       return { id: key, section: 'sourceControl' as const, label: `settingsHost.rows.${name}.label`, description: `settingsHost.rows.${name}.description`, keys: [key] };
     }),
-  }, ...(prefs.remoteEnabled.value ? [REMOTE_HOSTS_SECTION] : []), {
+  }, REMOTE_HOSTS_SECTION, {
     id: 'about',
     label: 'settingsHost.sections.about.label',
     subtitle: 'settingsHost.sections.about.subtitle',
@@ -376,7 +377,10 @@ const scopeView = computed((): SettingsScopeView | undefined => {
       empty: (section) => (section === 'chat' ? t('settingsScope.chatOnHost', { host: current.host.name }) : undefined),
     };
   }
-  return { listed: (meta) => (tab === 'machine' && meta.section === 'chat') || (meta.keys ?? []).some((key) => writable!.has(key)), ...hidden };
+  return {
+    listed: (meta) => (tab === 'machine' && (meta.section === 'chat' || meta.id === MCP_HOST_SERVERS_ROW)) || (meta.keys ?? []).some((key) => writable!.has(key)),
+    ...hidden,
+  };
 });
 
 // Edit settings.json offers the files of the tab shown: the host tab's user file is its host's machine file.
@@ -459,6 +463,7 @@ const modal = ref<InstanceType<typeof SettingsModal> | null>(null);
     :page-key="attachment"
     :scope-view="scopeView"
     :chat-host="scopes && scopes.active !== 'user' ? scopes.host.name : undefined"
+    :machine-host="scopes?.active === 'machine' ? scopes.host : undefined"
     :host="DESKTOP"
     :footer="footer"
     backdrop="dim"

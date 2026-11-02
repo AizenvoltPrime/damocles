@@ -518,7 +518,7 @@ SOFTWARE.
 
 ## Visual Studio Code (Code - OSS)
 
-Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles: the Quick Open file scoring, the search view's case-preserving replace and query rules, the Search Editor's `.code-search` format and the grammar that colours its results, the integrated terminal's shell detection, pty handling, flow control, link detection, paste warning, shell integration scripts, command marks and navigation, the sidebar's section sizing, and source control's git output parsers, status groups, decorations, discard confirmations, repository discovery, list sorting, menus, commit flow and questions, commit message history and its recall keys, branch name input, remotes, fetch, pull, push, sync, clone, askpass and autofetch, branches, stash, tags and worktrees, the Repositories view, settings and palette titles, and the editor's git integration: hunk staging and revert (`applyLineChanges` and the selected-range rules of git's `staging.ts`), the merge conflict parser and merge editor labels, the quick diff and its provider rules, blame and the timeline, and the Graph: its lanes and its history view logic.
+Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles: the Quick Open file scoring, the search view's case-preserving replace and query rules, the Search Editor's `.code-search` format and the grammar that colours its results, the integrated terminal's shell detection, pty handling, flow control, link detection, paste warning, shell integration scripts, command marks and navigation, the sidebar's section sizing, and source control's git output parsers, status groups, decorations, discard confirmations, repository discovery, list sorting, menus, commit flow and questions, commit message history and its recall keys, branch name input, remotes, fetch, pull, push, sync, clone, askpass and autofetch, branches, stash, tags and worktrees, the Repositories view, settings and palette titles, and the editor's git integration: hunk staging and revert (`applyLineChanges` and the selected-range rules of git's `staging.ts`), the merge conflict parser and merge editor labels, the quick diff and its provider rules, blame and the timeline, and the Graph: its lanes and its history view logic; and the remote Ports: finding URLs in terminal output, listening sockets as forwarding candidates, port attributes, restored forwards and their expiry, the automatic-forwarding fallback and its Undo, and Change Local Port's check; and the server build's clamp of Node's PT_LOAD alignment, so a server package runs on WSL 1; and the Keep both names of Files' copies.
 
 - **Source**: https://github.com/microsoft/vscode
 - **Adapted code**:
@@ -547,6 +547,7 @@ Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles
   - `src/shared/relative-path.ts` (the reserved Windows names) from `src/vs/base/common/extpath.ts` (`WINDOWS_FORBIDDEN_NAMES`)
   - `src/desktop/workspace/terminal/terminal-env.ts` (`langFromLocale`, the `LANG` check, and the integration variables a terminal never inherits) from `src/vs/workbench/contrib/terminal/common/terminalEnvironment.ts` (`shouldSetLangEnvVariable`, `getLangEnvVariable`) and `src/vs/base/common/processes.ts` (`sanitizeProcessEnvironment`); the Windows launch failure codes in `src/desktop/main/terminal/terminal-service.ts` from `src/vs/workbench/contrib/terminal/browser/terminalInstance.ts` (`parseExitResult`)
   - `src/desktop/main/editor-pane.ts` (diff titles from the file they show) from `src/vs/workbench/common/editor/diffEditorInput.ts` (`computeLabels`)
+  - `src/desktop/main/files/increment-name.ts` (`incrementFileName`, its `simple` mode) from `src/vs/workbench/contrib/files/browser/fileActions.ts` (`incrementFileName`), and its cases in `src/desktop/main/files/__tests__/increment-name.test.ts` from `src/vs/workbench/contrib/files/test/browser/fileActions.test.ts`
   - `src/desktop/main/files/file-tree.ts` (`delete`, `deletePermanently`), `src/desktop/workspace/file-system.ts` (`deleteEntry`) and `src/desktop/main/files/files-failure.ts` from `src/vs/workbench/contrib/files/browser/fileActions.ts` (`deleteFiles`)
   - `src/desktop/workspace/terminal/profiles.ts` from `src/vs/base/node/powershell.ts` (where PowerShell 7 is looked for, in order) and `src/vs/platform/terminal/node/terminalProfiles.ts` (WSL distros, Docker Desktop's skipped)
   - `src/desktop/shell/terminal/terminal-link-parsing.ts` and its tests from `src/vs/workbench/contrib/terminalContrib/links/browser/terminalLinkParsing.ts` and `test/browser/terminalLinkParsing.test.ts`; `src/desktop/shell/terminal/terminal-links.ts` from `terminalLocalLinkDetector.ts` and `terminalLinkHelpers.ts`; `src/desktop/main/terminal/terminal-links.ts` from `terminalLinkResolver.ts`
@@ -579,6 +580,14 @@ Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles
   - `src/core/scm/timeline.ts` (the file's history through renames, 50 entries a page, led by Staged Changes) from `extensions/git/src/timelineProvider.ts`
   - `src/shared/uri-template.ts` (the RFC 6570 template parser) from `src/vs/base/common/uriTemplate.ts`; in both hosts, the MCP resource picker (`src/webview/components/McpResourcePicker.vue`: Browse Resources shown while a server's capability is unknown, the template form and its 300 ms completion debounce, directory navigation) from `src/vs/workbench/contrib/mcp/browser/mcpServerActions.ts` (`BrowseResourcesAction`) and `mcpResourceQuickAccess.ts`, and the directory rule in `src/core/chat-panel/mcp-resource-attachments.ts` (`directoryChildren`) from `src/vs/workbench/contrib/mcp/common/mcpResourceFilesystem.ts` (`stat`, `readdir`)
 
+  - `src/desktop/local-services/url-finder.ts` (the loopback and hostname URLs it reports, the hostname mapped to localhost, the Node inspector exception and Python's `HTTP on ... port` line; rewritten as a linear-time scanner) from `src/vs/workbench/contrib/remote/browser/urlFinder.ts`
+  - `src/desktop/daemon/ports/linux-ports.ts` and `port-detector.ts` (every listening socket of the user as a candidate, matched to its process through the socket inodes of `/proc/<pid>/fd`, and the polling interval of twenty times the average scan, at least 2 s) from `src/vs/workbench/api/node/extHostTunnelService.ts` (`loadListeningPorts`, `loadConnectionTable`, `findPorts`, `NodeRemoteTunnel`'s candidate polling)
+  - `src/desktop/main/remote/ports/port-forwarding.ts` (port attributes by port or range with an exact port over a range, the onAutoForward actions, restoring forwards per workspace and their two-week expiry) from `src/vs/workbench/services/remote/common/tunnelModel.ts` (`PortsAttributes`, `TUNNELS_TO_RESTORE`, `RESTORE_EXPIRATION_TIME`, `restoreForwarded`), and the fallback to output-only forwarding after the automatic-forward threshold and its Undo from `src/vs/workbench/contrib/remote/browser/remoteExplorer.ts` (`AutomaticPortForwarding`)
+  - `src/desktop/main/remote/ports/ports-controller.ts` (Change Local Port's digits-only, 1 to 65535 check, and Forward a Port's `host:port` input) from `src/vs/workbench/contrib/remote/browser/tunnelView.ts` (`ChangeLocalPortAction`, `ForwardPortAction`)
+  - `src/remote/mux.ts` and `src/remote/tunnel-pipe.ts` (one stream per forwarded TCP connection, the daemon connecting the loopback form of the bound address) from `src/vs/platform/remote/common/remoteAgentConnection.ts` (`ConnectionType.Tunnel`) and `src/vs/server/node/remoteExtensionHostAgentServer.ts`
+  - `scripts/elf-load-align.mjs` (every PT_LOAD `p_align` above 4 KiB of an x86-64 ELF executable clamped to 4 KiB, by a walk of its 56-byte program headers) from `build/gulpfile.reh.ts` (`patchElfLoadAlign`)
+  - `resources/bin/damocles` and `damocles.cmd` (the app's binary run as Node on `cli.js` with `ELECTRON_RUN_AS_NODE`, the WSL branch that passes it through `WSLENV`, and the Git Bash, MSYS2 and Cygwin branch that names `cli.js` with `cygpath -m`) from `resources/win32/bin/code.sh`, `code.cmd`, `resources/linux/bin/code.sh` and `resources/darwin/bin/code.sh`
+  - `resources/server-bin/remote-cli/damocles`, `damocles.cmd` and `helpers/browser.sh` (the server's own Node running the remote command, and `BROWSER` handing the address to the client) from `resources/server/bin/remote-cli/code-linux.sh`, `code.cmd` and `resources/server/bin/helpers/browser-linux.sh`, with `code.sh`'s `cygpath -m` branch for Git Bash, MSYS2 and Cygwin on a Windows host
 ```
 MIT License
 
@@ -601,6 +610,49 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
+
+---
+
+## gopsutil
+
+Damocles' remote daemon reads listening TCP sockets the way gopsutil does, rewritten in TypeScript: the `/proc/net/tcp` and `tcp6` rows and the socket-inode map read from `/proc/<pid>/fd` links without a shell, `lsof -F` on macOS, and on Windows the `MIB_TCPROW_OWNER_PID` and `MIB_TCP6ROW_OWNER_PID` row layouts of `GetExtendedTcpTable`, the port in network byte order in the low 16 bits, and the call that grows its buffer while the table outgrows it.
+
+- **Source**: https://github.com/shirou/gopsutil
+- **License**: BSD 3-Clause
+- **Adapted code**:
+  - `src/desktop/daemon/ports/linux-ports.ts` from `net/net_linux.go` (`processInet`, `getProcInodes`, `decodeAddress`)
+  - `src/desktop/daemon/ports/darwin-ports.ts` from `net/net_unix.go` and `internal/common/common_unix.go` (`CallLsofWithContext`)
+  - `src/desktop/daemon/ports/win32-ports.ts` from `net/net_windows.go` (`mibTCPRowOwnerPid`, `mibTCP6RowOwnerPid`, `getTableUintptr`, `getTCPConnections`)
+
+```
+gopsutil is distributed under BSD license reproduced below.
+
+Copyright (c) 2014, WAKAYAMA Shirou
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of the gopsutil authors nor the names of its contributors
+   may be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
 ---
@@ -967,6 +1019,39 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Dev Containers CLI
+
+`@devcontainers/cli` ships unmodified in the desktop app (unpacked from `app.asar`) and in every server package, where Damocles runs it to build, start and read dev containers. Its own `LICENSE.txt` and `ThirdPartyNotices.txt` (the notices of the code its bundle carries) ship beside it in `node_modules/@devcontainers/cli/`.
+
+https://github.com/devcontainers/cli
+
+```
+MIT License
+
+Copyright (c) Microsoft Corporation.
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+'Software'), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+---
 
 ## smol-toml
 

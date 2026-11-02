@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { findBash, findOnAbsolutePath, findPwsh, isFileOrAppAlias, posixTool, posixToolAsync, resolveSshExecutable, resolveSshKeygenExecutable, windowsPowerShell, windowsSystemTool } from '../system-tools';
+import { findBash, findOnAbsolutePath, findPwsh, isFileOrAppAlias, posixTool, posixToolAsync, resolveSshExecutable, resolveSshKeygenExecutable, windowsExplorer, windowsPowerShell, windowsSystemTool } from '../system-tools';
 
 const SRC = path.join(__dirname, '..', '..');
 
@@ -90,6 +90,11 @@ describe('windowsSystemTool', () => {
   it('names Windows PowerShell under the same root', () => {
     expect(windowsPowerShell({ SystemRoot: 'D:\\Windows' })).toBe('D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
     expect(windowsPowerShell({ SystemRoot: '.\\Windows' })).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  });
+
+  it('names File Explorer in the root itself, beside System32', () => {
+    expect(windowsExplorer({ SystemRoot: 'D:\\Windows' })).toBe('D:\\Windows\\explorer.exe');
+    expect(windowsExplorer({ SystemRoot: '.\\Windows' })).toBe('C:\\Windows\\explorer.exe');
   });
 });
 

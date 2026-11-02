@@ -86,7 +86,49 @@
   "chat.queueRefusalCause",
   "terminals.screenHostClock",
   "core.attachClientStateRemoved",
-  "account.signInInputError"
+  "account.signInInputError",
+  "ports",
+  "ports.urlSeen",
+  "user.browser.tool",
+  "user.browser.release",
+  "browser.newPageUrl",
+  "clientNetwork",
+  "e2e.clientNetworkAnswers",
+  "user.memory",
+  "user.mcp",
+  "clientMcp",
+  "mcp.remoteAvailable",
+  "mcp.placement",
+  "mcp.hostTabOnly",
+  "settingsView.mcp",
+  "usageStats.hostId",
+  "paths.remoteMirrors",
+  "window.openAppSettingsScope",
+  "mirror.changed",
+  "mirror.subcalls",
+  "control.portProbe",
+  "containers",
+  "agent.relay",
+  "files.transfer",
+  "files.makeLinkWithin",
+  "files.clashesError",
+  "cli",
+  "user.memory.injectionGate",
+  "user.memory.appliedIds",
+  "user.browser.releaseScope",
+  "mux.streamsPerOpener",
+  "user.browser.discard",
+  "user.memory.searchFilters",
+  "user.memory.heldQueues",
+  "memory.auditApplyFailed",
+  "clientMcp.toolExposure",
+  "clientMcp.timeout",
+  "mcp.machineExposure",
+  "files.verifyLink",
+  "files.folderMode",
+  "files.cancel",
+  "files.walkEntryError",
+  "files.moveLeftMore"
  ],
  "contracts": {
   "CoreRequests": {
@@ -1455,6 +1497,119 @@
       }
      }
     },
+    "user.browser.release": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "closeTabs": {
+           "optional": false,
+           "type": "boolean"
+          },
+          "discard": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "scope": {
+           "optional": false,
+           "type": "string"
+          },
+          "viewId": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "user.browser.tool": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "input": {
+           "optional": false,
+           "type": "unknown"
+          },
+          "scope": {
+           "optional": false,
+           "type": "string"
+          },
+          "tool": {
+           "optional": false,
+           "type": "string"
+          },
+          "viewId": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "content": {
+           "optional": false,
+           "type": {
+            "array": {
+             "variants": "type",
+             "of": {
+              "\"image\"": {
+               "object": {
+                "data": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "mimeType": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "type": {
+                 "optional": false,
+                 "type": "\"image\""
+                }
+               }
+              },
+              "\"text\"": {
+               "object": {
+                "text": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "type": {
+                 "optional": false,
+                 "type": "\"text\""
+                }
+               }
+              }
+             }
+            }
+           }
+          },
+          "isError": {
+           "optional": true,
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
     "user.credentials": {
      "optional": false,
      "type": {
@@ -1541,6 +1696,559 @@
              "optional": false,
              "type": "\"oauth\""
             }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "user.mcp.call": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "args": {
+           "optional": false,
+           "type": {
+            "object": {},
+            "index": [
+             {
+              "key": "string",
+              "value": "unknown"
+             }
+            ]
+           }
+          },
+          "clientId": {
+           "optional": false,
+           "type": "string"
+          },
+          "server": {
+           "optional": false,
+           "type": "string"
+          },
+          "tool": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "unknown"
+       }
+      }
+     }
+    },
+    "user.mcp.readResource": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "clientId": {
+           "optional": false,
+           "type": "string"
+          },
+          "server": {
+           "optional": false,
+           "type": "string"
+          },
+          "uri": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "unknown"
+       }
+      }
+     }
+    },
+    "user.mcp.resources": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "clientId": {
+           "optional": false,
+           "type": "string"
+          },
+          "cursor": {
+           "optional": true,
+           "type": "string"
+          },
+          "kind": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"resources\"",
+             "\"templates\""
+            ]
+           }
+          },
+          "server": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "unknown"
+       }
+      }
+     }
+    },
+    "user.memory.apply": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "clientId": {
+           "optional": false,
+           "type": "string"
+          },
+          "entries": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "end": {
+               "optional": false,
+               "type": "number"
+              },
+              "write": {
+               "optional": false,
+               "type": {
+                "object": {
+                 "content": {
+                  "optional": false,
+                  "type": "string"
+                 },
+                 "kind": {
+                  "optional": false,
+                  "type": {
+                   "union": [
+                    "\"episode\"",
+                    "\"fact\"",
+                    "\"note\"",
+                    "\"preference\""
+                   ]
+                  }
+                 },
+                 "tags": {
+                  "optional": true,
+                  "type": {
+                   "array": "string"
+                  }
+                 },
+                 "title": {
+                  "optional": true,
+                  "type": "string"
+                 },
+                 "uuid": {
+                  "optional": false,
+                  "type": "string"
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "ids": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          },
+          "through": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "user.memory.profile": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "clientId": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "pinned": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "content": {
+               "optional": false,
+               "type": "string"
+              },
+              "contentHash": {
+               "optional": false,
+               "type": "string"
+              },
+              "createdAt": {
+               "optional": false,
+               "type": "number"
+              },
+              "id": {
+               "optional": false,
+               "type": "string"
+              },
+              "kind": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"episode\"",
+                 "\"fact\"",
+                 "\"note\"",
+                 "\"preference\""
+                ]
+               }
+              },
+              "tags": {
+               "optional": true,
+               "type": {
+                "array": "string"
+               }
+              },
+              "title": {
+               "optional": true,
+               "type": "string"
+              },
+              "updatedAt": {
+               "optional": false,
+               "type": "number"
+              }
+             }
+            }
+           }
+          },
+          "preferences": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "content": {
+               "optional": false,
+               "type": "string"
+              },
+              "contentHash": {
+               "optional": false,
+               "type": "string"
+              },
+              "createdAt": {
+               "optional": false,
+               "type": "number"
+              },
+              "id": {
+               "optional": false,
+               "type": "string"
+              },
+              "kind": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"episode\"",
+                 "\"fact\"",
+                 "\"note\"",
+                 "\"preference\""
+                ]
+               }
+              },
+              "tags": {
+               "optional": true,
+               "type": {
+                "array": "string"
+               }
+              },
+              "title": {
+               "optional": true,
+               "type": "string"
+              },
+              "updatedAt": {
+               "optional": false,
+               "type": "number"
+              }
+             }
+            }
+           }
+          },
+          "profile": {
+           "optional": false,
+           "type": {
+            "object": {
+             "dynamic": {
+              "optional": false,
+              "type": "string"
+             },
+             "static": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "user.memory.resolve": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "clientId": {
+           "optional": false,
+           "type": "string"
+          },
+          "ids": {
+           "optional": false,
+           "type": {
+            "array": "string"
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "array": {
+          "union": [
+           {
+            "object": {
+             "byUser": {
+              "optional": false,
+              "type": "boolean"
+             },
+             "gone": {
+              "optional": false,
+              "type": "true"
+             },
+             "id": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           },
+           {
+            "object": {
+             "id": {
+              "optional": false,
+              "type": "string"
+             },
+             "memory": {
+              "optional": false,
+              "type": {
+               "object": {
+                "content": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "contentHash": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "createdAt": {
+                 "optional": false,
+                 "type": "number"
+                },
+                "id": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "kind": {
+                 "optional": false,
+                 "type": {
+                  "union": [
+                   "\"episode\"",
+                   "\"fact\"",
+                   "\"note\"",
+                   "\"preference\""
+                  ]
+                 }
+                },
+                "tags": {
+                 "optional": true,
+                 "type": {
+                  "array": "string"
+                 }
+                },
+                "title": {
+                 "optional": true,
+                 "type": "string"
+                },
+                "updatedAt": {
+                 "optional": false,
+                 "type": "number"
+                }
+               }
+              }
+             }
+            }
+           }
+          ]
+         }
+        }
+       }
+      }
+     }
+    },
+    "user.memory.search": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "clientId": {
+           "optional": false,
+           "type": "string"
+          },
+          "includeForgotten": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "injection": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "k": {
+           "optional": false,
+           "type": "number"
+          },
+          "query": {
+           "optional": false,
+           "type": "string"
+          },
+          "since": {
+           "optional": true,
+           "type": "number"
+          },
+          "tiers": {
+           "optional": false,
+           "type": {
+            "array": {
+             "union": [
+              "\"global\"",
+              "\"note\""
+             ]
+            }
+           }
+          },
+          "until": {
+           "optional": true,
+           "type": "number"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "array": {
+          "object": {
+           "content": {
+            "optional": false,
+            "type": "string"
+           },
+           "contentHash": {
+            "optional": false,
+            "type": "string"
+           },
+           "createdAt": {
+            "optional": false,
+            "type": "number"
+           },
+           "fullAllowed": {
+            "optional": true,
+            "type": "boolean"
+           },
+           "id": {
+            "optional": false,
+            "type": "string"
+           },
+           "kind": {
+            "optional": false,
+            "type": {
+             "union": [
+              "\"episode\"",
+              "\"fact\"",
+              "\"note\"",
+              "\"preference\""
+             ]
+            }
+           },
+           "matchedTerms": {
+            "optional": true,
+            "type": {
+             "array": "string"
+            }
+           },
+           "tags": {
+            "optional": true,
+            "type": {
+             "array": "string"
+            }
+           },
+           "title": {
+            "optional": true,
+            "type": "string"
+           },
+           "updatedAt": {
+            "optional": false,
+            "type": "number"
            }
           }
          }
@@ -1871,6 +2579,10 @@
          "object": {
           "chatViewId": {
            "optional": false,
+           "type": "string"
+          },
+          "url": {
+           "optional": true,
            "type": "string"
           }
          }
@@ -2949,6 +3661,40 @@
       }
      }
     },
+    "e2e.clientNetworkAnswers": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "answers": {
+           "optional": false,
+           "type": {
+            "object": {},
+            "index": [
+             {
+              "key": "string",
+              "value": {
+               "array": {
+                "array": "string"
+               }
+              }
+             }
+            ]
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
     "e2e.fakeVoice": {
      "optional": false,
      "type": {
@@ -3281,6 +4027,50 @@
        "result": {
         "optional": false,
         "type": "void"
+       }
+      }
+     }
+    },
+    "memory.deliverHeld": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "queueId": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "boolean"
+       }
+      }
+     }
+    },
+    "memory.discardHeld": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "queueId": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "boolean"
        }
       }
      }
@@ -3970,6 +4760,134 @@
       }
      }
     },
+    "user.browser.release": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "agentScope": {
+           "optional": true,
+           "type": {
+            "object": {
+             "closeTabs": {
+              "optional": false,
+              "type": "boolean"
+             },
+             "discard": {
+              "optional": true,
+              "type": "boolean"
+             },
+             "scope": {
+              "optional": false,
+              "type": "string"
+             },
+             "viewId": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "authority": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "user.browser.tool": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "authority": {
+           "optional": false,
+           "type": "string"
+          },
+          "input": {
+           "optional": false,
+           "type": "unknown"
+          },
+          "scope": {
+           "optional": false,
+           "type": "string"
+          },
+          "tool": {
+           "optional": false,
+           "type": "string"
+          },
+          "viewId": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "content": {
+           "optional": false,
+           "type": {
+            "array": {
+             "variants": "type",
+             "of": {
+              "\"image\"": {
+               "object": {
+                "data": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "mimeType": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "type": {
+                 "optional": false,
+                 "type": "\"image\""
+                }
+               }
+              },
+              "\"text\"": {
+               "object": {
+                "text": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "type": {
+                 "optional": false,
+                 "type": "\"text\""
+                }
+               }
+              }
+             }
+            }
+           }
+          },
+          "isError": {
+           "optional": true,
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
     "user.clientAuth": {
      "optional": false,
      "type": {
@@ -4110,6 +5028,614 @@
        "result": {
         "optional": false,
         "type": "void"
+       }
+      }
+     }
+    },
+    "user.mcp.call": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "args": {
+           "optional": false,
+           "type": {
+            "object": {},
+            "index": [
+             {
+              "key": "string",
+              "value": "unknown"
+             }
+            ]
+           }
+          },
+          "server": {
+           "optional": false,
+           "type": "string"
+          },
+          "tool": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "unknown"
+       }
+      }
+     }
+    },
+    "user.mcp.readResource": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "server": {
+           "optional": false,
+           "type": "string"
+          },
+          "uri": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "unknown"
+       }
+      }
+     }
+    },
+    "user.mcp.resources": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "cursor": {
+           "optional": true,
+           "type": "string"
+          },
+          "kind": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"resources\"",
+             "\"templates\""
+            ]
+           }
+          },
+          "server": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "unknown"
+       }
+      }
+     }
+    },
+    "user.mcp.servers": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "ref": "object"
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "array": {
+          "object": {
+           "description": {
+            "optional": true,
+            "type": "string"
+           },
+           "name": {
+            "optional": false,
+            "type": "string"
+           },
+           "resources": {
+            "optional": false,
+            "type": "boolean"
+           },
+           "timeoutMs": {
+            "optional": true,
+            "type": "number"
+           },
+           "tools": {
+            "optional": false,
+            "type": {
+             "array": {
+              "object": {
+               "annotations": {
+                "optional": true,
+                "type": {
+                 "object": {
+                  "destructiveHint": {
+                   "optional": true,
+                   "type": "boolean"
+                  },
+                  "idempotentHint": {
+                   "optional": true,
+                   "type": "boolean"
+                  },
+                  "openWorldHint": {
+                   "optional": true,
+                   "type": "boolean"
+                  },
+                  "readOnlyHint": {
+                   "optional": true,
+                   "type": "boolean"
+                  }
+                 }
+                }
+               },
+               "description": {
+                "optional": true,
+                "type": "string"
+               },
+               "exposure": {
+                "optional": true,
+                "type": {
+                 "union": [
+                  "\"deferred\"",
+                  "\"direct\""
+                 ]
+                }
+               },
+               "inputSchema": {
+                "optional": true,
+                "type": "unknown"
+               },
+               "name": {
+                "optional": false,
+                "type": "string"
+               },
+               "title": {
+                "optional": true,
+                "type": "string"
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "user.memory.apply": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "writes": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "content": {
+               "optional": false,
+               "type": "string"
+              },
+              "kind": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"episode\"",
+                 "\"fact\"",
+                 "\"note\"",
+                 "\"preference\""
+                ]
+               }
+              },
+              "tags": {
+               "optional": true,
+               "type": {
+                "array": "string"
+               }
+              },
+              "title": {
+               "optional": true,
+               "type": "string"
+              },
+              "uuid": {
+               "optional": false,
+               "type": "string"
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "applied": {
+           "optional": false,
+           "type": "number"
+          },
+          "ids": {
+           "optional": true,
+           "type": {
+            "array": "string"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "user.memory.profile": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "ref": "object"
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "pinned": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "content": {
+               "optional": false,
+               "type": "string"
+              },
+              "contentHash": {
+               "optional": false,
+               "type": "string"
+              },
+              "createdAt": {
+               "optional": false,
+               "type": "number"
+              },
+              "id": {
+               "optional": false,
+               "type": "string"
+              },
+              "kind": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"episode\"",
+                 "\"fact\"",
+                 "\"note\"",
+                 "\"preference\""
+                ]
+               }
+              },
+              "tags": {
+               "optional": true,
+               "type": {
+                "array": "string"
+               }
+              },
+              "title": {
+               "optional": true,
+               "type": "string"
+              },
+              "updatedAt": {
+               "optional": false,
+               "type": "number"
+              }
+             }
+            }
+           }
+          },
+          "preferences": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "content": {
+               "optional": false,
+               "type": "string"
+              },
+              "contentHash": {
+               "optional": false,
+               "type": "string"
+              },
+              "createdAt": {
+               "optional": false,
+               "type": "number"
+              },
+              "id": {
+               "optional": false,
+               "type": "string"
+              },
+              "kind": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"episode\"",
+                 "\"fact\"",
+                 "\"note\"",
+                 "\"preference\""
+                ]
+               }
+              },
+              "tags": {
+               "optional": true,
+               "type": {
+                "array": "string"
+               }
+              },
+              "title": {
+               "optional": true,
+               "type": "string"
+              },
+              "updatedAt": {
+               "optional": false,
+               "type": "number"
+              }
+             }
+            }
+           }
+          },
+          "profile": {
+           "optional": false,
+           "type": {
+            "object": {
+             "dynamic": {
+              "optional": false,
+              "type": "string"
+             },
+             "static": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "user.memory.resolve": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "ids": {
+           "optional": false,
+           "type": {
+            "array": "string"
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "array": {
+          "union": [
+           {
+            "object": {
+             "byUser": {
+              "optional": false,
+              "type": "boolean"
+             },
+             "gone": {
+              "optional": false,
+              "type": "true"
+             },
+             "id": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           },
+           {
+            "object": {
+             "id": {
+              "optional": false,
+              "type": "string"
+             },
+             "memory": {
+              "optional": false,
+              "type": {
+               "object": {
+                "content": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "contentHash": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "createdAt": {
+                 "optional": false,
+                 "type": "number"
+                },
+                "id": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "kind": {
+                 "optional": false,
+                 "type": {
+                  "union": [
+                   "\"episode\"",
+                   "\"fact\"",
+                   "\"note\"",
+                   "\"preference\""
+                  ]
+                 }
+                },
+                "tags": {
+                 "optional": true,
+                 "type": {
+                  "array": "string"
+                 }
+                },
+                "title": {
+                 "optional": true,
+                 "type": "string"
+                },
+                "updatedAt": {
+                 "optional": false,
+                 "type": "number"
+                }
+               }
+              }
+             }
+            }
+           }
+          ]
+         }
+        }
+       }
+      }
+     }
+    },
+    "user.memory.search": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "includeForgotten": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "injection": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "k": {
+           "optional": false,
+           "type": "number"
+          },
+          "query": {
+           "optional": false,
+           "type": "string"
+          },
+          "since": {
+           "optional": true,
+           "type": "number"
+          },
+          "tiers": {
+           "optional": false,
+           "type": {
+            "array": {
+             "union": [
+              "\"global\"",
+              "\"note\""
+             ]
+            }
+           }
+          },
+          "until": {
+           "optional": true,
+           "type": "number"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "array": {
+          "object": {
+           "content": {
+            "optional": false,
+            "type": "string"
+           },
+           "contentHash": {
+            "optional": false,
+            "type": "string"
+           },
+           "createdAt": {
+            "optional": false,
+            "type": "number"
+           },
+           "fullAllowed": {
+            "optional": true,
+            "type": "boolean"
+           },
+           "id": {
+            "optional": false,
+            "type": "string"
+           },
+           "kind": {
+            "optional": false,
+            "type": {
+             "union": [
+              "\"episode\"",
+              "\"fact\"",
+              "\"note\"",
+              "\"preference\""
+             ]
+            }
+           },
+           "matchedTerms": {
+            "optional": true,
+            "type": {
+             "array": "string"
+            }
+           },
+           "tags": {
+            "optional": true,
+            "type": {
+             "array": "string"
+            }
+           },
+           "title": {
+            "optional": true,
+            "type": "string"
+           },
+           "updatedAt": {
+            "optional": false,
+            "type": "number"
+           }
+          }
+         }
+        }
        }
       }
      }
@@ -5055,6 +6581,27 @@
       }
      }
     },
+    "ports.urlSeen": {
+     "optional": false,
+     "type": {
+      "object": {
+       "host": {
+        "optional": false,
+        "type": {
+         "union": [
+          "\"0.0.0.0\"",
+          "\"127.0.0.1\"",
+          "\"localhost\""
+         ]
+        }
+       },
+       "port": {
+        "optional": false,
+        "type": "number"
+       }
+      }
+     }
+    },
     "scm.changed": {
      "optional": false,
      "type": {
@@ -5098,6 +6645,12 @@
       "ref": "object"
      }
     },
+    "user.mcpChanged": {
+     "optional": false,
+     "type": {
+      "ref": "object"
+     }
+    },
     "window.openAppSettings": {
      "optional": false,
      "type": {
@@ -5119,6 +6672,10 @@
           "\"xai\""
          ]
         }
+       },
+       "scope": {
+        "optional": true,
+        "type": "\"machine\""
        },
        "section": {
         "optional": true,
@@ -5386,6 +6943,34 @@
            "projectScope": {
             "optional": false,
             "type": "boolean"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "heldMemory": {
+     "optional": false,
+     "type": {
+      "object": {
+       "queues": {
+        "optional": false,
+        "type": {
+         "array": {
+          "object": {
+           "count": {
+            "optional": false,
+            "type": "number"
+           },
+           "lastSeen": {
+            "optional": false,
+            "type": "number"
+           },
+           "queueId": {
+            "optional": false,
+            "type": "string"
            }
           }
          }
@@ -5759,6 +7344,127 @@
           }
          }
         }
+       }
+      }
+     }
+    },
+    "clientMcp": {
+     "optional": false,
+     "type": {
+      "object": {
+       "clientId": {
+        "optional": true,
+        "type": "string"
+       },
+       "value": {
+        "optional": true,
+        "type": {
+         "object": {
+          "servers": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "description": {
+               "optional": true,
+               "type": "string"
+              },
+              "name": {
+               "optional": false,
+               "type": "string"
+              },
+              "resources": {
+               "optional": false,
+               "type": "boolean"
+              },
+              "timeoutMs": {
+               "optional": true,
+               "type": "number"
+              },
+              "tools": {
+               "optional": false,
+               "type": {
+                "array": {
+                 "object": {
+                  "annotations": {
+                   "optional": true,
+                   "type": {
+                    "object": {
+                     "destructiveHint": {
+                      "optional": true,
+                      "type": "boolean"
+                     },
+                     "idempotentHint": {
+                      "optional": true,
+                      "type": "boolean"
+                     },
+                     "openWorldHint": {
+                      "optional": true,
+                      "type": "boolean"
+                     },
+                     "readOnlyHint": {
+                      "optional": true,
+                      "type": "boolean"
+                     }
+                    }
+                   }
+                  },
+                  "description": {
+                   "optional": true,
+                   "type": "string"
+                  },
+                  "exposure": {
+                   "optional": true,
+                   "type": {
+                    "union": [
+                     "\"deferred\"",
+                     "\"direct\""
+                    ]
+                   }
+                  },
+                  "inputSchema": {
+                   "optional": true,
+                   "type": "unknown"
+                  },
+                  "name": {
+                   "optional": false,
+                   "type": "string"
+                  },
+                  "title": {
+                   "optional": true,
+                   "type": "string"
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "clientNetwork": {
+     "optional": false,
+     "type": {
+      "object": {
+       "allowLocalNetwork": {
+        "optional": false,
+        "type": "boolean"
+       },
+       "allowedPorts": {
+        "optional": false,
+        "type": {
+         "array": "number"
+        }
+       },
+       "authority": {
+        "optional": false,
+        "type": "string"
        }
       }
      }
@@ -6574,6 +8280,128 @@
          ]
         }
        },
+       "clientMcp": {
+        "optional": true,
+        "type": {
+         "object": {},
+         "index": [
+          {
+           "key": "string",
+           "value": {
+            "object": {
+             "servers": {
+              "optional": false,
+              "type": {
+               "array": {
+                "object": {
+                 "description": {
+                  "optional": true,
+                  "type": "string"
+                 },
+                 "name": {
+                  "optional": false,
+                  "type": "string"
+                 },
+                 "resources": {
+                  "optional": false,
+                  "type": "boolean"
+                 },
+                 "timeoutMs": {
+                  "optional": true,
+                  "type": "number"
+                 },
+                 "tools": {
+                  "optional": false,
+                  "type": {
+                   "array": {
+                    "object": {
+                     "annotations": {
+                      "optional": true,
+                      "type": {
+                       "object": {
+                        "destructiveHint": {
+                         "optional": true,
+                         "type": "boolean"
+                        },
+                        "idempotentHint": {
+                         "optional": true,
+                         "type": "boolean"
+                        },
+                        "openWorldHint": {
+                         "optional": true,
+                         "type": "boolean"
+                        },
+                        "readOnlyHint": {
+                         "optional": true,
+                         "type": "boolean"
+                        }
+                       }
+                      }
+                     },
+                     "description": {
+                      "optional": true,
+                      "type": "string"
+                     },
+                     "exposure": {
+                      "optional": true,
+                      "type": {
+                       "union": [
+                        "\"deferred\"",
+                        "\"direct\""
+                       ]
+                      }
+                     },
+                     "inputSchema": {
+                      "optional": true,
+                      "type": "unknown"
+                     },
+                     "name": {
+                      "optional": false,
+                      "type": "string"
+                     },
+                     "title": {
+                      "optional": true,
+                      "type": "string"
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         ]
+        }
+       },
+       "clientNetwork": {
+        "optional": true,
+        "type": {
+         "object": {},
+         "index": [
+          {
+           "key": "string",
+           "value": {
+            "object": {
+             "allowLocalNetwork": {
+              "optional": false,
+              "type": "boolean"
+             },
+             "allowedPorts": {
+              "optional": false,
+              "type": {
+               "array": "number"
+              }
+             }
+            }
+           }
+          }
+         ]
+        }
+       },
        "clientPolicy": {
         "optional": false,
         "type": {
@@ -6900,6 +8728,10 @@
          }
         }
        },
+       "remoteMirrors": {
+        "optional": true,
+        "type": "string"
+       },
        "resourceRoot": {
         "optional": false,
         "type": "string"
@@ -7028,6 +8860,120 @@
               "union": [
                "\"failed\"",
                "\"missing\""
+              ]
+             }
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "files.clashes": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "names": {
+           "optional": false,
+           "type": {
+            "array": "string"
+           }
+          },
+          "project": {
+           "optional": false,
+           "type": {
+            "object": {
+             "fsPath": {
+              "optional": false,
+              "type": "string"
+             },
+             "key": {
+              "optional": false,
+              "type": "string"
+             },
+             "name": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "relativeDir": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "clashes": {
+             "optional": false,
+             "type": {
+              "array": {
+               "union": [
+                "null",
+                {
+                 "object": {
+                  "kind": {
+                   "optional": false,
+                   "type": {
+                    "union": [
+                     "\"dir\"",
+                     "\"file\"",
+                     "\"link\"",
+                     "\"other\""
+                    ]
+                   }
+                  },
+                  "name": {
+                   "optional": false,
+                   "type": "string"
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            "ok": {
+             "optional": false,
+             "type": "true"
+            }
+           }
+          },
+          {
+           "object": {
+            "code": {
+             "optional": true,
+             "type": "string"
+            },
+            "message": {
+             "optional": true,
+             "type": "string"
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"failed\"",
+               "\"missing\"",
+               "\"notFolder\"",
+               "\"outside\""
               ]
              }
             }
@@ -7178,6 +9124,124 @@
             "path": {
              "optional": false,
              "type": "string"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "files.copy": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "from": {
+           "optional": false,
+           "type": {
+            "object": {
+             "fsPath": {
+              "optional": false,
+              "type": "string"
+             },
+             "key": {
+              "optional": false,
+              "type": "string"
+             },
+             "name": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "name": {
+           "optional": false,
+           "type": "string"
+          },
+          "relativePath": {
+           "optional": false,
+           "type": "string"
+          },
+          "replace": {
+           "optional": false,
+           "type": "boolean"
+          },
+          "to": {
+           "optional": false,
+           "type": {
+            "object": {
+             "fsPath": {
+              "optional": false,
+              "type": "string"
+             },
+             "key": {
+              "optional": false,
+              "type": "string"
+             },
+             "name": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "toDir": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "code": {
+             "optional": true,
+             "type": "string"
+            },
+            "message": {
+             "optional": true,
+             "type": "string"
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"changed\"",
+               "\"exists\"",
+               "\"failed\"",
+               "\"incomplete\"",
+               "\"intoItself\"",
+               "\"invalidName\"",
+               "\"missing\"",
+               "\"notAFile\"",
+               "\"notEmpty\"",
+               "\"notFolder\"",
+               "\"outside\"",
+               "\"unsupported\""
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "true"
             }
            }
           }
@@ -7510,6 +9574,332 @@
       }
      }
     },
+    "files.makeFolder": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "mode": {
+           "optional": true,
+           "type": "number"
+          },
+          "name": {
+           "optional": false,
+           "type": "string"
+          },
+          "project": {
+           "optional": false,
+           "type": {
+            "object": {
+             "fsPath": {
+              "optional": false,
+              "type": "string"
+             },
+             "key": {
+              "optional": false,
+              "type": "string"
+             },
+             "name": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "relativeDir": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "code": {
+             "optional": true,
+             "type": "string"
+            },
+            "message": {
+             "optional": true,
+             "type": "string"
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"changed\"",
+               "\"exists\"",
+               "\"failed\"",
+               "\"incomplete\"",
+               "\"intoItself\"",
+               "\"invalidName\"",
+               "\"missing\"",
+               "\"notAFile\"",
+               "\"notEmpty\"",
+               "\"notFolder\"",
+               "\"outside\"",
+               "\"unsupported\""
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "true"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "files.makeLink": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "name": {
+           "optional": false,
+           "type": "string"
+          },
+          "project": {
+           "optional": false,
+           "type": {
+            "object": {
+             "fsPath": {
+              "optional": false,
+              "type": "string"
+             },
+             "key": {
+              "optional": false,
+              "type": "string"
+             },
+             "name": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "relativeDir": {
+           "optional": false,
+           "type": "string"
+          },
+          "replace": {
+           "optional": false,
+           "type": "boolean"
+          },
+          "target": {
+           "optional": false,
+           "type": "string"
+          },
+          "within": {
+           "optional": true,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "code": {
+             "optional": true,
+             "type": "string"
+            },
+            "message": {
+             "optional": true,
+             "type": "string"
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"changed\"",
+               "\"exists\"",
+               "\"failed\"",
+               "\"incomplete\"",
+               "\"intoItself\"",
+               "\"invalidName\"",
+               "\"missing\"",
+               "\"notAFile\"",
+               "\"notEmpty\"",
+               "\"notFolder\"",
+               "\"outside\"",
+               "\"unsupported\""
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "true"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "files.move": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "from": {
+           "optional": false,
+           "type": {
+            "object": {
+             "fsPath": {
+              "optional": false,
+              "type": "string"
+             },
+             "key": {
+              "optional": false,
+              "type": "string"
+             },
+             "name": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "name": {
+           "optional": false,
+           "type": "string"
+          },
+          "relativePath": {
+           "optional": false,
+           "type": "string"
+          },
+          "replace": {
+           "optional": false,
+           "type": "boolean"
+          },
+          "to": {
+           "optional": false,
+           "type": {
+            "object": {
+             "fsPath": {
+              "optional": false,
+              "type": "string"
+             },
+             "key": {
+              "optional": false,
+              "type": "string"
+             },
+             "name": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "toDir": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "code": {
+             "optional": true,
+             "type": "string"
+            },
+            "message": {
+             "optional": true,
+             "type": "string"
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"changed\"",
+               "\"exists\"",
+               "\"failed\"",
+               "\"incomplete\"",
+               "\"intoItself\"",
+               "\"invalidName\"",
+               "\"missing\"",
+               "\"notAFile\"",
+               "\"notEmpty\"",
+               "\"notFolder\"",
+               "\"outside\"",
+               "\"unsupported\""
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "left": {
+             "optional": false,
+             "type": {
+              "array": "string"
+             }
+            },
+            "leftMore": {
+             "optional": true,
+             "type": "number"
+            },
+            "ok": {
+             "optional": false,
+             "type": "true"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
     "files.mtimes": {
      "optional": false,
      "type": {
@@ -7727,6 +10117,89 @@
       }
      }
     },
+    "files.readFile": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "project": {
+           "optional": false,
+           "type": {
+            "object": {
+             "fsPath": {
+              "optional": false,
+              "type": "string"
+             },
+             "key": {
+              "optional": false,
+              "type": "string"
+             },
+             "name": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "relativePath": {
+           "optional": false,
+           "type": "string"
+          },
+          "stream": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "code": {
+             "optional": true,
+             "type": "string"
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"failed\"",
+               "\"missing\"",
+               "\"notAFile\"",
+               "\"outside\""
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "true"
+            },
+            "size": {
+             "optional": false,
+             "type": "number"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
     "files.readHostSettings": {
      "optional": false,
      "type": {
@@ -7895,6 +10368,223 @@
       }
      }
     },
+    "files.receiveFile": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "mode": {
+           "optional": false,
+           "type": "number"
+          },
+          "mtimeMs": {
+           "optional": false,
+           "type": "number"
+          },
+          "name": {
+           "optional": false,
+           "type": "string"
+          },
+          "project": {
+           "optional": false,
+           "type": {
+            "object": {
+             "fsPath": {
+              "optional": false,
+              "type": "string"
+             },
+             "key": {
+              "optional": false,
+              "type": "string"
+             },
+             "name": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "relativeDir": {
+           "optional": false,
+           "type": "string"
+          },
+          "replace": {
+           "optional": false,
+           "type": "boolean"
+          },
+          "size": {
+           "optional": false,
+           "type": "number"
+          },
+          "stream": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "code": {
+             "optional": true,
+             "type": "string"
+            },
+            "message": {
+             "optional": true,
+             "type": "string"
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"changed\"",
+               "\"exists\"",
+               "\"failed\"",
+               "\"incomplete\"",
+               "\"intoItself\"",
+               "\"invalidName\"",
+               "\"missing\"",
+               "\"notAFile\"",
+               "\"notEmpty\"",
+               "\"notFolder\"",
+               "\"outside\"",
+               "\"unsupported\""
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "true"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "files.removeFolder": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "confirmed": {
+           "optional": false,
+           "type": {
+            "object": {
+             "birthtimeNs": {
+              "optional": false,
+              "type": "string"
+             },
+             "dev": {
+              "optional": false,
+              "type": "string"
+             },
+             "ino": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "project": {
+           "optional": false,
+           "type": {
+            "object": {
+             "fsPath": {
+              "optional": false,
+              "type": "string"
+             },
+             "key": {
+              "optional": false,
+              "type": "string"
+             },
+             "name": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "relativePath": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "code": {
+             "optional": true,
+             "type": "string"
+            },
+            "message": {
+             "optional": true,
+             "type": "string"
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"changed\"",
+               "\"exists\"",
+               "\"failed\"",
+               "\"incomplete\"",
+               "\"intoItself\"",
+               "\"invalidName\"",
+               "\"missing\"",
+               "\"notAFile\"",
+               "\"notEmpty\"",
+               "\"notFolder\"",
+               "\"outside\"",
+               "\"unsupported\""
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "true"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
     "files.renameEntry": {
      "optional": false,
      "type": {
@@ -8014,6 +10704,334 @@
        "result": {
         "optional": false,
         "type": "void"
+       }
+      }
+     }
+    },
+    "files.verifyLink": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "project": {
+           "optional": false,
+           "type": {
+            "object": {
+             "fsPath": {
+              "optional": false,
+              "type": "string"
+             },
+             "key": {
+              "optional": false,
+              "type": "string"
+             },
+             "name": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "relativePath": {
+           "optional": false,
+           "type": "string"
+          },
+          "within": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "code": {
+             "optional": true,
+             "type": "string"
+            },
+            "message": {
+             "optional": true,
+             "type": "string"
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"changed\"",
+               "\"exists\"",
+               "\"failed\"",
+               "\"incomplete\"",
+               "\"intoItself\"",
+               "\"invalidName\"",
+               "\"missing\"",
+               "\"notAFile\"",
+               "\"notEmpty\"",
+               "\"notFolder\"",
+               "\"outside\"",
+               "\"unsupported\""
+              ]
+             }
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "true"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "files.walk": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "project": {
+           "optional": false,
+           "type": {
+            "object": {
+             "fsPath": {
+              "optional": false,
+              "type": "string"
+             },
+             "key": {
+              "optional": false,
+              "type": "string"
+             },
+             "name": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          },
+          "relativePath": {
+           "optional": false,
+           "type": "string"
+          },
+          "walkId": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "done": {
+           "optional": false,
+           "type": "boolean"
+          },
+          "entries": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "error": {
+               "optional": true,
+               "type": "string"
+              },
+              "identity": {
+               "optional": false,
+               "type": {
+                "object": {
+                 "birthtimeNs": {
+                  "optional": false,
+                  "type": "string"
+                 },
+                 "dev": {
+                  "optional": false,
+                  "type": "string"
+                 },
+                 "ino": {
+                  "optional": false,
+                  "type": "string"
+                 }
+                }
+               }
+              },
+              "kind": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"dir\"",
+                 "\"file\"",
+                 "\"link\"",
+                 "\"other\""
+                ]
+               }
+              },
+              "linkTarget": {
+               "optional": true,
+               "type": "string"
+              },
+              "mode": {
+               "optional": false,
+               "type": "number"
+              },
+              "mtimeMs": {
+               "optional": false,
+               "type": "number"
+              },
+              "relativePath": {
+               "optional": false,
+               "type": "string"
+              },
+              "size": {
+               "optional": false,
+               "type": "number"
+              },
+              "unreadable": {
+               "optional": true,
+               "type": "string"
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "files.walkEnd": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "walkId": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "files.walkNext": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "walkId": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "done": {
+           "optional": false,
+           "type": "boolean"
+          },
+          "entries": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "error": {
+               "optional": true,
+               "type": "string"
+              },
+              "identity": {
+               "optional": false,
+               "type": {
+                "object": {
+                 "birthtimeNs": {
+                  "optional": false,
+                  "type": "string"
+                 },
+                 "dev": {
+                  "optional": false,
+                  "type": "string"
+                 },
+                 "ino": {
+                  "optional": false,
+                  "type": "string"
+                 }
+                }
+               }
+              },
+              "kind": {
+               "optional": false,
+               "type": {
+                "union": [
+                 "\"dir\"",
+                 "\"file\"",
+                 "\"link\"",
+                 "\"other\""
+                ]
+               }
+              },
+              "linkTarget": {
+               "optional": true,
+               "type": "string"
+              },
+              "mode": {
+               "optional": false,
+               "type": "number"
+              },
+              "mtimeMs": {
+               "optional": false,
+               "type": "number"
+              },
+              "relativePath": {
+               "optional": false,
+               "type": "string"
+              },
+              "size": {
+               "optional": false,
+               "type": "number"
+              },
+              "unreadable": {
+               "optional": true,
+               "type": "string"
+              }
+             }
+            }
+           }
+          }
+         }
+        }
        }
       }
      }
@@ -9692,8 +12710,218 @@
     }
    }
   },
+  "WorkspaceToClientRequests": {
+   "object": {
+    "cli.request": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "projectKey": {
+           "optional": true,
+           "type": "string"
+          },
+          "request": {
+           "optional": false,
+           "type": {
+            "variants": "kind",
+            "of": {
+             "\"diff\"": {
+              "object": {
+               "cwd": {
+                "optional": false,
+                "type": "string"
+               },
+               "kind": {
+                "optional": false,
+                "type": "\"diff\""
+               },
+               "left": {
+                "optional": false,
+                "type": "string"
+               },
+               "right": {
+                "optional": false,
+                "type": "string"
+               },
+               "wait": {
+                "optional": false,
+                "type": "boolean"
+               }
+              }
+             },
+             "\"open\"": {
+              "object": {
+               "cwd": {
+                "optional": false,
+                "type": "string"
+               },
+               "items": {
+                "optional": false,
+                "type": {
+                 "array": {
+                  "object": {
+                   "column": {
+                    "optional": true,
+                    "type": "number"
+                   },
+                   "line": {
+                    "optional": true,
+                    "type": "number"
+                   },
+                   "path": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 }
+                }
+               },
+               "kind": {
+                "optional": false,
+                "type": "\"open\""
+               },
+               "wait": {
+                "optional": false,
+                "type": "boolean"
+               }
+              }
+             },
+             "\"openExternal\"": {
+              "object": {
+               "kind": {
+                "optional": false,
+                "type": "\"openExternal\""
+               },
+               "url": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             },
+             "\"status\"": {
+              "object": {
+               "kind": {
+                "optional": false,
+                "type": "\"status\""
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "message": {
+             "optional": false,
+             "type": "string"
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "true"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "ControlRequests": {
    "object": {
+    "agent.connect": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "request": {
+           "optional": false,
+           "type": "number"
+          },
+          "stream": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "ok": {
+           "optional": false,
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "agent.refuse": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "request": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "agent.relay": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "ref": "object"
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
     "attach": {
      "optional": false,
      "type": {
@@ -10083,6 +13311,525 @@
           "restarts": {
            "optional": false,
            "type": "number"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "containers.config": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "folder": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "configPath": {
+           "optional": false,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "containers.copyPackage": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "containerId": {
+           "optional": false,
+           "type": "string"
+          },
+          "engine": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"docker\"",
+             "\"podman\""
+            ]
+           }
+          },
+          "file": {
+           "optional": false,
+           "type": "string"
+          },
+          "folder": {
+           "optional": false,
+           "type": "string"
+          },
+          "sha256": {
+           "optional": false,
+           "type": "string"
+          },
+          "size": {
+           "optional": false,
+           "type": "number"
+          },
+          "url": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "result": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"copied\"",
+             "\"engineMissing\"",
+             "\"notCopied\""
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "containers.exec": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "containerId": {
+           "optional": false,
+           "type": "string"
+          },
+          "engine": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"docker\"",
+             "\"podman\""
+            ]
+           }
+          },
+          "stream": {
+           "optional": false,
+           "type": "number"
+          },
+          "user": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "variants": "result",
+         "of": {
+          "\"engineMissing\"": {
+           "object": {
+            "result": {
+             "optional": false,
+             "type": "\"engineMissing\""
+            }
+           }
+          },
+          "\"started\"": {
+           "object": {
+            "result": {
+             "optional": false,
+             "type": "\"started\""
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "containers.inspect": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "engine": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"docker\"",
+             "\"podman\""
+            ]
+           }
+          },
+          "ids": {
+           "optional": false,
+           "type": {
+            "array": "string"
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "variants": "result",
+         "of": {
+          "\"engineMissing\"": {
+           "object": {
+            "result": {
+             "optional": false,
+             "type": "\"engineMissing\""
+            }
+           }
+          },
+          "\"ran\"": {
+           "object": {
+            "code": {
+             "optional": false,
+             "type": {
+              "union": [
+               "null",
+               "number"
+              ]
+             }
+            },
+            "result": {
+             "optional": false,
+             "type": "\"ran\""
+            },
+            "stderr": {
+             "optional": false,
+             "type": "string"
+            },
+            "stdout": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "containers.list": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "engine": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"docker\"",
+             "\"podman\""
+            ]
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "variants": "result",
+         "of": {
+          "\"engineMissing\"": {
+           "object": {
+            "result": {
+             "optional": false,
+             "type": "\"engineMissing\""
+            }
+           }
+          },
+          "\"ran\"": {
+           "object": {
+            "code": {
+             "optional": false,
+             "type": {
+              "union": [
+               "null",
+               "number"
+              ]
+             }
+            },
+            "result": {
+             "optional": false,
+             "type": "\"ran\""
+            },
+            "stderr": {
+             "optional": false,
+             "type": "string"
+            },
+            "stdout": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "containers.prepareData": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "containerId": {
+           "optional": false,
+           "type": "string"
+          },
+          "engine": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"docker\"",
+             "\"podman\""
+            ]
+           }
+          },
+          "user": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "variants": "result",
+         "of": {
+          "\"engineMissing\"": {
+           "object": {
+            "result": {
+             "optional": false,
+             "type": "\"engineMissing\""
+            }
+           }
+          },
+          "\"ran\"": {
+           "object": {
+            "code": {
+             "optional": false,
+             "type": {
+              "union": [
+               "null",
+               "number"
+              ]
+             }
+            },
+            "result": {
+             "optional": false,
+             "type": "\"ran\""
+            },
+            "stderr": {
+             "optional": false,
+             "type": "string"
+            },
+            "stdout": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "containers.readConfiguration": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "configPath": {
+           "optional": false,
+           "type": "string"
+          },
+          "engine": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"docker\"",
+             "\"podman\""
+            ]
+           }
+          },
+          "stream": {
+           "optional": false,
+           "type": "number"
+          },
+          "trustReadId": {
+           "optional": false,
+           "type": "string"
+          },
+          "workspaceFolder": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "variants": "result",
+         "of": {
+          "\"engineMissing\"": {
+           "object": {
+            "result": {
+             "optional": false,
+             "type": "\"engineMissing\""
+            }
+           }
+          },
+          "\"ran\"": {
+           "object": {
+            "code": {
+             "optional": false,
+             "type": {
+              "union": [
+               "null",
+               "number"
+              ]
+             }
+            },
+            "result": {
+             "optional": false,
+             "type": "\"ran\""
+            },
+            "stdout": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "containers.up": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "configPath": {
+           "optional": false,
+           "type": "string"
+          },
+          "dataKey": {
+           "optional": false,
+           "type": "string"
+          },
+          "engine": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"docker\"",
+             "\"podman\""
+            ]
+           }
+          },
+          "removeExisting": {
+           "optional": false,
+           "type": "boolean"
+          },
+          "stream": {
+           "optional": false,
+           "type": "number"
+          },
+          "workspaceFolder": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "variants": "result",
+         "of": {
+          "\"engineMissing\"": {
+           "object": {
+            "result": {
+             "optional": false,
+             "type": "\"engineMissing\""
+            }
+           }
+          },
+          "\"ran\"": {
+           "object": {
+            "code": {
+             "optional": false,
+             "type": {
+              "union": [
+               "null",
+               "number"
+              ]
+             }
+            },
+            "result": {
+             "optional": false,
+             "type": "\"ran\""
+            },
+            "stdout": {
+             "optional": false,
+             "type": "string"
+            }
+           }
           }
          }
         }
@@ -10535,6 +14282,79 @@
       }
      }
     },
+    "mirror.syncSubcalls": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "budgetBytes": {
+           "optional": false,
+           "type": "number"
+          },
+          "held": {
+           "optional": true,
+           "type": {
+            "object": {
+             "headHash": {
+              "optional": false,
+              "type": "string"
+             },
+             "size": {
+              "optional": false,
+              "type": "number"
+             },
+             "tailHash": {
+              "optional": false,
+              "type": "string"
+             }
+            }
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "change": {
+           "optional": true,
+           "type": {
+            "object": {
+             "kind": {
+              "optional": false,
+              "type": {
+               "union": [
+                "\"append\"",
+                "\"deleted\"",
+                "\"full\""
+               ]
+              }
+             },
+             "length": {
+              "optional": false,
+              "type": "number"
+             },
+             "offset": {
+              "optional": false,
+              "type": "number"
+             },
+             "stream": {
+              "optional": false,
+              "type": "number"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
     "ping": {
      "optional": false,
      "type": {
@@ -10549,6 +14369,34 @@
         "optional": false,
         "type": {
          "ref": "object"
+        }
+       }
+      }
+     }
+    },
+    "portProbe": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "ref": "object"
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "nonce": {
+           "optional": false,
+           "type": "string"
+          },
+          "port": {
+           "optional": false,
+           "type": "number"
+          }
+         }
         }
        }
       }
@@ -10771,6 +14619,17 @@
   },
   "ControlEvents": {
    "object": {
+    "agent.request": {
+     "optional": false,
+     "type": {
+      "object": {
+       "request": {
+        "optional": false,
+        "type": "number"
+       }
+      }
+     }
+    },
     "clients": {
      "optional": false,
      "type": {
@@ -10842,6 +14701,23 @@
         "type": "number"
        }
       }
+     }
+    },
+    "mirror.changed": {
+     "optional": false,
+     "type": {
+      "object": {
+       "projectKey": {
+        "optional": false,
+        "type": "string"
+       }
+      }
+     }
+    },
+    "mirror.subcallsChanged": {
+     "optional": false,
+     "type": {
+      "ref": "object"
      }
     }
    }
@@ -11033,6 +14909,170 @@
        "result": {
         "optional": false,
         "type": "void"
+       }
+      }
+     }
+    }
+   }
+  },
+  "PortsRequests": {
+   "object": {
+    "connect": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "host": {
+           "optional": false,
+           "type": "string"
+          },
+          "port": {
+           "optional": false,
+           "type": "number"
+          },
+          "stream": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "error": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"failed\"",
+               "\"refused\"",
+               "\"unreachable\""
+              ]
+             }
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            }
+           }
+          },
+          {
+           "object": {
+            "ok": {
+             "optional": false,
+             "type": "true"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "watch": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "ref": "object"
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    }
+   }
+  },
+  "PortsEvents": {
+   "object": {
+    "list": {
+     "optional": false,
+     "type": {
+      "object": {
+       "candidates": {
+        "optional": false,
+        "type": {
+         "array": {
+          "object": {
+           "bindAddress": {
+            "optional": false,
+            "type": "string"
+           },
+           "family": {
+            "optional": false,
+            "type": {
+             "union": [
+              "4",
+              "6"
+             ]
+            }
+           },
+           "host": {
+            "optional": false,
+            "type": "string"
+           },
+           "pid": {
+            "optional": true,
+            "type": "number"
+           },
+           "port": {
+            "optional": false,
+            "type": "number"
+           },
+           "process": {
+            "optional": true,
+            "type": {
+             "object": {
+              "command": {
+               "optional": true,
+               "type": "string"
+              },
+              "name": {
+               "optional": false,
+               "type": "string"
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "urlSeen": {
+     "optional": false,
+     "type": {
+      "object": {
+       "host": {
+        "optional": false,
+        "type": "string"
+       },
+       "port": {
+        "optional": false,
+        "type": "number"
+       },
+       "source": {
+        "optional": false,
+        "type": {
+         "union": [
+          "\"agentShell\"",
+          "\"terminal\""
+         ]
+        }
        }
       }
      }
@@ -16749,7 +20789,21 @@
            "optional": false,
            "type": "string"
           },
+          "placement": {
+           "optional": true,
+           "type": {
+            "union": [
+             "\"client\"",
+             "\"host\"",
+             "\"project\""
+            ]
+           }
+          },
           "readonly": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "remoteAvailable": {
            "optional": true,
            "type": "boolean"
           },
@@ -16769,6 +20823,7 @@
             "union": [
              "\"config\"",
              "\"local\"",
+             "\"machine\"",
              "\"project\"",
              "\"user\""
             ]
@@ -16800,6 +20855,7 @@
              "\"damocles\"",
              "\"pi-project\"",
              "\"pi\"",
+             "\"relayed\"",
              "\"workspace\""
             ]
            }
@@ -16879,6 +20935,7 @@
                 "union": [
                  "\"config\"",
                  "\"local\"",
+                 "\"machine\"",
                  "\"project\"",
                  "\"user\""
                 ]
@@ -17803,7 +21860,21 @@
            "optional": false,
            "type": "string"
           },
+          "placement": {
+           "optional": true,
+           "type": {
+            "union": [
+             "\"client\"",
+             "\"host\"",
+             "\"project\""
+            ]
+           }
+          },
           "readonly": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "remoteAvailable": {
            "optional": true,
            "type": "boolean"
           },
@@ -17823,6 +21894,7 @@
             "union": [
              "\"config\"",
              "\"local\"",
+             "\"machine\"",
              "\"project\"",
              "\"user\""
             ]
@@ -17854,6 +21926,7 @@
              "\"damocles\"",
              "\"pi-project\"",
              "\"pi\"",
+             "\"relayed\"",
              "\"workspace\""
             ]
            }
@@ -17933,6 +22006,7 @@
                 "union": [
                  "\"config\"",
                  "\"local\"",
+                 "\"machine\"",
                  "\"project\"",
                  "\"user\""
                 ]
@@ -17960,6 +22034,7 @@
         "array": {
          "union": [
           "\"local\"",
+          "\"machine\"",
           "\"project\"",
           "\"user\""
          ]
@@ -17988,6 +22063,7 @@
               "\"fileServersNotObject\"",
               "\"fileUnparseable\"",
               "\"fileUnreadable\"",
+              "\"hostTabOnly\"",
               "\"invalidDefinition\"",
               "\"nameExists\"",
               "\"nameMissing\"",
@@ -18366,6 +22442,10 @@
            },
            "applied": {
             "optional": false,
+            "type": "number"
+           },
+           "failed": {
+            "optional": true,
             "type": "number"
            },
            "rejected": {
@@ -28813,6 +32893,10 @@
                  ]
                 }
                },
+               "hostId": {
+                "optional": true,
+                "type": "string"
+               },
                "input": {
                 "optional": false,
                 "type": "number"
@@ -28913,6 +32997,10 @@
                   "string"
                  ]
                 }
+               },
+               "hostId": {
+                "optional": true,
+                "type": "string"
                },
                "input": {
                 "optional": false,
@@ -29031,6 +33119,10 @@
                      "string"
                     ]
                    }
+                  },
+                  "hostId": {
+                   "optional": true,
+                   "type": "string"
                   },
                   "key": {
                    "optional": false,
@@ -29248,6 +33340,10 @@
                   "string"
                  ]
                 }
+               },
+               "hostId": {
+                "optional": true,
+                "type": "string"
                },
                "input": {
                 "optional": false,
@@ -32037,6 +36133,22 @@
       }
      }
     },
+    "\"mcpSetRemoteAvailable\"": {
+     "object": {
+      "available": {
+       "optional": false,
+       "type": "boolean"
+      },
+      "serverName": {
+       "optional": false,
+       "type": "string"
+      },
+      "type": {
+       "optional": false,
+       "type": "\"mcpSetRemoteAvailable\""
+      }
+     }
+    },
     "\"mcpSetResourceExposure\"": {
      "object": {
       "exposure": {
@@ -32054,6 +36166,7 @@
        "type": {
         "union": [
          "\"local\"",
+         "\"machine\"",
          "\"project\"",
          "\"user\""
         ]
@@ -32086,6 +36199,7 @@
        "type": {
         "union": [
          "\"local\"",
+         "\"machine\"",
          "\"project\"",
          "\"user\""
         ]
@@ -32441,6 +36555,10 @@
          "\"xai\""
         ]
        }
+      },
+      "scope": {
+       "optional": true,
+       "type": "\"machine\""
       },
       "section": {
        "optional": true,

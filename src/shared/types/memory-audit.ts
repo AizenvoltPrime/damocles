@@ -137,6 +137,8 @@ export interface MemoryAuditApplyResult {
   /** Accepted, but the row or section changed after grading, so nothing was written. */
   stale: number;
   rejected: number;
+  /** Accepted, but its write to the client's global memory failed, so it stays pending; absent when none did. */
+  failed?: number;
 }
 
 export interface MemoryAuditRevertResult {

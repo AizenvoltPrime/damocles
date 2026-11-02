@@ -48,7 +48,7 @@ function attachedClient() {
   const daemonMain = createMainEndpoint(coreLoop.main, quiet);
   const core = createCoreEndpoint(coreLoop.core, quiet);
   const state = createDaemonState(path.join(dir, 'state'), quiet);
-  router = createCoreRouter({ core: daemonMain, state, registry: createRunRegistry(), mirrors: createClientMirrors(), secrets: new Map(), e2eHooks: false, reload: vi.fn(), log: quiet });
+  router = createCoreRouter({ core: daemonMain, state, registry: createRunRegistry(), mirrors: createClientMirrors(), secrets: new Map(), e2eHooks: false, reload: vi.fn(), agentShellUrl: () => undefined, clientPolicyChanged: () => undefined, log: quiet });
   const loop = createLoopback();
   const main = createMainEndpoint(loop.main, quiet, (error) => { throw error; });
   const clientSecrets = new Map<string, string>([...PROVIDER_KEY_SECRETS.map((key): [string, string] => [`remote/h1/${key}`, 'sk-client']), ['remote/h1/mcp.token', 't']]);
@@ -72,6 +72,8 @@ function attachedClient() {
   return { core, state, asked, clientSecrets };
 }
 
+// The user-scope relays are the designed exceptions, checked by main: user.memory.apply and user.mcp.* (user-relays.test.ts), and
+// user.browser.tool, whose profile and saved downloads are under ~/.damocles/browser-profiles/<authority>/ (main/remote's browser-relay.test.ts).
 describe('a daemon\'s core cannot write client files or change client credentials', () => {
   it.each(PROVIDER_KEY_SECRETS)('provider key %s: get answers undefined unasked, store and delete refuse, keys omit it', async (key) => {
     const { core, asked, clientSecrets } = attachedClient();
@@ -123,7 +125,7 @@ describe('a daemon routes credential and transcript requests so no client\'s fil
     const coreActors = createActorContext();
     const core = createCoreEndpoint(coreLoop.core, quiet, undefined, coreActors);
     const state = createDaemonState(path.join(dir, 'state'), quiet);
-    router = createCoreRouter({ core: createMainEndpoint(coreLoop.main, quiet, undefined, processActor), state, registry: createRunRegistry(), mirrors: createClientMirrors(), secrets: new Map(), e2eHooks: false, reload: vi.fn(), log: quiet });
+    router = createCoreRouter({ core: createMainEndpoint(coreLoop.main, quiet, undefined, processActor), state, registry: createRunRegistry(), mirrors: createClientMirrors(), secrets: new Map(), e2eHooks: false, reload: vi.fn(), agentShellUrl: () => undefined, clientPolicyChanged: () => undefined, log: quiet });
     const attach = (clientId: string, actors?: ActorContext) => {
       const loop = createLoopback();
       const main = createMainEndpoint(loop.main, quiet, (error) => { throw error; }, actors);

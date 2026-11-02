@@ -113,9 +113,12 @@ export class ProfileManager {
   private writeQueue: MemoryWriteQueue;
   private runner: MemorySubCallRunner;
   private readonly settings: SettingsStore;
+  // a daemon's core: the acting client's global profile, read at its attach
+  private readonly clientGlobalProfile: (() => UserProfile) | undefined;
 
-  constructor(db: DatabaseInstance, writeQueue: MemoryWriteQueue, runner: MemorySubCallRunner, settings: SettingsStore) {
+  constructor(db: DatabaseInstance, writeQueue: MemoryWriteQueue, runner: MemorySubCallRunner, settings: SettingsStore, clientGlobalProfile?: () => UserProfile) {
     this.settings = settings;
+    this.clientGlobalProfile = clientGlobalProfile;
     this.db = db;
     this.writeQueue = writeQueue;
     this.runner = runner;
@@ -128,8 +131,8 @@ export class ProfileManager {
 
   /** Read both sections for one scope; missing sections resolve to ''. Pass workspace='' for global. */
   getProfile(scope: ProfileScope, workspace: string): UserProfile {
-    // global memory is the client's, so a daemon's core reads no global profile
-    if (scope === 'global' && userScopeRemote()) return { static: '', dynamic: '' };
+    // global memory is the client's, so a daemon's core reads its client's global profile, never one of its own
+    if (scope === 'global' && userScopeRemote()) return { ...(this.clientGlobalProfile?.() ?? { static: '', dynamic: '' }) };
     const rows = this.db
       .prepare('SELECT section, content FROM memory_profile WHERE scope = ? AND workspace = ?')
       .all(scope, workspace) as ProfileSectionRow[];

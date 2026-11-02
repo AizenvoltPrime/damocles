@@ -359,13 +359,18 @@ function onLinkLeave(link: ILink): void {
   linkHover.value = null;
 }
 
+// Main opens a web link by the terminal's host, forwarding a remote terminal's loopback port first.
+function openWebLink(url: string): void {
+  props.api.terminal.openWebLink({ id: props.terminal.id, url });
+}
+
 // OSC 8 hyperlinks, which xterm offers for http and https only and underlines itself: they open like a web link, as VS Code's
 // terminalLinkManager sets linkHandler; without one xterm asks with window.confirm.
 const hyperlinks: ILinkHandler = {
   activate: (event, uri) => {
     if (!modifierDown(event)) return;
     linkHover.value = null;
-    window.open(uri);
+    openWebLink(uri);
   },
   hover: (_event, _uri, range) => {
     const xterm = term.value;
@@ -410,7 +415,7 @@ async function provideLinks(bufferLine: number, callback: (links: ILink[] | unde
     links.push(link);
   };
   try {
-    for (const web of candidates.web) add(web.start, web.end, web.url, 'web', () => window.open(web.url));
+    for (const web of candidates.web) add(web.start, web.end, web.url, 'web', () => openWebLink(web.url));
     // Main refuses a terminal that is gone (killed while hovered); its paths are then no links.
     const kinds = paths.length > 0 ? await props.api.terminal.resolveLinks({ id: props.terminal.id, paths }).catch(() => []) : [];
     for (const link of confirmedLinks(candidates, paths, kinds)) {

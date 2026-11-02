@@ -25,7 +25,7 @@ describe('authoritiesToConnectAtLaunch', () => {
     expect(authoritiesToConnectAtLaunch({ ...none, selectedProjectKey: staging })).toEqual(['ssh+stage']);
   });
 
-  it('never connects a host whose projects are no longer listed (the remote gate, a removed project)', () => {
+  it('never connects a host whose projects are no longer listed (a loopback project without the loopback daemon, a removed project)', () => {
     expect(authoritiesToConnectAtLaunch({ remoteProjectKeys: [], editorAuthorities: ['ssh+prod1'], terminalAuthorities: ['ssh+prod1'], chatAuthorities: ['ssh+stage'], selectedProjectKey: prod })).toEqual([]);
   });
 

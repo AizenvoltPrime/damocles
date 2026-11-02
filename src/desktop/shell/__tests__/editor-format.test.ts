@@ -68,6 +68,7 @@ const tsWorker = {
 };
 
 const monacoModule = {
+  setWebLinkOpener: () => undefined,
   useMonaco: () => ({
     Uri: { from: (parts: { path: string }) => parts },
     editor: {

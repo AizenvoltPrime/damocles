@@ -5,7 +5,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { agentSocketFile } from '../../core-protocol/agent-sockets';
-import { createAgentProxy, isAgentSock, type AgentProxy } from '../agent-proxy';
+import { createAgentProxy, isAgentSock, type AgentProxy, type AgentUpstream } from '../agent-proxy';
+import type { AgentRelay } from '../agent-relay';
+
+const sock = (path: string): AgentUpstream => ({ kind: 'socket', path });
 
 describe('the agent socket a bridge may name', () => {
   it('is one absolute POSIX line within the socket path bound', () => {
@@ -82,7 +85,7 @@ describe.runIf(process.platform !== 'win32')('the agent proxy (POSIX)', () => {
     expect((await fs.lstat(folder)).mode & 0o777).toBe(0o700);
     const laptop = await fakeAgent(agents, 'laptop');
     cleanups.push(laptop.close);
-    proxy.setClient('laptop', laptop.path);
+    proxy.setClient('laptop', sock(laptop.path));
     await proxy.settled();
     const file = agentSocketFile(folder, 'laptop');
     expect(proxy.socketFor('laptop')).toBe(file);
@@ -96,8 +99,8 @@ describe.runIf(process.platform !== 'win32')('the agent proxy (POSIX)', () => {
     const laptop = await fakeAgent(agents, 'laptop');
     const desktop = await fakeAgent(agents, 'desktop');
     cleanups.push(laptop.close, desktop.close);
-    proxy.setClient('laptop', laptop.path);
-    proxy.setClient('desktop', desktop.path);
+    proxy.setClient('laptop', sock(laptop.path));
+    proxy.setClient('desktop', sock(desktop.path));
     await proxy.settled();
     expect(proxy.socketFor('laptop')).not.toBe(proxy.socketFor('desktop'));
     expect(await ask(proxy.socketFor('laptop')!)).toBe('laptop');
@@ -105,18 +108,40 @@ describe.runIf(process.platform !== 'win32')('the agent proxy (POSIX)', () => {
     expect(await ask(proxy.socketFor('laptop')!)).toBe('laptop');
   });
 
-  it('refuses every connection while its client does not forward, and stops listening once its bridge names no agent', async () => {
+  it('listens only while its client forwards, and closes the socket and every live connection once the policy turns it off', async () => {
     const policy = new Map([['laptop', false]]);
-    const { folder, agents, proxy, log } = await setup(policy);
+    const { folder, agents, proxy } = await setup(policy);
+    const laptop = await fakeAgent(agents, 'laptop', { hold: true });
+    cleanups.push(laptop.close);
+    proxy.setClient('laptop', sock(laptop.path));
+    await proxy.settled();
+    // forwarding off: spawned processes get no SSH_AUTH_SOCK, and no socket exists to connect to
+    expect(proxy.socketFor('laptop')).toBeUndefined();
+    expect(fsSync.existsSync(agentSocketFile(folder, 'laptop'))).toBe(false);
+    policy.set('laptop', true);
+    proxy.policyChanged();
+    await proxy.settled();
+    const file = proxy.socketFor('laptop')!;
+    expect(file).toBe(agentSocketFile(folder, 'laptop'));
+    const client = net.connect(file);
+    const closed = new Promise<void>((resolve) => client.on('close', () => resolve()));
+    await new Promise<void>((resolve) => client.once('data', () => resolve()));
+    // switched off mid-session: the socket goes and the open connection ends, with no new connection or attach
+    policy.set('laptop', false);
+    proxy.policyChanged();
+    await proxy.settled();
+    await closed;
+    expect(proxy.socketFor('laptop')).toBeUndefined();
+    expect(fsSync.existsSync(file)).toBe(false);
+  });
+
+  it('stops listening once its bridge names no agent', async () => {
+    const { folder, agents, proxy } = await setup(new Map([['laptop', true]]));
     const laptop = await fakeAgent(agents, 'laptop');
     cleanups.push(laptop.close);
-    proxy.setClient('laptop', laptop.path);
+    proxy.setClient('laptop', sock(laptop.path));
     await proxy.settled();
-    // forwarding off: spawned processes get no SSH_AUTH_SOCK, and the socket answers nothing
-    expect(proxy.socketFor('laptop')).toBeUndefined();
-    expect(await ask(agentSocketFile(folder, 'laptop'))).toBe('');
-    expect(log).toHaveBeenCalledWith('[agent] refused a connection: its client does not forward its SSH agent');
-    policy.set('laptop', true);
+    expect(proxy.socketFor('laptop')).toBeDefined();
     proxy.setClient('laptop', undefined);
     await proxy.settled();
     expect(proxy.socketFor('laptop')).toBeUndefined();
@@ -124,11 +149,34 @@ describe.runIf(process.platform !== 'win32')('the agent proxy (POSIX)', () => {
     expect(laptop.accepted()).toBe(0);
   });
 
+  it('hands each connection on a relaying client\'s socket to that client\'s relay only, never another client\'s', async () => {
+    const { agents, proxy } = await setup(new Map([['laptop', true], ['desktop', true]]));
+    const asked: string[] = [];
+    const relayOf = (clientId: string): AgentRelay => ({
+      request: (incoming) => {
+        asked.push(clientId);
+        incoming.end(clientId);
+      },
+      connect: () => false,
+      refuse: () => undefined,
+      close: () => undefined,
+    });
+    const desktop = await fakeAgent(agents, 'desktop');
+    cleanups.push(desktop.close);
+    proxy.setClient('laptop', { kind: 'relay', relay: relayOf('laptop') });
+    proxy.setClient('desktop', sock(desktop.path));
+    await proxy.settled();
+    expect(await ask(proxy.socketFor('laptop')!)).toBe('laptop');
+    expect(await ask(proxy.socketFor('desktop')!)).toBe('desktop');
+    expect(asked).toEqual(['laptop']);
+    expect(desktop.accepted()).toBe(1);
+  });
+
   it('never proxies to a path that is not a socket, or to another user\'s socket', async () => {
     const { agents, proxy, log } = await setup(new Map([['laptop', true]]));
     const notSocket = path.join(agents, 'plain-file');
     await fs.writeFile(notSocket, 'x');
-    proxy.setClient('laptop', notSocket);
+    proxy.setClient('laptop', sock(notSocket));
     await proxy.settled();
     expect(await ask(proxy.socketFor('laptop')!)).toBe('');
     expect(log).toHaveBeenCalledWith(`[agent] refused a connection: ${notSocket} is not a socket of this user`);
@@ -136,7 +184,7 @@ describe.runIf(process.platform !== 'win32')('the agent proxy (POSIX)', () => {
     const other = await setup(new Map([['laptop', true]]), process.getuid!() + 1);
     const agent = await fakeAgent(other.agents, 'laptop');
     cleanups.push(agent.close);
-    other.proxy.setClient('laptop', agent.path);
+    other.proxy.setClient('laptop', sock(agent.path));
     await other.proxy.settled();
     expect(await ask(other.proxy.socketFor('laptop')!)).toBe('');
     expect(other.log).toHaveBeenCalledWith(`[agent] refused a connection: ${agent.path} is not a socket of this user`);
@@ -149,12 +197,12 @@ describe.runIf(process.platform !== 'win32')('the agent proxy (POSIX)', () => {
     cleanups.push(laptop.close);
     const file = agentSocketFile(folder, 'laptop');
     await fs.writeFile(file, 'in the way');
-    proxy.setClient('laptop', laptop.path);
+    proxy.setClient('laptop', sock(laptop.path));
     await proxy.settled();
     expect(proxy.socketFor('laptop')).toBeUndefined();
     expect(log.mock.calls.some(([line]) => String(line).startsWith('[agent] could not listen for laptop: '))).toBe(true);
     await fs.rm(file);
-    proxy.setClient('laptop', laptop.path);
+    proxy.setClient('laptop', sock(laptop.path));
     await proxy.settled();
     expect(await ask(proxy.socketFor('laptop')!)).toBe('laptop');
   });
@@ -168,7 +216,7 @@ describe.runIf(process.platform !== 'win32')('the agent proxy (POSIX)', () => {
     });
     await new Promise<void>((resolve) => server.listen(file, resolve));
     cleanups.push(() => new Promise((resolve) => server.close(() => resolve())));
-    proxy.setClient('laptop', file);
+    proxy.setClient('laptop', sock(file));
     await proxy.settled();
     expect(await ask(proxy.socketFor('laptop')!)).toBe('partial');
   });
@@ -177,7 +225,7 @@ describe.runIf(process.platform !== 'win32')('the agent proxy (POSIX)', () => {
     const { folder, agents, proxy } = await setup(new Map([['laptop', true]]));
     const laptop = await fakeAgent(agents, 'laptop', { hold: true });
     cleanups.push(laptop.close);
-    proxy.setClient('laptop', laptop.path);
+    proxy.setClient('laptop', sock(laptop.path));
     await proxy.settled();
     const client = net.connect(proxy.socketFor('laptop')!);
     const closed = new Promise<void>((resolve) => client.on('close', () => resolve()));
@@ -193,7 +241,7 @@ describe.runIf(process.platform !== 'win32')('the agent proxy (POSIX)', () => {
     const { agents, proxy } = await setup(new Map([['laptop', true]]));
     const laptop = await fakeAgent(agents, 'laptop');
     cleanups.push(laptop.close);
-    proxy.setClient('laptop', laptop.path);
+    proxy.setClient('laptop', sock(laptop.path));
     await proxy.settled();
     const socket = proxy.socketFor('laptop')!;
     const realLstat = fs.lstat.bind(fs);
@@ -228,7 +276,7 @@ describe.runIf(process.platform !== 'win32')('the agent proxy (POSIX)', () => {
     const { agents, folder, proxy } = await setup(new Map([['laptop', true]]));
     const laptop = await fakeAgent(agents, 'laptop');
     cleanups.push(laptop.close);
-    proxy.setClient('laptop', laptop.path);
+    proxy.setClient('laptop', sock(laptop.path));
     await proxy.settled();
     const kept = proxy.kept()!;
     expect(kept.files).toEqual([folder, agentSocketFile(folder, 'laptop')]);

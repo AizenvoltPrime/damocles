@@ -9,6 +9,11 @@ import { log } from '../../core/logger';
 import { runCheckpointMaintenance, setCheckpointGitAvailability } from '../../core/pi-session/checkpoints';
 import { setMcpSecretStorage } from '../../core/pi-session/mcp/mcp-auth';
 import { PiRuntime } from '../../core/pi-session/pi-runtime';
+import { getPiCodingAgent } from '../../core/pi-session/pi-loader';
+import { BrowserServices, type BrowserService } from '../../core/browser';
+import { resolveAddresses, type AddressResolver } from '../../core/browser/client-network-policy';
+import { startClientNetworkProxy } from '../../core/browser/client-network-proxy';
+import { createRemoteBrowsers } from './browser-relay';
 import { signInStubOAuth } from '../../core/pi-session/e2e-stub-oauth';
 import type { ChatActivity } from '../../core/pi-session/session-state';
 import { setupAutoDisable } from '../../core/voice/auto-disable';
@@ -78,6 +83,37 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   setMcpSecretStorage(platform.secrets);
 
   const provider = new ChatPanelProvider(platform, { subscriptions, createCompassViews: () => NO_COMPASS_VIEWS });
+  // e2e only: names the proxies resolve to fixed answers, each lookup taking the next one
+  const fixedAnswers = new Map<string, { readonly answers: readonly (readonly string[])[]; next: number }>();
+  const resolveForProxy: AddressResolver = (name) => {
+    const fixed = fixedAnswers.get(name);
+    if (!fixed) return resolveAddresses(name);
+    const answer = fixed.answers[fixed.next % fixed.answers.length]!;
+    fixed.next += 1;
+    return Promise.resolve(answer.map((address) => ({ address, family: address.includes(':') ? 6 as const : 4 as const })));
+  };
+  // one browser context per authority: this core's own chats' and each remote host's (docs/invariants.md "Ports and the remote browser")
+  const browsers = new BrowserServices(platform, provider.getBrowserService(), platform.init.e2eHooks ? (policy) => startClientNetworkProxy(policy, { resolve: resolveForProxy }) : undefined);
+  for (const [authority, policy] of Object.entries(platform.init.mirrors.clientNetwork ?? {})) browsers.setClientNetwork(authority, policy);
+  subscriptions.push(endpoint.onMirror('clientNetwork', ({ authority, allowedPorts, allowLocalNetwork }) => browsers.setClientNetwork(authority, { allowedPorts, allowLocalNetwork })));
+  const remoteBrowsers = createRemoteBrowsers({
+    browsers,
+    foreign: (viewId) => {
+      const host = panels.foreign(viewId);
+      const authority = panels.foreignAuthority(viewId);
+      return host && authority !== undefined ? { host, authority } : undefined;
+    },
+    pi: getPiCodingAgent,
+    enabled: () => platform.settings.get<boolean>('damocles.browser.enabled', false),
+  });
+  // a page of this core's chat, or of a remote chat whose view this core holds a proxy for, in its authority's context
+  const pageOwner = (viewId: string): { readonly host: PanelHost; readonly browser: BrowserService } | undefined => {
+    const own = panels.get(viewId);
+    if (own) return { host: own, browser: provider.getBrowserService() };
+    const foreign = panels.foreign(viewId);
+    const authority = panels.foreignAuthority(viewId);
+    return foreign && authority !== undefined ? { host: foreign, browser: browsers.forAuthority(authority) } : undefined;
+  };
   const panelManager = provider.getPanelManager();
   const registry = provider.getFolderRegistry();
   const catalog = provider.getSessionCatalog();
@@ -179,11 +215,6 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
     if (!instance) throw new Error('The chat is not loaded');
     return instance;
   };
-  const requireHost = (viewId: string): PanelHost => {
-    const host = panels.get(viewId);
-    if (!host) throw new Error('The chat is not loaded');
-    return host;
-  };
 
   subscriptions.push(
     registry.onDidChange(publishFolders),
@@ -233,7 +264,7 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
         for (const outcome of await Promise.allSettled(steps)) if (outcome.status === 'rejected') failures.push(outcome.reason);
       };
       const runtimeDisposed = PiRuntime.exists ? PiRuntime.disposeInstance() : Promise.resolve();
-      await settle(provider.dispose(), runtimeDisposed);
+      await settle(provider.dispose(), runtimeDisposed, browsers.dispose());
       for (const subscription of subscriptions.reverse()) subscription.dispose();
       finishHolds.dispose();
       platform.setChatPrompts(undefined);
@@ -283,8 +314,8 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   endpoint.serve('chats.restoreDraft', ({ panelId, content }) => panelManager.restoreDraft(panelId, [...content] as Parameters<typeof panelManager.restoreDraft>[1]));
   endpoint.serve('chats.restorePages', async ({ viewId, urls, activePage }) => {
     // a chat closed while its restore ran has no tabs left to restore into
-    const host = panels.get(viewId);
-    if (host) await provider.getBrowserService().restoreChatPages(host, urls, activePage);
+    const owner = pageOwner(viewId);
+    if (owner) await owner.browser.restoreChatPages(owner.host, urls, activePage);
   });
   endpoint.serve('chats.mention', async ({ panelId, target }) => {
     await panelManager.mentionFile(panelId, target);
@@ -363,7 +394,13 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   endpoint.serve('folders.setDefault', async ({ key }) => {
     await registry.setDefault(key);
   });
-  endpoint.serve('browser.newPage', ({ chatViewId }) => provider.getBrowserService().openNewPageForChat(requireHost(chatViewId)));
+  endpoint.serve('browser.newPage', ({ chatViewId, url }) => {
+    const owner = pageOwner(chatViewId);
+    if (!owner) throw new Error('The chat is not loaded');
+    return owner.browser.openNewPageForChat(owner.host, url);
+  });
+  endpoint.serve('user.browser.tool', (params, signal) => remoteBrowsers.tool(params, signal));
+  endpoint.serve('user.browser.release', ({ authority, agentScope }) => (agentScope ? remoteBrowsers.release(authority, agentScope) : remoteBrowsers.releaseAuthority(authority)));
   // this computer's user scope for remote chats: main asks only this core, and checks every answer before it leaves
   endpoint.serve('user.resolveCredential', ({ provider, force }) => PiRuntime.get().resolveCredentialForBroker(provider, force === true));
   // the daemon stamps the pushing client as the actor, so the token lands only in that client's broker entries
@@ -373,7 +410,25 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   if (!platform.remote) {
     const stopClientAuth = PiRuntime.onClientAuthChange(() => endpoint.emit('user.clientAuthChanged', {}));
     subscriptions.push({ dispose: stopClientAuth });
+    subscriptions.push(provider.onRelayedMcpChange(() => endpoint.emit('user.mcpChanged', {})));
   }
+  // this computer's global memory and personal MCP servers for remote chats; main checks every answer before it leaves
+  const memory = provider.getMemoryService();
+  endpoint.serve('user.memory.search', ({ query, k, tiers, injection, since, until, includeForgotten }) => memory.relaySearch(query, k, tiers, injection === true, {
+    ...(since !== undefined ? { since } : {}),
+    ...(until !== undefined ? { until } : {}),
+    ...(includeForgotten === true ? { includeForgotten } : {}),
+  }));
+  // a daemon's core: the asking device (the request's actor) takes a held outbox, or discards it
+  endpoint.serve('memory.deliverHeld', ({ queueId }) => memory.deliverHeldMemory(queueId));
+  endpoint.serve('memory.discardHeld', ({ queueId }) => memory.discardHeldMemory(queueId));
+  endpoint.serve('user.memory.profile', () => memory.relayProfile());
+  endpoint.serve('user.memory.resolve', ({ ids }) => memory.relayResolve(ids));
+  endpoint.serve('user.memory.apply', ({ writes }) => memory.applyRelayedWrites(writes));
+  endpoint.serve('user.mcp.servers', () => provider.relayedMcpServers());
+  endpoint.serve('user.mcp.call', ({ server, tool, args }, signal) => provider.runRelayedMcp({ kind: 'call', server, tool, args }, signal));
+  endpoint.serve('user.mcp.resources', ({ server, kind, cursor }, signal) => provider.runRelayedMcp({ kind, server, ...(cursor !== undefined ? { cursor } : {}) }, signal));
+  endpoint.serve('user.mcp.readResource', ({ server, uri }, signal) => provider.runRelayedMcp({ kind: 'read', server, uri }, signal));
   endpoint.serve('user.voice.speak', ({ viewId, text }) => provider.speakForeign(viewId, text));
   endpoint.serve('panels.attachForeign', ({ authority, viewId }) => {
     panels.attachForeign(authority, viewId);
@@ -452,6 +507,10 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
       holdShutdown = true;
     });
     endpoint.serve('e2e.inputBox', (options) => platform.dialogs.inputBox(options));
+    endpoint.serve('e2e.clientNetworkAnswers', ({ answers }) => {
+      fixedAnswers.clear();
+      for (const [name, list] of Object.entries(answers)) fixedAnswers.set(name, { answers: list, next: 0 });
+    });
     // this computer's ChatGPT sign-in, signed in and refreshed by a stub with short-lived tokens
     endpoint.serve('e2e.stubOAuth', ({ account, expiresInMs, offline }) => signInStubOAuth(PiRuntime.get(), account, expiresInMs, offline));
     // this core's recorder starts a stand-in under its own launcher, so a test can tell which process records

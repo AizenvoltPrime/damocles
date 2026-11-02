@@ -31,7 +31,7 @@ const emit = defineEmits<{
       {{ status }}
       <LoaderCircle
         v-if="state === 'busy'"
-        class="size-3 sm-spin"
+        class="size-3 d-spinning [--spin-duration:.8s]"
         aria-hidden="true"
       />
     </span>

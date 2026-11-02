@@ -42,6 +42,8 @@ export const TERMINAL_CHANNELS = {
   inputFocus: 'damocles:terminal:input-focus',
   // TerminalOpenLink: main resolves the path again; a file opens in the editor at line and column, a folder is revealed in Files
   openLink: 'damocles:terminal:open-link',
+  // TerminalOpenWebLink: a web link the user clicked; a remote terminal's opens through main's link checks and port forwarding
+  openWebLink: 'damocles:terminal:open-web-link',
   // TerminalRename
   rename: 'damocles:terminal:rename',
   // TerminalRef: Change Icon... and Change Color..., main's quick pick in the overlay
@@ -85,6 +87,8 @@ export const MAX_TERMINAL_LINK_PATHS = 50;
 export const MAX_TERMINAL_LINK_PATH_LENGTH = 1024;
 // A link's line and column are 1..MAX_TERMINAL_LINK_POSITION; must equal MAX_EDITOR_LINE.
 export const MAX_TERMINAL_LINK_POSITION = 10_000_000;
+// Characters of a clicked web link; main's link checks bound its UTF-8 bytes again.
+export const MAX_TERMINAL_WEB_LINK_CHARS: number = 8 * 1024;
 // Characters of a terminal's name after trimming; control and bidi characters are refused.
 export const MAX_TERMINAL_NAME_LENGTH = 64;
 // Characters of an automatic title or description; a longer one is cut and ends in '…'.
@@ -284,6 +288,12 @@ export interface TerminalOpenLink {
   readonly column: number | null;
 }
 
+// url: 1..MAX_TERMINAL_WEB_LINK_CHARS characters, as the terminal printed it
+export interface TerminalOpenWebLink {
+  readonly id: string;
+  readonly url: string;
+}
+
 // name: at most MAX_TERMINAL_NAME_LENGTH characters once trimmed; '' restores the automatic title
 export interface TerminalRename {
   readonly id: string;
@@ -470,6 +480,7 @@ export interface DamoclesTerminalApi {
   reportInputFocus(focused: boolean): void;
   resolveLinks(request: TerminalResolveLinks): Promise<Array<TerminalLinkKind | null>>;
   openLink(request: TerminalOpenLink): void;
+  openWebLink(request: TerminalOpenWebLink): void;
   rename(request: TerminalRename): void;
   pickIcon(id: string): void;
   pickColor(id: string): void;

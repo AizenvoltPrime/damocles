@@ -14,9 +14,10 @@ export function openAppSettingsFor(
   host: PanelHost | undefined,
   section?: SettingsSectionId,
   account?: SettingsAccountId,
+  scope?: 'machine',
 ): void {
   if (!platform.capabilities.settingsInPanel) {
-    platform.window.openAppSettings(section, account);
+    platform.window.openAppSettings(section, account, scope);
     return;
   }
   if (host === undefined) return;

@@ -5,7 +5,7 @@ import type { ShellHost } from '../../preload/shell-channels';
 import ConnectionBanner from '../components/ConnectionBanner.vue';
 import { shellI18n } from '../i18n';
 
-const HOST: ShellHost = { hostId: 'h1', authorityKey: 'ssh-remote+h1', name: 'prod-1', connection: 'offline', signInNeeded: false };
+const HOST: ShellHost = { hostId: 'h1', kind: 'ssh', authorityKey: 'ssh-remote+h1', name: 'prod-1', connection: 'offline', signInNeeded: false };
 const mounted: VueWrapper[] = [];
 const mountBanner = (host: ShellHost, edge = false): VueWrapper => {
   const wrapper = mount(ConnectionBanner, { props: { host, edge }, global: { plugins: [shellI18n] }, attachTo: document.body });

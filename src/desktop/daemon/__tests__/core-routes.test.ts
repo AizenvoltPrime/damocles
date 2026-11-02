@@ -64,7 +64,7 @@ interface Harness {
 
 let current: Harness | undefined;
 
-function setUp(options: { e2eHooks?: boolean } = {}): Harness {
+function setUp(options: { e2eHooks?: boolean; clientPolicyChanged?: () => void; log?: (line: string) => void } = {}): Harness {
   const coreLoop = createLoopback();
   const daemonMain = createMainEndpoint(coreLoop.main, quiet, undefined, processActor);
   const core = createCoreEndpoint(coreLoop.core, quiet, undefined, processActor);
@@ -73,7 +73,7 @@ function setUp(options: { e2eHooks?: boolean } = {}): Harness {
   const reload = vi.fn();
   const secrets = new Map<string, string | undefined>();
   const mirrors = createClientMirrors();
-  const router = createCoreRouter({ core: daemonMain, state, registry, mirrors, secrets, e2eHooks: options.e2eHooks ?? false, reload, log: quiet });
+  const router = createCoreRouter({ core: daemonMain, state, registry, mirrors, secrets, e2eHooks: options.e2eHooks ?? false, reload, agentShellUrl: () => undefined, clientPolicyChanged: options.clientPolicyChanged ?? (() => undefined), log: options.log ?? quiet });
   const harness: Harness = {
     core,
     router,
@@ -119,6 +119,18 @@ const entry = (panelId: string, viewId: string): ChatEntry => ({
 });
 
 describe('core routes', () => {
+  it('tells the daemon each time a client\'s clientPolicy changes, once the router holds the new value', async () => {
+    const seen: Array<boolean | undefined> = [];
+    const h: Harness = setUp({ clientPolicyChanged: () => seen.push(h.mirrors.clientPolicy.get('device-a')?.agentForwarding) });
+    const client = h.client('connection-1', 'h1', undefined, 'device-a');
+    await vi.waitFor(() => expect(seen).toEqual([undefined]));
+    client.main.publish('clientPolicy', { value: { ...emptyMirrors.clientPolicy, agentForwarding: true } });
+    await vi.waitFor(() => expect(seen).toEqual([undefined, true]));
+    client.main.publish('clientUser', { value: emptyMirrors.clientUser });
+    client.main.publish('clientPolicy', { value: emptyMirrors.clientPolicy });
+    await vi.waitFor(() => expect(seen).toEqual([undefined, true, undefined]));
+  });
+
   it('route every message of the core protocol', () => {
     const keys = (value: object): string[] => Object.keys(value).sort();
     expect(keys(CORE_REQUEST_ROUTES)).toEqual(keys(CORE_TO_MAIN.requests));
@@ -191,6 +203,17 @@ describe('core routes', () => {
     expect(deltas).toHaveLength(1);
   });
 
+  it('drop and log a client\'s clientNetwork delta, which only this computer\'s main publishes to its own core', async () => {
+    const lines: string[] = [];
+    const h = setUp({ log: (line) => lines.push(line) });
+    const deltas: unknown[] = [];
+    h.core.onMirror('clientNetwork', (patch) => deltas.push(patch));
+    h.client('c1').main.publish('clientNetwork', { authority: 'ssh-h1', allowedPorts: [3000], allowLocalNetwork: true });
+    await flush();
+    expect(deltas).toEqual([]);
+    expect(lines).toContain("[core-host] dropped c1's clientNetwork, which the daemon publishes");
+  });
+
   it('refuse core.shutdown, browser pages and the e2e hooks from a client, and drop power events', async () => {
     const h = setUp();
     const client = h.client('c1');
@@ -252,6 +275,36 @@ describe('core routes', () => {
     const failure = await client.main.request('scm.call', { method: 'fetch', args: [] }).catch((err: unknown) => err);
     expect(failure).toBeInstanceOf(GitError);
     expect((failure as GitError).exitCode).toBe(128);
+  });
+
+  it('give every client the held memory queues, a fresh one the last list, and take or discard a queue as the asking client', async () => {
+    const h = setUp();
+    const first = h.client('connection-1', 'h1', undefined, 'device-a');
+    const queues = [{ queueId: 'device-old', count: 3, lastSeen: 1_700_000_000_000 }];
+    const firstSeen: unknown[] = [];
+    first.main.onMirror('heldMemory', (patch) => firstSeen.push(patch));
+    h.core.publish('heldMemory', { queues });
+    await vi.waitFor(() => expect(firstSeen).toEqual([{ queues }]));
+
+    const later: unknown[] = [];
+    const loop = createLoopback();
+    const main = createMainEndpoint(loop.main, quiet, (error) => { throw error; });
+    main.onMirror('heldMemory', (patch) => later.push(patch));
+    h.router.attach({ id: 'connection-2', clientId: 'device-b', hostId: 'h2', transport: loop.core, mirrors: emptyMirrors, close: vi.fn(), drained: () => Promise.resolve(), lost: () => false, onLostChange: () => ({ dispose: () => undefined }) });
+    expect(later).toEqual([{ queues }]);
+
+    const asked: Array<[string, string | undefined]> = [];
+    h.core.serve('memory.deliverHeld', ({ queueId }) => {
+      asked.push([`deliver ${queueId}`, processActor.current()]);
+      return true;
+    });
+    h.core.serve('memory.discardHeld', ({ queueId }) => {
+      asked.push([`discard ${queueId}`, processActor.current()]);
+      return false;
+    });
+    expect(await main.request('memory.deliverHeld', { queueId: 'device-old' })).toBe(true);
+    expect(await first.main.request('memory.discardHeld', { queueId: 'device-old' })).toBe(false);
+    expect(asked).toEqual([['deliver device-old', 'device-b'], ['discard device-old', 'device-a']]);
   });
 
   it('give a fresh endpoint the materialized mirrors as deltas from version 1, chats only of its own views', async () => {

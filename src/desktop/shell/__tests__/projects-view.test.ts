@@ -44,7 +44,6 @@ interface Options {
   view?: ProjectsView;
   projects?: readonly ShellProject[];
   groups?: ShellProjectGroups;
-  remoteEnabled?: boolean;
   api?: FakeShellApi;
 }
 
@@ -55,7 +54,6 @@ function mountSection(options: Options = {}): { wrapper: VueWrapper; api: FakeSh
       api,
       projects: options.projects ?? PROJECTS,
       selectedKey: 'a',
-      remoteEnabled: options.remoteEnabled ?? true,
       hosts: [],
       view: options.view ?? 'grouped',
       groups: options.groups ?? GROUPS,
@@ -219,15 +217,6 @@ describe('grouped Projects view', () => {
     expect(api.openConnect).not.toHaveBeenCalled();
   });
 
-  it('hides every remote entry while remote is disabled, and keeps the views and reordering', async () => {
-    const { wrapper, api } = mountSection({ remoteEnabled: false });
-    await header(wrapper, 'ssh+h1').trigger('contextmenu');
-    await flushPromises();
-    expect(menuLabels(api)).toEqual(['Move up', 'Move down (disabled)']);
-    await wrapper.get('[data-project-key="x"]').trigger('contextmenu');
-    await flushPromises();
-    expect(menuLabels(api)).toEqual(['Move up (disabled)', 'Move down', '-', 'Remove project']);
-  });
 });
 
 describe('reordering by keyboard and menu', () => {

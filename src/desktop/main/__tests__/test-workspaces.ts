@@ -92,9 +92,9 @@ export function testRemote(options: TestWorkspaceOptions & { readonly authorityK
   const modules = localModules(options);
   const hub = { list: async () => [], post: () => { throw new Error('no terminal hub in this test'); }, detach: () => undefined } as unknown as TerminalHub;
   const watchLimits = options.watchLimits ?? { roots: () => [], onReached: () => ({ dispose: () => undefined }), limit: async () => null };
-  const host = createWorkspaceHost({ ...modules, hub, terminalCredentials: () => ({}), watchLimits }, log);
+  const host = createWorkspaceHost({ ...modules, hub, cli: { connected: () => ({ dispose: () => undefined }) }, terminalCredentials: () => ({}), watchLimits }, log);
   const [clientEnd, hostEnd] = channel();
-  const served = host.serve('test-connection', 'test-client', hostEnd, (reason) => { throw new Error(reason); });
+  const served = host.serve('test-connection', 'test-client', hostEnd, (reason) => { throw new Error(reason); }, () => undefined, () => false);
   const endpoint = createEndpoint<ClientToWorkspace, WorkspaceToClient>({ transport: clientEnd, outgoing: CLIENT_TO_WORKSPACE, incoming: WORKSPACE_TO_CLIENT, log, errors: ERROR_CODEC });
   const closeListeners = new Set<(reason: string) => void>();
   let closedWith: string | undefined;
@@ -109,6 +109,8 @@ export function testRemote(options: TestWorkspaceOptions & { readonly authorityK
     },
     notConnected: () => new NotConnectedError(`${authorityKey} is not connected.`),
     watchReady: true,
+    transfers: false,
+    openStream: () => { throw new Error('no transfer streams in this suite'); },
     log,
   });
   return {

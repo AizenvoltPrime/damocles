@@ -145,6 +145,24 @@ export async function answerOpenDialog(app: ElectronApplication, dir: string): P
   }, dir);
 }
 
+/** Answers the next showSaveDialog with `file`, and records the defaultPath it was asked with. */
+export async function answerSaveDialog(app: ElectronApplication, file: string): Promise<void> {
+  await app.evaluate(({ dialog }, answer) => {
+    const g = globalThis as unknown as { __e2eSaveDefaults?: string[] };
+    g.__e2eSaveDefaults ??= [];
+    dialog.showSaveDialog = ((...args: unknown[]) => {
+      const options = args.at(-1) as Electron.SaveDialogOptions;
+      g.__e2eSaveDefaults!.push(options.defaultPath ?? '');
+      return Promise.resolve({ canceled: false, filePath: answer });
+    }) as typeof dialog.showSaveDialog;
+  }, file);
+}
+
+/** The defaultPath of every Save dialog answerSaveDialog answered. */
+export async function saveDialogDefaults(app: ElectronApplication): Promise<string[]> {
+  return app.evaluate(() => (globalThis as unknown as { __e2eSaveDefaults?: string[] }).__e2eSaveDefaults ?? []);
+}
+
 interface HostPromptGlobals {
   __damoclesE2e: {
     dialogs: { inputBox(opts: { prompt: string; password: boolean }): Promise<string | undefined> };

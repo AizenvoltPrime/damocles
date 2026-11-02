@@ -20,6 +20,8 @@ const props = defineProps<{
   // undefined: the dialog is closing
   browse: (path?: string) => Promise<RemoteBrowseResult | undefined>;
   pick?: { readonly mode: 'file' | 'folder'; readonly buttonLabel?: string } | undefined;
+  // the Open button's label outside a picker
+  openLabel?: string | undefined;
 }>();
 const emit = defineEmits<{ pick: [path: string]; cancel: [] }>();
 const { t } = useI18n();
@@ -323,7 +325,7 @@ onMounted(async () => {
         :disabled="target === undefined"
         @click="target !== undefined && emit('pick', target)"
       >
-        {{ pick ? (pick.buttonLabel ?? t('remote.pick.choose')) : t('remote.folders.open') }}
+        {{ pick ? (pick.buttonLabel ?? t('remote.pick.choose')) : (openLabel ?? t('remote.folders.open')) }}
       </Button>
     </div>
   </div>

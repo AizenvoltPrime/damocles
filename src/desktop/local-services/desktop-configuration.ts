@@ -32,7 +32,14 @@ export const TERMINAL_CONFIRM_ON_KILL_SETTING = 'damocles.desktop.terminal.confi
 export const TERMINAL_PROFILES_SETTING = 'damocles.desktop.terminal.profiles';
 export const REMOTE_TERMINAL_IDLE_DAYS_SETTING = 'damocles.desktop.remote.terminalIdleDays';
 export const REMOTE_CLOSE_WITH_RUNNING_AGENTS_SETTING = 'damocles.desktop.remote.closeWithRunningAgents';
+export const REMOTE_AUTO_FORWARD_PORTS_SETTING = 'damocles.desktop.remote.autoForwardPorts';
+export const REMOTE_AUTO_FORWARD_PORTS_FALLBACK_SETTING = 'damocles.desktop.remote.autoForwardPortsFallback';
+export const REMOTE_CONTAINER_ENGINE_SETTING = 'damocles.desktop.remote.containerEngine';
+// equals MCP_REMOTE_AVAILABLE_SETTING in shared/types/mcp.ts, which core reads (this file takes no imports)
+export const MCP_REMOTE_AVAILABLE_SETTING = 'damocles.desktop.mcp.remoteAvailable';
 export const FILES_EXCLUDE_SETTING = 'damocles.desktop.files.exclude';
+export const FILES_CONFIRM_DRAG_AND_DROP_SETTING = 'damocles.desktop.files.confirmDragAndDrop';
+export const FILES_CONFIRM_PASTE_NATIVE_SETTING = 'damocles.desktop.files.confirmPasteNative';
 export const SEARCH_EXCLUDE_SETTING = 'damocles.desktop.search.exclude';
 export const SEARCH_MODE_SETTING = 'damocles.desktop.search.mode';
 export const SEARCH_SMART_CASE_SETTING = 'damocles.desktop.search.smartCase';
@@ -92,6 +99,7 @@ export const EDITOR_RENDER_WHITESPACES = ['none', 'boundary', 'selection', 'trai
 export const EDITOR_AUTO_SAVES = ['off', 'afterDelay', 'onFocusChange'] as const;
 export const TERMINAL_CURSOR_STYLES = ['block', 'underline', 'bar'] as const;
 export const CLOSE_WITH_RUNNING_AGENTS = ['ask', 'keep', 'stop'] as const;
+export const CONTAINER_ENGINES = ['docker', 'podman'] as const;
 // VS Code's terminal.integrated.enableMultiLinePasteWarning values.
 export const TERMINAL_MULTI_LINE_PASTE_WARNINGS = ['auto', 'always', 'never'] as const;
 export type TerminalMultiLinePasteWarning = (typeof TERMINAL_MULTI_LINE_PASTE_WARNINGS)[number];
@@ -362,6 +370,35 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     scope: 'application',
     description: 'A terminal on a remote host that no device has reattached for this many days ends on its own. 0 means never.',
   },
+  [REMOTE_AUTO_FORWARD_PORTS_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: 'When a program on a remote host starts listening, or a terminal there prints a local address, its port is forwarded to this computer. Off: detected ports are listed in Ports, and nothing is forwarded until you choose Forward.',
+  },
+  [MCP_REMOTE_AVAILABLE_SETTING]: {
+    type: 'array',
+    items: { type: 'string' },
+    default: [],
+    scope: 'application',
+    description: 'The personal MCP servers (from ~/.damocles/mcp.json and the Claude Code, Codex and pi user files) that chats on remote hosts may use. They run on this computer; a remote host gets their names and tool and resource schemas, never their environment or headers.',
+  },
+  [REMOTE_AUTO_FORWARD_PORTS_FALLBACK_SETTING]: {
+    type: 'integer',
+    default: 20,
+    minimum: 0,
+    maximum: 65535,
+    scope: 'application',
+    description: 'After this many ports were forwarded automatically on one host, that host forwards only the ports its terminals and agent shells print. 0 means never.',
+  },
+  [REMOTE_CONTAINER_ENGINE_SETTING]: {
+    type: 'string',
+    enum: CONTAINER_ENGINES,
+    enumDescriptions: ['Docker builds and runs dev containers.', 'Podman builds and runs dev containers, given to the devcontainer CLI as its --docker-path.'],
+    default: 'docker',
+    scope: 'application',
+    description: 'The container engine a new dev container or attached container uses, on this computer or on the SSH host it runs on. A saved container keeps the engine it was made with.',
+  },
   [REMOTE_CLOSE_WITH_RUNNING_AGENTS_SETTING]: {
     type: 'string',
     enum: CLOSE_WITH_RUNNING_AGENTS,
@@ -476,6 +513,18 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     default: DEFAULT_FILES_EXCLUDE,
     scope: 'application',
     description: 'Glob patterns of files and folders the Files section hides; Quick Open and Search skip them too. A pattern set to false is shown.',
+  },
+  [FILES_CONFIRM_DRAG_AND_DROP_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: 'Controls whether Files asks to confirm moving a file or folder by drag and drop.',
+  },
+  [FILES_CONFIRM_PASTE_NATIVE_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: 'Controls whether Files asks to confirm pasting files copied in the operating system\'s file manager.',
   },
   [SEARCH_EXCLUDE_SETTING]: {
     type: 'object',

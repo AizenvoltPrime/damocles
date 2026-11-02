@@ -19,6 +19,7 @@ import {
   type NoticeSeverity,
   type ToastAnswer,
 } from '../preload/notifications';
+import type { LinkAnswer, LinkRequest } from './remote/open-url';
 
 // Global KeyValueState key; Do not disturb outlives the run, the entries do not (D26).
 export const DO_NOT_DISTURB_KEY = 'damocles.desktop.notifications.doNotDisturb';
@@ -32,6 +33,8 @@ export const NOTICE_LIFE_MS: Readonly<Record<NoticeSeverity | 'withActions', num
   // a toast that asks for a choice stays long enough to be answered after a glance away
   withActions: 120_000,
 };
+// The internal answer index of a link request's Open.
+const LINK_OPEN = 0;
 // Characters of free text (a prompt summary, an error) an entry keeps.
 const MAX_TEXT = 1000;
 
@@ -82,6 +85,8 @@ export interface NotificationCenterDeps {
   readonly flash: (on: boolean) => void;
   // undefined when the panel is no loaded chat
   readonly describeChat: (corePanelId: string) => Promise<ChatRef | undefined>;
+  // writes a link request's URL to the clipboard
+  readonly copyText: (text: string) => void;
   // the desktop popup window (D52), where every toast shows; undefined while the main window is closed or until the popup
   // page loads, when windowOpened or pendingToasts replays what waits
   readonly popups: () => ToastSink | undefined;
@@ -118,6 +123,12 @@ function chatOfAction(action: EntryAction): ChatRef | undefined {
 
 function sameChat(ref: ChatRef, chat: ChatKey): boolean {
   return ref.panelId === chat.panelId || (ref.sessionId !== undefined && ref.sessionId === chat.sessionId);
+}
+
+// Bodies that pop up whatever silences popups: main's and core's notices, and a target's request to open a page, which the
+// user's own terminal program made.
+function alwaysPopsUp(body: NotificationBody): boolean {
+  return body.kind === 'notice' || body.kind === 'link';
 }
 
 /** A notice that stays until it is answered: its toast never times out, and its center row offers its actions meanwhile. */
@@ -359,6 +370,37 @@ export class NotificationCenter {
   }
 
   /**
+   * A target asks to open a web page here: a sticky toast with Open and Copy, popped up whatever silences popups. It
+   * answers 'open' only for the toast's Open; a dismissal, Dismiss all, its withdrawal or the center's disposal answer
+   * 'dismissed', and a withdrawal keeps its entry.
+   */
+  linkRequest(host: NotificationHost, url: string): LinkRequest {
+    // the notice shows the URL as given and Open opens that, so it must already be the form a browser opens
+    if (!URL.canParse(url) || new URL(url).href !== url) throw new Error('A link request needs a canonical http or https URL');
+    const id = randomUUID();
+    const answer = new Promise<LinkAnswer>((resolve) => {
+      const body: NotificationBody = { kind: 'link', host: host.name, ...(host.tone !== undefined ? { hostTone: host.tone } : {}), url };
+      this.raise(body, { kind: 'none' }, { id, sticky: true, answer: (index) => resolve(index === LINK_OPEN ? 'open' : 'dismissed') });
+    });
+    return { answer, withdraw: () => this.withdraw(id) };
+  }
+
+  /** Whether the toast is a link request's, whose Open goes to the browser and so never brings the window forward. */
+  isLinkRequest(id: string): boolean {
+    return this.toasts.get(id)?.body.kind === 'link';
+  }
+
+  /** Copy on a link request's toast: main writes its own copy of the URL, and the toast stays. */
+  copyLink(id: string): void {
+    const live = this.toasts.get(id);
+    if (live?.body.kind !== 'link') {
+      this.deps.log(`[notifications] ignored a copy for toast ${id}, which is no link request`);
+      return;
+    }
+    this.deps.copyText(live.body.url);
+  }
+
+  /**
    * An answer to a toast from the popup window, which has dropped it: the index of a notice's action, TOAST_OPEN_ACTION for a
    * kind's action, or undefined. Dismissing a sticky notice's toast leaves it waiting in its center row.
    */
@@ -369,6 +411,11 @@ export class NotificationCenter {
       || (live.body.kind === 'notice' ? isActionIndex(action, live.body.actions) : action === TOAST_OPEN_ACTION);
     if (!allowed) {
       this.deps.log(`[notifications] ignored an answer that is not one of toast ${id}'s actions`);
+      return;
+    }
+    if (live.body.kind === 'link') {
+      this.finish(live, action === TOAST_OPEN_ACTION ? LINK_OPEN : undefined);
+      this.markRead(id);
       return;
     }
     const index = typeof action === 'number' ? action : undefined;
@@ -417,7 +464,9 @@ export class NotificationCenter {
   /** A row of the center: marks it read and runs its action. */
   open(entryId: string): void {
     const entry = this.entries.find((candidate) => candidate.id === entryId);
-    if (entry) this.act(entry.id, entry.action);
+    // a link request's row is its record: only its toast's Open or a dismissal answers it
+    if (entry?.body.kind === 'link') this.markRead(entry.id);
+    else if (entry) this.act(entry.id, entry.action);
   }
 
   /** The user is looking at this chat (selected, window focused): its entries are read (D52). */
@@ -442,7 +491,7 @@ export class NotificationCenter {
   relabelHost(from: string, to: NotificationHost): void {
     const toneOf = (tone: HostTone | undefined): { hostTone?: HostTone } => (tone !== undefined ? { hostTone: tone } : {});
     const relabel = (body: NotificationBody): NotificationBody => {
-      if (body.kind === 'notice') {
+      if (body.kind === 'notice' || body.kind === 'link') {
         if (body.host !== from) return body;
         const { hostTone: _tone, ...rest } = body;
         return { ...rest, host: to.name, ...toneOf(to.tone) };
@@ -500,7 +549,7 @@ export class NotificationCenter {
   popupPolicyChanged(): void {
     if (this.silenced()) {
       for (const live of [...this.toasts.values()]) {
-        if (live.body.kind === 'notice') continue;
+        if (alwaysPopsUp(live.body)) continue;
         this.finish(live, undefined);
         this.hide(live);
       }
@@ -547,9 +596,10 @@ export class NotificationCenter {
     const entry: Entry = { id: options.id ?? randomUUID(), at: this.now(), read, seen: read, body, action };
     this.entries = [entry, ...this.entries].slice(0, MAX_ENTRIES);
     const allowed = !this.silenced();
-    const toast = !options.quiet && (body.kind === 'notice' || allowed);
+    const toast = !options.quiet && (alwaysPopsUp(body) || allowed);
     if (toast) {
-      const lifeMs = body.kind === 'notice'
+      // a link request is sticky, so its life is never counted
+      const lifeMs = body.kind === 'link' ? 0 : body.kind === 'notice'
         ? (body.actions.length > 0 ? NOTICE_LIFE_MS.withActions : NOTICE_LIFE_MS[body.severity])
         : KIND_LIFE_MS[body.kind];
       this.present({
@@ -674,6 +724,14 @@ export class NotificationCenter {
       this.hide(live);
     }
     this.choose(entryId, action);
+  }
+
+  private markRead(entryId: string): void {
+    const entry = this.entries.find((candidate) => candidate.id === entryId);
+    if (!entry || (entry.read && entry.seen)) return;
+    entry.read = true;
+    entry.seen = true;
+    this.deps.changed();
   }
 
   private choose(entryId: string, action: EntryAction): void {

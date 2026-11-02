@@ -13,16 +13,25 @@ import type { HostPlatform, HostServicesDeps, HostState, HostTrust, HostUi, Host
 import type { DesktopEditorService, HostDiffView } from '../platform/editor-service';
 import type { ActiveEditorContext, DiffRequest } from '../../../platform/editor-service';
 import type { ChatReviewScope, SettingsFileScope } from '../../../shared/types/messages';
-import { authorityKeyOfProject } from '../../../shared/project-location';
+import { authorityKeyOfProject, isInsideFolder } from '../../../shared/project-location';
+import type { SpawnSpec } from '../../../core/process-launcher';
+import { windowsExplorer } from '../../../core/system-tools';
 import type { PickOptions } from './remote-hosts';
+import { linuxToWslUnc } from './wsl/wsl-paths';
 
 export interface RemoteServicesDeps {
   readonly authority: string;
   readonly hostId: string;
+  // a WSL distro's name: its folders are this computer's too, under \\wsl.localhost\<distro>
+  readonly wslDistro?: string;
   // the host's name as this computer's host store names it; a target never names itself
   readonly hostName: () => string;
+  // the core's own shell.openExternal: OpenUrl.coreOpenExternal, which always asks the user first
+  readonly openLink: (url: string) => Promise<boolean>;
   // main's own platform, whose services the allowed requests use
   readonly platform: HostPlatform;
+  // runs a process on main's launcher to its exit
+  readonly runProcess: (spec: SpawnSpec) => Promise<unknown>;
   // the authority's projects, their paths native to the target
   readonly projects: () => readonly Project[];
   // the roots a target path may name a file in: the projects and their live chat worktrees, keyed as main's roots
@@ -139,6 +148,11 @@ export function remoteServices(deps: RemoteServicesDeps): Omit<HostServicesDeps,
     isHostExtensionActive: () => false,
     searchHostExtensions: (query) => platform.editor.searchHostExtensions(query),
   };
+  const wslFolder = (target: string): string | undefined => {
+    const distro = deps.wslDistro;
+    if (distro === undefined || !deps.fileRoots().some((root) => isInsideFolder({ os: 'linux' }, root.fsPath, target))) return undefined;
+    return linuxToWslUnc(distro, target);
+  };
   const folders: { folders(): readonly OpenFolder[]; onDidChange(cb: () => void): Disposable } = {
     folders: () => deps.projects().map((project) => ({ fsPath: project.fsPath, name: project.name })),
     onDidChange: (cb) => deps.onProjectsChanged(cb),
@@ -149,17 +163,21 @@ export function remoteServices(deps: RemoteServicesDeps): Omit<HostServicesDeps,
     notifications: localizedNotifications(deps.notices, deps.base.render),
     clipboard: { writeText: () => refused('A clipboard write') },
     shell: {
-      // The user sees the address and the host before anything opens.
-      openExternal: async (url) => {
-        // only a web address, shown as it would open
-        const href = URL.canParse(url) ? new URL(url) : undefined;
-        if (href?.protocol !== 'http:' && href?.protocol !== 'https:') return false;
-        const open = t('Open');
-        if ((await deps.notices.info(t('{0} wants to open {1}', deps.hostName(), href.href), open)) !== open) return false;
-        return platform.shell.openExternal(href.href);
+      openExternal: (url) => deps.openLink(url),
+      // the one target path this computer opens: a WSL distro's folder inside its projects, through \\wsl.localhost, selected in
+      // File Explorer, which never runs a file the distro put in the folder's place as opening the path would
+      openFolder: async (target) => {
+        const unc = wslFolder(target);
+        // no Windows name holds a quote, which would end Explorer's verbatim argument
+        if (unc === undefined || unc.includes('"')) return false;
+        // Explorer exits 1 after it opened the window
+        await deps.runProcess({ file: windowsExplorer(), args: [`/select,"${unc}"`], windowsVerbatimArguments: true, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore'] });
+        return true;
       },
-      openFolder: () => Promise.resolve(false),
-      revealPath: () => Promise.resolve(),
+      revealPath: async (target) => {
+        const unc = wslFolder(target);
+        if (unc !== undefined) await platform.shell.revealPath(unc);
+      },
     },
     window: platform.window,
     lifecycle: { reload: () => refused('A reload') },

@@ -56,7 +56,8 @@ const WS = folderTarget(fakeWorkspace);
  * shadowing assertion below maps `mcpSourceOrder` through this rather than listing names, which is
  * the whole point: a precedence change has to move the expectation with it.
  */
-const SERVER_BY_SOURCE: Record<McpServerSource, string> = {
+// relayed servers exist only on a daemon's core, from its client, never in a file
+const SERVER_BY_SOURCE: Record<Exclude<McpServerSource, "relayed">, string> = {
   workspace: "fromWorkspace",
   damocles: "plainStdio",
   claude: "fromClaude",
@@ -195,7 +196,7 @@ describe("McpManager: getShadowingServerNames", () => {
 
     expect(expected.every(source => MCP_SCOPE_BY_SOURCE[source] === "folder")).toBe(true);
     expect([...shadowing.entries()].sort()).toEqual(
-      expected.map(source => [SERVER_BY_SOURCE[source], source] as const).sort(),
+      expected.map(source => [SERVER_BY_SOURCE[source as Exclude<McpServerSource, "relayed">], source] as const).sort(),
     );
   });
 
@@ -222,6 +223,7 @@ describe("McpManager: getShadowingServerNames", () => {
     const overridable = order.slice(0, order.indexOf("damocles") + 1);
 
     for (const source of overridable) {
+      if (source === "relayed") continue;
       expect(shadowing.has(SERVER_BY_SOURCE[source])).toBe(false);
     }
     // `claude-local` in particular: it is project-SCOPED, but still ranks below `damocles`, so

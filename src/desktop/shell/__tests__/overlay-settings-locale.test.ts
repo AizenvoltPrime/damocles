@@ -72,7 +72,7 @@ describe('overlay settings during a language load', () => {
     await flushPromises();
     expect(api.ack).toHaveBeenCalledWith('s1');
 
-    api.pushState({ locale: 'el', platform: 'win32', remoteEnabled: true });
+    api.pushState({ locale: 'el', platform: 'win32' });
     api.settingsMessage({ type: 'settingWriteResult', key: 'damocles.desktop.theme', ok: false, error: coreText });
     // handled on arrival, and stored as core's text rather than as a rendered string
     expect(writes().latest(['damocles.desktop.theme'])).toMatchObject({ kind: 'error', error: coreText });

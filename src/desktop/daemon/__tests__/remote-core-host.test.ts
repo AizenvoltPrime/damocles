@@ -4,7 +4,7 @@ import { INVALID } from '../../core-protocol/schema';
 import type { CoreAttach, CoreState } from '../control-messages';
 import type { DaemonState } from '../daemon-state';
 import type { ForkedChild } from '../process-starts';
-import { createRemoteCoreHost } from '../remote-core-host';
+import { createRemoteCoreHost, MAX_DETACHED_LANGUAGES } from '../remote-core-host';
 import { createRunRegistry } from '../run-registry';
 import { runPaths } from '../token';
 
@@ -17,7 +17,7 @@ interface FakeCore {
   readonly killed: boolean;
 }
 
-function setUp(sockets: { agentFolder?: string; relayHandle?: string } = {}) {
+function setUp(sockets: { agentFolder?: string; relayHandle?: string } = {}, clientPolicyChanged: () => void = () => undefined) {
   const cores: FakeCore[] = [];
   let nextPid = 100;
   const fork = (): ForkedChild => {
@@ -43,6 +43,8 @@ function setUp(sockets: { agentFolder?: string; relayHandle?: string } = {}) {
   };
   const state: DaemonState = { snapshot: () => ({}), update: async () => undefined, flush: async () => undefined };
   const host = createRemoteCoreHost({
+    agentShellUrl: () => undefined,
+    clientPolicyChanged,
     root: '/opt/damocles',
     paths: runPaths('/home/u', 'box'),
     git: { available: false, reason: 'no git' },
@@ -99,6 +101,39 @@ describe('remote core host', () => {
     cores.at(-1)!.exit(1);
     const detached = (parseCoreInit(cores.at(-1)!.sent[0]) as CoreInit).mirrors;
     expect([detached.clientAuth, detached.clientEditor, detached.clientTerminal, detached.clientLanguage]).toEqual([{}, {}, {}, {}]);
+  });
+
+  it('tells the daemon a client\'s clientPolicy changed when it attaches and when its last connection goes, with no core to route it', () => {
+    const seen: Array<boolean | undefined> = [];
+    const { host, cores } = setUp({}, () => seen.push(host.clientPolicy('device-a')?.agentForwarding));
+    // a halted core: no router publishes the client's values, the core host alone holds them
+    connection(host, 'connection-0', 'device-x').core.attach(attach(1));
+    for (let crash = 1; crash <= 4; crash++) cores.at(-1)!.exit(1);
+    expect(host.state().phase).toBe('halted');
+    seen.splice(0);
+    const first = connection(host, 'connection-1', 'device-a');
+    const forwarding = attach(1);
+    first.core.attach({ ...forwarding, mirrors: { ...forwarding.mirrors, clientPolicy: { ...forwarding.mirrors.clientPolicy, agentForwarding: true } } });
+    expect(seen).toEqual([true]);
+    first.core.dispose();
+    expect(seen).toEqual([true, undefined]);
+  });
+
+  it(`keeps the last language of the ${MAX_DETACHED_LANGUAGES} most recently detached clients`, () => {
+    const { host } = setUp();
+    const detach = (clientId: string): void => {
+      const { core } = connection(host, `connection-${clientId}`, clientId);
+      core.attach(attach(1));
+      core.dispose();
+    };
+    for (let index = 0; index <= MAX_DETACHED_LANGUAGES; index++) detach(`device-${index}`);
+    expect(host.clientLanguage('device-0')).toBeUndefined();
+    expect(host.clientLanguage('device-1')).toBe('el');
+    // a client that detaches again is the most recent once more
+    detach('device-1');
+    detach('device-extra');
+    expect(host.clientLanguage('device-1')).toBe('el');
+    expect(host.clientLanguage('device-2')).toBeUndefined();
   });
 
   it('forks core on the first attach with an init the daemon builds, carrying remote but no client value of it', () => {

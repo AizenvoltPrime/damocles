@@ -138,6 +138,11 @@ export function useOverlayEscape(onClose: () => void, options: OverlayOptions = 
   return { zIndex, isTop };
 }
 
+/** A dialog's leaving element keeps its last render; its exit keyframes key on the closed state reka would have rendered. */
+export function markClosed(element: Element): void {
+  (element as HTMLElement).dataset['state'] = 'closed';
+}
+
 /**
  * A reka modal dialog's layer of the stack (`ui/alert-dialog`, `ui/dialog` content), held while the dialog is open, so an
  * overlay opened over it paints above it and takes Escape. `content` is the reka content component.

@@ -10,7 +10,7 @@ export type ReconnectPhase = HostReconnect;
 // seconds before each attempt after a drop; past the last, every RECONNECT_REPEAT_S forever (D3)
 export const RECONNECT_BACKOFF_S: readonly number[] = [0, 5, 5, 10, 10, 10, 10, 10, 30];
 export const RECONNECT_REPEAT_S = 30;
-// paused while the attempt waits on a prompt; off once stage 1 runs on the target or a user watches the attempt
+// paused while the attempt waits on a prompt; off once a container builds, stage 1 runs on the target or a user watches the attempt
 export const ATTEMPT_TIMEOUT_MS = 30_000;
 // Electron's main process has net.online and no network-change event, so it is sampled this often while a loop waits
 export const NETWORK_SAMPLE_MS = 2000;
@@ -46,6 +46,9 @@ export function permanentFailureOf(failure: ConnectFailure): PermanentFailureCod
   if (PREREQUISITES.has(failure.code)) return 'prerequisites';
   if (INSTALL.has(failure.code)) return 'install';
   if (AUTH.has(failure.code)) return 'authFailed';
+  if (failure.code === 'containerNeedsBuild') return 'containerBuild';
+  // the distro was unregistered: the target is gone until the user brings it back
+  if (failure.code === 'distroNotListed') return 'hostRemoved';
   return undefined;
 }
 
@@ -82,7 +85,7 @@ export interface ReconnectorDeps {
   // one attempt, unwatched: its outcome resolves once connected, rejects with the attempt's error; signal aborts an attempt
   // the loop started. force (Reconnect now) gives up a suspect connection's transport, which any other connect joins.
   readonly attempt: (authorityKey: string, signal: AbortSignal, force: boolean) => LoopAttempt;
-  // the attempt in flight runs stage 1 on the target (checking, installing, starting)
+  // the attempt in flight builds its container or runs stage 1 on the target (building, checking, installing, starting)
   readonly staging: (authorityKey: string) => boolean;
   // a user watches the attempt in flight in the Connect dialog
   readonly watched: (authorityKey: string) => boolean;
@@ -116,7 +119,7 @@ interface LoopRun {
   readonly controller: AbortController;
   timeout: NodeJS.Timeout | undefined;
   timedOut: boolean;
-  // ATTEMPT_TIMEOUT_MS applies: the loop started it, nobody watches it and stage 1 has not started on the target
+  // ATTEMPT_TIMEOUT_MS applies: the loop started it, nobody watches it, and neither a build nor stage 1 has started
   bounded: boolean;
 }
 
@@ -216,8 +219,8 @@ export class Reconnector {
     }
     const attempt = record?.attempt;
     if (!record || !attempt) return;
-    // stage 1's silent steps (the install lock, unpacking, the self-test) outlast any fixed bound: its own limits and ssh's
-    // keepalive end it from here, as the user's Cancel ends an attempt they watch
+    // a build and stage 1's silent steps (the install lock, unpacking, the self-test) outlast any fixed bound: their own
+    // limits and ssh's keepalive end it from here, as the user's Cancel ends an attempt they watch
     if (attempt.bounded && (this.deps.staging(authorityKey) || this.deps.watched(authorityKey))) {
       attempt.bounded = false;
       clearTimeout(attempt.timeout);

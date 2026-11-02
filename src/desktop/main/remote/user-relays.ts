@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { parseSettingsText, type SettingsObject } from '../../../core/config/settings-file';
 import type { Disposable } from '../../../platform/disposable';
 import { PROVIDER_ID_PATTERN } from '../../../shared/types/messages';
-import { MAX_BROKER_EXPIRES_IN_MS, planModelIdsOf, sentClientAuth, type BrokerAnswer, type ClientAuth, type ClientPolicy, type ClientUser, type HeldAuth, type HeldAuthEntry, type PermissionRuleLists, type UserRulesDir } from '../../../shared/remote-user';
+import { GLOBAL_MEMORY_APPLY_TIMEOUT_MS, GLOBAL_MEMORY_READ_TIMEOUT_MS, MAX_BROKER_EXPIRES_IN_MS, MAX_STANDING_GLOBALS, planModelIdsOf, sentClientAuth, type BrokerAnswer, type ClientAuth, type ClientGlobalProfile, type ClientPolicy, type ClientUser, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type GlobalMemoryWrite, type HeldAuth, type HeldAuthEntry, type PermissionRuleLists, type RelayedMcpServer, type SearchedGlobalMemory, type UserRulesDir } from '../../../shared/remote-user';
 
 // an access token or API key; pi's JWTs are a few KB
 export const MAX_SECRET_CHARS: number = 64 * 1024;
@@ -18,6 +18,8 @@ export const MAX_RULE_CHARS: number = 4096;
 export const MAX_RULES: number = 2000;
 // how often an unknown provider id may re-read this computer's snapshot
 export const AUTH_REREAD_MS: number = 5000;
+// a daemon whose welcome does not list it closes the connection on a clientMcp mirror as a violation
+export const CLIENT_MCP_FEATURE = 'clientMcp';
 
 /** A user settings file read for its permission rules, and the folder it is in. */
 export interface UserRulesFile {
@@ -133,6 +135,64 @@ export interface ClientMirrorValues {
   readonly clientPolicy: ClientPolicy;
 }
 
+/** The mirrors an attach publishes: the three it starts from, then the relayed MCP servers right after it. */
+export interface PublishedMirrors extends ClientMirrorValues {
+  readonly clientMcp: { readonly servers: readonly RelayedMcpServer[] };
+}
+
+/** The local core's global memory and personal MCP servers, which a remote core reaches only through these checks. */
+export interface LocalUserScope {
+  readonly memorySearch: (query: string, k: number, tiers: readonly ('global' | 'note')[], injection: boolean, filters: GlobalMemorySearchFilters) => Promise<readonly SearchedGlobalMemory[]>;
+  readonly memoryProfile: () => Promise<ClientGlobalProfile>;
+  readonly memoryResolve: (ids: readonly string[]) => Promise<readonly GlobalMemoryResolution[]>;
+  readonly memoryApply: (writes: readonly GlobalMemoryWrite[]) => Promise<{ readonly applied: number; readonly ids?: readonly string[] }>;
+  readonly mcpServers: () => Promise<readonly RelayedMcpServer[]>;
+  readonly mcpCall: (server: string, tool: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal) => Promise<unknown>;
+  readonly mcpResources: (server: string, kind: 'resources' | 'templates', cursor: string | undefined, signal: AbortSignal) => Promise<unknown>;
+  readonly mcpReadResource: (server: string, uri: string, signal: AbortSignal) => Promise<unknown>;
+}
+
+/**
+ * The servers a remote host learns of, rebuilt field by field from the local core's answer: names, descriptions, timeouts,
+ * tool schemas and exposures and the resources flag, so nothing else a server's config holds (env, headers, a command or
+ * url) can cross.
+ */
+export function relayedServersOf(raw: readonly RelayedMcpServer[]): RelayedMcpServer[] {
+  return raw.map((server) => ({
+    name: server.name,
+    ...(server.description !== undefined ? { description: server.description } : {}),
+    tools: server.tools.map((tool) => ({
+      name: tool.name,
+      ...(tool.title !== undefined ? { title: tool.title } : {}),
+      ...(tool.description !== undefined ? { description: tool.description } : {}),
+      ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
+      ...(tool.annotations !== undefined ? { annotations: tool.annotations } : {}),
+      ...(tool.exposure !== undefined ? { exposure: tool.exposure } : {}),
+    })),
+    resources: server.resources,
+    ...(server.timeoutMs !== undefined ? { timeoutMs: server.timeoutMs } : {}),
+  }));
+}
+
+/** What `answer` settles to, or a rejection once ms pass first; the remote core treats that as a failure of its call. */
+async function withinTimeout<T>(what: string, ms: number, answer: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`This computer's core did not answer ${what} within ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([answer, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** An MCP result a personal server answered: an object, as every MCP result is. */
+function mcpResultOf(raw: unknown, what: string): unknown {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new Error(`The answer of ${what} is not an MCP result`);
+  return raw;
+}
+
 export interface UserRelaysDeps {
   // the local core's requests, run on the running core (they wait through its restart)
   readonly resolveCredential: (provider: string) => Promise<BrokerAnswer>;
@@ -145,10 +205,11 @@ export interface UserRelaysDeps {
   readonly userValue: (key: string) => unknown;
   // the authority's configured policy from this computer's host store: YOLO, the default mode and agent forwarding
   readonly hostPolicy: (authorityKey: string) => Pick<ClientPolicy, 'allowBypass' | 'defaultPermissionMode' | 'agentForwarding'>;
+  readonly local: LocalUserScope;
   readonly log: (line: string) => void;
 }
 
-type Publish = <K extends keyof ClientMirrorValues>(topic: K, value: ClientMirrorValues[K]) => void;
+type Publish = <K extends keyof PublishedMirrors>(topic: K, value: PublishedMirrors[K]) => void;
 
 /**
  * Serves a remote core's user.credentials and keeps each attach's client mirrors current: a sign-in or out in the User tab
@@ -159,21 +220,34 @@ export class UserRelays implements Disposable {
   // expiries on this computer's clock; each send turns them into the ms left
   private auth: HeldAuth = { providers: {} };
   private user: ClientUser = { settings: {}, permissionRules: [] };
-  // each attach's publish, by the authority it attached
-  private readonly attached = new Map<Publish, { readonly authorityKey: string; readonly sharedLoopback: boolean; policy: string }>();
+  // each attach's publish, by the authority it attached; mcp: its daemon lists CLIENT_MCP_FEATURE
+  private readonly attached = new Map<Publish, { readonly authorityKey: string; readonly sharedLoopback: boolean; readonly mcp: boolean; policy: string }>();
   private lastAuthRead = Number.NEGATIVE_INFINITY;
+  // the personal MCP servers marked available on remote hosts, as last published; each relayed request is checked against them
+  private mcp: readonly RelayedMcpServer[] = [];
+  private mcpRefresh: Promise<void> = Promise.resolve();
+  // settles once the first read of them landed or failed, which a relayed request waits for
+  private readonly mcpRead: Promise<void>;
+  private mcpReadSettled!: () => void;
   // one refresh of each mirror at a time, so the last to publish read after every earlier one
   private authRefresh: Promise<void> = Promise.resolve();
   private userRefresh: Promise<void> = Promise.resolve();
 
   constructor(deps: UserRelaysDeps) {
     this.deps = deps;
+    this.mcpRead = new Promise((resolve) => (this.mcpReadSettled = resolve));
   }
 
-  /** The values an attach of authorityKey starts from; its publish hears every later change until disposed. sharedLoopback: ClientPolicy's. */
-  attach(publish: Publish, authorityKey: string, sharedLoopback: boolean): { readonly mirrors: ClientMirrorValues; readonly subscription: Disposable } {
+  /**
+   * The values an attach of authorityKey starts from; its publish hears every later change until disposed. sharedLoopback:
+   * ClientPolicy's. features: the daemon's welcome.features, which decide the topics it hears.
+   */
+  attach(publish: Publish, authorityKey: string, sharedLoopback: boolean, features: readonly string[]): { readonly mirrors: ClientMirrorValues; readonly subscription: Disposable } {
     const clientPolicy = this.policyOf(authorityKey, sharedLoopback);
-    this.attached.set(publish, { authorityKey, sharedLoopback, policy: JSON.stringify(clientPolicy) });
+    const mcp = features.includes(CLIENT_MCP_FEATURE);
+    this.attached.set(publish, { authorityKey, sharedLoopback, mcp, policy: JSON.stringify(clientPolicy) });
+    // an empty list included: a core keeps a detached client's last list, which a reattach must replace
+    if (mcp) publish('clientMcp', { servers: this.mcp });
     return { mirrors: { clientAuth: sentClientAuth(this.auth, Date.now()), clientUser: this.user, clientPolicy }, subscription: { dispose: () => this.attached.delete(publish) } };
   }
 
@@ -212,6 +286,81 @@ export class UserRelays implements Disposable {
     const refresh = this.userRefresh.then(() => this.refreshUser());
     this.userRefresh = refresh.catch(() => undefined);
     return refresh;
+  }
+
+  /** The marked personal servers or their tools changed (or the local core started): re-reads and publishes them where they differ. */
+  mcpChanged(): Promise<void> {
+    const refresh = this.mcpRefresh.then(async () => {
+      const next = relayedServersOf(await this.deps.local.mcpServers());
+      if (JSON.stringify(next) === JSON.stringify(this.mcp)) return;
+      this.mcp = next;
+      for (const [publish, attach] of this.attached) if (attach.mcp) publish('clientMcp', { servers: next });
+    }).finally(() => this.mcpReadSettled());
+    this.mcpRefresh = refresh.catch(() => undefined);
+    return refresh;
+  }
+
+  /** A remote core's search of this computer's global memory (injection: its injection's gate): at most k rows, each of a tier it asked for. */
+  async memorySearch(authority: string, query: string, k: number, tiers: readonly ('global' | 'note')[], injection = false, filters: GlobalMemorySearchFilters = {}): Promise<readonly SearchedGlobalMemory[]> {
+    const found = await withinTimeout('user.memory.search', GLOBAL_MEMORY_READ_TIMEOUT_MS, this.deps.local.memorySearch(query, k, tiers, injection, filters));
+    if (found.length > k) throw new Error(`The global memory search answered ${found.length} rows for ${k}`);
+    for (const memory of found) {
+      if (!tiers.includes(memory.kind === 'note' ? 'note' : 'global')) throw new Error('The global memory search answered a row of a tier it was not asked for');
+    }
+    this.deps.log(`[remote] user.memory.search for ${authority}: ${found.length} rows`);
+    return found;
+  }
+
+  /** This computer's global profile, pinned globals and global preferences: at most the bound each, each of its own kind. */
+  async memoryProfile(): Promise<ClientGlobalProfile> {
+    const answer = await withinTimeout('user.memory.profile', GLOBAL_MEMORY_READ_TIMEOUT_MS, this.deps.local.memoryProfile());
+    if (answer.pinned.length > MAX_STANDING_GLOBALS || answer.preferences.length > MAX_STANDING_GLOBALS) throw new Error('The global profile answer lists more memories than its bound');
+    if (answer.pinned.some((memory) => memory.kind === 'note') || answer.preferences.some((memory) => memory.kind !== 'preference')) throw new Error('The global profile answer lists a memory of the wrong kind');
+    return answer;
+  }
+
+  /** The current version of global memories a remote core named by id: one answer per id it asked about, no other. */
+  async memoryResolve(ids: readonly string[]): Promise<readonly GlobalMemoryResolution[]> {
+    const answers = await withinTimeout('user.memory.resolve', GLOBAL_MEMORY_READ_TIMEOUT_MS, this.deps.local.memoryResolve(ids));
+    if (answers.length > ids.length || answers.some((answer) => !ids.includes(answer.id))) throw new Error('The global memory answer names an id it was not asked about');
+    return answers;
+  }
+
+  /** Applies a remote core's writes in order and acknowledges the byte offset after the last one applied, and the row of each. */
+  async memoryApply(authority: string, entries: readonly { readonly end: number; readonly write: GlobalMemoryWrite }[]): Promise<{ readonly through: number; readonly ids?: readonly string[] }> {
+    const { applied, ids } = await withinTimeout('user.memory.apply', GLOBAL_MEMORY_APPLY_TIMEOUT_MS, this.deps.local.memoryApply(entries.map((entry) => entry.write)));
+    if (!Number.isInteger(applied) || applied < 0 || applied > entries.length) throw new Error(`The global memory apply answered ${applied} for ${entries.length} writes`);
+    if (ids !== undefined && ids.length !== applied) throw new Error(`The global memory apply answered ${ids.length} rows for ${applied} writes`);
+    this.deps.log(`[remote] user.memory.apply for ${authority}: ${applied} of ${entries.length} writes`);
+    return { through: applied === 0 ? 0 : entries[applied - 1]!.end, ...(ids !== undefined ? { ids } : {}) };
+  }
+
+  /** A server published now; a request that arrives before the first read waits for it, as a credential ask waits for its snapshot. */
+  private async relayedServer(server: string): Promise<RelayedMcpServer> {
+    await this.mcpRead;
+    const found = this.mcp.find((candidate) => candidate.name === server);
+    if (!found) throw new Error(`MCP server ${JSON.stringify(server.slice(0, 64))} is not available on remote hosts`);
+    return found;
+  }
+
+  /** A remote core's call of a personal server: only a server marked available, and only a tool it lists; its caller's abort ends it. */
+  async mcpCall(authority: string, server: string, tool: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<unknown> {
+    if (!(await this.relayedServer(server)).tools.some((candidate) => candidate.name === tool)) throw new Error(`MCP server ${JSON.stringify(server.slice(0, 64))} has no tool ${JSON.stringify(tool.slice(0, 64))}`);
+    this.deps.log(`[remote] user.mcp.call for ${authority}: ${server}`);
+    return mcpResultOf(await this.deps.local.mcpCall(server, tool, args, signal), `MCP server ${server}`);
+  }
+
+  /** A remote core's resource listing of a personal server: only a server marked available that offers resources. */
+  async mcpResources(authority: string, server: string, kind: 'resources' | 'templates', cursor: string | undefined, signal: AbortSignal): Promise<unknown> {
+    if (!(await this.relayedServer(server)).resources) throw new Error(`MCP server ${JSON.stringify(server.slice(0, 64))} offers no resources`);
+    this.deps.log(`[remote] user.mcp.resources for ${authority}: ${server}`);
+    return mcpResultOf(await this.deps.local.mcpResources(server, kind, cursor, signal), `MCP server ${server}`);
+  }
+
+  async mcpReadResource(authority: string, server: string, uri: string, signal: AbortSignal): Promise<unknown> {
+    if (!(await this.relayedServer(server)).resources) throw new Error(`MCP server ${JSON.stringify(server.slice(0, 64))} offers no resources`);
+    this.deps.log(`[remote] user.mcp.readResource for ${authority}: ${server}`);
+    return mcpResultOf(await this.deps.local.mcpReadResource(server, uri, signal), `MCP server ${server}`);
   }
 
   private async refreshAuth(): Promise<void> {

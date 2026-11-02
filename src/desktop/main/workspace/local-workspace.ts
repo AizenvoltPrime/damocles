@@ -14,6 +14,7 @@ import { createTreeListing } from '../../workspace/tree-listing';
 import { spawnFormatterHost } from '../formatting/formatter-process';
 import { ptyHostPaths } from '../platform/app-paths';
 import { spawnPtyHost } from '../terminal/pty-host-process';
+import { windowsTerminalEnvironment } from './windows-terminal-environment';
 
 export interface LocalWorkspaceDeps {
   readonly paths: AppPaths;
@@ -48,6 +49,7 @@ export function createLocalWorkspace(deps: LocalWorkspaceDeps): ProjectWorkspace
       zshDotDir: deps.zshDotDir,
       homedir: deps.homedir,
       env: process.env,
+      ...(process.platform === 'win32' ? { currentEnvironment: (env: NodeJS.ProcessEnv) => windowsTerminalEnvironment(env, deps.log) } : {}),
       log: deps.log,
     }),
   };

@@ -25,6 +25,7 @@ let revealed: string[];
 let copied: string[];
 let answer: number | undefined;
 let host: string | undefined;
+let wslDistro: string | undefined;
 // answered first, in order, before answer
 let answers: Array<number | undefined>;
 let asked: MessageQuestion[];
@@ -48,6 +49,7 @@ beforeEach(() => {
   copied = [];
   answer = 0;
   host = undefined;
+  wslDistro = undefined;
   answers = [];
   asked = [];
   trashFailure = undefined;
@@ -77,7 +79,7 @@ beforeEach(() => {
     reveal: async (target) => { revealed.push(target); },
     copy: async (text) => { copied.push(text); },
     changed: (change) => changed.push(change),
-    ignored: async () => new Set(), target: () => ({ os: process.platform, ...(host !== undefined ? { host } : {}) }),
+    ignored: async () => new Set(), target: () => ({ os: process.platform, ...(host !== undefined ? { host } : {}), ...(wslDistro !== undefined ? { wslDistro } : {}) }),
   });
 });
 
@@ -293,6 +295,17 @@ describe('delete, reveal and copy', () => {
     expect(removed).toEqual([path.join(projectDir, 'src', 'old.ts')]);
     expect(await tree.reveal(project.key, '')).toEqual({ ok: false, reason: 'failed', message: 'The folder is not on this computer.' });
     expect(revealed).toEqual([]);
+  });
+
+  it('reveals a WSL distro\'s project folder in File Explorer under \\\\wsl.localhost, and nothing it cannot name', async () => {
+    host = 'Ubuntu-24.04';
+    wslDistro = 'Ubuntu-24.04';
+    project = { key: 'wsl+Ubuntu-24.04|/home/me/app', fsPath: '/home/me/app', name: 'app' };
+    expect(await tree.reveal(project.key, '')).toEqual({ ok: true });
+    expect(revealed).toEqual(['\\\\wsl.localhost\\Ubuntu-24.04\\home\\me\\app']);
+    project = { key: 'wsl+Ubuntu-24.04|C:/odd', fsPath: 'C:\\odd', name: 'odd' };
+    expect(await tree.reveal(project.key, '')).toEqual({ ok: false, reason: 'failed', message: 'The folder is not on this computer.' });
+    expect(revealed).toHaveLength(1);
   });
 
   it('trashes a junction itself, never the folder outside it points to', async () => {

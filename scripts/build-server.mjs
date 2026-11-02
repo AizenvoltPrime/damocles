@@ -2,13 +2,15 @@
  * Builds the server packages: one archive per target holding the daemon's bundles, the Node the shipped
  * Electron embeds, and the production closure of the desktop externals for that target.
  *
- *   npm run build:server -- --target <target> [--node-version <v>] [--node-pty-binary <pty.node>]
+ *   npm run build:server -- --target <target> [--node-version <v>] [--node-pty-binary <pty.node>] [--signed-browser-helper <browser.exe>]
  *   npm run build:server -- --all
  *   node scripts/build-server.mjs --write-manifest <dir>
  *
  * The bundles are built once into dist/server-packages/.stage/, never over the dev tree's dist/. Node archives, the
- * target's native npm packages and the subscription plugin (scripts/subscription-plugin.mjs) download into
- * dist/server-packages/.cache/, each checked against its pinned SHA-256 or its package-lock.json integrity. Archives land in dist/server-packages/, and dist/desktop/server-manifest.json lists every
+ * target's native npm packages, the subscription plugin (scripts/subscription-plugin.mjs) and the zig that compiles a Windows
+ * package's bin/helpers/browser.exe (scripts/browser-helper.mjs) download into dist/server-packages/.cache/, each checked against
+ * its pinned SHA-256 or its package-lock.json integrity; `--signed-browser-helper` puts the release's signed copy of that
+ * browser.exe in its place once it proves to be it. Archives land in dist/server-packages/, and dist/desktop/server-manifest.json lists every
  * package there for this version (the dev manifest). `--write-manifest` writes the release manifest from all eight packages
  * in <dir>. Alpine targets need `--node-pty-binary`, node-pty compiled against musl (the release workflow builds it in
  * node:<version>-alpine); `--all` builds the other six.
@@ -19,12 +21,15 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
+import { packagedBrowserHelper } from './browser-helper.mjs';
+import { cachedDownload as cachedFile } from './cached-download.mjs';
 import { DESKTOP_EXTERNALS } from './desktop-externals.mjs';
 import { EXTENSION_EXTERNALS } from './extension-externals.mjs';
+import { clampLoadAlign } from './elf-load-align.mjs';
 import { isEntryPoint } from './entry-point.mjs';
 import { readTarGz, readZip, sha256, tarGz, zip } from './server-archive.mjs';
 import { readProtocolVersion } from './protocol-compat.mjs';
-import { NODE_RELEASES, SERVER_TARGETS, nodeArchive, serverArtifact, serverNodeVersion } from './server-targets.mjs';
+import { DEVCONTAINERS_CLI, NODE_RELEASES, SERVER_TARGETS, nodeArchive, serverArtifact, serverNodeVersion } from './server-targets.mjs';
 import { DESKTOP_ONLY_PACKAGES, isPlatformBinary, platformFamilyGlob, productionClosure } from './sync-vscodeignore.mjs';
 import { PLUGIN_DIR, vendorSubscriptionPlugin } from './subscription-plugin.mjs';
 
@@ -38,6 +43,8 @@ const FLAVOR_MODULE = join(ROOT, 'src', 'desktop', 'daemon', 'server-package.ts'
 // Package files that are executed, so their mode is 0755 whatever the build machine's file modes are.
 const EXECUTABLES = [
   /^bin\/damocles-server$/,
+  /^bin\/remote-cli\/damocles$/,
+  /^bin\/helpers\/browser\.sh$/,
   /^node\/node$/,
   /^node_modules\/@vscode\/ripgrep-[^/]+\/bin\/rg$/,
   /^node_modules\/node-pty\/prebuilds\/[^/]+\/spawn-helper$/,
@@ -54,7 +61,7 @@ export function modeOf(path) {
   return EXECUTABLES.some((re) => re.test(path)) ? 0o755 : 0o644;
 }
 
-/** The node_modules roots of `spec`: the desktop externals without Electron's, with node-pty, per platform. */
+/** The node_modules roots of `spec`: the desktop externals without Electron's, with node-pty and the Dev Containers CLI, per platform. */
 export function serverRoots(spec) {
   const roots = new Set(DESKTOP_EXTERNALS.filter((name) => !name.startsWith('node:')).map((name) => name.replace(/\/\*+$/, '')));
   roots.delete('electron');
@@ -63,6 +70,7 @@ export function serverRoots(spec) {
   if (spec.platform === 'win32') roots.delete('@parcel/watcher');
   else roots.delete('koffi');
   roots.add('node-pty');
+  roots.add(DEVCONTAINERS_CLI);
   return [...roots].sort();
 }
 
@@ -136,12 +144,32 @@ export function launchers(spec) {
   return entries;
 }
 
-/** node/node (or node.exe) and node/LICENSE from a Node release archive. */
+// The damocles command and the BROWSER helper of a target's user terminals (resources/server-bin), for POSIX or Windows. Windows
+// also gets the sh forms for Git Bash, MSYS2 and Cygwin, whose sh finds no .cmd, and the BROWSER cli-server.ts sets there is
+// bin/helpers/browser.exe (targetEntries), since cmd.exe would parse the address.
+const CLI_SCRIPTS = {
+  posix: ['remote-cli/damocles', 'helpers/browser.sh'],
+  win32: ['remote-cli/damocles', 'remote-cli/damocles.cmd', 'helpers/browser.sh'],
+};
+export const BROWSER_HELPER_PATH = 'bin/helpers/browser.exe';
+
+/** bin/remote-cli and bin/helpers for `spec`'s platform, from resources/server-bin; each runs dist/cli-remote.js. */
+export function cliScripts(spec, root = ROOT) {
+  return CLI_SCRIPTS[spec.platform === 'win32' ? 'win32' : 'posix'].map((name) => file(`bin/${name}`, join(root, 'resources', 'server-bin', name)));
+}
+
+/** Whether `spec`'s executables must load on WSL 1, whose ELF loader takes no PT_LOAD aligned past 4 KiB: x64 Linux only, as arm64 kernels may use 64 KiB pages. */
+export function clampsLoadAlign(spec) {
+  return spec.platform === 'linux' && spec.arch === 'x64';
+}
+
+/** node/node (or node.exe) and node/LICENSE from a Node release archive, node/node's PT_LOAD alignment clamped where `clampsLoadAlign`. */
 export function nodeEntries(spec, archiveName, archive) {
   const entries = archiveName.endsWith('.zip') ? readZip(archive) : readTarGz(archive);
   const top = archiveName.replace(/\.(zip|tar\.gz)$/, '');
   const wanted = spec.platform === 'win32' ? { [`${top}/node.exe`]: 'node/node.exe', [`${top}/LICENSE`]: 'node/LICENSE' } : { [`${top}/bin/node`]: 'node/node', [`${top}/LICENSE`]: 'node/LICENSE' };
-  const found = entries.filter((entry) => entry.type === 'file' && wanted[entry.path]).map((entry) => bytes(wanted[entry.path], entry.data));
+  const contents = (entry) => (wanted[entry.path] === 'node/node' && clampsLoadAlign(spec) ? clampLoadAlign(entry.data, `${archiveName} ${entry.path}`) : entry.data);
+  const found = entries.filter((entry) => entry.type === 'file' && wanted[entry.path]).map((entry) => bytes(wanted[entry.path], contents(entry)));
   if (found.length !== 2) throw new Error(`${archiveName} lacks ${Object.keys(wanted).join(' or ')}`);
   return found;
 }
@@ -158,7 +186,7 @@ export function npmPackageEntries(name, tarball) {
  * node_modules closure from `nodeModules`, and the checkout's root files. Entries carry `source` (a file to read) or `data`.
  */
 export function packageEntries({ spec, target, version, nodeVersion, distDir, nodeModules = join(ROOT, 'node_modules'), root = ROOT, portable, externals }) {
-  const entries = [...launchers(spec)];
+  const entries = [...launchers(spec), ...cliScripts(spec, root)];
   for (const name of walk(distDir)) if (!name.endsWith('.map')) entries.push(file(`dist/${name}`, join(distDir, name)));
   for (const name of portable) {
     const dir = join(nodeModules, name);
@@ -175,9 +203,9 @@ export function packageEntries({ spec, target, version, nodeVersion, distDir, no
   return entries;
 }
 
-/** The roots self-test imports: what the bundles require, minus node-pty, which only the pty host loads, by path. */
+/** The roots self-test imports: what the bundles require, minus node-pty and the Dev Containers CLI, which load by path. */
 export function selfTestExternals(spec) {
-  return serverRoots(spec).filter((name) => name !== 'node-pty');
+  return serverRoots(spec).filter((name) => name !== 'node-pty' && name !== DEVCONTAINERS_CLI);
 }
 
 function lockfileEntry(name) {
@@ -193,20 +221,8 @@ function matchesIntegrity(data, integrity) {
 }
 
 /** A download, cached under .cache/ and accepted only when `valid` holds for its bytes. */
-async function cachedDownload(url, name, valid) {
-  mkdirSync(CACHE_DIR, { recursive: true });
-  const cached = join(CACHE_DIR, name);
-  if (existsSync(cached)) {
-    const data = readFileSync(cached);
-    if (valid(data)) return data;
-  }
-  console.log(`Downloading ${url}`);
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`${url} answered ${response.status}`);
-  const data = Buffer.from(await response.arrayBuffer());
-  if (!valid(data)) throw new Error(`${url} does not match its pinned hash`);
-  writeFileSync(cached, data);
-  return data;
+function cachedDownload(url, name, valid) {
+  return cachedFile(url, join(CACHE_DIR, name), valid);
 }
 
 async function nativeEntries(spec) {
@@ -254,8 +270,11 @@ export function loaded(entries) {
   return entries.map((entry) => (entry.data ? entry : { path: entry.path, mode: entry.mode, data: readFileSync(entry.source) }));
 }
 
-/** All of `target`'s entries; `nodePtyBinary` replaces the prebuild of an Alpine target. */
-export async function targetEntries(target, { version, nodeVersion, distDir, nodePtyBinary }) {
+/**
+ * All of `target`'s entries; `nodePtyBinary` replaces the prebuild of an Alpine target, and `signedBrowserHelper`, the release's
+ * signed copy of the browser.exe built here, the Windows one.
+ */
+export async function targetEntries(target, { version, nodeVersion, distDir, nodePtyBinary, signedBrowserHelper }) {
   const spec = SERVER_TARGETS[target];
   const { portable } = serverClosure(spec);
   const archive = nodeArchive(target, nodeVersion);
@@ -266,6 +285,8 @@ export async function targetEntries(target, { version, nodeVersion, distDir, nod
     ...nodeEntries(spec, archiveName, nodeArchiveData),
     ...(await nativeEntries(spec)),
   ];
+  if (spec.platform === 'win32') entries.push(bytes(BROWSER_HELPER_PATH, await packagedBrowserHelper(spec.arch, version, signedBrowserHelper)));
+  else if (signedBrowserHelper) throw new Error(`${target} carries no browser.exe to replace with a signed one`);
   if (spec.alpine) {
     const prebuilt = `node_modules/node-pty/prebuilds/${spec.ptyPrebuild}/pty.node`;
     const at = entries.findIndex((entry) => entry.path === prebuilt);
@@ -318,15 +339,18 @@ async function main() {
   const all = process.argv.includes('--all');
   if (!all && !SERVER_TARGETS[target]) throw new Error(`Usage: build-server.mjs --target <${Object.keys(SERVER_TARGETS).join('|')}> | --all`);
   const nodePtyBinary = option('--node-pty-binary');
+  const signedHelperFile = option('--signed-browser-helper');
   const targets = all ? Object.keys(SERVER_TARGETS).filter((name) => !SERVER_TARGETS[name].alpine) : [target];
   if (!all && SERVER_TARGETS[target].alpine && !nodePtyBinary) throw new Error(`${target} needs --node-pty-binary <pty.node compiled against musl>`);
+  if (signedHelperFile && all) throw new Error('--signed-browser-helper names one architecture\'s browser.exe, so it needs --target');
+  const signedBrowserHelper = signedHelperFile ? readFileSync(signedHelperFile) : undefined;
   const pinned = option('--node-version');
   const nodeVersion = pinned ?? serverNodeVersion();
   if (!NODE_RELEASES[nodeVersion]) throw new Error(`Node ${nodeVersion} has no pinned archives in scripts/server-targets.mjs`);
   const distDir = await buildBundles();
   mkdirSync(OUT_DIR, { recursive: true });
   for (const name of targets) {
-    const entries = loaded(await targetEntries(name, { version, nodeVersion, distDir, nodePtyBinary }));
+    const entries = loaded(await targetEntries(name, { version, nodeVersion, distDir, nodePtyBinary, signedBrowserHelper }));
     const archive = archiveOf(name, entries);
     const out = join(OUT_DIR, serverArtifact(name, version));
     writeFileSync(out, archive);

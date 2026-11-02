@@ -16,6 +16,7 @@ import { answerOf, ran } from '../popup-answer';
 import HostActions from '../components/HostActions.vue';
 import HostNameField from '../components/HostNameField.vue';
 import InstallFolderField from '../components/InstallFolderField.vue';
+import HeldMemoryRow from './HeldMemoryRow.vue';
 import { useDesktopPrefs } from './desktop-prefs';
 import { integerSetting } from './integer-setting';
 import { REMOTE_HOSTS_TARGET } from './remote-hosts-target';
@@ -147,8 +148,13 @@ const SWITCHES: readonly { readonly key: SwitchKey; readonly row: string; readon
   { key: 'browserLocalNetwork', row: 'remote-host-local-network', name: 'remoteHostLocalNetwork' },
   { key: 'openLinksWithoutAsking', row: 'remote-host-links', name: 'remoteHostLinks' },
 ];
-// Agent forwarding exists for POSIX targets only.
-const switchesOf = (entry: RemoteHostEntry): typeof SWITCHES => SWITCHES.filter((item) => item.key !== 'forwardAgent' || entry.os !== 'win32');
+// The agent reaches a POSIX SSH host through ssh and a container through its connection, never a WSL distro; only ssh asks
+// for a password to remember.
+const shownSwitch = (entry: RemoteHostEntry, key: SwitchKey): boolean => {
+  if (key === 'forwardAgent') return entry.kind === 'container' || (entry.kind === 'ssh' && entry.os !== 'win32');
+  return key !== 'rememberPassword' || entry.kind === 'ssh';
+};
+const switchesOf = (entry: RemoteHostEntry): typeof SWITCHES => SWITCHES.filter((item) => shownSwitch(entry, item.key));
 // The links row names the host; search still matches its static label.
 const switchLabel = (entry: RemoteHostEntry, item: (typeof SWITCHES)[number]): string => (item.key === 'openLinksWithoutAsking'
   ? t('remoteHosts.linksLabel', { name: entry.name })
@@ -248,6 +254,12 @@ watch(() => host.value?.hostId, () => {
     :data-host-id="host.hostId"
     class="contents"
   >
+    <HeldMemoryRow
+      :api="api"
+      :host-id="host.hostId"
+      :host-name="host.name"
+      :queues="host.heldMemoryQueues"
+    />
     <SettingsRow id="remote-host-name">
       <span
         class="w-48"
@@ -389,7 +401,10 @@ watch(() => host.value?.hostId, () => {
         </ul>
       </template>
     </SettingsRow>
-    <SettingsRow id="remote-host-os">
+    <SettingsRow
+      v-if="host.kind === 'ssh'"
+      id="remote-host-os"
+    >
       <template #note>
         <p
           v-if="failedOn(host, 'osOverride')"
@@ -465,9 +480,11 @@ watch(() => host.value?.hostId, () => {
             :api="api"
             :host-id="host.hostId"
             :host-name="host.name"
+            :kind="host.kind"
             :connection="host.connection"
             :passwordless="host.facts.passwordless"
             :os="host.os"
+            :containers="entries!.some((entry) => entry.container?.via?.hostId === host!.hostId)"
           />
         </div>
       </template>

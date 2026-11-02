@@ -24,6 +24,8 @@ function page(offline: { hostId: string; hostName: string } | undefined): void {
     setState: () => undefined,
     getHost: () => (offline ? { hostId: offline.hostId, name: offline.hostName, computer: 'ALEXIOS-PC' } : undefined),
     onHost: () => () => undefined,
+    getHostNames: () => undefined,
+    onHostNames: () => () => undefined,
     getOffline: () => offline,
     hostAction: () => undefined,
     getConnection: () => undefined,

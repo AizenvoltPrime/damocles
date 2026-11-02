@@ -17,6 +17,7 @@ import {
   type MemoryAuditSummary,
 } from '@shared/types/memory-audit';
 import type { DatabaseInstance, MemoryRow } from './types';
+import type { GlobalMemoryFields } from './global-memory-relay';
 import type { MemoryWriteQueue } from './write-queue';
 import type { MemorySubCallResult, MemorySubCallRunner } from './subcall-runner';
 import { estimateTokens, truncateToChars } from './token-estimate';
@@ -106,6 +107,10 @@ interface MemoryBeforeState {
   evidence?: { access_count: number; source_count: number };
   /** The session `row` restores into was deleted after apply, so revert has nowhere to put it. */
   sessionGone?: boolean;
+  /** A rescope to global graded on a daemon's core: it writes to the accepting client's global memory, never to this store. */
+  toClient?: true;
+  /** The client that took the global copy, and whether it waits in that client's outbox. */
+  wroteTo?: { clientId: string; queued: boolean };
 }
 
 interface SectionSnapshot {
@@ -160,6 +165,14 @@ export interface AuditDeps {
   db: DatabaseInstance;
   writeQueue: MemoryWriteQueue;
   profileManager: ProfileManager;
+}
+
+/** A daemon's core's global write (GlobalMemoryRelay.write) under a given uuid. */
+export type AuditGlobalWrite = (fields: GlobalMemoryFields, uuid: string) => Promise<{ clientId: string; queued: boolean }>;
+
+export interface AuditApplyDeps extends AuditDeps {
+  tracker: AuditFileTracker | null;
+  globalWrite?: AuditGlobalWrite;
 }
 
 export interface AuditRunDeps extends AuditDeps {
@@ -237,10 +250,14 @@ function eligibleWhere(): string {
   return `is_latest = 1 AND forgotten = 0 AND pinned = 0 AND kind IN ('fact','preference','episode','observation')${localOnly()}`;
 }
 
-/** Global memory is the client's: on a daemon's core, a proposal that names a global row or profile, or would make a row global, is left out. */
+/**
+ * Global memory is the client's: on a daemon's core, a proposal that names a global row or profile is left out. A rescope to
+ * global applies only on the kind of core that graded it, since a daemon's core sends the row to its client (`toClient`).
+ */
 function localProposal(alias = ''): string {
-  if (!userScopeRemote()) return '';
-  return ` AND ${alias}action != 'rescope_global' AND ${alias}profile_scope IS NOT 'global'
+  const toClient = `json_extract(${alias}before_state, '$.toClient')`;
+  if (!userScopeRemote()) return ` AND ${toClient} IS NULL`;
+  return ` AND (${alias}action != 'rescope_global' OR ${toClient} = 1) AND ${alias}profile_scope IS NOT 'global'
     AND json_extract(${alias}before_state, '$.row.scope') IS NOT 'global'
     AND NOT EXISTS (SELECT 1 FROM memories g WHERE g.id = ${alias}memory_id AND g.scope = 'global')`;
 }
@@ -419,7 +436,7 @@ export function gradesToProposals(
     } else if (verdict === 'rescope') {
       const targetScope = g.targetScope ?? (typeof g.targetWorkspace === 'string' ? 'project' : undefined);
       if (targetScope === 'global') {
-        if (row.scope !== 'global' && row.kind !== 'observation' && !userScopeRemote()) proposals.push({ row, action: 'rescope_global', targetWorkspace: null, reason });
+        if (row.scope !== 'global' && row.kind !== 'observation') proposals.push({ row, action: 'rescope_global', targetWorkspace: null, reason });
       } else if (targetScope === 'project') {
         const candidate = typeof g.targetWorkspace === 'string' ? g.targetWorkspace : row.workspace;
         const target = candidate ? matchKnownWorkspace(candidate, knownWorkspaces) : null;
@@ -608,7 +625,7 @@ export async function runAudit(
           reason: p.reason,
           snapshotHash: p.row.content_hash,
           snapshotUpdatedAt: p.row.updated_at,
-          beforeState: { row: pickState(p.row) },
+          beforeState: p.action === 'rescope_global' && userScopeRemote() ? { row: pickState(p.row), toClient: true } : { row: pickState(p.row) },
         });
       }
     });
@@ -743,12 +760,8 @@ function retrackOp(row: MemoryRow, workspace: string | null): TrackerOp {
   };
 }
 
-/** CAS-check and apply one memory proposal inside the caller's transaction. */
-function applyMemoryProposal(
-  db: DatabaseInstance,
-  p: ProposalRow,
-  ops: TrackerOp[],
-): { status: 'applied' | 'stale'; beforeState?: MemoryBeforeState } {
+/** The proposal's row while it is still the live, unpinned, unedited row the proposal graded. */
+function gradedRow(db: DatabaseInstance, p: ProposalRow): MemoryRow | undefined {
   const row = p.memory_id ? readMemory(db, p.memory_id) : undefined;
   if (
     !row ||
@@ -758,8 +771,19 @@ function applyMemoryProposal(
     row.content_hash !== p.snapshot_hash ||
     row.updated_at !== p.snapshot_updated_at
   ) {
-    return { status: 'stale' };
+    return undefined;
   }
+  return row;
+}
+
+/** CAS-check and apply one memory proposal inside the caller's transaction. */
+function applyMemoryProposal(
+  db: DatabaseInstance,
+  p: ProposalRow,
+  ops: TrackerOp[],
+): { status: 'applied' | 'stale'; beforeState?: MemoryBeforeState } {
+  const row = gradedRow(db, p);
+  if (!row) return { status: 'stale' };
   const beforeState: MemoryBeforeState = { row: pickState(row) };
 
   const forgetInstead = (dedupTargetId: string): void => {
@@ -808,6 +832,49 @@ function applyMemoryProposal(
   return { status: 'applied', beforeState };
 }
 
+function isToClient(p: ProposalRow): boolean {
+  return p.action === 'rescope_global' && p.before_state !== null && (JSON.parse(p.before_state) as MemoryBeforeState).toClient === true;
+}
+
+function clientWriteOf(row: MemoryRow): GlobalMemoryFields | null {
+  if (row.kind !== 'fact' && row.kind !== 'preference' && row.kind !== 'episode') return null;
+  const tags = parseList(row.tags);
+  return { kind: row.kind, content: row.content, ...(row.title !== null ? { title: row.title } : {}), ...(tags.length > 0 ? { tags } : {}) };
+}
+
+/**
+ * Apply a daemon's core's rescope to global: the row goes to the accepting client's global memory through the relay (applied
+ * there now, or queued in its outbox), and once that write is taken the target's chain is forgotten, as a local rescope onto
+ * an existing global duplicate forgets it. The write's uuid is the proposal's id, so an apply repeated after a stop between
+ * the write and the forget adds no second copy on that device; two devices that accept it at once each get a copy, since each
+ * applies the uuid once per device. Null when the proposal was decided meanwhile.
+ */
+async function applyToClient(deps: AuditApplyDeps, p: ProposalRow): Promise<'applied' | 'stale' | null> {
+  const { db, writeQueue } = deps;
+  if (!deps.globalWrite) throw new Error(`Audit proposal ${p.id} rescopes to a client's global memory, which only a daemon's core reaches`);
+  const pending = (): boolean => db.prepare("SELECT 1 FROM memory_audit_proposals WHERE id = ? AND status = 'pending'").get(p.id) !== undefined;
+  const decide = (status: 'applied' | 'stale', beforeState: string | null): 'applied' | 'stale' => {
+    db.prepare('UPDATE memory_audit_proposals SET status = ?, before_state = ?, decided_at = ? WHERE id = ?').run(status, beforeState, Date.now(), p.id);
+    return status;
+  };
+  const graded = gradedRow(db, p);
+  const fields = graded ? clientWriteOf(graded) : null;
+  if (!fields) return writeQueue.run(() => (pending() ? decide('stale', p.before_state) : null));
+  const { clientId, queued } = await deps.globalWrite(fields, p.id);
+  const wroteTo = { clientId, queued };
+  return writeQueue.run(() => {
+    if (!pending()) return null;
+    const row = gradedRow(db, p);
+    if (!row) {
+      log('[MemoryAudit] memory %s changed while its global copy %s was written to client %s; the copy stays', p.memory_id, p.id, wroteTo.clientId);
+      return decide('stale', p.before_state);
+    }
+    const beforeState: MemoryBeforeState = { row: pickState(row), toClient: true, wroteTo, forgotten: forgetChain(db, row) };
+    beforeState.applied = pickState(readMemory(db, row.id)!);
+    return decide('applied', JSON.stringify(beforeState));
+  });
+}
+
 function parseProfileText(json: string | null): MemoryAuditProfileText | null {
   if (!json) return null;
   const value = JSON.parse(json) as unknown;
@@ -851,7 +918,7 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
  * that are not pending in this run are ignored.
  */
 export async function applyAuditDecisions(
-  deps: AuditDeps & { tracker: AuditFileTracker | null },
+  deps: AuditApplyDeps,
   runId: string,
   accept: readonly string[],
   reject: readonly string[],
@@ -873,6 +940,7 @@ export async function applyAuditDecisions(
   }
 
   for (const ids of chunk([...acceptSet], APPLY_CHUNK)) {
+    const toClient: ProposalRow[] = [];
     const ops = await writeQueue.run(() => {
       const chunkOps: TrackerOp[] = [];
       const now = Date.now();
@@ -881,6 +949,11 @@ export async function applyAuditDecisions(
           .prepare(`SELECT * FROM memory_audit_proposals WHERE id = ? AND run_id = ? AND status = 'pending'${localProposal()}`)
           .get(id, runId) as ProposalRow | undefined;
         if (!p) continue;
+        // its write crosses to a client, so it applies outside this transaction
+        if (isToClient(p)) {
+          toClient.push(p);
+          continue;
+        }
         const outcome = p.action === 'profile_rewrite' ? applyProfileProposal(profileManager, p) : applyMemoryProposal(db, p, chunkOps);
         db.prepare('UPDATE memory_audit_proposals SET status = ?, before_state = ?, decided_at = ? WHERE id = ?').run(
           outcome.status,
@@ -893,6 +966,18 @@ export async function applyAuditDecisions(
       return chunkOps;
     });
     if (deps.tracker) for (const op of ops) op(deps.tracker);
+    for (const p of toClient) {
+      let status: 'applied' | 'stale' | null;
+      try {
+        status = await applyToClient(deps, p);
+      } catch (err) {
+        // it stays pending, so the user may accept it again or reject it
+        log('[MemoryAudit] proposal %s could not be written to the client\'s global memory; it stays pending: %O', p.id, err);
+        result.failed = (result.failed ?? 0) + 1;
+        continue;
+      }
+      if (status) result[status] += 1;
+    }
   }
   return result;
 }
@@ -923,7 +1008,8 @@ function revertMemoryProposal(db: DatabaseInstance, p: ProposalRow, ops: Tracker
   if (!p.memory_id || !p.before_state) return false;
   const state = JSON.parse(p.before_state) as MemoryBeforeState;
   const row = readMemory(db, p.memory_id);
-  if (!row || !state.applied || state.sessionGone || !stillApplied(row, p, state.applied)) return false;
+  // a row sent to a client's global memory lives on that device now, and this core cannot take it back
+  if (!row || !state.applied || state.sessionGone || state.toClient || !stillApplied(row, p, state.applied)) return false;
 
   if (state.forgotten) {
     const restore = db.prepare(`UPDATE memories SET forgotten = 0, forget_reason = ? WHERE id = ? AND forgotten = 1 AND forget_reason = ?${localOnly()}`);
@@ -971,7 +1057,7 @@ function revertProfileProposal(profileManager: ProfileManager, p: ProposalRow): 
 
 /** Revert every applied proposal of `runId`, newest first, APPLY_CHUNK per write transaction. */
 export async function revertAuditRun(
-  deps: AuditDeps & { tracker: AuditFileTracker | null },
+  deps: AuditApplyDeps,
   runId: string,
 ): Promise<MemoryAuditRevertResult> {
   const { db, writeQueue, profileManager } = deps;

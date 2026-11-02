@@ -49,6 +49,9 @@ import { McpResourceServerGoneError, noResourcesError, resourcesOffError, unknow
 import { stripBidiControls, stripControlChars } from '../untrusted-text';
 import { l, verbatim } from '../../l10n';
 import { log } from '../../logger';
+import { installedPlatform } from '../../platform-host';
+import { clientRelayCalls, RelayedMcpTransport } from './relayed-mcp';
+import { setRelayedToolNames } from './relayed-tool-names';
 
 const FAILURE_BACKOFF_MS = 60_000;
 const EAGER_CONNECT_CONCURRENCY = 4;
@@ -260,6 +263,7 @@ export class McpClientManager implements McpToolSource {
       onConnectionLost: (name: string) => this.onServerConnectionLost(name),
       ...(authProviderFactory ? { authProviderFactory } : {}),
       ...(this.shellPath ? { shellPath: this.shellPath } : {}),
+      ...relayTransportOption(),
     };
     this.serverManager = this.serverManagerFactory(managerOptions);
     this.serverManager.setElicitationHandler(this.routeElicitation);
@@ -650,6 +654,7 @@ export class McpClientManager implements McpToolSource {
       }
     }
     this.descriptors = next;
+    setRelayedToolNames(this.managerId, new Map([...next.values()].filter((d) => this.isRelayed(d.serverName)).map((d) => [d.piName, { server: d.serverName, tool: d.rawToolName }])));
   }
 
   /** The live tools and capability, else the cache's; `hasResources` is undefined while neither knows. */
@@ -681,6 +686,16 @@ export class McpClientManager implements McpToolSource {
   serverHasResources(name: string): boolean | undefined {
     const def = this.definitions.get(name);
     return def ? this.metadataFor(name, def).hasResources : undefined;
+  }
+
+  /** How long one request of an enabled server waits: the manager's call timeout, else the server's config timeout. */
+  callTimeoutMsOf(name: string): number {
+    return this.callTimeoutMs ?? timeoutMsOf(this.definitions.get(name) ?? {});
+  }
+
+  /** Whether an enabled server is a client's personal server relayed to this daemon's core. */
+  isRelayed(name: string): boolean {
+    return this.servers.get(name)?.relay !== undefined;
   }
 
   /** An enabled server's resource exposure from its config alone. */
@@ -973,7 +988,8 @@ export class McpClientManager implements McpToolSource {
     const info: McpServerStatusInfo = { name, status, enabled: true };
     // Advertise OAuth capability regardless of status; the webview gates the re-auth/sign-out buttons on status === 'connected'.
     if (def && supportsOAuth(def)) info.supportsOAuth = true;
-    if (connection?.serverInfo) info.serverInfo = connection.serverInfo;
+    // a relayed server's initialize is answered on this host from its descriptor, which carries no server info
+    if (connection?.serverInfo && this.servers.get(name)?.relay === undefined) info.serverInfo = connection.serverInfo;
     const description = def ? serverDescriptionOf(def, connection?.status === 'connected' ? connection.instructions : undefined) : undefined;
     if (description) info.description = description;
     if (status === 'needs-auth' && connection?.errorInfo) info.errorInfo = connection.errorInfo;
@@ -1022,8 +1038,15 @@ export class McpClientManager implements McpToolSource {
       await this.serverManager.closeAll();
     }
     this.descriptors.clear();
+    setRelayedToolNames(this.managerId, new Map());
     this.toolsChangedListeners.clear();
   }
+}
+
+/** A daemon's core relays its relayed servers to the acting client; every other core has none. */
+function relayTransportOption(): Pick<McpServerManagerOptions, 'relayTransport'> {
+  const remote = installedPlatform()?.remote;
+  return remote ? { relayTransport: (name, server) => new RelayedMcpTransport(server, clientRelayCalls(remote, name)) } : {};
 }
 
 /** A stable signature of an enabled-server set so identical reconcile feeds can be skipped (M8). Uses a

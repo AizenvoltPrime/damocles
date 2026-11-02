@@ -552,6 +552,9 @@ describe('failure classification', () => {
     expect(of('permissionDenied')).toBe('authFailed');
     expect(of('hostKeyRefused')).toBe('authFailed');
     expect(of('destinationRefused')).toBe('destination');
+    // a devcontainer to build waits for a user, whom the loop's attempts never ask
+    expect(of('containerNeedsBuild')).toBe('containerBuild');
+    expect(of('distroNotListed')).toBe('hostRemoved');
     for (const code of ['refused', 'timedOut', 'unreachable', 'unresolved', 'unknown', 'bridgeFailed', 'handshakeFailed', 'cancelled'] as const) expect(of(code)).toBeUndefined();
   });
 });

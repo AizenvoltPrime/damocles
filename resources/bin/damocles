@@ -1,0 +1,80 @@
+#!/bin/sh
+# damocles on macOS, Linux, in a WSL shell and in Git Bash, MSYS2 or Cygwin on Windows: the app's binary runs dist/cli.js as
+# Node, as VS Code's code.sh runs cli.js. A PATH link (/usr/local/bin/damocles, the Linux alternative) points here, so links
+# are followed to find the app.
+
+script=$0
+while [ -L "$script" ]; do
+  target=$(readlink "$script") || exit 1
+  case $target in
+    /*) script=$target ;;
+    *) script=$(dirname -- "$script")/$target ;;
+  esac
+done
+resources=$(CDPATH='' cd -- "$(dirname -- "$script")/.." && pwd -P) || exit 1
+app_dir=$(dirname -- "$resources")
+
+# only the Windows app's script runs Damocles.exe from WSL; the Linux package installed inside WSL is a Linux app
+in_wsl=false
+if [ -f "$app_dir/Damocles.exe" ]; then
+  if [ -n "${WSL_DISTRO_NAME:-}" ]; then
+    in_wsl=true
+  else
+    case $(uname -r) in
+      *[Mm]icrosoft*) in_wsl=true ;;
+    esac
+  fi
+fi
+
+if [ "$in_wsl" = true ]; then
+  if [ -z "${WSL_DISTRO_NAME:-}" ]; then
+    echo "damocles: WSL_DISTRO_NAME is not set, so the distro to open in is unknown." >&2
+    exit 1
+  fi
+  cli=$(wslpath -w "$resources/app.asar.unpacked/dist/cli.js") || exit 1
+  # every path becomes absolute in the distro, which the app opens there; an option's value (--user-data-dir's is this
+  # computer's) and an empty argument are passed as typed
+  count=$#
+  paths_only=false
+  option_value=false
+  while [ "$count" -gt 0 ]; do
+    arg=$1
+    shift
+    count=$((count - 1))
+    if [ "$option_value" = true ]; then
+      option_value=false
+    elif [ "$paths_only" = false ] && [ "$arg" = "--" ]; then
+      paths_only=true
+    elif [ "$paths_only" = false ] && { [ "$arg" = "--user-data-dir" ] || [ "$arg" = "--remote" ]; }; then
+      option_value=true
+    elif [ -n "$arg" ] && { [ "$paths_only" = true ] || { [ "${arg#-}" = "$arg" ] && [ "${arg#/}" = "$arg" ]; }; }; then
+      case $arg in
+        /*) ;;
+        *) arg=$PWD/$arg ;;
+      esac
+    fi
+    set -- "$@" "$arg"
+  done
+  # ELECTRON_RUN_AS_NODE crosses into the Windows process only when WSLENV names it
+  WSLENV="ELECTRON_RUN_AS_NODE/w${WSLENV:+:$WSLENV}"
+  ELECTRON_RUN_AS_NODE=1
+  export WSLENV ELECTRON_RUN_AS_NODE
+  # started in a distro folder, the Windows process would work in its \\wsl.localhost path, whose connection keeps the distro
+  # running long after the process ends; the paths are absolute by now
+  cd "$app_dir" || exit 1
+  exec "$app_dir/Damocles.exe" "$cli" --remote "wsl+$WSL_DISTRO_NAME" "$@"
+fi
+
+cli=$resources/app.asar.unpacked/dist/cli.js
+case $(uname -s) in
+  Darwin) app=$app_dir/MacOS/Damocles ;;
+  # Git for Windows' sh finds this script before damocles.cmd; Windows Node reads cli.js only by its Windows path
+  MINGW* | MSYS* | CYGWIN*)
+    app=$app_dir/Damocles.exe
+    cli=$(cygpath -m "$cli") || exit 1
+    ;;
+  *) app=$app_dir/damocles ;;
+esac
+ELECTRON_RUN_AS_NODE=1
+export ELECTRON_RUN_AS_NODE
+exec "$app" "$cli" "$@"

@@ -17,7 +17,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const HOST: ShellHost = { hostId: 'h1', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'connected', signInNeeded: false };
+const HOST: ShellHost = { hostId: 'h1', kind: 'ssh', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'connected', signInNeeded: false };
 const mountBanner = (host: ShellHost | undefined) => {
   const wrapper = mount(ConnectionBanner, { props: { host }, global: { plugins: [shellI18n] } });
   mounted.push(wrapper);

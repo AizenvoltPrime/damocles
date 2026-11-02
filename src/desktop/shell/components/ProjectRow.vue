@@ -12,7 +12,7 @@ import HostStatusDot from './HostStatusDot.vue';
 
 // One project option of the Projects listbox. In the grouped view its group header names the host, so a remote row shows its
 // folder in place of the branch and no host badge.
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   project: ShellProject;
   selected: boolean;
   // the listbox's active descendant
@@ -20,7 +20,9 @@ const props = defineProps<{
   grouped: boolean;
   // the saved host of a remote project, whose reconnect phase and latency its dot shows
   host?: ShellHost | undefined;
-}>();
+  // false: a wrapper around the row and its notice moves and lifts them together
+  flip?: boolean;
+}>(), { flip: true, host: undefined });
 const emit = defineEmits<{ trust: [] }>();
 const { t } = useI18n();
 
@@ -42,10 +44,11 @@ const hostState = computed(() => hostStateLabel({ name: props.project.authority.
     role="option"
     :aria-selected="selected"
     :data-project-key="project.key"
-    :data-flip="`p:${project.key}`"
+    :data-flip="flip ? `p:${project.key}` : undefined"
     :title="remote ? t('projects.remoteTitle', { host: project.authority.name, path: project.fsPath }) : project.fsPath"
-    class="group/row @container/row flex h-8.5 shrink-0 cursor-pointer items-center gap-2.5 rounded-lg px-2 transition-colors select-none hover:bg-(--d-hover) data-dragging:relative data-dragging:z-5 data-dragging:cursor-grabbing data-dragging:bg-(--d-card) data-dragging:shadow-(--d-shadow) data-dragging:ring-1 data-dragging:ring-(--d-accent)"
+    class="group/row @container/row flex h-8.5 shrink-0 cursor-pointer items-center gap-2.5 rounded-lg px-2 transition-colors select-none hover:bg-(--d-hover) data-dragging:cursor-grabbing"
     :class="[
+      flip ? 'data-dragging:relative data-dragging:z-5 data-dragging:bg-(--d-card) data-dragging:shadow-(--d-shadow) data-dragging:ring-1 data-dragging:ring-(--d-accent)' : '',
       selected ? 'bg-(--d-accent-soft) font-semibold' : '',
       active ? 'group-focus-visible/list:outline group-focus-visible/list:-outline-offset-1 group-focus-visible/list:outline-(--d-accent)' : '',
     ]"

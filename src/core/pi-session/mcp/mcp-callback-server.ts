@@ -8,26 +8,15 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'http';
 import { log } from '../../logger';
 import { flattenServerText } from './utils';
+import { configuredOAuthCallbackPort } from './oauth-callback-port';
 
-const DEFAULT_OAUTH_CALLBACK_PORT = 19876;
 const DEFAULT_OAUTH_CALLBACK_PATH = '/callback';
 // Bind the loopback literal, not the `localhost` hostname (which can resolve to a non-loopback or
 // dual-stack address and is not guaranteed to land on this server) (L2).
 const DEFAULT_OAUTH_CALLBACK_HOST = '127.0.0.1';
 
-function resolveConfiguredPort(): number {
-  const raw = process.env['MCP_OAUTH_CALLBACK_PORT'];
-  if (raw) {
-    const parsed = Number.parseInt(raw, 10);
-    if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535) {
-      return parsed;
-    }
-  }
-  return DEFAULT_OAUTH_CALLBACK_PORT;
-}
-
-const configuredOAuthCallbackPort = resolveConfiguredPort();
-let oauthCallbackPort = configuredOAuthCallbackPort;
+const configuredPort = configuredOAuthCallbackPort();
+let oauthCallbackPort = configuredPort;
 let oauthCallbackPath = DEFAULT_OAUTH_CALLBACK_PATH;
 let callbackServerHost = DEFAULT_OAUTH_CALLBACK_HOST;
 // Outlives stopCallbackServer, so the redirect URI of non-strict flows stays the same for the whole process.
@@ -35,7 +24,7 @@ let lastEphemeralPort: number | undefined;
 
 /** The statically configured (env/default) callback port, before any OS-assigned rebind. */
 export function getConfiguredOAuthCallbackPort(): number {
-  return configuredOAuthCallbackPort;
+  return configuredPort;
 }
 
 /** The port the callback server is currently bound to. */
@@ -274,7 +263,7 @@ export async function ensureCallbackServer(options: EnsureCallbackServerOptions 
 }
 
 async function ensureCallbackServerLocked(options: EnsureCallbackServerOptions = {}): Promise<void> {
-  const requiredPort = options.port ?? configuredOAuthCallbackPort;
+  const requiredPort = options.port ?? configuredPort;
   const strictPort = options.strictPort === true;
   const requestedHost = options.callbackHost ?? DEFAULT_OAUTH_CALLBACK_HOST;
   const rawRequestedPath = options.callbackPath ?? DEFAULT_OAUTH_CALLBACK_PATH;
@@ -448,7 +437,7 @@ export async function stopCallbackServer(): Promise<void> {
     server = undefined;
   }
 
-  oauthCallbackPort = configuredOAuthCallbackPort;
+  oauthCallbackPort = configuredPort;
   callbackServerHost = DEFAULT_OAUTH_CALLBACK_HOST;
   setOAuthCallbackPath(DEFAULT_OAUTH_CALLBACK_PATH);
 

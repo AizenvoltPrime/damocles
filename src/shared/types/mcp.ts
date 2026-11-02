@@ -35,11 +35,20 @@ export const MCP_TOOL_EXPOSURE_SETTING = "damocles.mcp.toolExposure";
 /** A value of the `damocles.mcp.toolExposure` setting, keyed `[serverName][rawToolName]`. */
 export type McpToolExposureSetting = "off" | "deferred" | "direct";
 
-/** A settings scope `damocles.mcp.toolExposure` is read from and written to; equals the platform's `SettingsScope`. */
-export type McpToolExposureScope = "user" | "project" | "local";
+/**
+ * A settings scope `damocles.mcp.toolExposure` is read from and written to: the platform's `SettingsScope`, and on a daemon's
+ * core its host's machine settings, which apply to the host's own servers and which its store writes as `user`.
+ */
+export type McpToolExposureScope = "user" | "machine" | "project" | "local";
 
 /** Where a tool's effective exposure comes from: the highest settings scope holding its entry, else its config. */
 export type McpToolExposureSource = "config" | McpToolExposureScope;
+
+/** The desktop's list of personal MCP server names a remote host's chats may use; equals desktop-configuration.ts's key. */
+export const MCP_REMOTE_AVAILABLE_SETTING = 'damocles.desktop.mcp.remoteAvailable';
+
+/** The sources of personal servers this computer may relay to a remote host: its user-scope files, never a project's. */
+export const RELAYABLE_SOURCES: ReadonlySet<McpServerSource> = new Set(['codex', 'claude', 'pi', 'damocles']);
 
 /** The per-server resource setting, `{ [serverName]: McpToolExposureSetting }`. */
 export const MCP_RESOURCE_EXPOSURE_SETTING = "damocles.mcp.resourceExposure";
@@ -115,8 +124,8 @@ export const LOCAL_MCP_RELATIVE_PATH = ".damocles/mcp.local.json";
  * apart. `McpServerSource` is derived from the first tuple, so a source that exists but is missing
  * from the order cannot be expressed.
  */
-const SOURCE_ORDER_CLAUDE_WINS = ["codex", "claude", "pi", "pi-project", "claude-local", "damocles", "workspace", "damocles-local"] as const;
-const SOURCE_ORDER_CODEX_WINS = ["claude", "codex", "pi", "pi-project", "claude-local", "damocles", "workspace", "damocles-local"] as const;
+const SOURCE_ORDER_CLAUDE_WINS = ["relayed", "codex", "claude", "pi", "pi-project", "claude-local", "damocles", "workspace", "damocles-local"] as const;
+const SOURCE_ORDER_CODEX_WINS = ["relayed", "claude", "codex", "pi", "pi-project", "claude-local", "damocles", "workspace", "damocles-local"] as const;
 
 /**
  * Where a merged server's definition came from. `readonly` is derived from this union in one place
@@ -129,6 +138,8 @@ const SOURCE_ORDER_CODEX_WINS = ["claude", "codex", "pi", "pi-project", "claude-
  * `claude-local` (Claude Code's local scope, `~/.claude.json` → `projects[<ws>].mcpServers`),
  * `codex` (`~/.codex/config.toml`), `pi` (`~/.pi/agent/mcp.json`) and `pi-project`
  * (`<ws>/.pi/mcp.json`, trusted folders only) belong to other tools and are imported read-only.
+ * `relayed`, on a remote core only, is a personal server of the acting client the user marked
+ * available on remote hosts: it runs on the client and is read-only on the target.
  */
 export type McpServerSource = (typeof SOURCE_ORDER_CLAUDE_WINS)[number];
 
@@ -191,6 +202,7 @@ export interface McpConfigError {
  * holds hand-authored entries the merged list has dropped.
  */
 export type McpWriteErrorCode =
+  | "hostTabOnly"
   | "nameExists"
   | "nameMissing"
   | "nameShadowed"
@@ -326,7 +338,14 @@ export interface McpServerStatusInfo {
   untrusted?: boolean;
   /** True when this server uses OAuth (definition has a URL and auth is not disabled). */
   supportsOAuth?: boolean;
+  /** Set only by a desktop local core, on personal servers that may relay: marked available on remote hosts. */
+  remoteAvailable?: boolean;
+  /** Set only by a remote core: where the server runs, the view naming the host itself. */
+  placement?: McpServerPlacement;
 }
+
+/** `client` is this computer (a relayed server), `host` the target's machine scope, `project` the target's project files. */
+export type McpServerPlacement = "client" | "host" | "project";
 
 /** A resource the MCP panel's picker lists. Text fields are server text flattened to one line; `uri` is exactly as listed. */
 export interface McpResourceRow {

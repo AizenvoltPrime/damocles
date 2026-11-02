@@ -6,7 +6,8 @@ import { log } from '../../logger';
 import { mcpServerNamespaceKey } from '../../../shared/types/mcp';
 import { stripControlChars } from '../untrusted-text';
 import { BUILTIN_DEFERRED_GROUPS, resolveToolSearchEntries, userScopeToolNames } from './deferred-tools';
-import { browserUnavailableReason, userScopeRemote } from '../../user-scope';
+import { browserClosedReason, relayedMcpUnreachableReason, userScopeReach } from '../../user-scope';
+import { relayedServerNames, relayedServerOfTool } from '../mcp/relayed-tool-names';
 import { englishText } from '../../../shared/localized-text';
 
 /** One MCP tool's ToolSearch menu facts, taken from its descriptor. */
@@ -280,8 +281,15 @@ export function createToolSearchTool(port: ToolActivationPort): ToolDefinition {
       );
       const { matches, alreadyActive, alreadyActiveGroups, shadowedGroups } = resolution;
       // an entry naming a tool or group whose user-scope service this core cannot reach gets that reason, not "unknown"
-      const userScope = userScopeToolNames(!userScopeRemote());
-      const unavailable = entries.filter((entry) => userScope.has(entry) || BUILTIN_DEFERRED_GROUPS.some((g) => g.group === entry && g.names.some((name) => userScope.has(name))));
+      const userScope = userScopeToolNames(userScopeReach());
+      // a relayed server's own group, the form a model recalls from an earlier turn, maps to that server
+      const relayedGroup = (entry: string): string | undefined => {
+        if (BUILTIN_DEFERRED_GROUPS.some((g) => g.group === entry) || (!resolution.unknown.includes(entry) && !resolution.inertGroups.includes(entry))) return undefined;
+        return relayedServerNames().find((server) => mcpToolSearchGroup(server) === entry && [...userScope].some((name) => relayedServerOfTool(name) === server));
+      };
+      const unavailableServer = (entry: string): string | undefined => relayedServerOfTool(entry) ?? relayedGroup(entry);
+      const unavailable = entries.filter((entry) =>
+        userScope.has(entry) || relayedGroup(entry) !== undefined || BUILTIN_DEFERRED_GROUPS.some((g) => g.group === entry && g.names.some((name) => userScope.has(name))));
       const unknown = resolution.unknown.filter((entry) => !unavailable.includes(entry));
       const inertGroups = resolution.inertGroups.filter((entry) => !unavailable.includes(entry));
       const requested = matches.filter((name) => !snapshot.loaded.has(name));
@@ -334,7 +342,12 @@ export function createToolSearchTool(port: ToolActivationPort): ToolDefinition {
       // Without this, an inert group is indistinguishable from a no-op: the description is built from
       // the static catalog (one process-wide extension, no session identity), so it lists groups whose
       // subsystem may be off in THIS session. Naming the cause stops the model retrying the same call.
-      if (unavailable.length > 0) lines.push(`Not available: ${names([...new Set(unavailable)])}. ${englishText(browserUnavailableReason())}`);
+      const unavailableBrowser = [...new Set(unavailable)].filter((entry) => unavailableServer(entry) === undefined);
+      const unavailableMcp = [...new Set(unavailable)].filter((entry) => unavailableServer(entry) !== undefined);
+      if (unavailableBrowser.length > 0) lines.push(`Not available: ${names(unavailableBrowser)}. ${englishText(browserClosedReason())}`);
+      for (const server of new Set(unavailableMcp.map((entry) => unavailableServer(entry)!))) {
+        lines.push(`Not available: ${names(unavailableMcp.filter((entry) => unavailableServer(entry) === server))}. ${englishText(relayedMcpUnreachableReason(stripControlChars(server)))}`);
+      }
       if (inertGroups.length > 0) {
         lines.push(`Not available in this session: ${inertGroups.join(', ')} — the subsystem is disabled or every tool in it is turned off, so it cannot be loaded here.`);
       }

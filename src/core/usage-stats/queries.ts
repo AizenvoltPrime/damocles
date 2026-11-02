@@ -207,6 +207,8 @@ const aggregateOf = (row: AggregateRow): UsageStatsAggregate => ({
   requests: row.requests,
 });
 
+const hostOf = (hostId: string | null): { hostId?: string } => (hostId === null ? {} : { hostId });
+
 const ORDER_BY_SPEND = 'ORDER BY sum(e.cost_total) DESC, sum(e.input + e.output + e.cache_read + e.cache_write) DESC';
 
 /** Usage per time bucket of `timeZone` and model; buckets with no usage are omitted. */
@@ -265,13 +267,13 @@ export function queryByModel(
 }
 
 export function queryByProject(db: UsageDatabase, range: UsageStatsRange, filters: UsageStatsFilters): UsageStatsProjectRow[] {
-  const rows = db.prepare(`SELECT g.*, p.cwd AS cwd FROM (
+  const rows = db.prepare(`SELECT g.*, p.cwd AS cwd, p.host_id AS host_id FROM (
       SELECT e.project_key AS key, ${AGGREGATE_COLUMNS}
       ${FILTERED_ENTRIES}
       GROUP BY e.project_key
     ) g LEFT JOIN projects p ON p.project_key = g.key
-    ORDER BY g.cost DESC, g.input + g.output + g.cache_read + g.cache_write DESC, g.key`).all(filterParams(range, filters)) as unknown as Array<AggregateRow & { key: string; cwd: string | null }>;
-  return rows.map((r) => ({ key: r.key, cwd: r.cwd, ...aggregateOf(r) }));
+    ORDER BY g.cost DESC, g.input + g.output + g.cache_read + g.cache_write DESC, g.key`).all(filterParams(range, filters)) as unknown as Array<AggregateRow & { key: string; cwd: string | null; host_id: string | null }>;
+  return rows.map((r) => ({ key: r.key, cwd: r.cwd, ...hostOf(r.host_id), ...aggregateOf(r) }));
 }
 
 // One branch per entry, so the sources partition the totals: `docs/invariants.md`, "Usage accounting".
@@ -299,12 +301,17 @@ export function queryBySource(db: UsageDatabase, range: UsageStatsRange, filters
   return rows.map((r) => ({ source: r.source, detail: r.detail, ...aggregateOf(r) }));
 }
 
-/** One row per payer: a row a daemon's core billed to the host's own credential is the host's, every other the user's sign-in. */
+/**
+ * One row per payer: a row a daemon's core billed to the host's own credential is that host's (one row per host of a
+ * mirrored project; a daemon's own index names none), every other the user's sign-in.
+ */
 export function queryByCredential(db: UsageDatabase, range: UsageStatsRange, filters: UsageStatsFilters): UsageStatsCredentialRow[] {
-  const rows = db.prepare(`SELECT CASE WHEN e.credential_source = 'host' THEN 'host' ELSE 'signIn' END AS credential, ${AGGREGATE_COLUMNS}
+  const rows = db.prepare(`SELECT CASE WHEN e.credential_source = 'host' THEN 'host' ELSE 'signIn' END AS credential,
+    CASE WHEN e.credential_source = 'host' THEN (SELECT p.host_id FROM projects p WHERE p.project_key = e.project_key) END AS host_id,
+    ${AGGREGATE_COLUMNS}
     ${FILTERED_ENTRIES}
-    GROUP BY 1 ${ORDER_BY_SPEND}, 1`).all(filterParams(range, filters)) as unknown as Array<AggregateRow & { credential: UsageStatsCredential }>;
-  return rows.map((r) => ({ credential: r.credential, ...aggregateOf(r) }));
+    GROUP BY 1, 2 ${ORDER_BY_SPEND}, 1, 2`).all(filterParams(range, filters)) as unknown as Array<AggregateRow & { credential: UsageStatsCredential; host_id: string | null }>;
+  return rows.map((r) => ({ credential: r.credential, ...hostOf(r.host_id), ...aggregateOf(r) }));
 }
 
 /** Usage per weekday and hour of `timeZone`. */
@@ -325,7 +332,7 @@ export function queryHeatmap(db: UsageDatabase, range: UsageStatsRange, filters:
  */
 export function queryTopSessions(db: UsageDatabase, range: UsageStatsRange, filters: UsageStatsFilters, limit: number): UsageStatsTopSession[] {
   const rows = db.prepare(`SELECT g.*, s.title AS title, coalesce(s.missing, 0) AS missing,
-      coalesce(s.project_key, g.entry_project_key) AS project_key, p.cwd AS cwd
+      coalesce(s.project_key, g.entry_project_key) AS project_key, p.cwd AS cwd, p.host_id AS host_id
     FROM (
       SELECT e.session_id AS session_id, min(e.project_key) AS entry_project_key, max(e.ts_ms) AS last_active_ms, ${AGGREGATE_COLUMNS}
       ${FILTERED_ENTRIES} AND e.session_id IS NOT NULL
@@ -335,13 +342,14 @@ export function queryTopSessions(db: UsageDatabase, range: UsageStatsRange, filt
     LEFT JOIN projects p ON p.project_key = coalesce(s.project_key, g.entry_project_key)
     ORDER BY g.cost DESC, g.input + g.output + g.cache_read + g.cache_write DESC, g.session_id
     LIMIT :limit`).all({ ...filterParams(range, filters), limit }) as unknown as Array<
-    AggregateRow & { session_id: string; title: string | null; missing: number; project_key: string; cwd: string | null; last_active_ms: number }
+    AggregateRow & { session_id: string; title: string | null; missing: number; project_key: string; cwd: string | null; host_id: string | null; last_active_ms: number }
   >;
   return rows.map((r) => ({
     sessionId: r.session_id,
     title: r.title,
     projectKey: r.project_key,
     cwd: r.cwd,
+    ...hostOf(r.host_id),
     lastActiveMs: r.last_active_ms,
     missing: r.missing === 1,
     openable: false,
@@ -358,9 +366,9 @@ export function queryFilterOptions(
   const modelOptions = (db.prepare('SELECT DISTINCT model_key FROM entries WHERE model_key IS NOT NULL').all() as Array<{ model_key: string }>)
     .map(({ model_key }) => ({ key: model_key, label: labels.get(model_key) ?? model_key }))
     .sort((a, b) => a.label.localeCompare(b.label) || a.key.localeCompare(b.key));
-  const projects = db.prepare(`SELECT p.project_key AS key, p.cwd AS cwd FROM projects p
-    WHERE EXISTS (SELECT 1 FROM entries e WHERE e.project_key = p.project_key) ORDER BY p.project_key`).all() as unknown as UsageStatsProjectOption[];
-  return { models: modelOptions, projects: projects.map(({ key, cwd }) => ({ key, cwd })) };
+  const projects = db.prepare(`SELECT p.project_key AS key, p.cwd AS cwd, p.host_id AS host_id FROM projects p
+    WHERE EXISTS (SELECT 1 FROM entries e WHERE e.project_key = p.project_key) ORDER BY p.project_key`).all() as unknown as Array<{ key: string; cwd: string | null; host_id: string | null }>;
+  return { models: modelOptions, projects: projects.map(({ key, cwd, host_id }) => ({ key, cwd, ...hostOf(host_id) })) };
 }
 
 export function queryIndexedAt(db: UsageDatabase): number | null {

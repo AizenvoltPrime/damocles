@@ -6,6 +6,7 @@ import type { AnyToolDefinition } from './any-tool-definition';
 import type { PiCodingAgentModule } from '../pi-loader';
 import { TOOL_POWERSHELL } from '../../../shared/tool-names';
 import { resolveTimeoutMs, SHELL_EXIT_OUTPUT_GRACE_MS, waitForShellExit, withCommandDescription, type ShellExit } from './bash-tool';
+import { withUrlWatch } from './shell-url-watch';
 import { processLauncher, type SessionJob } from '../../process-launcher';
 import { findPwsh, windowsPowerShell } from '../../system-tools';
 
@@ -72,6 +73,8 @@ async function execOnce(
   let timeoutHandle: NodeJS.Timeout | undefined;
   // Once the shell has exited, a tree kill would reach the jobs it deliberately left running.
   const killShell = (): void => shell.kill({ tree: true, whileRunning: true });
+  const stdout = withUrlWatch(onData);
+  const stderr = withUrlWatch(onData);
 
   try {
     if (timeoutMs !== undefined) {
@@ -80,8 +83,8 @@ async function execOnce(
         killShell();
       }, timeoutMs);
     }
-    shell.onData('stdout', onData);
-    shell.onData('stderr', onData);
+    shell.onData('stdout', stdout.onData);
+    shell.onData('stderr', stderr.onData);
     if (signal) {
       if (signal.aborted) killShell();
       else signal.addEventListener('abort', killShell, { once: true });
@@ -101,6 +104,8 @@ async function execOnce(
     // convention stands in for it.
     return { exitCode: exit.code ?? (exit.signal ? 128 + (osConstants.signals[exit.signal] ?? 0) : 1) };
   } finally {
+    stdout.end();
+    stderr.end();
     if (timeoutHandle) clearTimeout(timeoutHandle);
     if (signal) signal.removeEventListener('abort', killShell);
   }

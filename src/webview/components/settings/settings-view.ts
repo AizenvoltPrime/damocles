@@ -1,6 +1,7 @@
 import { inject, provide, shallowRef, watch, type InjectionKey, type Ref, type ShallowRef } from 'vue';
 import type { SettingsSectionId, SettingsTarget } from '@shared/settings-sections';
 import type { SettingsFileScope } from '@shared/types/messages';
+import type { HostTone } from '@shared/host-tones';
 import type { SettingsRowMeta } from './settings-rows';
 
 /** Rows enter staggered by this many ms each, for the first STAGGERED_ROWS rows of a page only (M4). */
@@ -126,6 +127,22 @@ export function provideSettingsChatHost(host: () => string | undefined): void {
 
 export function useSettingsChatHost(): () => string | undefined {
   return inject(CHAT_HOST, () => undefined);
+}
+
+/** The host whose machine scope the modal edits (a remote chat's host tab), as this computer names it; undefined elsewhere. */
+const MACHINE_HOST: InjectionKey<() => SettingsMachineHost | undefined> = Symbol('settingsMachineHost');
+
+export interface SettingsMachineHost {
+  readonly name: string;
+  readonly color?: HostTone | undefined;
+}
+
+export function provideSettingsMachineHost(host: () => SettingsMachineHost | undefined): void {
+  provide(MACHINE_HOST, host);
+}
+
+export function useSettingsMachineHost(): () => SettingsMachineHost | undefined {
+  return inject(MACHINE_HOST, () => undefined);
 }
 
 /** What the Workspace section's list of values from settings files needs from the modal. */

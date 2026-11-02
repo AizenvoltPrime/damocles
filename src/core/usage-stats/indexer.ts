@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { StatementSync } from 'node:sqlite';
-import { NO_PROJECT_KEY } from '../../shared/types/usage-stats';
+import { isSafeAgentPathId } from '../../shared/agent-path-id';
+import { MIRROR_CLOCK_FILE, MIRROR_SUBCALLS_FILE, parseMirrorClock } from '../../shared/remote-mirror';
+import { hostNoProjectKey, hostProjectKey, NO_PROJECT_KEY } from '../../shared/types/usage-stats';
 import type { UsageDatabase } from './database';
 import { normalizeModelKey, parseLedgerLine, parseSessionLine, type UsageLine } from './entry-parser';
 import type { UsageStatsModel, UsageStatsProgress } from './worker-protocol';
@@ -44,6 +46,8 @@ export interface IndexUsageOptions {
   db: UsageDatabase;
   sessionsDir: string;
   ledgerPath: string;
+  /** `<userData>/remote`: each `<hostId>/mirror` folder is indexed too, its projects keyed per host and its times moved onto this computer's clock. */
+  remoteMirrorsDir?: string;
   models: readonly UsageStatsModel[];
   onProgress?: (progress: UsageStatsProgress) => void;
   log: (message: string) => void;
@@ -78,6 +82,10 @@ interface Target {
   path: string;
   kind: FileKind;
   parentSessionId?: string;
+  /** A file of a remote host's mirror: its project keys are host-qualified and its cwd is the host's path. */
+  hostId?: string;
+  /** The host's clock minus this computer's, as its mirror's clock file holds it when this scan listed it. */
+  clockSkewMs?: number;
 }
 
 /** Mutable per-file state carried across incremental reads through the `files` row. */
@@ -100,7 +108,7 @@ const TAIL_BYTES = 1024;
 const CHUNK_BYTES = 1 << 20;
 const PROGRESS_INTERVAL_MS = 100;
 
-function listSessionFiles(sessionsDir: string): Target[] {
+function listSessionFiles(sessionsDir: string, host: Pick<Target, 'hostId' | 'clockSkewMs'> = {}): Target[] {
   let names: string[];
   try {
     names = fs.readdirSync(sessionsDir, { recursive: true, encoding: 'utf8' });
@@ -114,12 +122,79 @@ function listSessionFiles(sessionsDir: string): Target[] {
     if (!name.endsWith('.jsonl')) continue;
     const filePath = path.join(sessionsDir, name);
     const cls = classifySessionPath(sessionsDir, filePath);
-    if (cls.kind === 'main') main.push({ path: filePath, kind: 'main' });
-    else if (cls.kind !== 'skip') nested.push({ path: filePath, kind: cls.kind, parentSessionId: cls.parentSessionId });
+    if (cls.kind === 'main') main.push({ path: filePath, kind: 'main', ...host });
+    else if (cls.kind !== 'skip') nested.push({ path: filePath, kind: cls.kind, parentSessionId: cls.parentSessionId, ...host });
   }
   const byPath = (a: Target, b: Target) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   // Main files first, so a nested file finds its parent session's start time already indexed.
   return [...main.sort(byPath), ...nested.sort(byPath)];
+}
+
+/**
+ * The session files of every host's mirror under `<remoteMirrorsDir>/<hostId>/mirror`, which share pi's sessions layout, and
+ * the host's sub-call ledger beside them, each with the host's recorded clock skew. A folder that cannot be listed is logged
+ * and left for a later scan, so it holds back no other host and none of this computer's files.
+ */
+function listMirrorFiles(remoteMirrorsDir: string, log: (message: string) => void): Target[] {
+  const failed = (what: string, err: unknown): Target[] => {
+    log(`[UsageStats] Could not list ${what}; retrying on the next scan: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  };
+  let hosts: fs.Dirent[];
+  try {
+    hosts = fs.readdirSync(remoteMirrorsDir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    return failed('the hosts\' mirrors', err);
+  }
+  return hosts
+    .filter((entry) => entry.isDirectory() && isSafeAgentPathId(entry.name))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .flatMap((entry) => {
+      const mirror = path.join(remoteMirrorsDir, entry.name, 'mirror');
+      const clockSkewMs = clockSkewOf(mirror, entry.name, log);
+      if (clockSkewMs === undefined) return [];
+      const host = { hostId: entry.name, clockSkewMs };
+      try {
+        const ledger = path.join(mirror, MIRROR_SUBCALLS_FILE);
+        const ledgers: Target[] = isRegularFile(ledger) ? [{ path: ledger, kind: 'background', ...host }] : [];
+        return [...listSessionFiles(mirror, host), ...ledgers];
+      } catch (err) {
+        return failed(`${entry.name}'s mirror`, err);
+      }
+    });
+}
+
+/**
+ * A host's recorded clock skew, 0 until a connection that measured one synced the mirror; undefined, and the host's files wait
+ * for a later scan, while the clock file cannot be read, since a row keeps the time its first index gave it.
+ */
+function clockSkewOf(mirror: string, hostId: string, log: (message: string) => void): number | undefined {
+  let text: string;
+  try {
+    text = fs.readFileSync(path.join(mirror, MIRROR_CLOCK_FILE), 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    log(`[UsageStats] Could not read the clock file of ${hostId}'s mirror; retrying on the next scan: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
+  const skewMs = parseMirrorClock(text);
+  if (skewMs === undefined) log(`[UsageStats] The clock file of ${hostId}'s mirror holds no skew; retrying on the next scan`);
+  return skewMs;
+}
+
+function isRegularFile(filePath: string): boolean {
+  try {
+    return fs.lstatSync(filePath).isFile();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw err;
+  }
+}
+
+/** A target's project key for a header or worktree path: a host's path as written, under its host; this computer's resolved. */
+function targetProjectKey(target: Target, cwd: string): string {
+  return target.hostId === undefined ? projectKeyOf(cwd) : hostProjectKey(target.hostId, cwd);
 }
 
 function tailHash(fd: number, end: number): string {
@@ -191,7 +266,7 @@ function prepareStatements(db: UsageDatabase): Statements {
       model_provider = ?, model_id = ?, size = ?, mtime_ms = ?, byte_offset = ?, tail_hash = ?, missing = 0, parse_errors = ?,
       client_providers = ? WHERE file_id = ?`),
     upsertEntry: db.prepare(UPSERT_ENTRY_SQL),
-    upsertProject: db.prepare('INSERT INTO projects (project_key, cwd) VALUES (?, ?) ON CONFLICT(project_key) DO NOTHING'),
+    upsertProject: db.prepare('INSERT INTO projects (project_key, cwd, host_id) VALUES (?, ?, ?) ON CONFLICT(project_key) DO NOTHING'),
     selectSession: db.prepare('SELECT started_ms, project_key FROM sessions WHERE session_id = ?'),
     upsertSession: db.prepare(`INSERT INTO sessions (session_id, project_key, title, started_ms, file_id, missing) VALUES (?, ?, NULL, ?, ?, 0)
       ON CONFLICT(session_id) DO UPDATE SET project_key = excluded.project_key, started_ms = excluded.started_ms,
@@ -285,7 +360,7 @@ class Indexer {
     const state = resume ? stateFromRow(existing) : emptyState();
 
     const onLine: (line: string, first: boolean) => void = target.kind === 'background'
-      ? (line) => this.ledgerLine(line, state, fileId, target.path)
+      ? (line) => this.ledgerLine(line, state, fileId, target)
       : (line, first) => this.sessionLine(line, first, state, fileId, target);
     let first = start === 0;
     const end = readCompleteLines(fd, start, size, (line) => {
@@ -348,7 +423,7 @@ class Indexer {
           model: parsed.model ?? state.modelId,
           credentialSource: state.clientProviders !== null && provider !== null && !state.clientProviders.includes(provider) ? 'host' : null,
           fileId,
-          filePath: target.path,
+          target,
         });
         return;
       }
@@ -358,8 +433,8 @@ class Indexer {
   }
 
   private attribute(header: Extract<ReturnType<typeof parseSessionLine>, { kind: 'header' }>, state: FileState, fileId: number, target: Target): void {
-    const ownProjectKey = projectKeyOf(header.cwd);
-    this.stmts.upsertProject.run(ownProjectKey, header.cwd);
+    const ownProjectKey = targetProjectKey(target, header.cwd);
+    this.stmts.upsertProject.run(ownProjectKey, header.cwd, target.hostId ?? null);
     state.attributed = true;
     if (target.kind === 'main') {
       state.sessionId = header.id;
@@ -380,24 +455,24 @@ class Indexer {
   // A worktree chat's header names its working folder; its worktree entry names the project its spend belongs to.
   private attributeToProject(projectPath: string, state: FileState, target: Target): void {
     if (target.kind !== 'main' || state.sessionId === null) return;
-    const projectKey = projectKeyOf(projectPath);
+    const projectKey = targetProjectKey(target, projectPath);
     if (state.projectKey === projectKey) return;
-    this.stmts.upsertProject.run(projectKey, projectPath);
+    this.stmts.upsertProject.run(projectKey, projectPath, target.hostId ?? null);
     this.stmts.reattributeSession.run(projectKey, state.sessionId);
     this.stmts.reattributeEntries.run(projectKey, state.sessionId);
     this.stmts.reattributeFiles.run(projectKey, state.sessionId);
     state.projectKey = projectKey;
   }
 
-  private ledgerLine(line: string, state: FileState, fileId: number, filePath: string): void {
+  private ledgerLine(line: string, state: FileState, fileId: number, target: Target): void {
     const parsed = parseLedgerLine(line);
     if (parsed.kind === 'error') {
       state.parseErrors++;
       return;
     }
     if (parsed.kind !== 'usage') return;
-    const projectKey = parsed.cwd === null ? NO_PROJECT_KEY : projectKeyOf(parsed.cwd);
-    this.stmts.upsertProject.run(projectKey, parsed.cwd);
+    const projectKey = parsed.cwd !== null ? targetProjectKey(target, parsed.cwd) : target.hostId === undefined ? NO_PROJECT_KEY : hostNoProjectKey(target.hostId);
+    this.stmts.upsertProject.run(projectKey, parsed.cwd, target.hostId ?? null);
     this.upsertEntry(parsed, {
       sessionId: parsed.sessionId,
       agentSessionId: null,
@@ -410,7 +485,7 @@ class Indexer {
       model: parsed.model,
       credentialSource: parsed.credentialSource,
       fileId,
-      filePath,
+      target,
     });
   }
 
@@ -418,16 +493,19 @@ class Indexer {
     line: UsageLine,
     at: {
       sessionId: string | null; agentSessionId: string | null; startedMs: number; projectKey: string; origin: FileKind;
-      detail: string | null; provider: string | null; model: string | null; credentialSource: 'host' | null; fileId: number; filePath: string;
+      detail: string | null; provider: string | null; model: string | null; credentialSource: 'host' | null; fileId: number; target: Target;
     },
   ): void {
     const u = line.usage;
     const modelKey = at.provider && at.model ? normalizeModelKey(at.provider, at.model, this.registryKeys) : null;
+    // A row keeps the time this write gave it: the upsert never rewrites a row from its own file, so a later skew moves only
+    // rows indexed after it. session_started_ms stays the host's own clock, an ordering key compared only within one host.
+    const tsMs = line.tsMs - (at.target.clockSkewMs ?? 0);
     this.stmts.upsertEntry.run(
-      `${line.id}|${line.timestamp}`, line.tsMs, at.sessionId, at.agentSessionId, at.startedMs, at.projectKey, at.origin,
+      `${line.id}|${line.timestamp}`, tsMs, at.sessionId, at.agentSessionId, at.startedMs, at.projectKey, at.origin,
       line.entryKind, at.detail, at.provider, at.model, modelKey, u.input, u.output, u.cacheRead, u.cacheWrite,
       u.cacheWrite1h, u.reasoning, u.cost.input, u.cost.output, u.cost.cacheRead, u.cost.cacheWrite, u.cost.total,
-      line.stopReason, at.fileId, at.credentialSource, at.filePath,
+      line.stopReason, at.fileId, at.credentialSource, at.target.path,
     );
   }
 
@@ -510,7 +588,7 @@ function rekeyModels(db: UsageDatabase, registryKeys: ReadonlySet<string>): void
  * steps, which must not turn an indexed scan into an error.
  */
 export async function indexUsage(options: IndexUsageOptions): Promise<IndexUsageSummary> {
-  const { db, sessionsDir, ledgerPath, models, onProgress, log } = options;
+  const { db, sessionsDir, ledgerPath, remoteMirrorsDir, models, onProgress, log } = options;
   const failSoft = (step: string, run: () => void) => {
     try {
       run();
@@ -519,6 +597,7 @@ export async function indexUsage(options: IndexUsageOptions): Promise<IndexUsage
     }
   };
   const targets = listSessionFiles(sessionsDir);
+  if (remoteMirrorsDir !== undefined) targets.push(...listMirrorFiles(remoteMirrorsDir, log));
   if (fs.existsSync(ledgerPath)) targets.push({ path: ledgerPath, kind: 'background' });
   const indexer = new Indexer(db, models);
   failSoft('re-key models for the current registry', () => rekeyModels(db, indexer.registryKeys));

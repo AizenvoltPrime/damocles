@@ -2,14 +2,14 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref, useId } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { ChevronRight } from 'lucide-vue-next';
-import { MIN_SECTION_SIZE, type SidebarSectionId } from '../../preload/shell-channels';
+import { MIN_SECTION_SIZE } from '../../preload/shell-channels';
 import { SECTION_HEADER_REM } from '../layout';
 import type { DropEdge } from '../layout/section-order';
 import { remPx } from '@/composables/useRemPx';
-import { ALWAYS_SHOW_SECTION_ACTIONS, SECTION_DRAG_MIME, SECTION_ORDER, SECTION_TITLES } from './sidebar-section';
+import { ALWAYS_SHOW_SECTION_ACTIONS, DOCKED_SECTION_ORDER, SECTION_DRAG_MIME, SECTION_ORDER, SECTION_TITLES, type SidebarPanelId } from './sidebar-section';
 
 const props = defineProps<{
-  section: SidebarSectionId;
+  section: SidebarPanelId;
   count?: number | undefined;
   collapsed: boolean;
   // CSS px of the body; absent, the section takes the sidebar's remaining height
@@ -25,12 +25,17 @@ const headingId = useId();
 const bodyId = useId();
 const root = ref<HTMLElement | null>(null);
 const body = ref<HTMLElement | null>(null);
+const headerButton = ref<HTMLButtonElement | null>(null);
 const alwaysShow = inject(ALWAYS_SHOW_SECTION_ACTIONS, ref(false));
-const ordering = inject(SECTION_ORDER, null);
+// the section's place in the user's order; absent for the docked Ports section
+const orderable = props.section === 'ports' ? undefined : props.section;
+const ordering = orderable === undefined ? null : inject(SECTION_ORDER, null);
 
 const sectionStyle = computed(() => {
-  const order = ordering?.orderOf(props.section);
+  const order = orderable === undefined ? DOCKED_SECTION_ORDER : ordering?.orderOf(orderable);
   if (props.collapsed) return { flex: `0 0 ${SECTION_HEADER_REM}rem`, order };
+  // a docked section is as tall as its content, which caps its own height
+  if (orderable === undefined) return { flex: '0 0 auto', order };
   // MIN_SECTION_SIZE is px at the default font.
   if (props.bodySize === undefined) return { flex: '1 1 0px', minHeight: `${MIN_SECTION_SIZE / 16 + SECTION_HEADER_REM}rem`, order };
   return { flex: `0 0 calc(${props.bodySize}px + ${SECTION_HEADER_REM}rem)`, order };
@@ -43,11 +48,11 @@ const dropEdge = ref<DropEdge | null>(null);
 const dropShown = computed(() => dropEdge.value !== null && ordering?.dragged.value != null);
 
 function onDragStart(event: DragEvent): void {
-  if (!ordering || !event.dataTransfer) return;
-  event.dataTransfer.setData(SECTION_DRAG_MIME, props.section);
+  if (!ordering || !orderable || !event.dataTransfer) return;
+  event.dataTransfer.setData(SECTION_DRAG_MIME, orderable);
   event.dataTransfer.effectAllowed = 'move';
   if (dragImage.value) event.dataTransfer.setDragImage(dragImage.value, remPx(0.75), remPx(0.75));
-  ordering.dragged.value = props.section;
+  ordering.dragged.value = orderable;
 }
 
 function onDragEnd(): void {
@@ -56,7 +61,7 @@ function onDragEnd(): void {
 
 function acceptsDrop(event: DragEvent): boolean {
   const dragged = ordering?.dragged.value;
-  return dragged != null && dragged !== props.section && event.dataTransfer?.types.includes(SECTION_DRAG_MIME) === true;
+  return dragged != null && dragged !== orderable && event.dataTransfer?.types.includes(SECTION_DRAG_MIME) === true;
 }
 
 function onDragOver(event: DragEvent): void {
@@ -75,14 +80,14 @@ function onDrop(event: DragEvent): void {
   const edge = dropEdge.value;
   dropEdge.value = null;
   const dragged = ordering?.dragged.value;
-  if (!acceptsDrop(event) || !edge || !dragged) return;
+  if (!acceptsDrop(event) || !edge || !dragged || !orderable) return;
   event.preventDefault();
   ordering!.dragged.value = null;
-  ordering!.drop(dragged, props.section, edge);
+  ordering!.drop(dragged, orderable, edge);
 }
 
 function openMenuAt(anchor: { x: number; y: number; width: number; height: number }): void {
-  if (ordering) void holdActions(ordering.openMenu(props.section, anchor));
+  if (ordering && orderable) void holdActions(ordering.openMenu(orderable, anchor));
 }
 
 function onHeaderContextMenu(event: MouseEvent): void {
@@ -150,7 +155,7 @@ async function holdActions<T>(popup: Promise<T>): Promise<T> {
   }
 }
 
-defineExpose({ bodyHeight: (): number => body.value?.getBoundingClientRect().height ?? 0, holdActions });
+defineExpose({ bodyHeight: (): number => body.value?.getBoundingClientRect().height ?? 0, holdActions, focusHeader: (): void => headerButton.value?.focus() });
 </script>
 
 <template>
@@ -186,6 +191,7 @@ defineExpose({ bodyHeight: (): number => body.value?.getBoundingClientRect().hei
         :class="hasChip ? '' : 'flex-1'"
       >
         <button
+          ref="headerButton"
           type="button"
           class="flex min-w-0 flex-1 items-center gap-1.5 text-left"
           :aria-expanded="!collapsed"

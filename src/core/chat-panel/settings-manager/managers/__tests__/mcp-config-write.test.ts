@@ -371,6 +371,8 @@ describe("name-collision policy", () => {
   const SHADOWING_FILE: readonly (readonly [McpServerSource, string])[] = [
     ["workspace", ".mcp.json"],
     ["damocles-local", ".damocles/mcp.local.json"],
+    // a remote core's relayed server is defined on the client, in no file of the host
+    ["relayed", "your computer's MCP config"],
   ];
 
   it.each(SHADOWING_FILE)("rejects adding a name %s already defines, naming that file", async (source, file) => {

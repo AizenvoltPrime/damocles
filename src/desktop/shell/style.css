@@ -357,6 +357,25 @@
   color: var(--d-text);
 }
 
+/* The transfer bar fills as the connect timeline's does; reduced motion makes each step instant. */
+.files-transfer-fill {
+  transform-origin: left;
+  transition: transform 0.45s var(--ease-out), background-color 0.2s var(--ease-out);
+}
+
+[dir="rtl"] .files-transfer-fill {
+  transform-origin: right;
+}
+
+/* A cut row fades to the disabled opacity until Paste or Escape. */
+.files-row {
+  transition: opacity 0.12s var(--ease-out);
+}
+
+.files-row[data-cut] {
+  opacity: var(--d-opacity-disabled);
+}
+
 /* Image preview: a checkerboard behind the image shows its transparency. */
 .image-preview img {
   background-color: var(--d-panel);

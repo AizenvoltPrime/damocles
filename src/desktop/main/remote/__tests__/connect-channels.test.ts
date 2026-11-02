@@ -25,8 +25,17 @@ function setup(open = true) {
     entries: vi.fn(() => []),
     setSetting: vi.fn(async () => undefined),
     revokeCredentialHost: vi.fn(async () => undefined),
+    deliverHeldMemory: vi.fn(async () => ({ ok: true })),
+    discardHeldMemory: vi.fn(async () => ({ ok: false, code: 'gone' })),
     setUpPasswordless: vi.fn(async () => ({ ok: true })),
     removalInfo: vi.fn(async () => ({ runs: [], offerRemoveKey: false, offerDisableLinger: false })),
+    conversionInfo: vi.fn(async () => ({ runs: [] })),
+    convertToWsl2: vi.fn(async () => undefined),
+    rebuildInfo: vi.fn(async () => ({ runs: [] })),
+    rebuildContainer: vi.fn(async () => undefined),
+    listContainers: vi.fn(async () => ({ ok: true as const, engine: 'docker' as const, containers: [] })),
+    pickContainerFolder: vi.fn(async () => null),
+    checkContainerFolder: vi.fn(async (_via: string, folder: string) => ({ ok: false as const, code: 'noDevcontainerConfig' as const, folder })),
     removeServer: vi.fn(async () => ({ ok: true, notices: [] })),
     retryRemoval: vi.fn(async () => ({ ok: true, notices: [] })),
     operations: vi.fn(() => ({ hostId: 'h', revision: 1 })),
@@ -100,6 +109,11 @@ describe('the Remote hosts channels', () => {
     expect(actions.removeServer).toHaveBeenCalledWith('h', { removeKey: true, disableLinger: false });
     await expect(call(OVERLAY_CHANNELS.hostsRetryRemoval, { hostId: 'h', options: {} })).rejects.toThrow('Malformed');
     await call(OVERLAY_CHANNELS.hostsRetryRemoval, { hostId: 'h' });
+    await expect(call(OVERLAY_CHANNELS.hostsConvertToWsl2, { hostId: 'h', force: true })).rejects.toThrow('Malformed');
+    await call(OVERLAY_CHANNELS.hostsConversionInfo, { hostId: 'h' });
+    await call(OVERLAY_CHANNELS.hostsConvertToWsl2, { hostId: 'h' });
+    expect(actions.conversionInfo).toHaveBeenCalledWith('h');
+    expect(actions.convertToWsl2).toHaveBeenCalledWith('h');
     expect(actions.retryRemoval).toHaveBeenCalledWith('h');
     await expect(call(OVERLAY_CHANNELS.hostsOperations, { hostId: 'h', revision: 1 })).rejects.toThrow('Malformed');
     await expect(call(OVERLAY_CHANNELS.hostsOperations, { hostId: '' })).rejects.toThrow('Malformed');
@@ -111,18 +125,37 @@ describe('the Remote hosts channels', () => {
     const { call, actions } = setup();
     const entry = {
       hostId: 'h1',
+      kind: 'ssh',
       authorityKey: 'ssh+h1',
       name: 'prod-1',
       destinationLabel: 'deploy@10.0.0.9',
       connection: 'connected',
       settings: { allowBypass: false, forwardAgent: true, rememberPassword: false, browserLocalNetwork: false, openLinksWithoutAsking: false },
       facts: { passwordless: true, keyInstalledByDamocles: false, lingerEnabledByDamocles: false, alwaysCredentialHosts: ['github.com'] },
+      heldMemoryQueues: [{ queueId: 'client-old', count: 3, lastSeen: 1_700_000_000_000 }],
     };
-    actions.entries.mockReturnValue([{ ...entry, password: 'not for the page', settings: { ...entry.settings, token: 'x' } }]);
+    actions.entries.mockReturnValue([{ ...entry, password: 'not for the page', settings: { ...entry.settings, token: 'x' }, heldMemoryQueues: [{ ...entry.heldMemoryQueues[0], path: '/home/u/.damocles/outbox' }] }]);
     expect(await call(OVERLAY_CHANNELS.hostsList, {})).toEqual({ ok: true, value: [entry] });
+    actions.entries.mockReturnValue([{ ...entry, heldMemoryQueues: [{ queueId: 'client-old', count: 0, lastSeen: 1 }] }]);
+    await expect(call(OVERLAY_CHANNELS.hostsList, {})).rejects.toThrow('The saved hosts exceed the overlay bounds');
     actions.entries.mockReturnValue(Array.from({ length: MAX_OVERLAY_ITEMS + 1 }, (_, index) => ({ ...entry, hostId: `h${index}`, authorityKey: `ssh+h${index}` })));
     await expect(call(OVERLAY_CHANNELS.hostsList, {})).rejects.toThrow('The saved hosts exceed the overlay bounds');
     await expect(call(OVERLAY_CHANNELS.hostsList, { all: true })).rejects.toThrow('Malformed');
+  });
+
+  it('takes or discards a held memory queue by exact host and queue ids, and only while Settings or Connect shows', async () => {
+    const { call, actions } = setup();
+    expect(await call(OVERLAY_CHANNELS.hostsDeliverHeldMemory, { hostId: 'h', queueId: 'client-old' })).toEqual({ ok: true, value: { ok: true } });
+    expect(actions.deliverHeldMemory).toHaveBeenCalledWith('h', 'client-old');
+    expect(await call(OVERLAY_CHANNELS.hostsDiscardHeldMemory, { hostId: 'h', queueId: 'client-old' })).toEqual({ ok: true, value: { ok: false, code: 'gone' } });
+    expect(actions.discardHeldMemory).toHaveBeenCalledWith('h', 'client-old');
+    for (const raw of [{ hostId: 'h' }, { hostId: 'h', queueId: '' }, { hostId: 'h', queueId: 'q'.repeat(129) }, { hostId: 'h', queueId: 'q', all: true }]) {
+      await expect(call(OVERLAY_CHANNELS.hostsDeliverHeldMemory, raw)).rejects.toThrow('Malformed');
+      await expect(call(OVERLAY_CHANNELS.hostsDiscardHeldMemory, raw)).rejects.toThrow('Malformed');
+    }
+    const closed = setup(false);
+    expect(await closed.call(OVERLAY_CHANNELS.hostsDeliverHeldMemory, { hostId: 'h', queueId: 'client-old' })).toEqual({ ok: false, reason: 'closed' });
+    expect(closed.actions.deliverHeldMemory).not.toHaveBeenCalled();
   });
 });
 
@@ -131,6 +164,9 @@ describe('parseConnectTarget', () => {
     expect(parseConnectTarget({ target: { hostId: 'h1' } })).toEqual({ hostId: 'h1' });
     expect(parseConnectTarget({ target: { alias: 'prod-1', name: 'Prod' } })).toEqual({ alias: 'prod-1', name: 'Prod' });
     expect(parseConnectTarget({ target: { input: 'ssh deploy@10.0.0.9', name: '' } })).toEqual({ input: 'ssh deploy@10.0.0.9', name: '' });
+    expect(parseConnectTarget({ target: { distro: 'Ubuntu-24.04', name: 'Ubuntu' } })).toEqual({ distro: 'Ubuntu-24.04', name: 'Ubuntu' });
+    expect(parseConnectTarget({ target: { distro: '--shutdown', name: 'x' } })).toBeUndefined();
+    expect(parseConnectTarget({ target: { distro: 'Ubuntu', name: 'x', input: 'y' } })).toBeUndefined();
     expect(parseConnectTarget({ target: { alias: '', name: 'x' } })).toBeUndefined();
     expect(parseConnectTarget({ target: { alias: 'a', name: 'x', options: [] } })).toBeUndefined();
     expect(parseConnectTarget({ target: 'h1' })).toBeUndefined();

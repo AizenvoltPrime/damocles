@@ -134,6 +134,7 @@ type FakeWindow = EventEmitter & {
 const TOAST: OverlayToast = { id: 't1', at: 1, lifeMs: 12_000, remainingMs: 12_000, body: { kind: 'done', chat: { project: { key: 'p', name: 'acme' }, title: 'Chat' } } };
 
 let resolved: Array<[string, string | number | undefined]>;
+let copies: string[];
 let holds: Array<[string, boolean]>;
 let leaves: number;
 let blurs: number;
@@ -155,8 +156,9 @@ function notifier(platform: NodeJS.Platform): NotifierHost {
   return new NotifierHost({
     platform,
     preloadPath: 'preload-overlay.js',
-    state: () => ({ locale: 'en', platform: 'win32', remoteEnabled: false }),
+    state: () => ({ locale: 'en', platform: 'win32' }),
     resolveToast: (id, action) => resolved.push([id, action]),
+    copyToast: (id) => copies.push(id),
     holdToast: (id, held) => holds.push([id, held]),
     leave: () => {
       leaves++;
@@ -173,6 +175,7 @@ beforeEach(() => {
   H.windows.length = 0;
   H.scaleFactor = 1;
   resolved = [];
+  copies = [];
   holds = [];
   leaves = 0;
   blurs = 0;
@@ -394,7 +397,7 @@ describe('desktop popup window (D52)', () => {
     expect(blurs).toBe(1);
   });
 
-  it('takes answers and holds only from its own page, bounded', async () => {
+  it('takes answers, holds and copies only from its own page, bounded', async () => {
     host.sink();
     const contents = win().webContents;
     contents.ipc.emit(OVERLAY_CHANNELS.resolveToast, own(), 't1', 'open');
@@ -407,10 +410,15 @@ describe('desktop popup window (D52)', () => {
     contents.ipc.emit(OVERLAY_CHANNELS.resolveToast, { sender: contents, senderFrame: { url: 'app://damocles/overlay/index.html', parent: null } }, 't1', 'open');
     contents.ipc.emit(OVERLAY_CHANNELS.toastHold, own(), 't1', true);
     contents.ipc.emit(OVERLAY_CHANNELS.toastHold, own(), 't1', 'yes');
+    contents.ipc.emit(OVERLAY_CHANNELS.toastCopy, own(), 'l1');
+    contents.ipc.emit(OVERLAY_CHANNELS.toastCopy, own(), '');
+    contents.ipc.emit(OVERLAY_CHANNELS.toastCopy, own(), 7);
+    contents.ipc.emit(OVERLAY_CHANNELS.toastCopy, { sender: contents, senderFrame: { url: 'app://damocles/overlay/index.html', parent: null } }, 'l1');
+    expect(copies).toEqual(['l1']);
     expect(resolved).toEqual([['t1', 'open'], ['t1', undefined], ['t1', 2]]);
     expect(holds).toEqual([['t1', true]]);
     expect(lines.some((line) => line.startsWith('[notifier] rejected'))).toBe(true);
-    await expect(Promise.resolve(contents.ipc.handlers.get(OVERLAY_CHANNELS.getState)!(own()))).resolves.toEqual({ locale: 'en', platform: 'win32', remoteEnabled: false });
+    await expect(Promise.resolve(contents.ipc.handlers.get(OVERLAY_CHANNELS.getState)!(own()))).resolves.toEqual({ locale: 'en', platform: 'win32' });
     expect(() => contents.ipc.handlers.get(OVERLAY_CHANNELS.getState)!({ sender: {}, senderFrame: { url: NOTIFIER_PAGE_URL, parent: null } })).toThrow('Rejected');
   });
 
@@ -507,7 +515,7 @@ describe('desktop popup window (D52)', () => {
     const contents = win().webContents;
     const closing = own();
     win().emit('closed');
-    await expect(Promise.resolve(contents.ipc.handlers.get(OVERLAY_CHANNELS.getState)!(closing))).resolves.toEqual({ locale: 'en', platform: 'win32', remoteEnabled: false });
+    await expect(Promise.resolve(contents.ipc.handlers.get(OVERLAY_CHANNELS.getState)!(closing))).resolves.toEqual({ locale: 'en', platform: 'win32' });
     contents.ipc.emit(OVERLAY_CHANNELS.toastHold, closing, 't1', true);
     contents.ipc.emit(OVERLAY_CHANNELS.toastArea, closing, AREA);
     expect(holds).toEqual([]);

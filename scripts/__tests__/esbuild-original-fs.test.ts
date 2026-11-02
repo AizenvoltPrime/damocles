@@ -1,10 +1,11 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { ESLint } from 'eslint';
 import * as esbuild from 'esbuild';
 import { afterAll, describe, expect, it } from 'vitest';
+import { BUNDLED_TREES, backendSourceFiles } from '../../src/__mocks__/source-tree';
 import { originalFs } from '../esbuild-original-fs.mjs';
 
 /**
@@ -140,14 +141,16 @@ describe('the original-fs redirect', () => {
   });
 
   it('is skipped only for the readers of Damocles\' own packed files', () => {
-    const importers = (readdirSync(join(ROOT, 'src'), { recursive: true, encoding: 'utf8' }) as string[])
-      .filter((file) => /\.(?:ts|vue)$/.test(file) && !/(?:^|[\\/])__tests__[\\/]|\.test\.ts$/.test(file))
-      .filter((file) => /['"](?:\.\.?\/)+(?:core\/)?resource-fs['"]/.test(readFileSync(join(ROOT, 'src', file), 'utf8')))
-      .map((file) => relative(ROOT, join(ROOT, 'src', file)).replaceAll('\\', '/'))
+    // only esbuild's Node bundles take the redirect; src/webview and the .vue files are Vite browser bundles, which have no fs
+    const importers = backendSourceFiles(ROOT, BUNDLED_TREES)
+      .filter((file) => !file.rel.endsWith('.test.ts') && /['"](?:\.\.?\/)+(?:core\/)?resource-fs['"]/.test(readFileSync(file.path, 'utf8')))
+      .map((file) => file.rel)
       .sort();
     expect(importers).toEqual([
       'src/core/config/read-contributed-configuration.ts',
       'src/core/pi-session/session-store/meta-index/worker.ts',
+      // dist/cli.js reads the app's package.json and l10n bundle inside app.asar
+      'src/desktop/cli/cli.ts',
       'src/desktop/local-services/localization-service.ts',
       'src/desktop/main/protocol.ts',
       'src/desktop/main/release-notes.ts',

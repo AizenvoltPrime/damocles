@@ -4,6 +4,9 @@
 import { isRelativeFilePath } from './relative-path';
 
 export const FILE_DRAG_MIME = 'application/x-damocles-file';
+// A Files row dragged to move or copy it; Files accepts a drop of this type only (plus OS files), never FILE_DRAG_MIME alone,
+// so an editor tab or source control row dropped on Files stays a chat mention. Same payload as FILE_DRAG_MIME.
+export const FILES_ROW_DRAG_MIME = 'application/x-damocles-files-row';
 
 // Must stay equal to MAX_ID_LENGTH in src/desktop/preload/shell-channels.ts; the key may be a worktree's root key.
 const MAX_PROJECT_KEY_LENGTH = 209;

@@ -5,7 +5,11 @@ import type { Platform } from "../../../../platform/platform";
 import type { SettingsScope } from "../../../../platform/settings-store";
 import * as path from "path";
 import { homedir } from "os";
-import { LOCAL_MCP_RELATIVE_PATH, MCP_TOOL_EXPOSURE_SETTING, mcpServerNamespaceKey } from "../../../../shared/types/mcp";
+import { LOCAL_MCP_RELATIVE_PATH, MCP_REMOTE_AVAILABLE_SETTING, MCP_TOOL_EXPOSURE_SETTING, mcpServerNamespaceKey, RELAYABLE_SOURCES, type McpServerPlacement } from "../../../../shared/types/mcp";
+import type { RelayedMcpServer } from "../../../../shared/remote-user";
+import type { RemoteHost } from "../../../../platform/remote-host";
+import { currentPin } from "../../../client-snapshots";
+import { relayedServerConfig, relaysPersonalMcp, remoteAvailableNames } from "../../../pi-session/mcp/relayed-mcp";
 import { personalConfigRoot } from "../../../worktrees/personal-config";
 import type {
   McpConfigError,
@@ -186,6 +190,19 @@ interface FolderRead {
 
 const FOLDER_WATCHED_FILES = [".mcp.json", LOCAL_MCP_RELATIVE_PATH, ".pi/mcp.json", ".gitignore"] as const;
 
+/** Where a remote core's server runs, which its row's chip shows; the view names the host. */
+const PLACEMENT_BY_SOURCE: Record<McpServerSource, McpServerPlacement> = {
+  relayed: "client",
+  codex: "host",
+  claude: "host",
+  pi: "host",
+  "claude-local": "host",
+  damocles: "host",
+  "pi-project": "project",
+  workspace: "project",
+  "damocles-local": "project",
+};
+
 export class McpManager {
   private folderStates = new Map<string, FolderMcpState>();
   private configLoaded = false;
@@ -198,11 +215,35 @@ export class McpManager {
   private readonly platform: Platform;
   private readonly workspaceState: Memento;
   private readonly folders: () => readonly FolderTarget[];
+  // a daemon's core: the relayed servers of every client, as the last load read them, by name
+  private relayed = new Map<string, RelayedMcpServer>();
+  private clientsListener: Disposable | null = null;
+  private remoteAvailableListener: Disposable | null = null;
 
   constructor(platform: Platform, folders: () => readonly FolderTarget[]) {
     this.platform = platform;
     this.workspaceState = platform.state.workspace;
     this.folders = folders;
+  }
+
+  /**
+   * A daemon's core holds the personal servers of every client, a detached one's included, so their tools stay eligible; a
+   * turn reaches only those of the device it is pinned to (user-scope.ts userScopeReach).
+   */
+  private relayedSource(): readonly RelayedMcpServer[] {
+    return this.platform.remote ? relayedUnion(this.platform.remote) : [];
+  }
+
+  /** On a daemon's core a device sees only the relayed servers it relays itself; every other row it sees. */
+  private shownToDevice(entry: McpServerEntry): boolean {
+    return entry.source !== "relayed" || this.deviceRelayed()?.some((server) => server.name === entry.name) === true;
+  }
+
+  /** The relayed servers of the device a post is built for (forEachDevice), else the acting one. */
+  private deviceRelayed(): readonly RelayedMcpServer[] | undefined {
+    const remote = this.platform.remote;
+    const clientId = remote ? currentPin(remote).clientId : undefined;
+    return clientId === undefined ? undefined : remote!.clients.mcp(clientId);
   }
 
   setOnConfigChange(callback: () => void): void {
@@ -226,6 +267,25 @@ export class McpManager {
     this.precedenceListener ??= this.platform.settings.onDidChange(ASSET_SOURCE_PRECEDENCE_SETTING, () => {
       this.reload().catch(err => log("[McpManager] Reload after a source precedence change failed:", err));
     });
+    // a daemon's core reloads when a client's relayed servers change the union, and re-sends the rows when only its own changed
+    const remote = this.platform.remote;
+    if (remote && !this.clientsListener) {
+      this.clientsListener = remote.clients.onDidChange((change) => {
+        if (change.topic !== "clientMcp" || change.clientId === undefined) return;
+        if (JSON.stringify(change.before ?? []) === JSON.stringify(remote.clients.mcp(change.clientId) ?? [])) return;
+        if (JSON.stringify(relayedUnion(remote)) === JSON.stringify([...this.relayed.values()])) {
+          this.onConfigChange?.();
+          return;
+        }
+        this.reload().catch(err => log("[McpManager] Reload after the relayed servers changed failed:", err));
+      });
+    }
+    // this computer's desktop core shows each personal server's mark on its row
+    if (relaysPersonalMcp(this.platform)) {
+      this.remoteAvailableListener ??= this.platform.settings.onDidChange(MCP_REMOTE_AVAILABLE_SETTING, () => {
+        this.reload().catch(err => log("[McpManager] Reload after the remote-available servers changed failed:", err));
+      });
+    }
     this.syncFolderWatchers();
   }
 
@@ -276,6 +336,10 @@ export class McpManager {
     this.userWatchers = [];
     this.precedenceListener?.dispose();
     this.precedenceListener = null;
+    this.clientsListener?.dispose();
+    this.clientsListener = null;
+    this.remoteAvailableListener?.dispose();
+    this.remoteAvailableListener = null;
     for (const watchers of this.folderWatchers.values()) {
       for (const watcher of watchers) watcher.dispose();
     }
@@ -549,7 +613,9 @@ export class McpManager {
     for (const target of this.folders()) {
       for (const entry of this.folderStates.get(target.key)?.entries ?? []) {
         // A user server is shared by every folder, so its relative paths resolve against the home directory.
-        if (entry.scope === "user" && isLoadable(entry)) union.set(entry.name, serverSpec(entry, entry.config!, homedir(), true));
+        if (entry.scope !== "user" || !isLoadable(entry)) continue;
+        const relay = entry.source === "relayed" ? this.relayed.get(entry.name) : undefined;
+        union.set(entry.name, { ...serverSpec(entry, entry.config!, homedir(), true), ...(relay ? { relay } : {}) });
       }
     }
     return Object.fromEntries(union);
@@ -586,9 +652,11 @@ export class McpManager {
    * and local apply only in a trusted folder with a project layer. The settings store writes them for
    * the window's project (`windowSettingsProject`), which refuses an untrusted project and is none on a
    * daemon's core, so that folder must exist and be trusted too. Local is offered only where the host
-   * keeps a local settings file (`scopeFile`), which VS Code does not.
+   * keeps a local settings file (`scopeFile`), which VS Code does not. A daemon's core saves exposure only to its host's
+   * machine settings, from the settings overlay's host tab.
    */
   toolExposureScopes(folderKey: string): McpToolExposureScope[] {
+    if (this.platform.remote) return ["machine"];
     const target = this.folders().find(candidate => candidate.key === folderKey);
     if (!target?.projectScope || !this.isTargetTrusted(target)) return ["user"];
     const writeTarget = windowSettingsProject(this.platform);
@@ -599,12 +667,21 @@ export class McpManager {
   getServersForUI(folderKey: string): McpServerStatusInfo[] {
     const state = this.stateFor(folderKey, "getServersForUI");
     const trusted = this.isFolderTrusted(folderKey);
-    return (state?.entries ?? []).map(entry => {
+    return (state?.entries ?? []).filter(entry => this.shownToDevice(entry)).map(entry => {
       const status = !entry.enabled ? "disabled" : entry.error ? "failed" : "idle";
       const info = this.toStatusInfo(entry, status);
       if (this.isUntrustedRepoServer(entry, trusted)) info.untrusted = true;
       return info;
     });
+  }
+
+  /** The source of the user-scope server of that name, from any open folder, so a folder's same-named server does not hide it. */
+  userServerSource(name: string): McpServerSource | undefined {
+    for (const target of this.folders()) {
+      const entry = this.folderStates.get(target.key)?.entries.find(candidate => candidate.scope === "user" && candidate.name === name && isLoadable(candidate));
+      if (entry) return entry.source;
+    }
+    return undefined;
   }
 
   getConfigLoaded(): boolean {
@@ -717,6 +794,12 @@ export class McpManager {
       readGlobalMcpSources(projectTargets.map(target => target.fsPath)),
       Promise.all(projectTargets.map(target => this.readFolderFiles(target, trustedByKey.get(target.key) === true))),
     ]);
+    const relayedSource = this.relayedSource();
+    const relayedBatch: McpSourceServers = {
+      source: "relayed",
+      servers: Object.fromEntries(relayedSource.map(server => [server.name, relayedServerConfig(server)])),
+      invalid: {},
+    };
 
     const folderReads: FolderRead[] = fileReads.map(read => ({
       ...read,
@@ -735,7 +818,7 @@ export class McpManager {
     for (const target of targets) {
       // The home target of a window with no folder open has no project files, only user servers.
       const read = readsByKey.get(target.key);
-      const ranked = orderMcpSources([...global.sources, ...(read?.sources ?? [])], precedence);
+      const ranked = orderMcpSources([relayedBatch, ...global.sources, ...(read?.sources ?? [])], precedence);
       const folded = trustedByKey.get(target.key) === true ? ranked : demoteRepoAuthored(ranked);
       // A folder the split has not reached yet still honours every pre-split name, so nothing disabled
       // before the upgrade connects while its files are unreadable.
@@ -763,6 +846,7 @@ export class McpManager {
     }
     if (generation !== this.loadGeneration) return;
     this.folderStates = folderStates;
+    this.relayed = new Map(relayedSource.map(server => [server.name, server]));
     this.configLoaded = true;
     // Queued on the toggle lock but not awaited, so a load never waits behind a slow toggle write.
     void this.pruneStaleEnabledOverrides(folderStates).catch(err => log("[McpManager] Pruning stale enabled overrides failed:", err));
@@ -830,7 +914,8 @@ export class McpManager {
     const statusMap = new Map(sdkStatuses.map(s => [s.name, s]));
     const state = this.stateFor(folderKey, "buildRuntimeStatus");
     const trusted = this.isFolderTrusted(folderKey);
-    return (state?.entries ?? []).map(entry => {
+    const deviceRelayed = this.deviceRelayed();
+    return (state?.entries ?? []).filter(entry => this.shownToDevice(entry)).map(entry => {
       const sdkServer = statusMap.get(entry.name);
       const untrusted = this.isUntrustedRepoServer(entry, trusted);
       const status = untrusted
@@ -847,6 +932,9 @@ export class McpManager {
       if (sdkServer?.stderrTail && !untrusted) info.stderrTail = sdkServer.stderrTail;
       if (sdkServer?.description && info.description === undefined) info.description = sdkServer.description;
       if (sdkServer?.tools) info.tools = sdkServer.tools as McpToolInfo[];
+      // two devices may relay one name with different tools; each sees its own
+      const own = entry.source === "relayed" ? deviceRelayed?.find(server => server.name === entry.name) : undefined;
+      if (own && info.tools) info.tools = info.tools.filter(tool => own.tools.some(candidate => candidate.name === tool.name));
       if (sdkServer?.hasResources !== undefined) info.hasResources = sdkServer.hasResources;
       if (sdkServer?.resourceExposure) info.resourceExposure = sdkServer.resourceExposure;
       if (sdkServer?.resourceExposureSource) info.resourceExposureSource = sdkServer.resourceExposureSource;
@@ -859,6 +947,8 @@ export class McpManager {
   private toStatusInfo(entry: McpServerEntry, status: McpServerStatusInfo["status"]): McpServerStatusInfo {
     const info: McpServerStatusInfo = { name: entry.name, status, enabled: entry.enabled };
     if (entry.source) info.source = entry.source;
+    if (this.platform.remote) info.placement = PLACEMENT_BY_SOURCE[entry.source];
+    else if (relaysPersonalMcp(this.platform) && RELAYABLE_SOURCES.has(entry.source)) info.remoteAvailable = remoteAvailableNames(this.platform.settings).includes(entry.name);
     if (entry.readonly !== undefined) info.readonly = entry.readonly;
     if (entry.error) {
       info.error = verbatim(entry.error.message);
@@ -878,6 +968,31 @@ export class McpManager {
     }
     return info;
   }
+}
+
+/**
+ * Every client's relayed servers by name, sorted: a name two devices relay takes each tool from the first device (by id)
+ * that lists it, offers resources when either does, and waits the longer timeout.
+ */
+function relayedUnion(remote: RemoteHost): RelayedMcpServer[] {
+  const byName = new Map<string, RelayedMcpServer>();
+  for (const clientId of [...remote.clients.mcpClients()].sort()) {
+    for (const server of remote.clients.mcp(clientId) ?? []) {
+      const held = byName.get(server.name);
+      if (!held) {
+        byName.set(server.name, server);
+        continue;
+      }
+      const timeoutMs = held.timeoutMs !== undefined && server.timeoutMs !== undefined ? Math.max(held.timeoutMs, server.timeoutMs) : held.timeoutMs ?? server.timeoutMs;
+      byName.set(server.name, {
+        ...held,
+        tools: [...held.tools, ...server.tools.filter(tool => !held.tools.some(own => own.name === tool.name))],
+        resources: held.resources || server.resources,
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      });
+    }
+  }
+  return [...byName.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
 /** An enabled entry that can connect: it passed validation and no other server's name took its tools. */

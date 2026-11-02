@@ -5,6 +5,7 @@ import type { MemoryService } from '../../memory';
 import type { CompassService } from '../../compass';
 import type { BrowserService } from '../../browser';
 import type { PanelHost } from '../../../platform/window-service';
+import type { RemoteHost } from '../../../platform/remote-host';
 import {
   TOOL_EDIT,
   TOOL_POWERSHELL,
@@ -24,6 +25,8 @@ import { createWriteTool } from './write-tool';
 import { createLsTool } from './ls-tool';
 import { resolveRgPath } from '../../chat-panel/ripgrep';
 import { platform } from '../../platform-host';
+import { relayedBrowserTools } from './browser-relay';
+import { CHAT_BROWSER_SCOPE } from '../../../shared/remote-user';
 import { withPerCallCancel } from './cancellable-shell';
 import type { ShellCancelStore } from './shell-cancel-registry';
 import type { SessionJob } from '../../process-launcher';
@@ -78,6 +81,8 @@ export interface CustomToolDeps {
   browserScopeId?: string;
   /** The chat panel the agent runs in; it owns every page the agent opens. */
   browserChat?: PanelHost;
+  /** A daemon's core's relay to the client showing the chat, the session's own `Platform.remote`: its browser calls run there. */
+  browserRelay?: RemoteHost;
   /** The current session id, for the memory tools (mirrors the SDK factory's `getSessionId`). */
   getSessionId: () => string;
   /** The session's deterministic plan path, named in the EnterPlanMode result so a model that enters
@@ -159,7 +164,7 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
  * operations from Damocles' bundle, which treat an `.asar` as a file.
  */
 export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
-  const { pi, cwd, permissionHandler, getShellOptions, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, browserChat, getSessionId, getPlanFilePath, subagentManager, teamService, imageGeneration, isTeamEnabled, mcpResources } = deps;
+  const { pi, cwd, permissionHandler, getShellOptions, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, browserChat, browserRelay, getSessionId, getPlanFilePath, subagentManager, teamService, imageGeneration, isTeamEnabled, mcpResources } = deps;
   // Bound here because this is the only place that knows which agent the tools being built run in.
   const cancelRegistry = shellCancel.forContext(deliverUserNote);
   const rgPath = (): Promise<string> => resolveRgPath(platform().paths);
@@ -195,12 +200,14 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
     // human scope with the human; each subagent/team agent passes its own id for tab isolation.
     // Both are idempotent, so a rebuild (per session / per spawn) reuses the scope.
     const scope = browserScopeId !== undefined ? browserService.createAgentScope(browserScopeId, browserChat) : browserService.chatScope(browserChat);
-    tools.push(...buildBrowserPiTools({ pi, scope }));
+    const browserTools = buildBrowserPiTools({ pi, scope });
     // The interactive form-fill tool (Slice 4) mirrors AskUserQuestion: it drives the permission handler
     // (FormManager) directly through `canUseTool`. It is built HERE (a leaf module) rather than inside
     // `buildBrowserPiTools` to avoid an eval-time import cycle via permission-gate → tool-catalog →
     // browser-tools. `abortableTool` gives it the same turn-abort boundary as the other browser tools.
-    tools.push(abortableTool(createBrowserRequestInputTool(pi, scope, permissionHandler)));
+    browserTools.push(abortableTool(createBrowserRequestInputTool(pi, scope, permissionHandler)));
+    // a daemon's core has no browser: the client showing the chat runs each call in the chat's scope there
+    tools.push(...(browserRelay ? relayedBrowserTools(browserTools, browserRelay, browserChat, browserScopeId ?? CHAT_BROWSER_SCOPE).map(abortableTool) : browserTools));
   }
 
   // Subagent tools only when a manager is wired (the primary session). Nested subagents build their

@@ -65,7 +65,7 @@ function handleReindex(): void {
     >
       <IconCompass
         class="size-2.75 shrink-0"
-        :class="store.isIndexing ? 'animate-[d-spin_2s_linear_infinite]' : ''"
+        :class="store.isIndexing ? 'd-spinning [--spin-duration:2s]' : ''"
       />
       <span class="tabular-nums leading-none @max-[43rem]:sr-only">{{ pillText }}</span>
       <span

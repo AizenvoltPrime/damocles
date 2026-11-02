@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { rgPath } from '@vscode/ripgrep';
 import { build } from 'esbuild';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DAMOCLES_HOME_DIR } from '../../../../core/paths';
 import { folderKey } from '../../../../core/workspace-folders/folder-key';
 import { DesktopFileWatcherFactory } from '../../../local-services/file-watcher-factory';
@@ -23,8 +23,11 @@ import { NONCE_ENV } from '../../../workspace/terminal/shell-integration-injecti
 import { createTreeListing } from '../../../workspace/tree-listing';
 import { REPO_ROOT, startInProcessDaemon } from '../../../daemon/__tests__/in-process-daemon';
 import { connect } from '../../remote/connection';
-import { createRemoteWorkspace, WATCH_READY_FEATURE } from '../remote-workspace';
+import { carriesTransfers, createRemoteWorkspace, TRANSFER_FEATURES, TransfersUnsupportedError, WATCH_READY_FEATURE } from '../remote-workspace';
 import { NotConnectedError } from '../workspaces';
+import { createFakePlatform } from '../../../../__mocks__/fake-platform';
+import { MAX_OPEN_STREAMS } from '../../../../remote/mux';
+import { FileTransferService } from '../../files/file-transfer';
 
 // No pty host or formatter host starts in this suite; the terminal and format members it runs need none.
 const NO_HOSTS: HostStarters = {
@@ -70,7 +73,8 @@ async function localAdapter(): Promise<Adapter> {
   return { workspace, keyOf: folderKey, dispose: () => factory.close() };
 }
 
-async function remoteAdapter(): Promise<Adapter> {
+// features: what the client takes from the daemon's welcome, every name by default
+async function remoteAdapter(features: (listed: readonly string[]) => readonly string[] = (listed) => listed): Promise<Adapter> {
   const daemon = await startInProcessDaemon({ starters: NO_HOSTS, watchWorker });
   const connection = await connect({ stream: await daemon.connect(), appVersion: '0.0.0-test', clientId: 'conformance', deviceName: 'test', terminalIdleDays: 30, log: () => undefined });
   const workspace = createRemoteWorkspace({
@@ -80,6 +84,8 @@ async function remoteAdapter(): Promise<Adapter> {
     onClose: (listener) => connection.onClose(listener),
     notConnected: () => new NotConnectedError('Local daemon is not connected.'),
     watchReady: connection.features.includes(WATCH_READY_FEATURE),
+    transfers: carriesTransfers(features(connection.features)),
+    openStream: () => connection.openStream(),
     log: () => undefined,
   });
   return {
@@ -92,7 +98,7 @@ async function remoteAdapter(): Promise<Adapter> {
   };
 }
 
-const ADAPTERS: ReadonlyArray<readonly [string, () => Promise<Adapter>]> = [['local adapter', localAdapter], ['loopback client', remoteAdapter]];
+const ADAPTERS: ReadonlyArray<readonly [string, () => Promise<Adapter>]> = [['local adapter', localAdapter], ['loopback client', () => remoteAdapter()]];
 
 function search(workspace: ProjectWorkspace, cwd: string, args: readonly string[]): Promise<{ events: RgEvent[]; end: SearchRunEnd }> {
   return new Promise((resolve) => {
@@ -229,6 +235,68 @@ describe.each(ADAPTERS)('ProjectWorkspace conformance: %s', (_name, start) => {
     expect(fs.existsSync(file('src/c.ts'))).toBe(false);
   });
 
+  it('receives a file through a part and streams it back, and a source that throws leaves no part and no claim', async () => {
+    async function* bytes(...parts: string[]): AsyncGenerator<Uint8Array> {
+      for (const part of parts) yield Buffer.from(part);
+    }
+    const mtimeMs = Date.UTC(2021, 5, 6);
+    expect(await workspace.files.receiveFile(project, 'src', 'b.ts', bytes('one ', 'two'), { mode: 0o644, mtimeMs, replace: false, size: 7 })).toEqual({ ok: true });
+    expect(fs.readFileSync(file('src/b.ts'), 'utf8')).toBe('one two');
+    expect(fs.statSync(file('src/b.ts')).mtimeMs).toBe(mtimeMs);
+    expect(await workspace.files.receiveFile(project, 'src', 'b.ts', bytes('x'), { mode: 0o644, mtimeMs, replace: false, size: 1 })).toEqual({ ok: false, reason: 'exists' });
+    expect(await workspace.files.receiveFile(project, 'src', 'c.ts', bytes('xy'), { mode: 0o644, mtimeMs, replace: false, size: 3 })).toMatchObject({ ok: false, reason: 'incomplete' });
+    const cancelled = new Error('cancelled');
+    async function* failing(): AsyncGenerator<Uint8Array> {
+      yield Buffer.alloc(300 * 1024, 1);
+      throw cancelled;
+    }
+    await expect(workspace.files.receiveFile(project, 'src', 'd.ts', failing(), { mode: 0o644, mtimeMs, replace: false, size: 600 * 1024 })).rejects.toBe(cancelled);
+    // the host answers after it removed its part, and the listing is read after the answer
+    await vi.waitFor(() => expect(fs.readdirSync(file('src')).sort()).toEqual(['a.ts', 'b.ts']));
+    const big = Buffer.alloc(700 * 1024, 7);
+    fs.writeFileSync(file('src/big.bin'), big);
+    const read = await workspace.files.readFile(project, 'src/big.bin');
+    if (!read.ok) throw new Error(read.reason);
+    expect(read.size).toBe(big.length);
+    const parts: Buffer[] = [];
+    for await (const chunk of read.chunks) parts.push(Buffer.from(chunk));
+    expect(Buffer.concat(parts).equals(big)).toBe(true);
+    expect(await workspace.files.readFile(project, 'src')).toEqual({ ok: false, reason: 'notAFile' });
+    const early = await workspace.files.readFile(project, 'src/big.bin');
+    if (!early.ok) throw new Error(early.reason);
+    for await (const chunk of early.chunks) {
+      expect(chunk.length).toBeGreaterThan(0);
+      break;
+    }
+  });
+
+  it('walks in pages, finds clashes, and copies, moves, makes and removes folders on the host', async () => {
+    fs.mkdirSync(file('src/deep'));
+    fs.writeFileSync(file('src/deep/c.txt'), 'see');
+    const walked: Array<[string, string]> = [];
+    for await (const page of workspace.files.walk(project, 'src')) walked.push(...page.map((entry): [string, string] => [entry.relativePath, entry.kind]));
+    expect(walked).toEqual([['', 'dir'], ['a.ts', 'file'], ['deep', 'dir'], ['deep/c.txt', 'file']]);
+    for await (const page of workspace.files.walk(project, 'src')) {
+      expect(page.length).toBeGreaterThan(0);
+      break;
+    }
+    const foldsCase = process.platform === 'win32' || process.platform === 'darwin';
+    expect(await workspace.files.clashes(project, 'src', ['A.ts', 'z.ts'])).toEqual({ ok: true, clashes: [foldsCase ? { name: 'a.ts', kind: 'file' } : null, null] });
+    expect(await workspace.files.makeFolder(project, '', 'lib')).toEqual({ ok: true });
+    expect(await workspace.files.makeFolder(project, '', 'lib')).toEqual({ ok: true });
+    expect(await workspace.files.copy(project, 'src/a.ts', project, 'lib', 'a copy.ts', false)).toEqual({ ok: true });
+    expect(fs.readFileSync(file('lib/a copy.ts'), 'utf8')).toBe('export const needle = 1;\n');
+    expect(await workspace.files.move(project, 'src/deep', project, 'lib', 'deep', false)).toEqual({ ok: true, left: [] });
+    expect(fs.readFileSync(file('lib/deep/c.txt'), 'utf8')).toBe('see');
+    expect(await workspace.files.move(project, 'lib', project, 'lib/deep', 'lib', false)).toEqual({ ok: false, reason: 'intoItself' });
+    expect(await workspace.files.makeLink(project, 'lib', 'to-a', 'a copy.ts', false)).toEqual(process.platform === 'win32' ? { ok: false, reason: 'unsupported' } : { ok: true });
+    fs.mkdirSync(file('empty'));
+    const empty = await workspace.files.entry(project, 'empty');
+    if (!empty.ok) throw new Error(empty.reason);
+    expect(await workspace.files.removeFolder(project, 'empty', empty.identity)).toEqual({ ok: true });
+    expect(fs.existsSync(file('empty'))).toBe(false);
+  });
+
   it('answers projectOfPath with the project it was given', async () => {
     const found = await workspace.files.projectOfPath([project], file('src/a.ts'));
     expect(found).toEqual({ project, relativePath: 'src/a.ts', path: file('src/a.ts') });
@@ -317,4 +385,104 @@ describe.each(ADAPTERS)('ProjectWorkspace conformance: %s', (_name, start) => {
     const injected = await Promise.all(profiles.map((profile) => workspace.terminals.injection({ file: profile.file, args: profile.args, nonce: 'n0nce', env: {} })));
     expect(injected.some((injection) => injection?.env[NONCE_ENV] === 'n0nce')).toBe(true);
   });
+});
+
+describe('transfers over a loopback connection', () => {
+  let adapter: Adapter;
+  let root: string;
+  let project: Project;
+
+  const start = async (features?: (listed: readonly string[]) => readonly string[]): Promise<void> => {
+    adapter = await remoteAdapter(features);
+    root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dm-conf-transfer-')));
+    const folder = path.join(root, 'proj');
+    fs.mkdirSync(path.join(folder, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(folder, 'src', 'a.ts'), 'a');
+    project = { key: adapter.keyOf(folder), fsPath: folder, name: 'proj' };
+  };
+
+  afterEach(async () => {
+    await adapter.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('sends nothing to a daemon that does not list the transfer features, and the connection stays up', async () => {
+    await start((listed) => listed.filter((feature) => !TRANSFER_FEATURES.includes(feature)));
+    const { files } = adapter.workspace;
+    const identity = { dev: 1n, ino: 2n, birthtimeNs: 3n };
+    async function* none(): AsyncGenerator<Uint8Array> {}
+    const calls: Array<() => Promise<unknown>> = [
+      async () => {
+        for await (const page of files.walk(project, 'src')) return page;
+        return undefined;
+      },
+      () => files.clashes(project, 'src', ['a.ts']),
+      () => files.copy(project, 'src/a.ts', project, 'src', 'b.ts', false),
+      () => files.move(project, 'src/a.ts', project, 'src', 'b.ts', false),
+      () => files.makeFolder(project, '', 'lib', 0o755),
+      () => files.makeLink(project, '', 'to-a', 'src/a.ts', false, ''),
+      () => files.verifyLink(project, 'to-a', ''),
+      () => files.removeFolder(project, 'src', identity),
+      () => files.receiveFile(project, 'src', 'b.ts', none(), { mode: 0o644, mtimeMs: 0, replace: false, size: 0 }),
+      () => files.readFile(project, 'src/a.ts'),
+    ];
+    for (const call of calls) await expect(call()).rejects.toBeInstanceOf(TransfersUnsupportedError);
+    expect(fs.readdirSync(project.fsPath)).toEqual(['src']);
+    expect(await files.confineExisting(project, 'src/a.ts')).toEqual({ ok: true, path: path.join(project.fsPath, 'src', 'a.ts') });
+  });
+
+  it('ends a file\'s stream short once its signal aborts, also while the writer waits for credit, and the host keeps no part', async () => {
+    await start();
+    const controller = new AbortController();
+    let pulled = 0;
+    // a source far faster than the host writes, which never ends on its own
+    const endless: AsyncIterable<Uint8Array> = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          pulled += 1;
+          if (pulled === 4) controller.abort();
+          return { done: false, value: new Uint8Array(64 * 1024).fill(1) };
+        },
+        return: async () => ({ done: true, value: undefined }),
+      }),
+    };
+    const size = 256 * 1024 * 1024;
+    expect(await adapter.workspace.files.receiveFile(project, 'src', 'big.bin', endless, { mode: 0o644, mtimeMs: 0, replace: false, size }, controller.signal)).toMatchObject({ ok: false, reason: 'incomplete' });
+    expect(pulled * 64 * 1024).toBeLessThan(size / 16);
+    expect(fs.readdirSync(path.join(project.fsPath, 'src'))).toEqual(['a.ts']);
+  });
+
+  it('frees each source stream a receiver refused unread, so a download never uses up the connection\'s streams', async () => {
+    await start();
+    const count = MAX_OPEN_STREAMS + 8;
+    for (let index = 0; index < count; index++) fs.writeFileSync(path.join(project.fsPath, 'src', `f${index}.txt`), 'x');
+    const local = createFileSystem({ watchers: createFakePlatform().fileWatchers, trash: async () => undefined, damoclesHome: DAMOCLES_HOME_DIR, log: () => undefined });
+    // a name another process took meanwhile: the receiver refuses before it reads a byte
+    vi.spyOn(local, 'receiveFile').mockImplementation(async () => ({ ok: false, reason: 'exists' }));
+    const ended: string[] = [];
+    const service = new FileTransferService({
+      projects: () => [project],
+      filesOf: () => adapter.workspace.files,
+      target: () => ({ os: process.platform, host: 'loopback' }),
+      authorityOf: (key) => (key === project.key ? 'loopback' : 'local'),
+      transfers: () => true,
+      local,
+      platform: process.platform,
+      askChecked: async () => ({ action: undefined, checked: false }),
+      notify: async () => undefined,
+      showDetails: async () => undefined,
+      renameInProject: async (_key, _from, renameOnDisk) => renameOnDisk(),
+      progress: (update) => {
+        if (['done', 'failed', 'cancelled'].includes(update.state)) ended.push(update.state);
+      },
+      changed: () => undefined,
+      reveal: async () => undefined,
+      t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)])),
+      log: () => undefined,
+    });
+    const picked = path.join(root, 'downloads');
+    fs.mkdirSync(picked);
+    expect(await service.start({ op: 'download', sources: [{ kind: 'project', projectKey: project.key, relativePath: 'src' }], destination: { kind: 'download', folder: picked } })).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(ended).toEqual(['done']), { timeout: 30_000 });
+  }, 60_000);
 });

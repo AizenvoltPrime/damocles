@@ -1,4 +1,5 @@
 import type { TextContent, ImageContent } from '@earendil-works/pi-ai';
+import type { RelayedMcpServer } from '../../../shared/remote-user';
 import type {
   McpOAuthConfig,
   McpServerConfig,
@@ -82,6 +83,8 @@ export interface McpServerSpec {
   valueFormat: 'pi' | 'legacy';
   folderScoped: boolean;
   trusted: boolean;
+  /** A daemon's core's relayed server: it runs on the acting client, which these schemas came from; `config` opens nothing. */
+  relay?: RelayedMcpServer;
 }
 
 /** Collapse the shared discriminated-union config into the flat connection view. */

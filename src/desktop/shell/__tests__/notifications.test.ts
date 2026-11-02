@@ -327,6 +327,45 @@ describe('message dialog', () => {
     await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('m4', { kind: 'message', action: null }));
   });
 
+  it('shows a checkbox above the buttons, keeps focus on the default action, ignores Enter on the box and answers its state', async () => {
+    const CONFLICT: OverlayRequest = {
+      kind: 'message',
+      severity: 'warning',
+      message: '"app.ts" already exists in src',
+      detail: 'Replace it with the one you are copying, keep both, or skip it.',
+      actions: ['Skip', 'Keep both', 'Replace'],
+      cancelLabel: 'Cancel',
+      defaultAction: 1,
+      checkbox: { label: 'Apply to all remaining conflicts (2)', checked: false },
+    };
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'm5', CONFLICT);
+
+    const box = wrapper.get('[data-testid="overlay-message-checkbox"]');
+    expect(box.attributes('role')).toBe('checkbox');
+    expect(box.attributes('aria-checked')).toBe('false');
+    expect(wrapper.get(`label[for="${box.attributes('id')}"]`).text()).toBe('Apply to all remaining conflicts (2)');
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="overlay-message-action-1"]').element);
+    // Tab order: the box comes before the buttons
+    const order = [...wrapper.get('[role="alertdialog"]').element.querySelectorAll('button')];
+    expect(order.indexOf(box.element as HTMLButtonElement)).toBe(0);
+
+    await box.trigger('click');
+    expect(box.attributes('aria-checked')).toBe('true');
+    (box.element as HTMLElement).focus();
+    await box.trigger('keydown', { key: 'Enter' });
+    await flushPromises();
+    expect(api.answer).not.toHaveBeenCalled();
+    await wrapper.get('[data-testid="overlay-message-action-2"]').trigger('click');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('m5', { kind: 'message', action: 2, checked: true }));
+
+    await open(wrapper, 'm6', { ...CONFLICT, checkbox: { label: "Don't ask again", checked: true } });
+    expect(wrapper.get('[data-testid="overlay-message-checkbox"]').attributes('aria-checked')).toBe('true');
+    press('Escape');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('m6', { kind: 'message', action: null, checked: true }));
+  });
+
   // The control that asked disables itself while the question is up and focus falls to the body. Each step awaits the
   // answer or the mutation itself, and the tests fake setTimeout, so the 5 s give-up runs only when a test advances it.
   async function askAndAnswer(wrapper: VueWrapper, id: string, control: HTMLButtonElement): Promise<void> {
@@ -698,5 +737,83 @@ describe('title bar bell', () => {
     expect(bell.attributes('aria-label')).toBe('Ειδοποιήσεις, 1 νέα');
     await wrapper.setProps({ state: { ...STATE, notifications: { unseen: 3, doNotDisturb: true, popupsOff: false, attention: 0 } } });
     expect(bell.attributes('aria-label')).toBe('Ειδοποιήσεις, 3 νέες · Η λειτουργία «Μην ενοχλείτε» είναι ενεργή');
+  });
+});
+
+describe('a link request toast', () => {
+  const LINK: NotificationBody = { kind: 'link', host: 'prod-1', hostTone: 'danger', url: 'https://github.com.evil.example:8443/login/device?next=%2F' };
+  const show = async (id = 'l1', body: NotificationBody = LINK): Promise<VueWrapper> => {
+    const wrapper = mountNotifier();
+    await flushPromises();
+    api.toast({ ...toast(id, body), sticky: true });
+    await flushPromises();
+    return wrapper;
+  };
+  const card = (wrapper: VueWrapper, id = 'l1') => wrapper.get(`[data-toast-id="${id}"]`);
+
+  it('reads "<host> wants to open <url>" with the whole URL in mono, its host and port standing out, then Open and Copy', async () => {
+    const wrapper = await show();
+    const title = card(wrapper).get('[data-testid="link-title"]');
+    expect(title.text()).toBe('prod-1 wants to open');
+    expect(title.get('[data-testid="host-name-badge"]').classes()).toContain('d-tone-danger');
+    const url = card(wrapper).get('[data-testid="link-url"]');
+    expect(url.text()).toBe(LINK.kind === 'link' ? LINK.url : '');
+    expect(url.classes()).toContain('font-mono');
+    expect(url.classes()).toContain('break-all');
+    expect(url.findAll('[data-role="host"]').map((part) => part.text())).toEqual(['github.com.evil.example:8443']);
+    expect(card(wrapper).findAll('button').map((button) => button.text())).toEqual(['', 'Open', 'Copy']);
+    expect(card(wrapper).find('[data-testid="overlay-toast-life"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="overlay-toasts-assertive"]').text()).toBe(`prod-1 wants to open ${LINK.kind === 'link' ? LINK.url : ''}`);
+  });
+
+  it('focuses Open when F6 reaches the popups, and Open is the one control that answers open', async () => {
+    const wrapper = await show();
+    api.focusToasts();
+    await flushPromises();
+    expect(document.activeElement).toBe(card(wrapper).get('[data-testid="link-open"]').element);
+    await card(wrapper).trigger('click');
+    expect(api.resolveToast).not.toHaveBeenCalled();
+    await card(wrapper).get('[data-testid="link-open"]').trigger('click');
+    expect(api.resolveToast).toHaveBeenCalledExactlyOnceWith('l1', 'open');
+  });
+
+  it('never moves focus onto Open on its own: a card that collapses under a new link request hands focus to its Copy', async () => {
+    const wrapper = mountNotifier();
+    await flushPromises();
+    api.toast({ ...toast('a', { kind: 'notice', severity: 'info', message: 'First.', actions: ['Retry'] }), sticky: true });
+    api.toast(toast('b', { kind: 'notice', severity: 'info', message: 'Second.', actions: [] }));
+    api.toast(toast('c', { kind: 'notice', severity: 'info', message: 'Third.', actions: [] }));
+    await flushPromises();
+    (card(wrapper, 'a').get('[data-toast-primary]').element as HTMLElement).focus();
+    api.toast({ ...toast('l1', LINK), sticky: true });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="overlay-toasts-more"]').text()).toBe('1 more · Dismiss all');
+    expect(document.activeElement).not.toBe(card(wrapper).get('[data-testid="link-open"]').element);
+    expect(document.activeElement).toBe(card(wrapper).get('[data-testid="link-copy"]').element);
+    press('Enter');
+    expect(api.resolveToast).not.toHaveBeenCalled();
+  });
+
+  it('copies through main and stays, its button saying Copied, and never answers', async () => {
+    const wrapper = await show();
+    await card(wrapper).get('[data-testid="link-copy"]').trigger('click');
+    await flushPromises();
+    expect(api.copyToast).toHaveBeenCalledExactlyOnceWith('l1');
+    expect(api.resolveToast).not.toHaveBeenCalled();
+    expect(card(wrapper).get('[data-testid="link-copy"]').attributes('data-copied')).toBe('true');
+    expect(card(wrapper).get('[role="status"]').text()).toBe('The link is copied.');
+  });
+
+  it('dismisses on Escape without opening, while Escape on another toast only hands focus back', async () => {
+    const wrapper = await show();
+    api.toast(toast('n1', { kind: 'notice', severity: 'info', message: 'Saved.', actions: [] }));
+    await flushPromises();
+    (card(wrapper, 'n1').get('button').element as HTMLElement).focus();
+    press('Escape');
+    expect(api.leaveToasts).toHaveBeenCalledOnce();
+    expect(api.resolveToast).not.toHaveBeenCalled();
+    (card(wrapper).get('[data-testid="link-copy"]').element as HTMLElement).focus();
+    press('Escape');
+    expect(api.resolveToast).toHaveBeenCalledExactlyOnceWith('l1', undefined);
   });
 });

@@ -202,6 +202,7 @@ describe('McpStatusPanel: source badges', () => {
     'damocles-local': 'From project .damocles',
     pi: 'From pi',
     'pi-project': 'From project .pi',
+    relayed: 'Personal',
   } as const satisfies Record<NonNullable<McpServerStatusInfo['source']>, string>;
 
   it('gives every member of the source union a distinct label', () => {
@@ -936,12 +937,23 @@ describe('McpStatusPanel — per-tool exposure', () => {
       global: { plugins: [i18n] },
     }));
     await nextTick();
-    const toolsLabel = i18n.global.t('mcp.tools', { count: 3 });
+    const toolsLabel = i18n.global.t('mcp.tools', { n: 3 }, 3);
     const expand = buttons().find((el) => el.textContent?.includes(toolsLabel));
     if (!expand) throw new Error(`no "${toolsLabel}" toggle`);
     await click(expand);
     return wrapper;
   }
+
+  it('counts one tool in the singular', async () => {
+    track(mount(McpStatusPanel, {
+      props: { servers: [{ ...context7, tools: [context7.tools![1]!] }], configErrors: [], mcpWriteInFlight: false, mcpWriteError: null, mcpEnabled: true, localMcpUnignored: false, configRevision: 0 },
+      attachTo: document.body,
+      global: { plugins: [i18n] },
+    }));
+    await nextTick();
+    expect(document.body.textContent).toContain('1 tool');
+    expect(document.body.textContent).not.toContain('1 tools');
+  });
 
   const groupFor = (tool: string): HTMLElement => {
     const label = i18n.global.t('mcp.toolExposureLabel', { name: tool });
@@ -1018,7 +1030,7 @@ describe('McpStatusPanel — per-tool exposure', () => {
     expect(document.body.querySelectorAll('[data-testid="mcp-tool-exposure-scope"]')).toHaveLength(1);
 
     for (const count of [3, 1]) {
-      const label = i18n.global.t('mcp.tools', { count });
+      const label = i18n.global.t('mcp.tools', { n: count }, count);
       await click(buttons().find((el) => el.textContent?.includes(label))!);
     }
     expect(document.body.querySelectorAll('[data-testid="mcp-tool-exposure"]')).toHaveLength(4);
@@ -1185,5 +1197,57 @@ describe('McpStatusPanel — Browse resources', () => {
       global: { plugins: [i18n] },
     }));
     expect(wrapper.find('[data-row-action="browseResources"]').exists()).toBe(false);
+  });
+});
+
+describe('McpStatusPanel: available on remote hosts, on this computer', () => {
+  const server = (name: string, over: Partial<McpServerStatusInfo>): McpServerStatusInfo => ({ name, status: 'connected', enabled: true, ...over });
+  const switches = (wrapper: ReturnType<typeof mountPanel>) => wrapper.findAll('[data-testid="mcp-server-row"]').map((row) => row.find('[data-testid="mcp-remote-available-toggle"]'));
+
+  it('offers the switch only on rows whose core says they may relay, checked as marked', () => {
+    const wrapper = mountPanel([
+      server('github', { source: 'damocles', remoteAvailable: true }),
+      server('linear', { source: 'claude', remoteAvailable: false }),
+      server('repo-tools', { source: 'workspace' }),
+    ]);
+    const shown = switches(wrapper);
+    expect(shown.map((toggle) => toggle.exists())).toEqual([true, true, false]);
+    expect(shown.map((toggle) => (toggle.exists() ? toggle.attributes('aria-checked') : null))).toEqual(['true', 'false', null]);
+    expect(wrapper.findAll('[data-testid="mcp-remote-available"]')[0]!.text()).toBe('Available on remote hosts');
+  });
+
+  it('names the server in the switch, and its label turns it too', async () => {
+    const wrapper = mountPanel([server('linear', { displayName: 'Linear', source: 'claude', remoteAvailable: false })]);
+    const toggle = wrapper.get('[data-testid="mcp-remote-available-toggle"]');
+    expect(toggle.attributes('aria-label')).toBe('Linear available on remote hosts');
+    const label = wrapper.get('[data-testid="mcp-remote-available"] label');
+    // the shared Label part, tied to the switch it names
+    expect(label.attributes('data-slot')).toBe('label');
+    expect(label.attributes('for')).toBe(toggle.attributes('id'));
+    expect(label.classes()).toEqual(expect.arrayContaining(['text-11.5/normal', 'font-normal']));
+    expect(label.classes()).not.toEqual(expect.arrayContaining(['text-sm']));
+    expect(label.classes()).not.toEqual(expect.arrayContaining(['leading-none']));
+    await label.trigger('click');
+    expect(wrapper.emitted('setRemoteAvailable')).toEqual([['linear', true]]);
+  });
+
+  it('emits the server name and the new mark', async () => {
+    const wrapper = mountPanel([server('github', { source: 'damocles', remoteAvailable: true })]);
+    await wrapper.get('[data-testid="mcp-remote-available-toggle"]').trigger('click');
+    expect(wrapper.emitted('setRemoteAvailable')).toEqual([['github', false]]);
+    expect(wrapper.emitted('toggle')).toBeUndefined();
+  });
+
+  it('shows no placement chip and counts no relayed source on this computer\'s core', () => {
+    const wrapper = mountPanel([server('github', { source: 'damocles', remoteAvailable: true })]);
+    expect(wrapper.find('[data-testid="mcp-server-placement"]').exists()).toBe(false);
+    expect(bodyText()).toContain('Servers from 8 sources');
+  });
+
+  it('says it in Greek', () => {
+    applyLocale('el');
+    const wrapper = mountPanel([server('github', { source: 'damocles', remoteAvailable: false })]);
+    expect(wrapper.get('[data-testid="mcp-remote-available"]').text()).toBe('Διαθέσιμος σε απομακρυσμένους διακομιστές');
+    expect(wrapper.get('[data-testid="mcp-remote-available-toggle"]').attributes('aria-label')).toBe('github διαθέσιμος σε απομακρυσμένους διακομιστές');
   });
 });

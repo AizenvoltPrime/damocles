@@ -2,7 +2,7 @@ import type { Duplex } from 'node:stream';
 import type { Project } from '../../local-services/confine';
 import type { ProjectConnection, ShellPlatform } from '../../preload/shell-channels';
 import type { ProjectWorkspace } from '../../workspace/project-workspace';
-import { createRemoteWorkspace, WATCH_READY_FEATURE } from '../workspace/remote-workspace';
+import { carriesTransfers, createRemoteWorkspace, WATCH_READY_FEATURE } from '../workspace/remote-workspace';
 import type { NotConnectedError } from '../workspace/workspaces';
 import { connect, type OtherProtocolDaemon, type RemoteConnection } from './connection';
 
@@ -204,6 +204,8 @@ export class Authorities {
       onClose: (listener) => connection.onClose(listener),
       notConnected: () => this.deps.notConnected(entry.authorityKey),
       watchReady: connection.features.includes(WATCH_READY_FEATURE),
+      transfers: carriesTransfers(connection.features),
+      openStream: () => connection.openStream(),
       log,
     });
     entry.connected = { connection, workspace };
@@ -211,7 +213,7 @@ export class Authorities {
     const current = (): boolean => entry.connected?.connection === connection;
     connection.onLost((reason) => {
       if (!current()) return;
-      log(`[remote] the transport to ${entry.authorityKey} dropped (${reason}); the daemon holds the connection`);
+      log(`[remote] the transport to ${entry.authorityKey} dropped (${reason}); the connection waits for a resume, which the daemon refuses if it ended the connection`);
       this.moved(entry, entry.attempt ? 'connecting' : 'failed');
     });
     connection.onSuspect(() => {

@@ -5,14 +5,14 @@ import { l, verbatim } from '../l10n';
 import { log } from '../logger';
 import { perfSpan } from '../perf';
 import { homeDirectory } from '../workspace-folders/folder-registry';
-import { isSchemaAhead, memoryDatabasePath, openDatabaseAsync, updateSearchTermsIfUnchanged, getUnexpandedMemoryRows, type UnexpandedRow } from './database';
+import { appliedWrite, isSchemaAhead, memoryDatabasePath, openDatabaseAsync, recordAppliedWrite, updateSearchTermsIfUnchanged, getUnexpandedMemoryRows, type UnexpandedRow } from './database';
 import { createMemoryIntegrity, MEMORY_WRITE_HOLD_MS, type IntegrityVerdict, type MemoryIntegrity, type RepairOutcome } from './integrity';
 import { repairMarkerPath } from './integrity-protocol';
 import { expandMemoryTerms, expandMemoryTermsWithStatus, clearExpansionCache } from './query-expansion';
 import { NoteManager } from './managers/note-manager';
 import { ObservationManager } from './managers/observation-manager';
 import { RetrievalManager } from './managers/retrieval-manager';
-import { InjectionManager, type BuildInjectionArgs, type InjectionBuildResult } from './managers/injection-manager';
+import { InjectionManager, MERGED_FORGET_REASON, mergeTargetOf, USER_FORGET_REASONS, type BuildInjectionArgs, type InjectionBuildResult } from './managers/injection-manager';
 import { FileChangeTracker } from './managers/file-change-tracker';
 import { FactGraphManager } from './managers/fact-graph-manager';
 import { ProfileManager } from './managers/profile-manager';
@@ -48,7 +48,7 @@ import type {
 } from '@shared/types/consolidation';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import type { ObservationCursor } from '@shared/types/memory';
-import { insertWithDedup, deleteMemoriesWithHygiene, type NewMemoryFields } from './dedup-decay';
+import { insertWithDedup, insertWithDedupInTransaction, deleteMemoriesWithHygiene, findNearDuplicates, getDedupThreshold, mergeNearDuplicates, type NewMemoryFields } from './dedup-decay';
 import type { DatabaseInstance, MemoryRow } from './types';
 import { rowToEntry, normalizedContentHash } from './types';
 import { buildFtsMatchQuery } from './text-tokenize';
@@ -59,10 +59,14 @@ import type { NotificationService } from '../../platform/notification-service';
 import type { FileWatcherFactory } from '../../platform/file-watcher';
 import type { AppPaths } from '../../platform/app-paths';
 import { notifySchemaAhead } from '../schema-skew';
-import { globalMemoryUnavailableReason, userScopeRemote } from '../user-scope';
-import { LocalizedError } from '../../shared/localized-text';
+import { globalMemoryChangeReason, globalMemoryClosedReason, globalMemoryReadReason, globalMemoryUnavailableReason, userScopeRemote } from '../user-scope';
+import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import { localOnly } from './local-only';
-import { USER_SCOPE_UNAVAILABLE } from '../../shared/remote-user';
+import { MAX_GLOBAL_MEMORY_CONTENT_CHARS, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_TAGS, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, USER_SCOPE_UNAVAILABLE, type ClientGlobalProfile, type GlobalMemoryKind, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type GlobalMemoryWrite, type RelayedGlobalMemory, type SearchedGlobalMemory } from '../../shared/remote-user';
+import type { RemoteHost } from '../../platform/remote-host';
+import { GlobalMemoryRelay, globalMemoryId, parseGlobalMemoryId, type GlobalMemoryFields } from './global-memory-relay';
+import { MemoryOutbox } from './memory-outbox';
+import { fuseRankedLists } from './rank-fusion';
 import type {
   MemoryEntry,
   MemoryScope,
@@ -91,6 +95,8 @@ interface TurnCandidate {
   files: string[];
   /** The raw folder fsPath the conversation ran in; consolidation files its extractions there. */
   workspace: string;
+  /** A daemon's core: the device the turn was pinned to, which owns its global extractions. */
+  clientId?: string;
 }
 
 /** Cap on buffered pre-init turn candidates; oldest dropped so a failing init cannot leak memory. */
@@ -110,6 +116,11 @@ const CHAIN_WHERE = 'root_id = ? OR (root_id IS NULL AND id = ?)';
 
 // the tiers of global rows: a global fact, preference or episode, and a note
 const GLOBAL_TIERS: ReadonlySet<MemoryTier> = new Set(['global', 'note']);
+
+/** On a daemon's core a relayed global id names a row of its client, which only that client changes or shows; refused before any lookup here. */
+function refuseRelayedId(id: string, reason: () => LocalizedText = globalMemoryChangeReason): void {
+  if (userScopeRemote() && parseGlobalMemoryId(id) !== undefined) throw new LocalizedError(reason());
+}
 
 /** Global memory is the client's: on a daemon's core an operation that names a global row is refused, before it enters the write queue. */
 function refuseGlobalRow(db: DatabaseInstance, id: string): void {
@@ -175,6 +186,62 @@ export interface MemoryServiceDeps {
   readonly notifications: NotificationService;
   readonly fileWatchers: FileWatcherFactory;
   readonly paths: AppPaths;
+  // a daemon's core: its clients, whose global memory it reaches through the relay
+  readonly remote?: RemoteHost;
+  // the relay's outbox folder; the default is ~/.damocles/outbox
+  readonly outboxDir?: string;
+}
+
+const SNIPPET_CHARS = 120;
+
+function relayedEntry(memory: RelayedGlobalMemory): MemoryEntry {
+  return {
+    id: memory.id,
+    tier: memory.kind === 'note' ? 'note' : 'global',
+    kind: memory.kind,
+    scope: 'global',
+    content: memory.content,
+    ...(memory.title !== undefined ? { title: memory.title } : {}),
+    tags: memory.tags ? [...memory.tags] : [],
+    sessionId: null,
+    workspace: null,
+    createdAt: memory.createdAt,
+    updatedAt: memory.updatedAt,
+  };
+}
+
+function relayedSearchResult(memory: RelayedGlobalMemory): SearchResult {
+  return {
+    id: memory.id,
+    tier: memory.kind === 'note' ? 'note' : 'global',
+    title: memory.title ?? null,
+    snippet: memory.content.slice(0, SNIPPET_CHARS),
+    rank: 0,
+    timestamp: memory.createdAt,
+  };
+}
+
+/** A row of this store as a client's core returns it to a remote core, within the user.memory tables' bounds. */
+function toRelayed(row: MemoryRow): RelayedGlobalMemory {
+  const tags = [...new Set(JSON.parse(row.tags) as string[])].filter((tag) => tag.length <= MAX_GLOBAL_MEMORY_LABEL_CHARS).slice(0, MAX_GLOBAL_MEMORY_TAGS);
+  return {
+    id: row.id,
+    kind: row.kind as GlobalMemoryKind,
+    ...(row.title !== null ? { title: row.title.slice(0, MAX_GLOBAL_MEMORY_LABEL_CHARS) } : {}),
+    content: row.content.slice(0, MAX_GLOBAL_MEMORY_CONTENT_CHARS),
+    contentHash: row.content_hash,
+    ...(tags.length > 0 ? { tags } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** The row a relayed write repeated after its first apply is in: its own, else the live row of its text it folded into. */
+function appliedRowOf(db: DatabaseInstance, write: GlobalMemoryWrite): string {
+  if (db.prepare('SELECT 1 FROM memories WHERE id = ?').get(write.uuid) !== undefined) return write.uuid;
+  const same = db.prepare("SELECT id FROM memories WHERE content_hash = ? AND scope = 'global' AND kind = ? AND is_latest = 1 AND forgotten = 0 LIMIT 1")
+    .get(normalizedContentHash(write.content), write.kind) as { id: string } | undefined;
+  return same?.id ?? write.uuid;
 }
 
 export class MemoryService {
@@ -238,12 +305,136 @@ export class MemoryService {
   private readonly notifications: NotificationService;
   private readonly fileWatchers: FileWatcherFactory;
   private readonly integrity: MemoryIntegrity;
+  // a daemon's core: global memory lives on its clients
+  private readonly globals: GlobalMemoryRelay | null;
 
   constructor(deps: MemoryServiceDeps) {
     this.settings = deps.settings;
     this.notifications = deps.notifications;
     this.fileWatchers = deps.fileWatchers;
     this.integrity = createMemoryIntegrity(deps.paths.workerEntry('memoryIntegrity'));
+    this.globals = deps.remote ? new GlobalMemoryRelay(deps.remote, new MemoryOutbox(deps.outboxDir)) : null;
+    this.globals?.start();
+  }
+
+  /** Writes a global memory on the client of a daemon's core, returned as the entry under the id of the client's row holding it. */
+  private async relayGlobal(fields: GlobalMemoryFields): Promise<MemoryEntry> {
+    const outcome = await this.globals!.write(fields);
+    const now = Date.now();
+    return relayedEntry({ id: globalMemoryId(outcome.clientId, outcome.id), contentHash: normalizedContentHash(fields.content), createdAt: now, updatedAt: now, ...fields });
+  }
+
+  /**
+   * This computer's core: its global memory a remote core searches (user.memory.search). For an injection, the injection's own
+   * lexical gate over its global facts, preferences and episodes, each saying whether it may render full; else the search
+   * SearchMemories runs here, over its global rows.
+   */
+  async relaySearch(query: string, k: number, tiers: readonly ('global' | 'note')[], injection = false, filters: GlobalMemorySearchFilters = {}): Promise<SearchedGlobalMemory[]> {
+    await this.ensureInitialized();
+    if (injection) {
+      const gated = await this.whileOpen([], async () => this.injectionManager?.gatedGlobals(query, k) ?? []);
+      return gated.map(({ row, fullAllowed, matchedTerms }) => ({
+        ...toRelayed(row),
+        fullAllowed,
+        matchedTerms: matchedTerms.filter((term) => term.length <= MAX_GLOBAL_MEMORY_LABEL_CHARS).slice(0, MAX_RELAYED_MEMORIES),
+      }));
+    }
+    // with no query the filters alone answer, as search_memories does here
+    const found = await this.whileOpen([], async () => (await this.retrievalManager?.search({ query, tiers: [...tiers], limit: k, allWorkspaces: true, ...filters })) ?? []);
+    const db = this.db;
+    if (!db || found.length === 0) return [];
+    const rows = new Map((db.prepare(`SELECT * FROM memories WHERE scope = 'global' AND id IN (${found.map(() => '?').join(',')})`).all(...found.map((result) => result.id)) as MemoryRow[]).map((row) => [row.id, row]));
+    return found.flatMap((result) => {
+      const row = rows.get(result.id);
+      return row ? [toRelayed(row)] : [];
+    });
+  }
+
+  /**
+   * This computer's core: its global profile with the globals a remote chat injects once per context, as a local chat does
+   * (user.memory.profile): its live pinned global facts, preferences and episodes, and its live global preferences, each
+   * list as the local injection ranks it and bounded.
+   */
+  async relayProfile(): Promise<ClientGlobalProfile> {
+    await this.ensureInitialized();
+    const profile = this.getProfile('global', '');
+    const db = this.db;
+    if (!db) return { profile, pinned: [], preferences: [] };
+    const live = "scope = 'global' AND is_latest = 1 AND forgotten = 0 AND (forget_after IS NULL OR forget_after >= ?)";
+    const now = Date.now();
+    const pinned = db.prepare(`SELECT * FROM memories WHERE ${live} AND pinned = 1 AND kind IN ('fact','preference','episode') ORDER BY updated_at DESC LIMIT ?`).all(now, MAX_STANDING_GLOBALS) as MemoryRow[];
+    const preferences = db.prepare(`SELECT * FROM memories WHERE ${live} AND kind = 'preference' ORDER BY pinned DESC, source_count DESC, updated_at DESC LIMIT ?`).all(now, MAX_STANDING_GLOBALS) as MemoryRow[];
+    return { profile, pinned: pinned.map(toRelayed), preferences: preferences.map(toRelayed) };
+  }
+
+  /**
+   * This computer's core: the current version of global rows it returned to a remote core before (user.memory.resolve), by
+   * the rules of its own injection's notices: a superseded row answers its chain's live head, a merged one the row it was
+   * folded into, a forgotten or deleted one that it is gone, by the user for a user forget or an applied audit proposal. A
+   * merge recorded without an edge gets no answer, so it stays as shown. A row of any other scope is gone, so no project
+   * memory leaves this computer by id.
+   */
+  async relayResolve(ids: readonly string[]): Promise<GlobalMemoryResolution[]> {
+    await this.ensureInitialized();
+    const db = this.db;
+    if (!db) return [];
+    return ids.flatMap((id): GlobalMemoryResolution[] => {
+      const row = db.prepare("SELECT * FROM memories WHERE id = ? AND scope = 'global'").get(id) as MemoryRow | undefined;
+      const target = row?.forgotten === 1 && row.forget_reason === MERGED_FORGET_REASON ? mergeTargetOf(db, row) : row;
+      if (target === null) return [];
+      if (!target || target.scope !== 'global') return [{ id, gone: true, byUser: false }];
+      if (target.forgotten === 1) return [{ id, gone: true, byUser: USER_FORGET_REASONS.has(target.forget_reason) }];
+      if (target.is_latest === 1) return [{ id, memory: toRelayed(target) }];
+      const root = target.root_id ?? target.id;
+      const head = db.prepare(`SELECT * FROM memories WHERE (${CHAIN_WHERE}) AND scope = 'global' AND is_latest = 1 AND forgotten = 0 ORDER BY updated_at DESC LIMIT 1`).get(root, root) as MemoryRow | undefined;
+      return [head ? { id, memory: toRelayed(head) } : { id, gone: true, byUser: false }];
+    });
+  }
+
+  /**
+   * This computer's core: applies a remote core's global writes in order (user.memory.apply), each in one transaction with
+   * its uuid recorded, a uuid applied before skipped, then judged against conflicts and soft-merged with near-duplicates as an
+   * extraction here is. Resolves only once every write is applied, with their count and the row each is in, an existing row
+   * a duplicate folded into included; a write that fails rejects the call, so it and the ones after it wait for the next drain.
+   */
+  async applyRelayedWrites(writes: readonly GlobalMemoryWrite[]): Promise<{ applied: number; ids: string[] }> {
+    await this.ensureInitialized();
+    const db = this.db, writeQueue = this.writeQueue, noteManager = this.noteManager, factGraph = this.factGraph, runner = this.runner;
+    if (!db || !writeQueue || !noteManager || !factGraph || !runner) throw new Error('Global memory is not available on this computer');
+    const ids: string[] = [];
+    for (const write of writes) {
+      const inserted = await writeQueue.run(() => {
+        if (appliedWrite(db, write.uuid)) return { id: appliedRowOf(db, write), deduped: true };
+        const tags = write.tags ? [...write.tags] : undefined;
+        const outcome = write.kind === 'note'
+          ? { id: noteManager.add(write.content, tags, write.uuid).id, deduped: false }
+          : insertWithDedupInTransaction(db, { kind: write.kind, scope: 'global', content: write.content, id: write.uuid, ...(write.title !== undefined ? { title: write.title } : {}), ...(tags ? { tags } : {}) });
+        recordAppliedWrite(db, write.uuid);
+        return outcome;
+      });
+      ids.push(inserted.id);
+      if (inserted.deduped) continue;
+      const fresh = write.kind === 'note' ? undefined : db.prepare('SELECT * FROM memories WHERE id = ?').get(inserted.id) as MemoryRow | undefined;
+      if (fresh) {
+        if (fresh.kind === 'fact' || fresh.kind === 'preference') await factGraph.resolveConflict(fresh);
+        const dups = findNearDuplicates(db, fresh, getDedupThreshold(this.settings));
+        if (dups.length > 0) await mergeNearDuplicates(db, writeQueue, runner, fresh, dups);
+      }
+      this._expandSearchTerms(inserted.id, { content: write.content, ...(write.title !== undefined ? { title: write.title } : {}), ...(write.tags ? { tags: [...write.tags] } : {}) });
+    }
+    return { applied: ids.length, ids };
+  }
+
+  /** A daemon's core: Deliver here, the asking device takes a held outbox; false when it is no longer held. */
+  deliverHeldMemory(queueId: string): Promise<boolean> {
+    if (!this.globals) return Promise.reject(new Error('Only a daemon\'s core holds memory outboxes'));
+    return this.globals.deliverHeld(queueId);
+  }
+
+  /** A daemon's core: Discard, a held outbox is deleted; false when it is no longer held. */
+  discardHeldMemory(queueId: string): Promise<boolean> {
+    if (!this.globals) return Promise.reject(new Error('Only a daemon\'s core holds memory outboxes'));
+    return this.globals.discardHeld(queueId);
   }
 
   /** The open folders' raw fsPaths; the file-change tracker rebuilds its index when they change. */
@@ -454,12 +645,13 @@ export class MemoryService {
     }
     this.runner = createMemorySubCallRunner(this.lifetime.signal);
     this.factGraph = new FactGraphManager(this.db, writeQueue, this.runner);
-    this.profileManager = new ProfileManager(this.db, writeQueue, this.runner, this.settings);
+    const globals = this.globals;
+    this.profileManager = new ProfileManager(this.db, writeQueue, this.runner, this.settings, globals ? () => globals.profile() : undefined);
 
     this.noteManager = new NoteManager(this.db);
     this.observationManager = new ObservationManager(this.db);
     this.retrievalManager = new RetrievalManager(this.db, this.settings, this.runner);
-    this.injectionManager = new InjectionManager(this.db, this.profileManager, this.runner, this.settings, this.notifications);
+    this.injectionManager = new InjectionManager(this.db, this.profileManager, this.runner, this.settings, this.notifications, globals ?? undefined);
     if (!this.readOnly) {
       const observations = this.observationManager;
       void writeQueue.run(() => observations.normalizeStoredFilePaths()).catch((err: unknown) =>
@@ -648,7 +840,7 @@ export class MemoryService {
 
   async addNote(content: string, tags?: string[]): Promise<MemoryEntry | null> {
     // a note is global
-    if (userScopeRemote()) throw new LocalizedError(globalMemoryUnavailableReason());
+    if (this.globals) return this.relayGlobal({ kind: 'note', content: content.slice(0, MAX_CONTENT_CHARS), ...(tags ? { tags } : {}) });
     await this.ensureInitialized();
     const db = this.db, writeQueue = this.writeQueue, noteManager = this.noteManager;
     if (!db || !writeQueue || !noteManager) return null;
@@ -685,7 +877,14 @@ export class MemoryService {
     sessionId?: string;
     workspace?: string;
   }): Promise<MemoryEntry | null> {
-    if (args.scope === 'global' && userScopeRemote()) throw new LocalizedError(globalMemoryUnavailableReason());
+    if (args.scope === 'global' && this.globals) {
+      return this.relayGlobal({
+        kind: args.kind,
+        content: args.content.slice(0, MAX_CONTENT_CHARS),
+        ...(args.title !== undefined ? { title: args.title } : {}),
+        ...(args.tags !== undefined ? { tags: args.tags } : {}),
+      });
+    }
     await this.ensureInitialized();
     if (!this.db || !this.writeQueue || !this.factGraph) return null;
 
@@ -740,6 +939,7 @@ export class MemoryService {
    * is omitted.
    */
   async updateMemory(id: string, contentRaw: string, tags?: string[]): Promise<MemoryEntry | null> {
+    refuseRelayedId(id);
     await this.ensureInitialized();
     const db = this.db, writeQueue = this.writeQueue, factGraph = this.factGraph;
     if (!db || !writeQueue) return null;
@@ -766,6 +966,7 @@ export class MemoryService {
   }
 
   async resetObservationStaleness(id: string): Promise<boolean> {
+    refuseRelayedId(id);
     await this.ensureInitialized();
     const db = this.db, writeQueue = this.writeQueue;
     if (!db || !writeQueue) return false;
@@ -774,6 +975,7 @@ export class MemoryService {
   }
 
   async deleteMemory(id: string): Promise<boolean> {
+    refuseRelayedId(id);
     await this.ensureInitialized();
     const db = this.db, writeQueue = this.writeQueue;
     if (!db || !writeQueue) return false;
@@ -834,9 +1036,32 @@ export class MemoryService {
   }
 
   async searchMemories(query: SearchQuery): Promise<SearchResult[]> {
-    // global memory is the client's, so a daemon's core reads no global row, its own host account's included, so retrieval's query leaves them out
-    if (userScopeRemote() && query.tiers !== undefined && query.tiers.length > 0 && query.tiers.every((tier) => GLOBAL_TIERS.has(tier))) throw new LocalizedError(globalMemoryUnavailableReason());
-    return this.whileOpen([], async () => (await this.retrievalManager?.search(query)) ?? []);
+    if (!this.globals) return this.whileOpen([], async () => (await this.retrievalManager?.search(query)) ?? []);
+    // a daemon's core reads no global row of its own; its client's come from that client's search, fused by rank
+    const tiers = query.tiers !== undefined && query.tiers.length > 0 ? query.tiers : undefined;
+    const globalTiers = (tiers ?? ['global', 'note']).filter((tier): tier is 'global' | 'note' => GLOBAL_TIERS.has(tier));
+    const globalOnly = tiers !== undefined && tiers.every((tier) => GLOBAL_TIERS.has(tier));
+    if (globalOnly && !this.globals.reachable()) throw new LocalizedError(globalMemoryClosedReason());
+    const limit = query.limit ?? 20;
+    const own = globalOnly ? [] : await this.whileOpen([], async () => (await this.retrievalManager?.search(query)) ?? []);
+    if (globalTiers.length === 0 || !this.globals.reachable()) return own;
+    const filters = {
+      ...(query.since !== undefined ? { since: query.since } : {}),
+      ...(query.until !== undefined ? { until: query.until } : {}),
+      ...(query.includeForgotten === true ? { includeForgotten: true } : {}),
+    };
+    // with no query the client's filters alone answer, as this store's search does
+    const found = await this.globals.search(query.query ?? '', limit, globalTiers, filters);
+    // a client that left during the search is away, as one that was away before it
+    if (found === undefined) {
+      if (globalOnly) throw new LocalizedError(globalMemoryClosedReason());
+      return own;
+    }
+    const theirs = found.map(relayedSearchResult);
+    const byId = new Map([...own, ...theirs].map((result) => [result.id, result]));
+    return fuseRankedLists([own.map((result) => result.id), theirs.map((result) => result.id)])
+      .slice(0, limit)
+      .map((id, index) => ({ ...byId.get(id)!, rank: index + 1 }));
   }
 
   // A read that queries the database on both sides of an await; dispose closes it only once these settle, and a read
@@ -851,6 +1076,15 @@ export class MemoryService {
   }
 
   async getMemoryDetails(ids: string[]): Promise<MemoryEntry[]> {
+    const globalIds = this.globals ? ids.filter((id) => parseGlobalMemoryId(id) !== undefined) : [];
+    if (globalIds.length > 0) {
+      const resolved = await this.globals!.resolve(globalIds);
+      const relayed = globalIds.flatMap((id) => {
+        const answer = resolved.get(id);
+        return answer && 'memory' in answer ? [relayedEntry(answer.memory)] : [];
+      });
+      return [...(await this.getMemoryDetails(ids.filter((id) => !globalIds.includes(id)))), ...relayed];
+    }
     await this.ensureInitialized();
     const db = this.db, writeQueue = this.writeQueue;
     if (!db || ids.length === 0) return [];
@@ -870,6 +1104,7 @@ export class MemoryService {
 
   /** Version chain for a fact, root→latest, for the panel's version drill-down. */
   getMemoryHistory(id: string): MemoryEntry[] {
+    refuseRelayedId(id, globalMemoryReadReason);
     if (!this.db || !this.factGraph) return [];
     refuseGlobalRow(this.db, id);
     return this.factGraph.getVersionHistory(id).map(rowToEntry);
@@ -877,6 +1112,7 @@ export class MemoryService {
 
   /** Fact-graph neighbors reached over UPDATES/EXTENDS/DERIVES/SUPERSEDES edges (default depth 2). */
   getRelatedMemories(id: string, maxDepth?: number): MemoryEntry[] {
+    refuseRelayedId(id, globalMemoryReadReason);
     if (!this.db || !this.factGraph) return [];
     refuseGlobalRow(this.db, id);
     const kinds: EdgeKind[] = ['UPDATES', 'EXTENDS', 'DERIVES', 'SUPERSEDES'];
@@ -895,6 +1131,7 @@ export class MemoryService {
     scope: 'version' | 'chain',
     exactId = false,
   ): Promise<{ forgotten: number; target?: { title: string | null; snippet: string } }> {
+    refuseRelayedId(idOrContent);
     const db = this.db;
     const factGraph = this.factGraph;
     const writeQueue = this.writeQueue;
@@ -947,6 +1184,7 @@ export class MemoryService {
 
   /** Restore a forgotten memory. `chain` (default) restores every version sharing the root. */
   async unforgetMemory(id: string, scope: 'version' | 'chain' = 'chain'): Promise<{ restored: number }> {
+    refuseRelayedId(id);
     const db = this.db;
     const writeQueue = this.writeQueue;
     if (!db || !writeQueue) return { restored: 0 };
@@ -1069,6 +1307,7 @@ export class MemoryService {
   }
 
   async pinMemory(id: string): Promise<boolean> {
+    refuseRelayedId(id);
     await this.ensureInitialized();
     const db = this.db, writeQueue = this.writeQueue, injectionManager = this.injectionManager;
     if (!db || !writeQueue || !injectionManager) return false;
@@ -1077,6 +1316,7 @@ export class MemoryService {
   }
 
   async unpinMemory(id: string): Promise<boolean> {
+    refuseRelayedId(id);
     await this.ensureInitialized();
     const db = this.db, writeQueue = this.writeQueue, injectionManager = this.injectionManager;
     if (!db || !writeQueue || !injectionManager) return false;
@@ -1201,6 +1441,7 @@ export class MemoryService {
     assistantText: string;
     files: string[];
     workspace: string;
+    clientId?: string;
   }): void {
     if (this.disposed || this.readOnly || !this.isEnabled || !this.autoExtractEnabled) return;
     if (!this.db || !this.writeQueue) {
@@ -1225,8 +1466,8 @@ export class MemoryService {
     if (!this.writeQueue) return Promise.resolve();
     return this.writeQueue.run(() => {
       db.prepare(
-        `INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, workspace, salient, consumed, reprocessed, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?)`,
+        `INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, workspace, client_id, salient, consumed, reprocessed, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?)`,
       ).run(
         crypto.randomUUID(),
         args.sessionId,
@@ -1235,6 +1476,7 @@ export class MemoryService {
         args.assistantText,
         JSON.stringify(args.files),
         args.workspace,
+        args.clientId ?? null,
         Date.now(),
       );
     });
@@ -1337,6 +1579,7 @@ export class MemoryService {
           nonProjectFolders: () => [homeDirectory()],
           folderExists: this.folderExists,
           autoExtractEnabled: manual || this.autoExtractEnabled,
+          ...(this.globals ? { globalWrite: (fields: GlobalMemoryFields, clientId: string | undefined) => this.globals!.write(fields, clientId) } : {}),
           trigger,
           declinedInRun,
           // Skip the pass if the service disposed between scheduling and execution, so it never
@@ -1499,7 +1742,13 @@ export class MemoryService {
     await this.ensureInitialized();
     const db = this.db, writeQueue = this.writeQueue, profileManager = this.profileManager;
     if (!db || !writeQueue || !profileManager) throw new Error('Memory system is not available');
-    return applyAuditDecisions({ db, writeQueue, profileManager, tracker: this.fileChangeTracker }, runId, accept, reject);
+    const globals = this.globals;
+    return applyAuditDecisions(
+      { db, writeQueue, profileManager, tracker: this.fileChangeTracker, ...(globals ? { globalWrite: (fields: GlobalMemoryFields, uuid: string) => globals.write(fields, undefined, uuid) } : {}) },
+      runId,
+      accept,
+      reject,
+    );
   }
 
   async revertAudit(runId: string): Promise<MemoryAuditRevertResult> {
@@ -1512,6 +1761,7 @@ export class MemoryService {
   /** Resolves once in-flight init, consolidation, audit and queued writes have settled and the database is closed. */
   dispose(): Promise<void> {
     this.disposed = true;
+    this.globals?.dispose();
     this.lifetime.abort();
     // Fails a running check at once and a repair after its grace, which releases the write queue and init.
     const integrityStopped = this.integrity.dispose();

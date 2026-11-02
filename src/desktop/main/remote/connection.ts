@@ -5,6 +5,7 @@ import { listeners } from '../../../remote/listeners';
 import { HANDSHAKE_MAX_BYTES, sayHello, type HostFacts } from '../../../remote/handshake';
 import { CHANNEL, createMux, MAX_FRAME_BYTES, type StreamChannel } from '../../../remote/mux';
 import { createPersistentProtocol } from '../../../remote/persistent-protocol';
+import { holdStream, MAX_UNCLAIMED_STREAM_BYTES } from '../../../remote/tunnel-pipe';
 import { PROTOCOL_VERSION } from '../../../remote/protocol-version';
 import { streamSocket } from '../../../remote/stream-transport';
 import { CORE_MAX_MESSAGE_BYTES } from '../../core-protocol/attached-transport';
@@ -21,6 +22,7 @@ import {
   type FrozenClientToControl,
 } from '../../daemon/control-messages';
 import { CLIENT_TO_WORKSPACE, WORKSPACE_MAX_MESSAGE_BYTES, WORKSPACE_TO_CLIENT, type ClientToWorkspace, type WorkspaceToClient } from '../../workspace/messages';
+import { CLIENT_TO_PORTS, PORTS_MAX_MESSAGE_BYTES, PORTS_TO_CLIENT, type ClientToPorts, type PortsToClient } from '../../daemon/ports/ports-messages';
 
 export interface ConnectOptions {
   // the transport's byte stream, already past the bridge's authentication
@@ -57,6 +59,13 @@ export class OtherProtocolError extends Error {
 export const RESUME_FEATURE = 'protocol.resume';
 // The daemon tells an attach that asks which devices are attached (control.clients).
 export const CLIENTS_FEATURE = 'clients';
+// The daemon reports its listening ports and the URLs its terminals print, and carries tunnel streams (`ports`).
+export const PORTS_FEATURE = 'ports';
+
+/** The daemon could not connect a tunnel's target. */
+export class TunnelConnectError extends Error {
+  override readonly name: string = 'TunnelConnectError';
+}
 
 export type ResumeOutcome = 'resumed' | 'refused';
 
@@ -67,10 +76,16 @@ export interface RemoteConnection {
   readonly serverVersion: string;
   // what the daemon lists in welcome.features; a newer command is called only when it is listed
   readonly features: readonly string[];
-  // serverTime minus the midpoint of hello and welcome on this computer's clock
+  // serverTime minus the midpoint of hello and welcome on this computer's clock, from the latest handshake (a resume measures again)
   readonly skewMs: number;
   readonly control: Endpoint<ClientToControl, ControlToClient>;
   readonly workspace: Endpoint<ClientToWorkspace, WorkspaceToClient>;
+  // the `ports` channel; its events flow once watched, and only from a daemon that lists PORTS_FEATURE
+  readonly ports: Endpoint<ClientToPorts, PortsToClient>;
+  // a tunnel stream to host:port on the target, once the daemon connected it
+  openTunnel(host: string, port: number): Promise<StreamChannel>;
+  // a stream to name in a request (containers.*), holding what arrives before its reader subscribes
+  openStream(): StreamChannel;
   // the `core` channel, whose messages each attach generation tags (attachedTransport)
   readonly coreChannel: CoreTransport;
   // the bytes of a stream the daemon opened (a mirror.sync change), handed to onChunk in order; resolves the byte count once
@@ -107,6 +122,7 @@ export async function connect(options: ConnectOptions): Promise<RemoteConnection
   const mux = createMux({ protocol, side: 'client', acceptStreams: true, onOverflow: () => close('held frames over the bound'), onViolation: close, log });
   const controlChannel = mux.messageChannel(CHANNEL.control, CONTROL_MAX_MESSAGE_BYTES);
   const workspaceChannel = mux.messageChannel(CHANNEL.workspace, WORKSPACE_MAX_MESSAGE_BYTES);
+  const portsChannel = mux.messageChannel(CHANNEL.ports, PORTS_MAX_MESSAGE_BYTES);
   const coreChannel = channelTransport(mux.messageChannel(CHANNEL.core, CORE_MAX_MESSAGE_BYTES), CORE_MAX_MESSAGE_BYTES, close);
   let closedWith: string | undefined;
   const closeListeners = listeners<[string]>(log);
@@ -151,9 +167,18 @@ export async function connect(options: ConnectOptions): Promise<RemoteConnection
     errors: ERROR_CODEC,
     onViolation: (err) => close(err.message),
   });
+  const ports = createEndpoint<ClientToPorts, PortsToClient>({
+    transport: channelTransport(portsChannel, PORTS_MAX_MESSAGE_BYTES, close),
+    outgoing: CLIENT_TO_PORTS,
+    incoming: PORTS_TO_CLIENT,
+    log,
+    checkOutgoing: true,
+    onViolation: (err) => close(err.message),
+  });
   closeListeners.add((reason) => {
     control.close(reason);
     workspace.close(reason);
+    ports.close(reason);
   });
   control.onEvent('clients', ({ clients }) => {
     devices = clients;
@@ -197,6 +222,7 @@ export async function connect(options: ConnectOptions): Promise<RemoteConnection
     throw err;
   });
   const { reconnectionToken } = outcome.welcome;
+  let skewMs = outcome.skewMs;
   const resume = async (stream: Duplex): Promise<ResumeOutcome> => {
     if (closedWith !== undefined) throw new Error(`The connection closed: ${closedWith}`);
     if (!protocol.lost()) throw new Error('Only a dropped connection resumes');
@@ -221,6 +247,7 @@ export async function connect(options: ConnectOptions): Promise<RemoteConnection
     transport = stream;
     protocol.resume(streamSocket(stream), answer.resumedRest);
     suspectSince = undefined;
+    skewMs = answer.skewMs;
     log(`[remote] the connection resumed, clock skew ${Math.round(answer.skewMs)} ms`);
     return 'resumed';
   };
@@ -228,9 +255,27 @@ export async function connect(options: ConnectOptions): Promise<RemoteConnection
     facts: outcome.welcome.facts,
     serverVersion: outcome.welcome.serverVersion,
     features: outcome.welcome.features,
-    skewMs: outcome.skewMs,
+    get skewMs() {
+      return skewMs;
+    },
     control,
     workspace,
+    ports,
+    openTunnel: async (host, port) => {
+      if (!outcome.welcome.features.includes(PORTS_FEATURE)) throw new TunnelConnectError('The daemon carries no tunnels');
+      const stream = holdStream(mux.openStream());
+      const answer = await ports.request('connect', { stream: stream.id, host, port }).catch((err: unknown) => {
+        stream.end();
+        throw err;
+      });
+      if (!answer.ok) {
+        // the daemon ended its side; this one ends too, or the stream counts against MAX_OPEN_STREAMS for the connection's life
+        stream.end();
+        throw new TunnelConnectError(`The daemon could not connect ${host}:${port}: ${answer.error}`);
+      }
+      return stream;
+    },
+    openStream: () => holdStream(mux.openStream()),
     coreChannel,
     receiveStream: (id, maxBytes, onChunk) => inbox.receive(id, maxBytes, onChunk),
     onClose,
@@ -247,9 +292,6 @@ export async function connect(options: ConnectOptions): Promise<RemoteConnection
     close,
   };
 }
-
-// Bytes the daemon may push on streams no receive has claimed yet; past it the connection closes.
-const MAX_UNCLAIMED_STREAM_BYTES = 64 * 1024 * 1024;
 
 type StreamEvent = { readonly chunk: Uint8Array } | { readonly end: true };
 

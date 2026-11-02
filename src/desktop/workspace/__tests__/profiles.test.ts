@@ -8,7 +8,7 @@ interface FakeMachine {
   readonly wsl?: Buffer | Error;
 }
 
-function probe(platform: NodeJS.Platform, env: Record<string, string | undefined>, machine: FakeMachine, windowsBuild = 22631): ProfileProbe & { runs: Array<{ file: string; args: readonly string[]; env: Readonly<Record<string, string | undefined>> }> } {
+function probe(platform: NodeJS.Platform, env: Record<string, string | undefined>, machine: FakeMachine, windowsBuild = 22631, accountShell?: string): ProfileProbe & { runs: Array<{ file: string; args: readonly string[]; env: Readonly<Record<string, string | undefined>> }> } {
   const files = new Set(machine.files ?? []);
   const runs: Array<{ file: string; args: readonly string[]; env: Readonly<Record<string, string | undefined>> }> = [];
   return {
@@ -16,6 +16,7 @@ function probe(platform: NodeJS.Platform, env: Record<string, string | undefined
     env,
     homedir: platform === 'win32' ? 'C:\\Users\\ada' : '/home/ada',
     windowsBuild: platform === 'win32' ? windowsBuild : 0,
+    accountShell,
     isFile: async (file) => files.has(file),
     readDir: async (dir) => [...(machine.dirs?.[dir] ?? [])],
     readText: async (file) => machine.texts?.[file],
@@ -196,6 +197,28 @@ describe('macOS and Linux profiles', () => {
     const tracked = { ...machine, isFile: (file: string) => { checked.push(file); return isFile(file); } };
     expect((await detectProfiles(tracked)).map((profile) => profile.file)).toEqual(['/usr/bin/bash']);
     expect(checked.every((file) => file.startsWith('/'))).toBe(true);
+  });
+
+  it('takes the account\'s passwd shell when nothing set $SHELL, as in a process docker exec starts', async () => {
+    const machine = probe('linux', { PATH: '/usr/local/bin:/usr/bin:/bin' }, { files: ['/bin/sh'] }, 0, '/bin/sh');
+    expect(await detectProfiles(machine)).toEqual([{ id: 'sh', name: 'sh', file: '/bin/sh', args: [], icon: 'shell' }]);
+    // $SHELL wins over it
+    const set = probe('linux', { SHELL: '/bin/bash', PATH: '/bin' }, { files: ['/bin/sh', '/bin/bash'] }, 0, '/bin/sh');
+    expect((await detectProfiles(set)).map((profile) => profile.file)).toEqual(['/bin/bash']);
+  });
+
+  it('never makes a shell that refuses a login the default, and takes a passwd shell only when /etc/shells, if any, lists it', async () => {
+    const files = ['/usr/sbin/nologin', '/sbin/nologin', '/bin/false', '/bin/sh', '/bin/bash'];
+    for (const shell of ['/usr/sbin/nologin', '/sbin/nologin', '/bin/false']) {
+      const service = probe('linux', { PATH: '/bin' }, { files }, 0, shell);
+      expect((await detectProfiles(service)).map((profile) => profile.file)).toEqual(['/bin/bash']);
+      const set = probe('linux', { SHELL: shell, PATH: '/bin' }, { files });
+      expect((await detectProfiles(set)).map((profile) => profile.file)).toEqual(['/bin/bash']);
+    }
+    // a passwd shell /etc/shells does not list is not a login shell; one it lists is
+    const shells = '# /etc/shells\n/bin/sh\n/bin/bash\n';
+    expect((await detectProfiles(probe('linux', { PATH: '/bin' }, { files: [...files, '/opt/odd'], texts: { '/etc/shells': shells } }, 0, '/opt/odd'))).map((profile) => profile.file)).toEqual(['/bin/bash']);
+    expect((await detectProfiles(probe('linux', { PATH: '/bin' }, { files, texts: { '/etc/shells': shells } }, 0, '/bin/sh'))).map((profile) => profile.file)).toEqual(['/bin/sh', '/bin/bash']);
   });
 
   it('ignores a relative or missing $SHELL and a missing /etc/shells', async () => {

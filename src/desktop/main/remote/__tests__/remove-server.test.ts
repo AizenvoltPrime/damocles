@@ -298,7 +298,7 @@ describe('the POSIX removal stage in a real sh', { timeout: 120_000 }, () => {
     expect(readdirSync(install)).not.toContain('.staging-old');
   });
 
-  it('deletes the socket folders the run folder records, a crashed daemon\'s agent and relay folders included, and only Damocles\' own', async () => {
+  it('deletes the socket folders the run folder records, a crashed daemon\'s agent, relay and CLI folders included, and only Damocles\' own', async () => {
     const { home, server } = targetHome();
     const tmp = scratchDir('remove-tmp-');
     // an absolute path as the target's daemon writes one: Git for Windows' sh reads C:\x as /c/x
@@ -311,11 +311,12 @@ describe('the POSIX removal stage in a real sh', { timeout: 120_000 }, () => {
     const endpoint = made('damocles-endpoint', ['daemon.sock', 'token']);
     const agent = made('damocles-agent', [`agent-${'a'.repeat(24)}.sock`]);
     const relay = made('damocles-relay', ['askpass.sock']);
+    const cli = made('damocles-cli', [`cli-${'b'.repeat(24)}.sock`, `cli-${'c'.repeat(24)}.sock`]);
     const crowded = made('damocles-crowded', ['askpass.sock', 'notes.txt']);
     const other = made('other-tool', ['askpass.sock']);
     const runDir = path.join(server, `run-${RUN_KEY}`);
     writeFileSync(path.join(runDir, 'daemon.pid'), JSON.stringify({ version: '3.7.0', pid: DEAD_PID, endpoint: `${endpoint}/daemon.sock`, socketFolder: endpoint }));
-    writeFileSync(path.join(runDir, 'socket-folders'), [agent, relay, crowded, other, 'relative/damocles-x', ''].join('\n'));
+    writeFileSync(path.join(runDir, 'socket-folders'), [agent, relay, cli, crowded, other, 'relative/damocles-x', ''].join('\n'));
     const output = await run(home, { runKey: RUN_KEY, disableLinger: false }, ID_DEV);
     expect(lines(output)).toContainEqual({ kind: 'notice', code: 'deleteFailed', params: { entry: crowded } });
     expect(lines(output).at(-1)).toEqual({ kind: 'removed' });

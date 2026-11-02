@@ -3,7 +3,7 @@ import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { ESLint } from 'eslint';
 import * as esbuild from 'esbuild';
-import { PROCESS_STARTERS_CORE, PROCESS_STARTERS_DAEMON, PROCESS_STARTERS_DESKTOP } from '../../eslint.config.mjs';
+import { PROCESS_STARTERS_CLI, PROCESS_STARTERS_CORE, PROCESS_STARTERS_DAEMON, PROCESS_STARTERS_DESKTOP } from '../../eslint.config.mjs';
 
 /**
  * A process start blocks the thread that makes it (CreateProcessW), so the UI thread, Damocles Core's thread and the extension
@@ -22,6 +22,7 @@ const TREE_ROOTS = [
   'src/desktop/local-services',
   'src/desktop/workspace',
   'src/desktop/daemon',
+  'src/desktop/cli',
   'src/remote',
   'src/desktop/quick-open-worker',
   'src/desktop/watch-worker',
@@ -197,12 +198,22 @@ describe('the files allowed to start processes', () => {
     expect(await processFindings(file)).toBe(0);
   }, 60_000);
 
+  it.each(PROCESS_STARTERS_CLI)('%s, the damocles command, starts the app and keeps the vscode, electron and desktop main bans', async (file) => {
+    expect(await processFindings(file)).toBe(0);
+    expect(await hostModuleFindings(file)).toBe(3);
+    expect((await findings("import { a } from '../main/views';\nexport const probe = a;\n", file)).length).toBe(1);
+  }, 60_000);
+
+  it('rejects a child_process import in the damocles command\'s other files', async () => {
+    for (const file of ['src/desktop/cli/cli-remote.ts', 'src/desktop/cli/cli-protocol.ts']) expect(await processFindings(file)).toBe(PROCESS_FINDINGS);
+  }, 60_000);
+
   it('rejects a child_process import in any other daemon file', async () => {
     for (const file of ['src/desktop/daemon/connections.ts', 'src/desktop/daemon/attach.ts', 'src/desktop/daemon/serve.ts']) expect(await processFindings(file)).toBe(PROCESS_FINDINGS);
   }, 60_000);
 
   it('lists only files and folders that exist', () => {
-    const paths = [...PROCESS_STARTERS_CORE, ...PROCESS_STARTERS_DAEMON, ...PROCESS_STARTERS_DESKTOP.map((glob: string) => glob.replace(/\/\*\*\/\*\.ts$/, ''))];
+    const paths = [...PROCESS_STARTERS_CORE, ...PROCESS_STARTERS_DAEMON, ...PROCESS_STARTERS_CLI, ...PROCESS_STARTERS_DESKTOP.map((glob: string) => glob.replace(/\/\*\*\/\*\.ts$/, ''))];
     expect(paths.filter((file: string) => !existsSync(join(ROOT, file)))).toEqual([]);
   });
 
@@ -211,6 +222,6 @@ describe('the files allowed to start processes', () => {
     for (const entry of HOST_ENTRIES) for (const file of await hostInputs(entry)) inputs.add(file);
     expect(inputs.has('src/core/process-launcher/pool.ts')).toBe(true);
     expect(inputs.has('src/core/scm/scm-service.ts')).toBe(true);
-    expect(PROCESS_STARTERS_CORE.filter((file: string) => inputs.has(file))).toEqual([]);
+    expect([...PROCESS_STARTERS_CORE, ...PROCESS_STARTERS_CLI].filter((file: string) => inputs.has(file))).toEqual([]);
   }, 120_000);
 });

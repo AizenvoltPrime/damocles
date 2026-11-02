@@ -1,75 +1,43 @@
 import { describe, it, expect } from 'vitest';
-import { isPrivateOrLocalAddress, isBlockedFaviconHost } from '../net-guard';
+import { publicAddresses } from '../net-guard';
+import type { AddressResolver } from '../client-network-policy';
 
-describe('isPrivateOrLocalAddress', () => {
-  it('flags IPv4 loopback, private, link-local, and cloud metadata ranges', () => {
-    for (const ip of [
-      '127.0.0.1',
-      '10.0.0.1',
-      '172.16.0.1',
-      '172.31.255.255',
-      '192.168.1.1',
-      '169.254.169.254', // cloud metadata endpoint
-      '100.64.0.1', // CGNAT
-      '0.0.0.0',
-      '224.0.0.1', // multicast
-    ]) {
-      expect(isPrivateOrLocalAddress(ip)).toBe(true);
+const answering = (...addresses: string[]): AddressResolver => async () => addresses.map((address) => ({ address, family: address.includes(':') ? 6 : 4 }));
+
+describe('publicAddresses', () => {
+  it('refuses loopback, private, link-local, shared and cloud metadata literals', async () => {
+    for (const host of ['127.0.0.1', '10.0.0.1', '172.16.0.1', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '224.0.0.1', '[::1]', '[::]', '[fe80::1]', '[fd12:3456::1]']) {
+      expect(await publicAddresses(host), host).toBeUndefined();
     }
   });
 
-  it('allows public IPv4 addresses', () => {
-    for (const ip of ['8.8.8.8', '1.1.1.1', '172.15.0.1', '172.32.0.1', '93.184.216.34']) {
-      expect(isPrivateOrLocalAddress(ip)).toBe(false);
+  it('refuses the IPv4-mapped literals in the canonical hex form the URL parser gives them', async () => {
+    for (const written of ['http://[::ffff:127.0.0.1]/', 'http://[::ffff:192.168.1.1]/', 'http://[::ffff:169.254.169.254]/']) {
+      const host = new URL(written).hostname;
+      expect(['[::ffff:7f00:1]', '[::ffff:c0a8:101]', '[::ffff:a9fe:a9fe]']).toContain(host);
+      expect(await publicAddresses(host), host).toBeUndefined();
     }
   });
 
-  it('flags IPv6 loopback, link-local, unique-local, and mapped-private', () => {
-    for (const ip of ['::1', '::', 'fe80::1', 'fc00::1', 'fd12:3456::1', '::ffff:127.0.0.1', '::ffff:192.168.0.1']) {
-      expect(isPrivateOrLocalAddress(ip)).toBe(true);
-    }
+  it('passes public literals as written', async () => {
+    expect(await publicAddresses('93.184.216.34')).toEqual([{ address: '93.184.216.34', family: 4 }]);
+    expect(await publicAddresses('[2606:4700:4700::1111]')).toEqual([{ address: '2606:4700:4700::1111', family: 6 }]);
   });
 
-  it('allows public IPv6 and mapped-public addresses', () => {
-    for (const ip of ['2606:4700:4700::1111', '::ffff:8.8.8.8']) {
-      expect(isPrivateOrLocalAddress(ip)).toBe(false);
-    }
+  it('refuses a name with any blocked answer, mapped forms included, even beside a public one', async () => {
+    expect(await publicAddresses('rebind.example', answering('10.1.2.3'))).toBeUndefined();
+    expect(await publicAddresses('mixed.example', answering('93.184.216.34', '::ffff:7f00:1'))).toBeUndefined();
   });
 
-  it('returns false for non-IP strings (host resolution handles names)', () => {
-    expect(isPrivateOrLocalAddress('example.com')).toBe(false);
-  });
-});
-
-describe('isBlockedFaviconHost', () => {
-  it('blocks localhost and its subdomains without DNS', async () => {
-    expect(await isBlockedFaviconHost('localhost')).toBe(true);
-    expect(await isBlockedFaviconHost('app.localhost')).toBe(true);
+  it('passes every public answer of a name, in the resolver\'s order', async () => {
+    expect(await publicAddresses('example.com', answering('2606:2800:220:1::1', '93.184.216.34'))).toEqual([
+      { address: '2606:2800:220:1::1', family: 6 },
+      { address: '93.184.216.34', family: 4 },
+    ]);
   });
 
-  it('blocks IP-literal hosts in private ranges (incl. bracketed IPv6)', async () => {
-    expect(await isBlockedFaviconHost('127.0.0.1')).toBe(true);
-    expect(await isBlockedFaviconHost('192.168.0.5')).toBe(true);
-    expect(await isBlockedFaviconHost('[::1]')).toBe(true);
-    expect(await isBlockedFaviconHost('169.254.169.254')).toBe(true);
-  });
-
-  it('allows public IP-literal hosts', async () => {
-    expect(await isBlockedFaviconHost('8.8.8.8')).toBe(false);
-  });
-
-  it('blocks a name that resolves into a private range (DNS rebinding)', async () => {
-    const resolver = async () => '10.1.2.3';
-    expect(await isBlockedFaviconHost('rebind.example.com', resolver)).toBe(true);
-  });
-
-  it('allows a name that resolves to a public address', async () => {
-    const resolver = async () => '93.184.216.34';
-    expect(await isBlockedFaviconHost('example.com', resolver)).toBe(false);
-  });
-
-  it('blocks hosts that fail to resolve (fail closed)', async () => {
-    const resolver = async () => { throw new Error('ENOTFOUND'); };
-    expect(await isBlockedFaviconHost('nonexistent.invalid', resolver)).toBe(true);
+  it('refuses a name that resolves to nothing or fails to resolve', async () => {
+    expect(await publicAddresses('empty.invalid', answering())).toBeUndefined();
+    expect(await publicAddresses('nonexistent.invalid', async () => { throw new Error('ENOTFOUND'); })).toBeUndefined();
   });
 });

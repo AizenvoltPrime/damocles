@@ -29,6 +29,8 @@ function harness(script: (request: SshStartRequest) => Promise<SshStarted>, hand
   const connections: RemoteConnections = new RemoteConnections({
     host: (id) => (id === HOST.id ? HOST : undefined),
     startSsh: script,
+    startWsl: () => Promise.reject(new Error('no wsl in this test')),
+    startContainer: () => Promise.reject(new Error('no containers in this test')),
     savePlatform: vi.fn(async () => undefined),
     installFolderSettled: vi.fn(async () => undefined),
     // Authorities.connect: the transport, then the handshake, which this stand-in completes at once unless given one
@@ -239,6 +241,46 @@ describe('RemoteConnections joining a live connection', () => {
     expect(connections.connect('h1', false)).not.toBe(first);
     await flush();
     expect(starts).toBe(2);
+  });
+
+  // the Connect dialog shows only main's step for the attempt a start returned, so a start that joins must send it
+  it('tells the attempt as it stands whenever a watched connect joins it, running or connected, and an unwatched join tells nothing', async () => {
+    let release!: (value: SshStarted) => void;
+    const { connections, changed, setConnected } = harness(() => new Promise((resolve) => (release = resolve)));
+    const attemptId = connections.connect('h1', true);
+    await flush();
+    changed.mockClear();
+    expect(connections.connect('h1', true)).toBe(attemptId);
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(connections.connect('h1', false)).toBe(attemptId);
+    expect(changed).toHaveBeenCalledTimes(1);
+    release(started());
+    await flush();
+    setConnected(true);
+    changed.mockClear();
+    expect(connections.connect('h1', false)).toBe(attemptId);
+    expect(changed).not.toHaveBeenCalled();
+    expect(connections.connect('h1', true)).toBe(attemptId);
+    expect(changed.mock.calls).toEqual([['h1']]);
+    expect(connections.attempt('h1')).toMatchObject({ attemptId, step: 'connected' });
+  });
+
+  it('marks a connected attempt whose container folder did not open, until an opening clears it, and no other attempt', async () => {
+    const { connections, changed } = harness(async () => started());
+    const attemptId = connections.connect('h1', true);
+    connections.setFolderFailed(attemptId, true);
+    // still connecting: nothing to mark
+    expect(connections.attempt('h1')).not.toHaveProperty('folderFailure');
+    await flush();
+    changed.mockClear();
+    connections.setFolderFailed(attemptId, true);
+    expect(connections.attempt('h1')).toMatchObject({ step: 'connected', folderFailure: { code: 'containerFolderFailed', params: {} } });
+    expect(connections.attempt('h1')).not.toHaveProperty('failure');
+    connections.setFolderFailed(attemptId, false);
+    expect(connections.attempt('h1')).not.toHaveProperty('folderFailure');
+    expect(changed).toHaveBeenCalledTimes(2);
+    connections.setFolderFailed('another', true);
+    expect(changed).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -5,7 +5,7 @@ import type { Platform } from '../../../platform/platform';
 import type { PanelHost } from '../../../platform/window-service';
 import type { GitCredentialAnswer } from '../../../shared/git-credential';
 import type { PageSpec } from '../../../shared/panel-html';
-import { LOCAL_CLIENT_ID, type BrokerAnswer } from '../../../shared/remote-user';
+import { LOCAL_CLIENT_ID, type BrokerAnswer, type BrowserToolAnswer } from '../../../shared/remote-user';
 import { desktopHostCapabilities } from '../../local-services/capabilities';
 import type { DesktopEditorService, HostDiffView } from '../platform/editor-service';
 import { DIFF_TITLE_NAME, type CoreInit, type CoreRequests, type CredentialKind, type MainEndpoint, type MirrorTopics, type PanelCreate, type StateScope } from '../../core-protocol';
@@ -73,6 +73,18 @@ export interface HostUser {
   speak(viewId: string, text: string): Promise<void>;
   // the target's git credential relay (remote/git-credential-client.ts)
   gitCredential(request: CoreRequests['askpass.credential']['params'], signal: AbortSignal): Promise<GitCredentialAnswer>;
+  // a remote chat's browser tool, run by this computer's core (remote/browser-relay.ts)
+  browserTool(request: CoreRequests['user.browser.tool']['params'], signal: AbortSignal): Promise<BrowserToolAnswer>;
+  // a remote chat's agent browser scope ended: this computer's core disposes it
+  browserRelease(request: CoreRequests['user.browser.release']['params']): Promise<void>;
+  // this computer's global memory and personal MCP servers, checked in remote/user-relays.ts
+  memorySearch(request: CoreRequests['user.memory.search']['params']): Promise<CoreRequests['user.memory.search']['result']>;
+  memoryProfile(): Promise<CoreRequests['user.memory.profile']['result']>;
+  memoryResolve(ids: readonly string[]): Promise<CoreRequests['user.memory.resolve']['result']>;
+  memoryApply(request: CoreRequests['user.memory.apply']['params']): Promise<CoreRequests['user.memory.apply']['result']>;
+  mcpCall(request: CoreRequests['user.mcp.call']['params'], signal: AbortSignal): Promise<unknown>;
+  mcpResources(request: CoreRequests['user.mcp.resources']['params'], signal: AbortSignal): Promise<unknown>;
+  mcpReadResource(request: CoreRequests['user.mcp.readResource']['params'], signal: AbortSignal): Promise<unknown>;
 }
 
 /** What the local core's host services answer: it asks this computer's PiRuntime and voice service itself. */
@@ -80,6 +92,15 @@ export const NO_USER_RELAYS: HostUser = {
   credentials: () => Promise.reject(new Error('Credentials are relayed only to a remote core')),
   speak: () => Promise.reject(new Error('Speech is relayed only from a remote core')),
   gitCredential: () => Promise.reject(new Error('Git credentials are relayed only to a remote core')),
+  browserTool: () => Promise.reject(new Error('Browser tools are relayed only from a remote core')),
+  browserRelease: () => Promise.reject(new Error('Browser tools are relayed only from a remote core')),
+  memorySearch: () => Promise.reject(new Error('Global memory is relayed only to a remote core')),
+  memoryProfile: () => Promise.reject(new Error('Global memory is relayed only to a remote core')),
+  memoryResolve: () => Promise.reject(new Error('Global memory is relayed only to a remote core')),
+  memoryApply: () => Promise.reject(new Error('Global memory is relayed only to a remote core')),
+  mcpCall: () => Promise.reject(new Error('Personal MCP servers are relayed only to a remote core')),
+  mcpResources: () => Promise.reject(new Error('Personal MCP servers are relayed only to a remote core')),
+  mcpReadResource: () => Promise.reject(new Error('Personal MCP servers are relayed only to a remote core')),
 };
 
 /** Main's own UI core's engine reaches: log tabs, the trash, questions, credential prompts and the worktree dialogs. */
@@ -112,6 +133,11 @@ export interface HostServicesDeps {
   readonly endedCores: CoreInit['endedCores'];
   readonly worktreeRecords: CoreInit['worktreeRecords'];
   readonly language: { current(): MirrorTopics['language']['language']; onDidChange(listener: () => void): Disposable };
+  // this computer's core only: a live remote chat view its page may name as owner, so the page is a tab of that chat
+  readonly foreignOwner?: (viewId: string) => RelayView | undefined;
+  // this computer's core only: each remote authority's forwarded local ports and local-network switch, which its browser
+  // context's proxy applies; a change publishes before the forward that caused it is used
+  readonly clientNetwork?: { current(): NonNullable<CoreInit['mirrors']['clientNetwork']>; onDidChange(listener: (patch: MirrorTopics['clientNetwork']) => void): Disposable };
   readonly power: { onSuspend(listener: () => void): Disposable; onResume(listener: () => void): Disposable };
   readonly ui: HostUi;
   readonly user: HostUser;
@@ -174,6 +200,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
       clientUser: {},
       clientPolicy: { [LOCAL_CLIENT_ID]: { voice: desktopHostCapabilities(process.platform).voice, allowBypass: true } },
       actingClient: { clientId: LOCAL_CLIENT_ID },
+      ...(deps.clientNetwork ? { clientNetwork: deps.clientNetwork.current() } : {}),
     },
   };
 
@@ -235,7 +262,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     refuseRelayed(panelId);
     const { owner, ...options } = create;
     if (owner === undefined) return deps.createView(panelId, options);
-    const chat = views.get(owner);
+    const chat = views.get(owner) ?? deps.foreignOwner?.(owner);
     if (!chat) throw new Error('A browser page opens only in a loaded chat');
     return deps.createView(panelId, { ...options, owner: chat });
   };
@@ -304,6 +331,15 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     endpoint.serve('worktrees.showRefusal', (request, signal) => ui.worktrees.showRefusal(request, signal));
     endpoint.serve('user.credentials', ({ provider }) => deps.user.credentials(provider));
     endpoint.serve('user.voice.speak', ({ viewId, text }) => deps.user.speak(viewId, text));
+    endpoint.serve('user.browser.tool', (params, signal) => deps.user.browserTool(params, signal));
+    endpoint.serve('user.browser.release', (params) => deps.user.browserRelease(params));
+    endpoint.serve('user.memory.search', (params) => deps.user.memorySearch(params));
+    endpoint.serve('user.memory.profile', () => deps.user.memoryProfile());
+    endpoint.serve('user.memory.resolve', ({ ids }) => deps.user.memoryResolve(ids));
+    endpoint.serve('user.memory.apply', (params) => deps.user.memoryApply(params));
+    endpoint.serve('user.mcp.call', (params, signal) => deps.user.mcpCall(params, signal));
+    endpoint.serve('user.mcp.resources', (params, signal) => deps.user.mcpResources(params, signal));
+    endpoint.serve('user.mcp.readResource', (params, signal) => deps.user.mcpReadResource(params, signal));
     endpoint.serve('askpass.credential', (request, signal) => deps.user.gitCredential(request, signal));
     endpoint.serve('worktrees.showApplyConflicts', ({ worktreeId, files }) => ui.worktrees.showApplyConflicts(worktreeId, files));
     // main posts to a page in this process, which queues nothing toward it
@@ -312,7 +348,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
 
   serve();
   const subscriptions: Disposable[] = [
-    endpoint.onEvent('window.openAppSettings', ({ section, account }) => platform.window.openAppSettings(section, account)),
+    endpoint.onEvent('window.openAppSettings', ({ section, account, scope }) => platform.window.openAppSettings(section, account, scope)),
     endpoint.onEvent('window.toggleTerminal', () => platform.window.toggleTerminal()),
     endpoint.onPanel((panelId, envelope) => {
       if (envelope.op === 'create') {
@@ -366,6 +402,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     platform.workspaceFolders.onDidChange(() => endpoint.publish('folders', { folders: platform.workspaceFolders.folders() })),
     platform.editor.onDidChangeActiveContext((context) => endpoint.publish('editor', editorPatch(context))),
     deps.language.onDidChange(() => endpoint.publish('language', { language: deps.language.current() })),
+    ...(deps.clientNetwork ? [deps.clientNetwork.onDidChange((patch) => endpoint.publish('clientNetwork', patch))] : []),
     deps.power.onSuspend(() => endpoint.emit('power.suspend', {})),
     deps.power.onResume(() => endpoint.emit('power.resume', {})),
   ];

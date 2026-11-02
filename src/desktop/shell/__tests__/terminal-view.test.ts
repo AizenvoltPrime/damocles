@@ -250,7 +250,7 @@ describe('a restored remote terminal whose host is not connected', () => {
 });
 
 describe('a remote terminal whose host dropped', () => {
-  const HOST: ShellHost = { hostId: 'h1', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'offline', signInNeeded: false };
+  const HOST: ShellHost = { hostId: 'h1', kind: 'ssh', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'offline', signInNeeded: false };
 
   it('takes no input at once, and shows Reconnecting and dims only once the drop outlasted the grace', async () => {
     const { xterm } = await mountView({ status: 'reconnecting', host: { ...HOST, reconnect: { phase: 'waiting', since: Date.now(), retryAt: Date.now() + 5000 } } });
@@ -269,19 +269,21 @@ describe('a remote terminal whose host dropped', () => {
 });
 
 describe('OSC 8 hyperlinks', () => {
-  it('open only on Ctrl+click, through the same window.open web links use, and never ask with window.confirm', async () => {
+  it('open only on Ctrl+click, through main with the terminal named as web links do, and never ask with window.confirm', async () => {
     const opened = vi.fn();
     const confirm = vi.fn(() => true);
     vi.stubGlobal('open', opened);
     vi.stubGlobal('confirm', confirm);
-    const { xterm } = await mountView();
+    const { api, xterm } = await mountView();
     const handler = xterm!.options.linkHandler as ILinkHandler | undefined;
     expect(handler).toBeDefined();
     expect(handler!.allowNonHttpProtocols).not.toBe(true);
     handler!.activate(new MouseEvent('click'), 'https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html', RANGE);
-    expect(opened).not.toHaveBeenCalled();
+    expect(api.terminal.openWebLink).not.toHaveBeenCalled();
     handler!.activate(new MouseEvent('click', { ctrlKey: true }), 'https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html', RANGE);
-    expect(opened).toHaveBeenCalledWith('https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html');
+    expect(api.terminal.openWebLink).toHaveBeenCalledWith({ id: 'term-1', url: 'https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html' });
+    // window.open reaches main without the terminal, so a remote terminal's localhost link would open this computer's port
+    expect(opened).not.toHaveBeenCalled();
     expect(confirm).not.toHaveBeenCalled();
   });
 
@@ -467,6 +469,22 @@ describe('link resolution', () => {
       wrapper!.unmount();
       wrapper = undefined;
     }
+  });
+
+  it('opens a printed web link through main with the terminal named, only on Ctrl+click', async () => {
+    const opened = vi.fn();
+    vi.stubGlobal('open', opened);
+    const { api, xterm } = await mountView();
+    xterm!.lines = ['  Local:   http://localhost:5173/'];
+    const links: ILink[] = [];
+    xterm!.linkProviders[0]!.provideLinks(1, (provided) => links.push(...(provided ?? [])));
+    await flushPromises();
+    expect(links.map((link) => link.text)).toEqual(['http://localhost:5173/']);
+    links[0]!.activate(new MouseEvent('click'), links[0]!.text);
+    expect(api.terminal.openWebLink).not.toHaveBeenCalled();
+    links[0]!.activate(new MouseEvent('click', { ctrlKey: true }), links[0]!.text);
+    expect(api.terminal.openWebLink).toHaveBeenCalledWith({ id: 'term-1', url: 'http://localhost:5173/' });
+    expect(opened).not.toHaveBeenCalled();
   });
 
   it('treats a failed resolution as no links, without an unhandled rejection', async () => {

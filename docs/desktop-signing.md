@@ -33,7 +33,7 @@ Apply to the SignPath Foundation open source program at https://signpath.org wit
 - the roles (below);
 - the browser feature disclosure (below).
 
-SignPath Foundation signs only software built from the project's own source code; upstream open source binaries may ship inside a signed package, unsigned ("Conditions for using the SignPath Foundation certificate", https://signpath.org/terms.html). So only `Damocles.exe`, which electron-builder writes from Electron's binary with Damocles' name, icon and version, `ssh-askpass.exe`, which the desktop build compiles from `resources/askpass/ssh-askpass.cs`, and the installers are signed. Electron's DLLs, `elevate.exe`, `rg.exe` and the koffi and node-pty modules ship as their projects publish them.
+SignPath Foundation signs only software built from the project's own source code; upstream open source binaries may ship inside a signed package, unsigned ("Conditions for using the SignPath Foundation certificate", https://signpath.org/terms.html). So only `Damocles.exe`, which electron-builder writes from Electron's binary with Damocles' name, icon and version, `ssh-askpass.exe`, which the desktop build compiles from `resources/askpass/ssh-askpass.cs`, the Windows server packages' `bin/helpers/browser.exe`, which `scripts/browser-helper.mjs` compiles from `resources/server-bin/helpers/browser.c`, and the installers are signed. The server packages' `node.exe` is the Node project's own, signed by it. Electron's DLLs, `elevate.exe`, `rg.exe` and the koffi and node-pty modules ship as their projects publish them.
 
 ### SignPath setup
 
@@ -41,9 +41,9 @@ The SignPath Foundation accepted the project. Its organization "Damocles [OSS]" 
 
 - Project `damocles`, repository URL `https://github.com/AizenvoltPrime/damocles.git`, with the predefined trusted build system GitHub.com linked.
 - The SignPath GitHub App (`https://github.com/apps/signpath`) installed on the account with access to this repository. SignPath's connector reads the workflow run and its artifacts through it; without it every signing request fails with "Failed to retrieve GitHub App token".
-- Signing policy `release-signing`: certificate "Release certificate 2026" on SignPath's HSM, submitter the CI user "CI builds", one approval by AizenvoltPrime, trusted build system and origin verification required. The Foundation orders and imports the certificate after it reviews a working test setup; until then the certificate is "CSR pending" and the policy invalid, and a tag run fails at the first signing request, before anything is published.
+- Signing policy `release-signing`: certificate "Release certificate 2026" on SignPath's HSM, submitter the CI user "CI builds", one approval by AizenvoltPrime per request, trusted build system and origin verification required. A tag run makes three requests, each approved: `browser-helpers` (in `sign-browser-helper`), then `app-executables` and `installers` (in `sign-windows`). The Foundation orders and imports the certificate after it reviews a working test setup; until then the certificate is "CSR pending" and the policy invalid, and a tag run fails at the first signing request, before anything is published.
 - Signing policy `test-signing`: the self-signed "Test certificate 2026", submitter "CI builds", no approval, trusted build system and origin verification required, so a test run passes the same origin checks a release does.
-- Artifact configurations `app-executables` and `installers` (below).
+- Artifact configurations `app-executables`, `installers` and `browser-helpers` (below). A run whose `sign` is on fails at the first request whose configuration the project lacks.
 - The CI user's API token, stored as the GitHub Actions secret `SIGNPATH_API_TOKEN`. The organization ID and the slugs are not secret and live in the workflow.
 
 `win.signtoolOptions.publisherName` in `electron-builder.yml` is `SignPath Foundation`, the common name of the release certificate (see "Obligations").
@@ -127,13 +127,45 @@ Both configurations take a required `version` parameter, which the workflow sets
 </artifact-configuration>
 ```
 
+### The browser helper
+
+A Windows server package's `BROWSER` is `bin/helpers/browser.exe`, never a `.cmd`, because cmd.exe would parse `&`, `^` and `%` in an address (docs/invariants.md "The damocles command"). It ships inside the package, and each package's SHA-256 is in `dist/desktop/server-manifest.json`, which `package-desktop` seals into `app.asar` before `sign-windows` signs anything, so the helper cannot be signed with the app executables. The `sign-browser-helper` job signs it first:
+
+1. It waits for `verify` only and runs on `windows-latest` with `actions: read`. It installs nothing: `scripts/browser-helper.mjs` imports only Node built-ins.
+2. `node scripts/browser-helper.mjs --out browser-helpers` builds `x64/browser.exe` and `arm64/browser.exe` with the pinned zig (docs/release.md "Server packages"), each with `ProductName` `Damocles`, `FileVersion` the version and `ProductVersion` its four-part form. The job uploads them as one artifact and submits it with the `browser-helpers` configuration and the `package.json` version, under the same signing policy as `sign-windows`.
+3. `check-authenticode.ps1` checks both signed files, requiring the SignPath Foundation certificate on a tag, and the job uploads them as `signed-browser-helpers`.
+4. Each Windows leg of `package-server` downloads its architecture's file and passes it to `build:server` and `verify-server-package.mjs` as `--signed-browser-helper`. Both build the helper again and refuse the signed file unless it is that build with an Authenticode signature added (the certificate table at the end cut off, the CheckSum and the certificate directory zeroed, every other byte equal), so a signing request cannot put other code into a package.
+
+A manual run with `sign` off skips every SignPath step of the job, and `package-server` packs the unsigned helper. A run that fails after `verify` has still spent this one request: the server packages' hashes leave no later point to sign the helper at.
+
+`browser-helpers` signs the two helpers:
+
+```xml
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file-set product-name="Damocles" product-version="${version}.0" file-version="${version}">
+      <include path="x64/browser.exe" />
+      <include path="arm64/browser.exe" />
+      <for-each>
+        <authenticode-sign />
+      </for-each>
+    </pe-file-set>
+  </zip-file>
+</artifact-configuration>
+```
+
+The configuration lives in the SignPath project beside the other two, and a change to the helpers' paths or metadata needs the same change there before the next signing run, test runs included.
+
 ### Test run
 
 Actions > "Create Release from Tag" > Run workflow with "sign" ticked (`gh workflow run release.yml --ref <branch> -f sign=true`) runs the whole workflow from a branch with `test-signing`: every build, test, signing and check job runs, and `attest` and `release` are skipped, so nothing is published. `verify` skips its tag version check. Download `desktop-win-x64` from the run and check `Get-AuthenticodeSignature .\Damocles-Setup-*.exe` names the test certificate (status `UnknownError`, because it chains to no trusted root). Once a run passes, tell the SignPath Foundation the setup is ready, with a link to the run; they review it and import the release certificate.
 
 ### Verifying a signed release
 
-- `signtool verify /pa /v` passes on `Damocles.exe`, `resources\app.asar.unpacked\dist\askpass\ssh-askpass.exe` and both installers, and names SignPath Foundation as the publisher.
+- `signtool verify /pa /v` passes on `Damocles.exe`, `resources\app.asar.unpacked\dist\askpass\ssh-askpass.exe`, both installers and `bin\helpers\browser.exe` of both Windows server packages, and names SignPath Foundation as the publisher.
 - Every `latest-*.yml` entry matches its signed file (the check in step 7).
 - An update from an unsigned N to a signed N+1 applies. The unsigned N has no `publisherName`, so it accepts the signed installer.
 - An update from a signed N+1 to a signed N+2 applies, which proves electron-updater's publisher check passes.
@@ -143,8 +175,8 @@ Actions > "Create Release from Tag" > Run workflow with "sign" ticked (`gh workf
 
 - **Roles.** Declare the Authors, Reviewers and Approvers roles publicly in the README's "Code signing policy" section. One maintainer holds all three: AizenvoltPrime (Authors: commit rights; Reviewers: reviews every change before release; Approvers: approves each signing request in SignPath).
 - **Code signing policy.** The README section states what is signed, by whom, and carries SignPath's attribution and the privacy statement. Keep this document's text and the README's identical; change both in one commit.
-- **Metadata.** Every signed binary carries product name and version metadata, and both artifact configurations enforce them against the release version ("Artifact configurations"). electron-builder writes them into `Damocles.exe` and the installers from `productName` and `package.json` `version`, and `scripts/askpass-trampoline.mjs` writes the same values into `ssh-askpass.exe`.
-- **Own code only.** Only files built from this repository are signed ("Applying"). A new executable this repository builds joins `app-executables`; an upstream binary never does.
+- **Metadata.** Every signed binary carries product name and version metadata, and both artifact configurations enforce them against the release version ("Artifact configurations"). electron-builder writes them into `Damocles.exe` and the installers from `productName` and `package.json` `version`, and `scripts/askpass-trampoline.mjs` and `scripts/browser-helper.mjs` write the same values into `ssh-askpass.exe` and `browser.exe`.
+- **Own code only.** Only files built from this repository are signed ("Applying"). A new executable this repository builds joins `app-executables`, or `browser-helpers` when it ships in a server package; an upstream binary never does.
 - **Publisher check.** `win.signtoolOptions.publisherName` in `electron-builder.yml` is set to the certificate's common name (electron-builder 26 has no top level `win.publisherName` key, and electron-updater accepts a common name or a full distinguished name), so electron-updater verifies the Authenticode publisher of every downloaded update before it runs it (`NsisUpdater` reads `publisherName` from the packaged `app-update.yml`).
 - **Browser feature disclosure.** The application states the browser feature in the text below.
 - **The DevTools port.** `damocles.browser.devToolsPort` defaults to `false`, so the browser opens no unauthenticated debugging endpoint unless the user turns it on.
@@ -155,7 +187,7 @@ Actions > "Create Release from Tag" > Run workflow with "sign" ticked (`gh workf
 >
 > Team roles: Authors, Reviewers and Approvers are all [AizenvoltPrime](https://github.com/AizenvoltPrime), the sole maintainer.
 >
-> Signed files: `Damocles.exe`, `ssh-askpass.exe` (the SSH password prompt helper, compiled from `resources/askpass/ssh-askpass.cs`) and the Windows installers, each built by this repository's release workflow from a tagged commit. Each signing request is approved by hand. The open source components the app includes (Electron's libraries, ripgrep, koffi, node-pty) ship as their projects publish them and are not signed by this project.
+> Signed files: `Damocles.exe`, `ssh-askpass.exe` (the SSH password prompt helper, compiled from `resources/askpass/ssh-askpass.cs`), `browser.exe` (the Windows remote server's link helper, compiled from `resources/server-bin/helpers/browser.c`) and the Windows installers, each built by this repository's release workflow from a tagged commit. Each signing request is approved by hand. The open source components the app includes (Electron's libraries, ripgrep, koffi, node-pty) ship as their projects publish them and are not signed by this project.
 
 ### Privacy statement (README)
 
