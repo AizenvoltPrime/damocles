@@ -7,7 +7,7 @@ import { build } from 'esbuild';
 import { EXTENSION_EXTERNALS } from '../../scripts/extension-externals.mjs';
 import { windowsTerminalEnvironment } from '../../src/desktop/main/workspace/windows-terminal-environment';
 import { coreLog, launchDesktop } from './support/app';
-import { createHermeticHome, hermeticEnv, REPO_ROOT, WINDOWS_POWERSHELL_CACHE, WINDOWS_POWERSHELL_CACHE_IN_PROFILE } from './support/hermetic';
+import { createHermeticHome, hermeticEnv, REPO_ROOT, WINDOWS_POWERSHELL_CACHE } from './support/hermetic';
 import { PACKAGED_APP_ENV, packagedAppPath } from './support/packaged-app';
 import { SECOND_PROCESS_BUNDLE } from './support/second-process';
 
@@ -63,11 +63,40 @@ async function warmFirstLaunch(): Promise<void> {
 
 // Analysing a runner's whole module path takes minutes, never more than this.
 const POWERSHELL_WARM_TIMEOUT_MS = 600_000;
-// a module no cache holds yet, so the analysis always queues a save
-const CACHE_PROBE_MODULE = 'DamoclesE2eCacheProbe';
-
-const psQuote = (text: string): string => `'${text.replaceAll("'", "''")}'`;
 const execFileAsync = promisify(execFile);
+
+// Windows PowerShell 5.1's own cache, by reflection: its analysis data, the file it reads and saves, and its writer and reader.
+const POWERSHELL_CACHE_MEMBERS = [
+  "$ErrorActionPreference = 'Stop'",
+  "$data = [psobject].Assembly.GetType('System.Management.Automation.AnalysisCache').GetField('cacheData', [Reflection.BindingFlags]'NonPublic,Static').GetValue($null)",
+  "$cache = $data.GetType().GetField('cacheStoreLocation', [Reflection.BindingFlags]'NonPublic,Static').GetValue($null)",
+  "$serialize = $data.GetType().GetMethod('Serialize', [Reflection.BindingFlags]'NonPublic,Instance')",
+  "$deserialize = $data.GetType().GetMethod('Deserialize', [Reflection.BindingFlags]'Public,NonPublic,Static')",
+  "if (-not $cache -or -not $serialize -or -not $deserialize) { throw 'This PowerShell has no AnalysisCacheData.cacheStoreLocation, Serialize or Deserialize' }",
+];
+
+/**
+ * Analyses every module on the module path, then saves the cache itself and reads it back until the file holds every entry:
+ * PowerShell saves on its own only from a timer once analyses pause for 3 s, which also fires mid-analysis, and never at
+ * exit. Serialize swallows its errors, and one meets a timer save writing the file, so a save is checked by reading it.
+ */
+const WARM_SCRIPT = [
+  ...POWERSHELL_CACHE_MEMBERS,
+  'Get-Command | Out-Null',
+  '$saved = $false',
+  'for ($i = 0; -not $saved -and $i -lt 50; $i++) { $serialize.Invoke($data, @($cache)) | Out-Null; try { $saved = $deserialize.Invoke($null, @($cache)).Entries.Count -ge $data.Entries.Count } catch { Start-Sleep -Milliseconds 200 } }',
+  'if (-not $saved) { throw "$cache does not hold the $($data.Entries.Count) analysed modules after 50 saves" }',
+  '[Console]::Out.Write($cache)',
+].join('\n');
+
+// A shell that reads the warmed cache: what its first command analyses that the cache lacks.
+const CHECK_SCRIPT = [
+  ...POWERSHELL_CACHE_MEMBERS,
+  '$loaded = @($data.Entries.Keys)',
+  'Get-Command | Out-Null',
+  '$missing = @($data.Entries.Keys | Where-Object { $loaded -notcontains $_ })',
+  'if ($missing.Count -gt 0) { throw "$cache lacks $($missing.Count) of the modules a shell analyses: $($missing -join \', \')" }',
+].join('\n');
 
 /**
  * Builds the Windows PowerShell 5.1 module analysis caches the launches' shells read, each under its readers' environment:
@@ -80,42 +109,34 @@ async function warmWindowsPowerShellCaches(): Promise<void> {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dps')));
   const home = path.join(root, 'h');
   for (const dir of [path.join(home, 'AppData', 'Local'), path.join(home, 'AppData', 'Roaming'), path.join(root, 'tmp')]) fs.mkdirSync(dir, { recursive: true });
-  const probes = path.join(root, 'probe');
-  fs.mkdirSync(path.join(probes, CACHE_PROBE_MODULE), { recursive: true });
-  fs.writeFileSync(path.join(probes, CACHE_PROBE_MODULE, `${CACHE_PROBE_MODULE}.psm1`), `function Get-${CACHE_PROBE_MODULE} {}\n`);
   const hermetic = hermeticEnv({ root, home });
   const terminal = windowsTerminalEnvironment(hermetic, (line) => console.log(line));
   const machineWide = Object.entries(terminal).some(([key, value]) => key.toUpperCase() === 'PSMODULEANALYSISCACHEPATH' && value);
-  const [profileCache] = await Promise.all([warmPowerShellCache(hermetic, probes), ...(machineWide ? [warmPowerShellCache(terminal, probes)] : [])]);
+  const [profileCache] = await Promise.all([warmPowerShellCache(hermetic), ...(machineWide ? [warmPowerShellCache(terminal)] : [])]);
   fs.mkdirSync(path.dirname(WINDOWS_POWERSHELL_CACHE), { recursive: true });
   fs.copyFileSync(profileCache!, WINDOWS_POWERSHELL_CACHE);
   fs.rmSync(root, { recursive: true, force: true, maxRetries: 25, retryDelay: 200 });
 }
 
-/**
- * Analyses every module on the module path under `env` and resolves the cache file PowerShell wrote. PowerShell saves the
- * cache on a timer seconds after an analysis and never at exit, so the script also analyses a probe module, which no cache
- * holds yet, and waits for a write after its start to close.
- */
-async function warmPowerShellCache(env: NodeJS.ProcessEnv, probes: string): Promise<string> {
-  const script = [
-    `$env:PSModulePath = ${psQuote(`${probes};`)} + $env:PSModulePath`,
-    `$cache = if ($env:PSModuleAnalysisCachePath) { $env:PSModuleAnalysisCachePath } else { Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) ${psQuote(WINDOWS_POWERSHELL_CACHE_IN_PROFILE)} }`,
-    '$started = [DateTime]::UtcNow',
-    'Get-Command | Out-Null',
-    "while ($true) { if ([IO.File]::GetLastWriteTimeUtc($cache) -ge $started) { try { [IO.File]::Open($cache, 'Open', 'Read', 'None').Dispose(); break } catch {} }; Start-Sleep -Milliseconds 200 }",
-    '[Console]::Out.Write($cache)',
-  ].join('; ');
+/** Warms the cache a shell under `env` reads, checks a fresh shell finds every module in it, and resolves its path. */
+async function warmPowerShellCache(env: NodeJS.ProcessEnv): Promise<string> {
   const started = Date.now();
-  const { stdout: cache } = await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+  const cache = await runPowerShell(env, WARM_SCRIPT, 'Warming');
+  const warmed = Date.now();
+  await runPowerShell(env, CHECK_SCRIPT, 'Checking');
+  console.log(`Warmed Windows PowerShell's module analysis cache ${cache} in ${((warmed - started) / 1000).toFixed(1)} s, checked in ${((Date.now() - warmed) / 1000).toFixed(1)} s`);
+  return cache;
+}
+
+async function runPowerShell(env: NodeJS.ProcessEnv, script: string, step: string): Promise<string> {
+  const { stdout } = await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
     env,
     encoding: 'utf8',
     timeout: POWERSHELL_WARM_TIMEOUT_MS,
     windowsHide: true,
   }).catch((error: unknown) => {
-    const reason = (error as { killed?: boolean }).killed ? `no save within ${POWERSHELL_WARM_TIMEOUT_MS / 1000} s` : error instanceof Error ? error.message : String(error);
-    throw new Error(`Warming Windows PowerShell's module analysis cache failed: ${reason}`);
+    const reason = (error as { killed?: boolean }).killed ? `not done within ${POWERSHELL_WARM_TIMEOUT_MS / 1000} s` : error instanceof Error ? error.message : String(error);
+    throw new Error(`${step} Windows PowerShell's module analysis cache failed: ${reason}`);
   });
-  console.log(`Warmed Windows PowerShell's module analysis cache ${cache} in ${((Date.now() - started) / 1000).toFixed(1)} s`);
-  return cache;
+  return stdout;
 }
