@@ -4,8 +4,9 @@ import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/p
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CancelledError, ChecksumMismatchError, downloadModel } from "../downloader";
+import { CancelledError, ChecksumMismatchError, DownloadHttpError, downloadModel, EmptyDownloadError } from "../downloader";
 import type { ModelEntry } from "../manifest";
+import { LocalizedError } from "../../../../shared/localized-text";
 
 function sha256OfBytes(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -144,6 +145,82 @@ describe("downloadModel", () => {
     expect(result.status).toBe("ok");
     const written = await readFile(join(versionDir, "model.bin"));
     expect(Array.from(written)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("throws localized errors for a failed, an empty and a mismatched download", async () => {
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const entry = makeEntry({}, body);
+    const run = (fetchImpl: typeof fetch): Promise<unknown> => downloadModel({ entry, modelsRoot: tmp, fetchImpl }).catch((err: unknown) => err);
+
+    const failed = await run(async () => new Response("gone", { status: 503, statusText: "Service Unavailable" }));
+    expect(failed).toBeInstanceOf(DownloadHttpError);
+    expect((failed as LocalizedError).text).toEqual({ message: "Download failed ({0} {1}): {2}", args: ["503", "Service Unavailable", "https://example/model.bin"] });
+
+    const empty = await run(async () => new Response(null, { status: 200 }));
+    expect(empty).toBeInstanceOf(EmptyDownloadError);
+    expect((empty as LocalizedError).text).toEqual({ message: "The download of {0} returned no data.", args: ["https://example/model.bin"] });
+
+    const mismatch = await run(fetchOk(new Uint8Array([4, 3, 2, 1])));
+    expect(mismatch).toBeInstanceOf(ChecksumMismatchError);
+    expect((mismatch as LocalizedError).text.message).toBe("SHA-256 mismatch for {0}: expected {1}…, got {2}…");
+  });
+
+  it("finishes a partial file that already holds the whole verified model without downloading", async () => {
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const versionDir = join(tmp, "parakeet", "v2.0.0");
+    await mkdir(versionDir, { recursive: true });
+    await writeFile(join(versionDir, "model.bin.partial"), body);
+    let fetched = false;
+    const result = await downloadModel({
+      entry: makeEntry({}, body),
+      modelsRoot: tmp,
+      fetchImpl: async () => {
+        fetched = true;
+        return new Response(null, { status: 416 });
+      },
+    });
+    expect(result.status).toBe("ok");
+    expect(fetched).toBe(false);
+    expect(Array.from(await readFile(join(versionDir, "model.bin")))).toEqual([1, 2, 3, 4]);
+    expect(await stat(join(versionDir, "model.bin.partial")).then(() => true, () => false)).toBe(false);
+  });
+
+  it("downloads afresh over a partial file of the full size with the wrong bytes", async () => {
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const versionDir = join(tmp, "parakeet", "v2.0.0");
+    await mkdir(versionDir, { recursive: true });
+    await writeFile(join(versionDir, "model.bin.partial"), Buffer.from([9, 9, 9, 9]));
+    const ranges: Array<string | undefined> = [];
+    await downloadModel({
+      entry: makeEntry({}, body),
+      modelsRoot: tmp,
+      fetchImpl: async (input, init) => {
+        ranges.push((init?.headers as Record<string, string>)["Range"]);
+        return fetchOk(body)(input, init);
+      },
+    });
+    expect(ranges).toEqual([undefined]);
+    expect(Array.from(await readFile(join(versionDir, "model.bin")))).toEqual([1, 2, 3, 4]);
+  });
+
+  it("starts over once when the server holds nothing past the partial file", async () => {
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const versionDir = join(tmp, "parakeet", "v2.0.0");
+    await mkdir(versionDir, { recursive: true });
+    await writeFile(join(versionDir, "model.bin.partial"), Buffer.from([1, 2]));
+    const ranges: Array<string | undefined> = [];
+    const result = await downloadModel({
+      entry: makeEntry({}, body),
+      modelsRoot: tmp,
+      fetchImpl: async (_input, init) => {
+        const range = (init?.headers as Record<string, string>)["Range"];
+        ranges.push(range);
+        return range !== undefined ? new Response(null, { status: 416, statusText: "Range Not Satisfiable" }) : new Response(body);
+      },
+    });
+    expect(result.status).toBe("ok");
+    expect(ranges).toEqual(["bytes=2-", undefined]);
+    expect(Array.from(await readFile(join(versionDir, "model.bin")))).toEqual([1, 2, 3, 4]);
   });
 
   it("waits out a download of the same model in flight and keeps the files it finished", async () => {

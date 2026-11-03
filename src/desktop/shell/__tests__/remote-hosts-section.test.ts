@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia, type Pinia } from 'pinia';
 import { installPlatformBridge } from '@/composables/usePlatformBridge';
+import { canonicalHostColor } from '@shared/host-colors';
+import { THEME_PALETTES } from '../../theme-palettes';
 import { STAGE_FAILED_CODES, type PasswordlessResult, type PasswordlessRun, type PopupAnswer, type RemoteHostEntry, type RemoveServerResult } from '../../preload/overlay-channels';
 import OverlayApp from '../overlay/OverlayApp.vue';
 import { createOverlaySettingsBridge } from '../overlay/settings/overlay-bridge';
@@ -104,6 +106,11 @@ describe('Settings, Remote hosts', () => {
     await flushPromises();
     expect(tab().textContent).toContain('prod-eu');
     expect(tab().querySelector('.d-tone-danger')).not.toBeNull();
+    api.settingsScopeHost({ name: 'prod-eu', color: canonicalHostColor('#00809a99')! });
+    await flushPromises();
+    const dot = tab().querySelector<HTMLElement>('.d-tone-custom')!;
+    expect(dot.style.getPropertyValue('--host-rgb')).toBe('0 128 154');
+    expect(dot.style.getPropertyValue('--host-alpha')).toBe('0.6');
   });
 
   it('lists the saved hosts, shows the first, and holds the global idle limit in its header', async () => {
@@ -189,8 +196,8 @@ describe('Settings, Remote hosts', () => {
   it('picks a color from the palette tones, by click and by arrow key, and clears it with None', async () => {
     await openRemoteHosts();
     const swatches = [...block().querySelectorAll<HTMLElement>('[role="radiogroup"][aria-label="Color"] [role="radio"]')];
-    expect(swatches.map((swatch) => swatch.dataset.tone)).toEqual(['none', 'accent', 'success', 'warning', 'danger', 'info']);
-    expect(swatches.map((swatch) => swatch.getAttribute('tabindex'))).toEqual(['0', '-1', '-1', '-1', '-1', '-1']);
+    expect(swatches.map((swatch) => swatch.dataset.tone)).toEqual(['none', 'accent', 'success', 'warning', 'danger', 'info', 'custom']);
+    expect(swatches.map((swatch) => swatch.getAttribute('tabindex'))).toEqual(['0', '-1', '-1', '-1', '-1', '-1', '-1']);
     swatches[4]!.click();
     await flushPromises();
     expect(api.setHostSetting).toHaveBeenLastCalledWith('h1', { key: 'color', value: 'danger' });
@@ -205,6 +212,228 @@ describe('Settings, Remote hosts', () => {
     block().querySelector<HTMLElement>('[data-tone="none"]')!.click();
     await flushPromises();
     expect(api.setHostSetting).toHaveBeenLastCalledWith('h1', { key: 'color', value: null });
+  });
+
+  describe('custom color', () => {
+    const TEAL = { ...PROD, settings: { ...PROD.settings, color: canonicalHostColor('#00808099')! } };
+    const custom = (): HTMLElement => block().querySelector<HTMLElement>('[data-tone="custom"]')!;
+    const picker = (): HTMLElement | null => $('[data-testid="host-color-picker"]');
+    const hex = (): HTMLInputElement => picker()!.querySelector<HTMLInputElement>('input[aria-label="Hex color"]')!;
+    const areaThumb = (): HTMLElement => picker()!.querySelector<HTMLElement>('[role="slider"][aria-label="Saturation and brightness"]')!;
+    const opacity = (): HTMLElement => picker()!.querySelector<HTMLElement>('[role="slider"][aria-label="Opacity"]')!;
+    const press = (target: Element, type: 'keydown' | 'keyup', key: string): void => {
+      target.dispatchEvent(new KeyboardEvent(type, { key, bubbles: true, cancelable: true }));
+    };
+    const colorWrites = (): unknown[] => vi.mocked(api.setHostSetting).mock.calls.filter(([, change]) => change.key === 'color');
+    // the picker's commits reach main once they pause
+    const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 350));
+    const described = (element: HTMLElement): string => (element.getAttribute('aria-describedby') ?? '').split(' ').map((id) => document.getElementById(id)?.textContent ?? '').join(' ');
+
+    async function openPicker(): Promise<void> {
+      custom().click();
+      await flushPromises();
+      expect(picker()).not.toBeNull();
+    }
+
+    async function typeHex(text: string): Promise<void> {
+      hex().focus();
+      hex().value = text;
+      hex().dispatchEvent(new Event('input', { bubbles: true }));
+      await flushPromises();
+    }
+
+    it('shows a stored custom color on its checked swatch, in its description and in the host picker', async () => {
+      api.remoteHosts.list = [TEAL, WIN];
+      await openRemoteHosts();
+      expect(custom().getAttribute('aria-checked')).toBe('true');
+      expect(custom().getAttribute('aria-label')).toBe('Custom color');
+      expect(described(custom())).toBe('#008080 at 60% opacity Opens a color picker');
+      expect(custom().title).toBe('Custom color: #008080 at 60% opacity');
+      expect(custom().classList.contains('d-tone-custom')).toBe(true);
+      expect(custom().style.getPropertyValue('--host-rgb')).toBe('0 128 128');
+      const dot = $('[data-testid="remote-host-pick"][data-host-id="h1"] span[aria-hidden="true"]')!;
+      expect(dot.classList.contains('d-tone-custom')).toBe(true);
+      expect(dot.style.getPropertyValue('--host-alpha')).toBe(String(0x99 / 255));
+    });
+
+    it('keeps the custom swatch a plain radio, open or closed, and gives focus back to it on Escape', async () => {
+      await openRemoteHosts();
+      const radioOnly = (): string[] => custom().getAttributeNames().filter((name) => name.startsWith('aria-')).sort();
+      expect(radioOnly()).toEqual(['aria-checked', 'aria-describedby', 'aria-label']);
+      expect(described(custom())).toBe('Opens a color picker');
+      await openPicker();
+      expect(radioOnly()).toEqual(['aria-checked', 'aria-describedby', 'aria-label']);
+      expect(picker()!.getAttribute('role')).toBe('dialog');
+      press(areaThumb(), 'keydown', 'Escape');
+      await flushPromises();
+      expect(picker()).toBeNull();
+      expect(document.activeElement).toBe(custom());
+    });
+
+    it('writes the commits once they pause, starting from the stored color', async () => {
+      api.remoteHosts.list = [TEAL, WIN];
+      await openRemoteHosts();
+      await openPicker();
+      expect(hex().value).toBe('#00808099');
+      await typeHex('#FF000080');
+      press(hex(), 'keydown', 'Enter');
+      press(hex(), 'keyup', 'Enter');
+      await flushPromises();
+      expect(custom().style.getPropertyValue('--host-rgb')).toBe('255 0 0');
+      expect(colorWrites()).toEqual([]);
+      await typeHex('#0000ff80');
+      press(hex(), 'keydown', 'Enter');
+      press(hex(), 'keyup', 'Enter');
+      await settle();
+      expect(colorWrites()).toEqual([['h1', { key: 'color', value: '#0000ff80' }]]);
+      press(hex(), 'keydown', 'Escape');
+      await flushPromises();
+      expect(picker()).toBeNull();
+      expect(colorWrites()).toHaveLength(1);
+      expect($('[data-testid="settings-nav-remoteHosts"]')).not.toBeNull();
+    });
+
+    it('writes a held commit at once when the popover closes', async () => {
+      api.remoteHosts.list = [TEAL, WIN];
+      await openRemoteHosts();
+      await openPicker();
+      areaThumb().focus();
+      press(areaThumb(), 'keydown', 'ArrowDown');
+      press(areaThumb(), 'keyup', 'ArrowDown');
+      await flushPromises();
+      const committed = hex().value;
+      expect(colorWrites()).toEqual([]);
+      custom().click();
+      await flushPromises();
+      expect(picker()).toBeNull();
+      expect(colorWrites()).toEqual([['h1', { key: 'color', value: committed }]]);
+    });
+
+    it('drops an unwritten draft on Escape', async () => {
+      api.remoteHosts.list = [TEAL, WIN];
+      await openRemoteHosts();
+      await openPicker();
+      areaThumb().focus();
+      press(areaThumb(), 'keydown', 'ArrowDown');
+      await flushPromises();
+      expect(hex().value).not.toBe('#00808099');
+      press(areaThumb(), 'keydown', 'Escape');
+      await flushPromises();
+      expect(picker()).toBeNull();
+      expect(colorWrites()).toEqual([]);
+      expect(custom().style.getPropertyValue('--host-rgb')).toBe('0 128 128');
+    });
+
+    it('writes nothing for hex typed and then cancelled with Escape, even when the closing field blurs', async () => {
+      api.remoteHosts.list = [TEAL, WIN];
+      await openRemoteHosts();
+      await openPicker();
+      await typeHex('#ff0000');
+      const field = hex();
+      press(field, 'keydown', 'Escape');
+      await flushPromises();
+      expect(picker()).toBeNull();
+      field.dispatchEvent(new FocusEvent('blur'));
+      await settle();
+      expect(colorWrites()).toEqual([]);
+    });
+
+    it('writes an unwritten draft once when the swatch closes the popover', async () => {
+      api.remoteHosts.list = [TEAL, WIN];
+      await openRemoteHosts();
+      await openPicker();
+      areaThumb().focus();
+      press(areaThumb(), 'keydown', 'ArrowDown');
+      await flushPromises();
+      const draft = hex().value;
+      expect(draft).toMatch(/^#[0-9a-f]{8}$/);
+      custom().click();
+      await flushPromises();
+      expect(picker()).toBeNull();
+      expect(colorWrites()).toEqual([['h1', { key: 'color', value: draft }]]);
+    });
+
+    it('writes an unwritten draft once when a press outside closes the popover, and leaves focus there', async () => {
+      api.remoteHosts.list = [TEAL, WIN];
+      await openRemoteHosts();
+      await openPicker();
+      areaThumb().focus();
+      press(areaThumb(), 'keydown', 'ArrowDown');
+      await flushPromises();
+      const draft = hex().value;
+      const outside = block().querySelector<HTMLElement>('[data-tone="none"]')!;
+      outside.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+      await flushPromises();
+      expect(picker()).toBeNull();
+      expect(colorWrites()).toEqual([['h1', { key: 'color', value: draft }]]);
+      expect(document.activeElement).not.toBe(custom());
+    });
+
+    it('starts a host with no color from the accent tone and a tone from its palette value, and closing unchanged writes nothing', async () => {
+      await openRemoteHosts();
+      await openPicker();
+      expect(hex().value).toBe(THEME_PALETTES.dark['--d-accent']);
+      custom().click();
+      await flushPromises();
+      api.remoteHosts.list = [{ ...PROD, settings: { ...PROD.settings, color: 'danger' } }, WIN];
+      api.hostEntries(api.remoteHosts.list);
+      await flushPromises();
+      await openPicker();
+      expect(hex().value).toBe(THEME_PALETTES.dark['--d-danger']);
+      custom().click();
+      await flushPromises();
+      expect(picker()).toBeNull();
+      expect(colorWrites()).toEqual([]);
+    });
+
+    it('reads zero opacity as no color: None shows checked and the write clears the color', async () => {
+      api.remoteHosts.list = [TEAL, WIN];
+      await openRemoteHosts();
+      await openPicker();
+      opacity().focus();
+      press(opacity(), 'keydown', 'Home');
+      press(opacity(), 'keyup', 'Home');
+      await flushPromises();
+      expect(block().querySelector('[data-tone="none"]')!.getAttribute('aria-checked')).toBe('true');
+      expect(custom().getAttribute('aria-checked')).toBe('false');
+      expect($('[data-testid="host-color-transparent"]')?.closest('[role="status"]')).not.toBeNull();
+      custom().click();
+      await flushPromises();
+      expect(colorWrites()).toEqual([['h1', { key: 'color', value: null }]]);
+    });
+
+    it('writes a held commit to the host it was made on when another host is selected, and closes the picker', async () => {
+      api.remoteHosts.list = [TEAL, WIN];
+      await openRemoteHosts();
+      await openPicker();
+      await typeHex('#ff000080');
+      press(hex(), 'keydown', 'Enter');
+      press(hex(), 'keyup', 'Enter');
+      await flushPromises();
+      const field = hex();
+      await typeHex('#00ff0080');
+      api.settingsTarget({ section: 'remoteHosts', host: 'h2' });
+      await flushPromises();
+      expect(block().dataset.hostId).toBe('h2');
+      expect(picker()).toBeNull();
+      field.dispatchEvent(new FocusEvent('blur'));
+      await settle();
+      expect(colorWrites()).toEqual([['h1', { key: 'color', value: '#ff000080' }]]);
+      expect(custom().getAttribute('aria-checked')).toBe('false');
+    });
+
+    it('arrows onto the custom swatch without writing or opening it', async () => {
+      await openRemoteHosts();
+      const info = block().querySelector<HTMLElement>('[data-tone="info"]')!;
+      info.click();
+      await flushPromises();
+      vi.mocked(api.setHostSetting).mockClear();
+      press(info, 'keydown', 'ArrowRight');
+      await flushPromises();
+      expect(document.activeElement).toBe(custom());
+      expect(picker()).toBeNull();
+      expect(colorWrites()).toEqual([]);
+    });
   });
 
   it('renames the host through main\'s validator', async () => {

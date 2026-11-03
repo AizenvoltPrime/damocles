@@ -1,11 +1,11 @@
 import { readonly, shallowRef, type Ref } from 'vue';
 import type { BridgeHost } from '@shared/damocles-bridge';
-import { isHostTone, type HostTone } from '@shared/host-tones';
+import { isHostColor, type HostColor } from '@shared/host-colors';
 
 export interface ChatHost {
   readonly name: string;
   // its safety color
-  readonly color?: HostTone;
+  readonly color?: HostColor;
   // this computer's name, for the user's own sign-in
   readonly computer: string;
   // the host is offline or waits for the user to sign in
@@ -27,7 +27,7 @@ export function useChatHost(): Readonly<Ref<ChatHost | undefined>> {
     // subscribed first: a read made before main answers the page's init learns the host once it does
     const shown = (label: BridgeHost): ChatHost => ({
       name: label.name,
-      ...(isHostTone(label.color) ? { color: label.color } : {}),
+      ...(isHostColor(label.color) ? { color: label.color } : {}),
       computer: label.computer,
       ...(label.attention !== undefined ? { attention: label.attention } : {}),
       ...(label.update !== undefined ? { update: label.update } : {}),

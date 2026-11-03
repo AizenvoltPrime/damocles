@@ -188,11 +188,11 @@ describe('this computer\'s clientAuth snapshot', () => {
     const auth = vi.fn();
     const stopAuth = PiRuntime.onClientAuthChange(auth);
     // no sign-in, so the key stays applied whatever the flag says
-    await platform().state.global.update('damocles.xai.preferApiKey', true);
+    await platform().settings.update('damocles.xai.preferApiKey', true, 'user');
     await runtime.syncCustomProviders(xaiKey);
     stopAuth();
     expect(auth).toHaveBeenCalled();
-    await platform().state.global.update('damocles.openai.preferApiKey', true);
+    await platform().settings.update('damocles.openai.preferApiKey', true, 'user');
     const snapshot = await runtime.clientAuthSnapshot();
     expect([snapshot.providers['xai']?.preferApiKey, snapshot.providers['openai']?.preferApiKey]).toEqual([true, true]);
     expect(snapshot.providers['deepseek']).not.toHaveProperty('preferApiKey');
@@ -242,20 +242,20 @@ describe('OpenAI account state on a daemon\'s core', () => {
     expect(pinnedToA).toBe(true);
   });
 
-  it('reads the prefer-API-key flags of the client it reads as, never the acting client\'s state mirror', async () => {
+  it('reads the prefer-API-key flags of the client it reads as, never a setting of its host', async () => {
     const host = createFakeRemoteHost();
     const fake = createFakePlatform();
     installPlatform({ ...fake, remote: host.remote });
-    await fake.state.global.update('damocles.openai.preferApiKey', true);
-    await fake.state.global.update('damocles.xai.preferApiKey', true);
+    await fake.settings.update('damocles.openai.preferApiKey', true, 'user');
+    await fake.settings.update('damocles.xai.preferApiKey', true, 'user');
     const signedInWithKey = { type: 'oauth', expires: 9_999_999_999_999, hasKey: true, flatFee: false } as const;
     host.set('clientAuth', 'client-a', { providers: { openai: { ...signedInWithKey, preferApiKey: true }, xai: { ...signedInWithKey, preferApiKey: true } } });
     host.set('clientAuth', 'client-b', { providers: { openai: signedInWithKey, xai: signedInWithKey } });
     host.setActing('client-a');
     const runtime = PiRuntime.get(agentDir);
 
-    const flags = (clientId: string) => asClient(host.remote, clientId, () => [runtime.preferOpenAIApiKey(), runtime.preferProviderApiKey('xai')]);
-    expect([flags('client-a'), flags('client-b')]).toEqual([[true, true], [false, false]]);
+    const flags = (clientId: string) => asClient(host.remote, clientId, async () => [runtime.preferOpenAIApiKey(), (await providerAuthStatus(platform(), 'xai'))?.preferApiKey]);
+    expect([await flags('client-a'), await flags('client-b')]).toEqual([[true, true], [false, false]]);
     await PiRuntime.disposeInstance();
     // before pi starts, the judge reads them too: the preferred key is the request credential, else the sign-in is
     const judge = (clientId: string) => asClient(host.remote, clientId, () => memoryJudgeStatus(platform())).then((status) => status.classifierCredentials.openai);

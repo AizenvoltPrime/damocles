@@ -8,17 +8,19 @@ import type { Disposable } from '../../../../platform/disposable';
 import { hostExtras } from '../../core-services/__tests__/host-deps';
 import { createDesktopNotificationService } from '../../platform/notification-service';
 import { namespacedSecrets, remoteServices } from '../remote-services';
+import { OutsideFilesUnsupportedError } from '../../workspace/remote-workspace';
 
 const none = (): Disposable => ({ dispose: () => undefined });
 const PROJECT = { key: 'loopback|/srv/app', fsPath: '/srv/app', name: 'app' };
 
-function services(wslDistro?: string) {
+function services(wslDistro?: string, openPlan: (targetPath: string) => Promise<boolean> = async () => false) {
   const main = createFakePlatform({ chatBrowserPane: true });
   const logged: string[] = [];
   const reviews: unknown[] = [];
   const previews: unknown[] = [];
   const settingsFiles: unknown[] = [];
   const opened: unknown[] = [];
+  const plans: unknown[] = [];
   const shown: unknown[] = [];
   const notices: unknown[] = [];
   const diffs: unknown[] = [];
@@ -50,6 +52,10 @@ function services(wslDistro?: string) {
     trust: { trustedKeys: () => [], onDidGrant: none, requestTrust: async () => false },
     openInEditor: async (...args) => {
       opened.push(args);
+    },
+    openPlan: async (...args) => {
+      plans.push(args);
+      return openPlan(args[0]);
     },
     showLog: (...args) => shown.push(args),
     showDiff: async (request) => {
@@ -83,7 +89,7 @@ function services(wslDistro?: string) {
     base: { terminalToggle: () => ({ shown: false, shortcut: '' }), createView: () => { throw new Error('no view'); }, git: { available: true }, e2eHooks: false, ...hostExtras(), log: (line) => logged.push(line) },
     t: (message, ...args) => args.reduce((text, arg, index) => text.replace(`{${index}}`, arg), message),
   });
-  return { deps, main, opened, shown, notices, diffs, logged, reviews, previews, settingsFiles, picks, links, runs };
+  return { deps, main, opened, plans, shown, notices, diffs, logged, reviews, previews, settingsFiles, picks, links, runs };
 }
 
 describe('a remote core\'s services', () => {
@@ -180,6 +186,30 @@ describe('a remote core\'s services', () => {
     await expect(deps.platform.editor.openFile('/home/me/.ssh/id_rsa')).rejects.toThrow(new Error('/home/me/.ssh/id_rsa is not in an open project'));
     await expect(deps.platform.editor.readText('/etc/passwd')).rejects.toThrow(new Error('/etc/passwd is not in an open project'));
     await expect(deps.platform.editor.readText('/srv/app/a.ts')).resolves.toBe('text');
+  });
+
+  it('opens a path outside the host\'s projects only through the host\'s plans rule, and refuses every other one as before', async () => {
+    const plan = '/home/me/.damocles/plans/fix-it-0123abcd.md';
+    const accepted = services(undefined, async (target) => target === plan);
+    await accepted.deps.platform.editor.openFile(plan, { line: 4, preserveFocus: true });
+    expect(accepted.plans).toEqual([[plan, 4, false]]);
+    expect(accepted.opened).toEqual([]);
+    for (const target of ['/home/me/.bashrc', '/home/me/.damocles/plans/notes.txt']) {
+      await expect(accepted.deps.platform.editor.openFile(target)).rejects.toThrow(new Error(`${target} is not in an open project`));
+    }
+    // a project file never reaches the plans rule
+    await accepted.deps.platform.editor.openFile('/srv/app/src/a.ts');
+    expect(accepted.plans.map((args) => (args as unknown[])[0])).toEqual([plan, '/home/me/.bashrc', '/home/me/.damocles/plans/notes.txt']);
+    expect(accepted.opened).toEqual([['loopback|/srv/app', 'src/a.ts', undefined, true]]);
+  });
+
+  it('refuses a plan path as before when the host\'s daemon does not carry files outside its projects, and says why in the log', async () => {
+    const plan = '/home/me/.damocles/plans/fix-it-0123abcd.md';
+    const { deps, logged } = services(undefined, async () => { throw new OutsideFilesUnsupportedError('loopback'); });
+    await expect(deps.platform.editor.openFile(plan)).rejects.toThrow(new Error(`${plan} is not in an open project`));
+    expect(logged).toEqual([`[remote] loopback's daemon opens no file outside its projects, so ${plan} stays closed`]);
+    const failing = services(undefined, async () => { throw new Error('the connection ended'); });
+    await expect(failing.deps.platform.editor.openFile(plan)).rejects.toThrow('the connection ended');
   });
 
   it('shows notifications through the host-labeled notices, never this computer\'s own', async () => {

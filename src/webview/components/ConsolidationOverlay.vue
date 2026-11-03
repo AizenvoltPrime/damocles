@@ -13,12 +13,14 @@ import { useConsolidationStore } from '@/stores/useConsolidationStore';
 import { useRelativeTime } from '@/composables/useRelativeTime';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useOpenSettings } from '@/composables/useOpenSettings';
+import { useMemoryScopeLabel } from '@/composables/useMemoryScopeLabel';
 import { folderName } from '@/lib/folder-name';
 import type { ConsolidationPersistOutcome } from '@shared/types/consolidation';
 import { MAX_FAILED_ANSWERS } from '@shared/consolidation';
 
 const emit = defineEmits<{ (e: 'close'): void }>();
 const { t, te } = useI18n();
+const { scopeLabel } = useMemoryScopeLabel();
 
 const store = useConsolidationStore();
 const { pendingCandidates, isRunning, lastResult, runPass, runSoFar, phase, phaseMeta, persistProgress, setAsideCount: storedSetAside } =
@@ -405,7 +407,7 @@ function toggleQueue(): void {
           >
             <div class="flex min-w-0 items-center gap-1.5 text-10.5">
               <span class="rounded-5 bg-(--d-accent-soft) px-1.5 leading-4.25 font-semibold text-(--d-accent-text)">{{ te(`memory.kind.${m.kind}`) ? t(`memory.kind.${m.kind}`) : m.kind }}</span>
-              <span class="rounded-5 bg-(--d-hover) px-1.5 leading-4.25 text-(--d-muted)">{{ te(`memory.scope.${m.scope}`) ? t(`memory.scope.${m.scope}`) : m.scope }}</span>
+              <span class="rounded-5 bg-(--d-hover) px-1.5 leading-4.25 text-(--d-muted)">{{ scopeLabel(m.scope) }}</span>
               <span
                 v-if="m.workspace"
                 class="min-w-0 truncate text-(--d-faint)"

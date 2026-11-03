@@ -132,19 +132,19 @@ describe('notification center: prompts', () => {
     notifications.activity('host-1', activity(prompt('t1', 'approval')));
     await settle();
     void notifications.notice('info', 'prod-1\'s Damocles server restarted', [], { name: 'prod-1' });
-    void notifications.notice('info', 'another host', [], { name: 'dev-1', tone: 'success' });
-    notifications.relabelHost('prod-1', { name: 'PROD', tone: 'danger' });
+    void notifications.notice('info', 'another host', [], { name: 'dev-1', color: 'success' });
+    notifications.relabelHost('prod-1', { name: 'PROD', color: 'danger' });
     const bodies = notifications.state().entries.map((entry) => entry.body);
     expect(bodies).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'approval', chat: expect.objectContaining({ host: 'PROD', hostTone: 'danger' }) }),
-      expect.objectContaining({ kind: 'notice', message: 'prod-1\'s Damocles server restarted', host: 'PROD', hostTone: 'danger' }),
-      expect.objectContaining({ kind: 'notice', message: 'another host', host: 'dev-1', hostTone: 'success' }),
+      expect.objectContaining({ kind: 'approval', chat: expect.objectContaining({ host: 'PROD', hostColor: 'danger' }) }),
+      expect.objectContaining({ kind: 'notice', message: 'prod-1\'s Damocles server restarted', host: 'PROD', hostColor: 'danger' }),
+      expect.objectContaining({ kind: 'notice', message: 'another host', host: 'dev-1', hostColor: 'success' }),
     ]));
     // the showing toasts are sent again with the host as it is now
-    expect(shown.filter((toast) => JSON.stringify(toast).includes('"hostTone":"danger"')).length).toBeGreaterThanOrEqual(2);
-    // a recolor back to no color drops the tone
+    expect(shown.filter((toast) => JSON.stringify(toast).includes('"hostColor":"danger"')).length).toBeGreaterThanOrEqual(2);
+    // a recolor back to no color drops the field
     notifications.relabelHost('PROD', { name: 'PROD' });
-    expect(notifications.state().entries.some((entry) => JSON.stringify(entry.body).includes('hostTone":"danger'))).toBe(false);
+    expect(notifications.state().entries.some((entry) => JSON.stringify(entry.body).includes('hostColor":"danger'))).toBe(false);
   });
 
   it('withdraws a resolved prompt\'s popup and keeps its entry', async () => {
@@ -807,14 +807,14 @@ describe('notification actions', () => {
 
 describe('notification center: link requests', () => {
   const URL_TEXT = 'https://github.com/login/device';
-  const PROD = { name: 'prod-1', tone: 'danger' as const };
+  const PROD = { name: 'prod-1', color: 'danger' as const };
   const toastOf = (): OverlayToast => shown.at(-1)!;
 
   it('shows a sticky link toast whatever silences popups, and answers open only for its Open', async () => {
     dnd = true;
     const notifications = center();
     const { answer } = notifications.linkRequest(PROD, URL_TEXT);
-    expect(toastOf()).toMatchObject({ body: { kind: 'link', host: 'prod-1', hostTone: 'danger', url: URL_TEXT }, sticky: true });
+    expect(toastOf()).toMatchObject({ body: { kind: 'link', host: 'prod-1', hostColor: 'danger', url: URL_TEXT }, sticky: true });
     expect(notifications.isLinkRequest(toastOf().id)).toBe(true);
     vi.advanceTimersByTime(NOTICE_LIFE_MS.withActions * 10);
     expect(dismissed).toEqual([]);
@@ -869,7 +869,7 @@ describe('notification center: link requests', () => {
     await expect(request.answer).resolves.toBe('dismissed');
     expect(dismissed).toEqual([id]);
     expect(notifications.isLinkRequest(id)).toBe(false);
-    expect(notifications.state().entries.map((entry) => entry.body)).toEqual([{ kind: 'link', host: 'prod-1', hostTone: 'danger', url: URL_TEXT }]);
+    expect(notifications.state().entries.map((entry) => entry.body)).toEqual([{ kind: 'link', host: 'prod-1', hostColor: 'danger', url: URL_TEXT }]);
     notifications.resolveToast(id, TOAST_OPEN_ACTION);
     await expect(request.answer).resolves.toBe('dismissed');
   });

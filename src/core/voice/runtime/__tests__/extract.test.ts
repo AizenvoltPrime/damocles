@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import type { ExtractWorkerData } from "../extract-protocol";
 import { isSafeEntry } from "../extract-worker";
 import { CancelledError, extractTarball, extractWorkerAt, type ExtractWorkerFactory } from "../python-installer";
+import { LocalizedError } from "../../../../shared/localized-text";
 
 let bundleDir: string;
 let workerPath: string;
@@ -161,6 +162,17 @@ describe("extractTarball", () => {
 
     await expect(run).rejects.toBeInstanceOf(CancelledError);
     expect(await exited).toBe(1);
+    expect(await exists(join(tmp, "python"))).toBe(false);
+  });
+
+  it("rejects with a localized error and removes the partial python folder when the worker exits without answering", async () => {
+    await mkdir(join(tmp, "python", "lib"), { recursive: true });
+    const factory: ExtractWorkerFactory = () => new Worker("process.exit(3)", { eval: true });
+
+    const failure = await extractTarball(join(tmp, "python.tar.gz"), tmp, undefined, factory).catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(LocalizedError);
+    expect((failure as LocalizedError).text).toEqual({ message: "The voice runtime could not be extracted: the helper exited with code {0}.", args: ["3"] });
     expect(await exists(join(tmp, "python"))).toBe(false);
   });
 

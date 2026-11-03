@@ -223,7 +223,8 @@ export const MAIN_CORE_IMPORTS = [
   'pi-session/explore-providers',
   // the MCP OAuth callback port, which main's forwards never bind
   'pi-session/mcp/oauth-callback-port',
-  'pi-session/openai-auth',
+  // PREFER_API_KEY_SETTINGS: flags that reach a remote core only in clientAuth, never as relayed user settings
+  'pi-session/provider-auth',
   // childEnv: git's environment without the repository-local variables
   'pi-session/checkpoints/exec',
   'pi-session/usage-thresholds',

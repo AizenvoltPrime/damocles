@@ -1266,6 +1266,69 @@
           ],
           "default": "",
           "description": "%configuration.memory.judgeEffort.description%"
+        },
+        "damocles.openai.preferApiKey": {
+          "scope": "application",
+          "ignoreSync": true,
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.openai.preferApiKey.description%"
+        },
+        "damocles.deepseek.preferApiKey": {
+          "scope": "application",
+          "ignoreSync": true,
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.deepseek.preferApiKey.description%"
+        },
+        "damocles.stepfun.preferApiKey": {
+          "scope": "application",
+          "ignoreSync": true,
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.stepfun.preferApiKey.description%"
+        },
+        "damocles.minimax.preferApiKey": {
+          "scope": "application",
+          "ignoreSync": true,
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.minimax.preferApiKey.description%"
+        },
+        "damocles.xai.preferApiKey": {
+          "scope": "application",
+          "ignoreSync": true,
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.xai.preferApiKey.description%"
+        },
+        "damocles.kimi-coding.preferApiKey": {
+          "scope": "application",
+          "ignoreSync": true,
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.kimi-coding.preferApiKey.description%"
+        },
+        "damocles.meta.preferApiKey": {
+          "scope": "application",
+          "ignoreSync": true,
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.meta.preferApiKey.description%"
+        },
+        "damocles.openrouter.preferApiKey": {
+          "scope": "application",
+          "ignoreSync": true,
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.openrouter.preferApiKey.description%"
+        },
+        "damocles.typesafe.preferApiKey": {
+          "scope": "application",
+          "ignoreSync": true,
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.typesafe.preferApiKey.description%"
         }
       }
     }

@@ -1,17 +1,17 @@
 import { readonly, shallowRef, type Ref } from 'vue';
 import type { BridgeHostName } from '@shared/damocles-bridge';
-import { isHostTone, type HostTone } from '@shared/host-tones';
+import { isHostColor, type HostColor } from '@shared/host-colors';
 
 export interface HostName {
   readonly name: string;
-  readonly color?: HostTone;
+  readonly color?: HostColor;
 }
 
 const names = shallowRef<ReadonlyMap<string, HostName> | undefined>(undefined);
 let watching = false;
 
 function shown(map: Readonly<Record<string, BridgeHostName>>): ReadonlyMap<string, HostName> {
-  return new Map(Object.entries(map).map(([hostId, entry]) => [hostId, { name: entry.name, ...(isHostTone(entry.color) ? { color: entry.color } : {}) }]));
+  return new Map(Object.entries(map).map(([hostId, entry]) => [hostId, { name: entry.name, ...(isHostColor(entry.color) ? { color: entry.color } : {}) }]));
 }
 
 /**

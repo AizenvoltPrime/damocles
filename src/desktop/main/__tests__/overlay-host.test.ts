@@ -4,7 +4,7 @@ const H = vi.hoisted(() => ({ webPreferences: [] as unknown[] }));
 
 vi.mock('electron', async () => (await import('./fake-overlay-electron')).fakeOverlayElectron(H.webPreferences));
 
-import { MAX_MESSAGE_ACTIONS, OVERLAY_ACK_TIMEOUT_MS, OVERLAY_CHANNELS, type OverlayRasterRequest, type OverlayRequest, type RasterArt } from '../../preload/overlay-channels';
+import { MAX_MESSAGE_ACTIONS, OVERLAY_ACK_TIMEOUT_MS, OVERLAY_CHANNELS, OVERLAY_REQUEST_PUSHES, type OverlayRasterRequest, type OverlayRequest, type RasterArt } from '../../preload/overlay-channels';
 import { OverlayHost, overlayHtml, parseMessageRequest, parseOverlayAnswer, parseOverlayRequest, RASTER_TIMEOUT_MS } from '../overlay';
 import { OVERLAY_PAGE_URL, resolveAppRequest } from '../protocol';
 import { fakeOverlayWindow, type FakeOverlayView } from './fake-overlay-electron';
@@ -51,9 +51,31 @@ function loaded(): void {
   view().webContents.emit('did-finish-load');
 }
 
+function sentKinds(): string[] {
+  return view().webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_CHANNELS.request).map(([, payload]) => (payload as { request: OverlayRequest }).request.kind);
+}
+
 function lastRequestId(): string {
   const sent = view().webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_CHANNELS.request);
   return (sent.at(-1)?.[1] as { requestId: string }).requestId;
+}
+
+// The page acknowledges the last request and reports it rendered, as OverlayApp does; resolves its id.
+function onScreen(): string {
+  const id = lastRequestId();
+  emit(OVERLAY_CHANNELS.ack, own(), id);
+  emit(OVERLAY_CHANNELS.shown, own(), id);
+  return id;
+}
+
+function outcome(promise: Promise<unknown>): { value?: unknown; error?: Error } {
+  const result: { value?: unknown; error?: Error } = {};
+  promise.then((value) => (result.value = value), (err: Error) => (result.error = err));
+  return result;
+}
+
+function cancelled(): string[] {
+  return view().webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_CHANNELS.cancel).map(([, id]) => id as string);
 }
 
 // Blocks main's event loop for `ms`: the fake clock jumps and each timer that came due fires once, as Node runs them
@@ -103,12 +125,14 @@ describe('overlay page', () => {
     expect(OVERLAY_PAGE_URL).toBe('app://damocles/overlay/index.html');
     expect(resolveAppRequest(OVERLAY_PAGE_URL, process.cwd())).toEqual({ kind: 'overlay' });
     expect(resolveAppRequest('app://damocles/overlay/other.html', process.cwd())).toBeUndefined();
-    const html = overlayHtml({ kind: 'dark', css: ':root{}', reducedMotion: false, fileIconTheme: 'material' });
+    const html = overlayHtml({ kind: 'dark', css: ':root{}', reducedMotion: false, fileIconTheme: 'material' }, 'el');
     const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html)?.[1] ?? '';
     const nonce = /'nonce-([^']+)'/.exec(csp)?.[1];
     expect(csp).toBe(`default-src 'none'; style-src app://damocles 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src app://damocles; img-src app://damocles data:; base-uri 'none'; form-action 'none';`);
     expect(html).toContain(`<script nonce="${nonce}" type="module" src="app://damocles/desktop-shell/assets/overlay.js"></script>`);
     expect(html).toContain('<link href="app://damocles/desktop-shell/assets/overlay.css" rel="stylesheet">');
+    // The page's first script reads the language from here, so a Greek overlay's first dialog is never English.
+    expect(html).toContain('<html lang="el" data-file-icon-theme="material">');
   });
 
   it('runs sandboxed and isolated and never takes focus by loading', () => {
@@ -370,17 +394,11 @@ describe('overlay page reload', () => {
     return view().webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_CHANNELS.request).length;
   }
 
-  function outcome(promise: Promise<unknown>): { value?: unknown; error?: Error } {
-    const result: { value?: unknown; error?: Error } = {};
-    promise.then((value) => (result.value = value), (err: Error) => (result.error = err));
-    return result;
-  }
-
   it('rejects the requests open when the page reloads, as a crash does, and hides the overlay', async () => {
     loaded();
     const shown = vi.fn();
     const settings = outcome(host.request(SETTINGS, returnFocus as never, shown));
-    emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
+    onScreen();
     const question = outcome(host.request(QUESTION, undefined));
     reloadCommits();
     await vi.advanceTimersByTimeAsync(0);
@@ -388,7 +406,7 @@ describe('overlay page reload', () => {
     expect(question.error?.message).toBe('The overlay page reloaded');
     expect(host.mode).toBe('hidden');
     expect(returnFocus.focus).toHaveBeenCalledTimes(1);
-    expect(shown).not.toHaveBeenCalled();
+    expect(shown).toHaveBeenCalledTimes(1);
     expect(lines).toContain('[overlay] the page reloaded');
   });
 
@@ -585,7 +603,7 @@ describe('overlay page reload', () => {
     expect(ready).toBe(true);
   });
 
-  it('keeps one held popup as it keeps one open: a later request dismisses an earlier one, a message dialog stays', async () => {
+  it('keeps one held popup as it keeps one open: a later request dismisses an earlier one, a message dialog stays, and one held after it waits for it', async () => {
     loaded();
     reloadCommits();
     const menu = outcome(host.request(MENU, returnFocus as never));
@@ -596,11 +614,14 @@ describe('overlay page reload', () => {
     expect(sentRequests()).toBe(0);
 
     view().webContents.emit('did-finish-load');
-    const sent = view().webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_CHANNELS.request).map(([, payload]) => (payload as { request: OverlayRequest }).request.kind);
-    expect(sent).toEqual(['message', 'settings']);
+    expect(sentKinds()).toEqual(['message']);
     expect(host.isOpen('message')).toBe(true);
+    expect(host.isOpen('settings')).toBe(false);
+    emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'message', action: 0 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(question.value).toEqual({ kind: 'message', action: 0 });
+    expect(sentKinds()).toEqual(['message', 'settings']);
     expect(host.isOpen('settings')).toBe(true);
-    void question;
     void settings;
   });
 
@@ -697,7 +718,7 @@ describe('overlay focus', () => {
       closedBeforeFocusReturned = closings;
     });
     const menu = host.request(MENU, returnFocus as never);
-    const menuId = lastRequestId();
+    const menuId = onScreen();
     const question = host.request({ kind: 'message', severity: 'danger', message: 'The window stopped working.', actions: ['Reload Window'], cancelLabel: 'Close' }, undefined);
     expect(activations).toBe(2);
     emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'message', action: 0 });
@@ -1006,12 +1027,13 @@ const QUESTION: Extract<OverlayRequest, { kind: 'message' }> = {
   cancelLabel: "Don't Trust",
 };
 const SETTINGS: OverlayRequest = { kind: 'settings', generation: 1 };
+const HOST_CARD: OverlayRequest = { kind: 'connect', hostId: 'h1', card: 'show', hosts: [], distros: [], sshConfigAliases: [] };
 
 describe('overlay message dialogs (D41)', () => {
   it('stack above an open request instead of dismissing it, and focus returns once both closed', async () => {
     loaded();
     const settings = host.request(SETTINGS, returnFocus as never);
-    const settingsId = lastRequestId();
+    const settingsId = onScreen();
     const question = host.request(QUESTION, view().webContents as never);
     const questionId = lastRequestId();
     expect(questionId).not.toBe(settingsId);
@@ -1031,7 +1053,7 @@ describe('overlay message dialogs (D41)', () => {
   it('hold Allow YOLO above the settings modal that asked, and take a malformed answer as a dismissal', async () => {
     loaded();
     const settings = host.request(SETTINGS, returnFocus as never);
-    const settingsId = lastRequestId();
+    const settingsId = onScreen();
     const request: OverlayRequest = { kind: 'allowYolo', hostName: 'prod', anchor: { x: 900, y: 400, width: 36, height: 20 } };
     const ask = host.request(request, undefined);
     expect(host.isOpen('settings')).toBe(true);
@@ -1046,23 +1068,220 @@ describe('overlay message dialogs (D41)', () => {
     await expect(settings).resolves.toEqual({ kind: 'settings', closed: true });
   });
 
-  it('stay open when another popup replaces the open one', async () => {
+  // A popup under a question's scrim could not be used, and a click on its margin would answer the question.
+  it('keep a popup asked for while one is open waiting, and show it once the last of them settles, with its own focus target and shown', async () => {
     loaded();
+    const asker = { focus: vi.fn(), isDestroyed: () => false };
     const question = host.request(QUESTION, returnFocus as never);
+    const questionId = lastRequestId();
+    const shown = vi.fn();
+    const card = host.request(HOST_CARD, asker as never, shown);
+    expect(sentKinds()).toEqual(['message']);
+    expect(host.isOpen('connect')).toBe(false);
+    const second = host.request({ ...QUESTION, message: 'Remove the project?' }, undefined);
+    const secondId = lastRequestId();
+
+    emit(OVERLAY_CHANNELS.answer, own(), questionId, { kind: 'message', action: 0 });
+    await expect(question).resolves.toEqual({ kind: 'message', action: 0 });
+    expect(host.isOpen('connect')).toBe(false);
+    emit(OVERLAY_CHANNELS.answer, own(), secondId, { kind: 'message', action: null });
+    await expect(second).resolves.toEqual({ kind: 'message', action: null });
+    expect(sentKinds()).toEqual(['message', 'message', 'connect']);
+    expect(host.isOpen('connect')).toBe(true);
+    // the overlay never hid between them, so focus stayed in it
+    expect(host.mode).toBe('full');
+    expect(closings).toBe(0);
+    expect(returnFocus.focus).not.toHaveBeenCalled();
+
+    const cardId = lastRequestId();
+    emit(OVERLAY_CHANNELS.ack, own(), cardId);
+    emit(OVERLAY_CHANNELS.shown, own(), cardId);
+    expect(shown).toHaveBeenCalledTimes(1);
+    emit(OVERLAY_CHANNELS.answer, own(), cardId, { kind: 'dismissed' });
+    await expect(card).resolves.toEqual({ kind: 'dismissed' });
+    expect(host.mode).toBe('hidden');
+    expect(asker.focus).toHaveBeenCalledTimes(1);
+    expect(returnFocus.focus).not.toHaveBeenCalled();
+  });
+
+  it('replace a waiting popup with a later one, settle a withdrawn or dismissed one dismissed, and show none of them', async () => {
+    loaded();
+    const settings = host.request(SETTINGS, returnFocus as never);
+    onScreen();
+    const question = host.request(QUESTION, undefined);
+    const questionId = lastRequestId();
     const menu = host.request(MENU, undefined);
-    const replacement = host.request(MENU, undefined);
+    await expect(settings).resolves.toEqual({ kind: 'dismissed' });
+    const withdrawn = new AbortController();
+    const quickOpen = host.request({ kind: 'quickOpen', mode: 'files' }, undefined, undefined, undefined, withdrawn.signal);
     await expect(menu).resolves.toEqual({ kind: 'dismissed' });
+    withdrawn.abort();
+    await expect(quickOpen).resolves.toEqual({ kind: 'dismissed' });
+    const card = host.request(HOST_CARD, undefined);
+    host.dismiss('connect');
+    await expect(card).resolves.toEqual({ kind: 'dismissed' });
     expect(host.isOpen('message')).toBe(true);
+
+    emit(OVERLAY_CHANNELS.answer, own(), questionId, { kind: 'message', action: 0 });
+    await expect(question).resolves.toEqual({ kind: 'message', action: 0 });
+    expect(sentKinds()).toEqual(['settings', 'message']);
+    expect(host.mode).toBe('hidden');
+    expect(returnFocus.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it('show a waiting popup when its question is withdrawn', async () => {
+    loaded();
+    const withdrawn = new AbortController();
+    const question = host.request(QUESTION, undefined, undefined, undefined, withdrawn.signal);
+    const card = host.request(HOST_CARD, undefined);
+    withdrawn.abort();
+    await expect(question).resolves.toEqual({ kind: 'dismissed' });
+    expect(host.isOpen('connect')).toBe(true);
+    expect(host.mode).toBe('full');
     emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'dismissed' });
-    await expect(replacement).resolves.toEqual({ kind: 'dismissed' });
+    await expect(card).resolves.toEqual({ kind: 'dismissed' });
+  });
+
+  // The waiting popup was never sent to the dead page, as a request made after the crash is not.
+  it('keep a waiting popup through a crash the page reloads after, and send it to the reloaded page; reject it when none will load', async () => {
+    loaded();
+    const question = host.request(QUESTION, undefined);
+    const shown = vi.fn();
+    const card = outcome(host.request(HOST_CARD, returnFocus as never, shown));
+    view().webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 });
+    await expect(question).rejects.toThrow('The overlay page stopped');
+    expect(card).toEqual({});
+    expect(host.isWaiting('connect')).toBe(true);
+    view().webContents.emit('did-finish-load');
+    expect(sentKinds()).toEqual(['message', 'connect']);
+    onScreen();
+    expect(shown).toHaveBeenCalledTimes(1);
+    emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'dismissed' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(card.value).toEqual({ kind: 'dismissed' });
+
+    const next = outcome(host.request(QUESTION, undefined));
+    const waiting = outcome(host.request(HOST_CARD, undefined));
+    view().webContents.emit('render-process-gone', {}, { reason: 'clean-exit', exitCode: 0 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(next.error?.message).toBe('The overlay page stopped');
+    expect(waiting.error?.message).toBe('The overlay page stopped');
+  });
+
+  // A question's caller that asks again at once must not find the popup released for the first answer under its next one.
+  it('take a popup the page has not shown back behind a question that opens, and send it again once that one settles', async () => {
+    loaded();
+    const asker = { focus: vi.fn(), isDestroyed: () => false };
+    const shown = vi.fn();
+    const first = host.request(QUESTION, undefined);
+    const firstId = lastRequestId();
+    const card = outcome(host.request(HOST_CARD, asker as never, shown));
+    let followUpId = '';
+    const followUp = first.then(() => {
+      const asked = host.request({ ...QUESTION, message: 'Remove the project?' }, undefined);
+      followUpId = lastRequestId();
+      return asked;
+    });
+    emit(OVERLAY_CHANNELS.answer, own(), firstId, { kind: 'message', action: 0 });
+    await vi.advanceTimersByTimeAsync(0);
+    const releasedId = view().webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_CHANNELS.request)[1]![1] as { requestId: string };
+    expect(sentKinds()).toEqual(['message', 'connect', 'message']);
+    expect(cancelled()).toContain(releasedId.requestId);
+    expect(host.isOpen('connect')).toBe(false);
+    expect(host.isWaiting('connect')).toBe(true);
+    // the page's late reports for the request it was told to drop count for nothing
+    emit(OVERLAY_CHANNELS.ack, own(), releasedId.requestId);
+    emit(OVERLAY_CHANNELS.shown, own(), releasedId.requestId);
+    expect(shown).not.toHaveBeenCalled();
+
+    emit(OVERLAY_CHANNELS.answer, own(), followUpId, { kind: 'message', action: null });
+    await expect(followUp).resolves.toEqual({ kind: 'message', action: null });
+    expect(sentKinds()).toEqual(['message', 'connect', 'message', 'connect']);
+    onScreen();
+    expect(shown).toHaveBeenCalledTimes(1);
+    expect(host.mode).toBe('full');
+    expect(closings).toBe(0);
+    emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'dismissed' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(card.value).toEqual({ kind: 'dismissed' });
+    expect(asker.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it('take back a popup the page acknowledged but has not shown, and leave one it has shown under the question', async () => {
+    loaded();
+    const menu = outcome(host.request(MENU, undefined));
+    emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
+    void host.request(QUESTION, undefined);
+    expect(host.isOpen('menu')).toBe(false);
+    expect(host.isWaiting('menu')).toBe(true);
+    host.dismiss('message');
+    expect(host.isOpen('menu')).toBe(true);
+
+    const shownId = onScreen();
+    void host.request(QUESTION, undefined);
+    expect(host.isOpen('menu')).toBe(true);
     expect(host.isOpen('message')).toBe(true);
-    host.dispose();
-    await expect(question).rejects.toThrow('window closed');
+    expect(cancelled()).not.toContain(shownId);
+    expect(menu).toEqual({});
+  });
+
+  it('settle a popup taken back behind a question dismissed when its signal aborts, and never send it again', async () => {
+    loaded();
+    const withdrawn = new AbortController();
+    const card = outcome(host.request(HOST_CARD, undefined, undefined, undefined, withdrawn.signal));
+    const question = host.request(QUESTION, undefined);
+    expect(host.isWaiting('connect')).toBe(true);
+    withdrawn.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(card.value).toEqual({ kind: 'dismissed' });
+    expect(host.isWaiting('connect')).toBe(false);
+    emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'message', action: 0 });
+    await expect(question).resolves.toEqual({ kind: 'message', action: 0 });
+    expect(sentKinds()).toEqual(['connect', 'message']);
+    expect(host.mode).toBe('hidden');
+  });
+
+  function navigationStarts(): void {
+    view().webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false, url: OVERLAY_PAGE_URL });
+  }
+
+  it('keep only the newest popup that is not a question when one waits behind a question and another is made during a navigation that stops', async () => {
+    loaded();
+    const question = host.request(QUESTION, undefined);
+    const questionId = lastRequestId();
+    const older = outcome(host.request(HOST_CARD, undefined));
+    navigationStarts();
+    const newer = outcome(host.request(MENU, undefined));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(older.value).toEqual({ kind: 'dismissed' });
+    emit(OVERLAY_CHANNELS.answer, own(), questionId, { kind: 'message', action: 0 });
+    await expect(question).resolves.toEqual({ kind: 'message', action: 0 });
+    expect(newer).toEqual({});
+    expect(sentKinds()).toEqual(['message']);
+    view().webContents.emit('did-stop-loading');
+    expect(sentKinds()).toEqual(['message', 'menu']);
+    expect(newer).toEqual({});
+  });
+
+  it('keep only the newest popup that is not a question when one waits behind a question and another is made during a navigation that commits', async () => {
+    loaded();
+    const question = outcome(host.request(QUESTION, undefined));
+    const older = outcome(host.request(HOST_CARD, undefined));
+    navigationStarts();
+    const newer = outcome(host.request(MENU, undefined));
+    view().webContents.emit('did-navigate', {}, OVERLAY_PAGE_URL, 200, 'OK');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(older.value).toEqual({ kind: 'dismissed' });
+    expect(question.error?.message).toBe('The overlay page reloaded');
+    view().webContents.emit('did-finish-load');
+    expect(sentKinds()).toEqual(['message', 'menu']);
+    expect(newer).toEqual({});
   });
 
   it('hold a worktree dialog open as a message, so Quick Open or a menu cannot answer a setup review', async () => {
     loaded();
     const settings = host.request(SETTINGS, returnFocus as never);
+    onScreen();
     const review = host.request({ kind: 'worktreeDialog', dialog: 'setupReview', projectName: 'alpha', commands: ['npm ci'] }, undefined);
     const reviewId = lastRequestId();
     expect(host.isOpen('settings')).toBe(true);
@@ -1083,7 +1302,7 @@ describe('overlay message dialogs (D41)', () => {
   it('reject every open request when the overlay misses an acknowledgement', async () => {
     loaded();
     const settings = host.request(SETTINGS, returnFocus as never);
-    emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
+    onScreen();
     const question = host.request(QUESTION, undefined);
     const both = Promise.allSettled([settings, question]);
     vi.advanceTimersByTime(OVERLAY_ACK_TIMEOUT_MS);
@@ -1319,5 +1538,70 @@ describe('an input box\'s browse button', () => {
     void host.request(BOX, undefined, undefined, handler);
     view().webContents.emit('did-finish-load');
     await expect(browse({ value: '' })).resolves.toEqual({ ok: true, value: { value: '/held' } });
+  });
+});
+
+// A popup subscribes to its pushes only once it renders, which waits for the page's language to load.
+describe('pushes addressed to an open request', () => {
+  const PAGE_PUSHES: readonly string[] = [
+    OVERLAY_CHANNELS.state,
+    OVERLAY_CHANNELS.request,
+    OVERLAY_CHANNELS.cancel,
+    OVERLAY_CHANNELS.toast,
+    OVERLAY_CHANNELS.toastDismiss,
+    OVERLAY_CHANNELS.toastsFocus,
+    OVERLAY_CHANNELS.theme,
+    OVERLAY_CHANNELS.rasterize,
+    OVERLAY_CHANNELS.chime,
+  ];
+  const sentOn = (...channels: string[]): unknown[][] => view().webContents.send.mock.calls.filter(([channel]) => channels.includes(channel as string));
+
+  it('names every main → renderer channel as the page\'s own or as addressed to a request kind', () => {
+    const channels: string[] = Object.values(OVERLAY_CHANNELS);
+    const toRenderer = channels.slice(channels.indexOf(OVERLAY_CHANNELS.state));
+    expect(new Set(toRenderer)).toEqual(new Set([...PAGE_PUSHES, ...OVERLAY_REQUEST_PUSHES.keys()]));
+    expect(PAGE_PUSHES.filter((channel) => OVERLAY_REQUEST_PUSHES.has(channel))).toEqual([]);
+  });
+
+  it('holds them until the page reports the request shown, then sends every one of a stream and the newest whole state, in order, before shown runs', () => {
+    loaded();
+    let atShown: unknown[][] = [];
+    void host.request(SETTINGS, undefined, () => (atShown = sentOn(OVERLAY_CHANNELS.settingsMessage, OVERLAY_CHANNELS.settingsTarget)));
+    const id = lastRequestId();
+    emit(OVERLAY_CHANNELS.ack, own(), id);
+    host.send(OVERLAY_CHANNELS.settingsMessage, { type: 'm1' });
+    host.send(OVERLAY_CHANNELS.settingsTarget, { section: 'appearance' });
+    host.send(OVERLAY_CHANNELS.settingsMessage, { type: 'm2' });
+    host.send(OVERLAY_CHANNELS.settingsTarget, { section: 'about' });
+    expect(sentOn(OVERLAY_CHANNELS.settingsMessage, OVERLAY_CHANNELS.settingsTarget)).toEqual([]);
+
+    emit(OVERLAY_CHANNELS.shown, own(), id);
+    expect(atShown).toEqual([
+      [OVERLAY_CHANNELS.settingsMessage, { type: 'm1' }],
+      [OVERLAY_CHANNELS.settingsMessage, { type: 'm2' }],
+      [OVERLAY_CHANNELS.settingsTarget, { section: 'about' }],
+    ]);
+    host.send(OVERLAY_CHANNELS.settingsTarget, { section: 'editor' });
+    expect(sentOn(OVERLAY_CHANNELS.settingsTarget).at(-1)).toEqual([OVERLAY_CHANNELS.settingsTarget, { section: 'editor' }]);
+  });
+
+  it('keeps them for a request a question takes back to wait, and drops them with a request that closes unshown', async () => {
+    loaded();
+    void host.request(HOST_CARD, undefined);
+    emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
+    host.send(OVERLAY_CHANNELS.connectHosts, []);
+    const question = host.request(QUESTION, undefined);
+    const questionId = lastRequestId();
+    emit(OVERLAY_CHANNELS.answer, own(), questionId, { kind: 'message', action: 0 });
+    await question;
+    expect(sentKinds()).toEqual(['connect', 'message', 'connect']);
+    expect(sentOn(OVERLAY_CHANNELS.connectHosts)).toEqual([]);
+    onScreen();
+    expect(sentOn(OVERLAY_CHANNELS.connectHosts)).toEqual([[OVERLAY_CHANNELS.connectHosts, []]]);
+
+    void host.request(SETTINGS, undefined);
+    host.send(OVERLAY_CHANNELS.prefsChanged, { values: {} });
+    emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'settings', closed: true });
+    expect(sentOn(OVERLAY_CHANNELS.prefsChanged)).toEqual([]);
   });
 });

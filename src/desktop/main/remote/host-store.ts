@@ -7,7 +7,7 @@ import type { ShellPlatform } from '../../preload/shell-channels';
 import { HOST_SWITCH_KEYS, MAX_HOST_NAME_LENGTH, type CachedPlatform, type HostSettingChange, type NameCheck } from '../../preload/overlay-channels';
 import { HOST_ID } from '../../daemon/control-messages';
 import { authorityKeyOfProject, pathFor } from '../../../shared/project-location';
-import { isHostTone, type HostTone } from '../../../shared/host-tones';
+import { canonicalHostColor, isHostTone, type HostColor } from '../../../shared/host-colors';
 import { PERMISSION_MODES, type PermissionMode } from '../../../shared/types/settings';
 import { MAX_PORT_LABEL_CHARS, ON_DETECT, type OnDetect } from '../../preload/ports-channels';
 import { isWslDistroName } from './wsl/distro-name';
@@ -56,7 +56,7 @@ export interface SshHostRecord {
   readonly destination: SshHostDestination;
   // this computer's name for the host, passing checkHostName against every other host
   readonly name: string;
-  readonly color?: HostTone;
+  readonly color?: HostColor;
   // platform detection's result, run once per host
   readonly platform?: CachedPlatform;
   // the user's OS choice, which replaces detection
@@ -88,7 +88,7 @@ export interface WslHostRecord {
   readonly kind: 'wsl';
   readonly distro: string;
   readonly name: string;
-  readonly color?: HostTone;
+  readonly color?: HostColor;
   readonly lastUsed?: number;
   readonly recentFolders: readonly string[];
   readonly settings: SshHostSettings;
@@ -124,7 +124,7 @@ export interface ContainerHostRecord {
   // the hash of the configuration the user last confirmed (devcontainer-trust.ts)
   readonly trustHash?: string;
   readonly name: string;
-  readonly color?: HostTone;
+  readonly color?: HostColor;
   readonly lastUsed?: number;
   readonly recentFolders: readonly string[];
   readonly settings: SshHostSettings;
@@ -341,6 +341,14 @@ export function hostOs(record: HostRecord): ShellPlatform | undefined {
 }
 
 /**
+ * The OS a remote authority's paths follow: its connection's, else its listed projects', else its saved host record's, so a
+ * host's file outside every project restores with no connection and no project; undefined when none names one.
+ */
+export function authorityOsOf(connectionOs: NodeJS.Platform | undefined, projectOs: NodeJS.Platform | undefined, record: HostRecord | undefined): NodeJS.Platform | undefined {
+  return connectionOs ?? projectOs ?? (record && hostOs(record));
+}
+
+/**
  * Whether this computer's SSH agent can reach the host: an SSH host known to be POSIX, through ssh's ForwardAgent, or a
  * container, through its daemon connection's agent relay; never a WSL distro.
  */
@@ -449,23 +457,32 @@ function parsePlatform(value: unknown): CachedPlatform | undefined {
 // A record as written, its name not yet checked against the others (parseHostFile does, in file order).
 type Unnamed<T> = T extends unknown ? Omit<T, 'name'> & { readonly name?: string } : never;
 
+// A color lands in inline style, so only a palette tone or a canonical #rrggbbaa above zero opacity is kept.
+function parseHostColor(id: string, value: unknown, log: (line: string) => void): HostColor | undefined {
+  if (value === undefined || isHostTone(value)) return value;
+  const color = typeof value === 'string' ? canonicalHostColor(value) : undefined;
+  if (color === undefined) log(`[hosts] dropping the color of ${id}: not a palette tone or #rrggbbaa color`);
+  else if (color === null) log(`[hosts] dropping the color of ${id}: ${value as string} has zero opacity, which reads as no color`);
+  else if (color !== value) log(`[hosts] reading the color of ${id} as ${color}, its canonical form`);
+  return color ?? undefined;
+}
+
 function parseWslHost(id: string, value: Record<string, unknown>, log: (line: string) => void): Unnamed<WslHostRecord> | undefined {
   const distro = own(value, 'distro');
   if (!isWslDistroName(distro)) return undefined;
   const name = own(value, 'name');
-  const color = own(value, 'color');
+  const color = parseHostColor(id, own(value, 'color'), log);
   const lastUsed = own(value, 'lastUsed');
   const recent = own(value, 'recentFolders');
   const previous = own(value, 'previousInstallFolder');
   const always = own(value, 'alwaysCredentialHosts');
   const ports = parsePorts(id, wslAuthorityKey(distro), own(value, 'ports'), log);
-  if (color !== undefined && !isHostTone(color)) log(`[hosts] dropping the color of ${id}: not a palette tone`);
   return {
     id,
     kind: 'wsl',
     distro,
     ...(typeof name === 'string' ? { name } : {}),
-    ...(isHostTone(color) ? { color } : {}),
+    ...(color !== undefined ? { color } : {}),
     ...(typeof lastUsed === 'number' && Number.isFinite(lastUsed) && lastUsed > 0 ? { lastUsed } : {}),
     recentFolders: Array.isArray(recent) ? [...new Set(recent.filter(isText))].slice(0, MAX_RECENT_FOLDERS) : [],
     settings: parseSettings(id, own(value, 'settings'), log),
@@ -495,13 +512,12 @@ function parseContainerHost(id: string, value: Record<string, unknown>, log: (li
   const dataNoticeShown = own(value, 'dataNoticeShown');
   const trustHash = own(value, 'trustHash');
   const name = own(value, 'name');
-  const color = own(value, 'color');
+  const color = parseHostColor(id, own(value, 'color'), log);
   const lastUsed = own(value, 'lastUsed');
   const recent = own(value, 'recentFolders');
   const previous = own(value, 'previousInstallFolder');
   const always = own(value, 'alwaysCredentialHosts');
   const ports = parsePorts(id, containerAuthorityKey(key), own(value, 'ports'), log);
-  if (color !== undefined && !isHostTone(color)) log(`[hosts] dropping the color of ${id}: not a palette tone`);
   return {
     id,
     kind: 'container',
@@ -518,7 +534,7 @@ function parseContainerHost(id: string, value: Record<string, unknown>, log: (li
     ...(isContainerId(dataNoticeShown) ? { dataNoticeShown } : {}),
     ...(typeof trustHash === 'string' && SHA256_HEX.test(trustHash) ? { trustHash } : {}),
     ...(typeof name === 'string' ? { name } : {}),
-    ...(isHostTone(color) ? { color } : {}),
+    ...(color !== undefined ? { color } : {}),
     ...(typeof lastUsed === 'number' && Number.isFinite(lastUsed) && lastUsed > 0 ? { lastUsed } : {}),
     recentFolders: Array.isArray(recent) ? [...new Set(recent.filter(isText))].slice(0, MAX_RECENT_FOLDERS) : [],
     settings: parseSettings(id, own(value, 'settings'), log),
@@ -536,7 +552,7 @@ function parseHost(id: string, value: unknown, log: (line: string) => void): Unn
   const destination = parseDestination(own(value, 'destination'));
   if (!destination) return undefined;
   const name = own(value, 'name');
-  const color = own(value, 'color');
+  const color = parseHostColor(id, own(value, 'color'), log);
   const platform = parsePlatform(own(value, 'platform'));
   const osOverride = own(value, 'osOverride');
   const lastUsed = own(value, 'lastUsed');
@@ -549,14 +565,12 @@ function parseHost(id: string, value: unknown, log: (line: string) => void): Unn
   const installed = typeof fingerprint === 'string' && FINGERPRINT.test(fingerprint) && typeof keyEntry === 'string' && KEY_ENTRY.test(keyEntry) && typeof keyFile === 'string' && HOST_FILE.test(keyFile);
   const always = own(value, 'alwaysCredentialHosts');
   const ports = parsePorts(id, sshAuthorityKey(id), own(value, 'ports'), log);
-  // only a palette tone is a color; anything else (an earlier '#rrggbb') is refused here, never shown
-  if (color !== undefined && !isHostTone(color)) log(`[hosts] dropping the color of ${id}: not a palette tone`);
   return {
     id,
     kind: 'ssh',
     destination,
     ...(typeof name === 'string' ? { name } : {}),
-    ...(isHostTone(color) ? { color } : {}),
+    ...(color !== undefined ? { color } : {}),
     ...(platform ? { platform } : {}),
     ...(TARGET_OSES.includes(osOverride) ? { osOverride: osOverride as ShellPlatform } : {}),
     ...(typeof lastUsed === 'number' && Number.isFinite(lastUsed) && lastUsed > 0 ? { lastUsed } : {}),

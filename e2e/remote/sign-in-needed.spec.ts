@@ -1,16 +1,20 @@
 import type { ElectronApplication } from '@playwright/test';
 import { mainLog } from '../desktop/support/app';
+import { activeChat } from '../desktop/support/fixtures';
 import { writeUserSettings } from '../desktop/support/hermetic';
 import { cleanUp } from '../desktop/support/loopback';
 import { sendPrompt } from '../desktop/support/loopback-agent';
 import { STUB_MODEL_ID, type OpenAIStub, type StubReply } from '../desktop/support/openai-stub';
 import { shellPage, shellState } from '../desktop/support/shell';
 import { listChats } from '../desktop/support/shell-ui';
-import { awaitTurnEnd } from '../desktop/support/ui';
+import { answerDialogs, awaitTurnEnd } from '../desktop/support/ui';
 import { MIN_VALIDITY_MS } from '../../src/core/pi-session/credential-broker';
+import { connectDialogClosed, hostCard, openConnect, openInBrowser } from './support/connect-ui';
+import { newPassword, usePasswords } from './support/credentials';
 import { shutdownHostDaemon } from './support/daemon-teardown';
 import { holdFor } from './support/flaky';
-import { addHost, expect, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
+import { connectAnswering, secretPrompt } from './support/host-settings-ui';
+import { addHost, dropConnection, exitControlMaster, expect, hostState, lastConnectStep, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
 import { chatShowing, closeRemoteDialog, exited, requestQuit, stubOAuth, targetCoreLog, targetSessions } from './support/remote-runs';
 import { secondDevice } from './support/second-device';
 import { newRemoteChat, startTargetStub } from './support/target-agent';
@@ -226,6 +230,74 @@ test('another attached device shows Sign-in needed with Continue with my sign-in
     throw error;
   } finally {
     await cleanUp(testInfo, failure, () => other.dispose(testInfo, failure !== undefined));
+    await stub.close();
+  }
+});
+
+test('a host that asks its password again after a drop shows Sign in on the chat banner; answering it closes the Connect dialog with no folder browser, and the chat works', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
+  test.setTimeout(600_000);
+  const fixture = await sshd('prod-1', { config: ['PreferredAuthentications publickey,password'] });
+  const password = newPassword();
+  await usePasswords(fixture, { dev: password });
+  const asks = "dev@127.0.0.1's password:";
+  const stub = await startTargetStub(home, fixture, 'dev', false);
+  try {
+    writeUserSettings(home, { 'damocles.model': STUB_MODEL_ID });
+    const { app } = await launch({ env: remoteEnv(ssh, mirror) });
+    await answerDialogs(app, { 'on prod-1?': 'Trust Folder' });
+    await stubOAuth(app, 'alice', 23.5 * 60_000);
+    const hostId = await addHost(app, { alias: 'prod-1', name: 'prod-1' });
+    const overlay = await openConnect(app);
+    await connectAnswering(app, overlay, hostId, () => hostCard(overlay, 'prod-1').click(), { [asks]: { answer: password } });
+    await openInBrowser(overlay, 'prod-1', APP);
+    const key = await remoteProjectKey(app, { authorityKey: `ssh+${hostId}` }, APP);
+    const tab = await newRemoteChat(app, key);
+
+    // without its master connection the reconnect's ssh asks the password again, and only the user can answer it
+    await exitControlMaster(app, hostId);
+    await dropConnection(app, hostId);
+    const banner = tab.getByTestId('chat-connection-banner');
+    await expect(banner).toHaveAttribute('data-state', 'signIn', { timeout: 120_000 });
+    // a folder browser drawn for any moment before the dialog closes counts
+    await overlay.evaluate(() => {
+      const g = window as unknown as { __e2eFoldersShown?: boolean };
+      g.__e2eFoldersShown = false;
+      new MutationObserver(() => {
+        if (document.querySelector('[data-testid="folder-list"]')) g.__e2eFoldersShown = true;
+      }).observe(document.body, { childList: true, subtree: true });
+    });
+    await banner.getByRole('button', { name: 'Sign in to prod-1' }).click();
+
+    // each ssh of the attempt signs in on its own, so the password may be asked more than once
+    const answered = new Set<string>();
+    for (;;) {
+      let step: { readonly step: string; readonly prompt?: { readonly promptId: string } } | undefined;
+      await expect.poll(async () => {
+        step = (await lastConnectStep(app, hostId)) as typeof step;
+        return step?.step === 'connected' || (step?.prompt !== undefined && !answered.has(step.prompt.promptId));
+      }, { timeout: 120_000 }).toBe(true);
+      const prompt = step!.prompt;
+      if (step!.step === 'connected' || prompt === undefined) break;
+      const form = secretPrompt(overlay);
+      await expect(form.getByText(asks, { exact: true })).toBeVisible();
+      await form.locator('input:not([type="checkbox"])').fill(password);
+      await form.getByRole('button', { name: 'Continue', exact: true }).click();
+      answered.add(prompt.promptId);
+    }
+    expect(answered.size).toBeGreaterThan(0);
+    await connectDialogClosed(overlay);
+    expect(await overlay.evaluate(() => (window as unknown as { __e2eFoldersShown?: boolean }).__e2eFoldersShown)).toBe(false);
+    expect(await hostState(app, hostId)).toBe('connected');
+    // a chat with no turn yet opens again in a new page once its host is back
+    const back = await activeChat(app);
+    await expect(back.locator('[data-testid="chat-connection-banner"][data-state="signIn"]')).toHaveCount(0);
+
+    stub.replies.push({ chunks: ['Answering after the sign-in.'] });
+    await sendPrompt(back, 'Are you back?');
+    await expect(back.getByText('Answering after the sign-in.', { exact: false })).toBeVisible({ timeout: 60_000 });
+    await awaitTurnEnd(back);
+    await shutdownHostDaemon(app, hostId, fixture);
+  } finally {
     await stub.close();
   }
 });

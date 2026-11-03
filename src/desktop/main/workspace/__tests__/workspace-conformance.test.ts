@@ -23,7 +23,7 @@ import { NONCE_ENV } from '../../../workspace/terminal/shell-integration-injecti
 import { createTreeListing } from '../../../workspace/tree-listing';
 import { REPO_ROOT, startInProcessDaemon } from '../../../daemon/__tests__/in-process-daemon';
 import { connect } from '../../remote/connection';
-import { carriesTransfers, createRemoteWorkspace, TRANSFER_FEATURES, TransfersUnsupportedError, WATCH_READY_FEATURE } from '../remote-workspace';
+import { carriesTransfers, createRemoteWorkspace, OUTSIDE_FILES_FEATURE, OutsideFilesUnsupportedError, TRANSFER_FEATURES, TransfersUnsupportedError, WATCH_READY_FEATURE } from '../remote-workspace';
 import { NotConnectedError } from '../workspaces';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import { MAX_OPEN_STREAMS } from '../../../../remote/mux';
@@ -85,6 +85,7 @@ async function remoteAdapter(features: (listed: readonly string[]) => readonly s
     notConnected: () => new NotConnectedError('Local daemon is not connected.'),
     watchReady: connection.features.includes(WATCH_READY_FEATURE),
     transfers: carriesTransfers(features(connection.features)),
+    outside: features(connection.features).includes(OUTSIDE_FILES_FEATURE),
     openStream: () => connection.openStream(),
     log: () => undefined,
   });
@@ -210,6 +211,39 @@ describe.each(ADAPTERS)('ProjectWorkspace conformance: %s', (_name, start) => {
     } finally {
       fs.rmSync(settings, { force: true });
       if (kept) fs.writeFileSync(settings, kept);
+    }
+  });
+
+  it('resolves, reads and writes a file outside every project by the host\'s own plans rule, and refuses one swapped for a link', async () => {
+    const plans = path.join(DAMOCLES_HOME_DIR, 'plans');
+    fs.mkdirSync(plans, { recursive: true });
+    const plan = path.join(fs.realpathSync.native(plans), `conformance-${path.basename(root)}.md`);
+    const notes = path.join(path.dirname(plan), `conformance-${path.basename(root)}.txt`);
+    fs.writeFileSync(plan, '# Plan\n');
+    fs.writeFileSync(notes, 'notes');
+    try {
+      expect(await workspace.files.resolveOutside(plan, { within: 'plans' })).toEqual({ kind: 'file', path: plan });
+      expect(await workspace.files.resolveOutside(notes, { within: 'plans' })).toEqual({ kind: 'outside' });
+      expect(await workspace.files.resolveOutside(path.join(root, 'outside.txt'), { within: 'plans' })).toEqual({ kind: 'outside' });
+      expect(await workspace.files.resolveOutside(path.join(root, 'outside.txt'), {})).toEqual({ kind: 'file', path: path.join(root, 'outside.txt') });
+      expect(await workspace.files.resolveOutside(root, {})).toEqual({ kind: 'folder', path: root });
+      expect(await workspace.files.resolveOutside(path.join(root, 'gone.md'), {})).toEqual({ kind: 'missing' });
+      expect(await workspace.files.resolveOutside('relative.md', {})).toEqual({ kind: 'outside' });
+      const read = await workspace.files.readOutside(plan, { within: 'plans' });
+      expect(read.kind === 'bytes' && read.bytes.toString('utf8')).toBe('# Plan\n');
+      expect(await workspace.files.readOutside(notes, { within: 'plans' })).toEqual({ kind: 'outside' });
+      expect(typeof (await workspace.files.writeOutside(plan, Buffer.from('# Edited\n'), { within: 'plans' }))).toBe('number');
+      expect(fs.readFileSync(plan, 'utf8')).toBe('# Edited\n');
+      fs.rmSync(plan);
+      fs.symlinkSync(path.join(root, 'outside.txt'), plan, 'file');
+      expect(await workspace.files.readOutside(plan, { within: 'plans' })).toEqual({ kind: 'outside' });
+      const refused = await workspace.files.writeOutside(plan, Buffer.from('x'), { within: 'plans' }).catch((err: unknown) => err);
+      expect(refused).toBeInstanceOf(WriteRefusedError);
+      expect((refused as WriteRefusedError).refusal).toBe('outsideFile');
+      expect(fs.readFileSync(path.join(root, 'outside.txt'), 'utf8')).toBe('outside\n');
+    } finally {
+      fs.rmSync(plan, { force: true });
+      fs.rmSync(notes, { force: true });
     }
   });
 
@@ -429,6 +463,17 @@ describe('transfers over a loopback connection', () => {
     for (const call of calls) await expect(call()).rejects.toBeInstanceOf(TransfersUnsupportedError);
     expect(fs.readdirSync(project.fsPath)).toEqual(['src']);
     expect(await files.confineExisting(project, 'src/a.ts')).toEqual({ ok: true, path: path.join(project.fsPath, 'src', 'a.ts') });
+  });
+
+  it('sends nothing for a file outside every project to a daemon that does not list files.outside, and the connection stays up', async () => {
+    await start((listed) => listed.filter((feature) => feature !== OUTSIDE_FILES_FEATURE));
+    const { files } = adapter.workspace;
+    const target = path.join(root, 'proj', 'src', 'a.ts');
+    await expect(files.resolveOutside(target, { within: 'plans' })).rejects.toBeInstanceOf(OutsideFilesUnsupportedError);
+    await expect(files.readOutside(target, { within: 'plans' })).rejects.toBeInstanceOf(OutsideFilesUnsupportedError);
+    await expect(files.writeOutside(target, Buffer.from('x'), { within: 'plans' })).rejects.toBeInstanceOf(OutsideFilesUnsupportedError);
+    expect(fs.readFileSync(target, 'utf8')).toBe('a');
+    expect(await files.confineExisting(project, 'src/a.ts')).toEqual({ ok: true, path: target });
   });
 
   it('ends a file\'s stream short once its signal aborts, also while the writer waits for credit, and the host keeps no part', async () => {

@@ -23,6 +23,7 @@ import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { dollarBilled, subscriptionProvider } from '../account-billing';
 import { DEFAULT_MODELS } from '../../../shared/types/constants';
 import type { HeldAuthEntry } from '../../../shared/remote-user';
+import type { SettingsChange } from '../../../platform/settings-store';
 import { LocalizedError } from '../../../shared/localized-text';
 
 /** Lets a test make pi-ai fail to load; every other test loads the real module. */
@@ -1229,8 +1230,8 @@ describe('PiRuntime.syncCustomProviders', () => {
     const interaction = { prompt: async () => '', notify: () => undefined };
     const signInEntry = (extra: Record<string, unknown> = {}) => ({ type: 'oauth', access: 'a', refresh: 'r', expires: Date.now() + 3_600_000, ...extra });
 
-    // ChatPanelProvider's sync listener reads every key status, and each read checks the prefer flag after an awaited secret read.
-    it('starts no resync when the prefer flag changes during that provider\'s sign-in, and the sign-in\'s own sync applies it', async () => {
+    // The sync skips a provider while it signs in, so a resync then would leave the flag unapplied.
+    it('starts no resync when the prefer setting changes during that provider\'s sign-in, and the sign-in\'s own sync applies it', async () => {
       const { runtime, dir, platform } = setupSignIn({ xai: signInEntry() });
       let loginStarted!: () => void;
       const started = new Promise<void>((resolve) => {
@@ -1250,26 +1251,125 @@ describe('PiRuntime.syncCustomProviders', () => {
       expect(modelRuntime.setRuntimeApiKey).not.toHaveBeenCalled();
 
       const synced = vi.fn();
-      const stop = PiRuntime.onCustomProvidersSynced(() => {
-        synced();
-        void platform.secrets.get(XAI_SECRET)
-          .then(() => new Promise((resolve) => setImmediate(resolve)))
-          .then(() => runtime.preferProviderApiKey('xai'));
-      });
+      const stop = PiRuntime.onCustomProvidersSynced(synced);
       try {
         const signIn = runtime.signInProvider('xai', interaction);
         await started;
-        await runtime.setProviderPreferApiKey('xai', true);
+        await platform.settings.update('damocles.xai.preferApiKey', true, 'user');
         await new Promise((resolve) => setTimeout(resolve, 50));
-        expect(synced).toHaveBeenCalledTimes(1);
+        expect(synced).not.toHaveBeenCalled();
         expect(modelRuntime.setRuntimeApiKey).not.toHaveBeenCalled();
 
         finishLogin();
         await signIn;
         await new Promise((resolve) => setTimeout(resolve, 50));
         expect(modelRuntime.setRuntimeApiKey).toHaveBeenCalledWith('xai', 'xai-key', expect.anything());
+        expect(synced).toHaveBeenCalledTimes(1);
+      } finally {
+        stop();
+      }
+    });
+
+    it("syncs this window's own prefer write once, and its settings event starts no second sync", async () => {
+      const { runtime, platform } = setupSignIn({ xai: signInEntry() });
+      const modelRuntime = fakeModelRuntime();
+      attach(runtime, modelRuntime);
+      await runtime.syncCustomProviders((key) => platform.secrets.get(key));
+      const synced = vi.fn();
+      const stop = PiRuntime.onCustomProvidersSynced(synced);
+      try {
+        await runtime.setProviderPreferApiKey('xai', true);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(platform.settings.inspect('damocles.xai.preferApiKey').userValue).toBe(true);
+        expect(synced).toHaveBeenCalledTimes(1);
+        expect(modelRuntime.setRuntimeApiKey).toHaveBeenCalledWith('xai', 'xai-key', expect.anything());
+      } finally {
+        stop();
+      }
+    });
+
+    // The listener skips the provider while this window writes it, so the write's end must catch a value its sync never read.
+    it("applies another writer's prefer value that lands while this window's own write syncs, once that write ends", async () => {
+      const { runtime, platform } = setupSignIn({ xai: signInEntry() });
+      let release!: () => void;
+      const modelRuntime = fakeModelRuntime();
+      const keys = modelRuntime.setRuntimeApiKey.getMockImplementation()!;
+      modelRuntime.setRuntimeApiKey.mockImplementationOnce(async (...args: Parameters<typeof keys>) => {
+        await new Promise<void>((resolve) => { release = resolve; });
+        return keys(...args);
+      });
+      attach(runtime, modelRuntime);
+      await runtime.syncCustomProviders((key) => platform.secrets.get(key));
+      const synced = vi.fn();
+      const stop = PiRuntime.onCustomProvidersSynced(synced);
+      try {
+        const write = runtime.setProviderPreferApiKey('xai', true);
+        await vi.waitFor(() => expect(release).toBeDefined());
+        await platform.settings.update('damocles.xai.preferApiKey', false, 'user');
+        release();
+        await write;
+        await vi.waitFor(() => expect(synced).toHaveBeenCalledTimes(2));
+        expect(modelRuntime.removeRuntimeApiKey).toHaveBeenCalledWith('xai', expect.anything());
+      } finally {
+        stop();
+      }
+    });
+
+    // The listener compares with the flag the last sync applied, which a sync running still holds the old value of.
+    it('applies a prefer value another writer flips back while a listener-started sync holds the one it read', async () => {
+      const { runtime, platform } = setupSignIn({ xai: signInEntry() });
+      let release!: () => void;
+      const modelRuntime = fakeModelRuntime();
+      const keys = modelRuntime.setRuntimeApiKey.getMockImplementation()!;
+      modelRuntime.setRuntimeApiKey.mockImplementationOnce(async (...args: Parameters<typeof keys>) => {
+        await new Promise<void>((resolve) => { release = resolve; });
+        return keys(...args);
+      });
+      attach(runtime, modelRuntime);
+      await runtime.syncCustomProviders((key) => platform.secrets.get(key));
+      const synced = vi.fn();
+      const stop = PiRuntime.onCustomProvidersSynced(synced);
+      try {
+        await platform.settings.update('damocles.xai.preferApiKey', true, 'user');
+        await vi.waitFor(() => expect(release).toBeDefined());
+        await platform.settings.update('damocles.xai.preferApiKey', false, 'user');
+        release();
+
+        await vi.waitFor(() => expect(synced).toHaveBeenCalledTimes(2));
+        expect(modelRuntime.removeRuntimeApiKey).toHaveBeenCalledWith('xai', expect.anything());
+        expect(modelRuntime.getProviderAuthStatus('xai')).toEqual({ configured: false });
+        await new Promise((resolve) => setTimeout(resolve, 50));
         expect(synced).toHaveBeenCalledTimes(2);
       } finally {
+        stop();
+      }
+    });
+
+    it('retries a sync the deadline cut short while a prefer flag is unapplied, and republishes clientAuth for the flag at once', async () => {
+      const { runtime, platform } = setupSignIn({ xai: signInEntry() });
+      const modelRuntime = fakeModelRuntime();
+      attach(runtime, modelRuntime);
+      await runtime.syncCustomProviders((key) => platform.secrets.get(key));
+      const timeout = new AbortController();
+      const timeoutSpy = stubTimeout(timeout.signal);
+      const { applyStarted, setRuntimeApiKey } = hangingApply();
+      modelRuntime.setRuntimeApiKey.mockImplementationOnce(setRuntimeApiKey as never);
+      const clientAuth = vi.fn();
+      const stop = PiRuntime.onClientAuthChange(clientAuth);
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        await platform.settings.update('damocles.xai.preferApiKey', true, 'user');
+        await applyStarted;
+        timeout.abort();
+        await vi.waitFor(() => expect(clientAuth).toHaveBeenCalledTimes(1));
+        expect(modelRuntime.getProviderAuthStatus('xai')).toEqual({ configured: false });
+
+        timeoutSpy.mockReturnValue(new AbortController().signal);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await vi.waitFor(() => expect(modelRuntime.getProviderAuthStatus('xai')).toEqual({ configured: true, source: 'runtime' }));
+        expect(modelRuntime.setRuntimeApiKey).toHaveBeenLastCalledWith('xai', 'xai-key', expect.anything());
+      } finally {
+        vi.useRealTimers();
         stop();
       }
     });
@@ -1278,7 +1378,7 @@ describe('PiRuntime.syncCustomProviders', () => {
       const { runtime, platform } = setupSignIn();
       vi.spyOn(runtime, 'init').mockRejectedValue(new Error('pi failed to load'));
       await expect(runtime.setProviderPreferApiKey('xai', true)).rejects.toThrow('pi failed to load');
-      expect(platform.state.global.get('damocles.xai.preferApiKey', false)).toBe(false);
+      expect(platform.settings.inspect('damocles.xai.preferApiKey').userValue).toBeUndefined();
     });
 
     // pi writes the new list, then resynchronizes its snapshot, before its login returns; a model adopted then is never checked again.
@@ -1643,25 +1743,68 @@ describe('PiRuntime.syncCustomProviders', () => {
     expect(PiRuntime.get().flatFeeKeyProviders()).toEqual(new Set());
   });
 
-  // VS Code reports no global-state change from another window, so the billing read that every turn makes is where it is seen.
-  it('re-syncs the keys once when an account read finds a prefer flag another window changed', async () => {
+  // Another window, a settings.json edit or a settings row: every writer of a provider's flag reaches the keys through one listener.
+  it('re-syncs the keys once for a prefer setting another writer changed, and an account read starts none', async () => {
     const fake = installFakePlatform();
     const runtime = PiRuntime.get();
     attach(runtime, fakeModelRuntime());
     await runtime.syncCustomProviders(secrets({}));
     const sync = vi.spyOn(runtime, 'syncCustomProviders').mockResolvedValue({ wired: [], notWired: [], timedOut: false });
-    runtime.flatFeeKeyProviders();
-    expect(sync).not.toHaveBeenCalled();
 
-    // DeepSeek has no sign-in, so its flag cannot change which credential pi sends
-    await fake.state.global.update('damocles.deepseek.preferApiKey', true);
-    runtime.flatFeeKeyProviders();
-    expect(sync).not.toHaveBeenCalled();
-
-    await fake.state.global.update('damocles.xai.preferApiKey', true);
-    runtime.flatFeeKeyProviders();
+    await fake.settings.update('damocles.xai.preferApiKey', true, 'user');
+    expect(sync).toHaveBeenCalledTimes(1);
     runtime.flatFeeKeyProviders();
     expect(sync).toHaveBeenCalledTimes(1);
+
+    // another setting under the same section changes no flag
+    await fake.settings.update('damocles.language', 'el', 'user');
+    expect(sync).toHaveBeenCalledTimes(1);
+  });
+
+  // No key sync runs before the model runtime exists, so the rows that read the setting hear of it directly.
+  it('republishes the key rows for a provider prefer setting change before the model runtime exists, starting no sync', async () => {
+    const fake = installFakePlatform();
+    const runtime = PiRuntime.get();
+    const sync = vi.spyOn(runtime, 'syncCustomProviders');
+    const heard = vi.fn();
+    const stop = PiRuntime.onAuthFileChange(heard);
+    try {
+      await fake.settings.update('damocles.xai.preferApiKey', true, 'user');
+      expect(heard).toHaveBeenCalledExactlyOnceWith(false);
+      expect(sync).not.toHaveBeenCalled();
+    } finally {
+      stop();
+    }
+  });
+
+  // A change heard after a sync already read it, as one landing while that sync ran.
+  it('starts no sync for a prefer setting whose value the last sync applied', async () => {
+    const fake = installFakePlatform({ settings: { user: { 'damocles.deepseek.preferApiKey': true } } });
+    const listeners: Array<(change: SettingsChange) => void> = [];
+    const listen = fake.settings.onDidChange.bind(fake.settings);
+    vi.spyOn(fake.settings, 'onDidChange').mockImplementation((section, cb) => {
+      listeners.push(cb);
+      return listen(section, cb);
+    });
+    const runtime = PiRuntime.get();
+    attach(runtime, fakeModelRuntime());
+    await runtime.syncCustomProviders(secrets({}));
+    const sync = vi.spyOn(runtime, 'syncCustomProviders').mockResolvedValue({ wired: [], notWired: [], timedOut: false });
+
+    for (const listener of listeners) listener({ affects: (key) => key === 'damocles' || key === 'damocles.deepseek.preferApiKey' });
+    expect(sync).not.toHaveBeenCalled();
+  });
+
+  it("registers no prefer listener on a daemon's core, which reads each client's flag from its clientAuth", () => {
+    const fake = createFakePlatform();
+    const onDidChange = vi.spyOn(fake.settings, 'onDidChange');
+    installPlatform({ ...fake, remote: createFakeRemoteHost().remote });
+    try {
+      PiRuntime.get();
+      expect(onDidChange).not.toHaveBeenCalled();
+    } finally {
+      installFakePlatform();
+    }
   });
 
   // pi's stored-credential snapshot follows auth.json only after the refresh; a failed one must not skip the key syncs.

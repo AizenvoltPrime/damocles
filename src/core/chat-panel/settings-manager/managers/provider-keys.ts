@@ -54,7 +54,7 @@ export async function providerAuthStatus(
     log("[ProviderKeys] the secret store did not answer for the %s key; its status is unchanged", provider);
     return undefined;
   }
-  const preferApiKey = runtime ? runtime.preferProviderApiKey(provider) : readPreferProviderApiKey(platform.state, provider);
+  const preferApiKey = readPreferProviderApiKey(platform.settings, provider);
   const external = runtime ? runtime.externalKeySource(provider, signIns) : null;
   const active = providerCredentialActive({ key: stored, signedIn, external }, preferApiKey);
   return { type: "providerAuthStatusChanged", provider, configured: stored, external, ...signInFields, preferApiKey, active };

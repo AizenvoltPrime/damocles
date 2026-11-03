@@ -6,6 +6,8 @@ import { setActivePinia, createPinia } from 'pinia';
 import InjectionKpiGrid from '../InjectionKpiGrid.vue';
 import { i18n } from '@/i18n';
 import { display, injected } from './fixtures';
+import { useSettingsStore } from '@/stores/useSettingsStore';
+import { VSCODE_HOST_CAPABILITIES } from '@shared/types/messages';
 import type { MemoryInjectionDisplay } from '@shared/types/context-injection';
 
 const mounted: VueWrapper[] = [];
@@ -98,6 +100,13 @@ describe('InjectionKpiGrid', () => {
     const popover = await openPopover(wrapper, 'storeSize');
     expect(popover.querySelector('[data-kpi-formula]')?.textContent).toContain('session + project + global + observations');
     expect(['session', 'project', 'global', 'observations'].map((id) => detail(popover, id))).toEqual(['2', '30', '10', '58']);
+  });
+
+  it('names the server in the store size formula and its global row where the host keeps global memory there', async () => {
+    useSettingsStore().hostCapabilities = { ...VSCODE_HOST_CAPABILITIES, globalMemoryOnServer: true };
+    const popover = await openPopover(mountGrid(display()), 'storeSize');
+    expect(popover.querySelector('[data-kpi-formula]')?.textContent).toContain('session + project + global (this server) + observations');
+    expect(popover.querySelector('[data-kpi-detail="global"]')?.previousElementSibling?.textContent?.trim()).toBe('Global (this server)');
   });
 
   it('names each info button after its card', () => {

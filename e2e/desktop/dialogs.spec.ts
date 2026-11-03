@@ -7,6 +7,7 @@ import { activeChat, expect, nextChat, test } from './support/fixtures';
 import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { overlayViewState, readyOverlay } from './support/overlay';
+import { killRenderer } from './support/renderer-kill';
 import { settingsRow, openSettingsModal, settingsModal } from './support/settings';
 import { OVERLAY_URL, shellState } from './support/shell';
 import { projectKeyOf, projectRow, readyShell } from './support/shell-ui';
@@ -173,6 +174,59 @@ test('a question asked while a select\'s list is open takes the pointer from its
   }
 });
 
+// The question's scrim covers the shell, so the card is asked for through a route it does not cover, as the native menu
+// or a toast's Details in the popup window would. A click on that scrim answers the question Cancel by design, so the card
+// must not lie under it, where it would draw the user's click.
+test('a host card asked for while a question is open waits unsent for its answer, with nothing of it under the scrim, then opens and works', async ({ launch }) => {
+  const { app } = await launch({ env: { DAMOCLES_E2E_HOOKS: '1' } });
+  await expect(chatInput(await activeChat(app))).toBeVisible();
+  await forbidNativeBoxes(app);
+  const overlay = await readyOverlay(app);
+  const hostId = await app.evaluate(() => (globalThis as unknown as { __damoclesE2e: { remote: { addHost(target: { alias: string; name: string }): Promise<string> } } }).__damoclesE2e.remote.addHost({ alias: 'prod-1', name: 'prod-1' }));
+  // main's requests to the overlay page, by kind, in the order it sent them
+  await app.evaluate(({ webContents }, { url, channel }) => {
+    const page = webContents.getAllWebContents().find((contents) => contents.getURL() === url)!;
+    const g = globalThis as unknown as { __e2eOverlayKinds: string[] };
+    g.__e2eOverlayKinds = [];
+    const send = page.send.bind(page);
+    page.send = (sent: string, ...args: unknown[]): void => {
+      if (sent === channel) g.__e2eOverlayKinds.push((args[0] as { request: { kind: string } }).request.kind);
+      send(sent, ...args);
+    };
+  }, { url: OVERLAY_URL, channel: OVERLAY_CHANNELS.request });
+  const sentKinds = (): Promise<string[]> => app.evaluate(() => (globalThis as unknown as { __e2eOverlayKinds: string[] }).__e2eOverlayKinds);
+
+  await app.evaluate(() => {
+    type Text = { message: string };
+    const g = globalThis as unknown as { __damoclesE2e: { notifications: { warn(message: Text, actions: Text[], options: { modal: boolean }): Promise<number | undefined> } }; __e2eAnswer?: Promise<number | undefined> };
+    g.__e2eAnswer = g.__damoclesE2e.notifications.warn({ message: 'Proceed before the host card?' }, [{ message: 'Proceed' }], { modal: true });
+  });
+  const question = dialogIn(overlay);
+  await expect(question).toBeVisible();
+  const shell = await readyShell(app);
+  const cardClosed = shell.evaluate((id) => window.damoclesShell!.showHostCard(id, { x: 40, y: 8, width: 90, height: 28 }), hostId);
+  await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __damoclesE2e: { overlayWaiting(kind: string): boolean } }).__damoclesE2e.overlayWaiting('connect'))).toBe(true);
+  expect(await sentKinds()).toEqual(['message']);
+  await expect(overlay.getByTestId('connect-dialog')).toHaveCount(0);
+  // the point the card would hang over, below its chip, belongs to the question's scrim alone
+  expect(await overlay.evaluate(() => document.elementFromPoint(80, 80)?.classList.contains('overlay-dialog'))).toBe(true);
+  await expect(question).toBeVisible();
+
+  await question.getByRole('button', { name: 'Proceed' }).click();
+  const card = overlay.getByTestId('host-card');
+  await expect(card).toBeVisible();
+  await expect(card.getByTestId('host-card-name')).toHaveText('prod-1');
+  await expect(question).toHaveCount(0);
+  expect(await sentKinds()).toEqual(['message', 'connect']);
+  await card.getByTestId('host-card-name').click();
+  await expect(card).toBeVisible();
+  await overlay.keyboard.press('Escape');
+  await expect(overlay.getByTestId('connect-dialog')).toHaveCount(0);
+  await cardClosed;
+  expect(await app.evaluate(() => (globalThis as unknown as { __e2eAnswer: Promise<number | undefined> }).__e2eAnswer)).toBe(0);
+  expect(await nativeBoxes(app)).toEqual([]);
+});
+
 test('with the overlay crashed, the question falls back to the OS message box and its answer still reaches the caller', async ({ home, launch }) => {
   const desktop = await launch();
   const { app } = desktop;
@@ -182,9 +236,7 @@ test('with the overlay crashed, the question falls back to the OS message box an
 
   await addProjectFromMenu(app, home.project);
   await expect(dialogIn(overlay)).toBeVisible();
-  await app.evaluate(({ webContents }, url) => {
-    webContents.getAllWebContents().find((contents) => contents.getURL() === url)!.forcefullyCrashRenderer();
-  }, OVERLAY_URL);
+  await killRenderer(app, OVERLAY_URL);
 
   await expect.poll(async () => (await messageBoxes(app)).filter((box) => box.message.startsWith(TRUST_PROMPT))).toEqual([
     expect.objectContaining({ parented: true, buttons: ['Trust Folder', 'Don\'t Trust'] }),

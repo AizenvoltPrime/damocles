@@ -30,6 +30,7 @@ import type { TeamRole } from "../../pi-session/team-model-resolution";
 import { PiRuntime } from "../../pi-session/pi-runtime";
 import { serializeSettingWrite } from "../../settings-write-chain";
 import { forEachDevice } from "../device-hosts";
+import { rewriteToolsDisabled } from "../tool-switches";
 import { IMAGE_ENABLED_SETTING, IMAGE_MODEL_SETTING, IMAGE_PROVIDER, isOfferedImageModel } from "../../pi-session/tools/image-tool-specs";
 
 export type { SettingsManagerConfig };
@@ -227,13 +228,10 @@ export class SettingsManager {
   }
 
   /** Add/remove a tool's active-set name in `damocles.tools.disabled` (per-tool Tools-panel toggle). */
-  async setToolDisabled(toolName: string, disabled: boolean): Promise<void> {
-    await this.serializeSettingWrite(async () => {
-      const current = this.platform.settings.get<string[]>("damocles.tools.disabled", []) ?? [];
-      const set = new Set(current);
-      if (disabled) set.add(toolName);
-      else set.delete(toolName);
-      await updateConfigAtEffectiveScope(this.platform, "damocles.tools.disabled", [...set]);
+  async setToolDisabled(toolName: string, disabled: boolean): Promise<SettingWrite> {
+    return this.serializeSettingWrite(async () => {
+      const current = this.platform.settings.get<unknown>("damocles.tools.disabled", []);
+      return updateConfigAtEffectiveScope(this.platform, "damocles.tools.disabled", rewriteToolsDisabled(current, toolName, !disabled));
     });
   }
 
@@ -323,7 +321,7 @@ export class SettingsManager {
     return this.configManager.handleSetDefaultThinkingDisabled(disabled, settingsFolderOf(folder));
   }
 
-  async handleSetPinnedHeaderHidden(hidden: boolean): Promise<void> {
+  async handleSetPinnedHeaderHidden(hidden: boolean): Promise<SettingWrite> {
     return this.configManager.handleSetPinnedHeaderHidden(hidden);
   }
 

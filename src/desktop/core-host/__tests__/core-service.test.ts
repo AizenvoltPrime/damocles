@@ -220,7 +220,7 @@ describe('core.shutdown', () => {
   it('disposes the engine, then core\'s services, then lands core\'s config writes and its logs', async () => {
     const { main } = start();
     await main.request('core.shutdown', {});
-    expect(H.order).toEqual(['runtime.dispose', 'provider.dispose', 'subscription disposed', 'teardown', 'flushCoreWrites', 'log: Damocles core disposed', 'flushLogs']);
+    expect(H.order).toEqual(['runtime.dispose', 'provider.dispose', 'teardown', 'flushCoreWrites', 'log: Damocles core disposed', 'flushLogs']);
   });
 
   it('still lands core\'s writes and logs when the engine\'s dispose fails, and answers with that failure', async () => {
@@ -361,14 +361,17 @@ describe('chats.unload', () => {
 });
 
 describe('panels.foreignMessage', () => {
-  it('dispatches a voice message of an attached remote view, and refuses any other message or an unattached view', async () => {
+  it('dispatches a voice or user-setting message of an attached remote view, and refuses any other message or an unattached view', async () => {
     const { main, foreign } = start();
     const proxy = {} as PanelHost;
     foreign.set('remote-view', proxy);
     await main.request('panels.foreignMessage', { viewId: 'remote-view', message: { type: 'startVoiceRecording' } });
-    await expect(main.request('panels.foreignMessage', { viewId: 'remote-view', message: { type: 'sendMessage', text: 'hi' } })).rejects.toThrow('Only voice messages reach this computer from a remote chat');
+    await main.request('panels.foreignMessage', { viewId: 'remote-view', message: { type: 'setPinnedHeaderHidden', hidden: true } });
+    for (const message of [{ type: 'sendMessage', text: 'hi' }, { type: 'setPermissionMode', mode: 'default' }]) {
+      await expect(main.request('panels.foreignMessage', { viewId: 'remote-view', message })).rejects.toThrow('Only voice and user-setting messages reach this computer from a remote chat');
+    }
     await expect(main.request('panels.foreignMessage', { viewId: 'other-view', message: { type: 'startVoiceRecording' } })).rejects.toThrow('The remote chat view is not attached');
-    expect(H.foreignDispatched).toEqual([[proxy, { type: 'startVoiceRecording' }]]);
+    expect(H.foreignDispatched).toEqual([[proxy, { type: 'startVoiceRecording' }], [proxy, { type: 'setPinnedHeaderHidden', hidden: true }]]);
   });
 });
 

@@ -220,6 +220,7 @@ export interface ConnectDialogOptions {
   readonly query?: string;
   readonly openFolder?: true;
   readonly anchor?: OverlayRect;
+  readonly purpose?: 'signIn';
 }
 
 /** How a Connect dialog ended: shown false when it closed before it was on screen; opened, the project a container's folder opened as. */
@@ -365,14 +366,16 @@ export class RemoteHosts implements ConnectActions {
    * The dialog shows the distros and container states last listed; their fresh lists follow once it is on screen. openFolder
    * (Reopen in Container): a connected devcontainer shows its connected attempt while its folder opens, where its folder browser
    * would show otherwise. anchor (with card 'show'): the chip the card hangs from as a popover, which shows a running attempt
-   * only in the card's status, never its timeline. Settles once the dialog closed.
+   * only in the card's status, never its timeline. purpose 'signIn' (a "Sign in to <host>" banner): the dialog closes once the
+   * host connects, and a host already connected opens nothing. Settles once the dialog closed.
    */
   async openConnect(hostId?: string, options: ConnectDialogOptions = {}): Promise<ConnectDialogEnd> {
-    const { card, query, openFolder, anchor } = options;
+    const { card, query, openFolder, anchor, purpose } = options;
     const overlay = this.deps.overlay();
     if (!overlay) throw new Error('No window shows the Connect dialog');
     const record = hostId === undefined ? undefined : this.deps.store.host(hostId);
     if (hostId !== undefined && !record) throw new Error(`No saved host ${hostId}`);
+    if (purpose === 'signIn' && hostId !== undefined && this.connectionOf(hostId) === 'connected') return { shown: false };
     // this dialog replaces an open picker, whose confinement goes with it
     this.picking = undefined;
     const known = new Set(this.deps.store.hosts().flatMap((saved) => (saved.kind === 'ssh' && saved.destination.kind === 'alias' ? [saved.destination.alias] : [])));
@@ -390,6 +393,7 @@ export class RemoteHosts implements ConnectActions {
       ...(card !== undefined ? { card } : {}),
       ...(anchor !== undefined ? { anchor } : {}),
       ...(query !== undefined ? { query } : {}),
+      ...(purpose !== undefined ? { purpose } : {}),
       hosts: this.cards(),
       distros: this.distroInfos(),
       sshConfigAliases: aliases,
@@ -400,11 +404,8 @@ export class RemoteHosts implements ConnectActions {
     this.watching = watching;
     const dialog: OpenDialog = { host: hostId, withdraw: new AbortController() };
     this.dialog = dialog;
-    if (running && hostId !== undefined) {
-      this.watch(hostId);
-      // the dialog waits on a devcontainer's timeline for its folder to open
-      if (record?.kind === 'container' && record.origin === 'devcontainer') void this.openWhenConnected(hostId, running.attemptId);
-    }
+    // the dialog waits on a devcontainer's timeline for its folder to open
+    if (running && hostId !== undefined && record?.kind === 'container' && record.origin === 'devcontainer') void this.openWhenConnected(hostId, running.attemptId);
     if (joined !== undefined && hostId !== undefined) {
       watching.add(hostId);
       void this.openWhenConnected(hostId, joined);
@@ -415,6 +416,14 @@ export class RemoteHosts implements ConnectActions {
     const answered = overlay.request(request, () => {
       onScreen = true;
       screened(true);
+      if (hostId === undefined || !shown) return;
+      // the sign-in banner stays until the user can see the prompt it stands for
+      if (running) {
+        this.deps.connections.watch(hostId, true);
+        watching.add(hostId);
+      }
+      // a dialog that waited behind a question or a page load would show its attempt as it stood when asked
+      this.sendStep(overlay, hostId);
     }, dialog.withdraw.signal);
     this.refreshLists(dialog, shownOrClosed);
     try {
@@ -459,13 +468,16 @@ export class RemoteHosts implements ConnectActions {
     if (this.removals.get(hostId)?.running) this.operationsChanged(hostId);
     const overlay = this.deps.overlay();
     if (!overlay?.isOpen('connect')) return;
-    const attempt = this.deps.connections.attempt(hostId);
-    if (attempt) {
-      const step = parseConnectStep(attempt);
-      if (step) overlay.send(OVERLAY_CHANNELS.connectStep, step);
-      else this.deps.log(`[remote] ${hostId}: the attempt's step exceeds the overlay bounds; the Connect dialog keeps the last one`);
-    }
+    this.sendStep(overlay, hostId);
     this.sendCards(overlay);
+  }
+
+  private sendStep(overlay: NonNullable<ReturnType<RemoteHostsDeps['overlay']>>, hostId: string): void {
+    const attempt = this.deps.connections.attempt(hostId);
+    if (!attempt) return;
+    const step = parseConnectStep(attempt);
+    if (step) overlay.send(OVERLAY_CHANNELS.connectStep, step);
+    else this.deps.log(`[remote] ${hostId}: the attempt's step exceeds the overlay bounds; the Connect dialog keeps the last one`);
   }
 
   /** The host list changed (a rename, a setting, a project added or removed): the open dialog and Settings hear it. */
@@ -1437,11 +1449,6 @@ export class RemoteHosts implements ConnectActions {
     this.watching?.add(hostId);
     if (this.dialog) this.dialog.host = hostId;
     return attemptId;
-  }
-
-  private watch(hostId: string): void {
-    this.deps.connections.watch(hostId, true);
-    this.watching?.add(hostId);
   }
 
   private record(hostId: string): HostRecord {

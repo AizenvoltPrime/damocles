@@ -52,6 +52,7 @@ function stubAnimate(animate: (...args: unknown[]) => Animation): void {
   Object.defineProperty(HTMLElement.prototype, 'animate', { value: animate, configurable: true, writable: true });
 }
 
+
 beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);

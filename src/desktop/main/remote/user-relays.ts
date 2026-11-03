@@ -3,7 +3,9 @@
 // attach publishes. Nothing here ever carries a refresh token, env, apiKeyHelper, hooks or a stored secret.
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import type { ContributedConfiguration } from '../../../core/config/contributed-configuration';
 import { parseSettingsText, type SettingsObject } from '../../../core/config/settings-file';
+import { PREFER_API_KEY_SETTINGS } from '../../../core/pi-session/provider-auth';
 import type { Disposable } from '../../../platform/disposable';
 import { PROVIDER_ID_PATTERN } from '../../../shared/types/messages';
 import { GLOBAL_MEMORY_APPLY_TIMEOUT_MS, GLOBAL_MEMORY_READ_TIMEOUT_MS, MAX_BROKER_EXPIRES_IN_MS, MAX_STANDING_GLOBALS, planModelIdsOf, sentClientAuth, type BrokerAnswer, type ClientAuth, type ClientGlobalProfile, type ClientPolicy, type ClientUser, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type GlobalMemoryWrite, type HeldAuth, type HeldAuthEntry, type PermissionRuleLists, type RelayedMcpServer, type SearchedGlobalMemory, type UserRulesDir } from '../../../shared/remote-user';
@@ -31,6 +33,12 @@ export interface UserRulesFile {
 export function userPermissionFiles(homedir: string): ReadonlyArray<{ readonly dir: UserRulesDir; readonly file: string }> {
   return ([['.damocles', 'settings.local.json'], ['.claude', 'settings.local.json'], ['.damocles', 'settings.json'], ['.claude', 'settings.json']] as const)
     .map(([dir, name]) => ({ dir, file: path.join(homedir, dir, name) }));
+}
+
+/** The contributed keys a remote core reads from this computer's user layer: no machine scoped key, and no Prefer API key flag, whose one copy there is clientAuth's. */
+export function relayedUserSettingKeys(contributed: Pick<ContributedConfiguration, 'keys' | 'clientMachineKeys' | 'hostKeys'>): string[] {
+  const prefer = new Set(PREFER_API_KEY_SETTINGS);
+  return contributed.keys.filter((key) => !contributed.clientMachineKeys.has(key) && !contributed.hostKeys.has(key) && !prefer.has(key));
 }
 
 const boundedString = (value: unknown, max: number, what: string): string => {

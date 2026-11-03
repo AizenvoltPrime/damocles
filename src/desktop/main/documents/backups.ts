@@ -34,6 +34,8 @@ export interface BackupRecord {
     | { readonly kind: 'settings'; readonly scope: SettingsFileScope; readonly path: string }
     // a host's own settings file, by its authority key and its path on that host
     | { readonly kind: 'hostSettings'; readonly authority: string; readonly path: string }
+    // a file outside every project on authority (local included), by its path there and the rule it opened editable by
+    | { readonly kind: 'outside'; readonly authority: string; readonly path: string; readonly outside: 'plans' | 'user' }
     | { readonly kind: 'untitled' }
     // an untitled Search Editor, text in the .code-search form; projectKey is resolved again against the open projects on restore
     | { readonly kind: 'searchEditor'; readonly projectKey?: string };
@@ -51,6 +53,11 @@ function field(record: Record<string, unknown>, key: string): unknown {
 
 function isBoundedText(value: unknown, max: number): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= max;
+}
+
+// An absolute path in either OS's rules, since a host's may be another OS than this computer's.
+function isHostPath(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= MAX_RELATIVE_PATH_LENGTH && isAbsoluteFolderKey(value) && !value.includes('\0');
 }
 
 function parseTarget(raw: unknown): BackupRecord['target'] | undefined {
@@ -71,9 +78,13 @@ function parseTarget(raw: unknown): BackupRecord['target'] | undefined {
   if (kind === 'hostSettings') {
     const authority = field(raw, 'authority');
     const filePath = field(raw, 'path');
-    return isBoundedText(authority, MAX_ID_LENGTH) && typeof filePath === 'string' && filePath.length <= MAX_RELATIVE_PATH_LENGTH && isAbsoluteFolderKey(filePath) && !filePath.includes('\0')
-      ? { kind, authority, path: filePath }
-      : undefined;
+    return isBoundedText(authority, MAX_ID_LENGTH) && isHostPath(filePath) ? { kind, authority, path: filePath } : undefined;
+  }
+  if (kind === 'outside') {
+    const authority = field(raw, 'authority');
+    const filePath = field(raw, 'path');
+    const outside = field(raw, 'outside');
+    return isBoundedText(authority, MAX_ID_LENGTH) && isHostPath(filePath) && (outside === 'plans' || outside === 'user') ? { kind, authority, path: filePath, outside } : undefined;
   }
   if (kind !== 'project') return undefined;
   const projectKey = field(raw, 'projectKey');
@@ -110,8 +121,9 @@ function targetOf(document: TextDocument): BackupRecord['target'] | undefined {
   }
   if (document.untitled) return { kind: 'untitled' };
   if (document.settingsScope !== undefined && document.location) return { kind: 'settings', scope: document.settingsScope, path: document.location.path };
-  if (document.location?.host !== undefined) return { kind: 'hostSettings', authority: document.location.host, path: document.location.path };
   const location = document.location;
+  if (location?.outside === 'settings' && location.host !== undefined) return { kind: 'hostSettings', authority: location.host, path: location.path };
+  if (location?.outside === 'plans' || location?.outside === 'user') return { kind: 'outside', authority: location.host ?? 'local', path: location.path, outside: location.outside };
   if (location?.projectKey !== undefined && location.relativePath !== undefined) {
     return { kind: 'project', projectKey: location.projectKey, relativePath: location.relativePath };
   }

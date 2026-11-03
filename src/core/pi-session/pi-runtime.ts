@@ -8,6 +8,7 @@ import { log } from '../logger';
 import { l } from '../l10n';
 import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import { serializeSettingWrite } from '../settings-write-chain';
+import { userSettingWriteError } from '../config/user-settings-write';
 import { timed } from '../perf';
 import { initPiLoader, getPiCodingAgent, loadPiAi, loadedPiAi, type PiCodingAgentModule } from './pi-loader';
 import { cacheWarmingSetting, ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
@@ -22,7 +23,7 @@ import type { AdditionMemory, NoticeMemory, PersonalToolLists, RenamedRuleNotice
 import { inertToolListEntry } from '../permission-handler/mcp-resource-rule';
 import { piSupportedModels, type ModelLookup } from './pi-models';
 import { piModelDollarBilled } from './account-billing';
-import { KEYED_PROVIDER_DEFS, flatFeeKeyProviders, keyProviderOfSecret, syncCustomProviders, type SecretResolver } from './custom-providers';
+import { flatFeeKeyProviders, keyProviderOfSecret, syncCustomProviders, type SecretResolver } from './custom-providers';
 import {
   resolveAutomaticModel,
   resolveBackgroundModel,
@@ -60,11 +61,12 @@ import {
   type ClaudeAuthStatus,
 } from './subscription';
 import { forceRemoveDir } from './fs-remove';
+import { createApplyRetry } from './apply-retry';
 import {
   OPENAI_API_KEY_SECRET,
   OPENAI_API_PROVIDER,
   OPENAI_CODEX_PROVIDER,
-  OPENAI_PREFER_API_KEY_STATE,
+  OPENAI_PREFER_API_KEY_SETTING,
   openaiAuthStatus,
   openaiRuntimeKeyWanted,
   readOpenAIAuthFromDisk,
@@ -75,15 +77,16 @@ import {
 import { syncOpenAIRuntimeKey } from './openai-runtime-key';
 import { migrateOpenAIApiKey } from './openai-key-migration';
 import { OPENAI_KEY_MOVED_MARKER_PATH, PROVIDER_KEY_SWEEP_MARKER_PATH } from '../paths';
-import { planModelsOf, providerPreferApiKeyState, readPreferProviderApiKey, readProviderSignIns, type ProviderSignIns } from './provider-auth';
+import { planModelsOf, preferApiKeySetting, readPreferProviderApiKey, readProviderSignIns, type ProviderSignIns } from './provider-auth';
 import { FolderRuntime, type ExtensionLoadError } from './folder-runtime';
 import { MCP_RESOURCE_EXPOSURE_SETTING, MCP_TOOL_EXPOSURE_SETTING, renamedRuleNoticeKey, type McpRenamedToolRuleLocation } from '../../shared/types/mcp';
 import { folderKey } from '../workspace-folders/folder-key';
-import { isKeyProviderId, type ExternalKeySource, type KeyProviderId, type SignInProviderId } from '../../shared/settings-sections';
+import { KEY_PROVIDER_IDS, isKeyProviderId, type ExternalKeySource, type KeyProviderId, type SignInProviderId } from '../../shared/settings-sections';
 import { withSettingsPolicy } from './settings-policy';
 import { platform } from '../platform-host';
 import type { Platform } from '../../platform/platform';
 import type { Disposable } from '../../platform/disposable';
+import type { SettingsChange } from '../../platform/settings-store';
 import type { RemoteHost } from '../../platform/remote-host';
 import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
 import { IMAGE_SETTINGS_SECTION } from './tools/image-tool-specs';
@@ -103,6 +106,8 @@ import { planModelIdsOf, type BrokerAnswer, type HeldAuth, type HeldAuthEntry } 
  * setting: it is not a value anyone can reason about correctly.
  */
 const CUSTOM_PROVIDER_SYNC_TIMEOUT_MS = 3000;
+/** The waits before each retry of a Prefer API key apply that failed or was cut short; past the last, the next change or sync applies it. */
+const PREFER_APPLY_RETRY_DELAYS_MS: readonly number[] = [1_000, 4_000, 16_000];
 const TOOLS_DISABLED_SETTING = 'damocles.tools.disabled';
 /**
  * Bounds one attempt at the OpenRouter catalog: its wait for `_providerSync` to go idle, which a plugin install can
@@ -453,20 +458,24 @@ export class PiRuntime {
   private _openaiKeyListener: Disposable | null = null;
   /** The prefer-API-key value the last runtime key sync applied; null before the first. */
   private _appliedPreferApiKey: boolean | null = null;
-  private _preferResyncPending = false;
   /** This process's own writes of the OpenAI prefer flag running, each publishing its own sync. */
   private _openaiPreferWrites = 0;
+  /** This computer's core: hears every Prefer API key setting from construction, whoever wrote it (`_preferSettingChanged`). */
+  private _preferSettingsListener: Disposable | null = null;
   /** Key providers whose prefer flag this process is writing, each with the count of such writes running; that write's own sync applies it. */
   private readonly _providerPreferWrites = new Map<KeyProviderId, number>();
   /** Each key provider's prefer-API-key value the last custom-provider sync applied; absent before the first. */
   private readonly _appliedProviderPrefer = new Map<KeyProviderId, boolean>();
+  /** Applies the OpenAI prefer flag again on the credential chain after its apply failed. */
+  private readonly _openaiPreferRetry = createApplyRetry('OpenAI Prefer API key', PREFER_APPLY_RETRY_DELAYS_MS, () => void this._openaiPreferChanged('retry'));
+  /** Runs the custom-provider sync again after one that failed or was cut short left a provider's prefer flag unapplied. */
+  private readonly _providerPreferRetry = createApplyRetry('provider Prefer API key', PREFER_APPLY_RETRY_DELAYS_MS, () => void this.syncCustomProviders((key) => this._platform.secrets.get(key)));
   /** Whether each key provider's key is saved, from the last custom-provider sync that read its secret; absent before. */
   private readonly _providerKeySaved = new Map<KeyProviderId, boolean>();
   /** Key providers whose pi sign-in is running; the custom-provider sync leaves them alone until it ends. */
   private readonly _signingIn = new Set<SignInProviderId>();
   /** Each provider's plan model ids from auth.json's last read; null until read, and cleared when auth.json or a sign-in changes. */
   private _planModels: ReadonlyMap<string, ReadonlySet<string>> | null = null;
-  private _providerPreferResyncPending = false;
   /** The custom-provider sync running now; syncs never overlap, since each decides from inputs read before its awaits. */
   private _customProviderSyncRun: Promise<CustomProviderSyncOutcome> | null = null;
   /** The one sync queued behind the running one, which every call made meanwhile shares; it reads with the newest call's resolver. */
@@ -541,6 +550,7 @@ export class PiRuntime {
       void recording.finally(() => {
         this._openaiKeyRecording = null;
       });
+      this._preferSettingsListener = this._platform.settings.onDidChange('damocles', (change) => this._preferSettingChanged(change));
     }
   }
 
@@ -692,8 +702,8 @@ export class PiRuntime {
 
   /**
    * Fires once the runtime published the sessions it holds and the judge status for an OpenAI credential change no Settings
-   * handler publishes: another window's write of the key secret or of the prefer flag, or init's move of an auth.json key into
-   * the secret. Subscribing does not create the singleton.
+   * handler publishes: another window's write of the key secret, a prefer setting change this process's setter did not make, or
+   * init's move of an auth.json key into the secret. Subscribing does not create the singleton.
    */
   static onOpenAICredentialChange(listener: () => void): () => void {
     openaiCredentialListeners.add(listener);
@@ -1126,14 +1136,61 @@ export class PiRuntime {
   }
 
   /**
-   * Another window's prefer flag, read here first: `_resyncOpenAI`, then the sessions' account state and the judge status, which
-   * read the key rule the sync applied, and the OpenAI row and every other panel through `onOpenAICredentialChange`.
+   * A Prefer API key setting changed, whoever wrote it: another window, a settings.json edit or a settings row. A flag this process's
+   * setter is writing is skipped, since that write's own sync applies it and its caller publishes (docs/invariants.md "Agent auth store").
    */
-  private async _resyncOpenAIAndRepublish(reason: string): Promise<void> {
-    await this._resyncOpenAI(reason, true);
+  private _preferSettingChanged(change: SettingsChange): void {
     if (this._disposed) return;
-    this._publishAccountInfoToSessions();
-    notifyOpenAICredentialListeners();
+    if (change.affects(OPENAI_PREFER_API_KEY_SETTING) && this._openaiPreferWrites === 0) void this._openaiPreferChanged('change');
+    if (KEY_PROVIDER_IDS.some((provider) => change.affects(preferApiKeySetting(provider)) && !this._providerPreferWrites.has(provider) && this._providerPreferUnapplied(provider))) {
+      // before init a key sync runs nothing and so publishes nothing, while the rows already read the setting
+      if (this._modelRuntime) {
+        this._providerPreferRetry.reset();
+        void this.syncCustomProviders((key) => this._platform.secrets.get(key));
+      } else notifyUnsyncedAccountChange();
+    }
+  }
+
+  /** The sync skips a provider while it signs in, and that sign-in's final sync applies the flag. */
+  private _providerPreferUnapplied(provider: KeyProviderId): boolean {
+    return !(this._signingIn as ReadonlySet<string>).has(provider) && readPreferProviderApiKey(this._platform.settings, provider) !== this._appliedProviderPrefer.get(provider);
+  }
+
+  /** A provider whose flag differs from the one the last sync applied, outside a sign-in and this process's own write, which apply it themselves. */
+  private _anyProviderPreferUnapplied(): boolean {
+    return KEY_PROVIDER_IDS.some((provider) => !this._providerPreferWrites.has(provider) && this._providerPreferUnapplied(provider));
+  }
+
+  /**
+   * Decided on the credential chain, so a value another sync on it already applied, this process's own write's included, changes
+   * nothing here. Only a `change` publishes: the sessions' account state and the judge status, and the OpenAI row and every other
+   * panel through `onOpenAICredentialChange`; a `write`'s Settings handler publishes after it, and a `retry` follows a change
+   * already published. A failed apply is retried (`_openaiPreferRetry`).
+   */
+  private _openaiPreferChanged(cause: 'change' | 'write' | 'retry'): Promise<void> {
+    const publish = cause === 'change';
+    if (cause !== 'retry') this._openaiPreferRetry.reset();
+    // init's first sync publishes no prefer value, so a change heard before any sync applied one is published here
+    const appliedBefore = this._appliedPreferApiKey !== null;
+    if (publish && this._openaiSignInsPending > 0) this._publishAccountStateToSessions();
+    return this._withOpenAICredentialSync(async () => {
+      if (this._disposed) return;
+      const prefer = readPreferOpenAIApiKey(this._platform.settings);
+      if (prefer === this._appliedPreferApiKey && appliedBefore) return;
+      // before the model runtime exists only the publication is owed: init's own sync applies the flag to pi
+      if (prefer !== this._appliedPreferApiKey && this._modelRuntime) {
+        try {
+          await this._syncOpenAIRuntimeKeyNow();
+        } catch (err) {
+          log('[PiRuntime] OpenAI runtime key sync after a prefer-API-key change failed: %s', describeAuthError(err));
+          this._openaiPreferRetry.failed();
+        }
+        if (this._disposed) return;
+      }
+      if (!publish) return;
+      this._publishAccountInfoToSessions();
+      notifyOpenAICredentialListeners();
+    }).catch((err: unknown) => log('[PiRuntime] applying a prefer-API-key change failed: %s', describeAuthError(err)));
   }
 
   /** Whether init has succeeded, waiting for the attempt in flight; starts none, since init runs only for a caller that needs the runtime. */
@@ -1459,17 +1516,6 @@ export class PiRuntime {
   }
 
   /**
-   * Re-apply the active tool set to every open panel when `damocles.pi.webSearch.enabled` changes
-   * (Phase 7). The web tools are native per-session tools built up front, so the toggle is purely an
-   * active-set membership change — no install, no `resourceLoader.reload()`. Effective next turn. Starts no init: a folder
-   * exists only once init succeeded, and one created later reads the setting itself.
-   */
-  async refreshWebSearch(): Promise<void> {
-    if (this._disposed) return;
-    for (const folder of this.folders()) folder.refreshActiveTools();
-  }
-
-  /**
    * Register/authenticate the key-backed providers (`KEYED_PROVIDER_DEFS`) on the shared registry
    * from each one's secret (Phase 5, US-018.8). Idempotent and fail-soft: called on
    * session start and on secret change so subagents can reach those models by explicit id (no loopback
@@ -1518,9 +1564,9 @@ export class PiRuntime {
     // `clientAuthSnapshot` sends the saved keys and prefer flags, and one a sign-in outranks changes nothing else it carries
     let snapshotChanged = false;
     const modelRuntime = this._modelRuntime;
-    // read directly, not through `this.flatFeeKeyProviders()`, whose prefer check would schedule a second sync
     const flatFeeBefore = flatFeeKeyProviders(modelRuntime, this._platform.remote);
     const preferRead = new Map<KeyProviderId, boolean>();
+    let preferRecorded = false;
     try {
       const { wired, aborted, notWired, changed, keysSaved } = await syncCustomProviders({
         modelRuntime,
@@ -1532,7 +1578,7 @@ export class PiRuntime {
         },
         agentDir: this._agentDir,
         preferApiKey: (provider) => {
-          const prefer = readPreferProviderApiKey(this._platform.state, provider);
+          const prefer = readPreferProviderApiKey(this._platform.settings, provider);
           preferRead.set(provider, prefer);
           return prefer;
         },
@@ -1546,6 +1592,7 @@ export class PiRuntime {
           if (this._appliedProviderPrefer.get(provider) !== prefer) snapshotChanged = true;
           this._appliedProviderPrefer.set(provider, prefer);
         }
+        preferRecorded = true;
       }
       for (const [provider, saved] of keysSaved) {
         if (this._providerKeySaved.get(provider) !== saved) snapshotChanged = true;
@@ -1569,12 +1616,16 @@ export class PiRuntime {
       return { wired: [], notWired: [], timedOut };
     } finally {
       // a sync the dispose aborted ends with nothing published
-      if (!this._disposed) this._endCustomProviderRun(modelRuntime, flatFeeBefore, republishAccount, snapshotChanged);
+      if (!this._disposed) this._endCustomProviderRun(modelRuntime, flatFeeBefore, republishAccount, snapshotChanged, preferRecorded);
     }
   }
 
-  /** A sync's end: the folders' tools and the account state, judge status and key statuses its changes reach. */
-  private _endCustomProviderRun(modelRuntime: ModelRuntime, flatFeeBefore: ReadonlySet<string>, republishAccount: boolean, snapshotChanged: boolean): void {
+  /**
+   * A sync's end: the folders' tools and the account state, judge status and key statuses its changes reach. A prefer flag that
+   * differs from the one applied then gets one more sync, at once when it changed after this sync read it (`preferRecorded`), else
+   * after a backoff (`_providerPreferRetry`).
+   */
+  private _endCustomProviderRun(modelRuntime: ModelRuntime, flatFeeBefore: ReadonlySet<string>, republishAccount: boolean, snapshotChanged: boolean, preferRecorded: boolean): void {
     // GenerateImage's eligibility reads `hasConfiguredAuth('openrouter')`, which only now reflects the secret.
     for (const folder of this.folders()) folder.refreshActiveTools();
     this._customProvidersSynced = true;
@@ -1583,9 +1634,12 @@ export class PiRuntime {
     const signInChanged = this._accountChangeUnpublished;
     this._accountChangeUnpublished = false;
     const accountChanged = signInChanged || republishAccount || flatFeeAfter.size !== flatFeeBefore.size || [...flatFeeAfter].some((p) => !flatFeeBefore.has(p));
+    // a daemon's core reads no prefer setting: its flags are each client's clientAuth
+    const preferUnapplied = !this._platform.remote && this._anyProviderPreferUnapplied();
     if (accountChanged) this._publishAccountInfoToSessions();
     else {
-      if (snapshotChanged) notifyClientAuthListeners();
+      // clientAuth carries each flag from settings, so a flag this sync could not apply has still changed there
+      if (snapshotChanged || (preferUnapplied && !preferRecorded)) notifyClientAuthListeners();
       notifyMemoryJudgeListeners();
     }
     // Isolated: a throw here would replace the sync's result and skip the listeners after it.
@@ -1596,6 +1650,11 @@ export class PiRuntime {
         log('[PiRuntime] custom provider sync listener failed: %O', err);
       }
     }
+    if (this._platform.remote) return;
+    if (preferRecorded) this._providerPreferRetry.reset();
+    if (!preferUnapplied) return;
+    if (preferRecorded) void this.syncCustomProviders((key) => this._platform.secrets.get(key));
+    else this._providerPreferRetry.failed();
   }
 
   /**
@@ -1826,47 +1885,10 @@ export class PiRuntime {
     return resolved?.source === 'OAuth' ? resolved.auth.apiKey : undefined;
   }
 
-  /**
-   * The prefer-API-key toggle. It is global state, which another VS Code window can change with no event, so a read
-   * that differs from what the last runtime key sync applied re-applies it here and republishes. A daemon's core applies
-   * no key and reads the pinned (else acting) client's flag.
-   */
+  /** The prefer-API-key setting; a daemon's core applies no key and reads the pinned (else acting) client's flag. */
   preferOpenAIApiKey(): boolean {
     const remote = this._platform.remote;
-    if (remote) return clientPrefersApiKey(remote, OPENAI_API_PROVIDER);
-    const prefer = readPreferOpenAIApiKey(this._platform.state);
-    // while this process writes the flag, a new value is that write's, whose own sync applies it and whose caller publishes
-    if (this._openaiPreferWrites > 0 || this._disposed) return prefer;
-    if (this._appliedPreferApiKey !== null && prefer !== this._appliedPreferApiKey && !this._preferResyncPending) {
-      this._preferResyncPending = true;
-      void this._resyncOpenAIAndRepublish('a prefer-API-key change in another window').finally(() => {
-        this._preferResyncPending = false;
-      });
-    }
-    return prefer;
-  }
-
-  /**
-   * A key provider's prefer-API-key flag, global state like the OpenAI one: a read that differs from what the last
-   * custom-provider sync applied (another window changed it) re-applies the keys, whose listeners republish. A daemon's
-   * core applies no key and reads the pinned (else acting) client's flag.
-   */
-  preferProviderApiKey(provider: KeyProviderId): boolean {
-    const remote = this._platform.remote;
-    if (remote) return clientPrefersApiKey(remote, provider);
-    const prefer = readPreferProviderApiKey(this._platform.state, provider);
-    // The sync skips a provider while it signs in, so a resync would not apply the flag; the sign-in's own final sync does.
-    if ((this._signingIn as ReadonlySet<string>).has(provider)) return prefer;
-    // a value this process is writing is applied by that write's own sync
-    if (this._providerPreferWrites.has(provider)) return prefer;
-    const applied = this._appliedProviderPrefer.get(provider);
-    if (applied !== undefined && prefer !== applied && !this._providerPreferResyncPending) {
-      this._providerPreferResyncPending = true;
-      void this.syncCustomProviders((key) => this._platform.secrets.get(key)).finally(() => {
-        this._providerPreferResyncPending = false;
-      });
-    }
-    return prefer;
+    return remote ? clientPrefersApiKey(remote, OPENAI_API_PROVIDER) : readPreferOpenAIApiKey(this._platform.settings);
   }
 
   /** Prefer the saved key over a stored sign-in for `provider`, or not, and re-apply the keys. */
@@ -1876,12 +1898,20 @@ export class PiRuntime {
     await this.init();
     this._providerPreferWrites.set(provider, (this._providerPreferWrites.get(provider) ?? 0) + 1);
     try {
-      await this._platform.state.global.update(providerPreferApiKeyState(provider), preferApiKey);
+      await this._platform.settings.update(preferApiKeySetting(provider), preferApiKey, 'user').catch((err: unknown) => {
+        throw userSettingWriteError(this._platform.settings, err);
+      });
+      // fail-soft: a provider the sync could not apply stays not wired, and a later sync retries the written flag
       await this.syncCustomProviders((key) => this._platform.secrets.get(key));
     } finally {
       const writes = (this._providerPreferWrites.get(provider) ?? 1) - 1;
       if (writes > 0) this._providerPreferWrites.set(provider, writes);
       else this._providerPreferWrites.delete(provider);
+      // the listener skipped every event while the write ran, another writer's too, so a value its sync did not read is applied here
+      if (writes <= 0 && !this._disposed && this._providerPreferUnapplied(provider)) {
+        this._providerPreferRetry.reset();
+        void this.syncCustomProviders((key) => this._platform.secrets.get(key));
+      }
     }
   }
 
@@ -1949,13 +1979,14 @@ export class PiRuntime {
   }
 
   /**
-   * Runs on `_openaiCredentialSync`. A key other than the one the last sync read is a new request credential: the usage plans
-   * and the `openai` breaker reset once the sync settled, since a request claimed before then may carry the old key.
+   * Runs on `_openaiCredentialSync`. A key or prefer flag other than the one the last sync read is a new request credential: the
+   * usage plans and the `openai` breaker reset once the sync settled, since a request claimed before then may carry the old one.
    */
   private async _syncOpenAIRuntimeKeyNow(): Promise<void> {
     if (!this._modelRuntime) throw new Error('PiRuntime: runtime not initialized');
     const remote = this._platform.remote;
-    const preferApiKey = remote ? clientPrefersApiKey(remote, OPENAI_API_PROVIDER) : readPreferOpenAIApiKey(this._platform.state);
+    const preferApiKey = remote ? clientPrefersApiKey(remote, OPENAI_API_PROVIDER) : readPreferOpenAIApiKey(this._platform.settings);
+    const preferChanged = this._appliedPreferApiKey !== null && preferApiKey !== this._appliedPreferApiKey;
     let keyChanged = false;
     try {
       await syncOpenAIRuntimeKey({
@@ -1975,8 +2006,9 @@ export class PiRuntime {
         ...(this._platform.remote ? { remote: this._platform.remote } : {}),
       });
       this._appliedPreferApiKey = preferApiKey;
+      this._openaiPreferRetry.reset();
     } finally {
-      if (keyChanged) {
+      if (keyChanged || preferChanged) {
         this.usage.credentialsChanged();
         this._openaiCredentialChanged();
       }
@@ -2048,24 +2080,38 @@ export class PiRuntime {
   }
 
   /**
-   * This window's prefer-API-key toggle: writes the flag and applies it; the caller publishes the result, failed or not. A failure
-   * leaves the flag as it was, so the stored flag agrees with the failure the caller reports and no later read resyncs it.
+   * This window's prefer-API-key toggle: writes the user setting and applies it; the caller publishes the result once, failed or
+   * not, after this settles. A failure puts back the user value it replaced while the setting still holds this write's value, so the
+   * setting agrees with the failure the caller reports and the value the runtime last applied, and the restore's own event resyncs
+   * nothing. A settings write that fails rejects with a `LocalizedError` naming the file and the reason.
    */
   async setOpenAIPreferApiKey(preferApiKey: boolean): Promise<void> {
     this._refuseRemoteSignIn();
     await this.init();
-    const stored = this._platform.state.global.get<unknown>(OPENAI_PREFER_API_KEY_STATE);
+    const settings = this._platform.settings;
+    const stored = settings.inspect<unknown>(OPENAI_PREFER_API_KEY_SETTING).userValue;
     this._openaiPreferWrites++;
     try {
-      await this._platform.state.global.update(OPENAI_PREFER_API_KEY_STATE, preferApiKey);
+      await settings.update(OPENAI_PREFER_API_KEY_SETTING, preferApiKey, 'user').catch((err: unknown) => {
+        throw userSettingWriteError(settings, err);
+      });
       try {
         await this.applyOpenAIPreferApiKey();
       } catch (err) {
-        await this._platform.state.global.update(OPENAI_PREFER_API_KEY_STATE, stored);
+        // another writer's value that landed meanwhile stays, and the compare below applies it
+        if (settings.inspect<unknown>(OPENAI_PREFER_API_KEY_SETTING).userValue === preferApiKey) {
+          try {
+            await settings.update(OPENAI_PREFER_API_KEY_SETTING, stored, 'user');
+          } catch (restoreErr) {
+            log('[PiRuntime] putting back the prefer-API-key setting after a failed apply failed: %s', describeAuthError(restoreErr));
+          }
+        }
         throw err;
       }
     } finally {
       this._openaiPreferWrites--;
+      // the listener skipped every event while the write ran, another writer's too; awaited, so the caller's one publication follows it
+      if (this._openaiPreferWrites === 0 && !this._disposed) await this._openaiPreferChanged('write');
     }
   }
 
@@ -2263,7 +2309,7 @@ export class PiRuntime {
       const type = stored?.type === 'oauth' ? 'oauth' : (listed.get(id) ?? 'none');
       const hasKey = listed.get(id) === 'api_key' || stored?.type === 'api_key' || (id === OPENAI_API_PROVIDER && this._openaiKeyPresent);
       const keySaved = this._providerKeySaved.get(id as KeyProviderId);
-      const preferApiKey = id === OPENAI_API_PROVIDER ? readPreferOpenAIApiKey(this._platform.state) : isKeyProviderId(id) && readPreferProviderApiKey(this._platform.state, id);
+      const preferApiKey = id === OPENAI_API_PROVIDER ? readPreferOpenAIApiKey(this._platform.settings) : isKeyProviderId(id) && readPreferProviderApiKey(this._platform.settings, id);
       providers[id] = {
         type,
         hasKey,
@@ -2661,12 +2707,10 @@ export class PiRuntime {
 
   /**
    * Key providers whose applied key bills a flat subscription (on a daemon's core, the pinned client's); empty before the
-   * model runtime exists. Every account and billing read passes here, so it also picks up a prefer flag another window changed.
+   * model runtime exists.
    */
   flatFeeKeyProviders(): ReadonlySet<string> {
     if (!this._modelRuntime) return new Set();
-    // The flag decides only between a key and a sign-in, so a provider with no sign-in cannot change billing through it.
-    for (const def of KEYED_PROVIDER_DEFS) if (def.signIn) this.preferProviderApiKey(def.provider);
     return flatFeeKeyProviders(this._modelRuntime, this._platform.remote);
   }
 
@@ -2994,6 +3038,10 @@ export class PiRuntime {
     this._broker = null;
     this._openaiKeyListener?.dispose();
     this._openaiKeyListener = null;
+    this._preferSettingsListener?.dispose();
+    this._preferSettingsListener = null;
+    this._openaiPreferRetry.dispose();
+    this._providerPreferRetry.dispose();
     if (this._userDebounce) {
       clearTimeout(this._userDebounce);
       this._userDebounce = null;

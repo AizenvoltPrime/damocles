@@ -1,7 +1,8 @@
-import type { KeyValueState } from '../../platform/key-value-state';
-import type { ExternalKeySource, KeyProviderId, ProviderCredentialActive } from '../../shared/settings-sections';
+import type { SettingsStore } from '../../platform/settings-store';
+import { KEY_PROVIDER_IDS, type ExternalKeySource, type KeyProviderId, type ProviderCredentialActive } from '../../shared/settings-sections';
 import { planModelIdsOf } from '../../shared/remote-user';
 import { logAuthReadFailure, readAuthFile } from './auth-file';
+import { OPENAI_PREFER_API_KEY_SETTING } from './openai-auth';
 
 /** A provider's credential in pi's auth.json: a sign-in (`oauth`) or a stored key (`api_key`). */
 export interface StoredProviderCredential {
@@ -14,15 +15,18 @@ export interface StoredProviderCredential {
 export type ProviderSignIns = Readonly<Record<string, StoredProviderCredential>>;
 
 /**
- * Global-state key: prefer the key saved in Damocles over a stored sign-in for a key provider. Global, as the OpenAI
+ * Setting: prefer the key saved in Damocles over a stored sign-in for a key provider. Application scope, as the OpenAI
  * flag is. A daemon's core never reads it: each client's flag travels in its clientAuth (`ClientAuthEntry.preferApiKey`).
  */
-export function providerPreferApiKeyState(provider: KeyProviderId): string {
+export function preferApiKeySetting(provider: KeyProviderId): string {
   return `damocles.${provider}.preferApiKey`;
 }
 
-export function readPreferProviderApiKey(state: Pick<KeyValueState, 'global'>, provider: KeyProviderId): boolean {
-  return state.global.get<boolean>(providerPreferApiKeyState(provider), false);
+/** Every Prefer API key setting; package.json contributes each as application scope with `ignoreSync`, since the keys it chooses between are per machine. */
+export const PREFER_API_KEY_SETTINGS: readonly string[] = [OPENAI_PREFER_API_KEY_SETTING, ...KEY_PROVIDER_IDS.map(preferApiKeySetting)];
+
+export function readPreferProviderApiKey(settings: Pick<SettingsStore, 'get'>, provider: KeyProviderId): boolean {
+  return settings.get<unknown>(preferApiKeySetting(provider)) === true;
 }
 
 /** Whether the key saved in Damocles is applied as pi's runtime key, which overrides a stored sign-in. */

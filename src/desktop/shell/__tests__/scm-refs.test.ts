@@ -72,6 +72,7 @@ const disabledIds = (items: readonly OverlayMenuItem[]): string[] => items.flatM
 
 const mounted: VueWrapper[] = [];
 
+
 beforeEach(() => {
   shellI18n.global.locale.value = 'en';
   vi.stubGlobal('ResizeObserver', FakeResizeObserver);

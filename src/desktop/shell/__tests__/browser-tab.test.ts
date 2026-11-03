@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
+import { canonicalHostColor } from '@shared/host-colors';
 import type { OverlayAnswer, OverlayRequest } from '../../preload/overlay-channels';
 import type { DamoclesShellApi, ShellBrowserPage, ShellEditorTab } from '../../preload/shell-channels';
 import BrowserTab from '../editor/BrowserTab.vue';
@@ -73,7 +74,7 @@ describe('browser page helpers', () => {
 
 describe('navigation bar', () => {
   it("shows where a remote chat's forwarded page lives, tinted with its host's color, and nothing for any other page", async () => {
-    const { wrapper } = mountTab(pageTab({ url: 'http://localhost:5174/', forwardedFrom: { hostId: 'h1', hostName: 'prod-1', hostTone: 'success', targetUrl: 'http://localhost:5173/' } }));
+    const { wrapper } = mountTab(pageTab({ url: 'http://localhost:5174/', forwardedFrom: { hostId: 'h1', hostName: 'prod-1', hostColor: 'success', targetUrl: 'http://localhost:5173/' } }));
     const chip = wrapper.get('[data-testid="browser-forwarded-from"]');
     expect(chip.text()).toBe('Forwarded from prod-1:5173');
     expect(chip.attributes('title')).toBe('Forwarded from prod-1:5173');
@@ -83,6 +84,11 @@ describe('navigation bar', () => {
     expect(plain.wrapper.find('[data-testid="browser-forwarded-from"]').exists()).toBe(false);
     const untinted = mountTab(pageTab({ forwardedFrom: { hostId: 'h1', hostName: 'prod-1', targetUrl: 'http://localhost:8000/' } }), fakeShellApi());
     expect(untinted.wrapper.get('[data-testid="browser-forwarded-from"]').classes()).toContain('d-tone-muted');
+    const custom = mountTab(pageTab({ forwardedFrom: { hostId: 'h1', hostName: 'prod-1', hostColor: canonicalHostColor('#00809a99')!, targetUrl: 'http://localhost:8000/' } }), fakeShellApi());
+    const customChip = custom.wrapper.get<HTMLElement>('[data-testid="browser-forwarded-from"]');
+    expect(customChip.classes()).toContain('d-tone-custom');
+    expect(customChip.element.style.getPropertyValue('--host-rgb')).toBe('0 128 154');
+    expect(customChip.element.style.getPropertyValue('--host-alpha')).toBe('0.6');
   });
 
   it('reflects the page in disabled controls and sends each action for its tab', async () => {

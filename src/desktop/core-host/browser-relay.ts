@@ -9,7 +9,7 @@ import type { PiCodingAgentModule } from '../../core/pi-session/pi-loader';
 import { buildBrowserPiTools } from '../../core/pi-session/tools/browser-tools';
 import type { PanelHost } from '../../platform/window-service';
 import { LocalizedError } from '../../shared/localized-text';
-import { CHAT_BROWSER_SCOPE, type BrowserToolAnswer } from '../../shared/remote-user';
+import { CHAT_BROWSER_SCOPE, FOREIGN_VIEW_NOT_ATTACHED, type BrowserToolAnswer } from '../../shared/remote-user';
 
 export interface RemoteBrowsersDeps {
   readonly browsers: BrowserServices;
@@ -37,7 +37,7 @@ export function createRemoteBrowsers(deps: RemoteBrowsersDeps): RemoteBrowsers {
     tool: async ({ authority, viewId, scope, tool, input }, signal) => {
       if (!deps.enabled()) throw new LocalizedError(l('The browser is off on the computer that shows this chat. Turn it on in Damocles\' Settings there.'));
       const view = deps.foreign(viewId);
-      if (!view || view.authority !== authority) throw new Error('The remote chat view is not attached');
+      if (!view || view.authority !== authority) throw new Error(FOREIGN_VIEW_NOT_ATTACHED);
       const pi = deps.pi();
       if (!pi) throw new Error('pi is not loaded on this computer');
       const key = JSON.stringify([authority, viewId, scope]);

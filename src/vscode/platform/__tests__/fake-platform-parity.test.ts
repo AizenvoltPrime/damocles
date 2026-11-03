@@ -9,6 +9,7 @@ import { renderLocalizedText, type LocalizedText } from '../../../shared/localiz
 import { createDesktopLocalizationService } from '../../../desktop/local-services/localization-service';
 import { REPO_ROOT } from '../../../__mocks__/source-tree';
 import { renderVsCode } from '../localization-service';
+import { createVsCodePlatform } from '../index';
 import { VSCODE_HOST_CAPABILITIES } from '../../../shared/types/messages';
 
 // Tests of core code trust the fake to deliver what the VS Code host delivers.
@@ -140,6 +141,47 @@ describe('host capabilities parity', () => {
       chatReview: false,
       worktrees: false,
       bypassPermissions: true,
+      globalMemoryOnServer: false,
+    });
+  });
+
+  describe('global memory is the server\'s only where the extension itself runs there', () => {
+    const contextOfKind = (extensionKind: vscode.ExtensionKind) => ({
+      extensionUri: { fsPath: REPO_ROOT },
+      subscriptions: [],
+      secrets: {},
+      globalState: {},
+      workspaceState: {},
+      extension: { packageJSON: { version: '9.9.9' }, extensionKind },
+    }) as unknown as vscode.ExtensionContext;
+    // VS Code defines env.remoteName in the local extension host too whenever a remote one exists.
+    const inWindow = (remoteName: string | undefined, run: () => void): void => {
+      const env = vscode.env as { remoteName?: string };
+      if (remoteName !== undefined) env.remoteName = remoteName;
+      try {
+        run();
+      } finally {
+        delete env.remoteName;
+      }
+    };
+
+    it('a remote window with the extension on the workspace side reports true', () => {
+      inWindow('ssh-remote', () => {
+        expect(createVsCodePlatform(contextOfKind(vscode.ExtensionKind.Workspace)).capabilities)
+          .toStrictEqual({ ...VSCODE_HOST_CAPABILITIES, globalMemoryOnServer: true });
+      });
+    });
+
+    it('a remote window with the extension forced to the UI side reports false', () => {
+      inWindow('ssh-remote', () => {
+        expect(createVsCodePlatform(contextOfKind(vscode.ExtensionKind.UI)).capabilities.globalMemoryOnServer).toBe(false);
+      });
+    });
+
+    it('a local window reports false', () => {
+      inWindow(undefined, () => {
+        expect(createVsCodePlatform(contextOfKind(vscode.ExtensionKind.UI)).capabilities).toStrictEqual(VSCODE_HOST_CAPABILITIES);
+      });
     });
   });
 });

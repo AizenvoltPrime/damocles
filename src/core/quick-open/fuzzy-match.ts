@@ -324,21 +324,30 @@ export interface QuickOpenQueryParts {
   readonly filter: string;
   // 1-based; absent without a line suffix
   readonly line?: number;
+  // 1-based; present only with line
+  readonly column?: number;
   // the query started with '@': the pick is mentioned in the chat instead of opened
   readonly mention: boolean;
 }
 
-// A line past this reads as no line (the editor clamps to its last line anyway).
-const MAX_LINE = 10_000_000;
+// A line or column past this reads as none (the editor clamps to its last line and column anyway).
+// Must stay at or below MAX_EDITOR_LINE (src/desktop/preload/shell-channels.ts), or main refuses the pick.
+export const MAX_POSITION = 10_000_000;
 
-/** Splits a Quick Open query into its '@' prefix, its filter and its `:line` suffix. */
+function positionOf(digits: string | undefined): number | undefined {
+  if (digits === undefined || digits === '') return undefined;
+  const value = Number.parseInt(digits, 10);
+  return value >= 1 && value <= MAX_POSITION ? value : undefined;
+}
+
+/** Splits a Quick Open query into its '@' prefix, its filter and its `:line[:column]` suffix. */
 export function parseQuickOpenQuery(query: string): QuickOpenQueryParts {
   const mention = query.startsWith('@');
   const rest = mention ? query.slice(1) : query;
   const match = LINE_PATTERN.exec(rest);
   if (!match) return { filter: rest.trim(), mention };
   const filter = rest.slice(0, match.index).trim();
-  const digits = match[1] ?? '';
-  const line = digits === '' ? undefined : Number.parseInt(digits, 10);
-  return { filter, mention, ...(line !== undefined && line >= 1 && line <= MAX_LINE ? { line } : {}) };
+  const line = positionOf(match[1]);
+  const column = line === undefined ? undefined : positionOf(match[2]);
+  return { filter, mention, ...(line !== undefined ? { line } : {}), ...(column !== undefined ? { column } : {}) };
 }

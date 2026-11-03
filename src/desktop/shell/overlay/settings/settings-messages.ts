@@ -1,6 +1,5 @@
 import { applyLocale, loadLocale, i18n as webviewI18n } from '@/i18n';
-import { shellI18n } from '../../i18n';
-import type { ShellLocale } from '../../../preload/shell-channels';
+import { loadShellLocale, shellI18n } from '../../i18n';
 import { ACCOUNT_PROVIDER_IDS } from '@shared/settings-sections';
 
 /** The webview namespaces the settings components the overlay mounts read (the host tab's MCP panel included); only `overlay` is also a shell namespace, whose keys the merge adds beside the shell's. */
@@ -17,15 +16,28 @@ export function addSettingsMessages(): void {
   }
 }
 
-let latest: ShellLocale | undefined;
+let latest: string | undefined;
+let pending: Promise<void> | undefined;
+
+/** The latest applySettingsLocale while it is under way, which a settings request waits for (createLocaleHold's gate). */
+export function settingsLocalePending(): Promise<void> | undefined {
+  return pending;
+}
 
 /**
- * Loads the settings components' webview messages and core's catalog in `locale`, then sets the webview's locale, which
- * core's text renders in; of overlapping calls the last one wins, and a failed load (logged) leaves both as they were.
+ * Loads the settings components' webview messages, core's catalog and the shell's catalog in `locale`, then sets the
+ * webview's locale, which core's text renders in; of overlapping calls the last one wins, and a failed load (logged) leaves
+ * both as they were.
  */
-export async function applySettingsLocale(locale: ShellLocale): Promise<void> {
+export function applySettingsLocale(locale: string): Promise<void> {
   latest = locale;
-  if (!(await loadLocale(locale)) || latest !== locale) return;
-  addSettingsMessages();
-  await applyLocale(locale);
+  const applied = Promise.all([loadLocale(locale), loadShellLocale(locale)]).then(async (loaded) => {
+    if (!loaded.every(Boolean) || latest !== locale) return;
+    addSettingsMessages();
+    await applyLocale(locale);
+  }).finally(() => {
+    if (pending === applied) pending = undefined;
+  });
+  pending = applied;
+  return applied;
 }

@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -9,8 +7,11 @@ import { VOICE_EXTRACT_WORKER_MARKER, type ExtractEvent, type ExtractWorkerData 
 import type { GpuDetection } from "./gpu-detect";
 import { requireVoiceRuntimePlatform, type PbsTriple } from "./supported-platforms";
 import tarballChecksums from "./tarball-checksums.json";
-import { l, verbatim, withDetail } from "../../l10n";
+import { errorTextOf, l, verbatim, withDetail } from "../../l10n";
 import { LocalizedError, type LocalizedText } from "../../../shared/localized-text";
+import { CancelledError, DownloadHttpError, downloadToPartial } from "../download";
+
+export { CancelledError, ChecksumMismatchError, DownloadHttpError, EmptyDownloadError } from "../download";
 
 /** Auth env vars that must never leak into a Damocles-spawned subprocess (they belong to the Claude CLI). */
 const STRIPPED_ENV_KEYS: readonly string[] = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"];
@@ -53,28 +54,6 @@ export type RuntimeInstallProgress = {
 };
 
 export type RuntimeInstallProgressCallback = (p: RuntimeInstallProgress) => void;
-
-export class ChecksumMismatchError extends Error {
-  readonly expected: string;
-  readonly actual: string;
-  readonly url: string;
-  constructor(url: string, expected: string, actual: string) {
-    super(
-      `SHA-256 mismatch for ${url}: expected ${expected.slice(0, 12)}…, got ${actual.slice(0, 12)}…`,
-    );
-    this.name = "ChecksumMismatchError";
-    this.expected = expected;
-    this.actual = actual;
-    this.url = url;
-  }
-}
-
-export class CancelledError extends Error {
-  constructor() {
-    super("Operation cancelled");
-    this.name = "CancelledError";
-  }
-}
 
 type PbsRelease = {
   release: string;
@@ -153,97 +132,31 @@ export type DownloadOptions = {
 export async function downloadWithResumeAndVerify(opts: DownloadOptions): Promise<void> {
   const partialFile = `${opts.destFile}.partial`;
   await fs.mkdir(dirname(opts.destFile), { recursive: true });
-  const fetchImpl = opts.fetchImpl ?? fetch;
-
-  let resumeFrom = 0;
-  try {
-    const stat = await fs.stat(partialFile);
-    resumeFrom = stat.size;
-  } catch {
-    resumeFrom = 0;
-  }
-
-  const headers: Record<string, string> = {};
-  if (resumeFrom > 0) headers["Range"] = `bytes=${resumeFrom}-`;
-
-  const response = await fetchImpl(opts.url, {
-    headers,
+  const onProgress = opts.onProgress;
+  await downloadToPartial({
+    url: opts.url,
+    partialFile,
+    expectedSha256: isPlaceholderChecksum(opts.expectedSha256) ? undefined : opts.expectedSha256,
+    fetchImpl: opts.fetchImpl ?? fetch,
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    ...(onProgress !== undefined
+      ? {
+          onBytes: (received: number, total: number) => onProgress({
+            stage: "downloading-python",
+            pct: total > 0 ? Math.min(60, Math.floor((received / total) * 60)) : 30,
+            message: l("Downloaded {0} MB of {1} MB", megabytes(received), megabytes(total)),
+            bytesReceived: received,
+            bytesTotal: total,
+          }),
+        }
+      : {}),
   });
-  if (!(response.ok || response.status === 206)) {
-    throw new Error(`Download failed (${response.status} ${response.statusText}): ${opts.url}`);
-  }
-  if (resumeFrom > 0 && response.status === 200) {
-    await fs.rm(partialFile, { force: true });
-    resumeFrom = 0;
-  }
-
-  const totalHeader = response.headers.get("content-length");
-  const contentLength = totalHeader === null ? 0 : Number(totalHeader);
-  const totalBytes = resumeFrom + contentLength;
-
-  const flag = resumeFrom > 0 ? "a" : "w";
-  const writeStream = createWriteStream(partialFile, { flags: flag });
-  let receivedSinceStart = 0;
-
-  if (response.body === null) {
-    writeStream.end();
-    throw new Error(`Empty response body for ${opts.url}`);
-  }
-  const reader = response.body.getReader();
-  try {
-    while (true) {
-      if (opts.signal?.aborted === true) {
-        await new Promise<void>((resolve) => writeStream.end(resolve));
-        throw new CancelledError();
-      }
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value as ArrayBuffer);
-      const ok = writeStream.write(chunk);
-      if (!ok) await new Promise<void>((resolve) => writeStream.once("drain", () => resolve()));
-      receivedSinceStart += chunk.byteLength;
-      if (opts.onProgress !== undefined) {
-        const totalReceived = resumeFrom + receivedSinceStart;
-        const pct = totalBytes > 0 ? Math.min(60, Math.floor((totalReceived / totalBytes) * 60)) : 30;
-        const args: RuntimeInstallProgress = {
-          stage: "downloading-python",
-          pct,
-          message: l("Downloaded {0} MB of {1} MB", megabytes(totalReceived), megabytes(totalBytes)),
-          bytesReceived: totalReceived,
-          bytesTotal: totalBytes,
-        };
-        opts.onProgress(args);
-      }
-    }
-  } finally {
-    await new Promise<void>((resolve) => writeStream.end(resolve));
-  }
-
-  if (!isPlaceholderChecksum(opts.expectedSha256)) {
-    const actual = await sha256OfFile(partialFile);
-    if (actual.toLowerCase() !== opts.expectedSha256.toLowerCase()) {
-      await fs.rm(partialFile, { force: true });
-      throw new ChecksumMismatchError(opts.url, opts.expectedSha256, actual);
-    }
-  }
-
   await fs.rename(partialFile, opts.destFile);
 }
 
 // Megabytes to a tenth, which the renderer formats in its locale.
 function megabytes(bytes: number): { number: number } {
   return { number: Math.round((bytes / 1024 / 1024) * 10) / 10 };
-}
-
-async function sha256OfFile(path: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const hash = createHash("sha256");
-    const stream = createReadStream(path);
-    stream.on("data", (chunk) => hash.update(chunk));
-    stream.on("end", () => resolve(hash.digest("hex")));
-    stream.on("error", (err) => reject(err));
-  });
 }
 
 /** Starts the extraction worker for one archive. */
@@ -278,7 +191,7 @@ export async function extractTarball(
         else reject(new Error(event.message));
       });
       worker.on("error", reject);
-      worker.on("exit", (code) => reject(new Error(`voice extract worker exited with code ${code} before answering`)));
+      worker.on("exit", (code) => reject(new LocalizedError(l("The voice runtime could not be extracted: the helper exited with code {0}.", String(code)))));
     });
   } catch (err) {
     await worker.terminate();
@@ -334,10 +247,7 @@ export async function downloadAndExtractPython(
       chosen = candidate;
       break;
     } catch (err) {
-      if (err instanceof ChecksumMismatchError) throw err;
-      if (err instanceof CancelledError) throw err;
-      const message = err instanceof Error ? err.message : String(err);
-      if (/\b404\b|Not Found/i.test(message)) {
+      if (err instanceof DownloadHttpError && err.status === 404) {
         lastError = err;
         continue;
       }
@@ -345,9 +255,8 @@ export async function downloadAndExtractPython(
     }
   }
   if (chosen === null) {
-    throw new Error(
-      `All ${candidates.length} python-build-standalone release(s) failed to download. ` +
-        `Most recent error: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+    throw new LocalizedError(
+      l("No python-build-standalone release could be downloaded. Most recent error: {0}", errorTextOf(lastError)),
     );
   }
   const tarballPath = join(opts.targetDir, `python-${chosen.release}.tar.gz`);

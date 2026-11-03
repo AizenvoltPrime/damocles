@@ -280,7 +280,7 @@ watch(() => props.toolUseId, resetState);
             <template #host>
               <HostBadge
                 :name="host.name"
-                :tone="host.color"
+                :color="host.color"
               />
             </template>
             <template #tool>

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { DEFAULT_MODELS, LEGACY_MODEL_MAP, migrateLegacyModelValue } from '../../../shared/types/constants';
-import { UNREAD_SETTINGS, migrateExploreSettings, migrateLegacyEffortSetting, migrateLegacyModelSetting, removeUnreadSettings, runLegacySettingsMigrations } from '../legacy-settings-migrations';
+import { UNREAD_SETTINGS, migrateExploreSettings, migrateLegacyEffortSetting, migrateLegacyModelSetting, movePreferApiKeyFlagsToSettings, preferApiKeyMovedMarker, removeUnreadSettings, runLegacySettingsMigrations } from '../legacy-settings-migrations';
 import type { SettingsScope, SettingsStore } from '../../../platform/settings-store';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { installLogSink } from '../../logger';
@@ -780,5 +780,121 @@ describe('runLegacySettingsMigrations', () => {
     expect(settings.inspect('damocles.maxThinkingTokens')).toStrictEqual({ projectValue: 8000 });
     expect(settings.inspect('damocles.model')).toStrictEqual({ projectValue: 'gpt-5.5', localValue: 'gpt-6.1-sol' });
     expect(logLines.join('\n')).toMatch(/scope=project.*untrusted folder/);
+  });
+});
+
+describe('movePreferApiKeyFlagsToSettings', () => {
+  const OPENAI = 'damocles.openai.preferApiKey';
+  const XAI = 'damocles.xai.preferApiKey';
+  const logLines: string[] = [];
+  beforeEach(() => {
+    logLines.length = 0;
+    installLogSink({ appendLine: (line: string) => void logLines.push(line), show: () => {}, dispose: () => {} });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('moves the OpenAI flag an older version kept in workspace state to user settings and clears it', async () => {
+    const { settings, state } = createFakePlatform({ workspaceState: { [OPENAI]: true } });
+    await movePreferApiKeyFlagsToSettings(state, settings);
+    expect(settings.inspect(OPENAI)).toStrictEqual({ userValue: true });
+    expect(state.workspace.get(OPENAI)).toBeUndefined();
+  });
+
+  it('moves each flag in global state to user settings and clears every state copy', async () => {
+    const { settings, state } = createFakePlatform({ globalState: { [OPENAI]: true, [XAI]: true }, workspaceState: { [OPENAI]: false } });
+    await movePreferApiKeyFlagsToSettings(state, settings);
+    expect(settings.inspect(OPENAI)).toStrictEqual({ userValue: true });
+    expect(settings.inspect(XAI)).toStrictEqual({ userValue: true });
+    for (const memento of [state.global, state.workspace]) {
+      expect(memento.get(OPENAI)).toBeUndefined();
+      expect(memento.get(XAI)).toBeUndefined();
+    }
+  });
+
+  // An older version moved a workspace copy only while global state held none, so global state's flag is the one in effect.
+  it('moves the global flag over a workspace copy an older version left beside it', async () => {
+    const { settings, state } = createFakePlatform({ globalState: { [OPENAI]: false }, workspaceState: { [OPENAI]: true } });
+    await movePreferApiKeyFlagsToSettings(state, settings);
+    expect(settings.inspect(OPENAI)).toStrictEqual({});
+    expect(state.global.get(OPENAI)).toBeUndefined();
+    expect(state.workspace.get(OPENAI)).toBeUndefined();
+  });
+
+  it('keeps a user value already in settings and still clears the state copies', async () => {
+    const { settings, state } = createFakePlatform({ settings: { user: { [XAI]: false } }, globalState: { [XAI]: true } });
+    const update = vi.spyOn(settings, 'update');
+    await movePreferApiKeyFlagsToSettings(state, settings);
+    expect(update).not.toHaveBeenCalled();
+    expect(settings.inspect(XAI)).toStrictEqual({ userValue: false });
+    expect(state.global.get(XAI)).toBeUndefined();
+  });
+
+  it('keeps the state copies and leaves the move unrecorded when the settings write fails, moves the other flags, and returns the notice', async () => {
+    const { settings, state } = createFakePlatform({ globalState: { [OPENAI]: true, [XAI]: true }, workspaceState: { [OPENAI]: true } });
+    const update = settings.update.bind(settings);
+    vi.spyOn(settings, 'update').mockImplementation((key, value, scope) => (key === OPENAI ? Promise.reject(new Error('settings.json is dirty')) : update(key, value, scope)));
+    const notice = await movePreferApiKeyFlagsToSettings(state, settings);
+    expect(settings.inspect(OPENAI)).toStrictEqual({});
+    expect(state.global.get(OPENAI)).toBe(true);
+    expect(state.workspace.get(OPENAI)).toBe(true);
+    expect(state.global.get(preferApiKeyMovedMarker(OPENAI))).toBeUndefined();
+    expect(settings.inspect(XAI)).toStrictEqual({ userValue: true });
+    expect(state.global.get(preferApiKeyMovedMarker(XAI))).toBe(true);
+    expect(logLines.join('\n')).toContain('settings.json is dirty');
+    expect(notice?.message).toMatch(/^Your Prefer API key over sign-in choice could not be moved to \{0\}/);
+    expect(notice?.args?.[1]).toStrictEqual({ message: '{0}', args: ['settings.json is dirty'] });
+
+    vi.mocked(settings.update).mockRestore();
+    await expect(movePreferApiKeyFlagsToSettings(state, settings)).resolves.toBeUndefined();
+    expect(settings.inspect(OPENAI)).toStrictEqual({ userValue: true });
+    expect(state.workspace.get(OPENAI)).toBeUndefined();
+  });
+
+  it('names the settings file the host keeps in the notice', async () => {
+    const { settings, state } = createFakePlatform({ globalState: { [XAI]: true } });
+    vi.spyOn(settings, 'scopeFile').mockReturnValue('/home/u/.damocles/settings.json');
+    vi.spyOn(settings, 'update').mockRejectedValue(new Error('Unexpected token } in JSON'));
+    const notice = await movePreferApiKeyFlagsToSettings(state, settings);
+    expect(notice?.args?.[0]).toBe('/home/u/.damocles/settings.json');
+  });
+
+  // VS Code keeps workspace state per workspace, so a window opened later can still hold a copy the first window never saw.
+  it('only clears a workspace copy a later window holds once the first window recorded the move, even when it wrote nothing', async () => {
+    const first = createFakePlatform({ globalState: { [OPENAI]: false } });
+    await movePreferApiKeyFlagsToSettings(first.state, first.settings);
+    expect(first.settings.inspect(OPENAI)).toStrictEqual({});
+    expect(first.state.global.get(OPENAI)).toBeUndefined();
+
+    const update = vi.spyOn(first.settings, 'update');
+    const laterWorkspace = createFakePlatform({ workspaceState: { [OPENAI]: true } }).state.workspace;
+    await movePreferApiKeyFlagsToSettings({ global: first.state.global, workspace: laterWorkspace }, first.settings);
+    expect(update).not.toHaveBeenCalled();
+    expect(first.settings.inspect(OPENAI)).toStrictEqual({});
+    expect(laterWorkspace.get(OPENAI)).toBeUndefined();
+  });
+
+  it('records the move before clearing, so a clear that fails is only a clear at the next start', async () => {
+    const { settings, state } = createFakePlatform({ globalState: { [OPENAI]: false }, workspaceState: { [OPENAI]: true } });
+    const clear = state.global.update.bind(state.global);
+    vi.spyOn(state.global, 'update').mockImplementation((key, value) => (key === OPENAI ? Promise.reject(new Error('state is read-only')) : clear(key, value)));
+    await movePreferApiKeyFlagsToSettings(state, settings);
+    expect(state.global.get(preferApiKeyMovedMarker(OPENAI))).toBe(true);
+    expect(state.global.get(OPENAI)).toBe(false);
+
+    vi.mocked(state.global.update).mockRestore();
+    await movePreferApiKeyFlagsToSettings(state, settings);
+    expect(settings.inspect(OPENAI)).toStrictEqual({});
+    expect(state.global.get(OPENAI)).toBeUndefined();
+    expect(state.workspace.get(OPENAI)).toBeUndefined();
+  });
+
+  it('moves nothing a second time, so every window can run it', async () => {
+    const { settings, state } = createFakePlatform({ globalState: { [XAI]: true } });
+    await movePreferApiKeyFlagsToSettings(state, settings);
+    await settings.update(XAI, false, 'user');
+    const update = vi.spyOn(settings, 'update');
+    await movePreferApiKeyFlagsToSettings(state, settings);
+    expect(update).not.toHaveBeenCalled();
+    expect(settings.inspect(XAI)).toStrictEqual({ userValue: false });
   });
 });

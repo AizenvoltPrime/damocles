@@ -51,9 +51,8 @@ const buttons = computed((): DialogButton[] => [
       />
       <HostBadge
         :name="request.hostName"
-        :tone="request.hostColor"
+        :color="request.hostColor"
         data-testid="git-consent-host"
-        :data-tone="request.hostColor ?? 'none'"
       />
     </p>
     <p

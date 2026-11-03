@@ -293,6 +293,26 @@ describe('buildToolStatus', () => {
   });
 });
 
+describe('buildToolStatus: switches the host\'s own settings file holds', () => {
+  const hostFile = (held: Record<string, unknown>): NonNullable<ToolStatusDeps['hostSettings']> => ({
+    inspect: <T>(key: string) => (Object.hasOwn(held, key) ? { machineValue: held[key] as T } : {}),
+  });
+
+  it('marks a group setOnHost and the tool list toolsSetOnHost only for a key whose machineValue is set', () => {
+    const snap = buildToolStatus(deps({ hostSettings: hostFile({ 'damocles.browser.enabled': true, 'damocles.tools.disabled': [] }) }));
+    expect(group(snap, 'browser').setOnHost).toBe(true);
+    for (const name of ['memory', 'compass', 'web', 'image', 'team', 'subagents', 'core']) expect(group(snap, name), name).not.toHaveProperty('setOnHost');
+    expect(snap.toolsSetOnHost).toBe(true);
+  });
+
+  it('leaves both absent without host settings (this computer\'s core) or when the host file holds neither', () => {
+    for (const snap of [buildToolStatus(deps({})), buildToolStatus(deps({ hostSettings: hostFile({}) }))]) {
+      expect(snap.groups.some((g) => 'setOnHost' in g)).toBe(false);
+      expect(snap).not.toHaveProperty('toolsSetOnHost');
+    }
+  });
+});
+
 describe('activeToolNamesWithDeferral — per-tool MCP exposure', () => {
   const RESOLVE = 'mcp__context7__resolve_library_id';
   const DOCS = 'mcp__context7__query_docs';

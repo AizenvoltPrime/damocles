@@ -1,4 +1,5 @@
 import type { ElectronApplication, TestInfo } from '@playwright/test';
+import { openFolderDeadlineMs } from '../../../src/desktop/main/e2e-open-folder';
 import { authorityKeyOfProject } from '../../../src/shared/project-location';
 import { expect, test as desktopTest } from '../../desktop/support/fixtures';
 import { shellState } from '../../desktop/support/shell';
@@ -48,7 +49,7 @@ interface RemoteHooks {
   releaseTransport(hostId: string): void;
   exitControlMaster(hostId: string): Promise<void>;
   addHost(target: { alias: string; name: string } | { input: string; name: string }): Promise<string>;
-  openFolder(hostId: string, folder: string, trust: boolean): Promise<string>;
+  openFolder(hostId: string, folder: string, trust: boolean, deadlineMs: number): Promise<string>;
   setInstallFolder(hostId: string, folder: string | null): Promise<unknown>;
   connectStep(hostId: string): ConnectStepEvent | undefined;
   logs(hostId: string): Promise<{ daemon: string; bridgeStderr: string }>;
@@ -87,10 +88,10 @@ export const releaseTransport = (app: ElectronApplication, hostId: string): Prom
 export const exitControlMaster = (app: ElectronApplication, hostId: string): Promise<void> => remote(app, 'exitControlMaster', hostId);
 /** Saves a host record through main, as the Connect dialog's new-host form does, without connecting. */
 export const addHost = (app: ElectronApplication, target: { alias: string; name: string } | { input: string; name: string }): Promise<string> => remote(app, 'addHost', target);
-/** Connects the host with no prompt to answer and adds `folder` as its project, selected; resolves with its key. */
+/** Connects the host with no prompt to answer and adds `folder` as its project, selected; resolves with its key. The connect's deadline follows the running test's timeout. */
 export async function openRemoteFolder(app: ElectronApplication, hostId: string, folder: string, trust = true): Promise<string> {
   try {
-    return await remote(app, 'openFolder', hostId, folder, trust);
+    return await remote(app, 'openFolder', hostId, folder, trust, openFolderDeadlineMs(desktopTest.info().timeout));
   } catch (error) {
     // the failure's code and parameters and the bridge's stderr, which the rejection's text leaves out
     const step = await remote(app, 'connectStep', hostId);

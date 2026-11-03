@@ -12,6 +12,10 @@ import { buildUnaskedDenyResult } from '../utils';
 const NOT_SHOWN = 'Damocles could not show the plan to the user for approval, so this tool call was denied';
 const ABORTED_BEFORE_ANSWER = 'The session was aborted before the user answered this plan';
 
+function lfText(text: string): string {
+  return text.replace(/\r\n?/g, '\n');
+}
+
 export class PlanManager {
   private state: PermissionState;
   private getPostMessage: () => PostMessageFn | null;
@@ -57,8 +61,19 @@ export class PlanManager {
       };
     }
 
+    // The agent holds the plan it wrote; an edit the user saved before approving reaches it only through the result. A file
+    // that cannot be read now approves the plan the user was shown.
+    let approvedPlan: string | null | undefined;
+    try {
+      approvedPlan = await this.getPlanContent?.();
+    } catch (err) {
+      log('[PlanManager] Re-reading the plan after approval failed, so the plan shown is approved: %s', err instanceof Error ? err.message : String(err));
+    }
+    // a save that only changed line endings is no edit
+    const edited = approvedPlan && approvedPlan.trim() && lfText(approvedPlan) !== lfText(planContent) ? { editedPlan: approvedPlan } : {};
     return {
       ...shown,
+      ...edited,
       behavior: 'allow',
       updatedInput: {
         approved: true,

@@ -22,6 +22,7 @@ describe('desktop host capabilities', () => {
       chatReview: true,
       worktrees: true,
       bypassPermissions: true,
+      globalMemoryOnServer: false,
     });
   });
 });

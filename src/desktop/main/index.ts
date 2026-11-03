@@ -9,14 +9,12 @@ import { installLogSink, log, showLog } from '../../core/logger';
 import { processProfiler, StallMonitor } from '../local-services/stall-monitor';
 import { getRipgrepSearchOptions } from '../../core/chat-panel/ripgrep';
 import { locateSettingsFile, saveSettingsFileText } from '../../core/chat-panel/settings-file-editor';
-import type { MentionTarget } from '../../core/chat-panel/mention-resolver';
 import { installPlatform } from '../../core/platform-host';
 import { l, verbatim } from '../../core/l10n';
 import type { ChatActivity } from '../../core/pi-session/session-state';
 import { LANGUAGE_PREFERENCE_KEY } from '../../shared/language-preference';
 import type { CatalogResult } from '../../core/chat-panel/session-catalog';
-import { runLegacySettingsMigrations } from '../../core/config/legacy-settings-migrations';
-import { movePreferApiKeyToGlobalState } from '../../core/pi-session/openai-auth';
+import { movePreferApiKeyFlagsToSettings, runLegacySettingsMigrations } from '../../core/config/legacy-settings-migrations';
 import { deleteRetiredSecrets } from '../../core/config/retired-secrets';
 import { providerKeyStored } from '../../core/pi-session/custom-providers';
 import { PROVIDER_SECRET_KEYS } from '../../core/pi-session/explore-providers';
@@ -161,6 +159,8 @@ import { HiddenOpening } from './hidden-opening';
 import type { SettingsTarget } from '../../shared/settings-sections';
 import { PanelStateStore } from './panel-state-store';
 import { LastChats, openProjectChat } from './last-chats';
+import { recordSelection } from './selection-record';
+import { chatMutationResult } from './chat-mutation-result';
 import { createDesktopPlatform, type DesktopPlatform } from './platform';
 import { askpassPaths, coreHostEntryPath, createDesktopAppPaths, quickOpenWorkerPath, unpackagedResourceRoot, watchWorkerPath, type DesktopLayout } from './platform/app-paths';
 import type { ChatTabMessenger } from './platform/editor-service';
@@ -184,7 +184,8 @@ import { createScmClient, type ScmClient } from './scm/scm-client';
 import { SUBCALL_USAGE_LEDGER_PATH } from '../../core/paths';
 import { TaskbarBadges } from './taskbar-badges';
 import { TaskbarCounter } from './taskbar-counter';
-import { currentTheme, currentThemeKind, followThemeSettings, LIGHT_THEME, onThemeChange, THEME_BACKGROUND } from './theme';
+import { currentTheme, currentThemeKind, followThemeSettings, onThemeChange, THEME_BACKGROUND } from './theme';
+import { LIGHT_THEME } from '../theme-palettes';
 import { AppTray } from './tray';
 import { TrustStore } from './trust-store';
 import { transportOutputDocument } from './host-output';
@@ -222,7 +223,7 @@ import { Authorities, type RemoteProject } from './remote/authorities';
 import { failureOf, RemoteConnections } from './remote/connections';
 import { Reconnector, type ConnectionGain, type LoopAttempt, type ReconnectEvent } from './remote/reconnect';
 import { LatencyMeter } from './remote/latency';
-import { HELD_MEMORY_FEATURE, RemoteHosts, sshDestination } from './remote/remote-hosts';
+import { HELD_MEMORY_FEATURE, RemoteHosts, sshDestination, type ConnectDialogOptions } from './remote/remote-hosts';
 import {
   configuredAliases,
   controlMasterPlan,
@@ -250,7 +251,7 @@ import { createArtifactCache, type ArtifactCache } from './remote/artifact-cache
 import { RELEASES_URL } from './updater';
 import { PROMPT_CANCELLED, type AskpassServer } from '../../core/scm/askpass/askpass-server';
 import type { PanelConnection, PanelHostAction, PanelHostLabel, PanelHostNames, PanelQueueAction } from '../preload/panel-channels';
-import type { HostTone } from '../../shared/host-tones';
+import type { HostColor } from '../../shared/host-colors';
 import type { CloseRemoteRow, CloseRemoteStatus, CloseRowHost } from '../preload/overlay-channels';
 import type { Run } from '../daemon/control-messages';
 import type { ChatConnection, HostReconnect } from '../../shared/host-connection';
@@ -261,13 +262,12 @@ import { OfflineTranscripts } from './remote/offline-transcripts';
 import { MAX_HELD_BYTES, MAX_HELD_PER_PANEL, OfflineQueue } from './remote/offline-queue';
 import { remoteE2eEnvironment } from './remote/remote-e2e-environment';
 import { visibleLines } from '../../shared/visible-text';
-import { englishText } from '../../shared/localized-text';
 import { adoptCompatibleDaemon, FollowedDaemons, followOtherProtocolDaemon, otherDeviceCount, shutDownNow, type SwitchListing } from './remote/app-update-flow';
 import { askRemoteRuns, closeRowId, listHostRuns, type CloseWithRunningAgents, type HostRuns } from './remote/close-remote';
 import { CloseRelease } from './close-release';
 import { announceFinishedAway, awayChats } from './remote/finished-away';
 import { keepRunningAtShutdown, startKeepRunningRefresh, type KeepRunningDeps, type KeepRunningHost } from './remote/keep-running-refresh';
-import { forwardsAgent, groupsOf, hostIdOfAuthority, hostOs, offersAgentForwarding } from './remote/host-store';
+import { authorityOsOf, forwardsAgent, groupsOf, hostIdOfAuthority, hostOs, offersAgentForwarding } from './remote/host-store';
 import { AgentRelays, localAgentPath } from './remote/agent-relay';
 import { containerNameRefusedText, notContainerProjectText } from './remote/container-texts';
 import { forgetHostData } from './remote/forget-host-data';
@@ -289,6 +289,7 @@ import type { ContainerHostRecord } from './remote/host-store';
 import type { EditorOpenLink, ReopenInContainerResult } from '../preload/shell-channels';
 import { FILES_CONFIRM_DRAG_AND_DROP_SETTING, FILES_CONFIRM_PASTE_NATIVE_SETTING, REMOTE_CONTAINER_ENGINE_SETTING } from '../local-services/desktop-configuration';
 import { openAsProject, openFolderAsProject, type OpenAsProjectDeps } from './open-as-project';
+import { waitForRemoteFolderConnection } from './e2e-open-folder';
 import { RemoteCore, type RemoteHostedCore } from './remote/remote-core';
 import { clientGitCredential, createGitCredentialClient, type GitCredentialClient } from './remote/git-credential-client';
 import { remoteServices } from './remote/remote-services';
@@ -301,9 +302,9 @@ import { createProjectTrust, createRemoteTrust, type RemoteTrustTarget } from '.
 import { authorityKeyOfProject, pathFor, projectKeyOf, targetFolderKeyOf, type Authority } from '../../shared/project-location';
 import { projectOfCwd, remoteFileRef, type RemoteFileRoot } from './remote/remote-files';
 import { visibleText } from '../../shared/visible-text';
-import { crossedAuthority, crossedByViewMessage, ownRemoteDrop } from './mention-authority';
-import { UserRelays } from './remote/user-relays';
-import { VoiceRelay } from './remote/voice-relay';
+import { crossedByMention, crossedByViewMessage, ownRemoteDrop, type AuthorityMentionTarget } from './mention-authority';
+import { UserRelays, relayedUserSettingKeys } from './remote/user-relays';
+import { ForeignViewRelay } from './remote/foreign-view-relay';
 import { LOOPBACK_HOST, PortsController } from './remote/ports/ports-controller';
 import { relayBrowserTool, typedRemoteAddress } from './remote/browser-relay';
 import { rewriteOutbound } from './remote/ports/url-rewrite';
@@ -690,17 +691,19 @@ class DesktopApp {
     },
     log: (line) => log(line),
   });
-  // a remote chat's voice, recorded, transcribed and spoken by this computer's core
-  private readonly voiceRelay = new VoiceRelay({
+  // a remote chat's voice, recorded, transcribed and spoken by this computer's core, and its user-setting writes, which land here
+  private readonly foreignViews = new ForeignViewRelay({
     chatView: (viewId) => {
       const view = this.views?.panel(viewId);
       return view && view.kind === 'chat' && !view.isDisposed && this.views?.chats().includes(view) ? view : undefined;
     },
     attached: (authority) => this.remoteCores.get(authority)?.host.current()?.isReady() === true,
+    connectionFeatures: (authority) => this.authorities?.connection(authority)?.features,
+    hostName: (authority) => this.hostName(authority),
     local: {
-      attachForeign: (authority, viewId) => this.core.run('Remote voice', (core) => core.client.attachForeign(authority, viewId)),
-      detachForeign: (viewId) => this.core.run('Remote voice', (core) => core.client.detachForeign(viewId)),
-      foreignMessage: (viewId, message) => this.core.run('Remote voice', (core) => core.client.foreignMessage(viewId, message)),
+      attachForeign: (authority, viewId) => this.core.run('Remote chat view', (core) => core.client.attachForeign(authority, viewId)),
+      detachForeign: (viewId) => this.core.run('Remote chat view', (core) => core.client.detachForeign(viewId)),
+      foreignMessage: (viewId, message) => this.core.run('Remote chat view', (core) => core.client.foreignMessage(viewId, message)),
       speak: (viewId, text) => this.core.run('Remote voice', (core) => core.client.speak(viewId, text)),
     },
     log: (line) => log(line),
@@ -1089,10 +1092,10 @@ class DesktopApp {
     restrictPermissions(session.defaultSession);
     handleAppProtocol(resourceRoot, {
       panel: (panelId) => this.views?.htmlFor(panelId),
-      shell: () => shellHtml(currentTheme()),
-      overlay: () => overlayHtml(currentTheme()),
+      shell: () => shellHtml(currentTheme(), localization.language),
+      overlay: () => overlayHtml(currentTheme(), localization.language),
       // The overlay bundle, which shows only its toast stack at this path.
-      notifier: () => overlayHtml(currentTheme()),
+      notifier: () => overlayHtml(currentTheme(), localization.language),
     });
 
     [this.hostStore, this.remoteState] = await Promise.all([HostStore.open(this.userDataDir, bootLog), RemoteState.open(this.userDataDir, bootLog)]);
@@ -1364,7 +1367,7 @@ class DesktopApp {
 
     const secrets = this.platform.secrets;
     await runLegacySettingsMigrations(this.platform.settings, () => providerKeyStored((key) => secrets.get(key), PROVIDER_SECRET_KEYS.stepfun));
-    await movePreferApiKeyToGlobalState(this.platform.state);
+    const preferMoveNotice = await movePreferApiKeyFlagsToSettings(this.platform.state, this.platform.settings);
     void deleteRetiredSecrets(secrets);
     this.restoreAtLaunch = this.platform.settings.get<boolean>(RESTORE_LAYOUT_SETTING, true);
     if (!this.restoreAtLaunch) {
@@ -1380,15 +1383,22 @@ class DesktopApp {
     const remoteState = this.requireRemoteState();
     const savedRemoteSelection = remoteState.selected();
     const launchSelection = savedRemoteSelection && this.remoteProject(savedRemoteSelection.projectKey) ? savedRemoteSelection : this.states.selected();
+    const hostFileAuthorities = [
+      ...savedEditor.tabs.flatMap((tab) => ('authority' in tab ? [tab.authority] : [])),
+      ...backups.flatMap(({ target }) => ((target.kind === 'hostSettings' || target.kind === 'outside') && target.authority !== 'local' ? [target.authority] : [])),
+    ];
     const launchAuthorities = authoritiesToConnectAtLaunch({
       remoteProjectKeys: this.remoteProjects().map((project) => project.key),
       editorAuthorities: [
         ...savedEditor.tabs.flatMap((tab) => ('file' in tab ? [authorityKeyOfProject(tab.file.projectKey)] : [])),
-        ...backups.flatMap((backup) => (backup.target.kind === 'project' ? [authorityKeyOfProject(backup.target.projectKey)] : backup.target.kind === 'hostSettings' ? [backup.target.authority] : [])),
+        ...backups.flatMap(({ target }) => (target.kind === 'project' ? [authorityKeyOfProject(target.projectKey)] : [])),
+        ...hostFileAuthorities,
       ],
+      hostFileAuthorities,
       terminalAuthorities: this.remoteProjects().map((project) => project.authorityKey).filter((key) => remoteState.terminals(key).length > 0),
       chatAuthorities: this.remoteProjects().map((project) => project.authorityKey).filter((key) => remoteState.chats(key).length > 0),
       selectedProjectKey: launchSelection?.projectKey,
+      isSavedHost: (authority) => this.savedHostRecord(authority) !== undefined,
     });
     for (const key of launchAuthorities) if (this.savedHostIdOf(key) !== undefined) this.connectAuthority(key);
     await Promise.all(launchAuthorities.filter((key) => this.savedHostIdOf(key) === undefined).map((key) => authorities.connect(key).catch(this.report(`Connecting to ${key}`))));
@@ -1441,6 +1451,7 @@ class DesktopApp {
     this.requireWorktrees().scanAtStartup(this.desktopProjects().map((project) => project.fsPath)).catch(this.report('Scanning for leftover worktrees'));
 
     if (!git.available) void this.notifications.warn(git.reason);
+    if (preferMoveNotice) void this.platform.notifications.warn(preferMoveNotice);
     const hostsUnreadable = this.hostStore.unreadable();
     if (hostsUnreadable !== undefined) void this.notifications.warn(localization.t('Damocles can\'t read {0}, so remote hosts, projects and their order can\'t be changed until it is fixed and Damocles restarts: {1}', this.hostStore.filePath, hostsUnreadable));
     const remoteStateUnreadable = remoteState.unreadable();
@@ -1635,7 +1646,7 @@ class DesktopApp {
     const { client } = core;
     // The previous core's chats closed with it, and its foreign view proxies.
     this.forgetChatsOf('local');
-    this.voiceRelay.localCoreStarted();
+    this.foreignViews.localCoreStarted();
     void core.ready.then(() => this.userRelays?.authChanged()).catch(this.report('Reading the sign-ins for remote chats'));
     void core.ready.then(() => this.userRelays?.mcpChanged()).catch(this.report('Reading the personal MCP servers for remote chats'));
     for (const key of [...this.catalogRows.keys()]) if (authorityKeyOfProject(key) === 'local') this.catalogRows.delete(key);
@@ -1680,7 +1691,7 @@ class DesktopApp {
       client.onRelayedMcpChanged(() => {
         this.userRelays?.mcpChanged().catch(this.report('Reading the personal MCP servers for remote chats'));
       }),
-      client.onForeignPost((viewId, message) => this.voiceRelay.foreignPost(viewId, message)),
+      client.onForeignPost((viewId, message) => this.foreignViews.foreignPost(viewId, message)),
       this.requireScmClient().attach(client),
     ];
     const hosted: DesktopCore = {
@@ -1879,7 +1890,7 @@ class DesktopApp {
       browserEnabled: () => this.browserEnabled(),
       newPage: async (chat) => {
         // a remote chat's page opens in its host's own context on this computer, a tab of that chat
-        if (chat.authority !== 'local') await this.voiceRelay.attachView(chat.panelId, chat.authority);
+        if (chat.authority !== 'local') await this.foreignViews.attachView(chat.panelId, chat.authority);
         return this.core.run('New Browser Page', (core) => core.client.newBrowserPage(chat.panelId));
       },
       remoteAddress: (chat, url) => this.remotePageAddress(chat, url),
@@ -2647,14 +2658,10 @@ class DesktopApp {
       this.terminals?.publish();
     }
     const sessionId = this.sessionIdOf(panel);
-    const record = (): void => {
-      this.lastChats.remember(projectKey, this.chatIdOf(panel));
-      // panels.json names only local chats, which an older version reads; a remote selection is remote-state.json's
-      if (panel.authority === 'local') this.states.select({ projectKey, panelId: panel.panelId, ...(sessionId !== undefined ? { sessionId } : {}) });
-      this.remoteState?.select(panel.authority === 'local' ? undefined : { projectKey, ...(sessionId !== undefined ? { sessionId } : {}) }).catch(this.report('Saving the remote selection'));
-    };
-    // the last chat and the selection land in one write of each file
-    this.states.batch(() => (this.remoteState ? this.remoteState.batch(record) : record()));
+    recordSelection(
+      { states: this.states, remoteState: this.remoteState, lastChats: this.lastChats, report: this.report('Saving the remote selection') },
+      { projectKey, chatId: this.chatIdOf(panel), panelId: panel.panelId, authority: panel.authority, ...(sessionId !== undefined ? { sessionId } : {}) },
+    );
     const client = this.clientOf(panel);
     if (projectChanged && client && client.defaultTarget()?.key !== projectKey) {
       client.setDefaultFolder(projectKey).catch(this.report('Following the selected project'));
@@ -2912,15 +2919,13 @@ class DesktopApp {
 
   // Catalog results become the shell's; every refusal reaches the user as exactly one toast (core shows the lease one).
   private mutationResult(result: CatalogResult, failure: string): ChatMutationResult {
-    if (result.ok) return { ok: true };
-    const { t } = this.requireLocalization();
-    if (result.reason === 'leased') return { ok: false, reason: 'leased' };
-    if (!('message' in result)) return this.missingChat();
-    log(`[chats] ${failure} ${result.reason}: ${englishText(result.message)}`);
-    // An invalid request's message is the user's to read; a failure's is error detail.
-    const message = this.requireLocalization().render(result.message);
-    void this.notifications.error(result.reason === 'invalid' ? message : t('Damocles could not change the session: {0}', message));
-    return { ok: false, reason: 'failed' };
+    return chatMutationResult(result, failure, {
+      log,
+      t: (message, ...args) => this.requireLocalization().t(message, ...args),
+      render: (text) => this.requireLocalization().render(text),
+      error: (message) => void this.notifications.error(message),
+      missing: () => this.missingChat(),
+    });
   }
 
   private unwrittenChat(): ChatMutationResult {
@@ -3000,7 +3005,7 @@ class DesktopApp {
     this.chatsChanged(projectKey);
     if (panel.authority !== 'local') {
       this.saveRemoteChats(panel.authority);
-      this.voiceRelay.viewClosed(panel.panelId);
+      this.foreignViews.viewClosed(panel.panelId);
     }
     const views = this.views;
     if (this.closingForWorktree.has(panel) || (projectKey !== undefined && this.removingProjects.has(projectKey))) return;
@@ -3370,8 +3375,8 @@ class DesktopApp {
         this.shellStateChanged();
       },
       reconnectHost: reportFailure(async (hostId: string) => this.reconnectHost(hostId), this.shellFailure('Reconnect', 'Damocles could not reconnect to the host: {0}')),
-      // the Connect dialog on the host's attempt, its waiting prompt included
-      signInHost: reportFailure(async (hostId: string) => this.openConnect(hostId), this.shellFailure('Connect to Host', 'Damocles could not open the Connect dialog: {0}')),
+      // the Connect dialog on the host's attempt, its waiting prompt included, closing once the host connects
+      signInHost: reportFailure(async (hostId: string) => this.openConnect(hostId, { purpose: 'signIn' }), this.shellFailure('Connect to Host', 'Damocles could not open the Connect dialog: {0}')),
       showHostLog: reportFailure((hostId: string) => this.requireRemoteHosts().showLog(hostId), this.shellFailure('Show log', 'Damocles could not show the host\'s log: {0}')),
       switchHostWhenIdle: reportFailure(async (hostId: string) => this.switchHostWhenIdle(hostId), this.shellFailure('Switch when they finish', 'Damocles could not switch the host to this version: {0}')),
       switchHostNow: reportFailure(async (hostId: string) => this.switchHostNow(hostId), this.shellFailure('Switch now', 'Damocles could not switch the host to this version: {0}'), false),
@@ -3639,6 +3644,9 @@ class DesktopApp {
       watch: (project) => fileTree.watch(project),
       startWorker: () => new Worker(quickOpenWorkerPath(platform.paths)),
       log: report,
+      authorityOs: (authority) => this.knownAuthorityOs(authority),
+      homedir: (authority) => (authority === 'local' ? os.homedir() : this.authorities?.connection(authority)?.facts.homedir),
+      hostName: (authority) => this.hostName(authority),
     });
     const editorPane = new EditorPane({
       documents,
@@ -3867,6 +3875,8 @@ class DesktopApp {
         // this computer's core signs in to the stub OAuth account; remote chats get its tokens through the broker
         stubOAuth: (account: string, expiresInMs: number, offline?: boolean) => this.core.run('e2e', (core) => core.client.e2eStubOAuth(account, expiresInMs, offline)),
         notifications: platform.notifications,
+        // main took an overlay request of this kind and keeps it unsent, behind a question or a page load
+        overlayWaiting: (kind: OverlayRequest['kind']) => this.overlay?.isWaiting(kind) ?? false,
         secrets: platform.secrets,
         // requests of the active page's browser context whose URL matches pattern load from toHost instead; routed lists them
         browser: {
@@ -3958,20 +3968,9 @@ class DesktopApp {
             return record.id;
           },
           // connects with no prompt answered (a prompt fails the attempt), then adds the folder and selects it
-          openFolder: async (hostId: string, folder: string, trust: boolean) => {
-            const connections = this.requireRemoteConnections();
-            connections.connect(hostId, false);
+          openFolder: async (hostId: string, folder: string, trust: boolean, deadlineMs: number) => {
             const authority = this.authorityOfHost(hostId);
-            for (;;) {
-              const attempt = connections.attempt(hostId);
-              if (attempt?.prompt) {
-                connections.cancel(attempt.attemptId);
-                throw new Error(`connecting asked: ${attempt.prompt.kind}`);
-              }
-              if (attempt?.step === 'failed') throw new Error(`connecting failed: ${attempt.failure?.code ?? 'unknown'}`);
-              if (attempt?.step === 'connected' && this.authorities?.connection(authority)) break;
-              await new Promise((resolve) => setTimeout(resolve, 100));
-            }
+            await waitForRemoteFolderConnection(this.requireRemoteConnections(), this.requireAuthorities(), hostId, authority, deadlineMs);
             if (trust) {
               const folderKey = await this.requireConnection(authority).workspace.request('files.folderKey', { path: folder });
               await this.requireHostStore().grantTrust(authority, folderKey);
@@ -4386,12 +4385,17 @@ class DesktopApp {
     return workspace;
   }
 
-  // The OS whose path rules an authority's paths follow: this computer's, or the target's as its connection or its projects name it.
+  // The OS whose path rules an authority's paths follow: this computer's, or the target's as its connection, its projects or its
+  // saved host record name it.
   private authorityOs(authority: string): NodeJS.Platform {
-    if (authority === 'local') return process.platform;
-    const os = this.authorities?.connection(authority)?.facts.os ?? this.remoteProjects().find((project) => project.authorityKey === authority)?.os;
+    const os = this.knownAuthorityOs(authority);
     if (os === undefined) throw this.notConnected(authority);
     return os;
+  }
+
+  private knownAuthorityOs(authority: string): NodeJS.Platform | undefined {
+    if (authority === 'local') return process.platform;
+    return authorityOsOf(this.authorities?.connection(authority)?.facts.os, this.remoteProjects().find((project) => project.authorityKey === authority)?.os, this.savedHostRecord(authority));
   }
 
   private projectOs(projectKey: string): NodeJS.Platform {
@@ -4566,7 +4570,7 @@ class DesktopApp {
       clientAuth: () => this.core.run('Sign-ins for remote chats', (core) => core.client.clientAuth()),
       voice: desktopHostCapabilities(process.platform).voice,
       homedir: homeDirectory(),
-      userSettingKeys: () => contributed.keys.filter((key) => !contributed.clientMachineKeys.has(key) && !contributed.hostKeys.has(key)),
+      userSettingKeys: () => relayedUserSettingKeys(contributed),
       userValue: (key) => platform.settings.inspect(key).userValue,
       local: {
         memorySearch: (query, k, tiers, injection, filters) => this.core.run('Global memory for a remote chat', (core) => core.client.memorySearch(query, k, tiers, injection, filters)),
@@ -4674,8 +4678,8 @@ class DesktopApp {
     await this.requireEditorPane().openHostSettingsFile(authority, t('{0}: {1}', this.hostName(authority), 'settings.json'), key);
   }
 
-  // A chat page's message main takes: a file of another authority is refused, a remote chat's own file goes to its core as a
-  // mention, and a remote chat's voice goes to this computer.
+  // A chat page's message main takes: a file of another authority is refused, a remote chat's voice and user-setting writes
+  // go to this computer, and a remote chat's own file goes to its core as a mention.
   private divertViewMessage(view: RelayView, message: unknown): boolean {
     const panel = this.views?.panel(view.panelId);
     if (!panel || panel !== view || panel.kind !== 'chat') return false;
@@ -4684,6 +4688,8 @@ class DesktopApp {
       void this.notifications.warn(this.crossAuthorityRefusal(panel.authority, from));
       return true;
     }
+    // ahead of the offline queue, so a user-setting write saves on this computer while the host is away
+    if (this.foreignViews.fromView(panel.panelId, message)) return true;
     if (this.holdWhileAway(panel, message)) return true;
     const dropped = ownRemoteDrop(panel.authority, message);
     if (dropped) {
@@ -4699,7 +4705,7 @@ class DesktopApp {
       this.browserTabs?.newPage(panel).catch(this.report('Opening the browser'));
       return true;
     }
-    return this.voiceRelay.fromView(panel.panelId, message);
+    return false;
   }
 
   // A remote core's services: main's own, with the refusals and the host store's trust for this authority.
@@ -4722,6 +4728,7 @@ class DesktopApp {
         const opened = await this.requireEditorPane().openFromUser(projectKey, relativePath, { ...(line !== undefined ? { line } : {}), preserveFocus: !focus });
         if (!opened.ok) throw new Error(`${relativePath} could not be opened: ${opened.reason}`);
       },
+      openPlan: (targetPath, line, focus) => this.requireEditorPane().openPlan(authority, targetPath, { ...(line !== undefined ? { line } : {}), focus }),
       showLog: (name, preserveFocus) => {
         this.showRemoteLog(authority, logFileName(name), preserveFocus).catch(this.report('Show Log'));
       },
@@ -4738,11 +4745,11 @@ class DesktopApp {
       notices: this.hostNotices(authority),
       user: {
         credentials: (provider) => this.requireUserRelays().credentials(authority, provider),
-        speak: (viewId, text) => this.voiceRelay.speak(authority, viewId, text),
+        speak: (viewId, text) => this.foreignViews.speak(authority, viewId, text),
         gitCredential: (request, signal) => this.gitCredentialClient().handle(this.hostIdOf(authority), request, signal),
         browserTool: (request, signal) => relayBrowserTool({
           authority,
-          attachView: (viewId) => this.voiceRelay.attachView(viewId, authority),
+          attachView: (viewId) => this.foreignViews.attachView(viewId, authority),
           tunnels: () => this.requirePorts().forwarding.forwardingFor(this.hostIdOf(authority)),
           policy: () => this.clientNetworkPolicy(authority),
           run: (params, abort) => this.core.run('Browser tool', (core) => core.client.browserTool(params, abort)),
@@ -4837,8 +4844,8 @@ class DesktopApp {
 
   // Connect to Host..., a host's sign-in banner and every "open another folder on <host>": opens the Connect dialog, its
   // outcome reported here.
-  private openConnect(hostId: string | undefined): void {
-    this.requireRemoteHosts().openConnect(hostId).catch(this.shellFailure('Connect to Host', 'Damocles could not open the Connect dialog: {0}'));
+  private openConnect(hostId: string | undefined, options?: ConnectDialogOptions): void {
+    this.requireRemoteHosts().openConnect(hostId, options).catch(this.shellFailure('Connect to Host', 'Damocles could not open the Connect dialog: {0}'));
   }
 
   // Remote: Open Folder on Host...: the host first, then its folder browser.
@@ -5035,7 +5042,7 @@ class DesktopApp {
     const of = (projectKey: string | undefined): boolean => projectKey !== undefined && authorityKeyOfProject(projectKey) === authority;
     if (of(this.selectedProjectKey)) return true;
     if (this.remoteChatViews(authority).length > 0) return true;
-    if (this.editorPane?.hasProjectTab(of)) return true;
+    if (this.editorPane?.hasProjectTab(of) || this.editorPane?.hasHostFileTab(authority)) return true;
     return this.remoteProjects().some((project) => project.authorityKey === authority && (this.terminals?.idsIn(project.key).length ?? 0) > 0);
   }
 
@@ -5061,6 +5068,7 @@ class DesktopApp {
     const authority = gain.authorityKey;
     const connection = this.authorities?.connection(authority);
     if (!connection) return;
+    this.foreignViews.hostConnected(authority, connection.features);
     if (gain.how === 'resumed') this.terminals?.connectionResumed(authority);
     if (gain.how === 'attached') this.announceAway(authority, connection);
     if (connection.features.includes('control.ping')) this.latency?.connected(authority, connection);
@@ -5518,7 +5526,7 @@ class DesktopApp {
       void this.notifications.info(this.requireLocalization().t('Open a chat on {0} to show the page in its pane.', this.hostName(authority)));
       return;
     }
-    await this.voiceRelay.attachView(chat.panelId, authority);
+    await this.foreignViews.attachView(chat.panelId, authority);
     await this.core.run('Open in pane', (core) => core.client.newBrowserPage(chat.panelId, url));
     this.showChat(chat, { focus: true });
   }
@@ -5546,8 +5554,8 @@ class DesktopApp {
     const tunnels = this.requirePorts().tunnels.list(chat.authority);
     const parsed = new URL(url);
     if (!tunnels.some((tunnel) => String(tunnel.localPort) === parsed.port)) return undefined;
-    const tone = this.hostColor(chat.authority);
-    return { hostId, hostName: this.hostName(chat.authority), ...(tone !== undefined ? { hostTone: tone } : {}), targetUrl: rewriteOutbound(url, tunnels) };
+    const color = this.hostColor(chat.authority);
+    return { hostId, hostName: this.hostName(chat.authority), ...(color !== undefined ? { hostColor: color } : {}), targetUrl: rewriteOutbound(url, tunnels) };
   }
 
   // A connected saved host (SSH, WSL or container): its use is recorded and its session mirror catches up.
@@ -5749,7 +5757,7 @@ class DesktopApp {
 
   // Every saved host's name and color, which this computer's chat pages label remote /stats rows with; core never names a host.
   private panelHostNames(): PanelHostNames {
-    const names: Record<string, { name: string; color?: HostTone }> = {};
+    const names: Record<string, { name: string; color?: HostColor }> = {};
     for (const host of this.hostStore?.hosts() ?? []) names[host.id] = { name: host.name, ...(host.color !== undefined ? { color: host.color } : {}) };
     if (LOOPBACK) names['loopback'] = { name: this.hostName('loopback') };
     return names;
@@ -5783,7 +5791,7 @@ class DesktopApp {
       return;
     }
     if (action === 'signIn') {
-      this.openConnect(hostId);
+      this.openConnect(hostId, { purpose: 'signIn' });
       return;
     }
     if (action === 'showLog') {
@@ -6449,12 +6457,12 @@ class DesktopApp {
 
   // A remote host as notifications show it: this computer's name and safety color for it.
   private notificationHost(authorityKey: string): NotificationHost {
-    const tone = this.hostColor(authorityKey);
-    return { name: this.hostName(authorityKey), ...(tone !== undefined ? { tone } : {}) };
+    const color = this.hostColor(authorityKey);
+    return { name: this.hostName(authorityKey), ...(color !== undefined ? { color } : {}) };
   }
 
   // The host's safety color as this computer keeps it.
-  private hostColor(authorityKey: string): HostTone | undefined {
+  private hostColor(authorityKey: string): HostColor | undefined {
     const hostId = this.savedHostIdOf(authorityKey);
     return hostId === undefined ? undefined : this.hostStore?.host(hostId)?.color;
   }
@@ -7256,20 +7264,32 @@ class DesktopApp {
       return;
     }
     const pick = outcome.pick;
+    const position = { ...(pick.line !== undefined ? { line: pick.line } : {}), ...(pick.column !== undefined ? { column: pick.column } : {}) };
+    if (pick.kind === 'path') {
+      // its host may have gone away since the query returned it
+      const opened = await this.requireEditorPane().openPathFromUser(pick.authority, pick.path, position).catch((err: unknown) => {
+        if (err instanceof NotConnectedError) return 'notConnected' as const;
+        log(`[quick-open] opening ${pick.path} on ${pick.authority} failed: ${err instanceof Error ? err.message : String(err)}`);
+        return false;
+      });
+      const { t } = this.requireLocalization();
+      if (opened === 'notConnected') void this.notifications.warn(t('{0} is not connected.', this.hostName(pick.authority)));
+      else if (!opened) void this.notifications.warn(t('{0} could not be opened.', pick.path));
+      return;
+    }
     if (pick.mention) {
       await this.mentionInSelectedChat({ projectKey: pick.projectKey, relativePath: pick.relativePath });
       return;
     }
-    const opened = await this.requireEditorPane().openFromUser(pick.projectKey, pick.relativePath, pick.line !== undefined ? { line: pick.line } : {});
+    const opened = await this.requireEditorPane().openFromUser(pick.projectKey, pick.relativePath, position);
     if (!opened.ok) void this.notifications.warn(this.requireLocalization().t('{0} could not be opened.', pick.relativePath));
   }
 
   // Files' and Source Control's Mention in chat, the editor's mention button and Quick Open's @ mention in the selected chat.
   // A chat still restoring is the chat the file goes to, once core registered it.
-  private async mentionInSelectedChat(target: MentionTarget): Promise<void> {
+  private async mentionInSelectedChat(target: AuthorityMentionTarget): Promise<void> {
     const authority = this.views?.selected()?.authority ?? 'local';
-    // a target named by path alone is a file of this computer
-    const from = crossedAuthority(authority, 'projectKey' in target ? target.projectKey : '');
+    const from = crossedByMention(authority, target);
     if (from !== undefined && this.views?.selected()) {
       void this.notifications.warn(this.crossAuthorityRefusal(authority, from));
       return;
@@ -7332,7 +7352,7 @@ class DesktopApp {
       project: this.notificationProject(projectKey),
       title: this.titleOf(panel),
       // the host store's name, never one a core sent
-      ...(panel.authority !== 'local' ? (({ name, tone }) => ({ host: name, ...(tone !== undefined ? { hostTone: tone } : {}) }))(this.notificationHost(panel.authority)) : {}),
+      ...(panel.authority !== 'local' ? (({ name, color }) => ({ host: name, ...(color !== undefined ? { hostColor: color } : {}) }))(this.notificationHost(panel.authority)) : {}),
     };
   }
 
@@ -7930,9 +7950,9 @@ class DesktopApp {
 
   // A close row's host part: its name, safety color and logout warning as this computer knows them now.
   private closeRowHost(hostId: string): CloseRowHost {
-    const { name, tone } = this.notificationHost(hostId === 'loopback' ? 'loopback' : this.authorityOfHost(hostId));
+    const { name, color } = this.notificationHost(hostId === 'loopback' ? 'loopback' : this.authorityOfHost(hostId));
     const lingerWarning = this.remoteConnections?.notices(hostId).some((notice) => notice.code === 'noLinger') === true;
-    return { hostLabel: name, ...(tone !== undefined ? { hostTone: tone } : {}), ...(lingerWarning ? { lingerWarning: true as const } : {}) };
+    return { hostLabel: name, ...(color !== undefined ? { hostColor: color } : {}), ...(lingerWarning ? { lingerWarning: true as const } : {}) };
   }
 
   // A run's row: its chat's title, its project and host as this computer names them, its status from the chat's activity.

@@ -12,6 +12,7 @@ import HostBadge from '@/components/HostBadge.vue';
 import ToastLife from './ToastLife.vue';
 import { Button } from '@/components/ui/button';
 import { remPx } from '@/composables/useRemPx';
+import { createLocaleHold } from '../../i18n';
 
 const props = defineProps<{ api: DamoclesOverlayApi }>();
 const { t, locale } = useI18n();
@@ -270,8 +271,11 @@ watch(() => toasts.value.length > 0, (showing) => {
   }, CLOCK_TICK_MS);
 });
 
+// A toast, and a dismiss or focus ordered behind it, reach the stack once the language main named before it has loaded,
+// so its card and its announcement are in that language.
+const afterLocale = createLocaleHold();
 onMounted(() => {
-  stops.push(props.api.onToast((toast) => {
+  stops.push(props.api.onToast((toast) => afterLocale(() => {
     // A showing toast sent again is relabeled (a host renamed): its text changes in place, keeping its place, life and announcement.
     if (toasts.value.some((existing) => existing.id === toast.id)) {
       toasts.value = toasts.value.map((existing) => (existing.id === toast.id ? { ...existing, body: toast.body } : existing));
@@ -280,10 +284,10 @@ onMounted(() => {
     clocks.set(toast.id, { remaining: toast.remainingMs, since: Date.now() });
     toasts.value = [...toasts.value, toast];
     announce(toast);
-  }));
-  stops.push(props.api.onToastDismiss(drop));
+  })));
+  stops.push(props.api.onToastDismiss((id) => afterLocale(() => drop(id))));
   // F6 lands on the newest toast's action; the key went to another view, so this page's last input may be a click that would hide the ring.
-  stops.push(props.api.onToastsFocus(() => focusNewest({ focusVisible: true })));
+  stops.push(props.api.onToastsFocus(() => afterLocale(() => focusNewest({ focusVisible: true }))));
   observer = new ResizeObserver(reportArea);
   if (stack.value) observer.observe(stack.value);
   reportArea();
@@ -397,7 +401,7 @@ onBeforeUnmount(() => {
             <HostBadge
               v-if="shown.host"
               :name="shown.host"
-              :tone="shown.hostTone"
+              :color="shown.hostColor"
               class="self-start"
             />
             <span
@@ -422,7 +426,7 @@ onBeforeUnmount(() => {
               <template #host>
                 <HostBadge
                   :name="toast.body.host"
-                  :tone="toast.body.hostTone"
+                  :color="toast.body.hostColor"
                 />
               </template>
             </i18n-t>
@@ -445,7 +449,7 @@ onBeforeUnmount(() => {
               <HostBadge
                 v-if="shown.host"
                 :name="shown.host"
-                :tone="shown.hostTone"
+                :color="shown.hostColor"
               />
             </div>
             <p class="line-clamp-2 text-12.5 text-pretty text-(--d-muted)">

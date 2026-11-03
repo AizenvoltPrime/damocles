@@ -373,7 +373,8 @@ export interface McpLocalUnignoredFlag {
 
 /**
  * What the host can do for the webview. The webview's defaults equal the VS Code values, so a VS Code
- * webview renders identically before and after `hostCapabilities` arrives.
+ * webview renders identically before and after `hostCapabilities` arrives, except in a window where the
+ * extension runs on a remote: that host sends `globalMemoryOnServer: true`, and global memory labels then name the server.
  */
 export interface HostCapabilities {
   /** Local sidecar voice controls (false on macOS desktop: an ad hoc signed app gets no microphone input). */
@@ -408,6 +409,8 @@ export interface HostCapabilities {
   worktrees: boolean;
   /** False: the chat's host refuses YOLO (a remote host's policy for the viewing client), the YOLO control is hidden and core answers a change with `permissionModeRefused`. */
   bypassPermissions: boolean;
+  /** Global-scope memories live on the server the host runs on, not the user's own computer (the VS Code extension running on the workspace side of a Remote-SSH, WSL, Dev Containers or Codespaces window); their labels name the server. Optional on the wire: an older daemon's core omits it. */
+  globalMemoryOnServer?: boolean;
 }
 
 /** Where a worktree-capable chat works (D61). */
@@ -475,7 +478,7 @@ export interface AuthFailure { account: SettingsAccountId; reason: AuthFailureRe
 /** A chat review's scope (D60): the whole chat, or only its latest turn. */
 export type ChatReviewScope = "chat" | "turn";
 
-/** What the VS Code host supplies, and the webview's value until the host says otherwise. */
+/** What the VS Code host supplies, and the webview's value until the host says otherwise; where the extension runs on a remote the host sends `globalMemoryOnServer: true` instead. */
 export const VSCODE_HOST_CAPABILITIES: Readonly<HostCapabilities> = {
   voice: true,
   hostSpeechExtensions: true,
@@ -493,6 +496,7 @@ export const VSCODE_HOST_CAPABILITIES: Readonly<HostCapabilities> = {
   chatReview: false,
   worktrees: false,
   bypassPermissions: true,
+  globalMemoryOnServer: false,
 };
 
 /** Text of a file or buffer the host shows in a chat panel editor; the host decides the body, the webview never reads files. */

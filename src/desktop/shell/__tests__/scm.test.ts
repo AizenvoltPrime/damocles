@@ -10,6 +10,7 @@ import { actionOf, COMMIT_VARIANTS, commitMenu, groupActions, moreActionsMenu, r
 import CommitBox from '../scm/CommitBox.vue';
 import { fakeScmApi, fakeShellApi, NO_CLONE, SCM_SETTINGS } from './fakes';
 
+
 const change = (path: string, status: ScmChange['status'] = 'MODIFIED', letter: ScmChange['letter'] = 'M'): ScmChange =>
   ({ path, status, letter, tone: letter === 'U' ? 'untracked' : 'modified', strike: false });
 

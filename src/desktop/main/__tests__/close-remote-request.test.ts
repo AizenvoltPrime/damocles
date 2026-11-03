@@ -67,6 +67,13 @@ describe('closeRemote request', () => {
     const answer = host.request(parseCloseRemoteRequest([ROW])!, undefined);
     const id = lastRequestId();
     view().webContents.ipc.emit(OVERLAY_CHANNELS.ack, own(), id);
+    // rows before the page shows the dialog wait for it, and only the newest goes
+    host.updateCloseRemote([{ ...ROW, status: 'waiting' }]);
+    host.updateCloseRemote([{ ...ROW, status: 'idle' }]);
+    expect(sentOn(OVERLAY_CHANNELS.closeRemoteRows)).toEqual([]);
+    view().webContents.ipc.emit(OVERLAY_CHANNELS.shown, own(), id);
+    expect(sentOn(OVERLAY_CHANNELS.closeRemoteRows)).toEqual([[{ ...ROW, status: 'idle' }]]);
+    view().webContents.send.mockClear();
     const menu = host.request({ kind: 'menu', label: 'Actions', anchor: { x: 0, y: 0, width: 1, height: 1 }, items: [{ kind: 'item', id: 'a', label: 'A' }] }, undefined);
     expect(host.isOpen('closeRemote')).toBe(true);
     host.updateCloseRemote([{ ...ROW, status: 'signIn', tokenNote: { provider: 'anthropic', minutesLeft: 0 } }]);

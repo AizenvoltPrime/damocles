@@ -197,6 +197,13 @@
     --tone-on: var(--d-on-info);
     color: var(--d-info-text);
   }
+  /* A host's custom color from hostColorLook (docs/invariants.md "Design tokens"). A labelled solid fill whose background is not
+     --d-panel sets --tone-surface to it, or --tone-on is picked against the wrong composite. */
+  .d-tone-custom {
+    --tone: rgb(var(--host-rgb) / var(--host-alpha));
+    --tone-on: color(from color-mix(in srgb, rgb(var(--host-rgb)) calc(var(--host-alpha) * 100%), var(--tone-surface, var(--d-panel))) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
+    color: var(--d-text);
+  }
   .d-tone-muted {
     --tone: var(--d-muted);
     color: var(--d-muted);

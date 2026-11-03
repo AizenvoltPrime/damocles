@@ -59,7 +59,7 @@ export function addLanguageWorker(labels: readonly string[], create: () => Worke
 
 const THEME_NAME = 'damocles';
 
-// Monaco color id -> the design token the desktop host injects (palettes in src/desktop/main/theme.ts).
+// Monaco color id -> the design token the desktop host injects (palettes in src/desktop/theme-palettes.ts).
 const THEME_COLORS: Readonly<Record<string, `--d-${string}`>> = {
   'editor.background': '--d-bg',
   // An explicit minimap background, so the minimap paints over the text its column overlaps.

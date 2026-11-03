@@ -1,4 +1,4 @@
-import type * as vscode from 'vscode';
+import * as vscode from 'vscode';
 import type { Platform } from '../../platform/platform';
 import { VSCODE_HOST_CAPABILITIES } from '../../shared/types/messages';
 import { createVsCodeAppInfo } from './app-info';
@@ -23,7 +23,8 @@ import { createVsCodeWorkspaceFolders } from './workspace-folders';
 // Every service subscribes per caller and returns that Disposable; only the editor's window-wide diff providers go to context.subscriptions.
 export function createVsCodePlatform(context: vscode.ExtensionContext): Platform {
   return {
-    capabilities: VSCODE_HOST_CAPABILITIES,
+    // env.remoteName is set in the local extension host too whenever a remote one exists; only the extension's kind says where it runs.
+    capabilities: { ...VSCODE_HOST_CAPABILITIES, globalMemoryOnServer: context.extension.extensionKind === vscode.ExtensionKind.Workspace },
     settings: new VsCodeSettingsStore(),
     secrets: createVsCodeSecretsStore(context.secrets),
     state: createVsCodeKeyValueState(context),

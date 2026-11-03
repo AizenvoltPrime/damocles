@@ -117,7 +117,7 @@ const providerName = (provider: string): string => (Object.hasOwn(PROVIDER_NAMES
           </Transition>
           <HostBadge
             :name="row.hostLabel"
-            :tone="row.hostTone"
+            :color="row.hostColor"
           />
         </div>
         <p

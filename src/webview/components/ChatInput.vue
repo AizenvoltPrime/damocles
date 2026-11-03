@@ -677,7 +677,7 @@ onUnmounted(() => {
           <template #host>
             <HostBadge
               :name="chatHost.name"
-              :tone="chatHost.color"
+              :color="chatHost.color"
             />
           </template>
         </i18n-t>

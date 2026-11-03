@@ -107,7 +107,7 @@ const destinations = [
                 <template #host>
                   <HostBadge
                     :name="host.name"
-                    :tone="host.color"
+                    :color="host.color"
                   />
                 </template>
               </i18n-t>

@@ -16,7 +16,7 @@ import {
 } from "./python-installer";
 import { executablePathForm } from "../../executable-path";
 import { errorTextOf, l, withDetail } from "../../l10n";
-import type { LocalizedText } from "../../../shared/localized-text";
+import { LocalizedError, type LocalizedText } from "../../../shared/localized-text";
 import type { ExtractWorkerFactory, RuntimeInstallProgressCallback } from "./python-installer";
 import {
   cxxToolchainEnv,
@@ -473,10 +473,8 @@ export class VoiceRuntimeInstaller {
 
 function defaultRequirementsPath(extensionRoot: string | undefined): string {
   if (extensionRoot === undefined || extensionRoot.length === 0) {
-    throw new Error(
-      "VoiceRuntimeInstaller.installAll requires `extensionRoot` (or `requirementsFile`). " +
-      "process.cwd() is not safe inside the VS Code extension host — it resolves to the VS Code install directory.",
-    );
+    // process.cwd() is no fallback: in the VS Code extension host it is VS Code's install folder.
+    throw new LocalizedError(l("The voice installer was started without Damocles' install folder, so it cannot find its requirements file."));
   }
   return join(extensionRoot, "python", "damocles_voice_sidecar", "requirements.txt");
 }
@@ -485,7 +483,7 @@ async function assertReadable(filePath: string): Promise<void> {
   try {
     await fs.access(filePath);
   } catch {
-    throw new Error(`Voice sidecar requirements file not found at ${filePath}. Reinstall the extension.`);
+    throw new LocalizedError(l("The voice requirements file was not found at {0}. Reinstall Damocles.", filePath));
   }
 }
 

@@ -18,6 +18,7 @@ import type { SpawnSpec } from '../../../core/process-launcher';
 import { windowsExplorer } from '../../../core/system-tools';
 import type { PickOptions } from './remote-hosts';
 import { linuxToWslUnc } from './wsl/wsl-paths';
+import { OutsideFilesUnsupportedError } from '../workspace/remote-workspace';
 
 export interface RemoteServicesDeps {
   readonly authority: string;
@@ -42,6 +43,9 @@ export interface RemoteServicesDeps {
   readonly trust: HostTrust;
   // opens a project file in the editor pane by its project key and relative path
   readonly openInEditor: (projectKey: string, relativePath: string, line: number | undefined, focus: boolean) => Promise<void>;
+  // opens a path outside the host's projects editable when the host's plans rule accepts it, through its workspace; resolves
+  // whether it opened, and throws OutsideFilesUnsupportedError for a daemon without files.outside
+  readonly openPlan: (targetPath: string, line: number | undefined, focus: boolean) => Promise<boolean>;
   // an Edit/Write approval or checkpoint diff, its target paths resolved only inside this host's projects (remote-files.ts)
   readonly showDiff: (request: DiffRequest) => Promise<HostDiffView>;
   // a rendered Markdown preview of text the core sent, titled after its file on the target, which main never reads
@@ -124,11 +128,21 @@ export function remoteServices(deps: RemoteServicesDeps): Omit<HostServicesDeps,
   const projectOf = async (target: string): Promise<{ project: Project; relativePath: string } | undefined> =>
     deps.workspace().files.projectOfPath(deps.fileRoots(), target);
   const editor: DesktopEditorService = {
+    // a path outside the host's projects opens only as a plan file, by the host's own plans rule
     openFile: async (filePath, opts) => {
-      const found = await projectOf(filePath);
-      if (!found) throw new Error(`${filePath} is not in an open project`);
       const line = opts?.line !== undefined && Number.isInteger(opts.line) && opts.line > 0 ? opts.line : undefined;
-      await deps.openInEditor(found.project.key, found.relativePath, line, opts?.preserveFocus !== true);
+      const focus = opts?.preserveFocus !== true;
+      const found = await projectOf(filePath);
+      if (found) {
+        await deps.openInEditor(found.project.key, found.relativePath, line, focus);
+        return;
+      }
+      const opened = await deps.openPlan(filePath, line, focus).catch((err: unknown) => {
+        if (!(err instanceof OutsideFilesUnsupportedError)) throw err;
+        deps.base.log(`[remote] ${deps.authority}'s daemon opens no file outside its projects, so ${filePath} stays closed`);
+        return false;
+      });
+      if (!opened) throw new Error(`${filePath} is not in an open project`);
     },
     openUntitled: (content, language, opts) => platform.editor.openUntitled(content, language, opts),
     readText: async (filePath) => {
@@ -210,7 +224,7 @@ export function remoteServices(deps: RemoteServicesDeps): Omit<HostServicesDeps,
     power: { onSuspend: () => ({ dispose: () => undefined }), onResume: () => ({ dispose: () => undefined }) },
     ui,
     user: deps.user,
-    // voice view state reaches a remote chat's view only from this computer's core (voice-relay.ts)
+    // voice view state reaches a remote chat's view only from this computer's core (foreign-view-relay.ts)
     refusedPosts: VOICE_VIEW_POSTS,
   };
 }

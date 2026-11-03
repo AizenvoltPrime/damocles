@@ -61,8 +61,12 @@ const activeDescendant = computed(() => (renderedActive.value >= 0 && activeRow.
 
 async function refresh(): Promise<void> {
   const asked = ++generation;
-  const next = await props.load(query.value);
+  show(asked, await props.load(query.value));
+}
+
+function show(asked: number, next: QuickPickModel | undefined): void {
   if (asked !== generation || !next) return;
+  if (next.update) void next.update.then((later) => show(asked, later));
   model.value = next;
   loaded.value = true;
   active.value = 0;

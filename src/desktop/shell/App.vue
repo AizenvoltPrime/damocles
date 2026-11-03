@@ -46,7 +46,7 @@ let sidebarWaiters: Array<() => void> = [];
 
 function applyState(next: ShellState): void {
   state.value = next;
-  applyShellLocale(next.locale);
+  void applyShellLocale(next.locale);
   if (!next.layout.sidebarVisible) return;
   for (const resolve of sidebarWaiters.splice(0)) resolve();
 }

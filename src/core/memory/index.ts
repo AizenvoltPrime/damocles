@@ -1761,7 +1761,7 @@ export class MemoryService {
   /** Resolves once in-flight init, consolidation, audit and queued writes have settled and the database is closed. */
   dispose(): Promise<void> {
     this.disposed = true;
-    this.globals?.dispose();
+    const globalsStopped = this.globals?.dispose();
     this.lifetime.abort();
     // Fails a running check at once and a repair after its grace, which releases the write queue and init.
     const integrityStopped = this.integrity.dispose();
@@ -1796,7 +1796,7 @@ export class MemoryService {
     const inFlight = this.consolidationInFlight;
     const auditDone = this.audit?.done ?? Promise.resolve();
     const reads = [...this.reads].map((read) => read.catch(() => undefined));
-    const settled = Promise.all([this._initPromise, inFlight ? inFlight.catch(() => undefined) : undefined, auditDone, integrityStopped, ...reads]);
+    const settled = Promise.all([this._initPromise, inFlight ? inFlight.catch(() => undefined) : undefined, auditDone, integrityStopped, globalsStopped, ...reads]);
     const drained = writeQueue ? settled.then(() => writeQueue.drain()) : settled;
     this._initPromise = null;
     return drained.then(closeDb);

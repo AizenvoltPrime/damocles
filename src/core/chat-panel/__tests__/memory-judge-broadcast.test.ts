@@ -864,41 +864,45 @@ describe("account state for one change, by one publisher per audience and row", 
     expect(runtime.getOpenAIAuthStatus().apiKey).toBe(true);
   }, 60_000);
 
-  it("a Prefer API key change another window makes publishes the OpenAI row, every chat's account state and the judge status once each, syncing once", async () => {
+  it("a Prefer API key setting another window changes publishes the OpenAI row, every chat's account state and the judge status once each, syncing once", async () => {
     const { posted, panels } = harness();
     addPanel(panels, "p2");
     const runtime = await started(panels, true);
     const count = counter(runtime, posted, panels);
 
-    // VS Code reports no change another window makes to global state, so a read of the flag is where this window learns of it
-    expect(await count(async () => {
-      await platform.state.global.update("damocles.openai.preferApiKey", true);
-      runtime.preferOpenAIApiKey();
-    })).toMatchObject({ judges: 1, notices: 1, syncs: 0, openaiSyncs: 1, publishes: [1, 1], keyRows: 0, claudeRows: 0, openaiRows: 1 });
+    expect(await count(() => platform.settings.update("damocles.openai.preferApiKey", true, "user"))).toMatchObject({ judges: 1, notices: 1, syncs: 0, openaiSyncs: 1, publishes: [1, 1], keyRows: 0, claudeRows: 0, openaiRows: 1 });
     expect(openaiRows(posted)[0]).toMatchObject({ preferApiKey: true });
   }, 60_000);
 
-  /** VS Code's global state holds a new value before its write resolves, so an account read can land in between. */
-  function readWhileWriting(read: () => void): void {
-    const global = platform.state.global;
-    const update = global.update.bind(global);
-    vi.spyOn(global, "update").mockImplementation(async (key: string, value: unknown) => {
-      const written = update(key, value);
-      read();
-      await written;
-    });
-  }
-
-  it("this window's Prefer API key toggle publishes the OpenAI row, every chat's account state and the judge status once, though a read of the flag lands while it is written", async () => {
+  // the fake store raises the change inside the write, before it resolves
+  it("this window's Prefer API key toggle publishes the OpenAI row, every chat's account state and the judge status once, though its settings event lands while it is written", async () => {
     const { posted, panels, provider } = harness();
     addPanel(panels, "p2");
     const runtime = await started(panels, true);
-    readWhileWriting(() => runtime.preferOpenAIApiKey());
     const count = counter(runtime, posted, panels);
 
     expect(await count(() => routerOf(provider).handleWebviewMessage({ type: "setOpenAIPreferApiKey", preferApiKey: true, requestId: "prefer" }, "p1", undefined)))
       .toMatchObject({ judges: 1, notices: 1, openaiSyncs: 1, publishes: [1, 1], openaiRows: 1 });
     expect(posted).toContainEqual({ type: "setOpenAIPreferApiKeyAck", requestId: "prefer", ok: true });
+  }, 60_000);
+
+  // The setting keeps the toggle's value, which the runtime applies before the handler's one publication.
+  it("this window's Prefer API key toggle whose apply and restore both fail publishes the OpenAI row, every chat's account state and the judge status once", async () => {
+    const { posted, panels, provider } = harness();
+    addPanel(panels, "p2");
+    const runtime = await started(panels, true);
+    const count = counter(runtime, posted, panels);
+    const removeKey = vi.mocked(runtime.modelRuntime!.removeRuntimeApiKey);
+    removeKey.mockRejectedValueOnce(new Error("auth.json is locked"));
+    const update = platform.settings.update.bind(platform.settings);
+    vi.spyOn(platform.settings, "update").mockImplementationOnce(update).mockRejectedValueOnce(new Error("settings.json is dirty"));
+
+    expect(await count(() => routerOf(provider).handleWebviewMessage({ type: "setOpenAIPreferApiKey", preferApiKey: true, requestId: "prefer" }, "p1", undefined)))
+      .toMatchObject({ judges: 1, notices: 1, publishes: [1, 1], openaiRows: 1 });
+    expect(posted).toContainEqual({ type: "setOpenAIPreferApiKeyAck", requestId: "prefer", ok: false, error: { message: "Failed to apply the preference" } });
+    expect(platform.settings.inspect("damocles.openai.preferApiKey").userValue).toBe(true);
+    // the toggle's failed apply, then the compare's
+    expect(removeKey.mock.calls.filter(([provider]) => provider === "openai")).toHaveLength(2);
   }, 60_000);
 
   /** An xAI key saved and an xAI sign-in stored, which outranks it until Prefer API key is on. */
@@ -908,26 +912,22 @@ describe("account state for one change, by one publisher per audience and row", 
     await platform.secrets.store("damocles.xai.apiKey", "xai-key");
   }
 
-  it("a provider's Prefer API key change another window makes posts every key row, the judge status and every chat's account state once each", async () => {
+  it("a provider's Prefer API key setting another window changes posts every key row, the judge status and every chat's account state once each", async () => {
     await xaiKeyAndSignIn();
     const { posted, panels } = harness();
     addPanel(panels, "p2");
     const runtime = await started(panels, true);
     const count = counter(runtime, posted, panels);
 
-    expect(await count(async () => {
-      await platform.state.global.update("damocles.xai.preferApiKey", true);
-      runtime.preferProviderApiKey("xai");
-    })).toMatchObject({ judges: 1, notices: 1, syncs: 1, publishes: [1, 1], keyRows: ACCOUNT_PROVIDER_IDS.length, claudeRows: 0, openaiRows: 0 });
+    expect(await count(() => platform.settings.update("damocles.xai.preferApiKey", true, "user"))).toMatchObject({ judges: 1, notices: 1, syncs: 1, publishes: [1, 1], keyRows: ACCOUNT_PROVIDER_IDS.length, claudeRows: 0, openaiRows: 0 });
     expect(keyStatuses(posted).find((status) => status.provider === "xai")).toMatchObject({ preferApiKey: true, active: "apiKey" });
   }, 60_000);
 
-  it("this window's provider Prefer API key toggle syncs once and posts every key row and the judge status once, though a read of the flag lands while it is written", async () => {
+  it("this window's provider Prefer API key toggle syncs once and posts every key row and the judge status once, though its settings event lands while it is written", async () => {
     await xaiKeyAndSignIn();
     const { posted, panels, provider } = harness();
     addPanel(panels, "p2");
     const runtime = await started(panels, true);
-    readWhileWriting(() => runtime.preferProviderApiKey("xai"));
     const count = counter(runtime, posted, panels);
 
     expect(await count(() => routerOf(provider).handleWebviewMessage({ type: "setProviderPreferApiKey", provider: "xai", preferApiKey: true, requestId: "prefer" }, "p1", undefined)))
@@ -1531,8 +1531,8 @@ describe("account state on a daemon's core chat two devices show", () => {
     const { host, provider } = twoDevices();
     host.set("clientAuth", "device-a", { providers: { openai: { type: "api_key", hasKey: true, flatFee: false, preferApiKey: true } } });
     host.set("clientAuth", "device-b", { providers: { openai: { type: "api_key", hasKey: true, flatFee: false } } });
-    // what the host's state holds is no device's flag
-    void platform.state.global.update("damocles.openai.preferApiKey", true);
+    // a setting on the host is no device's flag
+    void platform.settings.update("damocles.openai.preferApiKey", true, "user");
     const prefer = (provider as unknown as { sessionManager: { getPreferOpenAIApiKey: () => boolean } }).sessionManager;
 
     expect([asClient(host.remote, "device-a", () => prefer.getPreferOpenAIApiKey()), asClient(host.remote, "device-b", () => prefer.getPreferOpenAIApiKey())]).toEqual([true, false]);
@@ -1546,16 +1546,16 @@ describe("account state on a daemon's core chat two devices show", () => {
     await router.handleWebviewMessage({ type: "setOpenAIPreferApiKey", requestId: "r1", preferApiKey: true }, "p1", undefined, "view-b");
 
     expect(view("view-b").filter((m) => m.type === "setOpenAIPreferApiKeyAck")).toEqual([{ type: "setOpenAIPreferApiKeyAck", requestId: "r1", ok: false, error: { message: "Sign-ins change only in the User tab on your computer." } }]);
-    expect(platform.state.global.get("damocles.openai.preferApiKey")).toBeUndefined();
+    expect(platform.settings.inspect("damocles.openai.preferApiKey").userValue).toBeUndefined();
     expect(PiRuntime.exists).toBe(false);
   });
 
   it("gives each device's views its own prefer-API-key choices, never the acting device's", async () => {
     const { host, view, provider } = twoDevices();
     const router = (provider as unknown as { messageRouter: { handleWebviewMessage: (message: unknown, panelId: string, view: undefined, viewKey: string) => Promise<void> } }).messageRouter;
-    // the acting device's own flags, which the state mirror carries
-    await platform.state.global.update("damocles.openai.preferApiKey", true);
-    await platform.state.global.update("damocles.xai.preferApiKey", true);
+    // a setting on the host is no device's flag
+    await platform.settings.update("damocles.openai.preferApiKey", true, "user");
+    await platform.settings.update("damocles.xai.preferApiKey", true, "user");
     host.set("clientAuth", "device-a", { providers: {
       openai: { type: "api_key", hasKey: true, flatFee: false, preferApiKey: true },
       xai: { type: "none", hasKey: true, keySaved: true, flatFee: false, preferApiKey: true },

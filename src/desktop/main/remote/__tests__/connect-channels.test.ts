@@ -97,8 +97,9 @@ describe('the Remote hosts channels', () => {
     await call(OVERLAY_CHANNELS.hostsSetSetting, { hostId: 'h', change: { key: 'color', value: 'danger' } });
     await call(OVERLAY_CHANNELS.hostsSetSetting, { hostId: 'h', change: { key: 'defaultPermissionMode', value: null } });
     await call(OVERLAY_CHANNELS.hostsSetSetting, { hostId: 'h', change: { key: 'allowBypass', value: true } });
-    expect(actions.setSetting.mock.calls).toEqual([['h', { key: 'color', value: 'danger' }], ['h', { key: 'defaultPermissionMode', value: null }], ['h', { key: 'allowBypass', value: true }]]);
-    for (const change of [{ key: 'color', value: '#ff0000' }, { key: 'defaultPermissionMode', value: 'bypassPermissions' }, { key: 'allowBypass', value: 'yes' }, { key: 'installFolder', value: '/x' }, { key: 'color', value: 'danger', extra: 1 }]) {
+    await call(OVERLAY_CHANNELS.hostsSetSetting, { hostId: 'h', change: { key: 'color', value: '#00808099' } });
+    expect(actions.setSetting.mock.calls).toEqual([['h', { key: 'color', value: 'danger' }], ['h', { key: 'defaultPermissionMode', value: null }], ['h', { key: 'allowBypass', value: true }], ['h', { key: 'color', value: '#00808099' }]]);
+    for (const change of [{ key: 'color', value: '#ff0000' }, { key: 'color', value: '#00ff00ff;background:url(x)' }, { key: 'color', value: '#00A0A0FF' }, { key: 'color', value: 'teal' }, { key: 'defaultPermissionMode', value: 'bypassPermissions' }, { key: 'allowBypass', value: 'yes' }, { key: 'installFolder', value: '/x' }, { key: 'color', value: 'danger', extra: 1 }]) {
       await expect(call(OVERLAY_CHANNELS.hostsSetSetting, { hostId: 'h', change })).rejects.toThrow('Malformed');
     }
     await expect(call(OVERLAY_CHANNELS.hostsRevokeCredential, { hostId: 'h', credentialHost: 'github.com/evil' })).rejects.toThrow('Malformed');

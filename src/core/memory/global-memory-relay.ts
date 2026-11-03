@@ -310,8 +310,8 @@ export class GlobalMemoryRelay implements Disposable {
     try {
       do {
         this.again.delete(clientId);
-        while (this.remote.clients.attached(clientId) && (await this.drainOnce(clientId)));
-      } while (this.again.has(clientId) && this.remote.clients.attached(clientId));
+        while (!this.disposed && this.remote.clients.attached(clientId) && (await this.drainOnce(clientId)));
+      } while (!this.disposed && this.again.has(clientId) && this.remote.clients.attached(clientId));
       this.failures.delete(clientId);
     } catch (err) {
       const failures = (this.failures.get(clientId) ?? 0) + 1;
@@ -424,10 +424,15 @@ export class GlobalMemoryRelay implements Disposable {
     return removed;
   }
 
-  dispose(): void {
+  /**
+   * Stops retries and further batches; resolves once the held listing and seen records under way have ended. A drain or
+   * write waiting on its device is not waited for, since a device that stops answering would hold the shutdown.
+   */
+  dispose(): Promise<void> {
     this.disposed = true;
     this.subscription.dispose();
     this.profiles.clear();
     for (const clientId of [...this.retries.keys()]) this.stopRetry(clientId);
+    return this.heldList;
   }
 }

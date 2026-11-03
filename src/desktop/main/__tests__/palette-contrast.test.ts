@@ -1,8 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-vi.mock('electron', () => ({ nativeTheme: { shouldUseDarkColors: true, on: vi.fn(), off: vi.fn() } }));
-
-import { DARK_THEME, LIGHT_THEME, type ThemePalette } from '../theme';
+import { DARK_THEME, LIGHT_THEME, type ThemePalette } from '../../theme-palettes';
 
 // WCAG 2.2 AA for normal-size text (D21). docs/invariants.md "Design tokens" lists every value adjusted to reach it.
 const AA = 4.5;

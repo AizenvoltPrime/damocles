@@ -1,5 +1,11 @@
+import type { KeyValueState } from "../../platform/key-value-state";
 import type { SettingInspection, SettingsScope, SettingsStore } from "../../platform/settings-store";
 import { log } from "../logger";
+import { errorTextOf, l } from "../l10n";
+import type { LocalizedText } from "../../shared/localized-text";
+import { userSettingsFileName } from "./user-settings-write";
+import { OPENAI_PREFER_API_KEY_SETTING } from "../pi-session/openai-auth";
+import { PREFER_API_KEY_SETTINGS } from "../pi-session/provider-auth";
 import { DEFAULT_FALLBACK_MODEL, LEGACY_EFFORT_VALUE_MAP, LEGACY_MODEL_MAP, carryRetiredEffort, supportedStoredEffort } from "../../shared/types/constants";
 import type { EffortLevel } from "../../shared/types/settings";
 import { EXPLORE_EFFORT_SETTING, EXPLORE_MODEL_SETTING } from "../../shared/explore-settings";
@@ -191,6 +197,45 @@ async function moveExploreChoice(settings: SettingsStore, stepfunKeyStored: Step
     });
   }
   return true;
+}
+
+/** Global state's record that `key`'s flag was moved to settings, so a workspace copy another window holds is only cleared. */
+export function preferApiKeyMovedMarker(key: string): string {
+  return `${key}.movedToSettings`;
+}
+
+/**
+ * Moves each Prefer API key flag older versions kept in key-value state to its user setting; run by each host before any core
+ * reads a flag. The first window to run decides, from the flag in effect there: global state's, else the OpenAI flag's older
+ * workspace copy; a user value already in settings wins. Once the setting holds it, global state records the move
+ * (`preferApiKeyMovedMarker`) before any copy is cleared, so a later window clears its own workspace copy and moves nothing.
+ * A failed settings write keeps the copies and the record unset for the next start, and resolves to the notice the host shows.
+ */
+export async function movePreferApiKeyFlagsToSettings(state: KeyValueState, settings: SettingsStore): Promise<LocalizedText | undefined> {
+  let notice: LocalizedText | undefined;
+  for (const key of PREFER_API_KEY_SETTINGS) {
+    const copies = (key === OPENAI_PREFER_API_KEY_SETTING ? [state.global, state.workspace] : [state.global]).filter((memento) => memento.get<unknown>(key) !== undefined);
+    const marker = preferApiKeyMovedMarker(key);
+    try {
+      if (state.global.get<unknown>(marker) !== true) {
+        if (copies[0]?.get<unknown>(key) === true && settings.inspect<unknown>(key).userValue === undefined) {
+          try {
+            await settings.update(key, true, "user");
+          } catch (err) {
+            log(`[Migration] ${key} could not be written to user settings (kept in key-value state for the next start): ${describeError(err)}`);
+            notice ??= l("Your Prefer API key over sign-in choice could not be moved to {0}, so a sign-in comes before the saved API key until it is. Damocles tries again at the next start: {1}", userSettingsFileName(settings), errorTextOf(err));
+            continue;
+          }
+          log(`[Migration] Moved ${key}=true from key-value state to user settings`);
+        }
+        await state.global.update(marker, true);
+      }
+      for (const memento of copies) await memento.update(key, undefined);
+    } catch (err) {
+      log(`[Migration] ${key} failed (non-fatal, retried at the next start): ${describeError(err)}`);
+    }
+  }
+  return notice;
 }
 
 /**

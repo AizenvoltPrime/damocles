@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n';
 import { Folder, Laptop } from 'lucide-vue-next';
 import type { OverlaySettingsScope, OverlaySettingsScopes } from '../../../preload/overlay-channels';
 import { Tabs, TabsIndicator, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { hostColorLook } from '@shared/host-colors';
 
 // pending: the tab clicked while main attaches it, shown selected meanwhile
 const props = defineProps<{ scopes: OverlaySettingsScopes; pending?: OverlaySettingsScope | undefined }>();
@@ -51,7 +52,7 @@ const TAB = 'relative h-8 min-w-0 flex-none gap-1.5 rounded-none border-0 bg-tra
         <span
           aria-hidden="true"
           class="size-2 shrink-0 rounded-full bg-(--tone)"
-          :class="`d-tone-${scopes.host.color ?? 'muted'}`"
+          v-bind="hostColorLook(scopes.host.color)"
         />
         <span class="max-w-40 truncate">{{ host }}</span>
       </TabsTrigger>

@@ -4,6 +4,7 @@ import type { HandlerRegistry } from "../types";
 import { auditResultText } from "@/components/memory-audit/audit-result-text";
 import { englishText } from "@shared/localized-text";
 import { renderText } from "@/composables/useLocalizedText";
+import { memorySavedToastKey } from "@/composables/useMemoryScopeLabel";
 
 export function createMemoryHandlers(): Partial<HandlerRegistry> {
   return {
@@ -20,7 +21,7 @@ export function createMemoryHandlers(): Partial<HandlerRegistry> {
       // Only a panel-originated create (carries requestId) settles the panel's pending-create token;
       // a chat /remember has no requestId and must not clear the panel's in-progress add input.
       if (msg.requestId) ctx.stores.memoryStore.settleCreate(msg.requestId, true);
-      toast.success(i18n.global.t(`memory.toast.saved.${msg.memory.tier}`));
+      toast.success(i18n.global.t(memorySavedToastKey(msg.memory.tier, ctx.stores.settingsStore.hostCapabilities)));
     },
 
     memoryUpdated: (msg, ctx) => {

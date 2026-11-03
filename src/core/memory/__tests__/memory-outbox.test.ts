@@ -76,8 +76,9 @@ beforeEach(() => {
   relay = new GlobalMemoryRelay(fake.remote, outbox);
 });
 
-afterEach(() => {
-  relay.dispose();
+afterEach(async () => {
+  // the outbox lock its work holds must be released before the folder goes and the next test fakes timers
+  await relay.dispose();
   installPlatform(createFakePlatform());
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -373,22 +374,44 @@ describe('the drain and the writes of one device', () => {
       expect(calls()).toBe(2);
       vi.mocked(fake.remote.memoryApply).mockImplementation(async (_clientId, entries) => ({ through: entries.at(-1)!.end }));
       await vi.advanceTimersByTimeAsync(1);
-      await until(() => !fs.existsSync(outbox.file('client-a')));
+      // the retry timer's drain sends it, and joining that drain releases its lock before the next append, which would
+      // otherwise wait on proper-lockfile's retry, a faked setTimeout
+      await until(() => calls() === 3);
+      await relay.drain('client-a');
+      expect(fs.existsSync(outbox.file('client-a'))).toBe(false);
       expect(calls()).toBe(3);
 
       await outbox.append('client-a', write(2));
       vi.mocked(fake.remote.memoryApply).mockRejectedValue(new Error('the client\'s store is busy'));
       await relay.drain('client-a');
       expect(calls()).toBe(4);
+      const drains = vi.spyOn(relay, 'drain');
       fake.set('clientAuth', 'client-a', undefined);
-      expect(vi.getTimerCount()).toBe(0);
+      // the detach stops the retry: no drain runs after it
       await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(drains).not.toHaveBeenCalled();
       expect(calls()).toBe(4);
       expect(await contents('client-a')).toEqual(['uuid-2']);
     } finally {
       vi.useRealTimers();
     }
   });
+
+  it('resolves its dispose without waiting on a device, and starts no batch after it', async () => {
+    await outbox.append('client-a', write(1));
+    let answer!: () => void;
+    vi.mocked(fake.remote.memoryApply).mockImplementationOnce((_clientId, entries) => new Promise((resolve) => (answer = () => resolve({ through: entries.at(-1)!.end }))));
+    const draining = relay.drain('client-a');
+    await until(() => vi.mocked(fake.remote.memoryApply).mock.calls.length === 1);
+    await outbox.append('client-a', write(2));
+    void relay.drain('client-a');
+    await relay.dispose();
+    answer();
+    await draining;
+    expect(vi.mocked(fake.remote.memoryApply)).toHaveBeenCalledTimes(1);
+    expect(await contents('client-a')).toEqual(['uuid-2']);
+  });
+
 
   it('keeps the profile of the latest attach when an older read lands after it', async () => {
     const profileOf = (text: string) => ({ profile: { static: text, dynamic: '' }, pinned: [], preferences: [] });
@@ -445,6 +468,17 @@ describe('held outboxes', () => {
     await until(() => published() !== undefined);
     expect(published()).toEqual([]);
     expect(recorded()['client-legacy']).toBeGreaterThanOrEqual(before);
+  });
+
+  it('resolves the relay\'s dispose once a held listing under way has ended', async () => {
+    await outbox.append('client-old', write(1));
+    lastSeen({ 'client-old': Date.now() - 40 * DAY });
+    relay.start();
+    await relay.dispose();
+    expect(vi.mocked(fake.remote.heldMemoryChanged)).not.toHaveBeenCalled();
+    // the listing ran to its end: it records the attached device as seen
+    expect(recorded()['client-a']).toBeDefined();
+    expect(fs.readdirSync(dir).filter((name) => name.endsWith('.lock'))).toEqual([]);
   });
 
   it('records when a device leaves', async () => {

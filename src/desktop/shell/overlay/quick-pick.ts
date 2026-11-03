@@ -1,6 +1,6 @@
 import type { Component } from 'vue';
 import { Folder } from 'lucide-vue-next';
-import type { OverlayQuickPickIcon, OverlayQuickPickItem, PaletteCommand, QuickOpenMatch, QuickOpenResponse, QuickOpenResult } from '../../preload/overlay-channels';
+import type { OverlayQuickPickIcon, OverlayQuickPickItem, PaletteCommand, QuickOpenMatch, QuickOpenPick, QuickOpenResponse, QuickOpenResult } from '../../preload/overlay-channels';
 import type { TerminalProfileOption, TerminalProjectOption } from '../../preload/terminal-channels';
 import { compareScoredItems, prepareQuery, scoreItem, type FuzzyItem, type ItemScore, type PreparedQuery } from '../../../core/quick-open/fuzzy-match';
 import { glyphLook, terminalGlyph } from '../terminal/terminal-icons';
@@ -17,7 +17,7 @@ export interface QuickPickItem {
   readonly icon?: Component;
   // a --d-* colour token
   readonly iconColor?: string;
-  // a Quick Open file's project-relative path, drawn as its file icon in place of `icon`
+  // a Quick Open file's project-relative or absolute path, drawn as its file icon in place of `icon`
   readonly file?: string;
   // the project chip at the row's end
   readonly project?: string;
@@ -28,7 +28,7 @@ export interface QuickPickItem {
   // shown dimmed; Enter and click do not accept it
   readonly disabled?: boolean;
   readonly checked?: boolean;
-  // a quiet chip after the label, such as a terminal profile's Default
+  // a quiet chip after the label, such as a terminal profile's Default or a typed path's host
   readonly badge?: string;
   // quiet text at the row's end, such as a branch's "local" or "2↓ 1↑"
   readonly hint?: string;
@@ -46,6 +46,8 @@ export interface QuickPickModel {
   readonly activeId?: string;
   // why the list could not load, shown instead of the text for no matches
   readonly failure?: string;
+  // the same query's later model, shown in place of this one when it arrives while the query is unchanged; never rejects
+  readonly update?: Promise<QuickPickModel | undefined>;
 }
 
 export interface Segment {
@@ -73,19 +75,32 @@ export interface QuickOpenLabels {
   current: (project: string) => string;
   other: (project: string) => string;
   goToLine: (line: number) => string;
+  goToLineColumn: (line: number, column: number) => string;
   mention: string;
 }
 
-export const quickOpenItemId = (result: Pick<QuickOpenResult, 'projectKey' | 'relativePath'>): string => JSON.stringify([result.projectKey, result.relativePath]);
+// A project file's id is a 2-tuple and a typed path's a 3-tuple, so no two rows of one answer share an id.
+export const quickOpenItemId = (result: QuickOpenResult): string =>
+  result.kind === 'path' ? JSON.stringify(['path', result.authority, result.path]) : JSON.stringify([result.projectKey, result.relativePath]);
 
 /**
  * Quick Open's rows from main's answer. An empty query groups its results (recent files, then each project's, the current
- * project's first as main ordered them); a typed query lists them by score with no groups.
+ * project's first as main ordered them); a typed query lists them by score with no groups. A typed path's row, which main
+ * answers alone, has no group.
  */
 export function quickOpenModel(response: QuickOpenResponse, grouped: boolean, labels: QuickOpenLabels): QuickPickModel {
   const rows: QuickPickRow[] = [];
   let group: string | undefined;
   for (const result of response.results) {
+    const matches = { labelMatches: result.labelMatches, descriptionMatches: result.descriptionMatches };
+    if (result.kind === 'path') {
+      group = undefined;
+      rows.push({
+        kind: 'item',
+        item: { id: quickOpenItemId(result), label: result.label, description: result.description, ...matches, file: result.path, ...(result.host === undefined ? {} : { badge: result.host }) },
+      });
+      continue;
+    }
     if (grouped) {
       const key = result.recent ? '\0recent' : result.projectKey;
       if (key !== group) {
@@ -96,19 +111,21 @@ export function quickOpenModel(response: QuickOpenResponse, grouped: boolean, la
     }
     rows.push({
       kind: 'item',
-      item: {
-        id: quickOpenItemId(result),
-        label: result.label,
-        description: result.description,
-        labelMatches: result.labelMatches,
-        descriptionMatches: result.descriptionMatches,
-        file: result.relativePath,
-        project: result.projectName,
-      },
+      item: { id: quickOpenItemId(result), label: result.label, description: result.description, ...matches, file: result.relativePath, project: result.projectName },
     });
   }
-  const hint = response.mention ? labels.mention : response.line !== undefined ? labels.goToLine(response.line) : undefined;
+  const { line, column } = response;
+  const hint = response.mention ? labels.mention : line === undefined ? undefined : column === undefined ? labels.goToLine(line) : labels.goToLineColumn(line, column);
   return { rows, ...(hint === undefined ? {} : { hint }) };
+}
+
+/** The pick of the row `itemId` of main's answer, with the query's :line[:column]; a typed path's pick never mentions. */
+export function quickOpenPick(response: QuickOpenResponse, itemId: string): QuickOpenPick | undefined {
+  const result = response.results.find((candidate) => quickOpenItemId(candidate) === itemId);
+  if (!result) return undefined;
+  const position = { ...(response.line === undefined ? {} : { line: response.line }), ...(response.column === undefined ? {} : { column: response.column }) };
+  if (result.kind === 'path') return { kind: 'path', authority: result.authority, path: result.path, ...position, mention: false };
+  return { kind: 'project', projectKey: result.projectKey, relativePath: result.relativePath, ...position, mention: response.mention };
 }
 
 export interface CommandLabels {

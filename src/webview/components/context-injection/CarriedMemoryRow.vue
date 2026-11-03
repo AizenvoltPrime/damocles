@@ -5,6 +5,7 @@ import { Pin } from 'lucide-vue-next';
 import { Badge } from '@/components/ui/badge';
 import InjectedMemoryActions from './InjectedMemoryActions.vue';
 import { memoryLabel, scopeBadgeClass } from './memory-display';
+import { useMemoryScopeLabel } from '@/composables/useMemoryScopeLabel';
 import type { CarriedMemory } from '@shared/types/context-injection';
 
 const props = defineProps<{
@@ -15,6 +16,7 @@ const props = defineProps<{
 }>();
 
 const { t } = useI18n();
+const { scopeLabel } = useMemoryScopeLabel();
 
 const label = computed(() => memoryLabel(props.memory.title, props.memory.snippet));
 </script>
@@ -50,7 +52,7 @@ const label = computed(() => memoryLabel(props.memory.title, props.memory.snippe
       class="shrink-0 px-1 py-0 text-10"
       :class="scopeBadgeClass(memory.scope)"
     >
-      {{ t(`memory.scope.${memory.scope}`) }} · {{ t(`memory.kind.${memory.kind}`) }} · {{ t(`contextInjection.tier.${memory.tier}`) }}
+      {{ scopeLabel(memory.scope) }} · {{ t(`memory.kind.${memory.kind}`) }} · {{ t(`contextInjection.tier.${memory.tier}`) }}
     </Badge>
     <span class="shrink-0 text-10 text-(--d-muted) tabular-nums">
       {{ t('contextInjection.fromPrompt', { n: memory.injectedAtPrompt + 1 }) }}

@@ -46,8 +46,17 @@ function nextCore<C>(): NextCore<C> {
   return { promise, resolve, reject };
 }
 
+/** A request run() never sent: no core runs, or a halt ended it, and none starts until the next reload. */
+export class CoreNotRunningError extends Error {
+  override readonly name: string = 'CoreNotRunningError';
+
+  constructor() {
+    super('The Damocles engine is not running');
+  }
+}
+
 const stoppedForQuit = (): Error => new Error('Core services are stopped for the quit');
-const notRunning = (): Error => new Error('The Damocles engine is not running');
+const notRunning = (): Error => new CoreNotRunningError();
 
 interface Request<C> {
   readonly label: string;

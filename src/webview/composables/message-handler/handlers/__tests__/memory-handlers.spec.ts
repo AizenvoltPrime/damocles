@@ -6,6 +6,7 @@ import { useMemoryStore } from '@/stores/useMemoryStore';
 import { useContextInjectionStore } from '@/stores/useContextInjectionStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useMemoryAuditStore } from '@/stores/useMemoryAuditStore';
+import { useSettingsStore } from '@/stores/useSettingsStore';
 import type { HandlerContext } from '../../types';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import type { MemoryEntry } from '@shared/types/memory';
@@ -18,7 +19,7 @@ vi.mock('vue-sonner', () => {
 
 function deliver(msg: ExtensionToWebviewMessage): void {
   const ctx = {
-    stores: { memoryStore: useMemoryStore(), contextInjectionStore: useContextInjectionStore(), uiStore: useUIStore(), memoryAuditStore: useMemoryAuditStore() },
+    stores: { memoryStore: useMemoryStore(), contextInjectionStore: useContextInjectionStore(), uiStore: useUIStore(), memoryAuditStore: useMemoryAuditStore(), settingsStore: useSettingsStore() },
   } as unknown as HandlerContext;
   const handler = createMemoryHandlers()[msg.type] as ((m: ExtensionToWebviewMessage, c: HandlerContext) => void) | undefined;
   handler!(msg, ctx);
@@ -48,6 +49,14 @@ describe('memory toasts', () => {
     deliver({ type: 'memoryPinned', id: 'm1' });
     deliver({ type: 'memoryForgotten', id: 'm1', count: 2 });
     expect(toasts).toEqual(['Η καθολική μνήμη αποθηκεύτηκε', 'Η μνήμη καρφιτσώθηκε', 'Ξεχάστηκαν 2 μνήμες']);
+  });
+
+  it('names the server for a global memory saved where the host keeps global memories on it', () => {
+    const settings = useSettingsStore();
+    settings.hostCapabilities = { ...settings.hostCapabilities, globalMemoryOnServer: true };
+    deliver({ type: 'memoryCreated', memory });
+    deliver({ type: 'memoryCreated', memory: { ...memory, tier: 'project' } });
+    expect(toasts).toEqual(['Global memory saved on this server', 'Project memory saved']);
   });
 
   it('logs an audit error in English whatever the view language', () => {

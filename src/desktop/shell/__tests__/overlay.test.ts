@@ -65,6 +65,7 @@ const MENU: OverlayRequest = {
   ],
 };
 
+
 beforeEach(() => {
   shellI18n.global.locale.value = 'en';
   FakeResizeObserver.instances = [];
@@ -975,7 +976,7 @@ describe('command palette', () => {
 
   it('shows a folder scope as a chip before the query, lists its files without groups and answers the pick', async () => {
     const result = (relativePath: string) => ({
-      projectKey: 'api-key', projectName: 'api', relativePath, label: relativePath.split('/').at(-1)!, description: 'src/routes', labelMatches: [], descriptionMatches: [], recent: false,
+      kind: 'project' as const, projectKey: 'api-key', projectName: 'api', relativePath, label: relativePath.split('/').at(-1)!, description: 'src/routes', labelMatches: [], descriptionMatches: [], recent: false,
     });
     api.quickOpen.answer = (query) => ({ generation: query.generation, currentProjectKey: 'web-key', mention: false, results: [result('src/routes/admin.ts'), result('src/routes/users.ts')] });
     const wrapper = mountOverlay();
@@ -989,7 +990,7 @@ describe('command palette', () => {
     expect(wrapper.findAll('[role="presentation"]')).toHaveLength(0);
     expect(wrapper.findAll('[data-testid="quick-pick-item"]').map((item) => item.text())).toEqual([expect.stringContaining('admin.ts'), expect.stringContaining('users.ts')]);
     await wrapper.findAll('[data-testid="quick-pick-item"]')[1]!.trigger('click');
-    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('q1', { kind: 'quickOpen', pick: { projectKey: 'api-key', relativePath: 'src/routes/users.ts', mention: false } }));
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('q1', { kind: 'quickOpen', pick: { kind: 'project', projectKey: 'api-key', relativePath: 'src/routes/users.ts', mention: false } }));
 
     // Greek labels the scope too, and the next request without one is plain Quick Open again.
     shellI18n.global.locale.value = 'el';
@@ -999,7 +1000,7 @@ describe('command palette', () => {
   });
 
   it('picks from the answer to the newest query when an older answer lands last', async () => {
-    const result = { projectKey: 'web-key', projectName: 'web', relativePath: 'src/foo.ts', label: 'foo.ts', description: 'src', labelMatches: [], descriptionMatches: [], recent: false };
+    const result = { kind: 'project' as const, projectKey: 'web-key', projectName: 'web', relativePath: 'src/foo.ts', label: 'foo.ts', description: 'src', labelMatches: [], descriptionMatches: [], recent: false };
     const late: Array<() => void> = [];
     vi.mocked(api.queryQuickOpen).mockImplementation((query) => new Promise((resolve) => {
       const answer = opened({ generation: query.generation, mention: false, results: [result], ...(query.query === 'foo:12' ? { line: 12 } : {}) });
@@ -1014,7 +1015,51 @@ describe('command palette', () => {
     for (const settle of late) settle();
     await flushPromises();
     press('Enter');
-    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('q1', { kind: 'quickOpen', pick: { projectKey: 'web-key', relativePath: 'src/foo.ts', mention: false } }));
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('q1', { kind: 'quickOpen', pick: { kind: 'project', projectKey: 'web-key', relativePath: 'src/foo.ts', mention: false } }));
+  });
+
+  it('shows a typed path as its only row with the host chip, and picks it by authority and path at the line and column', async () => {
+    // mention: a path row never mentions, whatever main parsed
+    api.quickOpen.answer = (query) => ({
+      generation: query.generation, mention: true, line: 3, column: 5,
+      results: [{ kind: 'path', authority: 'ssh-remote+box', path: '/home/u/a.txt', label: 'a.txt', description: '/home/u', labelMatches: [[0, 5]], descriptionMatches: [[0, 7]], host: 'box', recent: false }],
+    });
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'q1', { kind: 'quickOpen', mode: 'files' });
+    await type(wrapper, '/home/u/a.txt:3:5');
+    const items = wrapper.findAll('[data-testid="quick-pick-item"]');
+    expect(items).toHaveLength(1);
+    expect(items[0]!.text()).toContain('a.txt');
+    expect(items[0]!.text()).toContain('/home/u');
+    expect(items[0]!.get('[data-testid="quick-pick-badge"]').text()).toBe('box');
+    expect(items[0]!.find('img, svg').exists()).toBe(true);
+    press('Enter');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('q1', { kind: 'quickOpen', pick: { kind: 'path', authority: 'ssh-remote+box', path: '/home/u/a.txt', line: 3, column: 5, mention: false } }));
+  });
+
+  it('shows the text results until main brings the typed path it resolved after them, then picks that path at the line and column', async () => {
+    const typed = '/home/u/a.txt:3:5';
+    const text = { kind: 'project' as const, projectKey: 'web-key', projectName: 'web', relativePath: 'src/a.txt', label: 'a.txt', description: 'src', labelMatches: [], descriptionMatches: [], recent: false };
+    const row = { kind: 'path' as const, authority: 'ssh-remote+box', path: '/home/u/a.txt', label: 'a.txt', description: '/home/u', labelMatches: [[0, 5]] as const, descriptionMatches: [[0, 7]] as const, host: 'box', recent: false as const };
+    api.quickOpen.answer = (query) => ({ generation: query.generation, mention: false, line: 3, column: 5, results: [text], ...(query.query === typed ? { pathPending: true as const } : {}) });
+    let bring: (() => void) | undefined;
+    vi.mocked(api.quickOpenPath).mockImplementation((generation) => new Promise((resolve) => {
+      bring = () => resolve(opened({ generation, mention: false, line: 3, column: 5, results: [row] }));
+    }));
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'q1', { kind: 'quickOpen', mode: 'files' });
+    await type(wrapper, typed);
+    const shown = (): string[] => wrapper.findAll('[data-testid="quick-pick-item"]').map((item) => item.text());
+    expect(shown()).toEqual([expect.stringContaining('src')]);
+    expect(wrapper.get('[data-testid="quick-pick-hint"]').text()).toBe('Enter opens the file at line 3, column 5');
+    expect(api.quickOpenPath).toHaveBeenCalledTimes(1);
+    bring!();
+    await flushPromises();
+    expect(shown()).toEqual([expect.stringContaining('/home/u')]);
+    press('Enter');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('q1', { kind: 'quickOpen', pick: { kind: 'path', authority: 'ssh-remote+box', path: '/home/u/a.txt', line: 3, column: 5, mention: false } }));
   });
 
   it('keeps the list it shows when a query or the command list answers closed, with no unhandled rejection', async () => {
@@ -1024,7 +1069,7 @@ describe('command palette', () => {
     };
     process.on('unhandledRejection', record);
     try {
-      const result = { projectKey: 'web-key', projectName: 'web', relativePath: 'src/foo.ts', label: 'foo.ts', description: 'src', labelMatches: [], descriptionMatches: [], recent: false };
+      const result = { kind: 'project' as const, projectKey: 'web-key', projectName: 'web', relativePath: 'src/foo.ts', label: 'foo.ts', description: 'src', labelMatches: [], descriptionMatches: [], recent: false };
       api.quickOpen.answer = (query) => ({ generation: query.generation, mention: false, results: [result] });
       const wrapper = mountOverlay();
       await flushPromises();

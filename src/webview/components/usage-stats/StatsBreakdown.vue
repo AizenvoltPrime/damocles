@@ -378,7 +378,7 @@ function barSegments(rows: readonly Row[]): Array<{ id: string; color: string; w
                   <HostBadge
                     v-if="row.host"
                     :name="row.host.name"
-                    :tone="row.host.color"
+                    :color="row.host.color"
                     :title="t('usageStats.onHost', { host: row.host.name })"
                     class="min-w-10 shrink"
                     data-stats-host

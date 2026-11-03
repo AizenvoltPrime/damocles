@@ -793,6 +793,543 @@ describe('a host\'s own settings file', () => {
   });
 });
 
+describe('plan files', () => {
+  const t = (message: string, ...args: Array<string | number>): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]));
+  const noSettings = { locate: () => undefined, save: async (): Promise<SettingsFileSaveOutcome> => { throw new Error('no settings file in this test'); } };
+  let localPlans: string;
+  let hostPlans: string;
+  let localPlan: string;
+  let hostPlan: string;
+  // the loopback host's workspace over the wire while it is connected, its writeOutside calls recorded
+  let served: ProjectWorkspace | undefined;
+  let remote: ReturnType<typeof testRemote> | undefined;
+  let outsideWrites: Array<{ path: string; within: string | undefined }>;
+  let documents: DocumentService;
+
+  const connect = (): void => {
+    remote = testRemote({ watchers: platform.fileWatchers, damoclesHome: hostHome });
+    const workspace = remote.workspace();
+    served = {
+      ...workspace,
+      files: {
+        ...workspace.files,
+        writeOutside: (filePath, bytes, rule) => {
+          outsideWrites.push({ path: filePath, within: rule.within });
+          return workspace.files.writeOutside(filePath, bytes, rule);
+        },
+      },
+    };
+    documents.connectionsChanged();
+  };
+  const disconnect = (): void => {
+    remote?.disconnect('the test disconnected');
+    served = undefined;
+    documents.connectionsChanged();
+  };
+
+  beforeEach(() => {
+    const localHome = path.join(root, 'local', '.damocles');
+    localPlans = path.join(localHome, 'plans');
+    hostPlans = path.join(hostHome, 'plans');
+    fs.mkdirSync(localPlans, { recursive: true });
+    fs.mkdirSync(hostPlans, { recursive: true });
+    localPlan = path.join(localPlans, 'local-plan-0123abcd.md');
+    hostPlan = path.join(hostPlans, 'host-plan-4567cdef.md');
+    fs.writeFileSync(localPlan, '# Local plan\n');
+    fs.writeFileSync(hostPlan, '# Host plan\n');
+    served = undefined;
+    remote = undefined;
+    outsideWrites = [];
+    documents = new DocumentService({
+      render: englishText,
+      hostLabel: (authority) => ({ hostId: authority, name: 'prod-1' }),
+      uploadsConflicted: () => undefined,
+      warn: () => undefined,
+      reopen: () => undefined,
+      projects: () => [project],
+      authorityOs: () => process.platform,
+      ask: async () => 0,
+      t,
+      log: (line) => logged.push(line),
+      pickSavePath: async () => undefined,
+      backups: { changed: () => undefined, writeNow: async () => true, remove: () => undefined },
+      settings: noSettings,
+      workspaces: testWorkspaces({
+        watchers: platform.fileWatchers,
+        damoclesHome: localHome,
+        remote: (authorityKey) => {
+          if (authorityKey !== 'loopback' || !served) throw new NotConnectedError(`${authorityKey} is not connected.`);
+          return served;
+        },
+      }),
+    });
+  });
+
+  afterEach(() => {
+    documents.dispose();
+    remote?.disconnect('the test ended');
+  });
+
+  it('opens a host\'s plan editable, titled with its host, as Markdown, and saves it on the host through writeOutside with the plans rule', async () => {
+    connect();
+    const document = (await documents.openPlan('loopback', hostPlan)) as TextDocument;
+    expect(document).toMatchObject({ kind: 'text', name: 'prod-1: host-plan-4567cdef.md', languageId: 'markdown', readOnlyReason: undefined, text: '# Host plan\n' });
+    expect(document.location).toEqual({ path: hostPlan, host: 'loopback', outside: 'plans' });
+    expect(await documents.openPlan('loopback', hostPlan)).toBe(document);
+    // this computer's plans rule is checked against its own plans folder, which does not hold the host's file
+    expect(await documents.openPlan('local', hostPlan)).toBeUndefined();
+    const inode = fs.statSync(hostPlan, { bigint: true }).ino;
+    expect(await documents.save(document.id, document.version, '# Edited on the host\n')).toEqual({ ok: true });
+    expect(fs.readFileSync(hostPlan, 'utf8')).toBe('# Edited on the host\n');
+    expect(fs.statSync(hostPlan, { bigint: true }).ino).toBe(inode);
+    expect(outsideWrites).toEqual([{ path: hostPlan, within: 'plans' }]);
+    expect(isDocumentDirty(document)).toBe(false);
+  });
+
+  it('opens a local plan editable through a core\'s open of its path, and any other path outside every project read-only', async () => {
+    const plan = (await documents.openPath(localPlan)) as TextDocument;
+    expect(plan).toMatchObject({ kind: 'text', name: 'local-plan-0123abcd.md', languageId: 'markdown', readOnlyReason: undefined });
+    expect(plan.location).toEqual({ path: localPlan, outside: 'plans' });
+    expect(await documents.openPlan('local', localPlan)).toBe(plan);
+    expect(await documents.save(plan.id, plan.version, '# Edited\n')).toEqual({ ok: true });
+    expect(fs.readFileSync(localPlan, 'utf8')).toBe('# Edited\n');
+
+    const notes = path.join(localPlans, 'notes.txt');
+    fs.writeFileSync(notes, 'notes');
+    const elsewhere = path.join(outside, 'elsewhere.md');
+    fs.writeFileSync(elsewhere, '# Not a plan\n');
+    const hard = path.join(localPlans, 'hard.md');
+    fs.linkSync(elsewhere, hard);
+    for (const target of [notes, elsewhere, hard]) {
+      expect(await documents.openPlan('local', target), target).toBeUndefined();
+      const document = await documents.openPath(target);
+      expect(document.kind === 'text' && document.readOnlyReason, target).toBe('outsideProject');
+      expect(await documents.save(document.id, (document as TextDocument).version, 'x'), target).toEqual({ ok: false, reason: 'readOnly' });
+    }
+    expect(fs.readFileSync(elsewhere, 'utf8')).toBe('# Not a plan\n');
+  });
+
+  it('refuses a save once the plan file was swapped for a link, writing nothing where the link leads', async () => {
+    const document = (await documents.openPath(localPlan)) as TextDocument;
+    const elsewhere = path.join(outside, 'elsewhere.md');
+    fs.writeFileSync(elsewhere, '# Original\n');
+    fs.rmSync(localPlan);
+    fs.symlinkSync(elsewhere, localPlan, 'file');
+    expect(await documents.save(document.id, document.version, '# Mine\n')).toMatchObject({ ok: false, reason: 'failed', message: expect.stringContaining('outside the file the editor opened') });
+    expect(fs.readFileSync(elsewhere, 'utf8')).toBe('# Original\n');
+  });
+
+  it('reloads on a watch event, and is watched and read again over the host\'s next connection', async () => {
+    connect();
+    const document = (await documents.openPlan('loopback', hostPlan)) as TextDocument;
+    fs.writeFileSync(hostPlan, '# Rewritten by the agent\n');
+    // the host starts its watch once the request crosses the wire
+    await waitFor(() => platform.fileWatchers.watchers.some((watcher) => !watcher.disposed && watcher.base === hostPlans));
+    platform.fileWatchers.watcher(hostPlans, '*').fireChange(hostPlan);
+    await waitFor(() => document.text === '# Rewritten by the agent\n');
+    disconnect();
+    fs.writeFileSync(hostPlan, '# Rewritten while away\n');
+    connect();
+    await waitFor(() => document.text === '# Rewritten while away\n');
+    // no offline save for a file outside every project: the buffer stays dirty, and the next read finds it in conflict
+    disconnect();
+    expect(await documents.save(document.id, document.version, '# Mine\n')).toMatchObject({ ok: false, reason: 'failed', message: expect.stringContaining('loopback is not connected.') });
+    fs.writeFileSync(hostPlan, '# Rewritten again\n');
+    connect();
+    await waitFor(() => document.conflict);
+    expect(document.text).toBe('# Mine\n');
+    expect(fs.readFileSync(hostPlan, 'utf8')).toBe('# Rewritten again\n');
+  });
+
+  it('keeps the host\'s settings document apart from its plan, each saved by its own rule', async () => {
+    connect();
+    fs.writeFileSync(path.join(hostHome, 'settings.json'), '{}\n');
+    const settings = (await documents.openHostSettings('loopback', 'prod-1: settings.json')) as TextDocument;
+    const plan = (await documents.openPlan('loopback', hostPlan)) as TextDocument;
+    expect(plan).not.toBe(settings);
+    expect(settings).toMatchObject({ languageId: 'json', location: { host: 'loopback', outside: 'settings' } });
+    expect(await documents.openHostSettings('loopback', 'prod-1: settings.json')).toBe(settings);
+    // Markdown is never held to the settings file's JSON rule
+    expect(await documents.save(plan.id, plan.version, '# Not JSON\n')).toEqual({ ok: true });
+    expect(await documents.save(settings.id, settings.version, '# Not JSON\n')).toMatchObject({ ok: false, message: expect.stringContaining('not valid JSON') });
+    expect(outsideWrites).toEqual([{ path: hostPlan, within: 'plans' }]);
+  });
+
+  it('turns a read-only document of a file the plans rule refused into the editable plan once the rule accepts it', async () => {
+    const shared = path.join(outside, 'shared.md');
+    fs.linkSync(localPlan, shared);
+    const readOnly = (await documents.openPath(localPlan)) as TextDocument;
+    expect(readOnly.readOnlyReason).toBe('outsideProject');
+    fs.rmSync(shared);
+    fs.writeFileSync(localPlan, '# Revised\n');
+    expect(await documents.openPlan('local', localPlan)).toBe(readOnly);
+    expect(readOnly).toMatchObject({ readOnlyReason: undefined, text: '# Revised\n', location: { path: localPlan, outside: 'plans' } });
+    expect(await documents.save(readOnly.id, readOnly.version, '# Mine\n')).toEqual({ ok: true });
+    expect(fs.readFileSync(localPlan, 'utf8')).toBe('# Mine\n');
+    // a later core open of the path never makes it read-only again
+    expect(await documents.openPath(localPlan)).toBe(readOnly);
+    expect(readOnly.readOnlyReason).toBeUndefined();
+  });
+
+  it('throws while the host is away, and opens nothing a host refuses', async () => {
+    await expect(documents.openPlan('loopback', hostPlan)).rejects.toBeInstanceOf(NotConnectedError);
+    connect();
+    expect(await documents.openPlan('loopback', path.join(hostHome, 'settings.json'))).toBeUndefined();
+    expect(await documents.openPlan('loopback', path.join(hostPlans, 'gone.md'))).toBeUndefined();
+    expect(documents.all()).toEqual([]);
+  });
+});
+
+describe('files outside every project', () => {
+  const t = (message: string, ...args: Array<string | number>): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]));
+  const noSettings = { locate: () => undefined, save: async (): Promise<SettingsFileSaveOutcome> => { throw new Error('no settings file in this test'); } };
+  let file: string;
+  let served: ProjectWorkspace | undefined;
+  let remote: ReturnType<typeof testRemote> | undefined;
+  let outsideWrites: Array<{ path: string; within: string | undefined }>;
+  let removedBackups: string[];
+  let documents: DocumentService;
+
+  const connect = (): void => {
+    remote = testRemote({ watchers: platform.fileWatchers, damoclesHome: hostHome });
+    const workspace = remote.workspace();
+    served = {
+      ...workspace,
+      files: {
+        ...workspace.files,
+        writeOutside: (filePath, bytes, rule) => {
+          outsideWrites.push({ path: filePath, within: rule.within });
+          return workspace.files.writeOutside(filePath, bytes, rule);
+        },
+      },
+    };
+    documents.connectionsChanged();
+  };
+  const disconnect = (): void => {
+    remote?.disconnect('the test disconnected');
+    served = undefined;
+    documents.connectionsChanged();
+  };
+
+  beforeEach(() => {
+    file = path.join(outside, 'notes.txt');
+    fs.writeFileSync(file, 'notes\n');
+    served = undefined;
+    remote = undefined;
+    outsideWrites = [];
+    removedBackups = [];
+    documents = new DocumentService({
+      render: englishText,
+      hostLabel: (authority) => ({ hostId: authority, name: 'prod-1' }),
+      uploadsConflicted: () => undefined,
+      warn: () => undefined,
+      reopen: () => undefined,
+      projects: () => [project],
+      authorityOs: () => process.platform,
+      ask: async () => 0,
+      t,
+      log: (line) => logged.push(line),
+      pickSavePath: async () => undefined,
+      backups: { changed: () => undefined, writeNow: async () => true, remove: (backupId) => removedBackups.push(backupId) },
+      settings: noSettings,
+      workspaces: testWorkspaces({
+        watchers: platform.fileWatchers,
+        damoclesHome: path.join(root, 'local', '.damocles'),
+        remote: (authorityKey) => {
+          if (authorityKey !== 'loopback' || !served) throw new NotConnectedError(`${authorityKey} is not connected.`);
+          return served;
+        },
+      }),
+    });
+  });
+
+  afterEach(() => {
+    documents.dispose();
+    remote?.disconnect('the test ended');
+  });
+
+  it('opens a core\'s path read-only, and never writes it, even with its read-only reason cleared', async () => {
+    const document = (await documents.openPath(file)) as TextDocument;
+    expect(document).toMatchObject({ kind: 'text', readOnlyReason: 'outsideProject', location: { path: file } });
+    expect(document.location?.outside).toBeUndefined();
+    document.readOnlyReason = undefined;
+    expect(await documents.save(document.id, document.version, 'mine\n')).toMatchObject({ ok: false, reason: 'failed', message: expect.stringContaining('outside the project') });
+    expect(fs.readFileSync(file, 'utf8')).toBe('notes\n');
+  });
+
+  it('opens a path the user named editable and saves it in place, and refuses the save once the file was swapped for a link', async () => {
+    const document = (await documents.openUserPath('local', file)) as TextDocument;
+    expect(document).toMatchObject({ kind: 'text', name: 'notes.txt', readOnlyReason: undefined, location: { path: file, outside: 'user' } });
+    expect(await documents.openUserPath('local', file)).toBe(document);
+    const inode = fs.statSync(file, { bigint: true }).ino;
+    expect(await documents.save(document.id, document.version, 'mine\n')).toEqual({ ok: true });
+    expect(fs.readFileSync(file, 'utf8')).toBe('mine\n');
+    expect(fs.statSync(file, { bigint: true }).ino).toBe(inode);
+
+    const target = path.join(outside, 'target.txt');
+    fs.writeFileSync(target, 'target\n');
+    fs.rmSync(file);
+    fs.symlinkSync(target, file, 'file');
+    expect(await documents.save(document.id, document.version, 'again\n')).toMatchObject({ ok: false, reason: 'failed', message: expect.stringContaining('outside the file the editor opened') });
+    expect(fs.readFileSync(target, 'utf8')).toBe('target\n');
+    expect(isDocumentDirty(document)).toBe(true);
+  });
+
+  it('turns a core\'s read-only document editable in place when the user names the file, and a later core open never makes it read-only', async () => {
+    const readOnly = (await documents.openPath(file)) as TextDocument;
+    expect(readOnly.readOnlyReason).toBe('outsideProject');
+    expect(await documents.openUserPath('local', file)).toBe(readOnly);
+    expect(readOnly).toMatchObject({ readOnlyReason: undefined, location: { path: file, outside: 'user' } });
+    expect(await documents.openPath(file)).toBe(readOnly);
+    expect(readOnly.readOnlyReason).toBeUndefined();
+    expect(await documents.openPlan('local', file)).toBeUndefined();
+    expect(readOnly.readOnlyReason).toBeUndefined();
+    expect(await documents.save(readOnly.id, readOnly.version, 'mine\n')).toEqual({ ok: true });
+    expect(fs.readFileSync(file, 'utf8')).toBe('mine\n');
+  });
+
+  // The core's read of target is held until a second open joined it, so that open gets the core's read-only document.
+  async function joinedCoreRead(target: string, coreOpen: () => Promise<unknown>, editableOpen: () => Promise<unknown>): Promise<readonly [unknown, unknown]> {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const open = fs.promises.open.bind(fs.promises);
+    let holding = true;
+    vi.spyOn(fs.promises, 'open').mockImplementation((async (file: fs.PathLike, flags?: string | number) => {
+      if (holding && String(file) === target && flags === 'r') {
+        holding = false;
+        await held;
+      }
+      return open(file, flags);
+    }) as typeof fs.promises.open);
+    const joins = vi.spyOn(documents as unknown as { joined: (key: string, resolve: () => Promise<unknown>) => Promise<unknown> }, 'joined');
+    const core = coreOpen();
+    await waitFor(() => !holding);
+    const editable = editableOpen();
+    await waitFor(() => joins.mock.calls.length === 2);
+    release();
+    return [await core, await editable] as const;
+  }
+
+  it('turns editable a core\'s read-only document whose read the user\'s open joined', async () => {
+    const [core, user] = await joinedCoreRead(file, () => documents.openPath(file), () => documents.openUserPath('local', file));
+    expect(user).toBe(core);
+    expect(user).toMatchObject({ kind: 'text', readOnlyReason: undefined, location: { path: file, outside: 'user' } });
+  });
+
+  it('turns editable a core\'s read-only document whose read a plan open joined', async () => {
+    const plans = path.join(root, 'local', '.damocles', 'plans');
+    fs.mkdirSync(plans, { recursive: true });
+    const plan = path.join(plans, 'joined-0123abcd.md');
+    fs.writeFileSync(plan, '# Plan\n');
+    // a second hard link keeps the plans rule from the core's open, and is gone before the plan open
+    const shared = path.join(outside, 'shared.md');
+    fs.linkSync(plan, shared);
+    const [core, opened] = await joinedCoreRead(plan, () => documents.openPath(plan), () => {
+      fs.rmSync(shared);
+      return documents.openPlan('local', plan);
+    });
+    expect(opened).toBe(core);
+    expect(opened).toMatchObject({ kind: 'text', readOnlyReason: undefined, location: { path: plan, outside: 'plans' } });
+  });
+
+  it('opens a path inside a project as that project\'s file, the document Files opens', async () => {
+    write('src/a.ts', 'a\n');
+    const projectFile = await open('src/a.ts');
+    expect(await documents.openUserPath('local', path.join(projectDir, 'src', 'a.ts'))).toMatchObject({ location: { projectKey: project.key, relativePath: 'src/a.ts' } });
+    const viaFiles = await documents.openProjectFile(project.key, 'src/a.ts');
+    expect(viaFiles.ok && (await documents.openUserPath('local', path.join(projectDir, 'src', 'a.ts')))).toBe(viaFiles.ok && viaFiles.document);
+    expect(projectFile.location?.outside).toBeUndefined();
+  });
+
+  it('opens nothing for a folder or a missing file, and only a path that is still its own realpath', async () => {
+    expect(await documents.openUserPath('local', outside)).toBeUndefined();
+    expect(await documents.openUserPath('local', path.join(outside, 'gone.txt'))).toBeUndefined();
+    const link = path.join(root, 'link.txt');
+    fs.symlinkSync(file, link, 'file');
+    expect(await documents.openUserPath('local', link)).toBeUndefined();
+    write('src/a.ts', 'a\n');
+    fs.symlinkSync(path.join(projectDir, 'src', 'a.ts'), path.join(projectDir, 'src', 'link.ts'), 'file');
+    expect(await documents.openUserPath('local', path.join(projectDir, 'src', 'link.ts'))).toBeUndefined();
+    expect(documents.all()).toEqual([]);
+    const gone = path.join(outside, 'gone.txt');
+    const orphan = (await documents.openUserPath('local', gone, { missing: { encoding: 'utf8', bom: false, eol: '\n' } })) as TextDocument;
+    expect(orphan).toMatchObject({ kind: 'text', orphaned: true, location: { path: gone, outside: 'user' } });
+    expect(await documents.save(orphan.id, orphan.version, 'back\n')).toEqual({ ok: true });
+    expect(fs.readFileSync(gone, 'utf8')).toBe('back\n');
+  });
+
+  it('saves a host\'s file the user named through that host with no plans rule, and keeps it dirty with its backup while the host is away', async () => {
+    connect();
+    const document = (await documents.openUserPath('loopback', file)) as TextDocument;
+    expect(document).toMatchObject({ kind: 'text', name: 'prod-1: notes.txt', readOnlyReason: undefined });
+    expect(document.location).toEqual({ path: file, host: 'loopback', outside: 'user' });
+    expect(await documents.save(document.id, document.version, 'on the host\n')).toEqual({ ok: true });
+    expect(fs.readFileSync(file, 'utf8')).toBe('on the host\n');
+    expect(outsideWrites).toEqual([{ path: file, within: undefined }]);
+    removedBackups = [];
+    disconnect();
+    expect(await documents.save(document.id, document.version, 'while away\n')).toMatchObject({ ok: false, reason: 'failed', message: expect.stringContaining('loopback is not connected.') });
+    expect(isDocumentDirty(document)).toBe(true);
+    expect(document.pendingUpload).toBeUndefined();
+    expect(removedBackups).toEqual([]);
+    expect(fs.readFileSync(file, 'utf8')).toBe('on the host\n');
+  });
+
+  it('titles a host\'s file with its host and takes its language from the file\'s own name', async () => {
+    connect();
+    const dockerfile = path.join(outside, 'Dockerfile');
+    fs.writeFileSync(dockerfile, 'FROM node:24\n');
+    expect(await documents.openUserPath('loopback', dockerfile)).toMatchObject({ kind: 'text', name: 'prod-1: Dockerfile', languageId: 'dockerfile' });
+    const gone = path.join(outside, 'gone', 'Dockerfile');
+    expect(await documents.openUserPath('loopback', gone, { missing: { encoding: 'utf8', bom: false, eol: '\n' } })).toMatchObject({ kind: 'text', orphaned: true, name: 'prod-1: Dockerfile', languageId: 'dockerfile' });
+  });
+
+  it('checks the plans rule only for a file, on its realpath', async () => {
+    const plans = path.join(root, 'local', '.damocles', 'plans');
+    fs.mkdirSync(plans, { recursive: true });
+    const plan = path.join(plans, 'linked-0123abcd.md');
+    fs.writeFileSync(plan, '# Plan\n');
+    const linked = path.join(outside, 'linked.md');
+    fs.symlinkSync(plan, linked, 'file');
+    const resolves = vi.spyOn((documents as unknown as { deps: { workspaces: Workspaces } }).deps.workspaces.local.files, 'resolveOutside');
+    expect(await documents.openPath(linked)).toMatchObject({ kind: 'text', readOnlyReason: undefined, location: { path: plan, outside: 'plans' } });
+    expect(resolves.mock.calls).toEqual([[linked, {}], [plan, { within: 'plans' }]]);
+    resolves.mockClear();
+    await documents.openPath(outside);
+    await documents.openPath(path.join(outside, 'gone.md'));
+    expect(resolves.mock.calls).toEqual([[outside, {}], [path.join(outside, 'gone.md'), {}]]);
+  });
+
+  it.runIf(process.platform === 'win32')('refuses a core\'s UNC or device path before any file system call', async () => {
+    const touched: string[] = [];
+    for (const method of ['realpath', 'stat', 'lstat', 'open', 'readlink', 'access'] as const) {
+      const original = fs.promises[method].bind(fs.promises) as (...args: unknown[]) => unknown;
+      vi.spyOn(fs.promises, method).mockImplementation(((target: unknown, ...rest: unknown[]) => {
+        touched.push(String(target));
+        return original(target, ...rest);
+      }) as never);
+    }
+    for (const target of ['\\\\server\\share\\notes.txt', '\\\\?\\C:\\notes.txt', '\\\\.\\C:\\notes.txt']) {
+      const document = await documents.openPath(target);
+      expect(document.kind, target).toBe('notDisplayed');
+    }
+    expect(touched.filter((target) => target.startsWith('\\\\'))).toEqual([]);
+  });
+});
+
+describe.runIf(process.platform === 'win32')('a project on a share (win32)', () => {
+  // \\server\share stands for root on this computer: a call on any other UNC or device path, or on a share path outside the
+  // project while no project open is under way, is recorded and throws instead of reaching the network
+  const SHARE = '\\\\server\\share';
+  const uncProjectDir = `${SHARE}\\proj`;
+  let uncProject: Project;
+  let touched: string[];
+  // folderKey of a link, as this computer names it, -> what readlink answers for it
+  let fakeLinks: Map<string, string>;
+  // root as a mapped drive of the share: a realpath under it answers the share's spelling
+  let mappedDrive: boolean;
+  let projects: Project[];
+  let documents: DocumentService;
+
+  const onShare = (file: string): boolean => file.toLowerCase().startsWith(`${SHARE}\\`);
+  const local = (file: string): string => `${root}${file.slice(SHARE.length)}`;
+
+  beforeEach(() => {
+    uncProject = { key: folderKey(uncProjectDir), fsPath: uncProjectDir, name: 'proj' };
+    touched = [];
+    fakeLinks = new Map();
+    mappedDrive = false;
+    projects = [uncProject];
+    const through = <F extends (file: fs.PathLike, ...rest: never[]) => Promise<unknown>>(name: 'stat' | 'lstat' | 'open' | 'readlink' | 'realpath', original: F, back: (result: unknown) => unknown): void => {
+      vi.spyOn(fs.promises, name).mockImplementation((async (file: fs.PathLike, ...rest: never[]) => {
+        const named = String(file);
+        if (!/^[\\/]{2}/.test(named)) return original(file, ...rest);
+        touched.push(named);
+        if (!onShare(named)) throw new Error(`followed ${named}`);
+        return back(await original(local(named), ...rest));
+      }) as never);
+    };
+    const same = (result: unknown): unknown => result;
+    through('stat', fs.promises.stat.bind(fs.promises), same);
+    through('lstat', fs.promises.lstat.bind(fs.promises), same);
+    through('open', fs.promises.open.bind(fs.promises), same);
+    const readlink = fs.promises.readlink.bind(fs.promises);
+    through('readlink', (async (file: fs.PathLike) => fakeLinks.get(folderKey(String(file))) ?? readlink(file)) as typeof fs.promises.readlink, same);
+    const realpath = fs.promises.realpath.bind(fs.promises);
+    const shared = (result: unknown): string => (onShare(String(result)) ? String(result) : `${SHARE}${String(result).slice(root.length)}`);
+    through('realpath', (async (file: fs.PathLike) => {
+      const real = await realpath(file);
+      return mappedDrive && real.toLowerCase().startsWith(`${root.toLowerCase()}\\`) ? shared(real) : real;
+    }) as typeof fs.promises.realpath, shared);
+    documents = new DocumentService({
+      render: englishText,
+      hostLabel: (authority) => ({ hostId: authority, name: authority }),
+      uploadsConflicted: () => undefined,
+      warn: () => undefined,
+      reopen: () => undefined,
+      projects: () => projects,
+      authorityOs: () => process.platform,
+      ask: async () => 0,
+      t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)])),
+      log: (line) => logged.push(line),
+      pickSavePath: async () => undefined,
+      backups: { changed: () => undefined, writeNow: async () => true, remove: () => undefined },
+      settings: { locate: () => undefined, save: async (): Promise<SettingsFileSaveOutcome> => { throw new Error('no settings file in this test'); } },
+      workspaces: testWorkspaces({ watchers: platform.fileWatchers, damoclesHome: path.join(root, 'local', '.damocles') }),
+    });
+  });
+
+  afterEach(() => documents.dispose());
+
+  it('opens a core\'s path and a path the user named inside it as that project\'s file, one document', async () => {
+    write('src/a.ts', 'on the share\n');
+    const named = `${uncProjectDir}\\src\\a.ts`;
+    const document = (await documents.openPath(named)) as TextDocument;
+    expect(document).toMatchObject({ kind: 'text', readOnlyReason: undefined, text: 'on the share\n', location: { path: named, projectKey: uncProject.key, relativePath: 'src/a.ts' } });
+    expect(await documents.openUserPath('local', named)).toBe(document);
+    const viaFiles = await documents.openProjectFile(uncProject.key, 'src/a.ts');
+    expect(viaFiles.ok && viaFiles.document).toBe(document);
+    expect(await documents.save(document.id, document.version, 'saved on the share\n')).toEqual({ ok: true });
+    expect(fs.readFileSync(path.join(projectDir, 'src', 'a.ts'), 'utf8')).toBe('saved on the share\n');
+  });
+
+  it('opens a core\'s path of a file not yet on the share as that project\'s empty file', async () => {
+    expect(await documents.openPath(`${uncProjectDir}\\src\\new.ts`)).toMatchObject({ kind: 'text', text: '', location: { projectKey: uncProject.key, relativePath: 'src/new.ts' } });
+  });
+
+  it('refuses a share path outside the project, and a link inside it to another share, without following either', async () => {
+    fs.mkdirSync(path.join(root, 'other'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'other', 'x.txt'), 'x');
+    expect(await documents.openPath(`${SHARE}\\other\\x.txt`)).toMatchObject({ kind: 'notDisplayed' });
+    expect(await documents.openUserPath('local', `${SHARE}\\other\\x.txt`)).toBeUndefined();
+    expect(touched).toEqual([]);
+    // a real junction in the project whose readlink answers another server
+    fs.mkdirSync(path.join(projectDir, 'real'), { recursive: true });
+    fs.symlinkSync(path.join(projectDir, 'real'), path.join(projectDir, 'elsewhere'), 'junction');
+    fakeLinks.set(folderKey(path.join(projectDir, 'elsewhere')), '\\\\evil\\share');
+    expect(await documents.openPath(`${uncProjectDir}\\elsewhere\\x.txt`)).toMatchObject({ kind: 'notDisplayed' });
+    expect(await documents.openUserPath('local', `${uncProjectDir}\\elsewhere\\x.txt`)).toBeUndefined();
+    expect(touched.filter((file) => !onShare(file))).toEqual([]);
+  });
+
+  it('opens a core\'s path on a mapped drive, whose realpath is the share\'s, as its project\'s file', async () => {
+    mappedDrive = true;
+    projects = [{ key: folderKey(projectDir), fsPath: projectDir, name: 'proj' }];
+    write('src/a.ts', 'on the mapped drive\n');
+    expect(await documents.openPath(path.join(projectDir, 'src', 'a.ts'))).toMatchObject({ kind: 'text', readOnlyReason: undefined, text: 'on the mapped drive\n', location: { path: `${uncProjectDir}\\src\\a.ts`, projectKey: folderKey(projectDir), relativePath: 'src/a.ts' } });
+    // outside every project the outside rule decides, and refuses a path whose realpath is a share's
+    fs.mkdirSync(path.join(root, 'other'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'other', 'x.txt'), 'x');
+    expect(await documents.openPath(path.join(root, 'other', 'x.txt'))).toMatchObject({ kind: 'notDisplayed' });
+  });
+
+  it('opens a log of a logs folder on the share read-only, as Damocles\' own file', async () => {
+    fs.mkdirSync(path.join(root, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'logs', 'main.log'), 'started\n');
+    expect(await documents.openLog(`${SHARE}\\logs\\main.log`)).toMatchObject({ kind: 'text', readOnlyReason: 'log', text: 'started\n', location: { path: `${SHARE}\\logs\\main.log` } });
+  });
+});
+
 describe('overwrite sizes the bytes it writes', () => {
   const limit = EDITOR_MAX_DOCUMENT_BYTES;
   // One byte per line in a buffer reported with LF; two per line once written with the file's CRLF.
@@ -1534,9 +2071,9 @@ describe('documents of a host that is not connected', () => {
   it('shows a placeholder with no content of this computer, and opens the file once the host connects', async () => {
     write('src/a.ts', 'on the host');
     const host = offlineHost();
-    expect(host.documents.awaitsHost(host.away.key)).toBe(true);
-    const placeholder = host.documents.openOffline(host.away.key, 'src/a.ts');
-    expect(host.documents.openOffline(host.away.key, 'src/a.ts')).toBe(placeholder);
+    expect(host.documents.awaitsHost({ projectKey: host.away.key })).toBe(true);
+    const placeholder = host.documents.openOffline({ projectKey: host.away.key, relativePath: 'src/a.ts' });
+    expect(host.documents.openOffline({ projectKey: host.away.key, relativePath: 'src/a.ts' })).toBe(placeholder);
     expect(host.documents.content(placeholder.id)).toEqual({ kind: 'offline', documentId: placeholder.id, hostId: 'loopback', hostName: 'prod-1' });
     host.connect();
     await waitFor(() => host.replaced.length === 1);
@@ -1582,13 +2119,13 @@ describe('documents of a host that is not connected', () => {
   it('keeps one document per file while the host is away: a second backup finds the first, and a backup takes a placeholder\'s tabs', async () => {
     write('src/b.ts', 'saved');
     const host = offlineHost();
-    const placeholder = host.documents.openOffline(host.away.key, 'src/b.ts');
+    const placeholder = host.documents.openOffline({ projectKey: host.away.key, relativePath: 'src/b.ts' });
     const waiting = host.documents.openAwaitingHost(host.away.key, 'src/b.ts', { encoding: 'utf8', bom: false, eol: '\n' });
     expect(host.replaced).toEqual([{ from: placeholder.id, to: waiting.id }]);
     expect(host.documents.get(placeholder.id)).toBeUndefined();
     host.documents.restoreBuffer(waiting.id, 'first', (waiting as TextDocument).backupId);
     expect(host.documents.openAwaitingHost(host.away.key, 'src/b.ts', { encoding: 'utf8', bom: false, eol: '\n' })).toBe(waiting);
-    expect(host.documents.openOffline(host.away.key, 'src/b.ts')).toBe(waiting);
+    expect(host.documents.openOffline({ projectKey: host.away.key, relativePath: 'src/b.ts' })).toBe(waiting);
     expect(host.documents.all()).toEqual([waiting]);
     host.documents.dispose();
     host.end();

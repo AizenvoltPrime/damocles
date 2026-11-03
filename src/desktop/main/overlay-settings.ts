@@ -2,7 +2,7 @@ import type { WebContents } from 'electron';
 import type { Disposable } from '../../platform/disposable';
 import type { SettingsStore } from '../../platform/settings-store';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../shared/types/messages';
-import type { HostTone } from '../../shared/host-tones';
+import type { HostColor } from '../../shared/host-colors';
 import { isSettingsAccountId, isSettingsSectionId, type SettingsTarget } from '../../shared/settings-sections';
 import { SETTINGS_VIEW_REQUEST_TYPES } from '../../shared/settings-view-messages';
 import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayPrefs, type OverlayPrefWrite, type OverlayRect, type OverlaySettingsScopes } from '../preload/overlay-channels';
@@ -31,7 +31,7 @@ export interface SettingsAttachTarget {
 // The tabs a remote chat's settings show: User (the local core), its host (machine scope) and Project.
 export interface SettingsScopes {
   // canAllowYolo: the host has a saved record, so main may ask to allow YOLO on it
-  readonly host: { readonly authority: string; readonly name: string; readonly color?: HostTone; readonly canAllowYolo?: true };
+  readonly host: { readonly authority: string; readonly name: string; readonly color?: HostColor; readonly canAllowYolo?: true };
   readonly projectFile?: string;
 }
 

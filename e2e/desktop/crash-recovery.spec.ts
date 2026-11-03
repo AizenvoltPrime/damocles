@@ -3,6 +3,7 @@ import { logBeforeQuit } from './support/app';
 import { activeChat, expect, nextChat, panelIdOf, test } from './support/fixtures';
 import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
+import { killRenderer } from './support/renderer-kill';
 import { answerToast, recordedToasts, recordToasts } from './support/shell';
 import { addProject, chatInput, sendAndAwaitEcho } from './support/ui';
 
@@ -18,13 +19,7 @@ test('a killed chat renderer is recreated with its state', async ({ launch, home
     // Playwright's trace screencast on a page whose renderer crashes makes the driver close the app, so the trace ends here.
     await desktop.stopTracing(testInfo.outputPath('trace-before-crash.zip'));
 
-    const pidBefore = await desktop.app.evaluate(({ webContents }, id) => {
-      const w = webContents.getAllWebContents().find((c) => c.getURL().includes(`/panel/${id}/`));
-      if (!w) throw new Error('chat webContents not found');
-      const pid = w.getOSProcessId();
-      w.forcefullyCrashRenderer();
-      return pid;
-    }, panelId);
+    const pidBefore = await killRenderer(desktop.app, `/panel/${panelId}/`);
 
     await expect.poll(() => desktop.output()).toContain(`[views] panel ${panelId} renderer gone`);
     // Same webContents, new renderer process, same page URL.
@@ -65,9 +60,7 @@ test('a chat whose page keeps crashing is left dead with a Reload Chat toast, wh
     const w = webContents.getAllWebContents().find((c) => c.getURL().includes(`/panel/${id}/`));
     return w && !w.isCrashed() && !w.isLoading() ? w.getOSProcessId() : 0;
   }, panelId);
-  const crash = (): Promise<void> => app.evaluate(({ webContents }, id) => {
-    webContents.getAllWebContents().find((c) => c.getURL().includes(`/panel/${id}/`))!.forcefullyCrashRenderer();
-  }, panelId);
+  const crash = (): Promise<number> => killRenderer(app, `/panel/${panelId}/`);
 
   // Three crashes within a minute are reloaded; the fourth leaves the page dead.
   for (let i = 0; i < 3; i++) {
@@ -91,9 +84,7 @@ function chatPageOf(app: ElectronApplication, panelId: string) {
     return w && !w.isCrashed() && !w.isLoading() ? (w.executeJavaScript(code) as Promise<T>) : Promise.resolve(undefined as T);
   }, [panelId, script] as const);
   return {
-    crash: (): Promise<void> => app.evaluate(({ webContents }, id) => {
-      webContents.getAllWebContents().find((c) => c.getURL().includes(`/panel/${id}/`))!.forcefullyCrashRenderer();
-    }, panelId),
+    crash: (): Promise<number> => killRenderer(app, `/panel/${panelId}/`),
     text: async (): Promise<string> => (await evaluate<string | undefined>('document.body.innerText')) ?? '',
     sendButton: async (): Promise<string | null> => (await evaluate<string | null | undefined>('document.querySelector(\'[data-testid="composer-send"]\')?.getAttribute("aria-label") ?? null')) ?? null,
     evaluate,

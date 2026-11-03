@@ -1,9 +1,9 @@
-import type { HostTone } from '../../shared/host-tones';
+import type { HostColor } from '../../shared/host-colors';
 import type { OverlayAnswer, OverlayRect, OverlayRequest } from '../preload/overlay-channels';
 
 export interface AllowHostYoloDeps {
   // the saved host an authority names, from this computer's host store; undefined for an authority with no saved record
-  readonly savedHost: (authority: string) => { readonly hostId: string; readonly name: string; readonly color?: HostTone; readonly allowBypass: boolean } | undefined;
+  readonly savedHost: (authority: string) => { readonly hostId: string; readonly name: string; readonly color?: HostColor; readonly allowBypass: boolean } | undefined;
   // main's own overlay question; an aborted signal withdraws it, which answers dismissed
   readonly request: (request: Extract<OverlayRequest, { kind: 'allowYolo' }>, signal: AbortSignal | undefined) => Promise<OverlayAnswer>;
   // turns the host's allowBypass on and publishes its policy; throws for a host no longer saved

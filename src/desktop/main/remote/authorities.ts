@@ -2,7 +2,7 @@ import type { Duplex } from 'node:stream';
 import type { Project } from '../../local-services/confine';
 import type { ProjectConnection, ShellPlatform } from '../../preload/shell-channels';
 import type { ProjectWorkspace } from '../../workspace/project-workspace';
-import { carriesTransfers, createRemoteWorkspace, WATCH_READY_FEATURE } from '../workspace/remote-workspace';
+import { carriesTransfers, createRemoteWorkspace, OUTSIDE_FILES_FEATURE, WATCH_READY_FEATURE } from '../workspace/remote-workspace';
 import type { NotConnectedError } from '../workspace/workspaces';
 import { connect, type OtherProtocolDaemon, type RemoteConnection } from './connection';
 
@@ -205,6 +205,7 @@ export class Authorities {
       notConnected: () => this.deps.notConnected(entry.authorityKey),
       watchReady: connection.features.includes(WATCH_READY_FEATURE),
       transfers: carriesTransfers(connection.features),
+      outside: connection.features.includes(OUTSIDE_FILES_FEATURE),
       openStream: () => connection.openStream(),
       log,
     });

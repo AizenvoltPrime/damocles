@@ -44,7 +44,16 @@ export async function readFileBytes(filePath: string, limitBytes: number = EDITO
     return errnoCode(err) === 'ENOENT' ? { kind: 'missing' } : unreadable(err);
   }
   try {
-    // The path may have been replaced or grown since the stat; the read stops one byte past the limit.
+    return await readOpenedFile(handle, limitBytes);
+  } finally {
+    await handle.close();
+  }
+}
+
+/** The bytes of a file already opened, up to the document limit, read from its handle, which the caller closes. */
+export async function readOpenedFile(handle: fs.FileHandle, limitBytes: number = EDITOR_MAX_DOCUMENT_BYTES): Promise<FileBytes> {
+  try {
+    // The path may have been replaced or grown since the caller's stat; the read stops one byte past the limit.
     const stat = await handle.stat();
     if (!stat.isFile()) return notAFile(stat);
     if (stat.size > limitBytes) return { kind: 'tooLarge', bytes: stat.size };
@@ -61,7 +70,5 @@ export async function readFileBytes(filePath: string, limitBytes: number = EDITO
     return { kind: 'bytes', bytes: Buffer.concat(chunks, total), mtimeMs: stat.mtimeMs, dev: stat.dev, ino: stat.ino };
   } catch (err) {
     return unreadable(err);
-  } finally {
-    await handle.close();
   }
 }

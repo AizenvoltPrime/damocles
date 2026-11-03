@@ -71,6 +71,7 @@ function clientMain(router: CoreRouter, id: string, language: DesktopLanguage, p
       workspace: () => ({ files: { projectOfPath: async () => undefined, readText: async () => undefined } }) as never,
       trust: { trustedKeys: () => [], onDidGrant: none, requestTrust: async () => false },
       openInEditor: async () => undefined,
+      openPlan: async () => false,
       showLog: () => undefined,
       showDiff: async () => ({ close: async () => undefined, closed: Promise.resolve() }),
       showMarkdown: async () => undefined,

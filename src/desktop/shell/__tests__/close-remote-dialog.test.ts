@@ -57,11 +57,11 @@ describe('close dialog', () => {
   });
 
   it("tints each row's host badge with its tone and follows a rename or recolor at once", async () => {
-    await open([{ ...ROW, hostTone: 'danger' }, { ...ROW, panelId: 'p2', hostId: 'h2', hostLabel: 'lab' }]);
+    await open([{ ...ROW, hostColor: 'danger' }, { ...ROW, panelId: 'p2', hostId: 'h2', hostLabel: 'lab' }]);
     const badges = (): Element[] => rowsShown().map((row) => row.querySelector('[data-testid="host-name-badge"]')!);
     expect(badges()[0]!.classList.contains('d-tone-danger')).toBe(true);
     expect(badges()[1]!.classList.contains('d-tone-muted')).toBe(true);
-    api.closeRemoteRows([{ ...ROW, hostLabel: 'prod-eu', hostTone: 'info' }, { ...ROW, panelId: 'p2', hostId: 'h2', hostLabel: 'lab' }]);
+    api.closeRemoteRows([{ ...ROW, hostLabel: 'prod-eu', hostColor: 'info' }, { ...ROW, panelId: 'p2', hostId: 'h2', hostLabel: 'lab' }]);
     await flushPromises();
     expect(badges()[0]!.classList.contains('d-tone-info')).toBe(true);
     // the badge swaps the old name for the new one

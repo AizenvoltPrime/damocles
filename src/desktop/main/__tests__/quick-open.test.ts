@@ -14,12 +14,15 @@ import { FileTree } from '../files/file-tree';
 import { projectKeyOf } from '../../../shared/project-location';
 import * as fuzzy from '../../../core/quick-open/fuzzy-match';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
-import { OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRequest, type PopupAnswer } from '../../preload/overlay-channels';
+import { OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRequest, type PopupAnswer, type QuickOpenPick, type QuickOpenProjectResult, type QuickOpenResult } from '../../preload/overlay-channels';
 import { createQuickOpenFileSearch } from '../../quick-open-worker/file-search';
 import { ripgrepFileArgs, type WorkerReply, type WorkerRequest } from '../../quick-open-worker/protocol';
 import type { Project } from '../../local-services/confine';
 import type { MenuState } from '../menu';
-import { QUICK_OPEN_WORKER_SILENCE_MS, QuickOpenIndex, QuickOpenPicker, type QuickOpenWorker } from '../quick-open';
+import { QUICK_OPEN_WORKER_SILENCE_MS, QuickOpenIndex, QuickOpenPicker, type QuickOpenAnswer, type QuickOpenWorker } from '../quick-open';
+import { MAX_EDITOR_LINE } from '../../preload/shell-channels';
+import type { ProjectWorkspace } from '../../workspace/project-workspace';
+import { OutsideFilesUnsupportedError } from '../workspace/remote-workspace';
 import { fakeHandleWhileOpen } from './fake-popup-channels';
 import { NO_SCM_MENU_STATE } from '../scm/scm-host';
 
@@ -27,6 +30,18 @@ vi.mock('../../../core/quick-open/fuzzy-match', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../../core/quick-open/fuzzy-match')>();
   return { ...original, scoreItem: vi.fn(original.scoreItem) };
 });
+
+// This computer alone: no host is known, and ~ is the test's root.
+const TYPED_PATHS = {
+  authorityOs: (authority: string) => (authority === 'local' ? process.platform : undefined),
+  homedir: (authority: string) => (authority === 'local' ? root : undefined),
+  hostName: (authority: string) => authority,
+};
+
+function projectRow(result: QuickOpenResult): QuickOpenProjectResult {
+  if (result.kind !== 'project') throw new Error(`a ${result.kind} row`);
+  return result;
+}
 
 // The value of a popup channel's answer while Quick Open is open.
 async function openValue(answer: unknown): Promise<unknown> {
@@ -137,6 +152,7 @@ function index(startWorker: () => QuickOpenWorker = () => new InProcessWorker(),
       return startWorker();
     },
     log: (line) => logged.push(line),
+    ...TYPED_PATHS,
   });
 }
 
@@ -180,7 +196,7 @@ describe('Quick Open in its worker', () => {
       currentProjectKey: alpha.key,
       line: 42,
       mention: true,
-      results: [{ projectKey: alpha.key, projectName: 'alpha', relativePath: 'src/editor-pane.ts', label: 'editor-pane.ts', description: 'src', labelMatches: [[0, 2], [7, 11]], descriptionMatches: [], recent: false }],
+      results: [{ kind: 'project', projectKey: alpha.key, projectName: 'alpha', relativePath: 'src/editor-pane.ts', label: 'editor-pane.ts', description: 'src', labelMatches: [[0, 2], [7, 11]], descriptionMatches: [], recent: false }],
     });
     quickOpen.dispose();
   });
@@ -228,7 +244,7 @@ describe('Quick Open in its worker', () => {
     expect(await quickOpen.query('a:3', context, { id: search, generation: 0 })).toEqual({ currentProjectKey: alpha.key, line: 3, mention: false, results: [], failed: true });
     expect(logged).toEqual(['[quick-open] the worker failed: out of memory']);
     expect(crashing.terminated).toBe(true);
-    expect((await quickOpen.query('a', context, { id: search, generation: 1 }))?.results.map((result) => result.relativePath)).toEqual(['a.ts']);
+    expect((await quickOpen.query('a', context, { id: search, generation: 1 }))?.results.map((result) => projectRow(result).relativePath)).toEqual(['a.ts']);
     expect(started).toBe(2);
     quickOpen.dispose();
   });
@@ -287,7 +303,7 @@ describe('Quick Open in its worker', () => {
       expect(await typedOn).toEqual({ currentProjectKey: alpha.key, mention: false, results: [], failed: true });
       expect(logged).toEqual([`[quick-open] the worker sent nothing for ${QUICK_OPEN_WORKER_SILENCE_MS} ms while a query waited`]);
       expect(silent.terminated).toBe(true);
-      expect((await quickOpen.query('a', context, { id: search, generation: 2 }))?.results.map((result) => result.relativePath)).toEqual(['a.ts']);
+      expect((await quickOpen.query('a', context, { id: search, generation: 2 }))?.results.map((result) => projectRow(result).relativePath)).toEqual(['a.ts']);
       expect(started).toBe(2);
       quickOpen.dispose();
     } finally {
@@ -563,16 +579,16 @@ describe('ripgrep listings main runs for the worker', () => {
     const workspaces = testWorkspaces({ watchers: createFakePlatform().fileWatchers, remote: () => remote.workspace() });
     const fileTree = new FileTree({ projects: () => [alpha, away], exclude: () => ({}), workspaces, ask: async () => undefined, t: (message) => message, log: (line) => logged.push(line), reveal: async () => undefined, copy: async () => undefined, changed: () => undefined, ignored: async () => new Set(), target: () => ({ os: process.platform }) });
     const worker = new InProcessWorker();
-    const quickOpen = new QuickOpenIndex({ projects: () => [alpha, away], workspaces, ignoreArgs: () => [], excludes: () => [], watch: (owner) => fileTree.watch(owner), startWorker: () => worker, log: (line) => logged.push(line) });
+    const quickOpen = new QuickOpenIndex({ projects: () => [alpha, away], workspaces, ignoreArgs: () => [], excludes: () => [], watch: (owner) => fileTree.watch(owner), startWorker: () => worker, log: (line) => logged.push(line), ...TYPED_PATHS });
     const search = quickOpen.open();
     const answer = await quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: search, generation: 0 });
     expect(answer?.failed).toBeUndefined();
-    expect(answer?.results.map((result) => [result.projectKey, result.relativePath])).toEqual([[alpha.key, 'a.ts']]);
+    expect(answer?.results.map((result) => [projectRow(result).projectKey, projectRow(result).relativePath])).toEqual([[alpha.key, 'a.ts']]);
     expect(await quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: search, generation: 1 })).toMatchObject({ results: [{ relativePath: 'a.ts' }] });
     quickOpen.dispose();
 
     const scripted = new ScriptedWorker();
-    const asking = new QuickOpenIndex({ projects: () => [alpha, away], workspaces, ignoreArgs: () => [], excludes: () => [], watch: (owner) => fileTree.watch(owner), startWorker: () => scripted, log: (line) => logged.push(line) });
+    const asking = new QuickOpenIndex({ projects: () => [alpha, away], workspaces, ignoreArgs: () => [], excludes: () => [], watch: (owner) => fileTree.watch(owner), startWorker: () => scripted, log: (line) => logged.push(line), ...TYPED_PATHS });
     void asking.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: asking.open(), generation: 0 });
     await turnsUntil(() => scripted.queries.length === 1);
     expect(scripted.queries[0]!.projects.map((queried) => queried.key)).toEqual([alpha.key]);
@@ -618,7 +634,7 @@ describe('Quick Open in a worker thread', () => {
     const quickOpen = index(() => new Worker(bundle));
     const search = quickOpen.open();
     const context = { currentProjectKey: alpha.key, recent: [] };
-    const names = async (raw: string, generation: number): Promise<string[] | undefined> => (await quickOpen.query(raw, context, { id: search, generation }))?.results.map((result) => `${result.projectName}/${result.relativePath}`);
+    const names = async (raw: string, generation: number): Promise<string[] | undefined> => (await quickOpen.query(raw, context, { id: search, generation }))?.results.map((result) => `${projectRow(result).projectName}/${projectRow(result).relativePath}`);
     expect((await names('auth', 0))?.sort()).toEqual(['alpha/src/routes/auth.ts', 'beta/docs/auth.md']);
     touch(alpha, 'auth-new.ts');
     quickOpen.invalidate(alpha.key);
@@ -626,6 +642,234 @@ describe('Quick Open in a worker thread', () => {
     quickOpen.end(search);
     quickOpen.dispose();
     expect(logged).toEqual([]);
+  });
+});
+
+describe('Quick Open of a typed path', () => {
+  let elsewhere: string;
+  let file: string;
+
+  beforeEach(() => {
+    elsewhere = path.join(root, 'elsewhere');
+    file = path.join(elsewhere, 'notes.txt');
+    fs.mkdirSync(elsewhere);
+    fs.writeFileSync(file, 'notes\n');
+  });
+
+  const pathRow = (filePath: string): QuickOpenResult => {
+    const label = path.basename(filePath);
+    const description = path.dirname(filePath);
+    return { kind: 'path', authority: 'local', path: filePath, label, description, labelMatches: [[0, label.length]], descriptionMatches: [[0, description.length]], recent: false };
+  };
+
+  // An index over this computer's workspace whose resolveOutside is the test's.
+  const indexResolving = (worker: QuickOpenWorker, resolveOutside: (real: ProjectWorkspace['files']['resolveOutside'], target: string) => ReturnType<ProjectWorkspace['files']['resolveOutside']>): QuickOpenIndex => {
+    const workspaces = testWorkspaces({ watchers: createFakePlatform().fileWatchers, rgPath: async () => rgPath, log: (line) => logged.push(line) });
+    const real = workspaces.local.files.resolveOutside;
+    const local: ProjectWorkspace = { ...workspaces.local, files: { ...workspaces.local.files, resolveOutside: (target) => resolveOutside(real, target) } };
+    return new QuickOpenIndex({
+      projects: () => [alpha, beta],
+      workspaces: { ...workspaces, local, forAuthority: () => local },
+      ignoreArgs: () => [],
+      excludes: () => [],
+      watch: () => true,
+      startWorker: () => worker,
+      log: (line) => logged.push(line),
+      ...TYPED_PATHS,
+    });
+  };
+
+  // The text search's answer to the worker query of raw, once main posted it.
+  const answerText = async (worker: ScriptedWorker, raw: string, results: readonly unknown[] = []): Promise<void> => {
+    await worker.posted((request) => request.kind === 'query' && request.raw === raw);
+    const query = worker.queries.find((candidate) => candidate.raw === raw)!;
+    worker.emit('message', { kind: 'answer', id: query.id, results });
+  };
+
+  it('answers a file outside every project as the only row, fully highlighted, with its :line:column, ahead of the text search', async () => {
+    const worker = new ScriptedWorker();
+    const quickOpen = index(() => worker);
+    const search = quickOpen.open();
+    const context = { currentProjectKey: alpha.key, recent: [] };
+    expect(await quickOpen.query(`${file}:3:5`, context, { id: search, generation: 0 })).toEqual({ currentProjectKey: alpha.key, line: 3, column: 5, mention: false, results: [pathRow(file)] });
+    expect(await quickOpen.query(`"${file}"`, context, { id: search, generation: 1 })).toEqual({ currentProjectKey: alpha.key, mention: false, results: [pathRow(file)] });
+    expect(await quickOpen.query('~/elsewhere/notes.txt(7)', context, { id: search, generation: 2 })).toEqual({ currentProjectKey: alpha.key, line: 7, mention: false, results: [pathRow(file)] });
+    // the worker never answered: the text search ran beside each lookup
+    expect(worker.queries).toHaveLength(3);
+    quickOpen.dispose();
+  });
+
+  it('answers a typed path inside a project with that project\'s row', async () => {
+    touch(alpha, 'src/app.ts');
+    const quickOpen = index(() => new ScriptedWorker());
+    const answer = await quickOpen.query(path.join(alpha.fsPath, 'src', 'app.ts'), { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
+    expect(answer?.results).toEqual([{ kind: 'project', projectKey: alpha.key, projectName: 'alpha', relativePath: 'src/app.ts', label: 'app.ts', description: 'src', labelMatches: [[0, 6]], descriptionMatches: [[0, 3]], recent: false }]);
+    quickOpen.dispose();
+  });
+
+  it('searches a missing file, a folder, an @ mention or a scoped request\'s typed path as text in the worker', async () => {
+    const worker = new ScriptedWorker();
+    const quickOpen = index(() => worker);
+    const search = quickOpen.open();
+    const context = { currentProjectKey: alpha.key, recent: [] };
+    const queries = [path.join(elsewhere, 'gone.txt'), elsewhere, `@${file}`];
+    queries.forEach((raw, generation) => void quickOpen.query(raw, context, { id: search, generation }));
+    void quickOpen.query(file, { ...context, scope: { projectKey: alpha.key, projectName: 'alpha', folder: '' } }, { id: search, generation: 3 });
+    expect(worker.queries.map((query) => query.raw).sort()).toEqual([...queries, file].sort());
+    quickOpen.dispose();
+  });
+
+  it('answers the text search while a typed path\'s lookup never returns, marked pending until the request ends', async () => {
+    const worker = new ScriptedWorker();
+    const quickOpen = indexResolving(worker, () => new Promise(() => undefined));
+    const search = quickOpen.open();
+    const result = { projectKey: alpha.key, relativePath: 'notes.txt', labelMatches: [], descriptionMatches: [], recent: false };
+    const asked = quickOpen.query(file, { currentProjectKey: alpha.key, recent: [] }, { id: search, generation: 0 });
+    await answerText(worker, file, [result]);
+    expect(await asked).toEqual({ currentProjectKey: alpha.key, mention: false, results: [expect.objectContaining({ kind: 'project', relativePath: 'notes.txt' })], pathPending: true });
+    const row = quickOpen.typedPathAnswer(search, 0);
+    expect(await settled(row)).toBe(false);
+    quickOpen.end(search);
+    expect(await row).toBeUndefined();
+    quickOpen.dispose();
+  });
+
+  it('runs one typed-path lookup at a time, then only the newest query\'s, whose row still answers, and drops a stale row', async () => {
+    const other = path.join(elsewhere, 'other.txt');
+    const newest = path.join(elsewhere, 'newest.txt');
+    fs.writeFileSync(other, '');
+    fs.writeFileSync(newest, '');
+    const worker = new ScriptedWorker();
+    const looked: string[] = [];
+    const gates: Array<() => void> = [];
+    const quickOpen = indexResolving(worker, (real, target) => {
+      looked.push(target);
+      return new Promise((resolve) => gates.push(() => resolve(real(target, {}))));
+    });
+    const search = quickOpen.open();
+    const context = { currentProjectKey: alpha.key, recent: [] };
+    const first = quickOpen.query(file, context, { id: search, generation: 0 });
+    await turnsUntil(() => looked.length === 1);
+    void quickOpen.query(other, context, { id: search, generation: 1 });
+    const answer = quickOpen.query(newest, context, { id: search, generation: 2 });
+    expect(await settled(answer)).toBe(false);
+    expect(looked).toEqual([file]);
+    gates[0]!();
+    // the first lookup finishes on the file system, which no number of turns bounds
+    await vi.waitFor(() => expect(looked).toEqual([file, newest]));
+    // the first query's row came back after newer queries replaced it, and answers none of them
+    expect(await settled(first)).toBe(false);
+    expect(await settled(answer)).toBe(false);
+    expect(await quickOpen.typedPathAnswer(search, 0)).toBeUndefined();
+    gates[1]!();
+    expect(await answer).toEqual({ currentProjectKey: alpha.key, mention: false, results: [pathRow(newest)] });
+    expect(await quickOpen.typedPathAnswer(search, 2)).toEqual({ currentProjectKey: alpha.key, mention: false, results: [pathRow(newest)] });
+    expect(worker.queries.map((query) => query.raw)).toEqual([file, other, newest]);
+    quickOpen.dispose();
+  });
+
+  it('gives no row and answers the text search when a lookup fails, logging an unexpected error, a permission error once per root, and no daemon without files.outside', async () => {
+    const worker = new ScriptedWorker();
+    let failure: Error = new Error('the disk caught fire');
+    let calls = 0;
+    const quickOpen = indexResolving(worker, () => {
+      calls++;
+      return Promise.reject(failure);
+    });
+    const search = quickOpen.open();
+    const context = { currentProjectKey: alpha.key, recent: [] };
+    const ask = async (raw: string, generation: number): Promise<QuickOpenAnswer | undefined> => {
+      const before = calls;
+      const asked = quickOpen.query(raw, context, { id: search, generation });
+      await turnsUntil(() => calls > before);
+      await new Promise((resolve) => setImmediate(resolve));
+      await answerText(worker, raw);
+      return asked;
+    };
+    const noRow = { currentProjectKey: alpha.key, mention: false, results: [] };
+    expect(await ask(file, 0)).toEqual(noRow);
+    expect(logged).toEqual(['[quick-open] a typed path did not resolve: the disk caught fire']);
+    logged.length = 0;
+    failure = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+    expect(await ask(path.join(elsewhere, 'a.txt'), 1)).toEqual(noRow);
+    expect(await ask(path.join(elsewhere, 'b.txt'), 2)).toEqual(noRow);
+    const root = path.parse(file).root;
+    expect(logged).toEqual([`[quick-open] a typed path under ${root} on local could not be read (EACCES); later ones there are not logged`]);
+    logged.length = 0;
+    failure = new OutsideFilesUnsupportedError('ssh-remote+box');
+    expect(await ask(path.join(elsewhere, 'c.txt'), 3)).toEqual(noRow);
+    expect(logged).toEqual([]);
+    quickOpen.dispose();
+  });
+
+  it('opens a path pick only when a query of the same request returned it, and carries its line and column', async () => {
+    const show = async (queried: string, pick: QuickOpenPick): Promise<unknown> => {
+      const handlers = new Map<string, (...args: unknown[]) => unknown>();
+      let open = false;
+      const logs: string[] = [];
+      const quickOpen = new QuickOpenPicker(
+        { handleWhileOpen: fakeHandleWhileOpen(handlers), isOpen: () => open, request: async () => {
+          open = true;
+          await handlers.get(OVERLAY_CHANNELS.quickOpenQuery)!({ query: queried, generation: 1 });
+          open = false;
+          return { kind: 'quickOpen', pick };
+        } },
+        index(() => new ScriptedWorker()),
+        () => ({ currentProjectKey: alpha.key, recent: [] }),
+        { capture: () => CONTEXT, list: () => [] },
+        (line) => logs.push(line),
+      );
+      const outcome = await quickOpen.show(undefined, 'files');
+      return outcome ?? logs;
+    };
+    const pick: QuickOpenPick = { kind: 'path', authority: 'local', path: file, line: 3, column: 5, mention: false };
+    expect(await show(`${file}:3:5`, pick)).toEqual({ kind: 'pick', pick });
+    const other = path.join(elsewhere, 'other.txt');
+    fs.writeFileSync(other, '');
+    expect(await show(`${file}:3:5`, { ...pick, path: other })).toEqual(['[quick-open] ignoring a path pick that no query returned']);
+    expect(await show(`${file}:3:5`, { ...pick, authority: 'loopback' })).toEqual(['[quick-open] ignoring a path pick that no query returned']);
+  });
+
+  it('brings the row of a typed path whose lookup returned after the text search answered, and opens a pick of it', async () => {
+    const worker = new ScriptedWorker();
+    const gates: Array<() => void> = [];
+    const quickOpen = indexResolving(worker, (real, target) => new Promise((resolve) => gates.push(() => resolve(real(target, {})))));
+    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    let open = false;
+    const responses: unknown[] = [];
+    const pick: QuickOpenPick = { kind: 'path', authority: 'local', path: file, line: 3, mention: false };
+    const picker = new QuickOpenPicker(
+      { handleWhileOpen: fakeHandleWhileOpen(handlers), isOpen: () => open, request: async () => {
+        open = true;
+        const asked = openValue(handlers.get(OVERLAY_CHANNELS.quickOpenQuery)!({ query: `${file}:3`, generation: 1 }));
+        await answerText(worker, `${file}:3`);
+        responses.push(await asked);
+        const late = openValue(handlers.get(OVERLAY_CHANNELS.quickOpenPath)!({ generation: 1 }));
+        responses.push(await openValue(handlers.get(OVERLAY_CHANNELS.quickOpenPath)!({ generation: 0 })));
+        await expect(handlers.get(OVERLAY_CHANNELS.quickOpenPath)!({ generation: -1 })).rejects.toThrow('Malformed Quick Open generation');
+        gates[0]!();
+        responses.push(await late);
+        open = false;
+        return { kind: 'quickOpen', pick };
+      } },
+      quickOpen,
+      () => ({ currentProjectKey: alpha.key, recent: [] }),
+      { capture: () => CONTEXT, list: () => [] },
+      () => undefined,
+    );
+    expect(await picker.show(undefined, 'files')).toEqual({ kind: 'pick', pick });
+    expect(responses).toEqual([
+      { generation: 1, currentProjectKey: alpha.key, line: 3, mention: false, results: [], pathPending: true },
+      null,
+      { generation: 1, currentProjectKey: alpha.key, line: 3, mention: false, results: [pathRow(file)] },
+    ]);
+    quickOpen.dispose();
+  });
+});
+
+describe('Quick Open positions', () => {
+  it('reads no line or column past what main accepts in a pick, which it would otherwise refuse', () => {
+    expect(fuzzy.MAX_POSITION).toBeLessThanOrEqual(MAX_EDITOR_LINE);
   });
 });
 
@@ -657,8 +901,8 @@ describe('Quick Open picker', () => {
 
   it('accepts only a pick a query returned', async () => {
     touch(alpha, 'a.ts');
-    expect(await picker(overlay({ kind: 'quickOpen', pick: { projectKey: alpha.key, relativePath: 'a.ts', mention: false } })).show(undefined, 'files')).toEqual({ kind: 'pick', pick: { projectKey: alpha.key, relativePath: 'a.ts', mention: false } });
-    expect(await picker(overlay({ kind: 'quickOpen', pick: { projectKey: alpha.key, relativePath: 'never-listed.ts', mention: false } })).show(undefined, 'files')).toBeUndefined();
+    expect(await picker(overlay({ kind: 'quickOpen', pick: { kind: 'project', projectKey: alpha.key, relativePath: 'a.ts', mention: false } })).show(undefined, 'files')).toEqual({ kind: 'pick', pick: { kind: 'project', projectKey: alpha.key, relativePath: 'a.ts', mention: false } });
+    expect(await picker(overlay({ kind: 'quickOpen', pick: { kind: 'project', projectKey: alpha.key, relativePath: 'never-listed.ts', mention: false } })).show(undefined, 'files')).toBeUndefined();
     expect(await picker(overlay({ kind: 'quickOpen', pick: null })).show(undefined, 'files')).toBeUndefined();
   });
 
@@ -739,7 +983,7 @@ describe('Quick Open picker', () => {
         queried.push(await openValue(handlers.get(OVERLAY_CHANNELS.quickOpenQuery)!({ query: '', generation: 1 })));
         queried.push(await openValue(handlers.get(OVERLAY_CHANNELS.quickOpenQuery)!({ query: 'users', generation: 2 })));
         open = false;
-        return { kind: 'quickOpen', pick: { projectKey: beta.key, relativePath: 'src/routes/users.ts', mention: false } };
+        return { kind: 'quickOpen', pick: { kind: 'project', projectKey: beta.key, relativePath: 'src/routes/users.ts', mention: false } };
       } },
       quickOpenIndex,
       () => ({ currentProjectKey: beta.key, recent: [{ projectKey: alpha.key, relativePath: 'src/app.ts' }] }),
@@ -753,7 +997,7 @@ describe('Quick Open picker', () => {
 
     // The next request is not scoped: every project's files come back.
     const all = await quickOpenIndex.query('users', { currentProjectKey: beta.key, recent: [] }, { id: quickOpenIndex.open(), generation: 0 });
-    expect(all?.results.map((result) => result.projectName).sort()).toEqual(['alpha', 'beta']);
+    expect(all?.results.map((result) => projectRow(result).projectName).sort()).toEqual(['alpha', 'beta']);
   });
 
   it('answers queries only while Quick Open is open, within bounds, and closed as a value otherwise', async () => {

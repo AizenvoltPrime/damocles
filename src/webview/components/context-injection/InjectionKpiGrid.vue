@@ -3,6 +3,7 @@ import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import KpiCard from '../KpiCard.vue';
 import { useStatsFormat } from '@/composables/useStatsFormat';
+import { useMemoryScopeLabel } from '@/composables/useMemoryScopeLabel';
 import type { MemoryInjectionDisplay } from '@shared/types/context-injection';
 
 const props = defineProps<{
@@ -26,6 +27,7 @@ interface Kpi {
 }
 
 const { t } = useI18n();
+const { scopeLabel, scopeKey } = useMemoryScopeLabel();
 const format = useStatsFormat();
 
 const kpis = computed<Kpi[]>(() => {
@@ -80,9 +82,9 @@ const kpis = computed<Kpi[]>(() => {
       value: format.integer(d.storeCounts.total),
       note: undefined,
       details: [
-        row('session', t('memory.scope.session'), d.storeCounts.session),
-        row('project', t('memory.scope.project'), d.storeCounts.project),
-        row('global', t('memory.scope.global'), d.storeCounts.global),
+        row('session', scopeLabel('session'), d.storeCounts.session),
+        row('project', scopeLabel('project'), d.storeCounts.project),
+        row('global', scopeLabel('global'), d.storeCounts.global),
         row('observations', t('contextInjection.kpi.part.observations'), d.storeCounts.observations),
       ],
     },
@@ -103,7 +105,7 @@ const kpis = computed<Kpi[]>(() => {
     >
       <template #formula>
         <p data-kpi-formula>
-          {{ t(`contextInjection.formula.${k.id}`) }}
+          {{ t(scopeKey(`contextInjection.formula.${k.id}`)) }}
         </p>
         <dl
           v-if="k.details.length > 0"

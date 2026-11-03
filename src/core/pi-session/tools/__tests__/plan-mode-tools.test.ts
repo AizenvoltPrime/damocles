@@ -56,4 +56,13 @@ describe('ExitPlanMode tool', () => {
     expect(canUseTool).toHaveBeenCalledTimes(1);
     expect(result.content[0]?.text).toBe('Plan approved. Proceeding with implementation.');
   });
+
+  it('gives the agent the plan the user edited before approving', async () => {
+    const canUseTool = vi.fn(async () => ({ behavior: 'allow' as const, updatedInput: {}, editedPlan: '# Plan\n2. Roll back first\n' }));
+    const handler = { getPermissionMode: () => 'plan', turnPermissionMode: () => 'plan', canUseTool } as unknown as PermissionHandler;
+    const [, exit] = createPlanModeTools(fakePi(), handler);
+    const ctx = { sessionManager: { getBranch: () => [] } };
+    const result = await (exit as unknown as { execute: (id: string, p: unknown, s: unknown, u: unknown, c: unknown) => Promise<{ content: { text: string }[] }> }).execute('t1', {}, undefined, undefined, ctx);
+    expect(result.content[0]?.text).toBe('Plan approved. The user edited the plan file before approving it. Implement this version, not the one you wrote:\n\n# Plan\n2. Roll back first\n');
+  });
 });

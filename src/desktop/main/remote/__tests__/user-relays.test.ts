@@ -4,7 +4,10 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FEATURES } from '../../../../remote/protocol-version';
 import { MAX_BROKER_EXPIRES_IN_MS, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, type BrokerAnswer, type HeldAuth } from '../../../../shared/remote-user';
-import { brokerAnswerOf, checkProvider, clientAuthOf, clientUserOf, UserRelays, type UserRelaysDeps, type LocalUserScope } from '../user-relays';
+import { fileURLToPath } from 'node:url';
+import { readContributedConfiguration } from '../../../../core/config/read-contributed-configuration';
+import { PREFER_API_KEY_SETTINGS } from '../../../../core/pi-session/provider-auth';
+import { brokerAnswerOf, checkProvider, clientAuthOf, clientUserOf, relayedUserSettingKeys, UserRelays, type UserRelaysDeps, type LocalUserScope } from '../user-relays';
 
 const KNOWN: HeldAuth = { providers: { anthropic: { type: 'oauth', expires: 1, hasKey: false, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false } } };
 
@@ -129,6 +132,18 @@ describe('clientUserOf per file', () => {
   });
 });
 
+describe('relayedUserSettingKeys', () => {
+  const contributed = readContributedConfiguration(fileURLToPath(new URL('../../../../../', import.meta.url)));
+
+  // A second copy beside clientAuth could disagree with it, and only the client's core applies the flag.
+  it('relays every user-layer key but the machine scoped ones and the Prefer API key settings', () => {
+    const keys = relayedUserSettingKeys(contributed);
+    for (const key of PREFER_API_KEY_SETTINGS) expect(contributed.keys).toContain(key);
+    for (const key of [...PREFER_API_KEY_SETTINGS, ...contributed.hostKeys, ...contributed.clientMachineKeys]) expect(keys).not.toContain(key);
+    expect(keys).toContain('damocles.memory.judge');
+  });
+});
+
 describe('UserRelays', () => {
   const homes: string[] = [];
   afterEach(async () => {
@@ -202,6 +217,30 @@ describe('UserRelays', () => {
     attach.subscription.dispose();
     await user.userChanged();
     expect(published).toHaveLength(3);
+  });
+
+  it('publishes a Prefer API key change in clientAuth, which the local core reads from the setting, and never in clientUser', async () => {
+    const setting = new Map<string, unknown>([['damocles.language', 'en']]);
+    const { relays: user } = await relays({
+      clientAuth: async () => ({ providers: { openai: { type: 'api_key', hasKey: true, flatFee: false, ...(setting.get('damocles.openai.preferApiKey') === true ? { preferApiKey: true } : {}) } } }),
+      userSettingKeys: () => relayedUserSettingKeys({ keys: [...PREFER_API_KEY_SETTINGS, 'damocles.language'], clientMachineKeys: new Set(), hostKeys: new Set() }),
+      userValue: (key) => setting.get(key),
+    });
+    const published: Array<[string, unknown]> = [];
+    user.attach((topic, value) => published.push([topic, value]), 'ssh+h1', false, FEATURES);
+    await user.authChanged();
+    await user.userChanged();
+
+    setting.set('damocles.openai.preferApiKey', true);
+    await user.authChanged();
+    await user.userChanged();
+
+    const sent = (topic: string) => published.filter(([t]) => t === topic).map(([, value]) => value);
+    expect(sent('clientAuth')).toEqual([
+      { providers: { openai: { type: 'api_key', hasKey: true, flatFee: false } } },
+      { providers: { openai: { type: 'api_key', hasKey: true, flatFee: false, preferApiKey: true } } },
+    ]);
+    expect(sent('clientUser')).toEqual([{ settings: { 'damocles.language': 'en' }, permissionRules: [{ allow: [], ask: [], deny: ['Bash(rm:*)'], dir: '.claude' }] }]);
   });
 
   it('gives each attach its host\'s configured policy and publishes a change only to that host\'s attaches', async () => {

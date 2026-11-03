@@ -74,7 +74,9 @@ describe('remote project keys', () => {
     await client.projectBusy(SHELL);
     await client.scmIgnoredIn(SHELL, '', []);
     await client.mention('p1', { projectKey: SHELL, relativePath: 'a.ts' });
-    expect(seen).toEqual([NATIVE, NATIVE, { projectKey: NATIVE, relativePath: 'a.ts' }]);
+    // a file of the core's own host outside every project crosses by its path there, without the authority main carries
+    await client.mention('p1', { path: '/home/me/.damocles/plans/a.md', authority: 'loopback' });
+    expect(seen).toEqual([NATIVE, NATIVE, { projectKey: NATIVE, relativePath: 'a.ts' }, { path: '/home/me/.damocles/plans/a.md' }]);
   });
 
   it('prefixes the scm mirror\'s view, repository and decorations keys and the catalog and scm events', () => {
@@ -103,7 +105,8 @@ describe('remote project keys', () => {
     const { client, core, foreign } = connect();
     await expect(client.projectBusy('ssh+h1|/srv/app')).rejects.toThrow(ForeignProjectKeyError);
     await expect(client.listSessions('/srv/app')).rejects.toThrow(ForeignProjectKeyError);
-    await expect(client.mention('p1', { path: '/home/me/notes.md' })).rejects.toThrow(ForeignProjectKeyError);
+    await expect(client.mention('p1', { path: '/home/me/notes.md', authority: 'local' })).rejects.toThrow(ForeignProjectKeyError);
+    await expect(client.mention('p1', { path: '/home/me/notes.md', authority: 'ssh+h1' })).rejects.toThrow(ForeignProjectKeyError);
     core.publish('folderTargets', { defaultKey: 'ssh+h1|/srv/app', targets: [] });
     expect(foreign).toHaveBeenCalledTimes(1);
     expect(client.defaultTarget()).toBeUndefined();

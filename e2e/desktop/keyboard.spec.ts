@@ -6,6 +6,7 @@ import { MAIN_SCRIPT } from './support/app';
 import { activeChat, expect, nextChat, panelIdOf, test } from './support/fixtures';
 import { hermeticEnv, seedStubModel, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
+import { killRenderer } from './support/renderer-kill';
 import { openProjectChat, saveScreenshot } from './support/screenshots';
 import { codeEditor, editorShows, openInEditor } from './support/editor';
 import {
@@ -434,9 +435,7 @@ test('F6 reaches the desktop popups only while one shows, Tab stays in them, Ent
   }, panelId);
   for (let i = 0; i < 4; i++) {
     await expect.poll(loadedRenderer).not.toBe(0);
-    await app.evaluate(({ webContents }, id) => {
-      webContents.getAllWebContents().find((c) => c.getURL().includes(`/panel/${id}/`))!.forcefullyCrashRenderer();
-    }, panelId);
+    await killRenderer(app, `/panel/${panelId}/`);
     await expect.poll(() => desktop.output().split(`[views] panel ${panelId} renderer gone`).length - 1).toBe(i + 1);
   }
   await expect(popupToasts(popup).filter({ hasText: GAVE_UP })).toBeVisible();

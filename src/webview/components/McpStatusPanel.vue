@@ -27,7 +27,7 @@ import HostBadge from './HostBadge.vue';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
-import type { HostTone } from '@shared/host-tones';
+import type { HostColor } from '@shared/host-colors';
 import { canDeleteMcpServer, canEditMcpServer, type McpCollisionServer } from './mcp-server-form-logic';
 
 const { t } = useI18n();
@@ -47,7 +47,7 @@ const props = defineProps<{
   /** Counts applied `mcpConfigUpdate` payloads, so the panel can see a reload land. */
   configRevision: number;
   /** A remote core's host as this computer names it; core sends only each server's placement, never a host name. */
-  host?: { readonly name: string; readonly color?: HostTone | undefined } | undefined;
+  host?: { readonly name: string; readonly color?: HostColor | undefined } | undefined;
   /** `hostSettings`: the settings overlay's host tab, the one place a remote core takes this host's MCP edits. */
   context?: 'chat' | 'hostSettings';
 }>();
@@ -516,12 +516,12 @@ const rows = computed(() => props.servers.map((server) => ({ server, actions: bu
 const sourceCount = computed(() => Object.keys(SOURCE_LABEL_KEYS).length - (host.value ? 0 : 1));
 
 /** A remote core's placement as a chip; the host chip waits for this page's host label, since core never names the host. */
-function placementChip(server: McpServerStatusInfo): { label: string; title: string; tone?: HostTone; host?: true } | undefined {
+function placementChip(server: McpServerStatusInfo): { label: string; title: string; color?: HostColor; host?: true } | undefined {
   if (server.placement === 'client') return { label: t('mcp.placement.client'), title: t('mcp.placement.clientTitle') };
   if (server.placement === 'project') return { label: t('mcp.placement.project'), title: t('mcp.placement.projectTitle') };
   const label = host.value;
   if (server.placement !== 'host' || !label) return undefined;
-  return { label: label.name, title: t('mcp.placement.hostTitle', { host: label.name }), ...(label.color ? { tone: label.color } : {}), host: true };
+  return { label: label.name, title: t('mcp.placement.hostTitle', { host: label.name }), ...(label.color ? { color: label.color } : {}), host: true };
 }
 
 function toolsSummary(server: McpServerStatusInfo): string {
@@ -844,7 +844,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
                   v-if="placement?.host"
                   :name="placement.label"
                   :title="placement.title"
-                  :tone="placement.tone"
+                  :color="placement.color"
                   data-testid="mcp-server-placement"
                   :data-placement="server.placement"
                 />

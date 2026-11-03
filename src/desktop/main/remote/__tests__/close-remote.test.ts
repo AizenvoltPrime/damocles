@@ -27,10 +27,10 @@ function deps(options: { hosts?: readonly HostRuns[]; later?: readonly HostRuns[
   let hostListener: ((hostId: string) => void) | undefined;
   const linger = new Set<string>(['h1']);
   // the host store's name and color of each host
-  const hostStore = new Map<string, { name: string; tone?: 'danger' | 'success' }>([['h1', { name: 'prod-1' }]]);
+  const hostStore = new Map<string, { name: string; color?: 'danger' | 'success' }>([['h1', { name: 'prod-1' }]]);
   const hostFields = (hostId: string) => {
     const host = hostStore.get(hostId) ?? { name: hostId };
-    return { hostLabel: host.name, ...(host.tone !== undefined ? { hostTone: host.tone } : {}), ...(linger.has(hostId) ? { lingerWarning: true as const } : {}) };
+    return { hostLabel: host.name, ...(host.color !== undefined ? { hostColor: host.color } : {}), ...(linger.has(hostId) ? { lingerWarning: true as const } : {}) };
   };
   let rowsListener: ((rows: readonly CloseRemoteRow[]) => void) | undefined;
   let answer!: (value: { choice: 'keep' | 'stop' | 'cancel'; dontAskAgain: boolean }) => void;
@@ -81,8 +81,8 @@ function deps(options: { hosts?: readonly HostRuns[]; later?: readonly HostRuns[
     linger.delete(hostId);
     hostListener?.(hostId);
   };
-  const recolor = (hostId: string, name: string, tone: 'danger' | 'success'): void => {
-    hostStore.set(hostId, { name, tone });
+  const recolor = (hostId: string, name: string, color: 'danger' | 'success'): void => {
+    hostStore.set(hostId, { name, color });
     hostListener?.(hostId);
   };
   return { value, events, shown, recorded, lingerEnabled, recolor, status: (...args: Parameters<NonNullable<typeof statusListener>>) => statusListener?.(...args), answer: (next: { choice: 'keep' | 'stop' | 'cancel'; dontAskAgain: boolean }) => answer(next), rows: () => rowsListener };
@@ -142,9 +142,9 @@ describe('the close\'s remote question', () => {
     const released = release(value, false);
     await vi.waitFor(() => expect(shown).toHaveLength(1));
     expect(shown[0]?.[0]).toMatchObject({ hostLabel: 'prod-1' });
-    expect(shown[0]?.[0]).not.toHaveProperty('hostTone');
+    expect(shown[0]?.[0]).not.toHaveProperty('hostColor');
     recolor('h1', 'PROD', 'danger');
-    expect(shown.at(-1)?.[0]).toMatchObject({ hostLabel: 'PROD', hostTone: 'danger', lingerWarning: true });
+    expect(shown.at(-1)?.[0]).toMatchObject({ hostLabel: 'PROD', hostColor: 'danger', lingerWarning: true });
     const before = shown.length;
     // the same host fields again change nothing
     recolor('h1', 'PROD', 'danger');

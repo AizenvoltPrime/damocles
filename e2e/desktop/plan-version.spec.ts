@@ -5,7 +5,9 @@ import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { activeChat, expect, nextChat, test } from './support/fixtures';
 import { seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { chatRequests, startOpenAIStub, STUB_MODEL_ID, type OpenAIStub } from './support/openai-stub';
-import { addProject, chatInput, sendAndAwaitEcho } from './support/ui';
+import { addProject, chatInput, postFromWebview, sendAndAwaitEcho } from './support/ui';
+import { activeTab, codeEditor, DOCUMENT_END, editorShows, editorTab, saveWithKeyboard } from './support/editor';
+import { shellPage } from './support/shell';
 
 const PLAN = '# Plan\n\n1. Ship it\n';
 // About 10k tokens to pi's estimate, well over the 1% of the stub's window kept, so the compaction summarises both plans.
@@ -107,6 +109,47 @@ test('D51: a plan after a compaction is Version 3 on its card and the banner, an
     desktop = await launch();
     const reopened = await activeChat(desktop.app);
     await expect(planCard(reopened)).toContainText('Plan · Version 3', { timeout: 60_000 });
+  } finally {
+    await stub.close();
+  }
+});
+
+// D7: approval reads the plan file, so a plan the user edits in the editor before approving is the plan the agent gets.
+test('a local plan opened from the plan overlay is an editable tab that saves the plan file, and the approval carries the edited text', async ({ foreground: _foreground, home, launch }) => {
+  const stub = await startOpenAIStub();
+  try {
+    seedStubModel(home, stub.baseUrl);
+    const desktop = await launch();
+    const tab = await openProject(desktop.app, home);
+
+    await sendAndAwaitEcho(tab, 'hello');
+    await awaitTitleRequest(stub);
+    await writePlanFile(tab, home);
+    const planFile = await planFilePath(tab, home);
+
+    stub.replies.push(ENTER_PLAN, EXIT_PLAN);
+    await send(tab, 'plan the release');
+    await expect(banner(tab)).toContainText('Version 1 · 1 step');
+
+    await postFromWebview(tab, { type: 'openSessionPlan' });
+    await tab.getByTestId('plan-view-overlay').getByTestId('plan-view-open').click();
+    const shell = await shellPage(desktop.app);
+    await expect(editorTab(shell, path.basename(planFile))).toHaveAttribute('aria-selected', 'true');
+    await expect.poll(async () => activeTab(desktop.app)).toMatchObject({ kind: 'code', readOnly: false, displayPath: fs.realpathSync.native(planFile) });
+    await editorShows(shell, '1. Ship it');
+    await codeEditor(shell).locator('.view-line').first().click();
+    await shell.keyboard.press(DOCUMENT_END);
+    await shell.keyboard.type('2. Roll back first');
+    await saveWithKeyboard(desktop.app);
+    await expect.poll(() => fs.readFileSync(planFile, 'utf8')).toBe(`${PLAN}2. Roll back first`);
+
+    stub.replies.push({ chunks: ['Shipping.'] });
+    await tab.getByRole('button', { name: 'Yes, manually approve' }).click();
+    await expect(tab.getByText('Shipping.', { exact: true })).toBeVisible();
+    const toolResults = chatRequests(stub).flatMap((request) => ((request.body as { messages?: { role: string; content: unknown }[] }).messages ?? [])
+      .filter((message) => message.role === 'tool')
+      .map((message) => (typeof message.content === 'string' ? message.content : JSON.stringify(message.content))));
+    expect(toolResults.some((result) => result.includes('2. Roll back first'))).toBe(true);
   } finally {
     await stub.close();
   }

@@ -480,6 +480,64 @@ describe('saved editors', () => {
     expect(lines).toContain('[layout] dropping a malformed recent file');
   });
 
+  it('keeps a host file tab by its authority, its path in either OS\'s rules and its rule, and drops a malformed one', () => {
+    const posix = { kind: 'code', authority: 'ssh+h1', path: '/home/me/.damocles/plans/fix-it-0123abcd.md', outside: 'plans' };
+    const win32 = { kind: 'markdownPreview', authority: 'wsl+x', path: 'C:\\Users\\me\\.damocles\\plans\\a.md', outside: 'plans' };
+    const user = { kind: 'code', authority: 'ssh+h1', path: '/etc/hosts', outside: 'user' };
+    expect(parsePersistedTab(posix)).toEqual(posix);
+    expect(parsePersistedTab(win32)).toEqual(win32);
+    expect(parsePersistedTab(user)).toEqual(user);
+    for (const malformed of [
+      { ...posix, authority: '' },
+      { ...posix, authority: 7 },
+      { ...posix, authority: 'local' },
+      { ...posix, authority: 'x'.repeat(5000) },
+      { ...posix, path: 'plans/a.md' },
+      { ...posix, path: '/home/me/a.md\0' },
+      { ...posix, outside: 'settings' },
+      { kind: 'code', authority: 'ssh+h1', path: posix.path },
+      { ...posix, backupId: BACKUP },
+      { ...user, backupId: BACKUP },
+      { ...user, editable: true },
+      { ...posix, kind: 'settings' },
+    ]) {
+      expect(parsePersistedTab(malformed), JSON.stringify(malformed)).toBeUndefined();
+    }
+    expect(parsePersistedEditor({ tabs: [posix, user, { ...posix, outside: 'other' }], active: 0, recent: [] }, log).tabs).toEqual([posix, user]);
+    expect(lines).toContain('[layout] dropping a malformed editor tab');
+  });
+
+  it('keeps a file of this computer the user named as editable, with a backup only then', () => {
+    const editable = { kind: 'code', path: OUTSIDE_README, editable: true };
+    expect(parsePersistedTab(editable)).toEqual(editable);
+    expect(parsePersistedTab({ ...editable, backupId: BACKUP })).toEqual({ ...editable, backupId: BACKUP });
+    expect(parsePersistedTab({ kind: 'code', path: OUTSIDE_README })).toEqual({ kind: 'code', path: OUTSIDE_README });
+    for (const malformed of [
+      { kind: 'code', path: OUTSIDE_README, backupId: BACKUP },
+      { ...editable, editable: false },
+      { ...editable, editable: 'yes' },
+      { ...editable, path: 'relative.md' },
+      { ...editable, backupId: 'not-a-uuid' },
+    ]) {
+      expect(parsePersistedTab(malformed), JSON.stringify(malformed)).toBeUndefined();
+    }
+  });
+
+  it('keeps a plan file of this computer by its rule, with a backup or without one', () => {
+    const plan = { kind: 'markdownPreview', path: OUTSIDE_README, outside: 'plans' };
+    expect(parsePersistedTab(plan)).toEqual(plan);
+    expect(parsePersistedTab({ ...plan, backupId: BACKUP })).toEqual({ ...plan, backupId: BACKUP });
+    for (const malformed of [
+      { ...plan, outside: 'user' },
+      { ...plan, outside: 'settings' },
+      { ...plan, editable: true },
+      { ...plan, path: 'plans/a.md' },
+      { ...plan, backupId: 'not-a-uuid' },
+    ]) {
+      expect(parsePersistedTab(malformed), JSON.stringify(malformed)).toBeUndefined();
+    }
+  });
+
   it('keeps a saved Search Editor by its .code-search file or by its header, and drops one out of bounds', () => {
     const config = { query: 'x', isRegex: false, matchCase: true, wholeWord: false, include: '', exclude: '', useExcludeSettingsAndIgnoreFiles: true, onlyOpenEditors: false, contextLines: 2, showIncludesExcludes: false };
     expect(parsePersistedTab({ kind: 'searchEditor', file: { projectKey: 'p', relativePath: 'q.code-search' }, backupId: BACKUP })).toEqual({ kind: 'searchEditor', file: { projectKey: 'p', relativePath: 'q.code-search' }, backupId: BACKUP });
@@ -495,7 +553,15 @@ describe('saved editors', () => {
 
   it('round-trips the editor through the file', async () => {
     const store = new WindowLayoutStore(dir, log);
-    const editor = { tabs: [{ kind: 'code' as const, file: { projectKey: 'p', relativePath: 'a.ts' } }], active: 0, recent: [{ projectKey: 'p', relativePath: 'a.ts' }] };
+    const editor = {
+      tabs: [
+        { kind: 'code' as const, file: { projectKey: 'p', relativePath: 'a.ts' } },
+        { kind: 'code' as const, path: OUTSIDE_README, editable: true as const, backupId: BACKUP },
+        { kind: 'code' as const, authority: 'ssh+h1', path: '/etc/hosts', outside: 'user' as const },
+      ],
+      active: 0,
+      recent: [{ projectKey: 'p', relativePath: 'a.ts' }],
+    };
     store.setEditor(editor);
     await store.flush();
     expect(new WindowLayoutStore(dir, log).editor()).toEqual(editor);

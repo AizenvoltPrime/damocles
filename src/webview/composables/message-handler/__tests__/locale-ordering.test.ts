@@ -8,6 +8,7 @@ import { useStreamingStore } from '@/stores/useStreamingStore';
 import { createMessageDispatcher } from '../index';
 import type { HandlerContext, HandlerRegistry } from '../types';
 import { inGreek } from '../../../../__mocks__/greek-locale';
+import { LOCALE_HOLD_BOUND_MS } from '@shared/locale-hold';
 
 const toasts = vi.hoisted(() => [] as string[]);
 vi.mock('vue-sonner', () => {
@@ -119,6 +120,28 @@ describe('a page whose language changes while its catalogs load', () => {
     dispatch(notice(C));
     expect(toasts).toEqual([english(B), inGreek(C)]);
     expect(loads.core).toBe(1);
+  });
+
+  it('handles the held messages in the language shown once a hung load passed LOCALE_HOLD_BOUND_MS', async () => {
+    const load = deferred();
+    const { dispatch, i18n } = await freshPage({ gate: load.promise });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      dispatch(switchTo('el'));
+      dispatch(notice(A));
+      await vi.advanceTimersByTimeAsync(LOCALE_HOLD_BOUND_MS - 1);
+      expect(toasts).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      await dispatch.settled();
+      expect(toasts).toEqual([english(A)]);
+      expect(logged).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+    // the switch still applies once the load ends, inside this test so it lands on this page's modules
+    load.release();
+    await vi.waitFor(() => expect(i18n.global.locale.value).toBe('el'));
   });
 
   it('handles the held messages in English when the Greek catalogs fail to load', async () => {

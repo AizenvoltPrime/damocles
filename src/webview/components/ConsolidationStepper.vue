@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
 import { Ban, Circle, CircleCheck, CircleX, LoaderCircle } from 'lucide-vue-next';
 import { useConsolidationStore } from '@/stores/useConsolidationStore';
+import { useMemoryScopeLabel } from '@/composables/useMemoryScopeLabel';
 import type { ConsolidationPhaseId } from '@shared/types/consolidation';
 import { consolidationReasonKey } from './consolidation-reasons';
 
@@ -11,6 +12,7 @@ const store = useConsolidationStore();
 const { phaseStatus, phaseMeta, persistProgress } = storeToRefs(store);
 
 const { t } = useI18n();
+const { scopeKey } = useMemoryScopeLabel();
 
 const PHASES: ConsolidationPhaseId[] = ['claim', 'extract', 'persist', 'maintain', 'profiles'];
 
@@ -33,7 +35,7 @@ function trailing(id: ConsolidationPhaseId): string {
     if (status === 'done') return t('consolidation.stepper.items', meta.done ?? 0);
   }
   if (id === 'maintain' && status === 'done') return meta.summary ?? '';
-  if (id === 'profiles' && status === 'done') return t('consolidation.stepper.profilesDone');
+  if (id === 'profiles' && status === 'done') return t(scopeKey('consolidation.stepper.profilesDone'));
   if (status === 'skipped') return meta.reason ? t('consolidation.stepper.skippedBecause', { reason: reasonText(meta.reason) }) : t('consolidation.stepper.skipped');
   if (status === 'failed') return meta.reason ? reasonText(meta.reason) : t('consolidation.stepper.failed');
   if (status === 'active') return t('consolidation.stepper.working');

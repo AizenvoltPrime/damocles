@@ -60,6 +60,33 @@ describe('setting writes', () => {
     expect(writes.latest(['damocles.a'])).toBeUndefined();
   });
 
+  it('hands a failed write of the whole value its revert to the later write that overwrote it', () => {
+    const writes = useSettingWritesStore();
+    const first = vi.fn();
+    const second = vi.fn();
+    writes.begin('damocles.a', first);
+    writes.begin('damocles.a', second);
+
+    writes.settle(failed('damocles.a'));
+    expect(first).not.toHaveBeenCalled();
+    writes.settle(failed('damocles.a'));
+
+    expect(first).toHaveBeenCalledOnce();
+    expect(second).not.toHaveBeenCalled();
+  });
+
+  it('runs each partial write\'s own revert, whatever else of the key is in flight', () => {
+    const writes = useSettingWritesStore();
+    const reverts = [vi.fn(), vi.fn(), vi.fn()];
+    const settled = vi.fn();
+    for (const revert of reverts) writes.begin('damocles.list', revert, { partial: true, settled });
+
+    reverts.forEach(() => writes.settle(failed('damocles.list')));
+
+    for (const revert of reverts) expect(revert).toHaveBeenCalledOnce();
+    expect(settled.mock.calls).toEqual([[false], [false], [false]]);
+  });
+
   it('records a result that arrives with no write in flight without reverting anything', () => {
     const writes = useSettingWritesStore();
     const revert = vi.fn();

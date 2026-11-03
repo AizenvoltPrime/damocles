@@ -121,7 +121,7 @@ function openDetails(event: MouseEvent): void {
       v-if="remote && !grouped"
       data-testid="host-badge"
       :name="project.authority.name"
-      :tone="project.authority.color"
+      :color="project.authority.color"
       :title="hostState"
       :class="opensCard ? 'cursor-pointer hover:bg-(--tone)/25' : ''"
       @click="openDetails"

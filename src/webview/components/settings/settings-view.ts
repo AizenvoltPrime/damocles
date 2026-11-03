@@ -1,7 +1,7 @@
 import { inject, provide, shallowRef, watch, type InjectionKey, type Ref, type ShallowRef } from 'vue';
 import type { SettingsSectionId, SettingsTarget } from '@shared/settings-sections';
 import type { SettingsFileScope } from '@shared/types/messages';
-import type { HostTone } from '@shared/host-tones';
+import type { HostColor } from '@shared/host-colors';
 import type { ViewRect } from '@/utils/visible-rect';
 import type { SettingsRowMeta } from './settings-rows';
 
@@ -152,7 +152,7 @@ const MACHINE_HOST: InjectionKey<() => SettingsMachineHost | undefined> = Symbol
 
 export interface SettingsMachineHost {
   readonly name: string;
-  readonly color?: HostTone | undefined;
+  readonly color?: HostColor | undefined;
 }
 
 export function provideSettingsMachineHost(host: () => SettingsMachineHost | undefined): void {

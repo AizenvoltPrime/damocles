@@ -55,6 +55,13 @@ import { relayedServerDescriptors, remoteAvailableNames, runRelayedMcpRequest, t
 import { MCP_REMOTE_AVAILABLE_SETTING, MCP_RESOURCE_EXPOSURE_SETTING, MCP_TOOL_EXPOSURE_SETTING, RELAYABLE_SOURCES } from "../../shared/types/mcp";
 import { toolExposureLayers } from "../pi-session/mcp/exposure";
 import type { RelayedMcpServer } from "../../shared/remote-user";
+import type { SettingsChange } from "../../platform/settings-store";
+import { TOOL_GROUP_SETTINGS, TOOLS_DISABLED_SETTING } from "../../shared/types/tools";
+import { IMAGE_MODEL_SETTING, IMAGE_SETTINGS_SECTION } from "../pi-session/tools/image-tool-specs";
+
+// The image model is here because it decides whether the image group can run, which the Tools status and the image settings show.
+const TOOL_STATUS_SETTINGS: readonly string[] = [...Object.values(TOOL_GROUP_SETTINGS), TOOLS_DISABLED_SETTING, IMAGE_MODEL_SETTING];
+const isImageSetting = (key: string): boolean => key.startsWith(`${IMAGE_SETTINGS_SECTION}.`);
 
 /**
  * Settles once every config file write core started (MCP, settings and permission files), one queued meanwhile included,
@@ -163,7 +170,7 @@ export class ChatPanelProvider {
     // A sign-in or sign-out in another app or the pi CLI lands only in auth.json, which the account rows read themselves.
     const stopAuthUpdates = PiRuntime.onAuthFileChange((keySynced) => this.accountInputsChanged(keySynced ? "keySync" : "judge"));
     this.subscriptions.push({ dispose: stopAuthUpdates });
-    // Another window's OpenAI key or prefer flag, or init's move of the key: the runtime published the sessions it holds and the judge status.
+    // Another window's OpenAI key, a prefer setting change, or init's move of the key: the runtime published the sessions it holds and the judge status.
     const stopOpenAIKeyUpdates = PiRuntime.onOpenAICredentialChange(() => {
       void this.broadcastAccountState("the OpenAI auth status", "openai", () => openaiAuthStatusMessage(platform));
       publishUnstartedPanelsAccountInfo(() => this.panelManager.getPanels());
@@ -219,6 +226,8 @@ export class ChatPanelProvider {
       if (accountChanged) publishUnstartedPanelsAccountInfo(getPanels);
     });
     this.subscriptions.push({ dispose: stopSyncUpdates });
+    // The one publisher of a tool switch change, whichever writer made it: a chat, Settings, a hand edit, another window.
+    this.subscriptions.push(platform.settings.onDidChange("damocles", (change) => this.toolSettingsChanged(change)));
     // the judge status reads no picker setting, so this tells it nothing
     this.subscriptions.push(platform.settings.onDidChange(MODEL_PICKER_SETTING, (change) => publishPanelsAccountInfo(() => this.panelManager.getPanels(), change.clientId)));
     this.subscriptions.push(platform.settings.onDidChange("damocles.memory", (change) => {
@@ -281,10 +290,9 @@ export class ChatPanelProvider {
       loadMcpConfig: () => this.settingsManager.loadMcpConfig(),
       getConfiguredModelForPanel: (panelId) => this.settingsManager.getConfiguredModelForPanel(panelId),
       getPreferOpenAIApiKey: () => {
-        if (PiRuntime.exists) return PiRuntime.get().preferOpenAIApiKey();
         // a daemon's core: the pinned (else acting) client's own flag, from its clientAuth
         const remote = this.platform.remote;
-        return remote ? clientPrefersApiKey(remote, OPENAI_API_PROVIDER) : readPreferOpenAIApiKey(this.platform.state);
+        return remote ? clientPrefersApiKey(remote, OPENAI_API_PROVIDER) : readPreferOpenAIApiKey(this.platform.settings);
       },
       resolveThinkingForPanel: (panelId, model, folder) => {
         const settings = this.platform.settings;
@@ -645,6 +653,23 @@ export class ChatPanelProvider {
       return true;
     }
     return false;
+  }
+
+  /**
+   * A tool switch setting changed: every panel re-applies its active tools and gets one `toolStatus`, and the image
+   * settings too for an image key. PiRuntime's own listener on the image section re-applies the tools for those.
+   */
+  private toolSettingsChanged(change: SettingsChange): void {
+    const changed = TOOL_STATUS_SETTINGS.filter((key) => change.affects(key));
+    if (changed.length === 0) return;
+    const image = changed.some(isImageSetting);
+    const refresh = changed.some((key) => !isImageSetting(key));
+    for (const [, instance] of this.panelManager.getPanels()) {
+      if (refresh) instance.session.refreshActiveTools();
+      const target = hostForChange(instance.host, change);
+      if (image) this.settingsManager.sendImageGenerationSettings(target);
+      this.settingsManager.sendToolStatus(instance.session, target);
+    }
   }
 
   /** clientId: on a daemon's core, the one device whose views alone need it. */

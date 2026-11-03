@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia } from 'pinia';
 import { installPlatformBridge } from '@/composables/usePlatformBridge';
-import type { HostTone } from '@shared/host-tones';
+import type { HostTone } from '@shared/host-colors';
 import OverlayApp from '../overlay/OverlayApp.vue';
 import { createOverlaySettingsBridge } from '../overlay/settings/overlay-bridge';
 import { addSettingsMessages } from '../overlay/settings/settings-messages';

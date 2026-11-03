@@ -18,7 +18,10 @@ import type { Project } from '../local-services/confine';
 import type { ProjectWorkspace } from '../workspace/project-workspace';
 import type { FileListing } from '../workspace/quick-open-listing';
 import type { MenuState } from './menu';
+import { pathFor } from '../../shared/project-location';
+import { typedPathRowAt, typedPathTarget, type TypedPathDeps, type TypedPathRow, type TypedPathTarget } from './quick-open-path';
 import { tickDeadline } from './tick-deadline';
+import { OutsideFilesUnsupportedError } from './workspace/remote-workspace';
 import { NotConnectedError, type Workspaces } from './workspace/workspaces';
 
 // A worker that posts nothing for this long while a query waits is stuck and replaced; a listing that still prints a file
@@ -46,6 +49,10 @@ export interface QuickOpenDeps {
   // starts dist/quick-open-worker.js
   readonly startWorker: () => QuickOpenWorker;
   readonly log: (line: string) => void;
+  // what a typed absolute path resolves by (quick-open-path.ts)
+  readonly authorityOs: TypedPathDeps['authorityOs'];
+  readonly homedir: TypedPathDeps['homedir'];
+  readonly hostName: TypedPathDeps['hostName'];
 }
 
 export interface QuickOpenContext {
@@ -71,6 +78,23 @@ interface Pending {
   readonly base: QuickOpenAnswer;
 }
 
+// The newest query of an open request whose text is a typed path.
+interface PathQuery {
+  readonly generation: number;
+  // the typed path's row as the only result; undefined for no row, and once a newer query or the request's end replaced it
+  readonly answer: Promise<QuickOpenAnswer | undefined>;
+  readonly pending: () => boolean;
+  readonly drop: () => void;
+}
+
+// One open request. At most one typed-path lookup runs, and only the newest query's waits for it, so a drive or host that
+// hangs holds one lookup rather than one per keystroke, and never the text search.
+interface Search {
+  latest: PathQuery | undefined;
+  running: boolean;
+  queued: (() => Promise<void>) | undefined;
+}
+
 function itemOf(relativePath: string): { label: string; description: string } {
   const slash = relativePath.lastIndexOf('/');
   return { label: relativePath.slice(slash + 1), description: slash < 0 ? '' : relativePath.slice(0, slash) };
@@ -89,9 +113,11 @@ export class QuickOpenIndex {
   private readonly listings = new Set<FileListing>();
   private readonly pending = new Map<number, Pending>();
   private nextId = 0;
-  // the open requests' search ids
-  private readonly searches = new Set<number>();
+  // the open requests, by search id
+  private readonly searches = new Map<number, Search>();
   private nextSearch = 0;
+  // the authorities and path roots a typed path was refused permission under, each logged once
+  private readonly deniedRoots = new Set<string>();
   // cancels the deadline by which the worker must post something while a query waits
   private cancelSilence: (() => void) | undefined;
 
@@ -106,26 +132,103 @@ export class QuickOpenIndex {
   /** A new open request's search id, for its queries. */
   open(): number {
     const search = this.nextSearch++;
-    this.searches.add(search);
+    this.searches.set(search, { latest: undefined, running: false, queued: undefined });
     return search;
   }
 
   /** The open request closed: a query of it still on its way is dropped, and the worker forgets its cache. */
   end(search: number): void {
+    const ended = this.searches.get(search);
     this.searches.delete(search);
+    if (ended) {
+      ended.queued = undefined;
+      ended.latest?.drop();
+    }
     this.worker?.postMessage({ kind: 'end', search });
   }
 
   dispose(): void {
+    for (const search of [...this.searches.keys()]) this.end(search);
     this.stop();
   }
 
-  /** The answer to raw, or undefined once a newer query of the same search replaced it or the search ended; never rejects. */
+  /**
+   * The answer to raw, or undefined once a newer query of the same search replaced it or the search ended; never rejects. A
+   * typed absolute path that resolves to a file answers as the only row (VS Code's getAbsolutePathFileResult), and the text
+   * search runs beside its lookup: whichever answers first is the answer, and a text answer that came first while the lookup
+   * still runs says so (`pathPending`), so typedPathAnswer can bring the row.
+   */
   async query(raw: string, context: QuickOpenContext, search: QuickOpenSearch): Promise<QuickOpenAnswer | undefined> {
+    const open = this.searches.get(search.id);
+    if (!open) return undefined;
     const parsed = parseQuickOpenQuery(raw);
+    open.latest?.drop();
+    open.queued = undefined;
+    const target = !parsed.mention && context.scope === undefined ? typedPathTarget(raw, context.currentProjectKey, this.deps) : undefined;
+    const pathQuery = target && this.lookUp(open, search.generation, target, context.currentProjectKey);
+    open.latest = pathQuery;
+    const text = this.textQuery(raw, parsed, context, search);
+    if (!pathQuery) return text;
+    type First = { readonly row: true; readonly answer: QuickOpenAnswer } | { readonly row: false; readonly answer: QuickOpenAnswer | undefined };
+    const asText = (answer: QuickOpenAnswer | undefined): First => ({ row: false, answer });
+    const first = await Promise.race<First>([
+      pathQuery.answer.then((answer): First | Promise<First> => (answer ? { row: true, answer } : text.then(asText))),
+      text.then(asText),
+    ]);
+    if (first.row) return first.answer;
+    return first.answer && pathQuery.pending() ? { ...first.answer, pathPending: true } : first.answer;
+  }
+
+  /**
+   * The row of the query of generation when a text answer came first (`pathPending`): its typed path's answer once the lookup
+   * finds a file while that query is still the newest; undefined for no row, a newer query, or the request's end.
+   */
+  async typedPathAnswer(search: number, generation: number): Promise<QuickOpenAnswer | undefined> {
+    const latest = this.searches.get(search)?.latest;
+    return latest?.generation === generation ? latest.answer : undefined;
+  }
+
+  // The lookup of target for the query of generation, run once the one on its way returns; dropped unanswered once a newer
+  // query or the request's end replaces it.
+  private lookUp(open: Search, generation: number, target: TypedPathTarget, currentProjectKey: string | undefined): PathQuery {
+    let settled = false;
+    let resolve!: (answer: QuickOpenAnswer | undefined) => void;
+    const answer = new Promise<QuickOpenAnswer | undefined>((settleAnswer) => (resolve = settleAnswer));
+    const settle = (value: QuickOpenAnswer | undefined): void => {
+      settled = true;
+      resolve(value);
+    };
+    open.queued = async () => {
+      const row = await this.typedPath(target);
+      settle(row && {
+        ...(currentProjectKey !== undefined ? { currentProjectKey } : {}),
+        ...(row.line !== undefined ? { line: row.line } : {}),
+        ...(row.column !== undefined ? { column: row.column } : {}),
+        mention: false,
+        results: [row.result],
+      });
+    };
+    this.runLookups(open);
+    return { generation, answer, pending: () => !settled, drop: () => settle(undefined) };
+  }
+
+  private runLookups(open: Search): void {
+    const next = open.queued;
+    if (open.running || !next) return;
+    open.queued = undefined;
+    open.running = true;
+    void next().finally(() => {
+      open.running = false;
+      this.runLookups(open);
+    });
+  }
+
+  private async textQuery(raw: string, parsed: ReturnType<typeof parseQuickOpenQuery>, context: QuickOpenContext, search: QuickOpenSearch): Promise<QuickOpenAnswer | undefined> {
+    const current = context.currentProjectKey !== undefined ? { currentProjectKey: context.currentProjectKey } : {};
     const base: QuickOpenAnswer = {
-      ...(context.currentProjectKey !== undefined ? { currentProjectKey: context.currentProjectKey } : {}),
+      ...current,
       ...(parsed.line !== undefined ? { line: parsed.line } : {}),
+      ...(parsed.column !== undefined ? { column: parsed.column } : {}),
       mention: parsed.mention,
       results: [],
     };
@@ -161,6 +264,28 @@ export class QuickOpenIndex {
       if (id !== undefined) this.pending.delete(id);
       this.deps.log(`[quick-open] a query failed: ${err instanceof Error ? err.message : String(err)}`);
       return { ...base, failed: true };
+    }
+  }
+
+  // A resolution that fails gives no row. The host going away and a daemon without files.outside are expected and not logged,
+  // a folder the user may not read is logged once per authority and path root, since every keystroke below it fails alike.
+  private async typedPath(target: TypedPathTarget): Promise<TypedPathRow | undefined> {
+    try {
+      return await typedPathRowAt(target, this.deps);
+    } catch (err) {
+      if (err instanceof OutsideFilesUnsupportedError || err instanceof NotConnectedError) return undefined;
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (code === 'EACCES' || code === 'EPERM') {
+        const root = pathFor({ os: target.os }).parse(target.path).root;
+        const key = JSON.stringify([target.authority, root]);
+        if (!this.deniedRoots.has(key)) {
+          this.deniedRoots.add(key);
+          this.deps.log(`[quick-open] a typed path under ${root} on ${target.authority} could not be read (${code}); later ones there are not logged`);
+        }
+        return undefined;
+      }
+      this.deps.log(`[quick-open] a typed path did not resolve: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
     }
   }
 
@@ -222,7 +347,7 @@ export class QuickOpenIndex {
       const project = pending.projects.get(result.projectKey);
       if (!project) return undefined;
       if (pending.scope && (project.key !== pending.scope.projectKey || !result.relativePath.startsWith(pending.scope.folder))) return undefined;
-      results.push({ projectKey: project.key, projectName: project.name, relativePath: result.relativePath, ...itemOf(result.relativePath), labelMatches: result.labelMatches, descriptionMatches: result.descriptionMatches, recent: result.recent });
+      results.push({ kind: 'project', projectKey: project.key, projectName: project.name, relativePath: result.relativePath, ...itemOf(result.relativePath), labelMatches: result.labelMatches, descriptionMatches: result.descriptionMatches, recent: result.recent });
     }
     return results;
   }
@@ -301,8 +426,9 @@ export type QuickOpenOutcome =
   // a palette command, for main to run in the context captured when the request opened
   | { readonly kind: 'command'; readonly id: string; readonly context: MenuState };
 
-function pickKey(projectKey: string, relativePath: string): string {
-  return `${projectKey}\n${relativePath}`;
+// A row's file as a pick names it: a project's relative path, or a typed path's authority and path.
+function pickKey(row: QuickOpenResult | QuickOpenPick): string {
+  return JSON.stringify(row.kind === 'project' ? ['project', row.projectKey, row.relativePath] : ['path', row.authority, row.path]);
 }
 
 /**
@@ -349,7 +475,18 @@ export class QuickOpenPicker {
       const response = search === undefined ? undefined : await this.index.query(query, { ...this.context(), ...(this.scope ? { scope: this.scope } : {}) }, { id: search, generation });
       // A newer query replaced this one, so the overlay drops its answer.
       if (!response) return { generation, mention: false, results: [] };
-      for (const result of response.results) returned.add(pickKey(result.projectKey, result.relativePath));
+      for (const result of response.results) returned.add(pickKey(result));
+      return { generation, ...response };
+    });
+    overlay.handleWhileOpen(OVERLAY_CHANNELS.quickOpenPath, quickOpenOpen, async (raw) => {
+      const value = typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>) : undefined;
+      const generation = value && Object.hasOwn(value, 'generation') ? value['generation'] : undefined;
+      if (typeof generation !== 'number' || !Number.isSafeInteger(generation) || generation < 0) throw new Error('Malformed Quick Open generation');
+      const search = this.search;
+      const returned = this.returned;
+      const response = search === undefined ? undefined : await this.index.typedPathAnswer(search, generation);
+      if (!response) return null;
+      for (const result of response.results) returned.add(pickKey(result));
       return { generation, ...response };
     });
   }
@@ -379,8 +516,8 @@ export class QuickOpenPicker {
     if (answer.kind !== 'quickOpen') return undefined;
     if ('command' in answer) return { kind: 'command', id: answer.command, context };
     if (answer.pick === null) return undefined;
-    if (!this.returned.has(pickKey(answer.pick.projectKey, answer.pick.relativePath))) {
-      this.log('[quick-open] ignoring a pick that no query returned');
+    if (!this.returned.has(pickKey(answer.pick))) {
+      this.log(`[quick-open] ignoring a ${answer.pick.kind} pick that no query returned`);
       return undefined;
     }
     return { kind: 'pick', pick: answer.pick };

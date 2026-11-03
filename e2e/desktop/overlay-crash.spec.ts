@@ -12,8 +12,10 @@ interface Recorded {
   events: Array<{ name: string; crashed: boolean; pid: number }>;
   // the requests main sent the page, by the question's message, in order, and the load event each followed
   sent: Array<{ message: string; after: string | undefined }>;
-  // render-process-gone's reason, which depends on the OS: forcefullyCrashRenderer reads "crashed" on Windows and Linux, "killed" on macOS
+  // render-process-gone's reason, which depends on the OS
   goneReason?: string;
+  // the renderer pid the reload's listener read; 0 means it sent no signal
+  killedPid?: number;
 }
 
 interface HookGlobals {
@@ -59,7 +61,10 @@ test('a question asked while the overlay reloads is held through a crash of its 
       if (!details.isMainFrame || details.isSameDocument) return;
       overlay.removeListener('did-start-navigation', crashDuringReload);
       g.__e2eHeldAnswer = g.__damoclesE2e.notifications.warn({ message: question }, [{ message: 'Proceed' }], { modal: true });
-      overlay.forcefullyCrashRenderer();
+      // killRenderer's SIGKILL and pid guard, inline because it runs in main's listener; Linux ignores forcefullyCrashRenderer
+      // when sandboxed, and process.kill(0) signals main's whole process group on POSIX
+      recorded.killedPid = overlay.getOSProcessId();
+      if (recorded.killedPid !== 0) process.kill(recorded.killedPid, 'SIGKILL');
     };
     overlay.on('did-start-navigation', crashDuringReload);
     overlay.reload();
@@ -81,6 +86,7 @@ test('a question asked while the overlay reloads is held through a crash of its 
   expect(await app.evaluate(() => (globalThis as unknown as HookGlobals).__e2eHeldAnswer)).toBe(0);
 
   const recorded = await app.evaluate(() => (globalThis as unknown as HookGlobals).__e2eOverlayCrash!);
+  expect(recorded.killedPid).toBeGreaterThan(0);
   // Electron 44's order, which OverlayHost's liveness check relies on: the dying renderer stops loading first, while
   // isCrashed() is still false and its process id already reads 0.
   const stop = recorded.events.findIndex((event) => event.name === 'did-stop-loading');

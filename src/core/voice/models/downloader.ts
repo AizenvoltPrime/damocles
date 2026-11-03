@@ -1,10 +1,12 @@
-import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { log } from "../../logger";
+import { CancelledError, downloadToPartial } from "../download";
 import type { ModelEntry, ModelFileEntry } from "./manifest";
 import { modelVersionDir } from "./manifest";
+
+export { CancelledError, ChecksumMismatchError, DownloadHttpError, EmptyDownloadError } from "../download";
 
 // A holder touches its lock every LOCK_HEARTBEAT_MS, so a lock untouched for STALE_LOCK_AGE_MS outlived its process.
 const LOCK_HEARTBEAT_MS: number = 20_000;
@@ -26,28 +28,6 @@ export type DownloadProgressCallback = (p: DownloadProgress) => void;
 export type DownloadModelStatus =
   | { status: "ok" }
   | { status: "license-required"; licenseUrl: string; modelId: string };
-
-export class ChecksumMismatchError extends Error {
-  readonly expected: string;
-  readonly actual: string;
-  readonly url: string;
-  constructor(url: string, expected: string, actual: string) {
-    super(
-      `SHA-256 mismatch for ${url}: expected ${expected.slice(0, 12)}…, got ${actual.slice(0, 12)}…`,
-    );
-    this.name = "ChecksumMismatchError";
-    this.expected = expected;
-    this.actual = actual;
-    this.url = url;
-  }
-}
-
-export class CancelledError extends Error {
-  constructor() {
-    super("Download cancelled");
-    this.name = "CancelledError";
-  }
-}
 
 export type DownloadModelOptions = {
   entry: ModelEntry;
@@ -116,109 +96,22 @@ async function downloadOneFile(opts: SingleFileOptions): Promise<void> {
     /* file does not yet exist; proceed to download */
   }
 
-  let resumeFrom = 0;
-  try {
-    const stat = await fs.stat(partialPath);
-    resumeFrom = stat.size;
-  } catch {
-    resumeFrom = 0;
-  }
-
-  const headers: Record<string, string> = {};
-  if (resumeFrom > 0) headers["Range"] = `bytes=${resumeFrom}-`;
-
-  const response = await fetchImpl(opts.file.url, {
-    headers,
+  const report = (status: DownloadProgress["status"], received: number, total: number): void => {
+    opts.onProgress?.({ modelId: opts.entry.id, filename: opts.file.filename, bytesReceived: received, bytesTotal: total, status });
+  };
+  const bytes = await downloadToPartial({
+    url: opts.file.url,
+    partialFile: partialPath,
+    // Verified whatever the manifest's status: a placeholder checksum fails closed.
+    expectedSha256: opts.file.sha256,
+    expectedBytes: opts.file.bytes,
+    fetchImpl,
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    onBytes: (received, total) => report("downloading", received, total),
+    onVerifying: (received, total) => report("verifying", received, total),
   });
-  if (!(response.ok || response.status === 206)) {
-    throw new Error(
-      `Download failed (${response.status} ${response.statusText}): ${opts.file.url}`,
-    );
-  }
-  if (resumeFrom > 0 && response.status === 200) {
-    await fs.rm(partialPath, { force: true });
-    resumeFrom = 0;
-  }
-
-  const contentLengthHeader = response.headers.get("content-length");
-  const contentLength = contentLengthHeader === null ? 0 : Number(contentLengthHeader);
-  const totalBytes = resumeFrom + (contentLength > 0 ? contentLength : Math.max(0, opts.file.bytes - resumeFrom));
-
-  const writeStream = createWriteStream(partialPath, { flags: resumeFrom > 0 ? "a" : "w" });
-  let receivedSinceStart = 0;
-
-  if (response.body === null) {
-    writeStream.end();
-    throw new Error(`Empty response body for ${opts.file.url}`);
-  }
-  const reader = response.body.getReader();
-  try {
-    while (true) {
-      if (opts.signal?.aborted === true) {
-        await new Promise<void>((resolve) => writeStream.end(resolve));
-        throw new CancelledError();
-      }
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value as ArrayBuffer);
-      const ok = writeStream.write(chunk);
-      if (!ok) await new Promise<void>((resolve) => writeStream.once("drain", () => resolve()));
-      receivedSinceStart += chunk.byteLength;
-      if (opts.onProgress !== undefined) {
-        opts.onProgress({
-          modelId: opts.entry.id,
-          filename: opts.file.filename,
-          bytesReceived: resumeFrom + receivedSinceStart,
-          bytesTotal: totalBytes,
-          status: "downloading",
-        });
-      }
-    }
-  } finally {
-    await new Promise<void>((resolve) => writeStream.end(resolve));
-  }
-
-  if (opts.onProgress !== undefined) {
-    opts.onProgress({
-      modelId: opts.entry.id,
-      filename: opts.file.filename,
-      bytesReceived: resumeFrom + receivedSinceStart,
-      bytesTotal: totalBytes,
-      status: "verifying",
-    });
-  }
-
-  // Fail-closed checksum verification, regardless of manifest_status.
-  // Previously gated behind status === "production", which let placeholder
-  // SHAs in a development manifest pass through unchecked at runtime —
-  // exactly the H3 hole.
-  const actual = await sha256OfFile(partialPath);
-  if (actual.toLowerCase() !== opts.file.sha256.toLowerCase()) {
-    await fs.rm(partialPath, { force: true });
-    throw new ChecksumMismatchError(opts.file.url, opts.file.sha256, actual);
-  }
-
   await fs.rename(partialPath, finalPath);
-  if (opts.onProgress !== undefined) {
-    opts.onProgress({
-      modelId: opts.entry.id,
-      filename: opts.file.filename,
-      bytesReceived: totalBytes,
-      bytesTotal: totalBytes,
-      status: "done",
-    });
-  }
-}
-
-async function sha256OfFile(path: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const hash = createHash("sha256");
-    const stream = createReadStream(path);
-    stream.on("data", (chunk) => hash.update(chunk));
-    stream.on("end", () => resolve(hash.digest("hex")));
-    stream.on("error", (err) => reject(err));
-  });
+  report("done", bytes, bytes);
 }
 
 /**

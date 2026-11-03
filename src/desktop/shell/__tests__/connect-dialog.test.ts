@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
+import { canonicalHostColor } from '@shared/host-colors';
 import { createPinia } from 'pinia';
 import { HOST_PARSE_REFUSALS, SHARED_HOME_SEPARATOR, SSH_FAILURE_CODES, type ConnectStepEvent, type HostCardInfo, type HostParseResult, type NameCheck, type OverlayRequest, type PasswordlessResult, type PopupAnswer, type RemoteBrowseResult, type RemoveServerResult } from '../../preload/overlay-channels';
 import OverlayApp from '../overlay/OverlayApp.vue';
@@ -447,6 +448,10 @@ describe('host card', () => {
     expect(wrapper.get('[data-testid="host-card-icon"]').classes()).toContain('d-tone-muted');
     await wrapper.setProps({ host: { ...PROD, color: 'danger' } });
     expect(wrapper.get('[data-testid="host-card-icon"]').classes()).toContain('d-tone-danger');
+    await wrapper.setProps({ host: { ...PROD, color: canonicalHostColor('#00809a99')! } });
+    const icon = wrapper.get<HTMLElement>('[data-testid="host-card-icon"]');
+    expect(icon.classes()).toContain('d-tone-custom');
+    expect(icon.element.style.getPropertyValue('--host-rgb')).toBe('0 128 154');
   });
 
   it('shows a control or bidi character in a device name or a run title as its escape', () => {
@@ -540,6 +545,13 @@ describe('connect dialog', () => {
     press('ArrowUp');
     press('ArrowUp');
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Search hosts or enter a new one');
+  });
+
+  it('tints a saved host\'s card icon with its custom color', async () => {
+    await openConnect({ hosts: [{ ...PROD, color: canonicalHostColor('#00809a99')! }] });
+    const icon = dialog().querySelector<HTMLElement>('[data-connect-card] .d-tone-custom')!;
+    expect(icon.style.getPropertyValue('--host-rgb')).toBe('0 128 154');
+    expect(icon.style.getPropertyValue('--host-alpha')).toBe('0.6');
   });
 
   it('staggers the first 8 cards 40 ms apart, saved hosts, aliases then the dev container cards, and enters every later card with the eighth', async () => {
@@ -744,6 +756,61 @@ describe('connect dialog', () => {
     await flushPromises();
     expect(api.pickHostFolder).toHaveBeenCalledWith('h1', '/srv/app');
     await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('c1', { kind: 'dismissed' }));
+  });
+
+  // The finished timeline stays 450 ms before it moves on.
+  async function connectsAfterTheTimelinePause(): Promise<void> {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      api.connectStep(step({ step: 'connected', visited: ['connecting', 'authenticating'] }));
+      await flushPromises();
+      expect(api.browseHost).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(450);
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it('goes on to the folders once the attempt it shows connects', async () => {
+    await openConnect({ hostId: 'h1', attempt: step({ step: 'authenticating', visited: ['connecting', 'authenticating'] }) });
+    await connectsAfterTheTimelinePause();
+    await vi.waitFor(() => expect(api.browseHost).toHaveBeenCalledWith('h1', undefined));
+    expect(document.getElementById(dialog().getAttribute('aria-labelledby')!)!.textContent!.trim()).toBe('Open a folder on prod');
+    expect(api.answer).not.toHaveBeenCalled();
+  });
+
+  it('closes once its host connects when a banner\'s Sign in opened it, showing no folders', async () => {
+    const prompt = { promptId: 'p1', kind: 'secret' as const, secretKind: 'password' as const, text: 'deploy@10.0.0.7\'s password:' };
+    await openConnect({ hostId: 'h1', purpose: 'signIn', attempt: step({ step: 'authenticating', visited: ['connecting', 'authenticating'], prompt }) });
+    expect(dialog().querySelector('[role="progressbar"]')).not.toBeNull();
+    await connectsAfterTheTimelinePause();
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('c1', { kind: 'dismissed' }));
+    expect(api.browseHost).not.toHaveBeenCalled();
+    expect(api.cancelConnect).not.toHaveBeenCalled();
+  });
+
+  it('shows the folders of the host a banner\'s Sign in opened on when the user left its timeline and picks it connected', async () => {
+    await openConnect({ hostId: 'h1', purpose: 'signIn', attempt: step({ step: 'failed', failure: { code: 'refused', params: {} } }) });
+    await vi.waitFor(() => expect(document.activeElement?.textContent?.trim()).toBe('Retry'));
+    [...dialog().querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Edit host')!.click();
+    await vi.waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Host name'));
+    dialog().querySelector<HTMLInputElement>('input[aria-label="Host name"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await flushPromises();
+    [...dialog().querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Back')!.click();
+    await vi.waitFor(() => expect(dialog().querySelector('input[aria-label="Search hosts or enter a new one"]')).not.toBeNull());
+    api.connectHosts([{ ...PROD, connection: 'connected' }]);
+    await flushPromises();
+    dialog().querySelector<HTMLElement>('[data-connect-card]')!.click();
+    await vi.waitFor(() => expect(api.browseHost).toHaveBeenCalledWith('h1', undefined));
+    expect(api.answer).not.toHaveBeenCalled();
+    expect(api.startConnect).not.toHaveBeenCalled();
+  });
+
+  it('closes at once when a banner\'s Sign in finds its host connected as the dialog mounts', async () => {
+    await openConnect({ hosts: [{ ...PROD, connection: 'connected' }], hostId: 'h1', purpose: 'signIn' });
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('c1', { kind: 'dismissed' }));
+    expect(api.browseHost).not.toHaveBeenCalled();
+    expect(api.startConnect).not.toHaveBeenCalled();
   });
 
   it('is a remote core\'s file picker: the same folder browser, inside its roots, listing files and answering the picked file', async () => {

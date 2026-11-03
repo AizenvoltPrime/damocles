@@ -111,4 +111,18 @@ describe("the Prefer API key toggle", () => {
     await send({ type: "setProviderPreferApiKey", provider: "xai", preferApiKey: false, requestId: "r2" });
     expect(posted).toEqual([{ type: "setProviderPreferApiKeyAck", provider: "xai", requestId: "r2", ok: false, error: { message: "Failed to apply the preference" } }]);
   });
+
+  it("acks a settings write that failed with the settings file and the reason", async () => {
+    const { platform, posted, send } = setup();
+    vi.spyOn(PiRuntime.get(), "init").mockResolvedValue();
+    vi.spyOn(platform.settings, "update").mockRejectedValueOnce(new Error("settings.json has unsaved changes"));
+    await send({ type: "setProviderPreferApiKey", provider: "xai", preferApiKey: true, requestId: "r3" });
+    expect(posted).toEqual([{
+      type: "setProviderPreferApiKeyAck",
+      provider: "xai",
+      requestId: "r3",
+      ok: false,
+      error: { message: "Could not save {0}: {1}", args: [{ message: "your user settings.json" }, { message: "{0}", args: ["settings.json has unsaved changes"] }] },
+    }]);
+  });
 });

@@ -7,7 +7,7 @@ import type { UpdateAction, UpdateSnapshot } from './updates';
 import type { SettingsFileScope } from '../../shared/types/messages';
 import type { AuthorityKind } from '../../shared/project-location';
 import type { HostLatency, HostReconnect } from '../../shared/host-connection';
-import type { HostTone } from '../../shared/host-tones';
+import type { HostColor } from '../../shared/host-colors';
 import type { SearchFileKey, SearchFileResult, SearchQuery, SearchRange, SearchSortOrder } from '../../shared/text-search';
 import type { DamoclesTerminalApi } from './terminal-channels';
 import type { DamoclesScmApi, ScmChangesTab, ScmMergeInputsResult } from './scm-channels';
@@ -327,7 +327,7 @@ export interface ShellProjectAuthority {
   readonly hostId?: string;
   // the host's name as the badge shows it
   readonly name: string;
-  readonly color?: HostTone;
+  readonly color?: HostColor;
 }
 
 export interface ShellProject {
@@ -737,7 +737,7 @@ export interface ShellBrowserPage {
   // a size-capped data: URL of the page's favicon
   readonly iconDataUrl?: string;
   // a remote chat's page on a forwarded port: the host and the page's address as the target names it (http://localhost:5173/...)
-  readonly forwardedFrom?: { readonly hostId: string; readonly hostName: string; readonly hostTone?: HostTone; readonly targetUrl: string };
+  readonly forwardedFrom?: { readonly hostId: string; readonly hostName: string; readonly hostColor?: HostColor; readonly targetUrl: string };
 }
 
 export interface ShellEditorTab {
@@ -1474,7 +1474,7 @@ export interface ShellHost {
   readonly container?: { readonly origin: 'devcontainer' | 'attach'; readonly image?: string; readonly via?: string };
   readonly authorityKey: string;
   readonly name: string;
-  readonly color?: HostTone;
+  readonly color?: HostColor;
   readonly os?: ShellPlatform;
   readonly connection: ProjectConnection;
   // an attempt made without the user waits on a prompt ("Sign in to <name>")

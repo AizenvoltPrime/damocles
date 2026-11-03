@@ -595,6 +595,18 @@ describe("createOpenAIHandlers", () => {
       expect(sent).toContainEqual({ type: "setOpenAIPreferApiKeyAck", requestId: "r2", ok: false, error: { message: "Failed to apply the preference" } });
       expect(sent).not.toContainEqual(cleared);
     });
+
+    it("acks a settings write that failed with the settings file and the reason", async () => {
+      vi.spyOn(platform.settings, "update").mockRejectedValueOnce(new Error("settings.json has unsaved changes"));
+      await handlers.setOpenAIPreferApiKey!({ type: "setOpenAIPreferApiKey", preferApiKey: true, requestId: "r3" }, ctx);
+      expect(sent).toContainEqual({
+        type: "setOpenAIPreferApiKeyAck",
+        requestId: "r3",
+        ok: false,
+        error: { message: "Could not save {0}: {1}", args: [{ message: "your user settings.json" }, { message: "{0}", args: ["settings.json has unsaved changes"] }] },
+      });
+      expect(sent).not.toContainEqual(cleared);
+    });
   });
 
   describe("account state republication", () => {

@@ -9,6 +9,7 @@ import { IconInfo } from '@/components/icons';
 import HighlightedText from './HighlightedText.vue';
 import InjectedMemoryActions from './InjectedMemoryActions.vue';
 import { scopeBadgeClass, shortId, memoryLabel } from './memory-display';
+import { useMemoryScopeLabel } from '@/composables/useMemoryScopeLabel';
 import { SCORE_FORMULA_WEIGHTS, scoreFromBreakdown, scoreTerms } from './injection-score';
 import type { InjectedMemory, InjectionReason } from '@shared/types/context-injection';
 
@@ -20,6 +21,7 @@ const props = defineProps<{
 }>();
 
 const { t, locale } = useI18n();
+const { scopeLabel } = useMemoryScopeLabel();
 
 const highlight = computed(() =>
   props.memory.reasons.flatMap((reason) => (reason.kind === 'matched' ? reason.terms : [])),
@@ -83,7 +85,7 @@ const notRankedText = computed(() => {
           :class="scopeBadgeClass(memory.scope)"
           data-badge="scope"
         >
-          {{ t(`memory.scope.${memory.scope}`) }}
+          {{ scopeLabel(memory.scope) }}
         </Badge>
         <Badge
           variant="outline"

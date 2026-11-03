@@ -96,6 +96,7 @@ import { parseRootKey } from '../../preload/folder-root';
 import type { Document, DocumentService, Location } from '../documents/document-service';
 import type { EditorPane, NotShownSide } from '../editor-pane';
 import type { AskMessage } from '../message-dialog';
+import type { AuthorityMentionTarget } from '../mention-authority';
 import type { AskInput } from '../overlay';
 import { MAX_OVERLAY_LABEL_LENGTH, type OverlayQuickPickIcon } from '../../preload/overlay-channels';
 import { decodeDocument } from '../platform/editor-document';
@@ -196,7 +197,7 @@ export interface ScmHostDeps {
   readonly ask: AskMessage;
   // the overlay QuickInput; undefined for Escape, or when it could not show (its asker told the user)
   readonly askInput: AskInput;
-  readonly mention: (target: FileRef | { readonly path: string }) => Promise<void>;
+  readonly mention: (target: AuthorityMentionTarget) => Promise<void>;
   // the selected chat's pending attachment, else a new chat's in projectKey; prompt, when given, joins the composer's draft
   readonly addToChat: (projectKey: string, attachment: CommitAttachmentInput, prompt: string | undefined) => Promise<void>;
   readonly send: {
@@ -371,7 +372,7 @@ const FLOWS: FlowRegistry = {
     const repo = host.repo(request.repoId);
     const absolute = await repo.confinedEntry(request.path);
     if (repo.authority === 'local') {
-      await host.deps.mention(host.fileRefOf(absolute) ?? { path: absolute });
+      await host.deps.mention(host.fileRefOf(absolute) ?? { path: absolute, authority: 'local' });
       return OK;
     }
     await host.deps.mention(host.remoteRef(repo, absolute));

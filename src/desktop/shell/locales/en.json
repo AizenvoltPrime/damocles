@@ -1287,6 +1287,7 @@
     "recent": "recently opened",
     "current": "{project} · current",
     "goToLine": "Enter opens the file at line {line}",
+    "goToLineColumn": "Enter opens the file at line {line}, column {column}",
     "mention": "Enter mentions the file in the chat",
     "loadFailed": "Damocles could not search the files.",
     "scopedLabel": "Go to a file in {scope}",
@@ -2981,7 +2982,23 @@
       "success": "Green",
       "warning": "Amber",
       "danger": "Red",
-      "info": "Indigo"
+      "info": "Indigo",
+      "custom": "Custom color",
+      "customTitle": "Custom color: {value}",
+      "customValue": "{hex} at {opacity}% opacity",
+      "opensPicker": "Opens a color picker"
+    },
+    "picker": {
+      "area": "Color area",
+      "areaThumb": "Saturation and brightness",
+      "areaValue": "Saturation {saturation}%, brightness {brightness}%",
+      "hue": "Hue",
+      "hueValue": "{n} degree | {n} degrees",
+      "opacity": "Opacity",
+      "opacityValue": "{percent}%",
+      "hex": "Hex color",
+      "preview": "Preview",
+      "transparent": "At 0% opacity the host has no color."
     },
     "credentialsLabel": "Saved credentials {name} may always use",
     "credentialsDescription": "Git on {name} gets the credentials for these hosts from this computer without asking.",

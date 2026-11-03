@@ -30,6 +30,7 @@ import { answerOf, ran } from '../popup-answer';
 import { placePanel } from '../placement';
 import { distroDetail, isDefiniteRefusal, otherDeviceCount, refusalText, wslVersionName } from '../connect-text';
 import HostBadge from '@/components/HostBadge.vue';
+import { hostColorLook } from '@shared/host-colors';
 import HostStatusDot from '../../components/HostStatusDot.vue';
 import DistroStateDot from '../../components/DistroStateDot.vue';
 import ContainerStateDot from '../../components/ContainerStateDot.vue';
@@ -330,9 +331,18 @@ async function start(target: ConnectTarget, shown?: { name: string; destination:
   if (known) showStarted(known);
 }
 
+// A banner's Sign in has done its job once its host connects, as VS Code's Remote-SSH does: no folder browser follows. It
+// holds until the user leaves the timeline; a host picked after that shows its folders.
+let signingIn = props.request.purpose === 'signIn';
+watch(view, (next) => {
+  if (next !== 'timeline') signingIn = false;
+});
+const closesOnConnect = (id: string): boolean => signingIn && id === props.request.hostId;
+
 function connectSaved(saved: HostCardInfo): void {
   hostId.value = saved.hostId;
-  if (saved.connection === 'connected') view.value = 'folders';
+  if (saved.connection === 'connected' && closesOnConnect(saved.hostId)) close();
+  else if (saved.connection === 'connected') view.value = 'folders';
   else void start({ hostId: saved.hostId });
 }
 
@@ -340,6 +350,10 @@ function connectSaved(saved: HostCardInfo): void {
 const opensItsFolder = (id: string): boolean => hosts.value.find((candidate) => candidate.hostId === id)?.container?.origin === 'devcontainer';
 
 function showConnected(id: string): void {
+  if (closesOnConnect(id)) {
+    close();
+    return;
+  }
   const flow = containerFlow.value;
   if (flow?.kind === 'attach' && flow.via === id) void openAttach(flow.via);
   else view.value = 'folders';
@@ -821,7 +835,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                       <span
                         aria-hidden="true"
                         class="grid size-8.5 shrink-0 place-items-center rounded-10 bg-(--tone)/15"
-                        :class="`d-tone-${saved.color ?? 'muted'}`"
+                        v-bind="hostColorLook(saved.color)"
                       >
                         <component
                           :is="KIND_ICONS[saved.kind]"
@@ -933,7 +947,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                       <span
                         aria-hidden="true"
                         class="grid size-8.5 shrink-0 place-items-center rounded-10 bg-(--tone)/15"
-                        :class="`d-tone-${card.host?.color ?? 'warning'}`"
+                        v-bind="hostColorLook(card.host?.color, 'warning')"
                       >
                         <SquareTerminal class="size-4.5" />
                       </span>
@@ -1082,7 +1096,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                       <span
                         aria-hidden="true"
                         class="grid size-8.5 shrink-0 place-items-center rounded-10 bg-(--tone)/15"
-                        :class="`d-tone-${saved.color ?? 'info'}`"
+                        v-bind="hostColorLook(saved.color, 'info')"
                       >
                         <Box class="size-4.5" />
                       </span>
@@ -1344,7 +1358,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                   <span
                     aria-hidden="true"
                     class="grid size-8.5 shrink-0 place-items-center rounded-10 bg-(--tone)/15"
-                    :class="`d-tone-${saved.color ?? 'muted'}`"
+                    v-bind="hostColorLook(saved.color)"
                   >
                     <Server class="size-4.5" />
                   </span>

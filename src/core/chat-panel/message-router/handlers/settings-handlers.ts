@@ -23,7 +23,8 @@ import { remoteSignInRefusal } from "../../../pi-session/pi-runtime";
 import { memoryJudgeStatus } from "../../settings-manager/managers/memory-judge-status";
 import { ACCOUNT_PROVIDER_IDS, isKeyProviderId } from "../../../../shared/settings-sections";
 import { log } from "../../../logger";
-import { isSwitchableToolGroup, TOOL_GROUP_SETTINGS } from "../../../../shared/types/tools";
+import { TOOL_GROUP_SETTINGS, TOOLS_DISABLED_SETTING } from "../../../../shared/types/tools";
+import { toolGroupSwitchOf, toolSwitchOf } from "../../tool-switches";
 import { IMAGE_ENABLED_SETTING, IMAGE_MODEL_SETTING } from "../../../pi-session/tools/image-tool-specs";
 import { writeSetting } from "../setting-write";
 import { errorTextOf, l } from "../../../l10n";
@@ -289,17 +290,8 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     setPinnedHeaderHidden: async (msg, ctx) => {
       if (msg.type !== "setPinnedHeaderHidden") return;
-      try {
-        await settingsManager.handleSetPinnedHeaderHidden(msg.hidden);
-      } catch (err) {
-        log("[MessageRouter] Error setting pinned header visibility:", err);
-        postMessage(ctx.reply, {
-          type: "notification",
-          message: l("Failed to save pinned header setting: {0}", errorTextOf(err)),
-          notificationType: "error",
-        });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
-      }
+      await writeSetting(deps, ctx, "damocles.pinnedHeaderHidden", (detail) => l("Failed to save pinned header setting: {0}", detail), () =>
+        settingsManager.handleSetPinnedHeaderHidden(msg.hidden));
     },
 
     setPanelThinkingDisabled: (msg, ctx) => {
@@ -505,7 +497,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       // a daemon's core never takes the default while its client's policy refuses YOLO; the row says why
       if (msg.enabled && !bypassAllowed(deps.platform)) {
         refuseMode(ctx, "dangerouslySkipPermissions", "remote-host");
-        postMessage(ctx.reply, { type: "settingWriteResult", key: "damocles.dangerouslySkipPermissions", ok: false, error: l("YOLO is off for your turns on this host.") });
+        postMessage(ctx.reply, { type: "settingWriteResult", key: "damocles.dangerouslySkipPermissions", ok: false, error: l("YOLO is off for your chats on this host.") });
         await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
         return;
       }
@@ -829,31 +821,19 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       await settingsManager.sendSupportedCommands(ctx.session, ctx.reply);
     },
 
+    // The settings listener in ChatPanelProvider refreshes the tools and publishes every panel's Tools status, for every writer.
     toggleTool: async (msg, ctx) => {
       if (msg.type !== "toggleTool") return;
-      try {
-        await settingsManager.setToolDisabled(msg.toolName, !msg.enabled);
-        ctx.session.refreshActiveTools();
-      } catch (err) {
-        log("[MessageRouter] Error toggling tool:", err);
-        postMessage(ctx.reply, {
-          type: "notification",
-          message: l("Failed to save tool setting: {0}", errorTextOf(err)),
-          notificationType: "error",
-        });
-      }
-      settingsManager.sendToolStatus(ctx.session, ctx.host);
+      const { toolName, enabled } = toolSwitchOf(msg.toolName, msg.enabled);
+      await writeSetting(deps, ctx, TOOLS_DISABLED_SETTING, (detail) => l("Failed to save tool setting: {0}", detail), () =>
+        settingsManager.setToolDisabled(toolName, !enabled));
     },
 
     toggleToolGroup: async (msg, ctx) => {
       if (msg.type !== "toggleToolGroup") return;
-      const group = msg.group;
-      if (!isSwitchableToolGroup(group)) throw new Error(`The ${String(group)} tool group has no switch`);
-      const saved = await writeSetting(deps, ctx, TOOL_GROUP_SETTINGS[group], (detail) => l("Failed to save tool group setting: {0}", detail), () =>
-        settingsManager.setToolGroupEnabled(group, msg.enabled));
-      if (saved) ctx.session.refreshActiveTools();
-      if (msg.group === "image") broadcastImageGenerationState(deps);
-      else settingsManager.sendToolStatus(ctx.session, ctx.host);
+      const { group, enabled } = toolGroupSwitchOf(msg.group, msg.enabled);
+      await writeSetting(deps, ctx, TOOL_GROUP_SETTINGS[group], (detail) => l("Failed to save tool group setting: {0}", detail), () =>
+        settingsManager.setToolGroupEnabled(group, enabled));
     },
 
     requestToolStatus: (_msg, ctx) => {
@@ -864,14 +844,12 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       if (msg.type !== "setImageGenerationEnabled") return;
       await writeSetting(deps, ctx, IMAGE_ENABLED_SETTING, (detail) => l("Failed to save image generation setting: {0}", detail), () =>
         settingsManager.setImageGenerationEnabled(msg.enabled));
-      broadcastImageGenerationState(deps);
     },
 
     setImageGenerationModel: async (msg, ctx) => {
       if (msg.type !== "setImageGenerationModel") return;
       await writeSetting(deps, ctx, IMAGE_MODEL_SETTING, (detail) => l("Failed to save image generation setting: {0}", detail), () =>
         settingsManager.setImageGenerationModel(msg.model));
-      broadcastImageGenerationState(deps);
     },
 
     setProjectTrusted: async (_msg, ctx) => {
@@ -916,7 +894,8 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         for (const [, instance] of getPanels()) postMessage(instance.host, { type: "authFailureCleared", account: provider });
       } catch (err) {
         log("[SettingsHandlers] Failed to apply the %s API key preference:", provider, err);
-        postMessage(ctx.reply, { type: "setProviderPreferApiKeyAck", provider, requestId, ok: false, error: l("Failed to apply the preference") });
+        // a settings write that failed says which file and why
+        postMessage(ctx.reply, { type: "setProviderPreferApiKeyAck", provider, requestId, ok: false, error: err instanceof LocalizedError ? err.text : l("Failed to apply the preference") });
       }
     },
 

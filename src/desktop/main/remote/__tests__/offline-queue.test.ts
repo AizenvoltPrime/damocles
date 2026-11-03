@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MAX_HELD_BYTES, MAX_HELD_PER_PANEL, OfflineQueue, VERDICT_WAIT_MS, type QueuedSend } from '../offline-queue';
 import { REMOTE_STATE_FILE, RemoteState } from '../remote-state';
+import { REMOTE_CHAT_USER_SETTING_MESSAGES, VOICE_VIEW_MESSAGES } from '../../../../shared/remote-user';
 
 const TOKEN = '6f1c2a9e-0d4b-4c1e-9a1f-1b2c3d4e5f60';
 const OTHER_PAGE = '1a2b3c4d-0d4b-4c1e-9a1f-1b2c3d4e5f60';
@@ -244,6 +245,16 @@ describe('OfflineQueue', () => {
     expect(queue.waiting(AUTHORITY)).toEqual([]);
     expect(queue.awaitsVerdict(TOKEN)).toBe(false);
     expect(queue.waiting('ssh+h2')).toEqual([OTHER_PAGE]);
+  });
+
+  // the foreign view relay takes these ahead of this queue; holding none of them keeps that order from changing what happens
+  it('holds no voice or user-setting message of a remote chat page, so it leaves them to the foreign view relay', async () => {
+    const state = await RemoteState.open(userData, () => undefined);
+    const { queue, changed } = await queueOn(state);
+    for (const type of [...VOICE_VIEW_MESSAGES, ...REMOTE_CHAT_USER_SETTING_MESSAGES]) {
+      expect(queue.hold(AUTHORITY, TOKEN, { type, content: 'hi', sessionId: null }), type).toBe('ignored');
+    }
+    expect(changed).toEqual([]);
   });
 
   it('refuses an empty send or one with a malformed conversation id, and forgets a closed chat\'s messages', async () => {

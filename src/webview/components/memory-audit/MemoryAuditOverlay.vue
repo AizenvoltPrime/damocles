@@ -13,6 +13,7 @@ import { memoryLabel } from '../context-injection/memory-display';
 import { auditResultText } from './audit-result-text';
 import { useMemoryAuditStore } from '@/stores/useMemoryAuditStore';
 import { useCostLabel } from '@/composables/useCostLabel';
+import { useMemoryScopeLabel } from '@/composables/useMemoryScopeLabel';
 import { formatTokenCount } from '@/composables/useTeamFormatting';
 import { folderName } from '@/lib/folder-name';
 import type { MemoryAuditAction, MemoryAuditProposalStatus, MemoryAuditProposalView } from '@shared/types/memory-audit';
@@ -80,15 +81,20 @@ function tokens(n: number): string {
   return formatTokenCount(n, locale.value);
 }
 
+const memoryScope = useMemoryScopeLabel();
+
 function scopeLabel(scope: string | null, workspace: string | null): string {
-  const key = `memory.scope.${scope ?? 'unknown'}`;
-  const label = te(key) ? t(key) : (scope ?? t('memory.scope.unknown'));
+  const label = scope === null ? t('memory.scope.unknown') : memoryScope.scopeLabel(scope);
   return workspace ? `${label} · ${folderName(workspace)}` : label;
 }
 
 function kindLabel(kind: string): string {
   const key = `memory.kind.${kind}`;
   return te(key) ? t(key) : kind;
+}
+
+function actionLabel(action: MemoryAuditAction): string {
+  return t(memoryScope.scopeKey(`memoryAudit.action.${action}`));
 }
 
 function proposedLabel(p: MemoryAuditProposalView): string {
@@ -104,7 +110,7 @@ function proposedLabel(p: MemoryAuditProposalView): string {
 function profileLabel(p: MemoryAuditProposalView): string {
   return p.profileScope === 'project'
     ? t('memoryAudit.profile.project', { workspace: p.profileWorkspace ? folderName(p.profileWorkspace) : '' })
-    : t('memoryAudit.profile.global');
+    : memoryScope.globalProfileLabel.value;
 }
 
 function rowLabel(p: MemoryAuditProposalView): string {
@@ -464,7 +470,7 @@ function confirmRevert(): void {
         >
           <div class="flex flex-wrap items-center gap-2">
             <h3 class="text-xs font-medium">
-              {{ t(`memoryAudit.action.${group.action}`) }}
+              {{ actionLabel(group.action) }}
             </h3>
             <Badge
               variant="secondary"
@@ -479,7 +485,7 @@ function confirmRevert(): void {
                 size="sm"
                 class="ml-auto justify-start"
                 :model-value="groupDecision(group.pendingIds)"
-                :aria-label="t('memoryAudit.decision.groupLabel', { group: t(`memoryAudit.action.${group.action}`) })"
+                :aria-label="t('memoryAudit.decision.groupLabel', { group: actionLabel(group.action) })"
                 data-audit-group-decision
                 :data-decision="groupDecision(group.pendingIds)"
                 @update:model-value="(v: AcceptableValue) => setDecisions(group.pendingIds, v)"

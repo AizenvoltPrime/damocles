@@ -110,13 +110,33 @@ describe('drop zones and Quick Open requests', () => {
     expect(parseOverlayAnswer({ kind: 'dropZones', slot: 'top' }, dropZones)).toBeUndefined();
 
     const quickOpen = { kind: 'quickOpen', mode: 'files' } as const;
-    expect(parseOverlayAnswer({ kind: 'quickOpen', pick: { projectKey: 'p', relativePath: 'src/a.ts', line: 4, mention: false } }, quickOpen))
-      .toEqual({ kind: 'quickOpen', pick: { projectKey: 'p', relativePath: 'src/a.ts', line: 4, mention: false } });
+    expect(parseOverlayAnswer({ kind: 'quickOpen', pick: { kind: 'project', projectKey: 'p', relativePath: 'src/a.ts', line: 4, column: 2, mention: false } }, quickOpen))
+      .toEqual({ kind: 'quickOpen', pick: { kind: 'project', projectKey: 'p', relativePath: 'src/a.ts', line: 4, column: 2, mention: false } });
     expect(parseOverlayAnswer({ kind: 'quickOpen', pick: null }, quickOpen)).toEqual({ kind: 'quickOpen', pick: null });
     for (const relativePath of ['../x', '/etc/passwd', 'C:\\x', '']) {
-      expect(parseOverlayAnswer({ kind: 'quickOpen', pick: { projectKey: 'p', relativePath, mention: false } }, quickOpen)).toBeUndefined();
+      expect(parseOverlayAnswer({ kind: 'quickOpen', pick: { kind: 'project', projectKey: 'p', relativePath, mention: false } }, quickOpen)).toBeUndefined();
     }
-    expect(parseOverlayAnswer({ kind: 'quickOpen', pick: { projectKey: 'p', relativePath: 'a', line: 0, mention: false } }, quickOpen)).toBeUndefined();
+    for (const position of [{ line: 0 }, { line: 1.5 }, { line: 10_000_001 }, { line: 3, column: 0 }, { column: 3 }]) {
+      expect(parseOverlayAnswer({ kind: 'quickOpen', pick: { kind: 'project', projectKey: 'p', relativePath: 'a', mention: false, ...position } }, quickOpen), JSON.stringify(position)).toBeUndefined();
+    }
+    // a pick names its kind
+    expect(parseOverlayAnswer({ kind: 'quickOpen', pick: { projectKey: 'p', relativePath: 'a', mention: false } }, quickOpen)).toBeUndefined();
+  });
+
+  it('bounds a typed path pick, whose authority and path main then checks against the paths its queries returned', () => {
+    const quickOpen = { kind: 'quickOpen', mode: 'files' } as const;
+    const pick = (fields: Record<string, unknown>): unknown => parseOverlayAnswer({ kind: 'quickOpen', pick: { kind: 'path', authority: 'local', path: 'C:\\x\\a.ts', mention: false, ...fields } }, quickOpen);
+    expect(pick({ line: 12, column: 4 })).toEqual({ kind: 'quickOpen', pick: { kind: 'path', authority: 'local', path: 'C:\\x\\a.ts', line: 12, column: 4, mention: false } });
+    expect(pick({ authority: 'ssh+h', path: '/home/u/a.txt' })).toEqual({ kind: 'quickOpen', pick: { kind: 'path', authority: 'ssh+h', path: '/home/u/a.txt', mention: false } });
+    for (const filePath of ['a.ts', 'src/a.ts', '~/a.txt', 'C:a.ts', '\\a.ts', '\\\\server\\share\\a.ts', '\\\\?\\C:\\a.ts', '//server/share/a.ts', 'C:\\x\\a\0.ts', `C:\\${'x'.repeat(4096)}`, '', 7]) {
+      expect(pick({ path: filePath }), String(filePath).slice(0, 40)).toBeUndefined();
+    }
+    for (const authority of ['', 'x'.repeat(201), 3, undefined]) expect(pick({ authority }), String(authority)).toBeUndefined();
+    // a typed path is opened, never mentioned
+    expect(pick({ mention: true })).toBeUndefined();
+    expect(pick({ mention: undefined })).toBeUndefined();
+    expect(pick({ line: 0 })).toBeUndefined();
+    expect(pick({ column: 2 })).toBeUndefined();
   });
 });
 
@@ -472,6 +492,14 @@ describe('the Connect dialog request', () => {
     expect(parseConnectRequest({ ...request, query: 'a'.repeat(1024) })).toBeDefined();
     for (const query of ['', 'a'.repeat(1025), 'deploy@host\n-oProxyCommand=x', 'host\u202E', 7]) expect(parseConnectRequest({ ...request, query })).toBeUndefined();
     expect(parseConnectRequest({ ...request, hostId: 'h1', query: 'prod-1' })).toBeUndefined();
+  });
+
+  it('takes a sign-in purpose only with a host and neither a card nor a picker', () => {
+    expect(parseConnectRequest({ ...request, hostId: 'h1', purpose: 'signIn' })).toEqual({ ...request, hostId: 'h1', purpose: 'signIn' });
+    const pick = { mode: 'folder', roots: ['/srv'], label: 'Open' };
+    for (const bad of [{ purpose: 'signIn' }, { hostId: 'h1', purpose: 'open' }, { hostId: 'h1', card: 'show', purpose: 'signIn' }, { hostId: 'h1', pick, purpose: 'signIn' }]) {
+      expect(parseConnectRequest({ ...request, ...bad })).toBeUndefined();
+    }
   });
 
   it('takes a chip\'s anchor only for a host card opened to show it without an attempt, and only a rect within the bounds', () => {

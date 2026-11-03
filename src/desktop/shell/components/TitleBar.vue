@@ -10,6 +10,7 @@ import ProjectAvatar from './ProjectAvatar.vue';
 import UpdatePill from './UpdatePill.vue';
 import WindowControls from './WindowControls.vue';
 import { ariaKeyshortcuts } from '../overlay/quick-pick';
+import { hostColorDataTone, hostColorLook } from '@shared/host-colors';
 
 const props = defineProps<{ api: DamoclesShellApi; state: ShellState }>();
 const { t } = useI18n();
@@ -24,7 +25,7 @@ const projectName = computed(() => selectedProject.value?.name ?? t('projects.ho
 // The safety stripe of the selected project's host, shown only once the host has a color.
 const stripe = computed(() => {
   const authority = selectedProject.value?.authority;
-  return authority?.color === undefined ? undefined : { key: authority.key, tone: authority.color };
+  return authority?.color === undefined ? undefined : { key: authority.key, color: authority.color, look: hostColorLook(authority.color) };
 });
 // The selected remote project's host chip: its state and name, on its tone once it has a color; a click opens its card.
 const host = computed(() => {
@@ -33,7 +34,8 @@ const host = computed(() => {
   if (!project || hostId === undefined) return undefined;
   const saved = props.state.hosts.find((entry) => entry.authorityKey === project.authority.key);
   const state = { name: project.authority.name, connection: project.connection, reconnect: saved?.reconnect, latency: saved?.latency };
-  return { ...state, key: project.authority.key, hostId, tone: project.authority.color, label: hostStateLabel(state, t) };
+  const { color } = project.authority;
+  return { ...state, key: project.authority.key, hostId, color, look: color === undefined ? undefined : hostColorLook(color), label: hostStateLabel(state, t) };
 });
 const hostChip = ref<HTMLElement | null>(null);
 const hostCardOpen = ref(false);
@@ -113,7 +115,7 @@ async function openCenter(): Promise<void> {
     class="title-bar relative flex h-10 shrink-0 items-center border-b border-(--d-border) bg-(--d-panel)"
     :class="state.platform === 'darwin' ? 'title-bar-darwin' : ''"
   >
-    <!-- keyed by host and tone, so a selection change or recolor fades the old stripe out as the new one fades in -->
+    <!-- keyed by host, so a selection change cross-fades the stripe; a recolor eases its color in place -->
     <Transition
       appear
       enter-active-class="animate-[d-fade_.3s_var(--ease-out)]"
@@ -121,12 +123,13 @@ async function openCenter(): Promise<void> {
     >
       <div
         v-if="stripe"
-        :key="`${stripe.key}:${stripe.tone}`"
+        :key="stripe.key"
         aria-hidden="true"
         data-testid="title-bar-stripe"
-        :data-tone="stripe.tone"
-        class="pointer-events-none absolute inset-x-0 top-0 h-0.5 bg-(--tone)"
-        :class="`d-tone-${stripe.tone}`"
+        :data-tone="hostColorDataTone(stripe.color)"
+        class="pointer-events-none absolute inset-x-0 top-0 h-0.5 bg-(--tone) transition-[background-color] duration-300 ease-out"
+        :class="stripe.look.class"
+        :style="stripe.look.style"
       />
     </Transition>
     <button
@@ -146,7 +149,8 @@ async function openCenter(): Promise<void> {
       >
       <span class="font-semibold tracking-[-.01em]">{{ APP_NAME }}</span>
     </button>
-    <!-- out-in: the chip sits in the row, so two at once would push the breadcrumb aside -->
+    <!-- out-in: the chip sits in the row, so two at once would push the breadcrumb aside; keyed by host and by whether it is
+         filled, which changes its size, while a recolor eases its colors in place -->
     <Transition
       appear
       mode="out-in"
@@ -157,10 +161,10 @@ async function openCenter(): Promise<void> {
       <button
         v-if="host"
         ref="hostChip"
-        :key="`${host.key}:${host.tone ?? ''}`"
+        :key="`${host.key}:${host.look ? 'filled' : 'plain'}`"
         type="button"
         data-testid="title-bar-host"
-        :data-tone="host.tone"
+        :data-tone="host.color === undefined ? undefined : hostColorDataTone(host.color)"
         class="title-bar-control mr-1 inline-flex h-7 max-w-52 shrink-0 items-center gap-1.75 rounded-7 px-2 hover:bg-(--d-hover) aria-expanded:bg-(--d-hover)"
         :title="host.label"
         aria-haspopup="dialog"
@@ -183,7 +187,8 @@ async function openCenter(): Promise<void> {
             aria-hidden="true"
             data-testid="title-bar-host-name"
             class="min-w-0 truncate"
-            :class="host.tone ? ['rounded px-1.5 py-px text-10 font-bold tracking-[.05em] bg-(--tone) text-(--tone-on)', `d-tone-${host.tone}`] : 'text-12 font-medium text-(--d-text)'"
+            :class="host.look ? ['rounded px-1.5 py-px text-10 font-bold tracking-[.05em] bg-(--tone) text-(--tone-on) transition-[background-color,color] duration-300 ease-out', host.look.class] : 'text-12 font-medium text-(--d-text)'"
+            :style="host.look?.style"
           >{{ host.name }}</span>
         </Transition>
       </button>

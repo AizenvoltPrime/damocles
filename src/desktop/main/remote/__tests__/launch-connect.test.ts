@@ -8,7 +8,8 @@ const idle = 'ssh+idle|/home/u/x';
 const loop = 'loopback|/tmp/l';
 const local = '/home/me/local';
 const all = [prod, prodOther, staging, idle, loop];
-const none = { remoteProjectKeys: all, editorAuthorities: [], terminalAuthorities: [], chatAuthorities: [], selectedProjectKey: undefined };
+const saved = new Set(['ssh+prod1', 'ssh+stage', 'ssh+idle', 'ssh+bare', 'ssh+lonely']);
+const none = { remoteProjectKeys: all, editorAuthorities: [], hostFileAuthorities: [], terminalAuthorities: [], chatAuthorities: [], selectedProjectKey: undefined, isSavedHost: (authority: string) => saved.has(authority) };
 
 describe('authoritiesToConnectAtLaunch', () => {
   it('connects nothing when no remote view was restored and a local project was selected', () => {
@@ -26,10 +27,19 @@ describe('authoritiesToConnectAtLaunch', () => {
   });
 
   it('never connects a host whose projects are no longer listed (a loopback project without the loopback daemon, a removed project)', () => {
-    expect(authoritiesToConnectAtLaunch({ remoteProjectKeys: [], editorAuthorities: ['ssh+prod1'], terminalAuthorities: ['ssh+prod1'], chatAuthorities: ['ssh+stage'], selectedProjectKey: prod })).toEqual([]);
+    expect(authoritiesToConnectAtLaunch({ ...none, remoteProjectKeys: [], editorAuthorities: ['ssh+prod1'], terminalAuthorities: ['ssh+prod1'], chatAuthorities: ['ssh+stage'], selectedProjectKey: prod })).toEqual([]);
   });
 
   it('keeps the projects list\'s order and leaves the idle host out', () => {
     expect(authoritiesToConnectAtLaunch({ ...none, editorAuthorities: ['loopback'], terminalAuthorities: ['ssh+stage'], selectedProjectKey: prod })).toEqual(['ssh+prod1', 'ssh+stage', 'loopback']);
+  });
+
+  it('connects a saved host with no listed project whose files outside every project restore, after the listed ones, once each', () => {
+    const hostFiles = ['ssh+lonely', 'ssh+bare', 'ssh+lonely', 'ssh+stage'];
+    expect(authoritiesToConnectAtLaunch({ ...none, editorAuthorities: hostFiles, hostFileAuthorities: hostFiles, selectedProjectKey: prod })).toEqual(['ssh+prod1', 'ssh+stage', 'ssh+lonely', 'ssh+bare']);
+  });
+
+  it('never connects for a file tab or backup of a host that is no longer saved, or of the loopback daemon without its project', () => {
+    expect(authoritiesToConnectAtLaunch({ ...none, remoteProjectKeys: [], editorAuthorities: ['ssh+gone', 'loopback'], hostFileAuthorities: ['ssh+gone', 'loopback'] })).toEqual([]);
   });
 });

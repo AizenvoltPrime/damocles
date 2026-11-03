@@ -21,6 +21,9 @@ const contributed = parseContributedConfiguration({
         'damocles.permissionMode': { default: 'default', scope: 'resource' },
         'damocles.voice.wakeWord': { default: 'jarvis', scope: 'machine' },
         'damocles.cacheWarming': { default: 'off', scope: 'application' },
+        'damocles.browser.enabled': { default: false },
+        'damocles.tools.disabled': { default: [] },
+        'damocles.imageGeneration.enabled': { default: false, scope: 'application' },
       },
     },
   },
@@ -110,6 +113,16 @@ describe('a daemon\'s core\'s settings layers', () => {
     client = { 'damocles.cacheWarming': 'on' };
     write(machineFile, { 'damocles.cacheWarming': 'aggressive' });
     expect(remoteStore().inspect('damocles.cacheWarming')).toEqual({ defaultValue: 'off', userValue: 'on' });
+  });
+
+  // a Tools switch is setOnHost exactly when its key reports a machineValue
+  it('report a window key the machine file holds as machineValue, and never an application key', () => {
+    client = { 'damocles.browser.enabled': false, 'damocles.imageGeneration.enabled': true };
+    write(machineFile, { 'damocles.browser.enabled': true, 'damocles.tools.disabled': ['WebFetch'], 'damocles.imageGeneration.enabled': false });
+    const store = remoteStore();
+    expect(store.inspect('damocles.browser.enabled')).toEqual({ defaultValue: false, userValue: false, machineValue: true });
+    expect(store.inspect('damocles.tools.disabled')).toEqual({ defaultValue: [], machineValue: ['WebFetch'] });
+    expect(store.inspect('damocles.imageGeneration.enabled')).toEqual({ defaultValue: false, userValue: true });
   });
 
   it('never read a machine key (voice runs on the client) from any layer', () => {

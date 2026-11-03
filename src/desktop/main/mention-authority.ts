@@ -1,10 +1,22 @@
 import { parseFileDragTarget, type FileDragPayload } from '../../shared/file-drag';
 import { authorityKeyOfProject } from '../../shared/project-location';
 
+/**
+ * A file main mentions in a chat: a project file by key, or a file outside every project by its path on the authority that
+ * holds it, which core's target never carries.
+ */
+export type AuthorityMentionTarget = { readonly projectKey: string; readonly relativePath: string } | { readonly path: string; readonly authority: string };
+
 /** Where a mentioned or dropped project file lives, when that is not where the chat runs; undefined when both are one authority. */
 export function crossedAuthority(chatAuthority: string, projectKey: string): string | undefined {
   const from = authorityKeyOfProject(projectKey);
   return from === chatAuthority ? undefined : from;
+}
+
+/** Where a mentioned file lives, by its project key or the authority its path is on, when that is not where the chat runs. */
+export function crossedByMention(chatAuthority: string, target: AuthorityMentionTarget): string | undefined {
+  if ('projectKey' in target) return crossedAuthority(chatAuthority, target.projectKey);
+  return target.authority === chatAuthority ? undefined : target.authority;
 }
 
 // A chat page's file drop (mentionDropped), as the shell names it; core's mention resolver refuses one without a project key.

@@ -4338,6 +4338,7 @@ export class PiSession implements ChatSession {
       mcpDeferrableToolNames: this.mcpClientManager()?.deferrableToolNames() ?? [],
       mcpResourceExposure: resourceToolsExposure(this.mcpClientManager()?.resourceServers() ?? []),
       disabled: this.disabledToolSet(),
+      ...(this.options.platform.remote ? { hostSettings: this.options.platform.settings } : {}),
     };
   }
 

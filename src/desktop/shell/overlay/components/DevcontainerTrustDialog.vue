@@ -99,7 +99,7 @@ function focusCancel(event: Event): void {
             <HostBadge
               v-if="request.hostName !== undefined"
               :name="request.hostName"
-              :tone="request.hostColor"
+              :color="request.hostColor"
               data-testid="devcontainer-trust-host"
             />
             <span

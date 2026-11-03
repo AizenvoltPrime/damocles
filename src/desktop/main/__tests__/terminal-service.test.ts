@@ -1020,6 +1020,7 @@ function fakeConnection(live: readonly LiveTerminal[] = []): FakeConnection {
     notConnected: () => new NotConnectedError('Local daemon is not connected.'),
     watchReady: false,
     transfers: false,
+    outside: false,
     openStream: () => { throw new Error('no transfer streams in this suite'); },
     log: () => undefined,
   });

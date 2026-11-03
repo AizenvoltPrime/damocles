@@ -14,8 +14,8 @@ onMounted(async () => {
   // Unsubscribed before the context closes, so no chime can open it again.
   stops.push(props.api.onChime(chime.play), chime.close);
   // Subscribed before the first read, so a language change between the two is not lost.
-  stops.push(props.api.onState((state) => applyShellLocale(state.locale)));
-  applyShellLocale((await props.api.getState()).locale);
+  stops.push(props.api.onState((state) => void applyShellLocale(state.locale)));
+  void applyShellLocale((await props.api.getState()).locale);
 });
 onBeforeUnmount(() => {
   for (const stop of stops) stop();

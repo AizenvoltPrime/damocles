@@ -3,6 +3,7 @@
 import type { StoredSession } from '../../../shared/types/session';
 import { authorityKeyOfProject, isAbsoluteFolderKey, targetFolderKeyOf } from '../../../shared/project-location';
 import type { ChatEntry, FolderTargetEntry, MentionTargetData, ScmMirrorPatch } from '../../core-protocol';
+import type { AuthorityMentionTarget } from '../mention-authority';
 
 export interface ProjectKeys {
   readonly authorityKey: string;
@@ -94,9 +95,9 @@ export function scmEventToShell(keys: ProjectKeys, event: unknown): unknown {
   return withProjectKey(keys, event);
 }
 
-// A file named by its path on this computer never reaches a remote core.
-export function mentionToCore(keys: ProjectKeys, target: MentionTargetData): MentionTargetData {
-  if ('projectKey' in target) return { ...target, projectKey: keys.toCore(target.projectKey) };
-  if (keys.authorityKey !== 'local') throw new ForeignProjectKeyError(`A file of this computer cannot be mentioned in a chat on ${keys.authorityKey}`);
-  return target;
+// A file named by its path reaches only the core of the authority that path is on, which resolves it on its own machine.
+export function mentionToCore(keys: ProjectKeys, target: AuthorityMentionTarget): MentionTargetData {
+  if ('projectKey' in target) return { projectKey: keys.toCore(target.projectKey), relativePath: target.relativePath };
+  if (target.authority !== keys.authorityKey) throw new ForeignProjectKeyError(`A file of ${target.authority} cannot be mentioned in a chat on ${keys.authorityKey}`);
+  return { path: target.path };
 }

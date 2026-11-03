@@ -85,7 +85,15 @@ describe('parseQuickOpenQuery', () => {
   it.each([
     ['a.ts:12', { filter: 'a.ts', line: 12, mention: false }],
     ['a.ts#7', { filter: 'a.ts', line: 7, mention: false }],
-    ['a.ts:12:4', { filter: 'a.ts', line: 12, mention: false }],
+    ['a.ts:12:4', { filter: 'a.ts', line: 12, column: 4, mention: false }],
+    ['file:12:3', { filter: 'file', line: 12, column: 3, mention: false }],
+    ['a.ts(12,5)', { filter: 'a.ts', line: 12, column: 5, mention: false }],
+    ['a.ts:12:0', { filter: 'a.ts', line: 12, mention: false }],
+    ['a.ts:12:99999999999', { filter: 'a.ts', line: 12, mention: false }],
+    ['a.ts::3', { filter: 'a.ts', mention: false }],
+    // a drive letter's colon is no line suffix
+    ['C:\\x\\y.ts', { filter: 'C:\\x\\y.ts', mention: false }],
+    ['C:\\x\\y.ts:12:3', { filter: 'C:\\x\\y.ts', line: 12, column: 3, mention: false }],
     ['a.ts(3)', { filter: 'a.ts', line: 3, mention: false }],
     ['a.ts:', { filter: 'a.ts', mention: false }],
     ['@src/a', { filter: 'src/a', mention: true }],

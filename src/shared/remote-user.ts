@@ -2,6 +2,7 @@
 // both import this file.
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from './types/messages';
 import type { PermissionMode } from './types/settings';
+import { isSwitchableToolGroup, TOOL_GROUP_SETTINGS, TOOLS_DISABLED_SETTING, type ToolGroup } from './types/tools';
 
 /** The client id a local core's init names for its one client, main. A daemon names each client by its hello's stable clientId. */
 export const LOCAL_CLIENT_ID = 'local';
@@ -169,8 +170,9 @@ export const VOICE_VIEW_POSTS: ReadonlySet<string> = new Set([
 
 /**
  * The webview-to-core message types a remote chat's page sends to this computer's core, whose voice service records,
- * transcribes and speaks. Voice settings change only on the settings overlay's User tab, this computer's core: a daemon's
- * core treats every voice key as the client's, so its host and Project tabs never list one.
+ * transcribes and speaks; main routes them, and REMOTE_CHAT_USER_SETTING_MESSAGES, to that core and never to the chat's
+ * remote core (foreign-view-relay.ts). Voice settings change only on the settings overlay's User tab, this computer's core:
+ * a daemon's core treats every voice key as the client's, so its host and Project tabs never list one.
  */
 export const VOICE_VIEW_MESSAGES: ReadonlySet<string> = new Set([
   'startVoiceRecording',
@@ -187,6 +189,51 @@ export const VOICE_VIEW_MESSAGES: ReadonlySet<string> = new Set([
   'voiceDismissModelUpgrade',
   'voiceCancelModelDownload',
 ] satisfies WebviewToExtensionMessage['type'][]);
+
+/**
+ * The failure toast of each write a remote chat page makes of this computer's user settings, an l() message whose {0} is the
+ * reason; this computer's core and main, when that core never answered, both word it so. It stays a plain object literal, so
+ * the l10n bundle check reads each message through its property.
+ */
+export const REMOTE_CHAT_SETTING_FAILURES: Readonly<Record<RemoteChatSettingMessage, string>> = {
+  setPinnedHeaderHidden: 'Failed to save pinned header setting: {0}',
+  toggleToolGroup: 'Failed to save tool group setting: {0}',
+  toggleTool: 'Failed to save tool setting: {0}',
+};
+
+export type RemoteChatSettingMessage = Extract<WebviewToExtensionMessage['type'], 'setPinnedHeaderHidden' | 'toggleToolGroup' | 'toggleTool'>;
+
+/**
+ * A remote chat page's writes of this computer's user settings: this computer's core writes its own user file, which the
+ * daemon reads as clientUser, so the setting applies to local chats too. Even while the host is away they never reach the
+ * remote core, which may not write that file.
+ */
+export const REMOTE_CHAT_USER_SETTING_MESSAGES: ReadonlySet<string> = new Set(Object.keys(REMOTE_CHAT_SETTING_FAILURES));
+
+export const isRemoteChatSettingMessage = (type: string): type is RemoteChatSettingMessage => Object.hasOwn(REMOTE_CHAT_SETTING_FAILURES, type);
+
+/** The key a remote chat page's setting write reports its settingWriteResult under; undefined for a group that has no switch. */
+export function remoteChatSettingKey(type: RemoteChatSettingMessage, group: unknown): string | undefined {
+  switch (type) {
+    case 'setPinnedHeaderHidden':
+      return 'damocles.pinnedHeaderHidden';
+    case 'toggleToolGroup': {
+      const named = group as ToolGroup;
+      return typeof group === 'string' && isSwitchableToolGroup(named) ? TOOL_GROUP_SETTINGS[named] : undefined;
+    }
+    case 'toggleTool':
+      return TOOLS_DISABLED_SETTING;
+  }
+}
+
+/** Why this computer's core refused a message for a remote chat view it holds no proxy for, as main matches it. */
+export const FOREIGN_VIEW_NOT_ATTACHED = 'The remote chat view is not attached';
+
+/** The posts that answer REMOTE_CHAT_USER_SETTING_MESSAGES; while the host is not attached main delivers them only while a write of that view waits for its answer. */
+export const FOREIGN_SETTING_POSTS: ReadonlySet<string> = new Set([
+  'settingWriteResult',
+  'notification',
+] satisfies ExtensionToWebviewMessage['type'][]);
 
 /** A browser tool's result as this computer's core runs it for a remote chat (user.browser.tool): pi's text and image blocks. */
 export interface BrowserToolAnswer {

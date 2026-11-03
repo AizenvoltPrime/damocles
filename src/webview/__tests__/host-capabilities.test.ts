@@ -31,6 +31,7 @@ const DESKTOP_MAC: HostCapabilities = {
   chatReview: true,
   worktrees: true,
   bypassPermissions: true,
+  globalMemoryOnServer: false,
 };
 
 function buildRegistry(): HandlerRegistry {
@@ -81,6 +82,7 @@ describe('host capabilities', () => {
       chatReview: false,
       worktrees: false,
       bypassPermissions: true,
+      globalMemoryOnServer: false,
     });
   });
 

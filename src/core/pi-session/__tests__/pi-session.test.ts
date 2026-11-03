@@ -4900,27 +4900,18 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
    * keeps ordering from a menu that still lists `web (5)` after the user turned web off, and gets an
    * inert group; or, worse for adoption, never learns web exists after the user turns it ON.
    *
-   * The chain is FOUR hops, and no test covered it end to end before this slice:
-   *   `extension.ts` onDidChangeConfiguration → `PiRuntime.refreshWebSearch()`
-   *     → `FolderRuntime.refreshActiveTools()` → the refresher `PiSession.bindSession` registered
-   *     → `PiSession.reloadForMcpToolChange()` → `refreshActiveTools()` → `republishToolSearch()`
-   *
-   * Entry is `refreshWebSearch()` — the seam `extension.ts`'s one-line listener calls — and everything
-   * after it is the REAL wiring, not a spy. That matters because each hop was individually plausible
-   * while the composition was unpinned: `refreshActiveTools` iterates a map a session must have
-   * registered itself into, and `reloadForMcpToolChange` only reaches `refreshActiveTools` on its
-   * registry-current fast path. A break anywhere in the middle is silent — the toggle appears to work,
-   * the active set is right, and only the advertised menu is wrong.
+   * `ChatPanelProvider.toolSettingsChanged` calls `refreshActiveTools()` on each panel's session, which must
+   * reach `republishToolSearch()` through the real wiring; a break there is silent, since the active set is
+   * right and only the advertised menu is wrong.
    */
-  it('toggling web republishes ToolSearch through the full refreshWebSearch chain (invariant 2)', async () => {
+  it('toggling web republishes ToolSearch through refreshActiveTools (invariant 2)', async () => {
     const cfg = subsystemsOn();
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
-    const runtime = PiRuntime.get('/fake/agent');
     const live = H.getLastSession()!;
     const republish = vi.spyOn(cwdFolder()!, 'republishToolSearch');
 
-    await runtime.refreshWebSearch();
+    session.refreshActiveTools();
 
     // The description surface: reached, so the next wrap re-materializes the inventory.
     expect(republish).toHaveBeenCalled();

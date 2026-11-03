@@ -68,6 +68,13 @@ function operationRefusal(folder: string): { kind: 'refused'; message: Localized
   return { kind: 'refused', message: l('{0} has an unfinished merge, rebase, cherry pick or revert. Finish or abort it, then try again.', folder) };
 }
 
+/** A failed git call's own words, else the command and its exit code. */
+function exitFailure(command: string, result: { readonly exitCode: number; readonly stderr: string }): LocalizedText {
+  const stderr = result.stderr.trim();
+  // bounded as gitRefusal is, under the wire's LocalizedText limit
+  return stderr ? verbatim(stderr.slice(0, 2000)) : l('{0} failed with exit code {1}.', command, String(result.exitCode));
+}
+
 function gitRefusal(result: { stderr: string; stdout: Buffer }): { kind: 'refused'; message: LocalizedText } {
   return { kind: 'refused', message: verbatim((result.stderr.trim() || result.stdout.toString('utf8').trim()).slice(0, 2000)) };
 }
@@ -81,7 +88,7 @@ async function pendingOutcome(record: ChatWorktreeRecord, pending: PendingBase, 
   // Mid-rebase HEAD already descends from the onto commit, so only an ended operation decides.
   if (await operationInProgress(git, cwd)) return 'running';
   const result = await git.run(cwd, ['merge-base', '--is-ancestor', revision(pending.commit), 'HEAD'], { allowFailure: true });
-  if (result.exitCode > 1) throw new Error(result.stderr.trim() || 'git merge-base failed');
+  if (result.exitCode > 1) throw new LocalizedError(exitFailure('git merge-base', result));
   return result.exitCode === 0 ? 'taken' : 'dropped';
 }
 
@@ -175,7 +182,7 @@ export async function apply(record: ChatWorktreeRecord, runner: GitRunner, regis
     // Both writes come after every check, so a refusal changes nothing in the project folder.
     if (hasPatch) {
       const check = await git.run(settled.repositoryRoot, ['apply', '--3way', '--check', '--binary', '--whitespace=nowarn', '--', patch], { allowFailure: true });
-      if (check.exitCode !== 0) throw new Error(check.stderr.trim() || 'git apply --check failed');
+      if (check.exitCode !== 0) throw new LocalizedError(exitFailure('git apply --check', check));
     }
     if (copied.length > 0) {
       const changed = await changedPreimages(git, settled.repositoryRoot, copied);
@@ -190,8 +197,7 @@ export async function apply(record: ChatWorktreeRecord, runner: GitRunner, regis
   // Only a touched path this Apply left unmerged is its conflict; an older unmerged path is someone else's.
   const conflicts = (await unmergedPaths(git, settled.repositoryRoot)).filter((p) => touched.includes(p) && !unmergedBefore.has(p));
   if (result !== undefined && 'applied' in result && result.applied.exitCode !== 0 && conflicts.length === 0) {
-    const stderr = result.applied.stderr.trim();
-    const failure = stderr ? verbatim(stderr) : l('{0} failed with exit code {1}.', 'git apply', String(result.applied.exitCode));
+    const failure = exitFailure('git apply', result.applied);
     throw new LocalizedError(copied.length > 0 ? l('{0} These binary files were already copied to the project folder: {1}', failure, copied.map((entry) => entry.path).join(', ')) : failure);
   }
   await registry.update(settled.id, { lastAppliedTree: tree });
@@ -309,7 +315,7 @@ async function copyObjects(git: ProjectGit, repositoryRoot: string, tree: string
   });
   if (result.exitCode === 0) return;
   const written = await writtenCopies(git, repositoryRoot, tree, copied);
-  throw new LocalizedError(l('The binary files could not all be copied to the project folder ({0}). Already copied: {1}', result.stderr.trim() || l('{0} failed with exit code {1}.', 'git restore', String(result.exitCode)), written.length > 0 ? written.join(', ') : l('none')));
+  throw new LocalizedError(l('The binary files could not all be copied to the project folder ({0}). Already copied: {1}', exitFailure('git restore', result), written.length > 0 ? written.join(', ') : l('none')));
 }
 
 // The copied paths whose file in the project folder now holds the snapshot's version (or is gone where the snapshot lacks it).
@@ -357,7 +363,7 @@ export async function isRewritten(record: ChatWorktreeRecord, runner: GitRunner,
   if (target === undefined) return false;
   const { baseCommit } = await currentBases(record, git);
   const result = await git.run(record.worktreeRoot, ['merge-base', '--is-ancestor', revision(baseCommit), `refs/heads/${revision(target)}`], { allowFailure: true });
-  if (result.exitCode > 1) throw new Error(result.stderr.trim() || 'git merge-base failed');
+  if (result.exitCode > 1) throw new LocalizedError(exitFailure('git merge-base', result));
   return result.exitCode === 1;
 }
 
@@ -391,7 +397,7 @@ export async function unmergedCommits(record: ChatWorktreeRecord, runner: GitRun
 export async function branchContained(record: ChatWorktreeRecord, runner: GitRunner): Promise<boolean> {
   const git = gitOf(record, runner);
   const result = await git.run(record.worktreeRoot, ['merge-base', '--is-ancestor', `refs/heads/${revision(record.branch)}`, await projectTip(record, runner)], { allowFailure: true });
-  if (result.exitCode > 1) throw new Error(result.stderr.trim() || 'git merge-base failed');
+  if (result.exitCode > 1) throw new LocalizedError(exitFailure('git merge-base', result));
   return result.exitCode === 0;
 }
 

@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import { ConfigManager } from '../managers/config-manager';
 import { ExploreManager } from '../managers/explore-manager';
 import { writeSetting } from '../../message-router/setting-write';
+import { createSettingsHandlers } from '../../message-router/handlers/settings-handlers';
+import { SettingsManager } from '../index';
+import type { HandlerDependencies } from '../../message-router/types';
+import { errorTextOf } from '../../../l10n';
 import type { HandlerContext } from '../../message-router/types';
 import type { ExtensionToWebviewMessage } from '../../../../shared/types/messages';
 import type { FolderTarget } from '../../../workspace-folders/folder-registry';
@@ -408,5 +412,42 @@ describe('settingWriteResult', () => {
     expect(saved).toBe(false);
     expect(posted).toContainEqual(expect.objectContaining({ type: 'settingWriteResult', key: 'damocles.checkpoints.retentionDays', ok: false }));
     expect(posted).toContainEqual(expect.objectContaining({ type: 'notification', notificationType: 'error' }));
+  });
+});
+
+describe('a chat tool switch and the pin', () => {
+  const USER_FILE = '/home/me/.damocles/settings.json';
+  const messages = [
+    { message: { type: 'toggleToolGroup', group: 'compass', enabled: false }, key: 'damocles.compass.enabled', failure: 'Failed to save tool group setting: {0}' },
+    { message: { type: 'toggleTool', toolName: 'web_search', enabled: false }, key: 'damocles.tools.disabled', failure: 'Failed to save tool setting: {0}' },
+    { message: { type: 'setPinnedHeaderHidden', hidden: true }, key: 'damocles.pinnedHeaderHidden', failure: 'Failed to save pinned header setting: {0}' },
+  ] as const;
+
+  function handlers() {
+    const { platform, posted } = setup();
+    const postMessage = (_host: unknown, message: ExtensionToWebviewMessage) => void posted.push(message);
+    const settingsManager = new SettingsManager({ postMessage, platform, folders: () => [] });
+    const registry = createSettingsHandlers({ postMessage, platform, settingsManager, getPanels: () => new Map() } as unknown as HandlerDependencies);
+    const chat = { host: {}, reply: {}, folder: targetA, panelId: 'p1', session: { refreshActiveTools: () => undefined } } as unknown as HandlerContext;
+    const run = (message: (typeof messages)[number]['message']) => (registry[message.type] as (m: unknown, c: HandlerContext) => Promise<void>)(message, chat);
+    return { platform, posted, run };
+  }
+
+  it.each(messages)('reports $message.type as saved to the user file under $key, and posts nothing else', async ({ message, key }) => {
+    const { platform, posted, run } = handlers();
+    await run(message);
+    expect(platform.settings.inspect(key).userValue).toBeDefined();
+    expect(posted).toStrictEqual([{ type: 'settingWriteResult', key, ok: true, scope: 'user', file: USER_FILE }]);
+  });
+
+  it.each(messages)('reports a failed $message.type under $key with its reason, and tells the chat', async ({ message, key, failure }) => {
+    const { platform, posted, run } = handlers();
+    vi.spyOn(platform.settings, 'update').mockRejectedValue(new Error('EACCES: permission denied'));
+    await run(message);
+    const detail = errorTextOf(new Error('EACCES: permission denied'));
+    expect(posted).toStrictEqual([
+      { type: 'notification', message: { message: failure, args: [detail] }, notificationType: 'error' },
+      { type: 'settingWriteResult', key, ok: false, error: detail },
+    ]);
   });
 });

@@ -765,6 +765,11 @@
       "noModel": "Unavailable: no image model chosen. Choose one in Settings.",
       "unknownModel": "Unavailable: the chosen image model is not available. Choose another in Settings.",
       "noOpenRouterKey": "Unavailable: no OpenRouter key or sign-in."
+    },
+    "setOnHost": {
+      "group": "Set in this host's own settings, so it changes only there.",
+      "tools": "Tool switches are set in this host's own settings, so they change only there.",
+      "open": "Open host settings"
     }
   },
   "usage": {
@@ -1169,6 +1174,7 @@
       "carried": "Memories sent with an earlier prompt that the model can still see. They are not sent again.",
       "notices": "Superseded, edited or forgotten memories announced to the model with this prompt, at most 10 per prompt.",
       "storeSize": "session + project + global + observations: the live memories this conversation can draw on. Notes are not counted.",
+      "storeSizeGlobalServer": "session + project + global (this server) + observations: the live memories this conversation can draw on. Notes are not counted.",
       "score": "score = ({relevance}·rel + {file}·file + {recency}·recency + {retrieval}·retrieval + sourceCountBoost) × stalenessPenalty",
       "relevance": "rel = matched idf / query idf = {matched} / {query}",
       "notRanked": "Not ranked: always included once per context",
@@ -2101,6 +2107,7 @@
       "session": "Session",
       "project": "Project",
       "global": "Global",
+      "globalServer": "Global (this server)",
       "unknown": "Unknown scope"
     },
     "toast": {
@@ -2108,6 +2115,7 @@
         "session": "Session memory saved",
         "project": "Project memory saved",
         "global": "Global memory saved",
+        "globalServer": "Global memory saved on this server",
         "note": "Note saved",
         "observation": "Observation saved"
       },
@@ -2169,6 +2177,7 @@
     "action": {
       "forget": "Forget",
       "rescope_global": "Move to global",
+      "rescope_globalServer": "Move to global (this server)",
       "rescope_workspace": "Move to another workspace",
       "to_episode": "Convert to episode",
       "profile_rewrite": "Rewrite profile"
@@ -2187,6 +2196,7 @@
     "profile": {
       "project": "Project profile ({workspace})",
       "global": "Global profile",
+      "globalServer": "Global profile (this server)",
       "static": "Static",
       "dynamic": "Dynamic",
       "before": "Before",
@@ -2425,6 +2435,7 @@
       "found": "{n} found",
       "items": "{n} item | {n} items",
       "profilesDone": "project · global",
+      "profilesDoneGlobalServer": "project · global (this server)",
       "working": "working…",
       "label": "Consolidation phases",
       "skippedBecause": "skipped: {reason}",
@@ -2449,6 +2460,7 @@
     "kindFilter": "Filter by kind",
     "scopeFilter": "Filter by scope",
     "profileHint": "project and global · auto-maintained",
+    "profileHintGlobalServer": "project and global (this server) · auto-maintained",
     "pinned": "pinned",
     "newTier": "Where the new memory goes",
     "newKind": "Kind of the new memory",
@@ -2502,6 +2514,7 @@
       "session": "Add session memory...",
       "project": "Add project memory...",
       "global": "Add global memory...",
+      "globalServer": "Add global memory on this server...",
       "note": "Add note memory..."
     }
   },

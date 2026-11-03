@@ -10,7 +10,7 @@ import type { ChimeTone, NotificationBody, NotificationCenterState, ToastAnswer 
 import type { ReleaseIndex, ReleaseNotes, UpdateSnapshot, VersionInfo } from './updates';
 import type { ScmLetter } from './scm-channels';
 import type { HostLatency, HostReconnect } from '../../shared/host-connection';
-import type { HostTone } from '../../shared/host-tones';
+import type { HostColor } from '../../shared/host-colors';
 import type { PermissionMode } from '../../shared/types/settings';
 import type { TerminalColor, TerminalGlyph, TerminalProfileOption, TerminalProfileReport, TerminalProjectOption } from './terminal-channels';
 import { INPUT_VALIDATIONS, MAX_INPUT_VALUE_LENGTH, inputProblem, type InputPlatform, type InputValidation } from '../../shared/input-validation';
@@ -69,6 +69,9 @@ export const OVERLAY_CHANNELS = {
   releaseNotesGet: 'damocles:overlay:release-notes:get',
   // QuickOpenQuery → QuickOpenResponse; answers closed unless a quickOpen request is open
   quickOpenQuery: 'damocles:overlay:quick-open:query',
+  // { generation } → QuickOpenResponse | null, the typed path's row of a response with pathPending, null for none; answers
+  // closed unless a quickOpen request is open
+  quickOpenPath: 'damocles:overlay:quick-open:path',
   // {} → PaletteCommand[] for the focus context main captured when the quickOpen request opened; answers closed unless one is open
   commandsList: 'damocles:overlay:commands:list',
   // {} → TerminalProfileReport for Settings › Terminal; answers closed unless the settings modal is open
@@ -209,6 +212,35 @@ export const OVERLAY_CHANNELS = {
   closeRemoteRows: 'damocles:overlay:close-remote:rows',
 } as const;
 
+export interface OverlayRequestPush {
+  // the kinds of open request the push is addressed to
+  readonly kinds: readonly OverlayRequest['kind'][];
+  // each push carries the whole state, so of those held only the newest is sent
+  readonly latest: boolean;
+}
+
+/**
+ * Every main → renderer push addressed to an open request. Its popup subscribes only once it renders, so main holds them per
+ * request until the page reports it shown; every other main → renderer channel is the page's own.
+ */
+export const OVERLAY_REQUEST_PUSHES: ReadonlyMap<string, OverlayRequestPush> = new Map([
+  [OVERLAY_CHANNELS.settingsMessage, { kinds: ['settings'], latest: false }],
+  [OVERLAY_CHANNELS.settingsAttached, { kinds: ['settings'], latest: false }],
+  [OVERLAY_CHANNELS.settingsScopeHost, { kinds: ['settings'], latest: true }],
+  [OVERLAY_CHANNELS.settingsTarget, { kinds: ['settings'], latest: true }],
+  [OVERLAY_CHANNELS.prefsChanged, { kinds: ['settings'], latest: true }],
+  [OVERLAY_CHANNELS.terminalProfilesChanged, { kinds: ['settings'], latest: true }],
+  [OVERLAY_CHANNELS.updateState, { kinds: ['settings'], latest: true }],
+  [OVERLAY_CHANNELS.notificationsState, { kinds: ['notifications'], latest: true }],
+  [OVERLAY_CHANNELS.dropZonesPointer, { kinds: ['dropZones'], latest: true }],
+  [OVERLAY_CHANNELS.connectStep, { kinds: ['connect'], latest: false }],
+  [OVERLAY_CHANNELS.connectHosts, { kinds: ['connect'], latest: true }],
+  [OVERLAY_CHANNELS.connectDistros, { kinds: ['connect'], latest: true }],
+  [OVERLAY_CHANNELS.hostsEntries, { kinds: ['connect', 'settings'], latest: true }],
+  [OVERLAY_CHANNELS.hostsOperationsChanged, { kinds: ['connect', 'settings'], latest: false }],
+  [OVERLAY_CHANNELS.closeRemoteRows, { kinds: ['closeRemote'], latest: true }],
+]);
+
 // The steps of a connection attempt, in the order they run; an attempt may skip installing. building runs only for a container
 // attempt that runs `devcontainer up`.
 export const CONNECT_STEPS = ['building', 'connecting', 'authenticating', 'checking', 'installing', 'starting'] as const;
@@ -335,7 +367,7 @@ export interface HostCardInfo {
   readonly kind: 'ssh' | 'wsl' | 'container';
   readonly container?: ContainerHostInfo;
   readonly name: string;
-  readonly color?: HostTone;
+  readonly color?: HostColor;
   // the ssh alias, or user@host:port; a distro's name for a WSL host
   readonly destinationLabel: string;
   // a WSL host's distro as the last list showed it
@@ -404,7 +436,7 @@ export interface CloseRemoteRow {
   readonly title: string;
   readonly projectLabel: string;
   readonly hostLabel: string;
-  readonly hostTone?: HostTone;
+  readonly hostColor?: HostColor;
   readonly status: CloseRemoteStatus;
   // the refresh of this provider's sign-in failed: the whole minutes its current token has left; provider is a pi provider id
   // (PROVIDER_ID_PATTERN)
@@ -416,7 +448,7 @@ export interface CloseRemoteRow {
 export type CloseRemoteChoice = 'keep' | 'stop' | 'cancel';
 
 // A close row's host part, which follows a rename, a recolor and the host's notices while the dialog shows.
-export type CloseRowHost = Pick<CloseRemoteRow, 'hostLabel' | 'hostTone' | 'lingerWarning'>;
+export type CloseRowHost = Pick<CloseRemoteRow, 'hostLabel' | 'hostColor' | 'lingerWarning'>;
 
 // A host's measured clock skew past this many ms shows a warning on its card.
 export const CLOCK_SKEW_WARN_MS: number = 2 * 60 * 1000;
@@ -503,7 +535,7 @@ export const MAX_DEVCONTAINER_TRUST_TEXT = 8192;
 // What the devcontainer confirmation shows: hostName absent is this computer; changed: a confirmed set exists and differs.
 export interface DevcontainerTrustRequest {
   readonly hostName?: string;
-  readonly hostColor?: HostTone;
+  readonly hostColor?: HostColor;
   readonly folder: string;
   readonly configPath: string;
   readonly changed: boolean;
@@ -563,7 +595,7 @@ export type InstallFolderResult = { readonly ok: true } | { readonly ok: false; 
 
 // Settings > Remote hosts: a host's own settings as its row shows them; an absent value is the default (off, none).
 export interface RemoteHostSettings {
-  readonly color?: HostTone;
+  readonly color?: HostColor;
   // absent: the target's own damocles.permissionMode decides
   readonly defaultPermissionMode?: PermissionMode;
   readonly allowBypass: boolean;
@@ -620,7 +652,7 @@ export type HostSwitchKey = (typeof HOST_SWITCH_KEYS)[number];
 
 // One setting change; null clears the value (no color, the host's settings decide the mode, detection decides the OS).
 export type HostSettingChange =
-  | { readonly key: 'color'; readonly value: HostTone | null }
+  | { readonly key: 'color'; readonly value: HostColor | null }
   | { readonly key: 'defaultPermissionMode'; readonly value: PermissionMode | null }
   | { readonly key: HostSwitchKey; readonly value: boolean }
   | { readonly key: 'osOverride'; readonly value: ShellPlatform | null };
@@ -1063,6 +1095,8 @@ export type OverlayRequest =
       readonly pick?: RemotePick;
       // without hostId: the host search filled in as if typed (an unsaved host the damocles command named), starting nothing
       readonly query?: string;
+      // with hostId, from a "Sign in to <host>" banner: the dialog closes once that host connects, showing no folder browser
+      readonly purpose?: 'signIn';
     }
   // A close or quit while remote chats run (only main asks it): Keep running, Stop agents or Cancel; it stacks as a message
   // does, and its rows follow on closeRemoteRows
@@ -1074,13 +1108,13 @@ export type OverlayRequest =
   | ({ readonly kind: 'devcontainerTrust' } & DevcontainerTrustRequest)
   // Allow YOLO on a saved host whose switch is off, hung from the control that asked (only main asks it); it stacks as a
   // message does, so it shows above the settings modal
-  | { readonly kind: 'allowYolo'; readonly hostName: string; readonly hostColor?: HostTone; readonly anchor: OverlayRect };
+  | { readonly kind: 'allowYolo'; readonly hostName: string; readonly hostColor?: HostColor; readonly anchor: OverlayRect };
 
 // The host's name and tone come from this computer's host store; credentialHost is the https host the target's git asked
 // for, as main validated it; targetHelper: the target's git has a credential helper of its own that would save the credential.
 export interface GitCredentialConsent {
   readonly hostName: string;
-  readonly hostColor?: HostTone;
+  readonly hostColor?: HostColor;
   readonly credentialHost: string;
   readonly targetHelper: boolean;
 }
@@ -1402,13 +1436,25 @@ export interface PaletteCommand {
   readonly recent: boolean;
 }
 
-export interface QuickOpenPick {
-  readonly projectKey: string;
-  readonly relativePath: string;
-  // 1-based, from the query's :line suffix
-  readonly line?: number;
-  readonly mention: boolean;
-}
+// line and column: 1-based, from the query's :line[:column] suffix
+export type QuickOpenPick =
+  | {
+      readonly kind: 'project';
+      readonly projectKey: string;
+      readonly relativePath: string;
+      readonly line?: number;
+      readonly column?: number;
+      readonly mention: boolean;
+    }
+  // main opens it only when a query of the same request returned this authority and path
+  | {
+      readonly kind: 'path';
+      readonly authority: string;
+      readonly path: string;
+      readonly line?: number;
+      readonly column?: number;
+      readonly mention: false;
+    };
 
 // Characters of a Quick Open query; main refuses a longer one.
 export const MAX_QUICK_OPEN_QUERY_LENGTH = 512;
@@ -1424,7 +1470,8 @@ export interface QuickOpenQuery {
 // [start, end) UTF-16 offsets into label or description
 export type QuickOpenMatch = readonly [number, number];
 
-export interface QuickOpenResult {
+export interface QuickOpenProjectResult {
+  readonly kind: 'project';
   readonly projectKey: string;
   readonly projectName: string;
   readonly relativePath: string;
@@ -1437,17 +1484,40 @@ export interface QuickOpenResult {
   readonly recent: boolean;
 }
 
+// A typed absolute path outside every project that main resolved to a file; it is a response's only row.
+export interface QuickOpenPathResult {
+  readonly kind: 'path';
+  // 'local' or the host authority main resolved it on
+  readonly authority: string;
+  // absolute, in that authority's path rules
+  readonly path: string;
+  // the file name
+  readonly label: string;
+  // the containing folder, absolute
+  readonly description: string;
+  readonly labelMatches: readonly QuickOpenMatch[];
+  readonly descriptionMatches: readonly QuickOpenMatch[];
+  // the host's name for its chip; absent on this computer
+  readonly host?: string;
+  readonly recent: false;
+}
+
+export type QuickOpenResult = QuickOpenProjectResult | QuickOpenPathResult;
+
 export interface QuickOpenResponse {
   readonly generation: number;
   // the selected project, for the current-project label
   readonly currentProjectKey?: string;
-  // the query's :line suffix and @ prefix as main parsed them, so the overlay need not parse
+  // the query's :line[:column] suffix and @ prefix as main parsed them, so the overlay need not parse
   readonly line?: number;
+  readonly column?: number;
   readonly mention: boolean;
   // recent files first, then per-project groups (empty query) or best score first
   readonly results: readonly QuickOpenResult[];
   // the index could not answer (its worker failed or went silent), so the empty results are no search result
   readonly failed?: true;
+  // the text search answered while the query's typed path was still being resolved; quickOpenPath brings its row
+  readonly pathPending?: true;
 }
 
 // A notification-center entry on screen; its id is the entry's.
@@ -1490,7 +1560,7 @@ export type OverlaySettingsScope = 'user' | 'machine' | 'project';
 // A remote chat's settings tabs: User, its host (as this computer names it) and Project, with the tab shown.
 export interface OverlaySettingsScopes {
   // canAllowYolo: the host has a saved record, so main may ask to allow YOLO on it
-  readonly host: { readonly name: string; readonly color?: HostTone; readonly canAllowYolo?: true };
+  readonly host: { readonly name: string; readonly color?: HostColor; readonly canAllowYolo?: true };
   // the Project tab's settings file, its path native to the host
   readonly projectFile?: string;
   readonly active: OverlaySettingsScope;
@@ -1586,6 +1656,8 @@ export interface DamoclesOverlayApi {
   getReleaseNotes(version: string): Promise<PopupAnswer<ReleaseNotes>>;
   // answers closed unless a quickOpen request is open
   queryQuickOpen(query: QuickOpenQuery): Promise<PopupAnswer<QuickOpenResponse>>;
+  // answers closed unless a quickOpen request is open
+  quickOpenPath(generation: number): Promise<PopupAnswer<QuickOpenResponse | null>>;
   // answers closed unless a quickOpen request is open
   listCommands(): Promise<PopupAnswer<PaletteCommand[]>>;
   // answers closed unless the settings modal is open

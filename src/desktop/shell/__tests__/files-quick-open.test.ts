@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import { ancestorsOf, autoRevealExcluded, flattenTree, type Listing } from '../files-tree';
-import { highlightSegments, quickOpenItemId, quickOpenModel } from '../overlay/quick-pick';
+import { highlightSegments, quickOpenItemId, quickOpenModel, quickOpenPick } from '../overlay/quick-pick';
 import { dropZoneAt } from '../overlay/drop-zones';
 import { markdownPreviewHtml, previewLink } from '../editor/markdown-html';
-import type { QuickOpenResponse, QuickOpenResult } from '../../preload/overlay-channels';
+import type { QuickOpenPathResult, QuickOpenProjectResult, QuickOpenResponse } from '../../preload/overlay-channels';
 
 const loaded = (...entries: Array<[string, 'file' | 'dir']>): Listing => ({ state: 'loaded', entries: entries.map(([name, kind]) => ({ name, kind })) });
 
@@ -51,16 +51,17 @@ describe('Files tree rows', () => {
 });
 
 describe('Quick Open rows', () => {
-  const result = (projectKey: string, relativePath: string, recent = false): QuickOpenResult => {
+  const result = (projectKey: string, relativePath: string, recent = false): QuickOpenProjectResult => {
     const slash = relativePath.lastIndexOf('/');
     return {
-      projectKey, projectName: projectKey.toUpperCase(), relativePath,
+      kind: 'project', projectKey, projectName: projectKey.toUpperCase(), relativePath,
       label: relativePath.slice(slash + 1), description: slash < 0 ? '' : relativePath.slice(0, slash),
       labelMatches: [[0, 1]], descriptionMatches: [], recent,
     };
   };
   const labels = {
-    recent: 'recently opened', current: (p: string) => `${p} · current`, other: (p: string) => p, goToLine: (n: number) => `line ${n}`, mention: 'mention',
+    recent: 'recently opened', current: (p: string) => `${p} · current`, other: (p: string) => p, goToLine: (n: number) => `line ${n}`,
+    goToLineColumn: (n: number, c: number) => `line ${n} column ${c}`, mention: 'mention',
   };
   const response: QuickOpenResponse = {
     generation: 1, currentProjectKey: 'a', mention: false,
@@ -76,6 +77,7 @@ describe('Quick Open rows', () => {
     const model = quickOpenModel({ ...response, line: 12 }, false, labels);
     expect(model.rows.every((row) => row.kind === 'item')).toBe(true);
     expect(model.hint).toBe('line 12');
+    expect(quickOpenModel({ ...response, line: 12, column: 4 }, false, labels).hint).toBe('line 12 column 4');
     expect(quickOpenModel({ ...response, mention: true }, false, labels).hint).toBe('mention');
   });
 
@@ -86,7 +88,60 @@ describe('Quick Open rows', () => {
   });
 
   it('ids each file by project and path, so equal paths in two projects stay apart', () => {
-    expect(quickOpenItemId({ projectKey: 'a', relativePath: 'x' })).not.toBe(quickOpenItemId({ projectKey: 'b', relativePath: 'x' }));
+    expect(quickOpenItemId(result('a', 'x'))).not.toBe(quickOpenItemId(result('b', 'x')));
+  });
+
+  const pathResult = (authority: string, path: string, host?: string): QuickOpenPathResult => {
+    const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+    const label = path.slice(slash + 1);
+    const description = path.slice(0, slash);
+    return {
+      kind: 'path', authority, path, label, description,
+      labelMatches: [[0, label.length]], descriptionMatches: [[0, description.length]], recent: false, ...(host === undefined ? {} : { host }),
+    };
+  };
+
+  it('renders a typed path as one row: its file icon, name, folder, and a host chip only on a host', () => {
+    const local = quickOpenModel({ generation: 1, mention: false, line: 3, results: [pathResult('local', 'C:\\notes\\todo.md')] }, false, labels);
+    expect(local.rows).toHaveLength(1);
+    expect(local.rows[0]).toMatchObject({
+      kind: 'item',
+      item: { label: 'todo.md', description: 'C:\\notes', file: 'C:\\notes\\todo.md', labelMatches: [[0, 7]], descriptionMatches: [[0, 8]] },
+    });
+    const item = local.rows[0]!.kind === 'item' ? local.rows[0]!.item : undefined;
+    expect(item?.badge).toBeUndefined();
+    expect(item?.project).toBeUndefined();
+    expect(item?.icon).toBeUndefined();
+    expect(local.hint).toBe('line 3');
+
+    const remote = quickOpenModel({ generation: 1, mention: false, results: [pathResult('ssh-remote+box', '/home/u/a.txt', 'box')] }, false, labels);
+    expect(remote.rows[0]).toMatchObject({ kind: 'item', item: { label: 'a.txt', description: '/home/u', file: '/home/u/a.txt', badge: 'box' } });
+  });
+
+  it('puts no group label over a typed path, even for an empty query', () => {
+    const model = quickOpenModel({ generation: 1, currentProjectKey: 'a', mention: false, results: [pathResult('local', '/tmp/a.txt')] }, true, labels);
+    expect(model.rows.map((row) => row.kind)).toEqual(['item']);
+  });
+
+  it('ids a typed path apart from every project file, and by its authority', () => {
+    const path = pathResult('local', '/x');
+    expect(quickOpenItemId(path)).not.toBe(quickOpenItemId(result('local', '/x')));
+    expect(quickOpenItemId(path)).not.toBe(quickOpenItemId(result('path', 'local')));
+    expect(quickOpenItemId(path)).not.toBe(quickOpenItemId(pathResult('ssh-remote+box', '/x')));
+  });
+
+  it('picks a typed path with its authority, path, line and column, never as a mention', () => {
+    const path = pathResult('ssh-remote+box', '/home/u/a.txt', 'box');
+    const answer: QuickOpenResponse = { generation: 1, mention: true, line: 3, column: 5, results: [path] };
+    expect(quickOpenPick(answer, quickOpenItemId(path))).toEqual({ kind: 'path', authority: 'ssh-remote+box', path: '/home/u/a.txt', line: 3, column: 5, mention: false });
+    expect(quickOpenPick({ generation: 1, mention: false, results: [path] }, quickOpenItemId(path))).toEqual({ kind: 'path', authority: 'ssh-remote+box', path: '/home/u/a.txt', mention: false });
+  });
+
+  it('picks a project file with the line and column of the query, and nothing for an id the answer does not hold', () => {
+    const answer: QuickOpenResponse = { ...response, line: 12, column: 4 };
+    expect(quickOpenPick(answer, quickOpenItemId(result('b', 'z.ts')))).toEqual({ kind: 'project', projectKey: 'b', relativePath: 'z.ts', line: 12, column: 4, mention: false });
+    expect(quickOpenPick({ ...response, mention: true }, quickOpenItemId(result('b', 'z.ts')))).toEqual({ kind: 'project', projectKey: 'b', relativePath: 'z.ts', mention: true });
+    expect(quickOpenPick(answer, quickOpenItemId(pathResult('local', 'z.ts')))).toBeUndefined();
   });
 
   it('cuts text at its match ranges, clamping ranges outside the text', () => {

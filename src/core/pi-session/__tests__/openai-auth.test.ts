@@ -34,16 +34,17 @@ vi.mock('../agent-dir', async (importOriginal) => ({
 
 import type { AuthInteraction } from '@earendil-works/pi-ai';
 import { installFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
+import { installLogSink } from '../../logger';
 import { PiRuntime } from '../pi-runtime';
 import {
   OPENAI_API_KEY_SECRET,
-  OPENAI_PREFER_API_KEY_STATE,
-  movePreferApiKeyToGlobalState,
+  OPENAI_PREFER_API_KEY_SETTING,
   openaiRequestCredentialIsKey,
   openaiRuntimeKeyWanted,
   readOpenAIAuthFromDisk,
 } from '../openai-auth';
 import type { ClassifierBreakers } from '../classifier-breaker';
+import { LocalizedError } from '../../../shared/localized-text';
 
 type Cred = { type: string; key?: string; expires?: number };
 
@@ -201,7 +202,7 @@ describe('PiRuntime OpenAI auth', () => {
   it('signOutChatGPT logs out openai and re-applies the key that the logout dropped', async () => {
     mock.writeState({ openai: { type: 'oauth', expires: 5 } });
     const rt = PiRuntime.get(agentDir);
-    await platform.state.global.update(OPENAI_PREFER_API_KEY_STATE, true);
+    await platform.settings.update(OPENAI_PREFER_API_KEY_SETTING, true, 'user');
     await rt.setOpenAIApiKey('sk-test');
     expect(mock.modelRuntime.runtimeKeys.get('openai')).toBe('sk-test');
 
@@ -229,7 +230,7 @@ describe('PiRuntime OpenAI auth', () => {
     await rt.setOpenAIApiKey('sk-test');
     expect(await rt.getChatGPTAccessToken()).toBe('token-openai');
 
-    await platform.state.global.update(OPENAI_PREFER_API_KEY_STATE, true);
+    await platform.settings.update(OPENAI_PREFER_API_KEY_SETTING, true, 'user');
     await rt.syncOpenAIRuntimeKey();
     expect(await rt.getChatGPTAccessToken()).toBeUndefined();
   });
@@ -296,37 +297,254 @@ describe('PiRuntime OpenAI auth', () => {
     expect(breakers.admits('openai')).toBe(true);
   });
 
-  it('the prefer toggle resets the OpenAI breaker even when its runtime key sync fails', async () => {
+  // The toggle's own write publishes through its Settings handler, so the failure leaves nothing for the settings listener to apply.
+  it('puts back the user value when applying the toggle fails, resets the breaker, and the restore resyncs nothing', async () => {
+    await platform.settings.update(OPENAI_PREFER_API_KEY_SETTING, false, 'user');
     const rt = PiRuntime.get(agentDir);
     await rt.init();
     const breakers = (rt as unknown as { _classifierBreakers: ClassifierBreakers })._classifierBreakers;
     breakers.settle(breakers.claim('openai'), { kind: 'rejected', reason: 'unauthorized' });
+    const sync = vi.spyOn(rt as unknown as { _syncOpenAIRuntimeKeyNow: () => Promise<void> }, '_syncOpenAIRuntimeKeyNow');
+    const heard = vi.fn();
+    const stop = PiRuntime.onOpenAICredentialChange(heard);
     mock.modelRuntime.removeRuntimeApiKey.mockRejectedValueOnce(new Error('auth.json is locked'));
 
-    await platform.state.global.update(OPENAI_PREFER_API_KEY_STATE, true);
-    await expect(rt.applyOpenAIPreferApiKey()).rejects.toThrow('auth.json is locked');
+    await expect(rt.setOpenAIPreferApiKey(true)).rejects.toThrow('auth.json is locked');
+    await new Promise((resolve) => setTimeout(resolve, 20));
 
+    expect(platform.settings.inspect(OPENAI_PREFER_API_KEY_SETTING).userValue).toBe(false);
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(heard).not.toHaveBeenCalled();
     expect(breakers.rejection('openai')).toBeUndefined();
+    stop();
   });
 
-  // The flag is global state, which another VS Code window can change with no event to this one.
-  it('a prefer flag another window wrote re-applies the runtime key at the next read', async () => {
-    mock.writeState({ openai: { type: 'oauth', expires: 5 } });
-    await platform.secrets.store(OPENAI_API_KEY_SECRET, 'sk-test');
-    const rt = PiRuntime.get(agentDir);
-    await rt.init();
-    expect(mock.modelRuntime.runtimeKeys.has('openai')).toBe(false);
-    const session = { publishAccountInfo: vi.fn(), publishAvailableModels: vi.fn() };
-    rt.registerSessionMutator('s1', session as never);
+  describe('a prefer setting change', () => {
+    const CHATGPT_SIGN_IN = { openai: { type: 'oauth', expires: 5 } };
 
-    await platform.state.global.update(OPENAI_PREFER_API_KEY_STATE, true);
-    expect(rt.preferOpenAIApiKey()).toBe(true);
+    async function signedInWithKey() {
+      mock.writeState(CHATGPT_SIGN_IN);
+      await platform.secrets.store(OPENAI_API_KEY_SECRET, 'sk-test');
+      const rt = PiRuntime.get(agentDir);
+      await rt.init();
+      expect(mock.modelRuntime.runtimeKeys.has('openai')).toBe(false);
+      const session = { publishAccountInfo: vi.fn(), publishAvailableModels: vi.fn() };
+      rt.registerSessionMutator('s1', session as never);
+      const heard = vi.fn();
+      const stops = [PiRuntime.onOpenAICredentialChange(heard)];
+      const sync = vi.spyOn(rt as unknown as { _syncOpenAIRuntimeKeyNow: () => Promise<void> }, '_syncOpenAIRuntimeKeyNow');
+      return { rt, session, heard, sync, stop: () => stops.forEach((s) => s()) };
+    }
 
-    await vi.waitFor(() => expect(mock.modelRuntime.runtimeKeys.get('openai')).toBe('sk-test'));
-    await vi.waitFor(() => expect(session.publishAccountInfo).toHaveBeenCalledTimes(1));
-    rt.preferOpenAIApiKey();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(session.publishAccountInfo).toHaveBeenCalledTimes(1);
+    it('from another window re-applies the runtime key and republishes once, and the reads after it only read', async () => {
+      const { rt, session, heard, sync, stop } = await signedInWithKey();
+
+      await platform.settings.update(OPENAI_PREFER_API_KEY_SETTING, true, 'user');
+
+      await vi.waitFor(() => expect(heard).toHaveBeenCalledTimes(1));
+      expect(mock.modelRuntime.runtimeKeys.get('openai')).toBe('sk-test');
+      expect(session.publishAccountInfo).toHaveBeenCalledTimes(1);
+      expect(rt.preferOpenAIApiKey()).toBe(true);
+      expect(rt.preferOpenAIApiKey()).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(sync).toHaveBeenCalledTimes(1);
+      expect(session.publishAccountInfo).toHaveBeenCalledTimes(1);
+      expect(heard).toHaveBeenCalledTimes(1);
+      stop();
+    });
+
+    // A classifier call refused under the old credential is tried again once the other window's flag applied.
+    it('from another window clears the OpenAI breaker once its sync settled', async () => {
+      const { rt, stop } = await signedInWithKey();
+      const breakers = (rt as unknown as { _classifierBreakers: ClassifierBreakers })._classifierBreakers;
+      breakers.settle(breakers.claim('openai'), { kind: 'rejected', reason: 'unauthorized' });
+      expect(breakers.rejection('openai')).toBeDefined();
+
+      await platform.settings.update(OPENAI_PREFER_API_KEY_SETTING, true, 'user');
+
+      await vi.waitFor(() => expect(mock.modelRuntime.runtimeKeys.get('openai')).toBe('sk-test'));
+      await vi.waitFor(() => expect(breakers.rejection('openai')).toBeUndefined());
+      expect(breakers.admits('openai')).toBe(true);
+      stop();
+    });
+
+    it("from this window's toggle syncs once, and its settings event publishes nothing more", async () => {
+      const { rt, session, heard, sync, stop } = await signedInWithKey();
+
+      await rt.setOpenAIPreferApiKey(true);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(platform.settings.inspect(OPENAI_PREFER_API_KEY_SETTING).userValue).toBe(true);
+      expect(mock.modelRuntime.runtimeKeys.get('openai')).toBe('sk-test');
+      expect(sync).toHaveBeenCalledTimes(1);
+      expect(heard).not.toHaveBeenCalled();
+      expect(session.publishAccountInfo).not.toHaveBeenCalled();
+      stop();
+    });
+
+    // A host may report the change after the write resolved; the chain finds the value the toggle's own sync applied.
+    it("from this window's toggle, heard after the toggle settled, syncs and publishes nothing", async () => {
+      const late: Array<() => void> = [];
+      const listen = platform.settings.onDidChange.bind(platform.settings);
+      vi.spyOn(platform.settings, 'onDidChange').mockImplementation((section, cb) => listen(section, (change) => void late.push(() => cb(change))));
+      const { rt, session, heard, sync, stop } = await signedInWithKey();
+
+      await rt.setOpenAIPreferApiKey(true);
+      expect(late).toHaveLength(1);
+      for (const fire of late.splice(0)) fire();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(sync).toHaveBeenCalledTimes(1);
+      expect(heard).not.toHaveBeenCalled();
+      expect(session.publishAccountInfo).not.toHaveBeenCalled();
+      stop();
+    });
+
+    // The listener skips every event while this window writes, so the write's end must catch a value its sync never read, before
+    // the toggle's Settings handler publishes.
+    it("from another window while this window's toggle applies is applied before the toggle resolves, which publishes nothing itself", async () => {
+      const { rt, session, heard, sync, stop } = await signedInWithKey();
+      let release!: () => void;
+      mock.modelRuntime.setRuntimeApiKey.mockImplementationOnce(async (provider: string, key: string) => {
+        await new Promise<void>((resolve) => { release = resolve; });
+        mock.modelRuntime.runtimeKeys.set(provider, key);
+      });
+
+      const toggle = rt.setOpenAIPreferApiKey(true);
+      await vi.waitFor(() => expect(release).toBeDefined());
+      await platform.settings.update(OPENAI_PREFER_API_KEY_SETTING, false, 'user');
+      release();
+      await toggle;
+
+      expect(mock.modelRuntime.runtimeKeys.has('openai')).toBe(false);
+      expect(sync).toHaveBeenCalledTimes(2);
+      expect(rt.preferOpenAIApiKey()).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(heard).not.toHaveBeenCalled();
+      expect(session.publishAccountInfo).not.toHaveBeenCalled();
+      stop();
+    });
+
+    it("keeps another window's value that landed while this window's failed toggle applied, and applies it before resolving", async () => {
+      const { rt, session, heard, sync, stop } = await signedInWithKey();
+      let fail!: () => void;
+      mock.modelRuntime.setRuntimeApiKey.mockImplementationOnce(async () => {
+        await new Promise<void>((resolve) => { fail = resolve; });
+        throw new Error('auth.json is locked');
+      });
+
+      const toggle = rt.setOpenAIPreferApiKey(true);
+      await vi.waitFor(() => expect(fail).toBeDefined());
+      await platform.settings.update(OPENAI_PREFER_API_KEY_SETTING, false, 'user');
+      const update = vi.spyOn(platform.settings, 'update');
+      fail();
+      await expect(toggle).rejects.toThrow('auth.json is locked');
+
+      expect(update).not.toHaveBeenCalled();
+      expect(platform.settings.inspect(OPENAI_PREFER_API_KEY_SETTING).userValue).toBe(false);
+      expect(mock.modelRuntime.runtimeKeys.has('openai')).toBe(false);
+      // the flag the setting kept is the one init's sync applied
+      expect(sync).toHaveBeenCalledTimes(1);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(heard).not.toHaveBeenCalled();
+      expect(session.publishAccountInfo).not.toHaveBeenCalled();
+      stop();
+    });
+
+    it('rejects with the settings file and the reason when the toggle cannot write the setting', async () => {
+      const { rt, sync, stop } = await signedInWithKey();
+      vi.spyOn(platform.settings, 'update').mockRejectedValueOnce(new Error('settings.json has unsaved changes'));
+
+      const error = await rt.setOpenAIPreferApiKey(true).then(() => undefined, (err: unknown) => err);
+
+      expect(error).toBeInstanceOf(LocalizedError);
+      expect((error as LocalizedError).text).toStrictEqual({ message: 'Could not save {0}: {1}', args: [{ message: 'your user settings.json' }, { message: '{0}', args: ['settings.json has unsaved changes'] }] });
+      expect(sync).not.toHaveBeenCalled();
+      stop();
+    });
+
+    // The toggle's Settings handler publishes the failure once, so the runtime publishes nothing for it.
+    it('logs a restore that fails, applies the value the setting kept before rejecting with the apply error, and publishes nothing', async () => {
+      const lines: string[] = [];
+      installLogSink({ appendLine: (line) => void lines.push(line), show: () => undefined, dispose: () => undefined });
+      const { rt, session, heard, sync, stop } = await signedInWithKey();
+      mock.modelRuntime.setRuntimeApiKey.mockRejectedValueOnce(new Error('auth.json is locked'));
+      const update = platform.settings.update.bind(platform.settings);
+      vi.spyOn(platform.settings, 'update')
+        .mockImplementationOnce(update)
+        .mockRejectedValueOnce(new Error('settings.json is dirty'));
+
+      await expect(rt.setOpenAIPreferApiKey(true)).rejects.toThrow('auth.json is locked');
+
+      expect(lines.join('\n')).toContain('settings.json is dirty');
+      expect(platform.settings.inspect(OPENAI_PREFER_API_KEY_SETTING).userValue).toBe(true);
+      expect(mock.modelRuntime.runtimeKeys.get('openai')).toBe('sk-test');
+      expect(sync).toHaveBeenCalledTimes(2);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(heard).not.toHaveBeenCalled();
+      expect(session.publishAccountInfo).not.toHaveBeenCalled();
+      stop();
+    });
+
+    it("from another window whose runtime key sync fails is published once, then applied by a retry that publishes nothing more", async () => {
+      const { session, heard, stop } = await signedInWithKey();
+      const clientAuth = vi.fn();
+      const stopClientAuth = PiRuntime.onClientAuthChange(clientAuth);
+      mock.modelRuntime.setRuntimeApiKey.mockRejectedValueOnce(new Error('auth.json is locked'));
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        await platform.settings.update(OPENAI_PREFER_API_KEY_SETTING, true, 'user');
+
+        await vi.waitFor(() => expect(heard).toHaveBeenCalledTimes(1));
+        expect(session.publishAccountInfo).toHaveBeenCalledTimes(1);
+        expect(clientAuth).toHaveBeenCalledTimes(1);
+        expect(mock.modelRuntime.runtimeKeys.has('openai')).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(1_000);
+        await vi.waitFor(() => expect(mock.modelRuntime.runtimeKeys.get('openai')).toBe('sk-test'));
+        expect(heard).toHaveBeenCalledTimes(1);
+        expect(session.publishAccountInfo).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+        stopClientAuth();
+        stop();
+      }
+    });
+
+    // The rows that read the setting show it at once; the sign-in's own resync reads the new flag, and its caller publishes what it applied.
+    it('while a ChatGPT sign-in holds the credential chain publishes the started chats at once, and finds the flag applied once the sign-in ends', async () => {
+      mock.writeState({});
+      await platform.secrets.store(OPENAI_API_KEY_SECRET, 'sk-test');
+      const rt = PiRuntime.get(agentDir);
+      await rt.init();
+      const session = { publishAccountInfo: vi.fn(), publishAvailableModels: vi.fn() };
+      rt.registerSessionMutator('s1', session as never);
+      const heard = vi.fn();
+      const stop = PiRuntime.onOpenAICredentialChange(heard);
+      let finish!: () => void;
+      mock.modelRuntime.login.mockImplementationOnce(async (provider: string) => {
+        await new Promise<void>((resolve) => { finish = resolve; });
+        mock.writeState({ ...mock.readState(), [provider]: { type: 'oauth', expires: 123 } });
+        return { type: 'oauth' as const };
+      });
+      const signIn = rt.signInChatGPT(callerInteraction());
+      await vi.waitFor(() => expect(finish).toBeDefined());
+      const sync = vi.spyOn(rt as unknown as { _syncOpenAIRuntimeKeyNow: () => Promise<void> }, '_syncOpenAIRuntimeKeyNow');
+
+      await platform.settings.update(OPENAI_PREFER_API_KEY_SETTING, true, 'user');
+      expect(session.publishAccountInfo).toHaveBeenCalledTimes(1);
+      expect(sync).not.toHaveBeenCalled();
+
+      finish();
+      await expect(signIn).resolves.toMatchObject({ apiKey: true, chatgpt: true });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(mock.modelRuntime.runtimeKeys.get('openai')).toBe('sk-test');
+      // the sign-in's resync alone
+      expect(sync).toHaveBeenCalledTimes(1);
+      expect(session.publishAccountInfo).toHaveBeenCalledTimes(1);
+      expect(heard).not.toHaveBeenCalled();
+      stop();
+    });
   });
 
   it('re-syncs and republishes once when another window changes the key secret', async () => {
@@ -517,28 +735,6 @@ describe('PiRuntime OpenAI auth', () => {
       expect(mock.readState()).toEqual({ 'openai-codex': { type: 'oauth', expires: 9 } });
       expect(status).toEqual({ apiKey: false, chatgpt: false, codex: true, codexExpires: 9 });
     });
-  });
-});
-
-describe('movePreferApiKeyToGlobalState', () => {
-  it('moves the workspace value to global state and clears the workspace copy', async () => {
-    const platform = installFakePlatform({ workspaceState: { [OPENAI_PREFER_API_KEY_STATE]: true } });
-    await movePreferApiKeyToGlobalState(platform.state);
-    expect(platform.state.global.get(OPENAI_PREFER_API_KEY_STATE)).toBe(true);
-    expect(platform.state.workspace.get(OPENAI_PREFER_API_KEY_STATE)).toBeUndefined();
-  });
-
-  it("keeps the value an earlier workspace moved, and still clears this workspace's copy", async () => {
-    const platform = installFakePlatform({ globalState: { [OPENAI_PREFER_API_KEY_STATE]: true }, workspaceState: { [OPENAI_PREFER_API_KEY_STATE]: false } });
-    await movePreferApiKeyToGlobalState(platform.state);
-    expect(platform.state.global.get(OPENAI_PREFER_API_KEY_STATE)).toBe(true);
-    expect(platform.state.workspace.get(OPENAI_PREFER_API_KEY_STATE)).toBeUndefined();
-  });
-
-  it('leaves global state alone when the workspace holds no value', async () => {
-    const platform = installFakePlatform();
-    await movePreferApiKeyToGlobalState(platform.state);
-    expect(platform.state.global.get(OPENAI_PREFER_API_KEY_STATE)).toBeUndefined();
   });
 });
 

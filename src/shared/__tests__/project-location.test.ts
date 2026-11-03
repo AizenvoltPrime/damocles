@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as path from 'node:path';
-import { authorityKey, authorityKeyOfProject, isInsideFolder, pathFor, projectKeyOf, targetFolderKeyOf } from '../project-location';
+import { authorityKey, authorityKeyOfProject, isInsideFolder, pathFor, projectKeyOf, rootHolding, targetFolderKeyOf } from '../project-location';
 
 describe('project location', () => {
   it('names each authority by its stable key', () => {
@@ -46,6 +46,26 @@ describe('project location', () => {
     expect(isInsideFolder(posix, '/srv/app', '/srv')).toBe(false);
     expect(isInsideFolder({ os: 'win32' }, 'C:\\app', 'C:\\app\\..cache')).toBe(true);
     expect(isInsideFolder({ os: 'win32' }, 'C:\\app', 'D:\\app')).toBe(false);
+  });
+
+  it('finds the deepest root that holds a path as written, a UNC root included, and never the root itself', () => {
+    const win32 = { os: 'win32' as const };
+    const share = { fsPath: '\\\\server\\share\\proj' };
+    const worktree = { fsPath: '\\\\server\\share\\proj\\.damocles\\worktrees\\wt' };
+    const drive = { fsPath: 'Z:\\code\\proj' };
+    expect(rootHolding(win32, [share, worktree, drive], '\\\\server\\share\\proj\\src\\a.ts')).toEqual({ root: share, relativePath: 'src/a.ts' });
+    expect(rootHolding(win32, [worktree, share], '\\\\SERVER\\share\\proj\\.damocles\\worktrees\\wt\\a.ts')).toEqual({ root: worktree, relativePath: 'a.ts' });
+    expect(rootHolding(win32, [share, worktree], '\\\\server\\share\\proj\\.damocles\\worktrees\\wt\\a.ts')).toEqual({ root: worktree, relativePath: 'a.ts' });
+    expect(rootHolding(win32, [drive], 'Z:\\code\\proj\\src\\a.ts')).toEqual({ root: drive, relativePath: 'src/a.ts' });
+    for (const outside of ['\\\\server\\share\\proj', '\\\\server\\share\\other\\a.ts', '\\\\server\\share\\proj\\..\\other\\a.ts', '\\\\?\\Z:\\code\\proj\\a.ts', 'Z:\\code\\project\\a.ts', 'code\\proj\\a.ts']) {
+      expect(rootHolding(win32, [share, drive], outside), outside).toBeUndefined();
+    }
+    expect(rootHolding({ os: 'linux' }, [{ fsPath: '/srv/app' }], '/srv/app/src/a.ts')).toEqual({ root: { fsPath: '/srv/app' }, relativePath: 'src/a.ts' });
+    expect(rootHolding({ os: 'linux' }, [{ fsPath: '/srv/app' }], '/srv/app/../etc/passwd')).toBeUndefined();
+    // the kernel follows sub before '..', so no lexical reading names the file; the outside rule refuses it
+    expect(rootHolding({ os: 'linux' }, [{ fsPath: '/srv/app' }], '/srv/app/sub/../a.ts')).toBeUndefined();
+    expect(rootHolding({ os: 'linux' }, [{ fsPath: '/srv/app' }], '/srv/app/./a.ts')).toBeUndefined();
+    expect(rootHolding(win32, [drive], 'Z:\\code\\proj\\sub/..\\a.ts')).toBeUndefined();
   });
 
   it('does path arithmetic in the target flavor', () => {

@@ -6,6 +6,7 @@ import { Ban, ChevronRight, Copy, CopyMinus, FilePlus, FolderInput, FolderPlus }
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { remPx } from '@/composables/useRemPx';
+import { useDragAutoScroll } from '@/composables/useDragAutoScroll';
 import { FILE_DRAG_MIME, FILES_ROW_DRAG_MIME, parseFileDragPayload, serializeFileDragPayload } from '@shared/file-drag';
 import { visibleText } from '@shared/visible-text';
 import { MAX_FILE_NAME_LENGTH, type DamoclesShellApi, type FileRef, type FilesPasteResult, type FilesTransferStartResult, type ShellPlatform, type ShownFolder } from '../../preload/shell-channels';
@@ -652,6 +653,7 @@ const dropHint = computed(() => {
 // The row this tree's own drag carries, set at dragstart: a row drop is taken only while it is live and names the same row.
 let rowDrag: FileRef | null = null;
 let hoverOpen: { readonly path: string; readonly timer: ReturnType<typeof setTimeout> } | undefined;
+const autoScroll = useDragAutoScroll(containerProps.ref);
 
 // OS files and Files rows only: an editor tab or a source control row carries FILE_DRAG_MIME alone and stays a chat mention.
 function dragKind(event: DragEvent): 'row' | 'files' | undefined {
@@ -702,12 +704,15 @@ function clearDrop(): void {
   dropTarget.value = null;
   dropRefused.value = false;
   stopHoverOpen();
+  autoScroll.stop();
 }
 
 function onTreeDragOver(event: DragEvent): void {
   const kind = dragKind(event);
   // Another app or page can put FILES_ROW_DRAG_MIME on its own drag: only this tree's live row drag is taken.
   if (!kind || (kind === 'row' && !rowDrag) || props.projectKey === undefined || !event.dataTransfer) return;
+  // Before the drop checks: a spot that takes no drop still scrolls on to one that does.
+  autoScroll.onDragOver(event);
   if (unsupportedText.value) {
     stopHoverOpen();
     dropTarget.value = null;
@@ -988,7 +993,7 @@ defineExpose({ reveal, startCreate, collapseAll });
         :data-away="away || undefined"
         :data-drop-target="dropTarget ?? undefined"
         class="d-dim-transition min-h-0 flex-1 overflow-x-hidden pb-2 outline-none"
-        :class="{ 'opacity-(--d-opacity-disabled)': away }"
+        :class="{ 'opacity-(--d-opacity-disabled)': away, 'overflow-y-hidden! [scrollbar-gutter:stable]': autoScroll.holding.value }"
         @keydown="onKeydown"
         @contextmenu="onTreeContextMenu"
         @dragenter="onTreeDragOver"

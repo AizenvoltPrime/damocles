@@ -195,7 +195,7 @@ describe('notification toasts', () => {
 });
 
 describe('host badge tone', () => {
-  const ON_PROD = { ...CHAT, host: 'prod-1', hostTone: 'danger' as const };
+  const ON_PROD = { ...CHAT, host: 'prod-1', hostColor: 'danger' as const };
   const badge = (root: Element): Element => root.querySelector('[data-testid="host-name-badge"]')!;
 
   it("tints a toast's host badge with its tone, keeps a host without one muted, and recolors a showing toast in place", async () => {
@@ -206,7 +206,7 @@ describe('host badge tone', () => {
     await flushPromises();
     expect(badge(wrapper.get('[data-toast-id="a1"]').element).classList.contains('d-tone-danger')).toBe(true);
     expect(badge(wrapper.get('[data-toast-id="n1"]').element).classList.contains('d-tone-muted')).toBe(true);
-    api.toast(toast('a1', { ...APPROVAL, chat: { ...ON_PROD, host: 'prod-eu', hostTone: 'info' } }));
+    api.toast(toast('a1', { ...APPROVAL, chat: { ...ON_PROD, host: 'prod-eu', hostColor: 'info' } }));
     await flushPromises();
     expect(wrapper.findAll('[data-toast-id="a1"]')).toHaveLength(1);
     const recolored = badge(wrapper.get('[data-toast-id="a1"]').element);
@@ -223,7 +223,7 @@ describe('host badge tone', () => {
     await flushPromises();
     const row = (): Element => wrapper.get('[data-testid="notification-row"]').element;
     expect(badge(row()).classList.contains('d-tone-danger')).toBe(true);
-    api.pushNotifications({ entries: [entry('e1', { ...APPROVAL, chat: { ...ON_PROD, hostTone: 'success' } })], doNotDisturb: false, popupsOff: false });
+    api.pushNotifications({ entries: [entry('e1', { ...APPROVAL, chat: { ...ON_PROD, hostColor: 'success' } })], doNotDisturb: false, popupsOff: false });
     await flushPromises();
     expect(badge(row()).classList.contains('d-tone-success')).toBe(true);
     api.pushNotifications({ entries: [entry('e1', { ...APPROVAL, chat: { ...CHAT, host: 'prod-1' } })], doNotDisturb: false, popupsOff: false });
@@ -741,7 +741,7 @@ describe('title bar bell', () => {
 });
 
 describe('a link request toast', () => {
-  const LINK: NotificationBody = { kind: 'link', host: 'prod-1', hostTone: 'danger', url: 'https://github.com.evil.example:8443/login/device?next=%2F' };
+  const LINK: NotificationBody = { kind: 'link', host: 'prod-1', hostColor: 'danger', url: 'https://github.com.evil.example:8443/login/device?next=%2F' };
   const show = async (id = 'l1', body: NotificationBody = LINK): Promise<VueWrapper> => {
     const wrapper = mountNotifier();
     await flushPromises();

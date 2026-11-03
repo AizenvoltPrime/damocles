@@ -26,6 +26,7 @@ const workspaceOver = (answers: Record<string, unknown>, sent: Array<[string, un
   notConnected,
   watchReady: false,
   transfers: false,
+  outside: false,
   openStream: () => { throw new Error('no transfer streams in this suite'); },
   log: () => undefined,
 });
@@ -72,6 +73,7 @@ describe('remote workspace client', () => {
       notConnected,
       watchReady: false,
       transfers: false,
+      outside: false,
       openStream: () => { throw new Error('no transfer streams in this suite'); },
       log: () => undefined,
     });
@@ -106,6 +108,7 @@ describe('remote workspace client', () => {
       notConnected,
       watchReady: false,
       transfers: false,
+      outside: false,
       openStream: () => { throw new Error('no transfer streams in this suite'); },
       log: () => undefined,
     });
@@ -148,6 +151,7 @@ describe('remote workspace client', () => {
       notConnected,
       watchReady: false,
       transfers: false,
+      outside: false,
       openStream: () => { throw new Error('no transfer streams in this suite'); },
       log: () => undefined,
     });
@@ -164,7 +168,7 @@ describe('remote workspace client', () => {
       ...fakeEndpoint({}, []),
       request: (method: string) => (method === 'files.watch' ? new Promise<void>((resolve, reject) => answers.push({ resolve, reject })) : Promise.resolve()),
     } as unknown as Endpoint<ClientToWorkspace, WorkspaceToClient>;
-    const over = (watchReady: boolean) => createRemoteWorkspace({ endpoint, authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady, transfers: false, openStream: () => { throw new Error('no transfer streams in this suite'); }, log: () => undefined });
+    const over = (watchReady: boolean) => createRemoteWorkspace({ endpoint, authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady, transfers: false, outside: false, openStream: () => { throw new Error('no transfer streams in this suite'); }, log: () => undefined });
     const settled = (ready: Promise<void>): { done: boolean } => {
       const state = { done: false };
       void ready.then(() => {
@@ -225,7 +229,7 @@ describe('remote workspace client', () => {
         return { ok: true };
       },
     } as unknown as Endpoint<ClientToWorkspace, WorkspaceToClient>;
-    const { files } = createRemoteWorkspace({ endpoint, authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady: false, transfers: true, openStream: () => { throw new Error('no transfer streams in this suite'); }, log: () => undefined });
+    const { files } = createRemoteWorkspace({ endpoint, authorityKey: 'loopback', projectOfCwd: () => undefined, onClose: () => ({ dispose: () => undefined }), notConnected, watchReady: false, transfers: true, outside: false, openStream: () => { throw new Error('no transfer streams in this suite'); }, log: () => undefined });
     const controller = new AbortController();
     await files.makeFolder(project, '', 'lib', 0o700);
     await files.copy(project, 'a.ts', project, 'lib', 'a.ts', false, controller.signal);

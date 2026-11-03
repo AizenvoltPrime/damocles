@@ -1,6 +1,6 @@
 // The notification center's data, shared by main (which builds it) and the overlay and shell apps (which render it).
 // Entries are structured: every renderer localizes them, the desktop popup window (D52) included.
-import type { HostTone } from '../../shared/host-tones';
+import type { HostColor } from '../../shared/host-colors';
 
 export const NOTIFICATION_KINDS = ['approval', 'plan', 'question', 'team', 'done', 'error', 'limit'] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
@@ -29,7 +29,7 @@ export interface NotificationChat {
   readonly title: string;
   // a remote chat's host as this computer's host store names and colors it, never a name a core sent
   readonly host?: string;
-  readonly hostTone?: HostTone;
+  readonly hostColor?: HostColor;
 }
 
 export type NotificationBody =
@@ -52,14 +52,14 @@ export type NotificationBody =
     }
   // A core NotificationService call: its text is already localized, and an action answers the caller. host: a remote core's,
   // named by this computer's host store
-  | { readonly kind: 'notice'; readonly severity: NoticeSeverity; readonly title?: string; readonly message: string; readonly actions: readonly string[]; readonly host?: string; readonly hostTone?: HostTone }
+  | { readonly kind: 'notice'; readonly severity: NoticeSeverity; readonly title?: string; readonly message: string; readonly actions: readonly string[]; readonly host?: string; readonly hostColor?: HostColor }
   // A target asked to open a web page here: Open is the only answer that opens it. url: exactly what Open opens
-  | { readonly kind: 'link'; readonly host: string; readonly hostTone?: HostTone; readonly url: string };
+  | { readonly kind: 'link'; readonly host: string; readonly hostColor?: HostColor; readonly url: string };
 
 // A remote host as a notification names it: this computer's host store's name and safety color.
 export interface NotificationHost {
   readonly name: string;
-  readonly tone?: HostTone;
+  readonly color?: HostColor;
 }
 
 export interface NotificationEntry {

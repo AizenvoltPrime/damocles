@@ -407,7 +407,7 @@ describe('PiRuntime memory judge', () => {
     await platform.settings.update('damocles.memory.judge', 'gpt-6-luna-classifier', 'user');
     expect(runtime.describeMemoryJudge()).toEqual({ kind: 'none', forced: { choice: 'gpt-6-luna-classifier', reason: 'chatgpt-active' } });
 
-    await platform.state.global.update('damocles.openai.preferApiKey', true);
+    await platform.settings.update('damocles.openai.preferApiKey', true, 'user');
     expect(runtime.describeMemoryJudge()).toEqual({ kind: 'classifier', via: 'openai' });
   });
 

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { computed, nextTick, ref } from 'vue';
 import { mount } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
@@ -13,6 +13,8 @@ import { createHistoryHandlers } from '@/composables/message-handler/handlers/hi
 import type { HandlerContext } from '@/composables/message-handler/types';
 import { inGreek } from '../../../__mocks__/greek-locale';
 import type { VirtualItem } from '@/composables/useVirtualizedMessages';
+import { useSettingsStore } from '@/stores/useSettingsStore';
+import { useSettingWritesStore } from '../settings/settings-writes';
 
 /**
  * The empty state belongs to App.vue, so the list draws only its canvas when it has nothing. Each row
@@ -102,5 +104,50 @@ describe('an error row after a language switch', () => {
     await nextTick();
     for (const row of rows) expect(row.text()).toContain(inGreek(coreText));
     for (const row of rows) row.unmount();
+  });
+});
+
+describe('the pin whose write fails', () => {
+  beforeEach(() => {
+    Object.defineProperty(document, 'fonts', { value: { ready: Promise.resolve() }, configurable: true });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  function mountWithPinHidden() {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const posted: unknown[] = [];
+    const api = (globalThis as unknown as { acquireVsCodeApi: () => { postMessage: (message: unknown) => void } }).acquireVsCodeApi();
+    vi.spyOn(api, 'postMessage').mockImplementation((message: unknown) => void posted.push(message));
+    const settings = useSettingsStore();
+    settings.updateSettings({ ...settings.currentSettings, pinnedHeaderHidden: true });
+    const list = mount(VirtualizedMessageList, { props: { messages: [] }, global: { plugins: [pinia, i18n] } });
+    return { settings, posted, list };
+  }
+
+  const failPin = () => useSettingWritesStore().settle({ type: 'settingWriteResult', key: 'damocles.pinnedHeaderHidden', ok: false, error: { message: 'EACCES: permission denied' } });
+
+  it('hides the pinned header again and sends the write under its key', () => {
+    const { settings, posted, list } = mountWithPinHidden();
+
+    (list.vm as unknown as { restorePin: () => void }).restorePin();
+    expect(settings.currentSettings.pinnedHeaderHidden).toBe(false);
+    expect(posted).toContainEqual({ type: 'setPinnedHeaderHidden', hidden: false });
+
+    failPin();
+    expect(settings.currentSettings.pinnedHeaderHidden).toBe(true);
+    list.unmount();
+  });
+
+  it('shows the value core posted last, not the one it had when clicked', () => {
+    const { settings, list } = mountWithPinHidden();
+
+    (list.vm as unknown as { restorePin: () => void }).restorePin();
+    // another writer showed the pin meanwhile
+    settings.updateSettings({ ...settings.currentSettings, pinnedHeaderHidden: false });
+
+    failPin();
+    expect(settings.currentSettings.pinnedHeaderHidden).toBe(false);
+    list.unmount();
   });
 });

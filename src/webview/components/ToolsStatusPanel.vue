@@ -2,16 +2,20 @@
 import { ref, computed, useId, type Component } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
-import { AppWindow, Bot, Brain, ChevronRight, Compass, Globe, ImagePlus, Search, ShieldAlert, Users, Wrench } from 'lucide-vue-next';
-import { enabledToolCount, type ToolsSnapshot, type ToolGroup, type ToolStatusInfo, type ToolGroupStatus } from '@shared/types/tools';
+import { AppWindow, Bot, Brain, ChevronRight, Compass, Globe, ImagePlus, Search, Settings, ShieldAlert, Users, Wrench } from 'lucide-vue-next';
+import { enabledToolCount, isSwitchableToolGroup, type SwitchableToolGroup, type ToolsSnapshot, type ToolGroup, type ToolStatusInfo, type ToolGroupStatus } from '@shared/types/tools';
+import type { SettingsSectionId } from '@shared/settings-sections';
 import OverlayShell from './OverlayShell.vue';
 import ToggleSwitch from './ToggleSwitch.vue';
 import LoadingSpinner from './LoadingSpinner.vue';
+import { Button } from './ui/button';
 import { useSettingsStore } from '@/stores/useSettingsStore';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
 const { t } = useI18n();
 
 const { projectTrusted } = storeToRefs(useSettingsStore());
+const { postMessage } = usePlatformBridge();
 
 const props = defineProps<{
   snapshot: ToolsSnapshot;
@@ -39,6 +43,18 @@ const GROUP_ICONS: Record<ToolGroup, Component> = {
 
 /** Groups with no master switch — gated per-tool only (core is locked on; subagents toggle individually). */
 const NO_MASTER_GROUPS: ReadonlySet<ToolGroup> = new Set<ToolGroup>(['core', 'subagents']);
+
+// The settings section whose page lists each group's setting row (settings-rows.ts); damocles.tools.disabled has no row,
+// so the per-tool note opens Integrations, beside the group rows, where the host tab's footer edits the host's file.
+const HOST_SETTINGS_SECTIONS: Readonly<Record<SwitchableToolGroup, SettingsSectionId>> = {
+  memory: 'integrations',
+  compass: 'integrations',
+  browser: 'integrations',
+  web: 'integrations',
+  image: 'integrations',
+  team: 'teams',
+};
+const TOOLS_HOST_SETTINGS_SECTION: SettingsSectionId = 'integrations';
 
 // Core starts open, as the reference shows it, and Subagents while its untrusted-project notice applies; the others open on demand.
 const expanded = ref<Partial<Record<ToolGroup, boolean>>>({ core: true });
@@ -84,6 +100,22 @@ const statusBadge = computed(() => loading.value ? undefined : {
   class: 'd-tone-muted',
 });
 
+/** The host's own settings file holds the per-tool list, so only that host's Settings tab changes a tool switch. */
+const toolsSetOnHost = computed(() => props.snapshot.toolsSetOnHost === true);
+
+function setOnHost(view: GroupView): boolean {
+  return view.status?.setOnHost === true;
+}
+
+function openHostSettings(section: SettingsSectionId): void {
+  postMessage({ type: 'openAppSettings', section, scope: 'machine' });
+}
+
+function groupSwitchDescription(view: GroupView): string | undefined {
+  const described = [unavailable(view) && `${ids}-unavailable-${view.group}`, setOnHost(view) && `${ids}-on-host-${view.group}`].filter(Boolean);
+  return described.length > 0 ? described.join(' ') : undefined;
+}
+
 function groupOff(view: GroupView): boolean {
   return view.status !== undefined && !NO_MASTER_GROUPS.has(view.group) && !view.status.enabled;
 }
@@ -101,7 +133,7 @@ function groupStatus(view: GroupView): { label: string; class: string } {
 }
 
 function toolLocked(view: GroupView, tool: ToolStatusInfo): boolean {
-  return !tool.toggleable || groupOff(view);
+  return !tool.toggleable || groupOff(view) || toolsSetOnHost.value;
 }
 
 function setAll(view: GroupView, enabled: boolean): void {
@@ -157,13 +189,42 @@ function canSetAll(view: GroupView, enabled: boolean): boolean {
       </p>
 
       <div
+        v-if="!loading && toolsSetOnHost"
+        class="flex items-center gap-2.5 rounded-10 border border-(--d-border) bg-(--d-panel) px-3 py-2.25 text-11.5 text-(--d-muted)"
+        data-testid="tools-host-note"
+      >
+        <Settings
+          class="size-3.25 flex-none text-(--d-faint)"
+          aria-hidden="true"
+        />
+        <span
+          :id="`${ids}-tools-on-host`"
+          class="min-w-0 flex-1 text-pretty"
+        >{{ t('tools.setOnHost.tools') }}</span>
+        <Button
+          type="button"
+          variant="link"
+          size="sm"
+          class="h-auto flex-none px-0 text-11.5 font-semibold text-(--d-accent-text)"
+          data-testid="tools-open-host-settings"
+          @click="openHostSettings(TOOLS_HOST_SETTINGS_SECTION)"
+        >
+          {{ t('tools.setOnHost.open') }}
+        </Button>
+      </div>
+
+      <div
         v-for="view in groups"
         :key="view.group"
-        class="overflow-hidden rounded-xl border border-(--d-border) bg-(--d-card) transition-opacity duration-200"
-        :class="groupOff(view) && 'opacity-60'"
+        class="overflow-hidden rounded-xl border border-(--d-border) bg-(--d-card)"
         data-testid="tools-group"
+        :data-group="view.group"
       >
-        <div class="flex items-center gap-2.5 px-3 py-2.5">
+        <div
+          class="flex items-center gap-2.5 px-3 py-2.5 transition-opacity duration-200"
+          :class="groupOff(view) && 'opacity-60'"
+          data-testid="tools-group-header"
+        >
           <button
             type="button"
             class="flex min-w-0 flex-1 items-center gap-2.5 text-left"
@@ -205,9 +266,9 @@ function canSetAll(view: GroupView, enabled: boolean): boolean {
           <ToggleSwitch
             v-if="!NO_MASTER_GROUPS.has(view.group) && view.status"
             :checked="view.status.enabled"
-            :disabled="!view.status.available && !view.status.enabled"
+            :disabled="setOnHost(view) || (!view.status.available && !view.status.enabled)"
             :aria-label="t('tools.groupSwitch', { group: t(`tools.group.${view.group}`) })"
-            :aria-describedby="unavailable(view) ? `${ids}-unavailable-${view.group}` : undefined"
+            :aria-describedby="groupSwitchDescription(view)"
             @update:checked="(checked: boolean) => emit('toggleGroup', view.group, checked)"
           />
         </div>
@@ -216,7 +277,8 @@ function canSetAll(view: GroupView, enabled: boolean): boolean {
           <div
             v-if="isOpen(view)"
             :id="`${ids}-group-${view.group}`"
-            class="mx-3 mb-3 overflow-hidden rounded-lg border border-(--d-border) @min-[35rem]/overlay:ml-9"
+            class="mx-3 mb-3 overflow-hidden rounded-lg border border-(--d-border) transition-opacity duration-200 @min-[35rem]/overlay:ml-9"
+            :class="groupOff(view) && 'opacity-60'"
           >
             <div class="flex h-7.5 items-center gap-2 bg-(--d-panel) px-2.5 text-11 text-(--d-faint)">
               <span class="min-w-0 flex-1 truncate">{{ t('overlays.tools.enabledOf', { n: view.tools.filter((tool) => tool.enabled).length, total: view.tools.length }) }}</span>
@@ -287,11 +349,38 @@ function canSetAll(view: GroupView, enabled: boolean): boolean {
                 :checked="tool.enabled"
                 :disabled="toolLocked(view, tool)"
                 :aria-labelledby="`${ids}-tool-${tool.name}`"
+                :aria-describedby="toolsSetOnHost && tool.toggleable ? `${ids}-tools-on-host` : undefined"
                 @update:checked="(checked: boolean) => emit('toggle', tool.name, checked)"
               />
             </div>
           </div>
         </Transition>
+
+        <!-- Outside the dimmed parts: the note's link must keep its contrast while the group is off. -->
+        <div
+          v-if="setOnHost(view) && isSwitchableToolGroup(view.group)"
+          class="flex items-center gap-2.5 border-t border-(--d-border) bg-(--d-panel) px-3 py-2 text-11.5 text-(--d-muted)"
+          data-testid="tools-group-host-note"
+        >
+          <Settings
+            class="size-3.25 flex-none text-(--d-faint)"
+            aria-hidden="true"
+          />
+          <span
+            :id="`${ids}-on-host-${view.group}`"
+            class="min-w-0 flex-1 text-pretty"
+          >{{ t('tools.setOnHost.group') }}</span>
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            class="h-auto flex-none px-0 text-11.5 font-semibold text-(--d-accent-text)"
+            data-testid="tools-open-host-settings"
+            @click="openHostSettings(HOST_SETTINGS_SECTIONS[view.group])"
+          >
+            {{ t('tools.setOnHost.open') }}
+          </Button>
+        </div>
       </div>
     </div>
   </OverlayShell>

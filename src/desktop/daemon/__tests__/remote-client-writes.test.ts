@@ -8,6 +8,9 @@ import { createClaudeAuthHandlers } from '../../../core/chat-panel/message-route
 import { createOpenAIHandlers } from '../../../core/chat-panel/message-router/handlers/openai-handlers';
 import { createProviderAccountHandlers } from '../../../core/chat-panel/message-router/handlers/provider-account-handlers';
 import { createSettingsHandlers } from '../../../core/chat-panel/message-router/handlers/settings-handlers';
+import { createRemoteChatSettingHandlers } from '../../../core/chat-panel/message-router/handlers/remote-chat-setting-handlers';
+import { SettingsManager } from '../../../core/chat-panel/settings-manager';
+import type { PanelHost } from '../../../platform/window-service';
 import type { HandlerContext, HandlerDependencies } from '../../../core/chat-panel/message-router/types';
 import type { HostInstance } from '../../../core/chat-panel/types';
 import { parseContributedConfiguration } from '../../../core/config/contributed-configuration';
@@ -103,6 +106,56 @@ describe('a daemon\'s core cannot write client files or change client credential
     expect(fs.existsSync(machineFile)).toBe(false);
     expect(store.get('damocles.model')).toBe('client-model');
     store.dispose();
+  });
+
+  it('a chat view\'s pin and Tools switches refuse on a daemon\'s core, on its own route and the remote chat route, and nothing reaches the client', async () => {
+    const machineFile = path.join(dir, 'home', '.damocles', 'settings.json');
+    const fake = createFakePlatform();
+    const remote = createFakeRemoteHost();
+    const clientUser = { 'damocles.pinnedHeaderHidden': false, 'damocles.compass.enabled': false, 'damocles.tools.disabled': ['A'] };
+    const settings = new DesktopSettingsStore({
+      userFile: machineFile,
+      contributed: parseContributedConfiguration({ contributes: { configuration: { properties: {
+        'damocles.pinnedHeaderHidden': { default: false, scope: 'application' },
+        'damocles.compass.enabled': { default: false },
+        'damocles.tools.disabled': { default: [] },
+      } } } }),
+      fileWatchers: fake.fileWatchers,
+      projects: fake.workspaceFolders,
+      trust: fake.trust,
+      chatFolders: { folders: () => [], onDidChange: () => ({ dispose: () => undefined }) },
+      notifications: undefined,
+      log: quiet,
+      remote: { fromHostTab: () => false, clientSettings: () => clientUser, onDidChangeClientSettings: () => ({ dispose: () => undefined }) },
+    });
+    const platform = { ...fake, settings, remote: remote.remote };
+    const posted: ExtensionToWebviewMessage[] = [];
+    const postMessage = (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message);
+    const settingsManager = new SettingsManager({ postMessage, platform, folders: () => [] });
+    const deps = { platform, postMessage, settingsManager, getPanels: () => new Map(), subscriptions: [] } as unknown as HandlerDependencies;
+    const host = {} as PanelHost;
+    const ctx = { host, reply: host, panelId: 'panel-1', folder: { fsPath: dir } } as unknown as HandlerContext;
+    const messages = [
+      { type: 'setPinnedHeaderHidden', hidden: true },
+      { type: 'toggleToolGroup', group: 'compass', enabled: true },
+      { type: 'toggleTool', toolName: 'B', enabled: false },
+    ] as WebviewToExtensionMessage[];
+    const chatRoutes = createSettingsHandlers(deps);
+    const remoteChatRoutes = createRemoteChatSettingHandlers(deps);
+    for (const message of messages) {
+      await chatRoutes[message.type]!(message, ctx);
+      await remoteChatRoutes[message.type]!(message, { host });
+    }
+    const keys = ['damocles.pinnedHeaderHidden', 'damocles.compass.enabled', 'damocles.tools.disabled'];
+    expect(posted.filter((message) => message.type === 'settingWriteResult')).toEqual(keys.flatMap((key) => [
+      expect.objectContaining({ key, ok: false }),
+      expect.objectContaining({ key, ok: false }),
+    ]));
+    expect(fs.existsSync(machineFile)).toBe(false);
+    expect(clientUser).toEqual({ 'damocles.pinnedHeaderHidden': false, 'damocles.compass.enabled': false, 'damocles.tools.disabled': ['A'] });
+    for (const relay of [remote.remote.credentials, remote.remote.memoryApply, remote.remote.mcpCall, remote.remote.browserTool]) expect(relay).not.toHaveBeenCalled();
+    settingsManager.dispose();
+    settings.dispose();
   });
 
   it('the broker\'s delete is refused and never reaches the client', async () => {
@@ -219,22 +272,22 @@ describe('a daemon\'s core refuses every sign-in and key change before any pi ca
     const runtime = PiRuntime.get(dir);
     const init = vi.spyOn(runtime, 'init');
     const folder = vi.spyOn(runtime, 'folder');
-    const stateWrite = vi.spyOn(platform.state.global, 'update');
+    const writes = [vi.spyOn(platform.state.global, 'update'), vi.spyOn(platform.settings, 'update')];
     await expect(call(runtime)).rejects.toThrow('Sign-ins change only in the User tab on your computer.');
     expect(init).not.toHaveBeenCalled();
     expect(folder).not.toHaveBeenCalled();
-    expect(stateWrite).not.toHaveBeenCalled();
+    for (const write of writes) expect(write).not.toHaveBeenCalled();
   });
 
-  it('the setProviderPreferApiKey route answers the refusal and writes no state', async () => {
+  it('the setProviderPreferApiKey route answers the refusal and writes no state or setting', async () => {
     const platform = remotePlatform();
-    const stateWrite = vi.spyOn(platform.state.global, 'update');
+    const writes = [vi.spyOn(platform.state.global, 'update'), vi.spyOn(platform.settings, 'update')];
     const posted: ExtensionToWebviewMessage[] = [];
     const { deps, ctx } = handlerDeps(platform, posted);
     const message = { type: 'setProviderPreferApiKey', provider: 'xai', preferApiKey: true, requestId: 'r1' } as WebviewToExtensionMessage;
     await createSettingsHandlers(deps).setProviderPreferApiKey!(message, ctx);
     expect(posted).toEqual([{ type: 'setProviderPreferApiKeyAck', provider: 'xai', requestId: 'r1', ok: false, error: { message: 'Sign-ins change only in the User tab on your computer.' } }]);
-    expect(stateWrite).not.toHaveBeenCalled();
+    for (const write of writes) expect(write).not.toHaveBeenCalled();
     expect(PiRuntime.exists).toBe(false);
   });
 

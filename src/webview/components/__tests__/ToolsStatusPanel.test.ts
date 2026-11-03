@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
@@ -44,6 +44,7 @@ function unavailableNote(): HTMLElement | null {
 beforeEach(() => setActivePinia(createPinia()));
 afterEach(() => {
   while (mounted.length) mounted.pop()?.unmount();
+  vi.restoreAllMocks();
 });
 
 describe('ToolsStatusPanel image group', () => {
@@ -172,5 +173,110 @@ describe('ToolsStatusPanel', () => {
 
     expect(wrapper.text()).toContain(i18n.global.t('overlays.tools.enabledCount', { n: 4, total: 6 }));
     expect(indicator.text()).toBe('4');
+  });
+});
+
+// The page posts through the host API vitest.setup.ts installs.
+const api = (globalThis as unknown as { acquireVsCodeApi: () => { postMessage: (message: unknown) => void } }).acquireVsCodeApi();
+
+const HOST_SNAPSHOT: ToolsSnapshot = {
+  groups: [
+    { group: 'browser', enabled: true, available: true, setOnHost: true },
+    { group: 'team', enabled: false, available: true, setOnHost: true },
+    { group: 'memory', enabled: true, available: true },
+    { group: 'core', enabled: true, available: true },
+  ],
+  tools: [
+    tool('BrowserNavigate', 'browser', true),
+    tool('TeamCreate', 'team', false),
+    tool('Remember', 'memory', true),
+    tool('Recall', 'memory', false),
+    tool('Read', 'core', true, false),
+  ],
+};
+
+function switchNamed(name: string): HTMLElement {
+  const label = i18n.global.t('tools.groupSwitch', { group: i18n.global.t(`tools.group.${name}`) });
+  const el = document.body.querySelector<HTMLElement>(`[role="switch"][aria-label="${label}"]`);
+  if (!el) throw new Error(`no ${name} group switch`);
+  return el;
+}
+
+function describedBy(el: HTMLElement): string {
+  return (el.getAttribute('aria-describedby') ?? '').split(' ').filter(Boolean).map((id) => document.getElementById(id)?.textContent?.trim() ?? '').join(' | ');
+}
+
+const openAppSettingsPosts = (post: { mock: { calls: unknown[][] } }): unknown[] =>
+  post.mock.calls.map(([message]) => message).filter((message) => (message as { type: string }).type === 'openAppSettings');
+
+describe('ToolsStatusPanel switches set on the host', () => {
+  it('disables a group switch the host sets, names why, and its link opens Settings on the host tab at the row section', async () => {
+    const post = vi.spyOn(api, 'postMessage');
+    const wrapper = mountPanel(HOST_SNAPSHOT);
+    await nextTick();
+
+    expect(switchNamed('browser').hasAttribute('disabled')).toBe(true);
+    expect(describedBy(switchNamed('browser'))).toBe(i18n.global.t('tools.setOnHost.group'));
+    expect(switchNamed('team').hasAttribute('disabled')).toBe(true);
+    // a group the host does not set keeps its switch and shows no note
+    expect(switchNamed('memory').hasAttribute('disabled')).toBe(false);
+    expect(group(wrapper, 'memory').find('[data-testid="tools-group-host-note"]').exists()).toBe(false);
+
+    await group(wrapper, 'browser').get('[data-testid="tools-open-host-settings"]').trigger('click');
+    await group(wrapper, 'team').get('[data-testid="tools-open-host-settings"]').trigger('click');
+    expect(openAppSettingsPosts(post)).toEqual([
+      { type: 'openAppSettings', section: 'integrations', scope: 'machine' },
+      { type: 'openAppSettings', section: 'teams', scope: 'machine' },
+    ]);
+
+    switchNamed('browser').click();
+    await nextTick();
+    expect(wrapper.emitted('toggleGroup')).toBeUndefined();
+  });
+
+  it('keeps the host note at full opacity while its group is off', async () => {
+    const wrapper = mountPanel(HOST_SNAPSHOT);
+    await nextTick();
+
+    const team = group(wrapper, 'team');
+    expect(team.get('[data-testid="tools-group-header"]').classes()).toContain('opacity-60');
+    expect(team.get('[data-testid="tools-group-host-note"]').classes()).not.toContain('opacity-60');
+  });
+
+  it('disables every tool switch and Enable all / Disable all when the host sets the tool list, with one note and link', async () => {
+    const post = vi.spyOn(api, 'postMessage');
+    const wrapper = mountPanel({ ...SNAPSHOT, toolsSetOnHost: true });
+    const memory = group(wrapper, 'memory');
+    await memory.get('button[aria-expanded]').trigger('click');
+
+    const switches = memory.findAll('[data-testid="tools-row"] [role="switch"]');
+    expect(switches).toHaveLength(3);
+    for (const row of switches) {
+      expect(row.attributes('disabled')).toBeDefined();
+      expect(describedBy(row.element as HTMLElement)).toBe(i18n.global.t('tools.setOnHost.tools'));
+    }
+    expect(byText(memory, 'overlays.tools.enableAll').attributes('disabled')).toBeDefined();
+    expect(byText(memory, 'overlays.tools.disableAll').attributes('disabled')).toBeDefined();
+    // the master switch is the group's own setting, which the tool list does not hold
+    expect(switchNamed('memory').hasAttribute('disabled')).toBe(false);
+
+    expect(wrapper.findAll('[data-testid="tools-host-note"]')).toHaveLength(1);
+    await wrapper.get('[data-testid="tools-host-note"] [data-testid="tools-open-host-settings"]').trigger('click');
+    expect(openAppSettingsPosts(post)).toEqual([{ type: 'openAppSettings', section: 'integrations', scope: 'machine' }]);
+  });
+
+  it('leaves every switch enabled and shows no note when nothing is set on the host', async () => {
+    const wrapper = mountPanel(SNAPSHOT);
+    const memory = group(wrapper, 'memory');
+    await memory.get('button[aria-expanded]').trigger('click');
+
+    expect(switchNamed('memory').hasAttribute('disabled')).toBe(false);
+    expect(switchNamed('memory').hasAttribute('aria-describedby')).toBe(false);
+    for (const row of memory.findAll('[data-testid="tools-row"] [role="switch"]')) {
+      expect(row.attributes('disabled')).toBeUndefined();
+      expect(row.attributes('aria-describedby')).toBeUndefined();
+    }
+    expect(wrapper.find('[data-testid="tools-host-note"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="tools-group-host-note"]').exists()).toBe(false);
   });
 });

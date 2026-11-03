@@ -2,7 +2,7 @@ import type { ITheme } from '@xterm/xterm';
 import type { ISearchDecorationOptions } from '@xterm/addon-search';
 import { HOST_THEME_STYLE_ID } from '@shared/host-theme';
 
-// xterm's sixteen ANSI slots in order, filled from --d-ansi-0 to --d-ansi-15 (theme.ts, palette-contrast.test.ts).
+// xterm's sixteen ANSI slots in order, filled from --d-ansi-0 to --d-ansi-15 (theme-palettes.ts, palette-contrast.test.ts).
 const ANSI_SLOTS = [
   'black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
   'brightBlack', 'brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite',

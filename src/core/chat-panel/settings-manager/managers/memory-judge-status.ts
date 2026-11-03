@@ -46,7 +46,7 @@ export async function memoryJudgeStatus(platform: Platform): Promise<Extract<Ext
     openrouter: inEnv("openrouter") || openrouterKey || openrouterSignedIn,
     openai: openai.apiKey || openai.chatgpt || inEnv("openai"),
   };
-  const preferApiKey = platform.remote ? clientPrefersApiKey(platform.remote, "openai") : readPreferOpenAIApiKey(platform.state);
+  const preferApiKey = platform.remote ? clientPrefersApiKey(platform.remote, "openai") : readPreferOpenAIApiKey(platform.settings);
   const classifierCredentials = Object.fromEntries(
     CLASSIFIER_MODELS.map(({ provider }) => [provider, classifierCredential(provider, (p) => keyed[p], { status: openai, preferApiKey })]),
   ) as Record<ClassifierProvider, ClassifierCredential>;

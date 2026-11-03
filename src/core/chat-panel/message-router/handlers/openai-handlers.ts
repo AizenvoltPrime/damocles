@@ -121,7 +121,7 @@ function activeOpenAICredential(status: OpenAIAuthStatus, preferApiKey: boolean)
 
 export async function openaiAuthStatusMessage(platform: Platform): Promise<Extract<ExtensionToWebviewMessage, { type: "openaiAuthStatusChanged" }>> {
   const status = await readStatus(platform);
-  const preferApiKey = platform.remote ? clientPrefersApiKey(platform.remote, OPENAI_API_PROVIDER) : readPreferOpenAIApiKey(platform.state);
+  const preferApiKey = platform.remote ? clientPrefersApiKey(platform.remote, OPENAI_API_PROVIDER) : readPreferOpenAIApiKey(platform.settings);
   return {
     type: "openaiAuthStatusChanged",
     status: toSnapshot(status),
@@ -134,7 +134,7 @@ export async function openaiAuthStatusMessage(platform: Platform): Promise<Extra
 /**
  * Webview-driven OpenAI auth (API key secret, Sign in with ChatGPT, legacy Codex sign-out) backed by
  * `PiRuntime`. pi owns the grants in auth.json, the loopback OAuth callback server, PKCE and token
- * refresh; the key lives in the host secret store. The prefer-api-key precedence is a global-state flag.
+ * refresh; the key lives in the host secret store. The prefer-api-key precedence is an application-scope setting.
  */
 export function createOpenAIHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, getPanels, platform } = deps;
@@ -300,6 +300,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
 
     setOpenAIPreferApiKey: async (msg, ctx) => {
       if (msg.type !== "setOpenAIPreferApiKey") return;
+      if (typeof msg.preferApiKey !== "boolean") throw new Error("Malformed preference");
       // each device's flag is its own, which its clientAuth carries
       if (platform.remote) {
         postMessage(ctx.reply, { type: "setOpenAIPreferApiKeyAck", requestId: msg.requestId, ok: false, error: remoteSignInRefusal() });
@@ -315,7 +316,8 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
           type: "setOpenAIPreferApiKeyAck",
           requestId: msg.requestId,
           ok: false,
-          error: l("Failed to apply the preference"),
+          // a settings write that failed says which file and why; pi's apply errors stay generic
+          error: err instanceof LocalizedError ? err.text : l("Failed to apply the preference"),
         });
         return;
       }

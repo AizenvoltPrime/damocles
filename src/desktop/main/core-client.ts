@@ -11,11 +11,12 @@ import type { ChatPlace, ChatReviewScope, ExtensionToWebviewMessage, WebviewToEx
 import type { StoredSession } from '../../shared/types/session';
 import type { BrokerAnswer, GlobalMemorySearchFilters, HeldAuth, HeldMemoryQueue } from '../../shared/remote-user';
 import type { PushedCredential } from '../core-protocol/messages';
-import type { ChatEntry, ChatPermissions, FolderTargetEntry, MainRequests, MentionTargetData, RepositoryCall, ScmCall, ScmMirrorPatch, WorktreeCall } from '../core-protocol';
+import type { ChatEntry, ChatPermissions, FolderTargetEntry, MainRequests, RepositoryCall, ScmCall, ScmMirrorPatch, WorktreeCall } from '../core-protocol';
 import { parsedCallText, SCM_CALL_LOCALIZED_TEXT, WORKTREE_CALL_LOCALIZED_TEXT, type MainEndpoint, type ScmCommitOutcome } from '../core-protocol';
 import type { ReviewSession } from './chat-review-host';
 import type { RelayView } from './core-services/host-services';
 import { finishHold, type FinishHold } from './worktrees/engine';
+import type { AuthorityMentionTarget } from './mention-authority';
 import { chatEntryToShell, folderTargetToShell, mentionToCore, scmEventToShell, scmPatchToShell, storedSessionToShell, type ProjectKeys } from './remote/remote-project-keys';
 
 type Params<M extends keyof MainRequests> = MainRequests[M]['params'];
@@ -202,7 +203,7 @@ export class CoreClient implements Disposable {
     return this.request('chats.restorePages', { viewId, urls, ...(activePage !== undefined ? { activePage } : {}) });
   }
 
-  async mention(panelId: string, target: MentionTargetData): Promise<void> {
+  async mention(panelId: string, target: AuthorityMentionTarget): Promise<void> {
     return this.request('chats.mention', { panelId, target: mentionToCore(this.keys, target) });
   }
 

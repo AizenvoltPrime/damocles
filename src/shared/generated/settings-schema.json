@@ -819,6 +819,51 @@
         "default": "",
         "description": "Reasoning effort for a model chosen as the memory judge. Per job runs merges and reranks as low as the model allows. Ignored on Automatic and for a classifier. Applies from user settings only."
       },
+      "damocles.openai.preferApiKey": {
+        "type": "boolean",
+        "default": false,
+        "description": "Use the OpenAI API key saved in Damocles even while you are signed in with ChatGPT, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
+      "damocles.deepseek.preferApiKey": {
+        "type": "boolean",
+        "default": false,
+        "description": "Use the DeepSeek API key saved in Damocles even while pi holds a DeepSeek sign-in, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
+      "damocles.stepfun.preferApiKey": {
+        "type": "boolean",
+        "default": false,
+        "description": "Use the StepFun API key saved in Damocles even while pi holds a StepFun sign-in, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
+      "damocles.minimax.preferApiKey": {
+        "type": "boolean",
+        "default": false,
+        "description": "Use the MiniMax API key saved in Damocles even while pi holds a MiniMax sign-in, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
+      "damocles.xai.preferApiKey": {
+        "type": "boolean",
+        "default": false,
+        "description": "Use the xAI API key saved in Damocles even while xAI holds a sign-in, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
+      "damocles.kimi-coding.preferApiKey": {
+        "type": "boolean",
+        "default": false,
+        "description": "Use the Kimi Code API key saved in Damocles even while Kimi Code holds a sign-in, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
+      "damocles.meta.preferApiKey": {
+        "type": "boolean",
+        "default": false,
+        "description": "Use the Meta API key saved in Damocles even while Meta holds a sign-in, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
+      "damocles.openrouter.preferApiKey": {
+        "type": "boolean",
+        "default": false,
+        "description": "Use the OpenRouter API key saved in Damocles even while OpenRouter holds a sign-in, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
+      "damocles.typesafe.preferApiKey": {
+        "type": "boolean",
+        "default": false,
+        "description": "Use the TypeSafe API key saved in Damocles even while pi holds a TypeSafe sign-in, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
       "damocles.desktop.theme": {
         "type": "string",
         "enum": [
@@ -2362,6 +2407,60 @@
         "errorMessage": "damocles.memory.judgeEffort applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
         "description": "damocles.memory.judgeEffort applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nReasoning effort for a model chosen as the memory judge. Per job runs merges and reranks as low as the model allows. Ignored on Automatic and for a classifier. Applies from user settings only."
+      },
+      "damocles.openai.preferApiKey": {
+        "not": {},
+        "errorMessage": "damocles.openai.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.openai.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nUse the OpenAI API key saved in Damocles even while you are signed in with ChatGPT, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
+      "damocles.deepseek.preferApiKey": {
+        "not": {},
+        "errorMessage": "damocles.deepseek.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.deepseek.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nUse the DeepSeek API key saved in Damocles even while pi holds a DeepSeek sign-in, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
+      "damocles.stepfun.preferApiKey": {
+        "not": {},
+        "errorMessage": "damocles.stepfun.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.stepfun.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nUse the StepFun API key saved in Damocles even while pi holds a StepFun sign-in, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
+      "damocles.minimax.preferApiKey": {
+        "not": {},
+        "errorMessage": "damocles.minimax.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.minimax.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nUse the MiniMax API key saved in Damocles even while pi holds a MiniMax sign-in, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
+      "damocles.xai.preferApiKey": {
+        "not": {},
+        "errorMessage": "damocles.xai.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.xai.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nUse the xAI API key saved in Damocles even while xAI holds a sign-in, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
+      "damocles.kimi-coding.preferApiKey": {
+        "not": {},
+        "errorMessage": "damocles.kimi-coding.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.kimi-coding.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nUse the Kimi Code API key saved in Damocles even while Kimi Code holds a sign-in, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
+      "damocles.meta.preferApiKey": {
+        "not": {},
+        "errorMessage": "damocles.meta.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.meta.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nUse the Meta API key saved in Damocles even while Meta holds a sign-in, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
+      "damocles.openrouter.preferApiKey": {
+        "not": {},
+        "errorMessage": "damocles.openrouter.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.openrouter.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nUse the OpenRouter API key saved in Damocles even while OpenRouter holds a sign-in, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
+      },
+      "damocles.typesafe.preferApiKey": {
+        "not": {},
+        "errorMessage": "damocles.typesafe.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.typesafe.preferApiKey applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nUse the TypeSafe API key saved in Damocles even while pi holds a TypeSafe sign-in, which otherwise comes first. Each computer keeps its own value; Settings Sync does not carry it. Applies from user settings only."
       },
       "damocles.desktop.theme": {
         "not": {},

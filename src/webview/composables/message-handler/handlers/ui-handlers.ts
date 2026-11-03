@@ -1,6 +1,6 @@
 import { nextTick } from "vue";
 import { toast } from "vue-sonner";
-import { applyLocale, i18n, localeReady } from "@/i18n";
+import { applyLocale, i18n, localeReady, withinLocaleBound } from "@/i18n";
 import { useUsageStatsStore } from "@/stores/useUsageStatsStore";
 import { useBindPlanStore } from "@/stores/useBindPlanStore";
 import type { PermissionMode } from "@shared/types/settings";
@@ -68,7 +68,7 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
     languageChange: (msg) => {
       const ready = localeReady(msg.locale);
       const shown = applyLocale(msg.locale);
-      return ready ? undefined : { holdUntil: shown };
+      return ready ? undefined : { holdUntil: withinLocaleBound(shown) };
     },
 
     showPlanContent: (msg, ctx) => {

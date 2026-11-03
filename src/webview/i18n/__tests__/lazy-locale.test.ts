@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defineComponent, h, nextTick, shallowRef } from 'vue';
 import { flushPromises, mount } from '@vue/test-utils';
 import { inGreek } from '../../../__mocks__/greek-locale';
+import { LOCALE_HOLD_BOUND_MS } from '../../../shared/locale-hold';
 
 // The paths i18n/index.ts imports the Greek catalogs from, resolved from this file.
 const CORE_EL = '../../../../l10n/bundle.l10n.el.json';
@@ -107,6 +108,49 @@ describe('the Greek catalogs', () => {
     expect(document.documentElement.lang).not.toBe('el');
     expect(renderText(TEXT)).toBe('Could not open file: notes.txt');
     expect(i18n.global.t('common.error')).toBe('Error');
+  });
+
+  it('that fail to load are not loaded or logged again until another language is asked for', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    document.documentElement.lang = 'el';
+    const { applyLocale, loadLocale } = await freshI18n({ fail: true });
+
+    await applyLocale('el');
+    await applyLocale('el');
+    expect(await loadLocale('el')).toBe(false);
+    expect(loads.core).toBe(1);
+    expect(logged).toHaveBeenCalledOnce();
+    // the page names the language it shows, not the one its host built it in
+    expect(document.documentElement.lang).toBe('en');
+
+    await applyLocale('en');
+    await applyLocale('el');
+    expect(loads.core).toBe(2);
+  });
+
+  it('that hang let the view mount in the language shown once LOCALE_HOLD_BOUND_MS passed, and the switch still applies when they load', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      document.documentElement.lang = 'el';
+      const { mountInInitialLocale, i18n } = await freshI18n({ gate });
+      const mounted = vi.fn(() => i18n.global.locale.value);
+
+      const ready = mountInInitialLocale(mounted);
+      await vi.advanceTimersByTimeAsync(LOCALE_HOLD_BOUND_MS - 1);
+      expect(mounted).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await ready;
+      expect(mounted).toHaveReturnedWith('en');
+      expect(logged).toHaveBeenCalledOnce();
+
+      release();
+      await vi.waitFor(() => expect(i18n.global.locale.value).toBe('el'));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('switch only to the language asked for last when two switches overlap', async () => {

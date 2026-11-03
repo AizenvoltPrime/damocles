@@ -1,8 +1,8 @@
-import { ref, computed } from 'vue';
+import { ref, computed, shallowRef } from 'vue';
 import { defineStore } from 'pinia';
 import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, CacheWarmingMode, ContextWarningLevel, PanelThinkingState, MemoryJudge, ClassifierProvider, ClassifierCredential, ImageGenerationSettings, ProviderSignInState } from '@shared/types/settings';
 import { renamedRuleNoticeKey, type McpConfigError, type McpRenamedToolRuleNotice, type McpServerStatusInfo, type McpToolExposureScope, type McpWriteErrorInfo } from '@shared/types/mcp';
-import type { ToolsSnapshot } from '@shared/types/tools';
+import type { ToolGroup, ToolsSnapshot } from '@shared/types/tools';
 import type { VoiceConfig, VoiceRuntimeStatus } from '@shared/types/voice';
 import type { WorkspaceFolderInfo } from '@shared/types/workspace-folders';
 import { VSCODE_HOST_CAPABILITIES, type ExtensionToWebviewMessage, type HostCapabilities, type SettingSource } from '@shared/types/messages';
@@ -17,6 +17,20 @@ import { DEFAULT_MODELS, DEFAULT_CACHE_WARMING, DEFAULT_SUBAGENT_CONCURRENCY } f
 import { ACCOUNT_PROVIDER_IDS, SIGN_IN_PROVIDER_IDS, type AccountProviderId, type ProviderCredentialActive, type SignInProviderId } from '@shared/settings-sections';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import type { LocalizedText } from '@shared/localized-text';
+
+/** A Tools switch: a group's master switch or one tool's. */
+export type ToolSwitch = { readonly group: ToolGroup } | { readonly tool: string };
+
+interface ToolSwitchHold {
+  readonly target: ToolSwitch;
+  readonly enabled: boolean;
+}
+
+function withSwitch(snapshot: ToolsSnapshot, { target, enabled }: ToolSwitchHold): ToolsSnapshot {
+  return 'group' in target
+    ? { ...snapshot, groups: snapshot.groups.map((entry) => (entry.group === target.group ? { ...entry, enabled } : entry)) }
+    : { ...snapshot, tools: snapshot.tools.map((entry) => (entry.name === target.tool ? { ...entry, enabled } : entry)) };
+}
 
 /**
  * Placeholder held until the host's first `voiceConfigUpdate`. Mirrors the `damocles.voice.*`
@@ -140,7 +154,13 @@ export const useSettingsStore = defineStore('settings', () => {
   /** The requestId of the MCP write awaiting acknowledgement, or null. */
   const mcpWriteRequestId = ref<string | null>(null);
   const mcpWriteError = ref<McpWriteErrorInfo | null>(null);
-  const toolsSnapshot = ref<ToolsSnapshot>({ groups: [], tools: [] });
+  // the Tools status core last posted, with each saved switch's value until the next one
+  const publishedTools = ref<ToolsSnapshot>({ groups: [], tools: [] });
+  // the Tools switches whose write is in flight, oldest first: a toolStatus meanwhile never shows a switch off its own value
+  const toolSwitchHolds = shallowRef<readonly ToolSwitchHold[]>([]);
+  const toolsSnapshot = computed<ToolsSnapshot>(() => toolSwitchHolds.value.reduce(withSwitch, publishedTools.value));
+  // the pin as core last posted it, which a failed pin write shows again
+  const publishedPinnedHeaderHidden = ref<boolean>(DEFAULT_SETTINGS.pinnedHeaderHidden);
   /** Whether the workspace is trusted — when false, project-scope subagents/skills are disabled (US-022). */
   const projectTrusted = ref<boolean>(true);
   const hostCapabilities = ref<HostCapabilities>({ ...VSCODE_HOST_CAPABILITIES });
@@ -188,6 +208,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function updateSettings(settings: ExtensionSettings, sources?: Record<string, SettingSource>) {
     currentSettings.value = settings;
+    publishedPinnedHeaderHidden.value = settings.pinnedHeaderHidden;
     settingSources.value = sources ?? {};
   }
 
@@ -209,6 +230,10 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function setPinnedHeaderHidden(hidden: boolean) {
     currentSettings.value.pinnedHeaderHidden = hidden;
+  }
+
+  function restorePinnedHeaderHidden() {
+    currentSettings.value.pinnedHeaderHidden = publishedPinnedHeaderHidden.value;
   }
 
   function setPanelThinking(state: PanelThinkingState, model: string) {
@@ -362,7 +387,18 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   function setToolsSnapshot(snapshot: ToolsSnapshot) {
-    toolsSnapshot.value = snapshot;
+    publishedTools.value = snapshot;
+  }
+
+  /** Shows `enabled` on the switch until the returned settle runs with the host's answer; a saved value stays until the next toolStatus. */
+  function holdToolSwitch(target: ToolSwitch, enabled: boolean): (saved: boolean) => void {
+    const hold: ToolSwitchHold = { target, enabled };
+    toolSwitchHolds.value = [...toolSwitchHolds.value, hold];
+    return (saved) => {
+      if (!toolSwitchHolds.value.includes(hold)) return;
+      toolSwitchHolds.value = toolSwitchHolds.value.filter((entry) => entry !== hold);
+      if (saved) publishedTools.value = withSwitch(publishedTools.value, hold);
+    };
   }
 
   function setProjectTrusted(trusted: boolean) {
@@ -529,7 +565,9 @@ export const useSettingsStore = defineStore('settings', () => {
     mcpConfigRevision.value = 0;
     mcpWriteRequestId.value = null;
     mcpWriteError.value = null;
-    toolsSnapshot.value = { groups: [], tools: [] };
+    publishedTools.value = { groups: [], tools: [] };
+    toolSwitchHolds.value = [];
+    publishedPinnedHeaderHidden.value = DEFAULT_SETTINGS.pinnedHeaderHidden;
     budgetWarning.value = null;
     contextWarning.value = null;
     activeModel.value = "";
@@ -596,6 +634,7 @@ export const useSettingsStore = defineStore('settings', () => {
     updateSettings,
     setPermissionMode,
     setPinnedHeaderHidden,
+    restorePinnedHeaderHidden,
     setPanelThinking,
     setDefaultThinking,
     setBudgetLimit,
@@ -619,6 +658,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setMcpEnabled,
     updateMcpServerStatuses,
     setToolsSnapshot,
+    holdToolSwitch,
     setProjectTrusted,
     setBudgetWarning,
     dismissBudgetWarning,

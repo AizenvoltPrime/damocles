@@ -10,6 +10,7 @@ import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useMemoryAuditStore } from '@/stores/useMemoryAuditStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useCopyToClipboard } from '@/composables/useCopyToClipboard';
+import { useMemoryScopeLabel } from '@/composables/useMemoryScopeLabel';
 import { formatMemoryForCopy } from '@/lib/format-memory-copy';
 import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -66,9 +67,7 @@ function searchReason(result: SearchResult): string | undefined {
 function kindLabel(kind: string): string {
   return te(`memory.kind.${kind}`) ? t(`memory.kind.${kind}`) : kind;
 }
-function scopeLabel(scope: string): string {
-  return te(`memory.scope.${scope}`) ? t(`memory.scope.${scope}`) : scope;
-}
+const { scopeLabel, scopeKey } = useMemoryScopeLabel();
 function tierLabel(tier: string): string {
   return te(`memory.scope.${tier}`) ? scopeLabel(tier) : kindLabel(tier);
 }
@@ -82,6 +81,7 @@ onMounted(() => auditStore.requestSummary());
 const activeTab = ref<TabId>('all');
 const newMemoryContent = ref('');
 const newMemoryTier = ref<MemoryCreateTier>('project');
+const addPlaceholder = computed(() => t(scopeKey(`memoryPanel.addPlaceholder.${newMemoryTier.value}`)));
 const newMemoryKind = ref<MemoryCreateKind>('fact');
 const pendingCreate = ref(false);
 // Correlates this panel's in-flight create with its settlement so a chat /remember or a failed
@@ -701,7 +701,7 @@ onUnmounted(() => {
                 aria-hidden="true"
               />
               {{ t('memoryPanel.userProfile') }}
-              <span class="text-11 font-normal text-(--d-faint)">{{ t('memoryPanel.profileHint') }}</span>
+              <span class="text-11 font-normal text-(--d-faint)">{{ t(scopeKey('memoryPanel.profileHint')) }}</span>
               <span class="flex-1" />
               <ChevronRight
                 class="size-3.25 text-(--d-faint) transition-transform duration-200 ease-out"
@@ -1179,13 +1179,13 @@ onUnmounted(() => {
           <label
             for="memory-new"
             class="sr-only"
-          >{{ t(`memoryPanel.addPlaceholder.${newMemoryTier}`) }}</label>
+          >{{ addPlaceholder }}</label>
           <input
             id="memory-new"
             v-model="newMemoryContent"
             type="text"
             class="min-w-0 flex-1 border-0 bg-transparent text-12.5 text-(--d-text) outline-none placeholder:text-(--d-faint)"
-            :placeholder="t(`memoryPanel.addPlaceholder.${newMemoryTier}`)"
+            :placeholder="addPlaceholder"
             data-testid="memory-new"
             @keydown="handleAddKeyDown"
           >

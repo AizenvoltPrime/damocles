@@ -1,4 +1,5 @@
-import type { ToolsSnapshot, ToolGroupStatus, ToolStatusInfo, ToolGroup } from '../../shared/types/tools';
+import { TOOL_GROUP_SETTINGS, TOOLS_DISABLED_SETTING, type ToolsSnapshot, type ToolGroupStatus, type ToolStatusInfo, type ToolGroup, type SwitchableToolGroup } from '../../shared/types/tools';
+import type { SettingsStore } from '../../platform/settings-store';
 import type { ImageAvailability } from './tools/image-tools';
 import type { MemoryService } from '../memory';
 import type { CompassService } from '../compass';
@@ -49,6 +50,8 @@ export interface ToolStatusDeps {
   mcpResourceExposure: 'direct' | 'deferred' | null;
   /** `this.disabledToolSet()`. */
   disabled: Set<string>;
+  /** A daemon's core only: its settings, whose machineValue marks a switch the host's own file holds (setOnHost). */
+  hostSettings?: Pick<SettingsStore, 'inspect'>;
 }
 
 /**
@@ -124,24 +127,27 @@ export function buildToolStatus(deps: ToolStatusDeps): ToolsSnapshot {
     subagents: true,
     team: deps.teamEnabled,
   };
+  const heldOnHost = (key: string): boolean => deps.hostSettings?.inspect(key).machineValue !== undefined;
+  const hostHeld = (group: SwitchableToolGroup): { setOnHost?: true } => (heldOnHost(TOOL_GROUP_SETTINGS[group]) ? { setOnHost: true } : {});
   const groups: ToolGroupStatus[] = [
-    { group: 'memory', enabled: groupEnabled.memory, available: !!deps.memoryService },
-    { group: 'compass', enabled: groupEnabled.compass, available: !!deps.compassService },
-    { group: 'browser', enabled: groupEnabled.browser, available: deps.browserAvailable },
-    { group: 'web', enabled: groupEnabled.web, available: true },
+    { group: 'memory', enabled: groupEnabled.memory, available: !!deps.memoryService, ...hostHeld('memory') },
+    { group: 'compass', enabled: groupEnabled.compass, available: !!deps.compassService, ...hostHeld('compass') },
+    { group: 'browser', enabled: groupEnabled.browser, available: deps.browserAvailable, ...hostHeld('browser') },
+    { group: 'web', enabled: groupEnabled.web, available: true, ...hostHeld('web') },
     {
       group: 'image',
       enabled: groupEnabled.image,
       available: deps.imageAvailability.available,
       ...(deps.imageAvailability.available ? {} : { unavailableReason: deps.imageAvailability.reason }),
+      ...hostHeld('image'),
     },
     { group: 'subagents', enabled: groupEnabled.subagents, available: true },
-    { group: 'team', enabled: groupEnabled.team, available: deps.teamAvailable },
+    { group: 'team', enabled: groupEnabled.team, available: deps.teamAvailable, ...hostHeld('team') },
     { group: 'core', enabled: true, available: true },
   ];
   const tools: ToolStatusInfo[] = FULL_TOOL_CATALOG.map((entry) => ({
     ...entry,
     enabled: entry.toggleable ? groupEnabled[entry.group] && !disabled.has(entry.name) : true,
   }));
-  return { groups, tools };
+  return { groups, tools, ...(heldOnHost(TOOLS_DISABLED_SETTING) ? { toolsSetOnHost: true as const } : {}) };
 }

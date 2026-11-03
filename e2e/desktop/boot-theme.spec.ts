@@ -7,7 +7,7 @@ import { SecondProcess } from './support/second-process';
 import { shellPage } from './support/shell';
 import { chatInput, listedSessionIds, setThemeSource } from './support/ui';
 
-// Rendered --d-bg of each palette in src/desktop/main/theme.ts.
+// Rendered --d-bg of each palette in src/desktop/theme-palettes.ts.
 const DARK_BG = 'rgb(11, 15, 20)';
 const LIGHT_BG = 'rgb(247, 249, 251)';
 

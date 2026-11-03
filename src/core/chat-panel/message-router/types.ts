@@ -46,7 +46,10 @@ export type MessageHandler = (
 
 export type HandlerRegistry = Record<string, MessageHandler>;
 
-/** A remote chat view's message on this computer's core (VOICE_VIEW_MESSAGES) has no chat here: its handler reads only the host it replies to. */
+/**
+ * A remote chat view's message on this computer's core (VOICE_VIEW_MESSAGES, REMOTE_CHAT_USER_SETTING_MESSAGES) has no
+ * chat here: its handler reads only the host it replies to.
+ */
 export type ViewHandlerContext = Pick<HandlerContext, "host">;
 
 export type ViewHandlerRegistry = Record<string, (message: WebviewToExtensionMessage, ctx: ViewHandlerContext) => Promise<void> | void>;

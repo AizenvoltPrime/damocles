@@ -76,7 +76,7 @@ function focusCancel(event: Event): void {
         <div class="flex min-w-0 flex-col gap-1">
           <HostBadge
             :name="request.hostName"
-            :tone="request.hostColor"
+            :color="request.hostColor"
             data-testid="allow-yolo-host"
             class="self-start"
           />

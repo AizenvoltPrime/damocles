@@ -416,6 +416,11 @@ export const ConfigurationTarget = {
   WorkspaceFolder: 3,
 } as const;
 
+export const ExtensionKind = {
+  UI: 1,
+  Workspace: 2,
+} as const;
+
 export const TreeItemCollapsibleState = {
   None: 0,
   Collapsed: 1,

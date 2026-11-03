@@ -5,7 +5,8 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('electron', () => ({ nativeTheme: { shouldUseDarkColors: true, on: vi.fn(), off: vi.fn() } }));
 
 import { DESKTOP_FONT_FILES, DESKTOP_FONT_LICENSES } from '../desktop-fonts';
-import { DARK_THEME, FONT_FACE_CSS, LIGHT_THEME, themeCss } from '../theme';
+import { DARK_THEME, LIGHT_THEME } from '../../theme-palettes';
+import { FONT_FACE_CSS, themeCss } from '../theme';
 
 const SRC = path.resolve(__dirname, '..', '..', '..');
 const REPO = path.resolve(SRC, '..');

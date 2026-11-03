@@ -16,7 +16,7 @@ import StickyUserHeader from './StickyUserHeader.vue';
 import ImageLightbox from './ImageLightbox.vue';
 import { imageBlockToDataUrl } from '@/utils/imageUtils';
 import { useSettingsStore } from '@/stores/useSettingsStore';
-import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { useSettingWrite } from './settings/settings-writes';
 import { remPx } from '@/composables/useRemPx';
 import { storeToRefs } from 'pinia';
 
@@ -24,14 +24,17 @@ const sessionStore = useSessionStore();
 const settingsStore = useSettingsStore();
 const uiStore = useUIStore();
 const { currentSettings } = storeToRefs(settingsStore);
-const { postMessage } = usePlatformBridge();
+const writeSetting = useSettingWrite();
 
 const pinnedHeaderHidden = computed(() => currentSettings.value.pinnedHeaderHidden);
 
 function setPinnedHeaderHidden(hidden: boolean): void {
   if (currentSettings.value.pinnedHeaderHidden === hidden) return;
-  settingsStore.setPinnedHeaderHidden(hidden);
-  postMessage({ type: 'setPinnedHeaderHidden', hidden });
+  writeSetting('damocles.pinnedHeaderHidden', { type: 'setPinnedHeaderHidden', hidden }, {
+    apply: () => settingsStore.setPinnedHeaderHidden(hidden),
+    // core re-posts the settings on every change, so its last post is the current value
+    revert: () => settingsStore.restorePinnedHeaderHidden(),
+  });
 }
 
 const props = defineProps<{

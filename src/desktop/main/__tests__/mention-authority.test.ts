@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { crossedAuthority, crossedByViewMessage, ownRemoteDrop } from '../mention-authority';
+import { crossedAuthority, crossedByMention, crossedByViewMessage, ownRemoteDrop } from '../mention-authority';
 
 describe('crossedAuthority', () => {
   it('names the other authority of a project file, and nothing for the chat\'s own', () => {
@@ -8,6 +8,17 @@ describe('crossedAuthority', () => {
     expect(crossedAuthority('ssh+abc', 'loopback|/srv/app')).toBe('loopback');
     expect(crossedAuthority('loopback', 'loopback|c:\\work\\app')).toBeUndefined();
     expect(crossedAuthority('local', 'c:\\work\\app')).toBeUndefined();
+  });
+});
+
+describe('crossedByMention', () => {
+  it('names the authority a file outside every project is on when the chat runs elsewhere, as for a project file', () => {
+    expect(crossedByMention('loopback', { path: '/home/me/.damocles/plans/a.md', authority: 'loopback' })).toBeUndefined();
+    expect(crossedByMention('local', { path: '/home/me/.damocles/plans/a.md', authority: 'loopback' })).toBe('loopback');
+    expect(crossedByMention('loopback', { path: 'C:\\Users\\me\\notes.md', authority: 'local' })).toBe('local');
+    expect(crossedByMention('local', { path: 'C:\\Users\\me\\notes.md', authority: 'local' })).toBeUndefined();
+    expect(crossedByMention('ssh+abc', { projectKey: 'loopback|/srv/app', relativePath: 'a.ts' })).toBe('loopback');
+    expect(crossedByMention('loopback', { projectKey: 'loopback|/srv/app', relativePath: 'a.ts' })).toBeUndefined();
   });
 });
 

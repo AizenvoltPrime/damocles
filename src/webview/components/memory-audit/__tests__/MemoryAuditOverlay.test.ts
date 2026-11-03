@@ -11,9 +11,10 @@ import { useMemoryStore } from '@/stores/useMemoryStore';
 import { useContextInjectionStore } from '@/stores/useContextInjectionStore';
 import { useConsolidationStore } from '@/stores/useConsolidationStore';
 import { useUIStore } from '@/stores/useUIStore';
+import { useSettingsStore } from '@/stores/useSettingsStore';
 import { createMemoryHandlers } from '@/composables/message-handler/handlers/memory-handlers';
 import type { HandlerContext } from '@/composables/message-handler/types';
-import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@shared/types/messages';
+import { VSCODE_HOST_CAPABILITIES, type ExtensionToWebviewMessage, type WebviewToExtensionMessage } from '@shared/types/messages';
 import {
   MEMORY_AUDIT_BANNER_MIN_ELIGIBLE,
   QUALITY_AUDIT_FORGET_REASON,
@@ -301,6 +302,17 @@ describe('review', () => {
     expect(prof.get('[data-profile-after="static"]').text()).toBe('new static');
     expect(prof.get('[data-profile-after="dynamic"]').text()).toBe('(empty)');
     expect(row(wrapper, 'p-f1').find('[data-audit-profile-diff]').exists()).toBe(false);
+  });
+
+  it('names the server on the move-to-global group where the host keeps global memory there', async () => {
+    useSettingsStore().hostCapabilities = { ...VSCODE_HOST_CAPABILITIES, globalMemoryOnServer: true };
+    const wrapper = await openOverlay(reviewState());
+
+    const group = wrapper.get('[data-audit-group="rescope_global"]');
+    expect(group.get('h3').text()).toBe('Move to global (this server)');
+    expect(group.get('[data-audit-group-decision]').attributes('aria-label')).toBe('Decision for every proposal in Move to global (this server)');
+    expect(row(wrapper, 'p-gl').get('[data-audit-change]').text()).toContain('Global (this server)');
+    expect(wrapper.get('[data-audit-group="forget"] h3').text()).not.toContain('this server');
   });
 
   it('starts every pending proposal undecided, and apply stays off until something is decided', async () => {

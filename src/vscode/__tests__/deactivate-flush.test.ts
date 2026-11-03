@@ -19,7 +19,7 @@ vi.mock('../platform', () => ({ createVsCodePlatform: () => createFakePlatform()
 vi.mock('../panels/sidebar-view-provider', () => ({ SidebarViewProvider: class {} }));
 vi.mock('../voice/status-bar', () => ({ createVoiceStatusBarItem: () => ({ dispose: () => undefined }) }));
 vi.mock('../../core/voice/auto-disable', () => ({ setupAutoDisable: () => undefined }));
-vi.mock('../../core/config/legacy-settings-migrations', () => ({ runLegacySettingsMigrations: async () => undefined }));
+vi.mock('../../core/config/legacy-settings-migrations', () => ({ runLegacySettingsMigrations: async () => undefined, movePreferApiKeyFlagsToSettings: async () => undefined }));
 vi.mock('vscode', async (importOriginal) => {
   const actual = await importOriginal<typeof import('vscode')>();
   return {

@@ -5,10 +5,10 @@ import type { CoreEndpoint } from '../../core-protocol';
 import { Listeners } from './listeners';
 
 /**
- * Proxies on this computer's core for remote chats' views: the voice service records, transcribes and speaks here and
- * posts to such a proxy, whose posts main delivers to that remote view after its own checks; the browser opens the chat's
- * pages in its authority's context with the proxy as their owner, so they show as tabs of the remote chat and close with it.
- * A proxy has no page, no session and no panel of this core.
+ * Proxies on this computer's core for remote chats' views: the voice service records, transcribes and speaks here, and the
+ * view's user-setting writes land here; both post to such a proxy, whose posts main delivers to that remote view after its
+ * own checks; the browser opens the chat's pages in its authority's context with the proxy as their owner, so they show as
+ * tabs of the remote chat and close with it. A proxy has no page, no session and no panel of this core.
  */
 export interface ForeignViews extends Disposable {
   // idempotent for a view of the same authority; a view id another authority holds is refused

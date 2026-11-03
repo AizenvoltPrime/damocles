@@ -169,7 +169,7 @@ function open(s: UsageStatsTopSession): void {
               <HostBadge
                 v-if="host"
                 :name="host.name"
-                :tone="host.color"
+                :color="host.color"
                 :title="t('usageStats.onHost', { host: host.name })"
                 class="min-w-10 shrink"
                 data-stats-host

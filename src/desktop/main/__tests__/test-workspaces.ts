@@ -110,6 +110,7 @@ export function testRemote(options: TestWorkspaceOptions & { readonly authorityK
     notConnected: () => new NotConnectedError(`${authorityKey} is not connected.`),
     watchReady: true,
     transfers: false,
+    outside: true,
     openStream: () => { throw new Error('no transfer streams in this suite'); },
     log,
   });

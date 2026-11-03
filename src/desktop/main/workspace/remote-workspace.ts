@@ -37,6 +37,20 @@ export class TransfersUnsupportedError extends Error {
   }
 }
 
+// files.resolveOutside, files.readOutside and files.writeOutside
+export const OUTSIDE_FILES_FEATURE = 'files.outside';
+
+/** A method for a file outside every project of a host whose daemon does not list OUTSIDE_FILES_FEATURE; nothing was sent. */
+export class OutsideFilesUnsupportedError extends Error {
+  override readonly name = 'OutsideFilesUnsupportedError';
+  readonly authorityKey: string;
+
+  constructor(authorityKey: string) {
+    super(`The Damocles server on ${authorityKey} does not open files outside its projects`);
+    this.authorityKey = authorityKey;
+  }
+}
+
 export interface RemoteWorkspaceDeps {
   // the workspace channel's endpoint, whose results and events its tables parse before they arrive here
   readonly endpoint: Endpoint<ClientToWorkspace, WorkspaceToClient>;
@@ -51,6 +65,8 @@ export interface RemoteWorkspaceDeps {
   readonly watchReady: boolean;
   // the daemon lists TRANSFER_FEATURES; without it every transfer method throws TransfersUnsupportedError before sending
   readonly transfers: boolean;
+  // the daemon lists OUTSIDE_FILES_FEATURE; without it every outside method throws OutsideFilesUnsupportedError before sending
+  readonly outside: boolean;
   // a stream for a transfer's bytes, held until its reader subscribes
   readonly openStream: () => StreamChannel;
   readonly log: (line: string) => void;
@@ -99,6 +115,10 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
   const requireTransfers = (): void => {
     if (closed) throw deps.notConnected();
     if (!deps.transfers) throw new TransfersUnsupportedError(authorityKey);
+  };
+  const requireOutside = (): void => {
+    if (closed) throw deps.notConnected();
+    if (!deps.outside) throw new OutsideFilesUnsupportedError(authorityKey);
   };
   const transferStream = (): StreamChannel => {
     requireTransfers();
@@ -160,6 +180,19 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
         return { path, read: read.kind === 'outside' ? read : fromWireBytes(read, EDITOR_MAX_DOCUMENT_BYTES) };
       },
       writeHostSettings: (bytes) => call('files.writeHostSettings', { bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength) }),
+      resolveOutside: async (target, rule) => {
+        requireOutside();
+        return call('files.resolveOutside', { target, ...rule });
+      },
+      readOutside: async (filePath, rule) => {
+        requireOutside();
+        const read = await call('files.readOutside', { path: filePath, ...rule });
+        return read.kind === 'outside' ? read : fromWireBytes(read, EDITOR_MAX_DOCUMENT_BYTES);
+      },
+      writeOutside: async (filePath, bytes, rule) => {
+        requireOutside();
+        return call('files.writeOutside', { path: filePath, bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), ...rule });
+      },
       createEntry: async (project, relativeDir, name, kind) => call('files.createEntry', { project: toWire(project), relativeDir, name, kind }),
       renameEntry: async (project, relativePath, newName) => call('files.renameEntry', { project: toWire(project), relativePath, newName }),
       deleteEntry: async (project, relativePath, confirmed) => call('files.deleteEntry', { project: toWire(project), relativePath, confirmed: toWireIdentity(confirmed) }),

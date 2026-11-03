@@ -7,7 +7,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { childEnv } from '../../../core/pi-session/checkpoints/exec';
 import { isCredentialValue, MAX_CREDENTIAL_PASSWORD_CHARS, MAX_CREDENTIAL_USERNAME_CHARS, type GitCredentialAnswer, type GitCredentialFields } from '../../../shared/git-credential';
-import type { HostTone } from '../../../shared/host-tones';
+import type { HostColor } from '../../../shared/host-colors';
 import type { GitCredentialConsent, GitCredentialConsentChoice } from '../../preload/overlay-channels';
 
 // a DNS name or IPv4 address and an optional port, compared lowercased; anything else is refused
@@ -22,7 +22,7 @@ export interface GitCredentialRequest {
 
 export interface CredentialTargetHost {
   readonly name: string;
-  readonly color?: HostTone;
+  readonly color?: HostColor;
   readonly alwaysCredentialHosts: readonly string[];
 }
 

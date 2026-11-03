@@ -3,7 +3,7 @@
 
 import type { FileIconTheme } from '../local-services/desktop-configuration';
 import type { ChatConnection } from '../../shared/host-connection';
-import type { HostTone } from '../../shared/host-tones';
+import type { HostColor } from '../../shared/host-colors';
 import type { HostAttention, HostUpdate } from './shell-channels';
 
 export type ThemeKind = 'dark' | 'light';
@@ -21,7 +21,7 @@ export interface PanelTheme {
 export interface PanelHostLabel {
   readonly hostId: string;
   readonly name: string;
-  readonly color?: HostTone;
+  readonly color?: HostColor;
   // this computer's name (os.hostname()), which names the user's own sign-in beside the host's environment
   readonly computer: string;
   // the host is offline or waits for the user to sign in (hostAttention), which the page's banner under its header names
@@ -40,7 +40,7 @@ export const PANEL_HOST_ACTIONS: readonly PanelHostAction[] = ['reconnect', 'sig
 export type { ChatConnection as PanelConnection, HeldMessage as PanelQueuedMessage, HeldMessageAction as PanelQueueAction } from '../../shared/host-connection';
 
 // Every saved host's name and color by host id, as this computer's host store keeps them.
-export type PanelHostNames = Readonly<Record<string, { readonly name: string; readonly color?: HostTone }>>;
+export type PanelHostNames = Readonly<Record<string, { readonly name: string; readonly color?: HostColor }>>;
 
 // Answer to the synchronous init request the preload sends once at load.
 export interface PanelInit {

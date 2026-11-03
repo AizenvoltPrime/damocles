@@ -152,11 +152,11 @@ async function ask(deps: CloseRemoteDeps, hosts: readonly HostRuns[], refresh: K
   });
   const hostChanges = deps.onHostChanged((hostId) => {
     const fields = deps.hostFields(hostId);
-    const same = (row: CloseRemoteRow): boolean => row.hostLabel === fields.hostLabel && row.hostTone === fields.hostTone && row.lingerWarning === fields.lingerWarning;
+    const same = (row: CloseRemoteRow): boolean => row.hostLabel === fields.hostLabel && row.hostColor === fields.hostColor && row.lingerWarning === fields.lingerWarning;
     if (rows.every((row) => row.hostId !== hostId || same(row))) return;
     changed(rows.map((row) => {
       if (row.hostId !== hostId) return row;
-      const { hostTone: _tone, lingerWarning: _warning, ...rest } = row;
+      const { hostColor: _color, lingerWarning: _warning, ...rest } = row;
       return { ...rest, ...fields };
     }));
   });

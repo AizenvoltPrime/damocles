@@ -1,5 +1,5 @@
 import type { Component } from 'vue';
-import type { HostTone } from '@shared/host-tones';
+import type { HostColor } from '@shared/host-colors';
 import {
   ChartLine,
   Check,
@@ -70,7 +70,7 @@ export interface NotificationView {
   // a remote chat's or core's host, which main named from its host store; undefined for this computer
   readonly host: string | undefined;
   // the host's safety color; undefined: none, the badge stays muted
-  readonly hostTone: HostTone | undefined;
+  readonly hostColor: HostColor | undefined;
   // empty for a notice without one, whose message is the whole text
   readonly title: string;
   readonly lead: string;
@@ -116,7 +116,7 @@ export function notificationView(body: NotificationBody, t: Translate, locale: s
       project: undefined,
       where: t('toasts.link.where'),
       host: body.host,
-      hostTone: body.hostTone,
+      hostColor: body.hostColor,
       title: t('toasts.link.title', { host: body.host }),
       lead: '',
       message: body.url,
@@ -134,7 +134,7 @@ export function notificationView(body: NotificationBody, t: Translate, locale: s
       project: undefined,
       where: t(`toasts.${body.severity}`),
       host: body.host,
-      hostTone: body.hostTone,
+      hostColor: body.hostColor,
       title: body.title ?? '',
       lead: '',
       message: body.message,
@@ -158,7 +158,7 @@ export function notificationView(body: NotificationBody, t: Translate, locale: s
       project: undefined,
       where: t('notifications.usage'),
       host: undefined,
-      hostTone: undefined,
+      hostColor: undefined,
       title: body.planName ? `${body.planName} · ${body.windowLabel}` : body.windowLabel || t('notifications.usage'),
       lead: t('notifications.kinds.limit.lead'),
       message: body.resetsAt === undefined ? used : `${used} ${resets('limit', body.resetsAt)}`,
@@ -202,5 +202,5 @@ export function notificationView(body: NotificationBody, t: Translate, locale: s
         return text(t('notifications.kinds.limit.lead'), t('notifications.kinds.limit.budget'));
     }
   })();
-  return { ...base, project: chat.project, where: chat.where, host: body.chat.host, hostTone: body.chat.hostTone, title: chat.title, ...parts };
+  return { ...base, project: chat.project, where: chat.where, host: body.chat.host, hostColor: body.chat.hostColor, title: chat.title, ...parts };
 }

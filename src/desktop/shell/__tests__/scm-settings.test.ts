@@ -35,6 +35,7 @@ const pressed = (key: string): string[] => [...row(key).querySelectorAll('button
 const options = (key: string): string[] => [...row(key).querySelectorAll('button[aria-pressed]')].map((button) => button.textContent!.trim());
 const switchOf = (key: string): HTMLElement => row(key).querySelector<HTMLElement>('[role="switch"]')!;
 
+
 beforeEach(() => {
   setActivePinia(createPinia());
   shellI18n.global.locale.value = 'en';

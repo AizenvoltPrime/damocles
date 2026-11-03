@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import type { ShellProject, ShellState } from '../../preload/shell-channels';
+import { canonicalHostColor, type HostColor } from '@shared/host-colors';
 import TitleBar from '../components/TitleBar.vue';
 import ProjectsSection from '../components/ProjectsSection.vue';
 import GitConsentDialog from '../overlay/components/GitConsentDialog.vue';
@@ -28,7 +29,7 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-const remote = (name: string, color?: 'danger' | 'info'): ShellProject => ({
+const remote = (name: string, color?: HostColor): ShellProject => ({
   key: 'ssh+h1|/srv/api',
   name: 'api',
   fsPath: '/srv/api',
@@ -56,19 +57,49 @@ describe('title bar safety stripe', () => {
     expect(wrapper.get('[data-testid="title-bar-host-name"]').text()).toBe('prod-eu');
   });
 
-  it('fades the old stripe and chip out as the new ones fade in when the selection or the color changes', async () => {
+  it('paints a custom color on the stripe and the chip through d-tone-custom and the color channels', async () => {
+    const wrapper = track(mount(TitleBar, { props: { api: fakeShellApi(), state: onRemote(remote('prod-1', canonicalHostColor('#00808099')!)) }, global: { plugins: [shellI18n] } }));
+    const stripe = wrapper.get<HTMLElement>('[data-testid="title-bar-stripe"]');
+    const chip = wrapper.get<HTMLElement>('[data-testid="title-bar-host"]');
+    const name = wrapper.get<HTMLElement>('[data-testid="title-bar-host-name"]');
+    expect([stripe.attributes('data-tone'), chip.attributes('data-tone')]).toEqual(['custom', 'custom']);
+    expect(stripe.classes()).toContain('d-tone-custom');
+    expect(name.classes()).toEqual(expect.arrayContaining(['d-tone-custom', 'bg-(--tone)', 'text-(--tone-on)']));
+    for (const painted of [stripe, name]) {
+      expect(painted.element.style.getPropertyValue('--host-rgb')).toBe('0 128 128');
+      expect(painted.element.style.getPropertyValue('--host-alpha')).toBe('0.6');
+    }
+  });
+
+  it('eases a recolor in place, and fades the old stripe and chip out as the new ones fade in when the selection changes', async () => {
     const wrapper = track(mount(TitleBar, { props: { api: fakeShellApi(), state: onRemote(remote('prod-1', 'danger')) }, global: { plugins: [shellI18n], stubs: { transition: false } }, attachTo: document.body }));
     const stripes = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('[data-testid="title-bar-stripe"]')];
     const chips = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('[data-testid="title-bar-host"]')];
+    const phase = (element: HTMLElement): string => (element.className.includes('o-fade-out') ? 'out' : element.className.includes('d-fade') ? 'in' : 'rest');
     const first = stripes()[0]!;
+    const chip = chips()[0]!;
     expect(first.className).toContain('animate-[d-fade_.3s_var(--ease-out)]');
-    await wrapper.setProps({ state: onRemote(remote('prod-1', 'info')) });
-    expect(stripes().map((stripe) => [stripe.dataset.tone, stripe.className.includes('o-fade-out') ? 'out' : stripe.className.includes('d-fade') ? 'in' : 'rest'])).toEqual([['danger', 'out'], ['info', 'in']]);
+    expect(first.className).toContain('transition-[background-color] duration-300 ease-out');
+    expect(chip.querySelector('[data-testid="title-bar-host-name"]')!.className).toContain('transition-[background-color,color] duration-300 ease-out');
+    await wrapper.setProps({ state: onRemote(remote('prod-1', canonicalHostColor('#00808099')!)) });
+    expect(stripes()).toEqual([first]);
+    expect(chips()).toEqual([chip]);
+    expect([first.dataset.tone, chip.dataset.tone]).toEqual(['custom', 'custom']);
+    // another host's project fades the old stripe and chip out
+    const lab: ShellProject = { ...remote('lab', 'info'), key: 'ssh+h2|/srv/api', authority: { kind: 'ssh', key: 'ssh+h2', hostId: 'h2', name: 'lab', color: 'info' } };
+    await wrapper.setProps({ state: onRemote(lab) });
+    expect(stripes().map((stripe) => [stripe.dataset.tone, phase(stripe)])).toEqual([['custom', 'out'], ['info', 'in']]);
     await vi.waitFor(() => expect(stripes()).toHaveLength(1));
-    expect(stripes()[0]).not.toBe(first);
     expect(stripes()[0]!.dataset.tone).toBe('info');
-    await vi.waitFor(() => expect(chips().map((chip) => chip.dataset.tone)).toEqual(['info']));
+    await vi.waitFor(() => expect(chips().map((element) => element.dataset.tone)).toEqual(['info']));
+    // a color added to an uncolored host changes the chip's size, so it fades
+    const filledChip = chips()[0]!;
+    await wrapper.setProps({ state: onRemote({ ...lab, authority: { kind: 'ssh', key: 'ssh+h2', hostId: 'h2', name: 'lab' } }) });
+    expect(phase(filledChip)).toBe('out');
+    await vi.waitFor(() => expect(chips().map((element) => element.dataset.tone)).toEqual([undefined]));
     // selecting a project with no colored host fades both out rather than dropping them
+    await wrapper.setProps({ state: onRemote(lab) });
+    await vi.waitFor(() => expect(stripes()).toHaveLength(1));
     await wrapper.setProps({ state: STATE });
     expect(stripes()[0]!.className).toContain('animate-[o-fade-out_.3s_ease-in_both]');
     expect(chips()[0]!.className).toContain('animate-[o-fade-out_.14s_ease-in_both]');

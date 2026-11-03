@@ -96,6 +96,7 @@ import {
   type SearchStartRequest,
   type SearchStartResult,
   type ShellGridSizes,
+  type ShellLocale,
   type ShellSidebarLayout,
   type ShellState,
   type WindowControl,
@@ -1075,12 +1076,12 @@ export function reportFailure<A extends unknown[], R>(action: (...args: A) => Pr
 // Monaco's editor, JSON and TypeScript module workers; a worker carries no nonce, and its script response has its own CSP.
 export const SHELL_WORKER_SRC: string = `${APP_ORIGIN}/desktop-shell/assets/`;
 
-/** The shell page main serves at SHELL_PAGE_URL: the built shell app under a fresh script nonce and the current theme. */
-export function shellHtml(theme: PanelTheme): string {
+/** The shell page main serves at SHELL_PAGE_URL: the built shell app under a fresh script nonce, the current theme and the UI language. */
+export function shellHtml(theme: PanelTheme, lang: ShellLocale): string {
   const nonce = randomBytes(16).toString('base64');
   const assets = `${APP_ORIGIN}/desktop-shell/assets`;
   return `<!DOCTYPE html>
-<html lang="en"${theme.reducedMotion ? ' data-reduced-motion' : ''} data-file-icon-theme="${theme.fileIconTheme}">
+<html lang="${lang}"${theme.reducedMotion ? ' data-reduced-motion' : ''} data-file-icon-theme="${theme.fileIconTheme}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">

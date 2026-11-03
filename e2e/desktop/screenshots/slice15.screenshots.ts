@@ -19,7 +19,7 @@ test.setTimeout(600_000);
 const VARIANTS = [...THEMES.map((theme) => [theme, false] as const), ['reduced', true] as const];
 
 function linkToast(id: string, url: string): OverlayToast {
-  const body: NotificationBody = { kind: 'link', host: 'prod-1', hostTone: 'danger', url };
+  const body: NotificationBody = { kind: 'link', host: 'prod-1', hostColor: 'danger', url };
   return { id, at: Date.now(), lifeMs: 0, remainingMs: 0, body, sticky: true };
 }
 

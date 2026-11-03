@@ -14,8 +14,7 @@ import { createVoiceStatusBarItem } from "./voice/status-bar";
 import { setupAutoDisable } from "../core/voice/auto-disable";
 import { PiRuntime } from "../core/pi-session/pi-runtime";
 import { setMcpSecretStorage } from "../core/pi-session/mcp/mcp-auth";
-import { runLegacySettingsMigrations } from "../core/config/legacy-settings-migrations";
-import { movePreferApiKeyToGlobalState } from "../core/pi-session/openai-auth";
+import { movePreferApiKeyFlagsToSettings, runLegacySettingsMigrations } from "../core/config/legacy-settings-migrations";
 import { deleteRetiredSecrets } from "../core/config/retired-secrets";
 import { providerKeyStored } from "../core/pi-session/custom-providers";
 import { PROVIDER_SECRET_KEYS } from "../core/pi-session/explore-providers";
@@ -57,7 +56,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   await runLegacySettingsMigrations(platform.settings, () => providerKeyStored((key) => platform.secrets.get(key), PROVIDER_SECRET_KEYS.stepfun));
-  await movePreferApiKeyToGlobalState(platform.state);
+  const preferMoveNotice = await movePreferApiKeyFlagsToSettings(platform.state, platform.settings);
+  if (preferMoveNotice) void platform.notifications.warn(preferMoveNotice);
   // SecretStorage can wedge indefinitely, and nothing below needs the deletion done.
   void deleteRetiredSecrets(platform.secrets);
   // Back MCP OAuth credential storage with the OS keychain; set before any MCP server connects.
@@ -67,16 +67,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     subscriptions: context.subscriptions,
     createCompassViews: (options) => new CompassViews(platform, options),
   }));
-
-  // Refresh the pi web-tools active set live when the setting changes — no window reload (only when the
-  // pi runtime already exists; otherwise its own init reads the current setting on first use).
-  context.subscriptions.push(
-    platform.settings.onDidChange("damocles.pi.webSearch.enabled", () => {
-      if (PiRuntime.exists) {
-        void PiRuntime.get().refreshWebSearch();
-      }
-    }),
-  );
 
   const voiceService = chatPanelProvider.getVoiceService();
   const voiceStatusBar = createVoiceStatusBarItem(context, voiceService, platform.settings);

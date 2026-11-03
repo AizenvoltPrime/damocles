@@ -6,7 +6,7 @@ import { NotConnectedError } from '../../workspace/workspaces';
 
 const connect = vi.hoisted(() => vi.fn());
 vi.mock('../connection', () => ({ connect }));
-vi.mock('../../workspace/remote-workspace', () => ({ createRemoteWorkspace: () => ({}), WATCH_READY_FEATURE: 'files.watchReady', carriesTransfers: () => true }));
+vi.mock('../../workspace/remote-workspace', () => ({ createRemoteWorkspace: () => ({}), WATCH_READY_FEATURE: 'files.watchReady', OUTSIDE_FILES_FEATURE: 'files.outside', carriesTransfers: () => true }));
 
 // A connection whose close fires its listeners once; closedAlready: it closed before anyone listened.
 function connection(closedAlready?: string) {

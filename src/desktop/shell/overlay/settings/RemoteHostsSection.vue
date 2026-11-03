@@ -1,17 +1,23 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, onScopeDispose, ref, shallowRef, watch } from 'vue';
+import { computed, inject, nextTick, onScopeDispose, ref, shallowRef, useId, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Ban, Check, FileText } from 'lucide-vue-next';
+import type { FocusOutsideEvent, PointerDownOutsideEvent } from 'reka-ui';
+import { Ban, Check, FileText, Pipette } from 'lucide-vue-next';
 import SettingsRow from '@/components/settings/SettingsRow.vue';
 import SettingButton from '@/components/settings/controls/SettingButton.vue';
 import SettingInput from '@/components/settings/controls/SettingInput.vue';
 import SettingSelect, { type SelectOption } from '@/components/settings/controls/SettingSelect.vue';
 import SettingSwitch from '@/components/settings/controls/SettingSwitch.vue';
-import { HOST_TONES, type HostTone } from '@shared/host-tones';
+import { ColorPicker } from '@/components/ui/color-picker';
+import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
+import { canonicalHexColor, hexColorParts, type HexColor } from '@shared/hex-color';
+import { HOST_TONES, canonicalHostColor, hostColorLook, isHostTone, type CustomHostColor, type HostTone } from '@shared/host-colors';
 import { PERMISSION_MODES, type PermissionMode } from '@shared/types/settings';
 import { DESKTOP_CONFIGURATION, REMOTE_TERMINAL_IDLE_DAYS_SETTING } from '../../../local-services/desktop-configuration';
 import type { HostSettingChange, NameCheck, RemoteHostEntry } from '../../../preload/overlay-channels';
 import type { ShellPlatform } from '../../../preload/shell-channels';
+import { THEME_PALETTES } from '../../../theme-palettes';
+import { hostAppearance } from '../../host-appearance';
 import { answerOf, ran } from '../popup-answer';
 import HostActions from '../components/HostActions.vue';
 import HostNameField from '../components/HostNameField.vue';
@@ -61,11 +67,24 @@ function shown<K extends keyof RemoteHostEntry['settings']>(entry: RemoteHostEnt
   return (value === null ? undefined : value) as RemoteHostEntry['settings'][K];
 }
 
-async function set(entry: RemoteHostEntry, change: HostSettingChange): Promise<void> {
-  const { hostId } = entry;
-  failedKey.value = undefined;
-  writing.set(hostId, (writing.get(hostId) ?? 0) + 1);
+function show(hostId: string, change: HostSettingChange): void {
   pending.value = { ...pending.value, [hostId]: { ...pending.value[hostId], [change.key]: change.value } };
+}
+
+function hold(hostId: string): void {
+  writing.set(hostId, (writing.get(hostId) ?? 0) + 1);
+}
+
+function letGo(hostId: string): void {
+  const left = (writing.get(hostId) ?? 1) - 1;
+  if (left === 0) writing.delete(hostId);
+  else writing.set(hostId, left);
+}
+
+async function save(hostId: string, change: HostSettingChange): Promise<void> {
+  failedKey.value = undefined;
+  hold(hostId);
+  show(hostId, change);
   try {
     await ran(api.setHostSetting(hostId, change));
   } catch {
@@ -73,11 +92,33 @@ async function set(entry: RemoteHostEntry, change: HostSettingChange): Promise<v
     pending.value = { ...pending.value, [hostId]: rest };
     failedKey.value = { hostId, key: change.key };
   } finally {
-    const left = (writing.get(hostId) ?? 1) - 1;
-    if (left === 0) writing.delete(hostId);
-    else writing.set(hostId, left);
+    letGo(hostId);
   }
 }
+
+const set = (entry: RemoteHostEntry, change: HostSettingChange): Promise<void> => save(entry.hostId, change);
+
+// The picker's commits show at once and reach main once they pause, so a held key or a run of drags writes the file once.
+const COLOR_WRITE_DELAY_MS = 300;
+let heldColor: { readonly hostId: string; readonly change: HostSettingChange; readonly timer: ReturnType<typeof setTimeout> } | undefined;
+
+function holdColor(hostId: string, change: HostSettingChange): void {
+  if (heldColor && heldColor.hostId !== hostId) flushColor();
+  if (heldColor) clearTimeout(heldColor.timer);
+  else hold(hostId);
+  show(hostId, change);
+  heldColor = { hostId, change, timer: setTimeout(flushColor, COLOR_WRITE_DELAY_MS) };
+}
+
+function flushColor(): void {
+  const held = heldColor;
+  if (!held) return;
+  heldColor = undefined;
+  clearTimeout(held.timer);
+  void save(held.hostId, held.change);
+  letGo(held.hostId);
+}
+onScopeDispose(flushColor);
 
 function failedOn(entry: RemoteHostEntry, key: HostSettingChange['key']): boolean {
   const failed = failedKey.value;
@@ -96,15 +137,102 @@ function moveRadio(event: KeyboardEvent, count: number, index: number, pick: (ne
   // read now: an event's currentTarget is null once its dispatch ends
   const group = (event.currentTarget as HTMLElement | null)?.parentElement;
   pick(next);
-  void nextTick(() => group?.querySelector<HTMLElement>('[aria-checked="true"]')?.focus());
+  void nextTick(() => group?.querySelectorAll<HTMLElement>('[role="radio"]')[next]?.focus());
 }
 
 const pickHost = (index: number): void => {
   selectedId.value = entries.value?.[index]?.hostId;
 };
 
+// The custom swatch is the radio after the palette; arrowing onto it only focuses it, and its popover writes.
 const COLORS: readonly (HostTone | null)[] = [null, ...HOST_TONES];
-const colorIndex = (entry: RemoteHostEntry): number => COLORS.indexOf(shown(entry, 'color') ?? null);
+const CUSTOM = COLORS.length;
+const customOf = (entry: RemoteHostEntry): CustomHostColor | undefined => {
+  const color = shown(entry, 'color');
+  return color === undefined || isHostTone(color) ? undefined : color;
+};
+const colorIndex = (entry: RemoteHostEntry): number => {
+  const color = shown(entry, 'color');
+  return color === undefined || isHostTone(color) ? COLORS.indexOf(color ?? null) : CUSTOM;
+};
+const pickColor = (entry: RemoteHostEntry, index: number): void => {
+  if (index < CUSTOM) void set(entry, { key: 'color', value: COLORS[index] ?? null });
+};
+const customLook = computed(() => {
+  const custom = host.value && customOf(host.value);
+  return custom ? hostColorLook(custom) : undefined;
+});
+// The custom swatch's description: the color it holds, then what it opens.
+const customHintId = useId();
+const customValue = computed(() => {
+  const custom = host.value && customOf(host.value);
+  return custom ? t('remoteHosts.color.customValue', { hex: custom.slice(0, 7), opacity: Math.round(hexColorParts(custom).alpha * 100) }) : undefined;
+});
+
+// The picker edits the color of the host it opened on: a commit writes, closing with an unwritten draft writes it, and Escape
+// drops it. Zero opacity writes no color.
+const customSwatch = ref<HTMLElement | null>(null);
+const pickerOpen = ref(false);
+const pickerDraft = ref<HexColor>();
+let pickerHostId: string | undefined;
+let pickerWritten: HexColor | undefined;
+let pickerEscaped = false;
+let pickerLeftOutside = false;
+const pickerTransparent = computed(() => pickerDraft.value !== undefined && hexColorParts(pickerDraft.value).alpha === 0);
+
+// None starts from the first tone, and a tone from its palette value in this page's theme (safety-colors.test.ts).
+function startColor(entry: RemoteHostEntry): HexColor {
+  const color = shown(entry, 'color') ?? HOST_TONES[0];
+  if (!isHostTone(color)) return color;
+  const start = canonicalHexColor(THEME_PALETTES[hostAppearance().kind][`--d-${color}`] ?? '');
+  if (!start) throw new Error(`The ${color} tone is not a hex color in the palette`);
+  return start;
+}
+
+function openPicker(entry: RemoteHostEntry): void {
+  pickerHostId = entry.hostId;
+  pickerDraft.value = startColor(entry);
+  pickerWritten = pickerDraft.value;
+  pickerEscaped = false;
+  pickerLeftOutside = false;
+  pickerOpen.value = true;
+}
+
+function writePicked(value: HexColor): void {
+  if (pickerHostId === undefined || pickerEscaped || value === pickerWritten) return;
+  pickerWritten = value;
+  const change = { key: 'color', value: canonicalHostColor(value) } as const;
+  if (pickerOpen.value) {
+    holdColor(pickerHostId, change);
+    return;
+  }
+  flushColor();
+  void save(pickerHostId, change);
+}
+
+function closePicker(): void {
+  if (!pickerOpen.value) return;
+  pickerOpen.value = false;
+  if (pickerDraft.value) writePicked(pickerDraft.value);
+  flushColor();
+}
+
+// The custom swatch opens and closes the picker itself, so a press on it is no dismissal.
+function onPickerOutside(event: PointerDownOutsideEvent | FocusOutsideEvent): void {
+  if (customSwatch.value?.contains(event.target as Node | null)) event.preventDefault();
+  else pickerLeftOutside = true;
+}
+
+// The swatch anchors the popover, so reka has no trigger to refocus; a close by a press elsewhere leaves focus there.
+function onPickerCloseFocus(event: Event): void {
+  if (pickerLeftOutside) return;
+  event.preventDefault();
+  customSwatch.value?.focus();
+}
+
+const areaValueText = (saturation: number, brightness: number): string => t('remoteHosts.picker.areaValue', { saturation, brightness });
+const hueValueText = (degrees: number): string => t('remoteHosts.picker.hueValue', degrees);
+const opacityValueText = (percent: number): string => t('remoteHosts.picker.opacityValue', { percent });
 
 // Name: saved on Enter and when the field loses focus, through main's validator.
 const nameDraft = ref('');
@@ -183,6 +311,10 @@ async function showLog(entry: RemoteHostEntry): Promise<void> {
 const choosingFolder = ref(false);
 watch(() => host.value?.hostId, () => {
   choosingFolder.value = false;
+  flushColor();
+  pickerOpen.value = false;
+  pickerDraft.value = undefined;
+  pickerHostId = undefined;
 });
 </script>
 
@@ -233,7 +365,8 @@ watch(() => host.value?.hostId, () => {
         <span
           aria-hidden="true"
           class="size-2 shrink-0 rounded-full bg-(--tone)"
-          :class="`d-tone-${shown(entry, 'color') ?? 'muted'}`"
+          :class="hostColorLook(shown(entry, 'color')).class"
+          :style="hostColorLook(shown(entry, 'color')).style"
         />
         <Transition
           name="t-swap"
@@ -305,9 +438,9 @@ watch(() => host.value?.hostId, () => {
           :title="t(`remoteHosts.color.${tone ?? 'none'}`)"
           :tabindex="index === colorIndex(host) ? 0 : -1"
           class="grid size-5.5 place-items-center rounded-full transition-transform duration-150 hover:scale-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent)"
-          :class="tone ? [`d-tone-${tone}`, 'bg-(--tone) text-(--tone-on)'] : 'border border-dashed border-(--d-border2) text-(--d-muted)'"
+          :class="tone ? [hostColorLook(tone).class, 'bg-(--tone) text-(--tone-on)'] : 'border border-dashed border-(--d-border2) text-(--d-muted)'"
           @click="set(host, { key: 'color', value: tone })"
-          @keydown="moveRadio($event, COLORS.length, index, (next) => set(host!, { key: 'color', value: COLORS[next]! }))"
+          @keydown="moveRadio($event, CUSTOM + 1, index, (next) => pickColor(host!, next))"
         >
           <Check
             v-if="index === colorIndex(host) && tone"
@@ -320,6 +453,85 @@ watch(() => host.value?.hostId, () => {
             class="size-3"
           />
         </button>
+        <Popover
+          :open="pickerOpen"
+          @update:open="(open: boolean) => open || closePicker()"
+        >
+          <PopoverAnchor as-child>
+            <button
+              ref="customSwatch"
+              type="button"
+              role="radio"
+              data-testid="remote-host-color"
+              data-tone="custom"
+              :aria-checked="colorIndex(host) === CUSTOM"
+              :aria-label="t('remoteHosts.color.custom')"
+              :aria-describedby="customValue ? `${customHintId}-value ${customHintId}-opens` : `${customHintId}-opens`"
+              :title="customValue ? t('remoteHosts.color.customTitle', { value: customValue }) : t('remoteHosts.color.custom')"
+              :tabindex="colorIndex(host) === CUSTOM ? 0 : -1"
+              class="grid size-5.5 place-items-center rounded-full transition-transform duration-150 hover:scale-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent)"
+              :class="customLook ? [customLook.class, 'bg-(--tone) text-(--tone-on) ring-1 ring-(--d-border2) ring-inset [--tone-surface:var(--d-bg)]'] : 'border border-dashed border-(--d-border2) text-(--d-muted)'"
+              :style="customLook?.style"
+              @click="pickerOpen ? closePicker() : openPicker(host!)"
+              @keydown="moveRadio($event, CUSTOM + 1, CUSTOM, (next) => pickColor(host!, next))"
+            >
+              <Check
+                v-if="customLook"
+                aria-hidden="true"
+                class="size-3 animate-[d-icon-in_.25s_var(--ease-spring)]"
+              />
+              <Pipette
+                v-else
+                aria-hidden="true"
+                class="size-3"
+              />
+            </button>
+          </PopoverAnchor>
+          <PopoverContent
+            align="end"
+            data-testid="host-color-picker"
+            :aria-label="t('remoteHosts.color.custom')"
+            class="w-60"
+            @escape-key-down="pickerEscaped = true"
+            @interact-outside="onPickerOutside"
+            @close-auto-focus="onPickerCloseFocus"
+          >
+            <ColorPicker
+              v-if="pickerDraft"
+              v-model="pickerDraft"
+              :area-label="t('remoteHosts.picker.area')"
+              :area-thumb-label="t('remoteHosts.picker.areaThumb')"
+              :hue-label="t('remoteHosts.picker.hue')"
+              :opacity-label="t('remoteHosts.picker.opacity')"
+              :hex-label="t('remoteHosts.picker.hex')"
+              :preview-label="t('remoteHosts.picker.preview')"
+              :area-value-text="areaValueText"
+              :hue-value-text="hueValueText"
+              :opacity-value-text="opacityValueText"
+              @commit="writePicked"
+            />
+            <!-- present before its text, so the note is announced when the opacity reaches 0% -->
+            <p
+              role="status"
+              class="text-11 text-(--d-muted)"
+            >
+              <span
+                v-if="pickerTransparent"
+                data-testid="host-color-transparent"
+                class="block animate-[d-fade_.2s_var(--ease-out)] pt-2.5"
+              >{{ t('remoteHosts.picker.transparent') }}</span>
+            </p>
+          </PopoverContent>
+        </Popover>
+        <span
+          v-if="customValue"
+          :id="`${customHintId}-value`"
+          class="sr-only"
+        >{{ customValue }}</span>
+        <span
+          :id="`${customHintId}-opens`"
+          class="sr-only"
+        >{{ t('remoteHosts.color.opensPicker') }}</span>
       </div>
     </SettingsRow>
     <SettingsRow

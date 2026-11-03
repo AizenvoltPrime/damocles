@@ -366,18 +366,6 @@ describe('PiRuntime.init lifecycle', () => {
     await expect(runtime.folder('/cwd')).rejects.toThrow(/disposed/);
   });
 
-  it('starts no init for a web search setting change, before init or after a failed one', async () => {
-    H.fakePi.ModelRuntime.create.mockClear();
-    const runtime = PiRuntime.get('/agent');
-    await runtime.refreshWebSearch();
-    expect(H.fakePi.ModelRuntime.create).not.toHaveBeenCalled();
-
-    H.fakePi.ModelRuntime.create.mockRejectedValueOnce(new Error('models.json could not be read'));
-    await expect(runtime.init()).rejects.toThrow('models.json could not be read');
-    await runtime.refreshWebSearch();
-    expect(H.fakePi.ModelRuntime.create).toHaveBeenCalledTimes(1);
-  });
-
   it('lets no secret or setting change made while it disposes reach the runtime', async () => {
     const runtime = PiRuntime.get('/agent');
     const folder = await runtime.folder('/cwd');
@@ -586,7 +574,7 @@ describe('PiRuntime.init lifecycle', () => {
     }
   });
 
-  it('ends a prefer flag resync under way when the dispose starts, publishing nothing, and starts none after it', async () => {
+  it('ends a prefer setting resync under way when the dispose starts, publishing nothing, and starts none after it', async () => {
     const runtime = PiRuntime.get('/agent');
     await runtime.init();
     const gate = held();
@@ -600,8 +588,7 @@ describe('PiRuntime.init lifecycle', () => {
     const published = publications();
     try {
       H.modelRuntime.removeRuntimeApiKey.mockClear();
-      await fake.state.global.update('damocles.openai.preferApiKey', true);
-      runtime.preferOpenAIApiKey();
+      await fake.settings.update('damocles.openai.preferApiKey', true, 'user');
       await vi.waitFor(() => expect(H.modelRuntime.removeRuntimeApiKey).toHaveBeenCalled());
       const disposed = runtime.dispose();
       gate.release();
@@ -610,8 +597,7 @@ describe('PiRuntime.init lifecycle', () => {
       expect(published.count()).toBe(0);
 
       resets.mockClear();
-      await fake.state.global.update('damocles.openai.preferApiKey', false);
-      runtime.preferOpenAIApiKey();
+      await fake.settings.update('damocles.openai.preferApiKey', false, 'user');
       await new Promise((resolve) => setTimeout(resolve, 20));
 
       expect([resets.mock.calls.length, published.count()]).toEqual([0, 0]);
@@ -641,7 +627,7 @@ describe('PiRuntime.init lifecycle', () => {
     expect(PiRuntime.observesClientAuth).toBe(false);
   });
 
-  it('starts no init for a prefer flag another window changed after an init that failed past its key sync', async () => {
+  it('starts no init for a prefer setting another window changed after an init that failed past its key sync', async () => {
     const inspect = fake.settings.inspect.bind(fake.settings);
     vi.spyOn(fake.settings, 'inspect').mockImplementation(((key: string) => {
       if (key === 'damocles.tools.disabled') throw new Error('settings unreadable');
@@ -653,8 +639,7 @@ describe('PiRuntime.init lifecycle', () => {
     H.fakePi.ModelRuntime.create.mockClear();
     H.modelRuntime.removeRuntimeApiKey.mockClear();
 
-    await fake.state.global.update('damocles.openai.preferApiKey', true);
-    runtime.preferOpenAIApiKey();
+    await fake.settings.update('damocles.openai.preferApiKey', true, 'user');
 
     await vi.waitFor(() => expect(H.modelRuntime.removeRuntimeApiKey).toHaveBeenCalled());
     expect(H.fakePi.ModelRuntime.create).not.toHaveBeenCalled();
@@ -689,32 +674,30 @@ describe('PiRuntime.init lifecycle', () => {
 
     await runtime.init();
 
-    // the image, tool exposure, resource exposure, disabled tools and asset precedence settings, and trust grants
-    expect({ ...live, userWatchers: userWatchers() }).toEqual({ settings: 5, trust: 1, userWatchers: watchersOfOneAttempt });
+    // the prefer settings (from construction), the image, tool exposure, resource exposure, disabled tools and asset precedence settings, and trust grants
+    expect({ ...live, userWatchers: userWatchers() }).toEqual({ settings: 6, trust: 1, userWatchers: watchersOfOneAttempt });
     expect((runtime as unknown as { _userMcp: unknown })._userMcp).toBe(mcp);
   });
 
-  it('writes no OpenAI prefer flag when its toggle fails, so a later read of the flag starts no resync', async () => {
+  it('leaves no OpenAI prefer setting when its toggle fails, and the restore resyncs and publishes nothing', async () => {
     H.fakePi.ModelRuntime.create.mockRejectedValueOnce(new Error('models.json could not be read'));
     const runtime = PiRuntime.get('/agent');
-    const writes = vi.spyOn(fake.state.global, 'update');
+    const writes = vi.spyOn(fake.settings, 'update');
     // a failed init writes nothing at all, as the key providers' toggle does
     await expect(runtime.setOpenAIPreferApiKey(true)).rejects.toThrow('models.json could not be read');
     expect(writes).not.toHaveBeenCalled();
-    expect(fake.state.global.get('damocles.openai.preferApiKey')).toBeUndefined();
+    expect(fake.settings.inspect('damocles.openai.preferApiKey').userValue).toBeUndefined();
 
     await runtime.init();
-    H.modelRuntime.removeRuntimeApiKey.mockClear();
-    H.modelRuntime.removeRuntimeApiKey.mockRejectedValueOnce(new Error('auth.json is locked'));
-    await expect(runtime.setOpenAIPreferApiKey(true)).rejects.toThrow('auth.json is locked');
-    expect(fake.state.global.get('damocles.openai.preferApiKey')).toBeUndefined();
-
     const published = publications();
     try {
       H.modelRuntime.removeRuntimeApiKey.mockClear();
-      runtime.preferOpenAIApiKey();
+      H.modelRuntime.removeRuntimeApiKey.mockRejectedValueOnce(new Error('auth.json is locked'));
+      await expect(runtime.setOpenAIPreferApiKey(true)).rejects.toThrow('auth.json is locked');
       await new Promise((resolve) => setTimeout(resolve, 20));
-      expect([H.modelRuntime.removeRuntimeApiKey.mock.calls.length, published.count()]).toEqual([0, 0]);
+      expect(fake.settings.inspect('damocles.openai.preferApiKey').userValue).toBeUndefined();
+      // the toggle's own sync, and no other; its Settings handler publishes the failure
+      expect([H.modelRuntime.removeRuntimeApiKey.mock.calls.length, published.count()]).toEqual([1, 0]);
     } finally {
       published.stop();
     }

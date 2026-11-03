@@ -38,6 +38,7 @@ import {
 import { MAX_CONTEXT_LINES, MAX_REPLACEMENT_LENGTH, MAX_SEARCH_GLOBS_LENGTH, MAX_SEARCH_HISTORY, MAX_SEARCH_PATTERN_LENGTH } from '../../shared/text-search';
 import { SEARCH_DEFAULT_VIEW_MODES } from '../local-services/desktop-configuration';
 import { isRelativeFilePath } from '../../shared/relative-path';
+import { isAbsoluteFolderKey } from '../../shared/project-location';
 import { MAX_RECENT_FILES, type PersistedEditor, type PersistedTab } from './editor-pane';
 import {
   clampListWidth,
@@ -441,7 +442,11 @@ function parseBackupId(raw: unknown): { ok: boolean; backupId?: string } {
   return typeof raw === 'string' && BACKUP_ID.test(raw) ? { ok: true, backupId: raw } : { ok: false };
 }
 
-/** One saved tab, or undefined when any field is missing or malformed; an absolute path is only ever reopened read-only. */
+/**
+ * One saved tab, or undefined when any field is missing or malformed. An absolute path reopens through the rules main opens a
+ * core-named path by, with editable through openUserPath only while it still resolves to itself, or with outside 'plans'
+ * through openPlan.
+ */
 export function parsePersistedTab(raw: unknown): PersistedTab | undefined {
   if (!isRecord(raw)) return undefined;
   const kind = field(raw, 'kind');
@@ -475,9 +480,22 @@ export function parsePersistedTab(raw: unknown): PersistedTab | undefined {
     return ref ? { kind, file: ref, ...withBackup } : undefined;
   }
   const filePath = field(raw, 'path');
-  return typeof filePath === 'string' && filePath.length <= MAX_PATH_LENGTH && path.isAbsolute(filePath) && !filePath.includes('\0') && backup.backupId === undefined
-    ? { kind, path: filePath }
-    : undefined;
+  const authority = field(raw, 'authority');
+  const editable = field(raw, 'editable');
+  if (authority !== undefined) {
+    // a host's path, in its own OS's rules; it reopens only through the rule it names, once that host connects
+    const outside = field(raw, 'outside');
+    const valid = typeof authority === 'string' && authority.length > 0 && authority.length <= MAX_ID_LENGTH && authority !== 'local' && (outside === 'plans' || outside === 'user');
+    return valid && typeof filePath === 'string' && filePath.length <= MAX_PATH_LENGTH && isAbsoluteFolderKey(filePath) && !filePath.includes('\0') && backup.backupId === undefined && editable === undefined
+      ? { kind, authority, path: filePath, outside }
+      : undefined;
+  }
+  if (typeof filePath !== 'string' || filePath.length > MAX_PATH_LENGTH || !path.isAbsolute(filePath) || filePath.includes('\0')) return undefined;
+  const outside = field(raw, 'outside');
+  // only a file the user named or a plan opens editable outside every project, so only their buffers have a backup
+  if (editable === true && outside === undefined) return { kind, path: filePath, editable, ...withBackup };
+  if (outside === 'plans' && editable === undefined) return { kind, path: filePath, outside, ...withBackup };
+  return editable === undefined && outside === undefined && backup.backupId === undefined ? { kind, path: filePath } : undefined;
 }
 
 /** The saved editor: each malformed tab or recent file is dropped and logged, the rest kept. */

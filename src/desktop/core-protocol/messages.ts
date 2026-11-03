@@ -359,7 +359,7 @@ export interface MainRequests {
   'user.mcp.call': Call<{ readonly server: string; readonly tool: string; readonly args: Readonly<Record<string, unknown>> }, unknown>;
   'user.mcp.resources': Call<{ readonly server: string; readonly kind: 'resources' | 'templates'; readonly cursor?: string }, unknown>;
   'user.mcp.readResource': Call<{ readonly server: string; readonly uri: string }, unknown>;
-  // this computer's core: a proxy for a remote chat's view, which only VOICE_VIEW_MESSAGES reach
+  // this computer's core: a proxy for a remote chat's view, which only VOICE_VIEW_MESSAGES and REMOTE_CHAT_USER_SETTING_MESSAGES reach
   'panels.attachForeign': Call<{ readonly authority: string; readonly viewId: string }, void>;
   'panels.detachForeign': Call<{ readonly viewId: string }, void>;
   'panels.foreignMessage': Call<{ readonly viewId: string; readonly message: unknown }, void>;

@@ -4,7 +4,7 @@ import type { UsageThresholdCrossing } from '../../core/pi-session/usage-thresho
 import type { ChatActivity, PendingPrompt, TurnOutcome } from '../../core/pi-session/session-state';
 import type { AttentionKind, ExtensionToWebviewMessage } from '../../shared/types/messages';
 import { OVERLAY_CHANNELS, type OverlayRequest, type OverlayToast } from '../preload/overlay-channels';
-import type { HostTone } from '../../shared/host-tones';
+import type { HostColor } from '../../shared/host-colors';
 import {
   chimeTone,
   KIND_LIFE_MS,
@@ -165,7 +165,7 @@ function bounded(text: string | undefined): string | undefined {
 }
 
 function chatOf(ref: ChatRef): NotificationChat {
-  return { project: ref.project, title: ref.title, ...(ref.host !== undefined ? { host: ref.host } : {}), ...(ref.hostTone !== undefined ? { hostTone: ref.hostTone } : {}) };
+  return { project: ref.project, title: ref.title, ...(ref.host !== undefined ? { host: ref.host } : {}), ...(ref.hostColor !== undefined ? { hostColor: ref.hostColor } : {}) };
 }
 
 /** The entry and action a pending prompt raises: a prompt a team agent raised is the team's, whatever it asks. */
@@ -357,7 +357,7 @@ export class NotificationCenter {
   /** A notification: always an entry and a toast, answered with its chosen action's index or undefined; host names a remote core's. */
   notice(severity: NoticeSeverity, message: string, actions: readonly string[], host?: NotificationHost, title?: string): Promise<number | undefined> {
     return new Promise((resolve) => {
-      this.raise({ kind: 'notice', severity, ...(title !== undefined ? { title } : {}), message, actions: [...actions], ...(host !== undefined ? { host: host.name, ...(host.tone !== undefined ? { hostTone: host.tone } : {}) } : {}) }, { kind: 'none' }, { answer: resolve });
+      this.raise({ kind: 'notice', severity, ...(title !== undefined ? { title } : {}), message, actions: [...actions], ...(host !== undefined ? { host: host.name, ...(host.color !== undefined ? { hostColor: host.color } : {}) } : {}) }, { kind: 'none' }, { answer: resolve });
     });
   }
 
@@ -379,7 +379,7 @@ export class NotificationCenter {
     if (!URL.canParse(url) || new URL(url).href !== url) throw new Error('A link request needs a canonical http or https URL');
     const id = randomUUID();
     const answer = new Promise<LinkAnswer>((resolve) => {
-      const body: NotificationBody = { kind: 'link', host: host.name, ...(host.tone !== undefined ? { hostTone: host.tone } : {}), url };
+      const body: NotificationBody = { kind: 'link', host: host.name, ...(host.color !== undefined ? { hostColor: host.color } : {}), url };
       this.raise(body, { kind: 'none' }, { id, sticky: true, answer: (index) => resolve(index === LINK_OPEN ? 'open' : 'dismissed') });
     });
     return { answer, withdraw: () => this.withdraw(id) };
@@ -489,16 +489,16 @@ export class NotificationCenter {
    * name and color now, a showing toast sent again under its id. Host names are unique, so the old name names that host alone.
    */
   relabelHost(from: string, to: NotificationHost): void {
-    const toneOf = (tone: HostTone | undefined): { hostTone?: HostTone } => (tone !== undefined ? { hostTone: tone } : {});
+    const colorOf = (color: HostColor | undefined): { hostColor?: HostColor } => (color !== undefined ? { hostColor: color } : {});
     const relabel = (body: NotificationBody): NotificationBody => {
       if (body.kind === 'notice' || body.kind === 'link') {
         if (body.host !== from) return body;
-        const { hostTone: _tone, ...rest } = body;
-        return { ...rest, host: to.name, ...toneOf(to.tone) };
+        const { hostColor: _color, ...rest } = body;
+        return { ...rest, host: to.name, ...colorOf(to.color) };
       }
       if (!('chat' in body) || body.chat?.host !== from) return body;
-      const { hostTone: _tone, ...chat } = body.chat;
-      return { ...body, chat: { ...chat, host: to.name, ...toneOf(to.tone) } } as NotificationBody;
+      const { hostColor: _color, ...chat } = body.chat;
+      return { ...body, chat: { ...chat, host: to.name, ...colorOf(to.color) } } as NotificationBody;
     };
     let changed = false;
     for (const entry of this.entries) {

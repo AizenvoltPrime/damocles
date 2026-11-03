@@ -188,9 +188,10 @@ export class ConfigManager {
     return updateConfigAtEffectiveScope(this.platform, "damocles.thinkingDisabled", disabled, { folder });
   }
 
-  async handleSetPinnedHeaderHidden(hidden: boolean): Promise<void> {
+  async handleSetPinnedHeaderHidden(hidden: boolean): Promise<SettingWrite> {
     assertBoolean(hidden);
     await this.platform.settings.update("damocles.pinnedHeaderHidden", hidden, "user");
+    return { key: "damocles.pinnedHeaderHidden", home: "user" };
   }
 
   async handleSetDefaultEffort(effort: EffortLevel | null, model: string, folder: SettingsFolder | undefined): Promise<SettingWrite> {

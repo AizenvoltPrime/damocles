@@ -50,6 +50,7 @@ async function openTerminalSettings(): Promise<void> {
 const q = (testid: string): HTMLElement | null => document.querySelector(`[data-testid="${testid}"]`);
 const all = (testid: string): HTMLElement[] => [...document.querySelectorAll<HTMLElement>(`[data-testid="${testid}"]`)];
 
+
 beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);

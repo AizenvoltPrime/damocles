@@ -13,6 +13,7 @@ import { EDITOR_STATE, FakeResizeObserver, fakeShellApi } from './fakes';
 
 const mounted: VueWrapper[] = [];
 
+
 beforeEach(() => {
   shellI18n.global.locale.value = 'en';
   vi.stubGlobal('ResizeObserver', FakeResizeObserver);

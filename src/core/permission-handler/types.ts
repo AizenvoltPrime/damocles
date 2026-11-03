@@ -14,6 +14,8 @@ export interface PermissionResult {
   updatedPermissions?: PermissionUpdate[];
   /** `ExitPlanMode` only: the plan reached the user, whether answered or stopped, so it is a plan version. */
   planShown?: true;
+  /** `ExitPlanMode` approval only: the plan file's text when it changed while the user had the plan open. */
+  editedPlan?: string;
 }
 
 /** The server an MCP call reaches, by its config name, and the server's own tool name. */

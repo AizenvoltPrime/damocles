@@ -51,6 +51,7 @@
   "control.shutdownForRemoval",
   "settings.remoteHosts",
   "capabilities.bypassPermissions",
+  "capabilities.globalMemoryOnServer",
   "credentialsPush.planModelIds",
   "terminals.view",
   "terminals.detachView",
@@ -128,7 +129,9 @@
   "files.folderMode",
   "files.cancel",
   "files.walkEntryError",
-  "files.moveLeftMore"
+  "files.moveLeftMore",
+  "tools.setOnHost",
+  "files.outside"
  ],
  "contracts": {
   "CoreRequests": {
@@ -10314,6 +10317,118 @@
       }
      }
     },
+    "files.readOutside": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "path": {
+           "optional": false,
+           "type": "string"
+          },
+          "within": {
+           "optional": true,
+           "type": "\"plans\""
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "variants": "kind",
+         "of": {
+          "\"bytes\"": {
+           "object": {
+            "bytes": {
+             "optional": false,
+             "type": {
+              "named": "Uint8Array<ArrayBufferLike>"
+             }
+            },
+            "dev": {
+             "optional": false,
+             "type": "number"
+            },
+            "ino": {
+             "optional": false,
+             "type": "number"
+            },
+            "kind": {
+             "optional": false,
+             "type": "\"bytes\""
+            },
+            "mtimeMs": {
+             "optional": false,
+             "type": "number"
+            }
+           }
+          },
+          "\"missing\"": {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": "\"missing\""
+            }
+           }
+          },
+          "\"notAFile\"": {
+           "object": {
+            "folder": {
+             "optional": false,
+             "type": "boolean"
+            },
+            "kind": {
+             "optional": false,
+             "type": "\"notAFile\""
+            }
+           }
+          },
+          "\"outside\"": {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": "\"outside\""
+            }
+           }
+          },
+          "\"tooLarge\"": {
+           "object": {
+            "bytes": {
+             "optional": false,
+             "type": "number"
+            },
+            "kind": {
+             "optional": false,
+             "type": "\"tooLarge\""
+            }
+           }
+          },
+          "\"unreadable\"": {
+           "object": {
+            "code": {
+             "optional": true,
+             "type": "string"
+            },
+            "error": {
+             "optional": false,
+             "type": "string"
+            },
+            "kind": {
+             "optional": false,
+             "type": "\"unreadable\""
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
     "files.readText": {
      "optional": false,
      "type": {
@@ -10655,6 +10770,65 @@
             "ok": {
              "optional": false,
              "type": "true"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "files.resolveOutside": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "target": {
+           "optional": false,
+           "type": "string"
+          },
+          "within": {
+           "optional": true,
+           "type": "\"plans\""
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"file\"",
+               "\"folder\""
+              ]
+             }
+            },
+            "path": {
+             "optional": false,
+             "type": "string"
+            }
+           }
+          },
+          {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"missing\"",
+               "\"outside\""
+              ]
+             }
             }
            }
           }
@@ -11176,6 +11350,38 @@
              }
             }
            }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "number"
+       }
+      }
+     }
+    },
+    "files.writeOutside": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "bytes": {
+           "optional": false,
+           "type": {
+            "named": "Uint8Array<ArrayBufferLike>"
+           }
+          },
+          "path": {
+           "optional": false,
+           "type": "string"
+          },
+          "within": {
+           "optional": true,
+           "type": "\"plans\""
           }
          }
         }
@@ -20063,6 +20269,10 @@
          },
          "folderPickerInPanel": {
           "optional": false,
+          "type": "boolean"
+         },
+         "globalMemoryOnServer": {
+          "optional": true,
           "type": "boolean"
          },
          "historyInPanel": {
@@ -32515,6 +32725,10 @@
                ]
               }
              },
+             "setOnHost": {
+              "optional": true,
+              "type": "true"
+             },
              "unavailableReason": {
               "optional": true,
               "type": {
@@ -32572,6 +32786,10 @@
             }
            }
           }
+         },
+         "toolsSetOnHost": {
+          "optional": true,
+          "type": "true"
          }
         }
        }

@@ -20,10 +20,14 @@ import { createUsageHandlers } from "./handlers/usage-handlers";
 import { createUsageStatsHandlers } from "./handlers/usage-stats-handlers";
 import { createWorkspaceFolderHandlers } from "./handlers/workspace-folder-handlers";
 import { createSettingsFileHandlers } from "./handlers/settings-file-handlers";
+import { createRemoteChatSettingHandlers } from "./handlers/remote-chat-setting-handlers";
 import { log } from "../../logger";
 
-/** Every message's handler, and the voice handlers a remote chat's view reaches on this computer's core (VOICE_VIEW_MESSAGES). */
-export function createHandlerRegistry(deps: HandlerDependencies): { readonly handlers: HandlerRegistry; readonly viewHandlers: ViewHandlerRegistry } {
+/**
+ * Every message's handler, and the handlers a remote chat's view reaches on this computer's core: its voice messages
+ * (VOICE_VIEW_MESSAGES) and its user-setting writes (REMOTE_CHAT_USER_SETTING_MESSAGES).
+ */
+export function createHandlerRegistry(deps: HandlerDependencies): { readonly handlers: HandlerRegistry; readonly foreignHandlers: ViewHandlerRegistry } {
   const voice = createVoiceHandlers(deps);
   const voiceStream = createVoiceStreamHandlers(deps);
   const chatDeps: HandlerDependencies = { ...deps, markUserTypedDuringTurn: voiceStream.markUserTypedDuringTurn };
@@ -65,5 +69,5 @@ export function createHandlerRegistry(deps: HandlerDependencies): { readonly han
     ...createWorkspaceFolderHandlers(deps),
     ...settingsFiles.handlers,
   };
-  return { handlers, viewHandlers: { ...voice.viewHandlers, ...voiceStream.viewHandlers } };
+  return { handlers, foreignHandlers: { ...voice.viewHandlers, ...voiceStream.viewHandlers, ...createRemoteChatSettingHandlers(deps) } };
 }

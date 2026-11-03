@@ -29,6 +29,7 @@ import EmptyState from "./components/EmptyState.vue";
 import PlanReadyBanner from "./components/PlanReadyBanner.vue";
 import ExtensionUiDialog from "./components/ExtensionUiDialog.vue";
 import { PANEL_HOST_SETTINGS } from "./components/settings/panel-host-settings";
+import { useToolSwitchWrites } from "./components/settings/tool-groups";
 import { Toaster } from "@/components/ui/sonner";
 import McpStatusPanel from "./components/McpStatusPanel.vue";
 import ToolsStatusPanel from "./components/ToolsStatusPanel.vue";
@@ -134,7 +135,7 @@ import type { ChatMessage, RewindOption, RewindHistoryItem, RestorePoint } from 
 import type { UserContentBlock } from "@shared/types/content";
 import type { SteerRequest } from "@/utils/steer-command";
 import type { PermissionUpdate } from "@shared/types/permissions";
-import type { ToolGroup } from "@shared/types/tools";
+import { isSwitchableToolGroup, type ToolGroup } from "@shared/types/tools";
 import type { WorktreeAction } from "@shared/types/messages";
 import type { SettingsAccountId } from "@shared/settings-sections";
 import { visibleText } from "@shared/visible-text";
@@ -712,24 +713,15 @@ function handleOpenToolsPanel() {
   }
 }
 
+// after a failed write the switch shows core's last status, and core is asked for a fresh one
+const toolSwitches = useToolSwitchWrites(() => postMessage({ type: "requestToolStatus" }));
+
 function handleToggleTool(toolName: string, enabled: boolean) {
-  settingsStore.setToolsSnapshot({
-    groups: toolsSnapshot.value.groups,
-    tools: toolsSnapshot.value.tools.map((tool) =>
-      tool.name === toolName ? { ...tool, enabled } : tool,
-    ),
-  });
-  postMessage({ type: "toggleTool", toolName, enabled });
+  toolSwitches.setTool(toolName, enabled);
 }
 
 function handleToggleToolGroup(group: ToolGroup, enabled: boolean) {
-  settingsStore.setToolsSnapshot({
-    groups: toolsSnapshot.value.groups.map((g) => (g.group === group ? { ...g, enabled } : g)),
-    tools: toolsSnapshot.value.tools.map((tool) =>
-      tool.group === group && tool.toggleable ? { ...tool, enabled } : tool,
-    ),
-  });
-  postMessage({ type: "toggleToolGroup", group, enabled });
+  if (isSwitchableToolGroup(group)) toolSwitches.setGroup(group, enabled);
 }
 
 function handleTypeSelected(option: RewindOption) {

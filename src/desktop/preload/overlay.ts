@@ -132,6 +132,7 @@ const api: DamoclesOverlayApi = {
   getReleaseIndex: () => ipcRenderer.invoke(OVERLAY_CHANNELS.releaseNotesIndex) as Promise<PopupAnswer<ReleaseIndex>>,
   getReleaseNotes: (version) => ipcRenderer.invoke(OVERLAY_CHANNELS.releaseNotesGet, version) as Promise<PopupAnswer<ReleaseNotes>>,
   queryQuickOpen: (query) => ipcRenderer.invoke(OVERLAY_CHANNELS.quickOpenQuery, { query: query.query, generation: query.generation }) as Promise<PopupAnswer<QuickOpenResponse>>,
+  quickOpenPath: (generation) => ipcRenderer.invoke(OVERLAY_CHANNELS.quickOpenPath, { generation }) as Promise<PopupAnswer<QuickOpenResponse | null>>,
   listCommands: () => ipcRenderer.invoke(OVERLAY_CHANNELS.commandsList, {}) as Promise<PopupAnswer<PaletteCommand[]>>,
   getTerminalProfiles: () => ipcRenderer.invoke(OVERLAY_CHANNELS.terminalProfiles, {}) as Promise<PopupAnswer<TerminalProfileReport>>,
   onTerminalProfiles: (listener) => subscribe<TerminalProfileReport>(OVERLAY_CHANNELS.terminalProfilesChanged, listener),

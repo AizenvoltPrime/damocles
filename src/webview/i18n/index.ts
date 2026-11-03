@@ -1,5 +1,6 @@
 import { createI18n } from 'vue-i18n';
 import type { WebviewToExtensionMessage } from '@shared/types/messages';
+import { LOCALE_HOLD_BOUND_MS } from '@shared/locale-hold';
 import en from './locales/en.json';
 
 type SupportedLocale = 'en' | 'el';
@@ -26,6 +27,8 @@ const LOADERS: Readonly<Record<Exclude<SupportedLocale, 'en'>, () => Promise<rea
 const coreCatalogs = new Map<string, CoreCatalog>();
 const loads = new Map<SupportedLocale, Promise<boolean>>();
 let requested: SupportedLocale = 'en';
+// The document's module map keeps a failed import (whatwg/html#6768), so its language is not tried again until another is asked for.
+let failed: SupportedLocale | undefined;
 
 /** Core's catalog for `locale` once it has loaded; undefined for English, whose keys are the text itself. */
 export function coreCatalog(locale: string): CoreCatalog | undefined {
@@ -41,13 +44,23 @@ export function localeReady(locale: string): boolean {
   return loaded(normalizeLocale(locale));
 }
 
-/** Loads `locale`'s catalogs without showing it; false, logged, when a chunk fails to load, which a later call tries again. */
-export function loadLocale(locale: string): Promise<boolean> {
+function askFor(locale: string): SupportedLocale {
   const target = normalizeLocale(locale);
+  if (failed !== target) failed = undefined;
+  return target;
+}
+
+/**
+ * Loads `locale`'s catalogs without showing it; false when a chunk fails to load, logged once: the language is tried again
+ * only after another was asked for.
+ */
+export function loadLocale(locale: string): Promise<boolean> {
+  const target = askFor(locale);
   return loaded(target) ? Promise.resolve(true) : load(target as Exclude<SupportedLocale, 'en'>);
 }
 
 function load(locale: Exclude<SupportedLocale, 'en'>): Promise<boolean> {
+  if (failed === locale) return Promise.resolve(false);
   const pending = loads.get(locale) ?? LOADERS[locale]().then(
     ([view, core]) => {
       i18n.global.setLocaleMessage(locale, view);
@@ -56,6 +69,7 @@ function load(locale: Exclude<SupportedLocale, 'en'>): Promise<boolean> {
     },
     (err: unknown) => {
       loads.delete(locale);
+      failed = locale;
       console.error(`[i18n] the ${locale} catalogs did not load, so the view keeps its language:`, err);
       return false;
     },
@@ -87,18 +101,34 @@ function showLocale(locale: SupportedLocale): void {
 
 /**
  * Shows `locale` once its catalogs have loaded, at once when they already have; of overlapping switches the last one asked
- * for wins. A language whose catalogs fail to load is logged and not shown, so the view keeps the language it renders in.
+ * for wins. A language whose catalogs fail to load is not shown, so the view keeps the language it renders in, and names it
+ * in its lang.
  */
 export function applyLocale(locale: string): Promise<void> {
-  const target = normalizeLocale(locale);
+  const target = askFor(locale);
   requested = target;
   if (loaded(target)) {
     showLocale(target);
     return Promise.resolve();
   }
   return load(target as Exclude<SupportedLocale, 'en'>).then((ok) => {
-    if (ok && requested === target) showLocale(target);
+    if (requested === target) showLocale(ok ? target : i18n.global.locale.value);
   });
+}
+
+/**
+ * `shown`, or LOCALE_HOLD_BOUND_MS, whichever ends first: what waits for a language renders in the language shown once its
+ * load hangs, logged, and the switch still applies when the load ends.
+ */
+export function withinLocaleBound(shown: Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      console.error(`[i18n] the ${requested} catalogs did not load within ${LOCALE_HOLD_BOUND_MS} ms, so what waited for them renders in the language shown`);
+      resolve();
+    }, LOCALE_HOLD_BOUND_MS);
+  });
+  return Promise.race([shown, bound]).finally(() => clearTimeout(timer));
 }
 
 export function setLocale(locale: string): Promise<void> {
@@ -111,5 +141,5 @@ export function setLocale(locale: string): Promise<void> {
 
 /** Mounts the view once the language its host built the page in (`<html lang>`) is ready, so its first render is in it. */
 export function mountInInitialLocale(mount: () => void): Promise<void> {
-  return applyLocale(document.documentElement.lang).then(mount);
+  return withinLocaleBound(applyLocale(document.documentElement.lang)).then(mount);
 }

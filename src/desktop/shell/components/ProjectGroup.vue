@@ -3,6 +3,7 @@ import { computed, nextTick, ref, useId, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { ChevronDown, Laptop, Server } from 'lucide-vue-next';
 import { Badge } from '@/components/ui/badge';
+import { hostColorLook } from '@shared/host-colors';
 import type { NameCheck } from '../../preload/overlay-channels';
 import type { ProjectConnection, ShellHost } from '../../preload/shell-channels';
 import { hostStateLabel } from '../host-label';
@@ -34,6 +35,11 @@ const nameId = useId();
 const draft = ref('');
 const field = ref<InstanceType<typeof HostNameField> | null>(null);
 
+// A tone's icon takes the tone's AA text shade. A custom color has no contrast floor, so its icon keeps the header's text
+// color, at 3:1 in both palettes (safety-colors.test.ts), and the color shows as a dot on it.
+const hostLook = computed(() => (props.host?.color === undefined ? undefined : hostColorLook(props.host.color)));
+const iconLook = computed(() => (hostLook.value?.style ? undefined : hostLook.value));
+const dotLook = computed(() => (hostLook.value?.style ? hostLook.value : undefined));
 const stateText = computed(() => (props.connection ? t(`projects.connection.${props.connection}`) : undefined));
 const dotLabel = computed(() => (props.connection ? hostStateLabel({ name: props.name, connection: props.connection, reconnect: props.host?.reconnect, latency: props.host?.latency }, t) : ''));
 // The header is an option, whose children are presentational, so its name carries the host's state and the disclosure.
@@ -80,7 +86,7 @@ defineExpose({
       data-testid="project-group-header"
       :data-group="groupKey"
       :data-flip="`g:${groupKey}`"
-      class="mt-1 flex min-h-7 animate-[d-fade_.2s_var(--ease-out)] cursor-pointer items-center gap-1.5 rounded-7 pr-1 pl-1.5 text-11 font-semibold text-(--d-muted) select-none hover:bg-(--d-hover) hover:text-(--d-text)"
+      class="group/header mt-1 flex min-h-7 animate-[d-fade_.2s_var(--ease-out)] cursor-pointer items-center gap-1.5 rounded-7 pr-1 pl-1.5 text-11 font-semibold text-(--d-muted) select-none hover:bg-(--d-hover) hover:text-(--d-text)"
       :class="active ? 'group-focus-visible/list:outline group-focus-visible/list:-outline-offset-1 group-focus-visible/list:outline-(--d-accent)' : ''"
       @click="renaming || emit('toggle')"
     >
@@ -90,13 +96,24 @@ defineExpose({
         class="size-3 shrink-0 text-(--d-faint) transition-transform duration-200 ease-out"
         :class="collapsed ? '-rotate-90' : ''"
       />
-      <component
-        :is="connection ? Server : Laptop"
-        aria-hidden="true"
-        data-testid="project-group-icon"
-        class="size-3 shrink-0"
-        :class="host?.color ? `d-tone-${host.color}` : ''"
-      />
+      <span class="relative flex shrink-0">
+        <component
+          :is="connection ? Server : Laptop"
+          aria-hidden="true"
+          data-testid="project-group-icon"
+          class="size-3"
+          :class="iconLook?.class"
+        />
+        <!-- the ring matches the header's background, so the dot reads apart from the icon's strokes -->
+        <span
+          v-if="dotLook"
+          aria-hidden="true"
+          data-testid="project-group-color"
+          class="absolute -right-0.75 -bottom-0.5 size-1.75 rounded-full bg-(--tone) ring-2 ring-(--d-panel) transition-[background-color] duration-300 ease-out group-hover/header:ring-(--d-hover)"
+          :class="dotLook.class"
+          :style="dotLook.style"
+        />
+      </span>
       <template v-if="renaming">
         <span
           :id="nameId"

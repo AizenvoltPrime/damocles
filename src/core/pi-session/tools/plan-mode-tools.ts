@@ -49,7 +49,7 @@ export function createPlanModeTools(
             text: buildPlanModeGuidance(getPlanFilePath?.(), {
               teamEnabled: isTeamEnabled?.() ?? false,
               // Read at EXECUTE time for the same reason `getPlanFilePath` is: the setting is live
-              // (`PiRuntime.refreshWebSearch` re-reads it on change), so a user who enabled the web
+              // (`ChatPanelProvider.toolSettingsChanged` re-applies it on change), so a user who enabled the web
               // tools after this tool was wrapped still gets guidance matching the tools they have.
               webSearchEnabled: isWebSearchEnabled(),
             }),
@@ -86,7 +86,10 @@ export function createPlanModeTools(
         const text = result.policy ? formatPolicyBlockReason(result.message) : formatDenyReason(result.message);
         return { content: [{ type: 'text', text }], details: result.planShown ? details : NO_PLAN_VERSION, isError: true };
       }
-      return { content: [{ type: 'text', text: 'Plan approved. Proceeding with implementation.' }], details };
+      const text = result.editedPlan === undefined
+        ? 'Plan approved. Proceeding with implementation.'
+        : `Plan approved. The user edited the plan file before approving it. Implement this version, not the one you wrote:\n\n${result.editedPlan}`;
+      return { content: [{ type: 'text', text }], details };
     },
   });
 

@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+import { canonicalHostColor } from '../../../shared/host-colors';
 
 vi.mock('electron', () => ({ WebContentsView: vi.fn(), nativeTheme: { shouldUseDarkColors: true, on: vi.fn(), off: vi.fn() }, protocol: {} }));
 
-import { MAX_BUILD_LOG_LINES, MAX_DEVCONTAINER_TRUST_VALUES, type DevcontainerTrustRequest, type HostCardInfo, type OverlayRequest } from '../../preload/overlay-channels';
-import { devcontainerTrustAccepted, parseConnectHosts, parseConnectStep, parseDevcontainerTrustRequest, parseHostEntries, parseOverlayAnswer } from '../overlay';
+import { MAX_BUILD_LOG_LINES, MAX_DEVCONTAINER_TRUST_VALUES, type DevcontainerTrustRequest, type GitCredentialConsent, type HostCardInfo, type OverlayRequest } from '../../preload/overlay-channels';
+import { devcontainerTrustAccepted, parseConnectHosts, parseConnectStep, parseDevcontainerTrustRequest, parseGitCredentialConsentRequest, parseHostEntries, parseOverlayAnswer } from '../overlay';
 import { parseConnectTarget } from '../remote/connect-channels';
 
 const ID = '28f4e6f33d7eb0c2fa0a1a525fdb39d5ef72c206dbca3f397ed48e8b10aa3a24';
@@ -89,6 +90,33 @@ describe('container cards, steps and targets', () => {
     expect(parseConnectTarget({ target: { devcontainer: 'C:\\work\\app', name: 'app' } })).toEqual({ devcontainer: 'C:\\work\\app', name: 'app' });
     for (const target of [{ attach: '--privileged', user: 'root', name: 'x' }, { attach: ID, user: 'admin', name: 'x' }, { devcontainer: 'relative', name: 'x' }, { devcontainer: '/srv/a\nb', name: 'x' }, { devcontainer: '/srv/app', name: 'x', extra: 1 }]) {
       expect(parseConnectTarget({ target })).toBeUndefined();
+    }
+  });
+});
+
+// A host color lands in the overlay's inline style, so every request carrying one keeps only a tone or #rrggbbaa.
+describe('host colors at the overlay boundary', () => {
+  const CUSTOM = canonicalHostColor('#00808099')!;
+  const JUNK = ['#ff0000', '#00A0A0FF', '#00a0a000', 'teal', 'url(x)', '#00ff00ff;background:url(x)', 7];
+
+  it('keeps a custom color on the devcontainer confirmation and the git consent, and refuses junk', () => {
+    expect(parseDevcontainerTrustRequest({ ...trust, hostName: 'prod-1', hostColor: CUSTOM })).toMatchObject({ hostColor: CUSTOM });
+    const consent = { hostName: 'prod-1', hostColor: CUSTOM, credentialHost: 'github.com', targetHelper: false } as GitCredentialConsent;
+    expect(parseGitCredentialConsentRequest(consent)).toMatchObject({ hostColor: CUSTOM });
+    for (const hostColor of JUNK) {
+      expect(parseDevcontainerTrustRequest({ ...trust, hostName: 'prod-1', hostColor } as unknown as DevcontainerTrustRequest)).toBeUndefined();
+      expect(parseGitCredentialConsentRequest({ ...consent, hostColor } as unknown as GitCredentialConsent)).toBeUndefined();
+    }
+  });
+
+  it('keeps a custom color on a Connect card and a Settings host entry, and refuses junk', () => {
+    const card = { hostId: 'h1', kind: 'ssh', name: 'prod-1', destinationLabel: 'prod-1', connection: 'offline', signInNeeded: false, recentFolders: [], projectFolders: [], notices: [], allowBypass: false, passwordless: false, keyInstalledByDamocles: false, lingerEnabledByDamocles: false };
+    expect(parseConnectHosts([{ ...card, color: CUSTOM }])).toEqual([{ ...card, color: CUSTOM }]);
+    const entry = { hostId: 'h1', kind: 'ssh', authorityKey: 'ssh+h1', name: 'prod-1', destinationLabel: 'prod-1', connection: 'offline', settings: { allowBypass: false, forwardAgent: false, rememberPassword: false, browserLocalNetwork: false, openLinksWithoutAsking: false }, facts: { passwordless: false, keyInstalledByDamocles: false, lingerEnabledByDamocles: false, alwaysCredentialHosts: [] }, heldMemoryQueues: [] };
+    expect(parseHostEntries([{ ...entry, settings: { ...entry.settings, color: CUSTOM } }])?.[0]?.settings.color).toBe(CUSTOM);
+    for (const color of JUNK) {
+      expect(parseConnectHosts([{ ...card, color }])).toBeUndefined();
+      expect(parseHostEntries([{ ...entry, settings: { ...entry.settings, color } }])).toBeUndefined();
     }
   });
 });

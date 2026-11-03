@@ -76,3 +76,20 @@ export function isInsideFolder(location: { readonly os: NodeJS.Platform }, folde
   const relative = flavor.relative(folder, target);
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${flavor.sep}`) && !flavor.isAbsolute(relative));
 }
+
+/**
+ * The deepest root that holds target below it as written, by the OS's path rules and with no file system call, and target's
+ * '/'-separated path in it; undefined when none does. A path a root holds is that root's to confine, wherever it is stored.
+ */
+export function rootHolding<R extends { readonly fsPath: string }>(location: { readonly os: NodeJS.Platform }, roots: readonly R[], target: string): { readonly root: R; readonly relativePath: string } | undefined {
+  // a POSIX kernel resolves '..' after the link before it, so no lexical reading of a dot segment names the file
+  if (target.split(location.os === 'win32' ? /[\\/]/ : '/').some((segment) => segment === '.' || segment === '..')) return undefined;
+  const flavor = pathFor(location);
+  let found: { readonly root: R; readonly relativePath: string } | undefined;
+  for (const root of roots) {
+    if (!isInsideFolder(location, root.fsPath, target) || (found && found.root.fsPath.length >= root.fsPath.length)) continue;
+    const relative = flavor.relative(root.fsPath, target);
+    if (relative !== '') found = { root, relativePath: relative.split(flavor.sep).join('/') };
+  }
+  return found;
+}

@@ -22,7 +22,7 @@ import { visibleArgs } from "../../../shared/visible-text";
 import { LocalizedError } from "../../../shared/localized-text";
 import { l, verbatim } from "../../l10n";
 import { LANGUAGE_PREFERENCE_KEY } from "../../../shared/language-preference";
-import { VOICE_VIEW_MESSAGES } from "../../../shared/remote-user";
+import { REMOTE_CHAT_USER_SETTING_MESSAGES, VOICE_VIEW_MESSAGES } from "../../../shared/remote-user";
 
 /**
  * Where a settings view's request is answered: on a panel several devices show, that device's chat views, and the settings
@@ -60,7 +60,7 @@ export interface MessageRouterConfig {
 
 export class MessageRouter {
   private readonly handlers: HandlerRegistry;
-  private readonly viewHandlers: ViewHandlerRegistry;
+  private readonly foreignHandlers: ViewHandlerRegistry;
   private readonly viewJoin: ReturnType<typeof createViewJoin>;
   private readonly getPanels: MessageRouterConfig["getPanels"];
   private readonly postMessage: MessageRouterConfig["postMessage"];
@@ -97,7 +97,7 @@ export class MessageRouter {
       worktrees: config.worktrees,
       broadcastAccountState: config.broadcastAccountState,
     };
-    ({ handlers: this.handlers, viewHandlers: this.viewHandlers } = createHandlerRegistry(deps));
+    ({ handlers: this.handlers, foreignHandlers: this.foreignHandlers } = createHandlerRegistry(deps));
     this.viewJoin = createViewJoin(deps);
     // each device's views render core's text in that device's language
     const remote = config.platform.remote;
@@ -143,10 +143,14 @@ export class MessageRouter {
     await platform.state.global.update(LANGUAGE_PREFERENCE_KEY, locale);
   }
 
-  /** A remote chat view's voice message on this computer's core: only VOICE_VIEW_MESSAGES, whose handlers read only the host they reply to. */
+  /**
+   * A remote chat view's message on this computer's core: only VOICE_VIEW_MESSAGES and REMOTE_CHAT_USER_SETTING_MESSAGES,
+   * whose handlers read only the host they reply to.
+   */
   async dispatchForeign(host: PanelHost, message: WebviewToExtensionMessage): Promise<void> {
-    const handler = this.viewHandlers[message.type];
-    if (!VOICE_VIEW_MESSAGES.has(message.type) || !handler) throw new Error(`${message.type} does not reach this computer from a remote chat`);
+    const allowed = VOICE_VIEW_MESSAGES.has(message.type) || REMOTE_CHAT_USER_SETTING_MESSAGES.has(message.type);
+    const handler = allowed ? this.foreignHandlers[message.type] : undefined;
+    if (!handler) throw new Error(`${message.type} does not reach this computer from a remote chat`);
     await handler(message, { host });
   }
 

@@ -115,6 +115,21 @@ describe('ConsolidationOverlay actions', () => {
     expect(persist.text()).toContain(i18n.global.t('consolidation.stepper.reason.noQueuedTurns'));
   });
 
+  it('names the server in the finished profiles step where the host keeps global memory there', async () => {
+    const store = useConsolidationStore();
+    const wrapper = mountOverlay();
+    const profiles = () => wrapper.findAll('[data-testid="consolidation-phase"]')[4]!.text();
+    store.startRun();
+    store.applyProgress({ phase: 'profiles', status: 'done' });
+    await wrapper.vm.$nextTick();
+    expect(profiles()).toContain('project · global');
+    expect(profiles()).not.toContain('this server');
+
+    useSettingsStore().hostCapabilities = { ...VSCODE_HOST_CAPABILITIES, globalMemoryOnServer: true };
+    await wrapper.vm.$nextTick();
+    expect(profiles()).toContain('project · global (this server)');
+  });
+
   it('shows no set-aside notice when no turn is set aside', () => {
     const wrapper = mountOverlay({ kind: 'error', detail: 'boom', phase: 'extract' });
     expect(wrapper.find('[data-testid="consolidation-set-aside"]').exists()).toBe(false);

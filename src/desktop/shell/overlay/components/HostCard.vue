@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref, useId } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { ArrowLeft, Box, FileText, FolderPlus, Key, KeyRound, Laptop, Pencil, Plug, Server, Settings2, Shield, SquareTerminal, TriangleAlert, Users, X } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
+import { hostColorLook } from '@shared/host-colors';
 import { visibleText } from '@shared/visible-text';
 import type { HostCardInfo, HostRun, InstallFolderResult, LingerResult, NameCheck, RemoteBrowseResult } from '../../../preload/overlay-channels';
 import HostStatusDot from '../../components/HostStatusDot.vue';
@@ -112,7 +113,7 @@ async function save(name: string): Promise<void> {
         aria-hidden="true"
         data-testid="host-card-icon"
         class="grid size-8.5 shrink-0 place-items-center rounded-10 bg-(--tone)/15"
-        :class="`d-tone-${host.color ?? 'muted'}`"
+        v-bind="hostColorLook(host.color)"
       >
         <SquareTerminal
           v-if="host.kind === 'wsl'"

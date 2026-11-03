@@ -22,7 +22,7 @@ import { settingsFolderOf, type FolderTarget } from '../../core/workspace-folder
 import type { Disposable } from '../../platform/disposable';
 import type { PanelHost } from '../../platform/window-service';
 import { holdsWorktreeSetup, isActiveActivity } from '../../shared/chat-retention';
-import { VOICE_VIEW_MESSAGES } from '../../shared/remote-user';
+import { FOREIGN_VIEW_NOT_ATTACHED, REMOTE_CHAT_USER_SETTING_MESSAGES, VOICE_VIEW_MESSAGES } from '../../shared/remote-user';
 import type { WebviewToExtensionMessage, WorktreePhase } from '../../shared/types/messages';
 import type { ChatEntry, FolderTargetEntry } from '../core-protocol';
 import { currentActor } from '../core-protocol/actor';
@@ -119,11 +119,6 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   const catalog = provider.getSessionCatalog();
   platform.setChatPrompts(provider.getWebviewPrompts());
 
-  subscriptions.push(
-    platform.settings.onDidChange('damocles.pi.webSearch.enabled', () => {
-      if (PiRuntime.exists) void PiRuntime.get().refreshWebSearch();
-    }),
-  );
   setupAutoDisable(provider.getVoiceService(), subscriptions, {
     onPanelsAllClosed: (callback: () => void) => panelManager.onAllPanelsClosed(callback),
   });
@@ -434,12 +429,14 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
     panels.attachForeign(authority, viewId);
   });
   endpoint.serve('panels.detachForeign', ({ viewId }) => panels.detachForeign(viewId));
-  // main sends only VOICE_VIEW_MESSAGES of a view it attached; checked again here
+  // main sends only VOICE_VIEW_MESSAGES and REMOTE_CHAT_USER_SETTING_MESSAGES of a view it attached; checked again here
   endpoint.serve('panels.foreignMessage', async ({ viewId, message }) => {
     const host = panels.foreign(viewId);
-    if (!host) throw new Error('The remote chat view is not attached');
+    if (!host) throw new Error(FOREIGN_VIEW_NOT_ATTACHED);
     const type = (message as { type?: unknown } | null)?.type;
-    if (typeof type !== 'string' || !VOICE_VIEW_MESSAGES.has(type)) throw new Error('Only voice messages reach this computer from a remote chat');
+    if (typeof type !== 'string' || !(VOICE_VIEW_MESSAGES.has(type) || REMOTE_CHAT_USER_SETTING_MESSAGES.has(type))) {
+      throw new Error('Only voice and user-setting messages reach this computer from a remote chat');
+    }
     await provider.dispatchForeign(host, message as WebviewToExtensionMessage);
   });
   endpoint.serve('worktree.retrySetup', ({ worktreeId }) => panelManager.retrySetup(worktreeId));

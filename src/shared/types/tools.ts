@@ -21,8 +21,33 @@ export const TOOL_GROUP_SETTINGS: Readonly<Record<SwitchableToolGroup, string>> 
   image: 'damocles.imageGeneration.enabled',
 };
 
+/** The per-tool switches' list: the active-set names (and URI-scoped entries) turned off. */
+export const TOOLS_DISABLED_SETTING = 'damocles.tools.disabled';
+
 export function isSwitchableToolGroup(group: ToolGroup): group is SwitchableToolGroup {
   return Object.hasOwn(TOOL_GROUP_SETTINGS, group);
+}
+
+/** The longest tool name a Tools switch writes into TOOLS_DISABLED_SETTING. */
+export const MAX_TOOL_NAME_CHARS = 256;
+
+/**
+ * The most entries a Tools switch leaves in TOOLS_DISABLED_SETTING: far above any chat's tool count, MCP tools included, and
+ * small enough for the clientUser every remote core gets.
+ */
+export const MAX_DISABLED_TOOLS = 1024;
+
+export const isToolSwitchName = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= MAX_TOOL_NAME_CHARS;
+
+/**
+ * `held`, the TOOLS_DISABLED_SETTING value a switch rewrites, with `toolName` on or off. Every other entry stays as it is, a
+ * hand-edited one that is not a name included; undefined when turning it off would pass MAX_DISABLED_TOOLS.
+ */
+export function toolsDisabledWith(held: unknown, toolName: string, enabled: boolean): unknown[] | undefined {
+  const list: readonly unknown[] = Array.isArray(held) ? held : [];
+  if (enabled) return list.filter((entry) => entry !== toolName);
+  if (list.includes(toolName)) return [...list];
+  return list.length >= MAX_DISABLED_TOOLS ? undefined : [...list, toolName];
 }
 
 /** Why the image group cannot run: no model chosen, a model pi's image catalog does not have, or no OpenRouter credential. */
@@ -55,12 +80,16 @@ export interface ToolGroupStatus {
   available: boolean;
   /** Set only on the image group, and only when `available` is false. */
   unavailableReason?: ToolGroupUnavailableReason;
+  /** Set only on a daemon's core, when the host's own settings file holds the group's key: the switch cannot change it there. */
+  setOnHost?: true;
 }
 
 /** The full Tools-panel snapshot: per-group master state + every tool's live state. */
 export interface ToolsSnapshot {
   groups: ToolGroupStatus[];
   tools: ToolStatusInfo[];
+  /** Set only on a daemon's core, when the host's own settings file holds TOOLS_DISABLED_SETTING: no tool switch can change it there. */
+  toolsSetOnHost?: true;
 }
 
 /** Every tool the session has on, core included; every enabled-tools summary uses this one count. */

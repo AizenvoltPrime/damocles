@@ -3,7 +3,7 @@ import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { DamoclesOverlayApi, InputBrowseResult, OverlayAnswer, OverlayRequest, OverlayState, PaletteCommand, QuickOpenResponse, QuickOpenScope } from '../../preload/overlay-channels';
 import type { ShellPlatform } from '../../preload/shell-channels';
-import { applyShellLocale } from '../i18n';
+import { applyShellLocale, createLocaleHold } from '../i18n';
 import { answerOf } from './popup-answer';
 import ContextMenu from './components/ContextMenu.vue';
 import ConfirmDialog from './components/ConfirmDialog.vue';
@@ -23,9 +23,9 @@ import CloseRemoteDialog from './components/CloseRemoteDialog.vue';
 import GitConsentDialog from './components/GitConsentDialog.vue';
 import DevcontainerTrustDialog from './components/DevcontainerTrustDialog.vue';
 import AllowYoloDialog from './components/AllowYoloDialog.vue';
-import { commandsModel, quickOpenItemId, quickOpenModel, type QuickPickModel } from './quick-pick';
+import { commandsModel, quickOpenModel, quickOpenPick, type QuickOpenLabels, type QuickPickModel } from './quick-pick';
 import OverlaySettings from './settings/OverlaySettings.vue';
-import { applySettingsLocale } from './settings/settings-messages';
+import { applySettingsLocale, settingsLocalePending } from './settings/settings-messages';
 import type { OverlaySettingsBridge } from './settings/overlay-bridge';
 
 const props = defineProps<{ api: DamoclesOverlayApi; settingsBridge: OverlaySettingsBridge }>();
@@ -35,10 +35,11 @@ const { t, locale } = useI18n();
 const platform = ref<ShellPlatform>('win32');
 
 // Mounted before main's state arrives: main sends requests from did-finish-load and this page acknowledges them from its
-// mount, so no load may hold the mount; the settings' catalogs load as the state names a language.
+// mount, so no load may hold the mount. The entry starts the catalogs' loads from <html lang>, each state loads the language
+// it names, and requests wait for the shell's catalog, a settings request also for the settings' (createLocaleHold).
 // Settings messages are not held across that load: their handlers store core's text for reactive rendering, and this page mounts no vue-sonner Toaster.
 function applyState(state: OverlayState): void {
-  applyShellLocale(state.locale);
+  void applyShellLocale(state.locale);
   void applySettingsLocale(state.locale);
   platform.value = state.platform;
 }
@@ -127,14 +128,32 @@ async function loadQuickOpen(query: string): Promise<QuickPickModel | undefined>
   if (!response) return undefined;
   // QuickPick shows only the newest query's answer, so a pick reads only that one.
   if (response.generation === quickOpenGeneration) lastQuickOpen = response;
-  if (response.failed) return { rows: [], failure: t('quickOpen.loadFailed') };
-  return quickOpenModel(response, query.trim() === '' && quickOpenScope === undefined, {
+  const model: QuickPickModel = response.failed ? { rows: [], failure: t('quickOpen.loadFailed') } : quickOpenModel(response, query.trim() === '' && quickOpenScope === undefined, quickOpenLabels());
+  return response.pathPending ? { ...model, update: typedPathModel(generation) } : model;
+}
+
+// The typed path's row main resolved after the text search answered the query of generation; undefined when it has none.
+async function typedPathModel(generation: number): Promise<QuickPickModel | undefined> {
+  let response: QuickOpenResponse | null | undefined;
+  try {
+    response = await answerOf(props.api.quickOpenPath(generation));
+  } catch {
+    return { rows: [], failure: t('quickOpen.loadFailed') };
+  }
+  if (!response || response.generation !== quickOpenGeneration || paletteMode.value) return undefined;
+  lastQuickOpen = response;
+  return quickOpenModel(response, false, quickOpenLabels());
+}
+
+function quickOpenLabels(): QuickOpenLabels {
+  return {
     recent: t('quickOpen.recent'),
     current: (project) => t('quickOpen.current', { project }),
     other: (project) => project,
     goToLine: (line) => t('quickOpen.goToLine', { line }),
+    goToLineColumn: (line, column) => t('quickOpen.goToLineColumn', { line, column }),
     mention: t('quickOpen.mention'),
-  });
+  };
 }
 
 function pickQuickOpen(id: string, itemId: string): void {
@@ -142,11 +161,8 @@ function pickQuickOpen(id: string, itemId: string): void {
     answer(id, { kind: 'quickOpen', command: itemId });
     return;
   }
-  const response = lastQuickOpen;
-  const result = response?.results.find((candidate) => quickOpenItemId(candidate) === itemId);
-  if (!response || !result) return;
-  const line = response.line;
-  answer(id, { kind: 'quickOpen', pick: { projectKey: result.projectKey, relativePath: result.relativePath, mention: response.mention, ...(line === undefined ? {} : { line }) } });
+  const pick = lastQuickOpen && quickOpenPick(lastQuickOpen, itemId);
+  if (pick) answer(id, { kind: 'quickOpen', pick });
 }
 
 // An input box's folder button; undefined when main answered that the box closed.
@@ -160,20 +176,24 @@ function onKeydown(event: KeyboardEvent): void {
 }
 
 const stops: Array<() => void> = [];
+// A request, and a cancel ordered behind it, reach the list once the language main named before it has loaded.
+const afterLocale = createLocaleHold();
 onMounted(async () => {
   stops.push(props.api.onRequest((id, request) => {
     // Sent before the render, which can outlast main's deadline on a cold or busy renderer; the deadline proves only that this page answers.
     props.api.ack(id);
-    if (request.kind === 'quickOpen') {
-      paletteCommands = undefined;
-      quickOpenScope = request.scope;
-    }
-    open.value = [...open.value, { id, request }];
-    void nextTick(() => {
-      if (open.value.some((entry) => entry.id === id)) props.api.shown(id);
-    });
+    afterLocale(() => {
+      if (request.kind === 'quickOpen') {
+        paletteCommands = undefined;
+        quickOpenScope = request.scope;
+      }
+      open.value = [...open.value, { id, request }];
+      void nextTick(() => {
+        if (open.value.some((entry) => entry.id === id)) props.api.shown(id);
+      });
+    }, request.kind === 'settings' ? settingsLocalePending : undefined);
   }));
-  stops.push(props.api.onCancel((id) => void close(id)));
+  stops.push(props.api.onCancel((id) => afterLocale(() => void close(id))));
   // Subscribed before the first read, so a language change between the two is not lost.
   stops.push(props.api.onState(applyState));
   window.addEventListener('keydown', onKeydown);

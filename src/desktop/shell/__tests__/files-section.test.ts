@@ -324,13 +324,14 @@ function dataTransfer(types: string[], data: Record<string, string> = {}, files:
 
 type FakeTransfer = ReturnType<typeof dataTransfer>;
 
-function drag(target: Element, type: string, transfer: FakeTransfer, init: { ctrlKey?: boolean; altKey?: boolean; relatedTarget?: Element | null } = {}): Event {
+function drag(target: Element, type: string, transfer: FakeTransfer, init: { ctrlKey?: boolean; altKey?: boolean; relatedTarget?: Element | null; clientY?: number } = {}): Event {
   const event = new Event(type, { bubbles: true, cancelable: true });
   Object.defineProperties(event, {
     dataTransfer: { value: transfer },
     ctrlKey: { value: init.ctrlKey ?? false },
     altKey: { value: init.altKey ?? false },
     relatedTarget: { value: init.relatedTarget ?? null },
+    clientY: { value: init.clientY ?? 0 },
   });
   target.dispatchEvent(event);
   return event;
@@ -474,6 +475,18 @@ describe('Files drop target', () => {
     expect(api.dropFilesRow).toHaveBeenCalledTimes(2);
   });
 
+  it('takes a row drag that left the tree and came back, since only its dragend ends it', async () => {
+    const { wrapper, api } = await mountFiles();
+    drag(rowElement(wrapper, 'notes.txt'), 'dragstart', dataTransfer([]));
+    const transfer = dataTransfer([FILES_ROW_DRAG_MIME], { [FILES_ROW_DRAG_MIME]: ROW_PAYLOAD('notes.txt') });
+    drag(rowElement(wrapper, 'src'), 'dragover', transfer);
+    drag(tree(wrapper), 'dragleave', transfer, { relatedTarget: document.body });
+    expect(drag(rowElement(wrapper, 'src'), 'dragover', transfer).defaultPrevented).toBe(true);
+    drag(rowElement(wrapper, 'src'), 'drop', transfer);
+    await flushPromises();
+    expect(api.dropFilesRow).toHaveBeenCalledWith({ from: { projectKey: 'home', relativePath: 'notes.txt' }, toDir: { projectKey: 'home', relativePath: 'src' }, copy: false });
+  });
+
   it('copies with Option on macOS, where Ctrl does not', async () => {
     const { wrapper, api } = await mountFiles({ platform: 'darwin' });
     for (const [init, copy] of [[{ ctrlKey: true }, false], [{ altKey: true }, true]] as const) {
@@ -577,6 +590,98 @@ describe('Files drop target', () => {
     expect(drag(rowElement(wrapper, 'src'), 'drop', forged).defaultPrevented).toBe(false);
     await flushPromises();
     expect(api.dropFilesRow).not.toHaveBeenCalled();
+  });
+});
+
+// happy-dom lays nothing out: the tree spans y 100-300 and scrolls 0-800. The edge zones are 35px at the 16px root.
+function scrollableTree(wrapper: VueWrapper): { scrollTop: number } {
+  const element = tree(wrapper);
+  const state = { scrollTop: 400 };
+  Object.defineProperties(element, {
+    scrollHeight: { configurable: true, get: () => 1000 },
+    clientHeight: { configurable: true, get: () => 200 },
+    scrollTop: { configurable: true, get: () => state.scrollTop, set: (value: number) => { state.scrollTop = value; } },
+  });
+  element.getBoundingClientRect = () => ({ top: 100, bottom: 300, left: 0, right: 200, width: 200, height: 200, x: 0, y: 100, toJSON: () => ({}) });
+  return state;
+}
+
+// How far the tree scrolled over `frames` animation frames.
+function scrolledOver(state: { scrollTop: number }, frames: number): number {
+  const before = state.scrollTop;
+  for (let i = 0; i < frames; i++) vi.advanceTimersToNextFrame();
+  return state.scrollTop - before;
+}
+
+describe('Files drag auto-scroll', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'requestAnimationFrame', 'cancelAnimationFrame'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('scrolls while a drag is held in the top or bottom edge zone, and not in the middle', async () => {
+    const { wrapper } = await mountFiles();
+    const state = scrollableTree(wrapper);
+    const files = dataTransfer(['Files']);
+    drag(tree(wrapper), 'dragover', files, { clientY: 200 });
+    expect(scrolledOver(state, 3)).toBe(0);
+    drag(tree(wrapper), 'dragover', files, { clientY: 299 });
+    expect(scrolledOver(state, 3)).toBeGreaterThan(0);
+    drag(tree(wrapper), 'dragover', files, { clientY: 101 });
+    expect(scrolledOver(state, 3)).toBeLessThan(0);
+  });
+
+  it('scrolls over a spot that takes no drop, so the drag can reach one that does', async () => {
+    const { wrapper } = await mountFiles();
+    const state = scrollableTree(wrapper);
+    drag(rowElement(wrapper, 'notes.txt'), 'dragstart', dataTransfer([]));
+    const transfer = dataTransfer([FILES_ROW_DRAG_MIME], { [FILES_ROW_DRAG_MIME]: ROW_PAYLOAD('notes.txt') });
+    expect(drag(rowElement(wrapper, 'todo.md'), 'dragover', transfer, { clientY: 299 }).defaultPrevented).toBe(false);
+    expect(scrolledOver(state, 3)).toBeGreaterThan(0);
+  });
+
+  it('stops on a drop, on leaving the tree and when the row drag ends', async () => {
+    const { wrapper } = await mountFiles();
+    const state = scrollableTree(wrapper);
+    const ends: Array<[string, () => void]> = [
+      ['drop', () => drag(tree(wrapper), 'drop', dataTransfer(['Files']), { clientY: 299 })],
+      ['dragleave', () => drag(tree(wrapper), 'dragleave', dataTransfer(['Files']), { relatedTarget: document.body })],
+      ['dragend', () => drag(rowElement(wrapper, 'notes.txt'), 'dragend', dataTransfer([]))],
+    ];
+    for (const [name, end] of ends) {
+      drag(rowElement(wrapper, 'notes.txt'), 'dragstart', dataTransfer([]));
+      const transfer = name === 'dragend' ? dataTransfer([FILES_ROW_DRAG_MIME], { [FILES_ROW_DRAG_MIME]: ROW_PAYLOAD('notes.txt') }) : dataTransfer(['Files']);
+      drag(tree(wrapper), 'dragover', transfer, { clientY: 299 });
+      expect(scrolledOver(state, 2), name).toBeGreaterThan(0);
+      end();
+      expect(scrolledOver(state, 3), name).toBe(0);
+    }
+  });
+
+  it('keeps scrolling when the drag leaves one row for another inside the tree', async () => {
+    const { wrapper } = await mountFiles();
+    const state = scrollableTree(wrapper);
+    const files = dataTransfer(['Files']);
+    drag(rowElement(wrapper, 'todo.md'), 'dragover', files, { clientY: 299 });
+    drag(rowElement(wrapper, 'todo.md'), 'dragleave', files, { relatedTarget: rowElement(wrapper, 'notes.txt') });
+    expect(scrolledOver(state, 3)).toBeGreaterThan(0);
+  });
+
+  it('hides the tree\'s overflow only while the drag is in an edge zone, so Chromium\'s own drag scroll stays off and the wheel stays on', async () => {
+    const { wrapper } = await mountFiles();
+    scrollableTree(wrapper);
+    const files = dataTransfer(['Files']);
+    const hidden = () => tree(wrapper).classList.contains('overflow-y-hidden!');
+    for (const [y, held] of [[200, false], [299, true], [200, false], [101, true]] as const) {
+      drag(tree(wrapper), 'dragover', files, { clientY: y });
+      await wrapper.vm.$nextTick();
+      expect(hidden(), `y ${y}`).toBe(held);
+    }
+    drag(tree(wrapper), 'dragleave', files, { relatedTarget: document.body });
+    await wrapper.vm.$nextTick();
+    expect(hidden()).toBe(false);
   });
 });
 

@@ -42,6 +42,7 @@ const change = (path: string): ScmChange => ({ path, status: 'MODIFIED', letter:
 
 const mounted: VueWrapper[] = [];
 
+
 beforeEach(() => {
   shellI18n.global.locale.value = 'en';
   vi.stubGlobal('ResizeObserver', FakeResizeObserver);

@@ -26,7 +26,7 @@ import {
   type HostSettingChange,
   HOST_SWITCH_KEYS,
 } from '../../preload/overlay-channels';
-import { isHostTone } from '../../../shared/host-tones';
+import { isHostColor } from '../../../shared/host-colors';
 import { PERMISSION_MODES, type PermissionMode } from '../../../shared/types/settings';
 import { isCredentialHost } from './host-store';
 import { isWslDistroName } from './wsl/distro-name';
@@ -107,7 +107,7 @@ export function parseHostSettingChange(raw: unknown): HostSettingChange | undefi
   const change = exactFields(raw, ['key', 'value']);
   if (!change) return undefined;
   const { key, value } = change;
-  if (key === 'color') return value === null || isHostTone(value) ? { key, value } : undefined;
+  if (key === 'color') return value === null || isHostColor(value) ? { key, value } : undefined;
   if (key === 'defaultPermissionMode') return value === null || (PERMISSION_MODES as readonly unknown[]).includes(value) ? { key, value: value as PermissionMode | null } : undefined;
   if (key === 'osOverride') return value === null || TARGET_OSES.includes(value) ? { key, value: value as 'win32' | 'darwin' | 'linux' | null } : undefined;
   if ((HOST_SWITCH_KEYS as readonly unknown[]).includes(key) && typeof value === 'boolean') return { key: key as (typeof HOST_SWITCH_KEYS)[number], value };

@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
-import type { ProjectsView, ShellProject, ShellProjectGroups } from '../../preload/shell-channels';
+import { canonicalHostColor } from '@shared/host-colors';
+import type { ProjectsView, ShellHost, ShellProject, ShellProjectGroups } from '../../preload/shell-channels';
 import ProjectsSection from '../components/ProjectsSection.vue';
 import { shellI18n } from '../i18n';
 import { FakeResizeObserver, STATE, fakeShellApi, type FakeShellApi } from './fakes';
@@ -44,6 +45,7 @@ interface Options {
   view?: ProjectsView;
   projects?: readonly ShellProject[];
   groups?: ShellProjectGroups;
+  hosts?: readonly ShellHost[];
   api?: FakeShellApi;
 }
 
@@ -54,7 +56,7 @@ function mountSection(options: Options = {}): { wrapper: VueWrapper; api: FakeSh
       api,
       projects: options.projects ?? PROJECTS,
       selectedKey: 'a',
-      hosts: [],
+      hosts: options.hosts ?? [],
       view: options.view ?? 'grouped',
       groups: options.groups ?? GROUPS,
       platform: 'win32',
@@ -184,6 +186,25 @@ describe('grouped Projects view', () => {
     expect(count.classes()).toContain('d-tone-warning');
     expect(header(wrapper, 'ssh+h1').attributes('aria-label')).toBe('prod-1, Connected, collapsed, 2 chats working or waiting');
     expect(wrapper.find('[data-group="local"] [data-testid="group-activity-badge"]').exists()).toBe(false);
+  });
+
+  it('tints a group icon in its tone\'s text shade, and shows a custom color as a dot on an icon left in the header\'s color', () => {
+    const hosts: ShellHost[] = [
+      { hostId: 'h1', kind: 'ssh', authorityKey: 'ssh+h1', name: 'prod-1', color: 'danger', connection: 'connected', signInNeeded: false },
+      { hostId: 'h2', kind: 'ssh', authorityKey: 'ssh+h2', name: 'staging', color: canonicalHostColor('#ffff8080')!, connection: 'connected', signInNeeded: false },
+    ];
+    const projects = [...PROJECTS, project('z', STAGING)];
+    const { wrapper } = mountSection({ projects, hosts, groups: { order: [...GROUPS.order, 'ssh+h2'], collapsed: [] } });
+    const icon = (group: string) => header(wrapper, group).get<SVGElement>('[data-testid="project-group-icon"]');
+    expect(icon('ssh+h1').classes()).toContain('d-tone-danger');
+    expect(header(wrapper, 'ssh+h1').find('[data-testid="project-group-color"]').exists()).toBe(false);
+    expect(icon('ssh+h2').classes().filter((name) => name.startsWith('d-tone-') || name.startsWith('text-'))).toEqual([]);
+    expect(icon('ssh+h2').attributes('style')).toBeUndefined();
+    const dot = header(wrapper, 'ssh+h2').get<HTMLElement>('[data-testid="project-group-color"]');
+    expect(dot.classes()).toEqual(expect.arrayContaining(['d-tone-custom', 'bg-(--tone)']));
+    expect(dot.element.style.getPropertyValue('--host-rgb')).toBe('255 255 128');
+    expect(dot.attributes('aria-hidden')).toBe('true');
+    expect(icon('local').classes().some((name) => name.startsWith('d-tone-'))).toBe(false);
   });
 
   it('opens the header menu with Shift+F10 and the Menu key, and with a right click', async () => {

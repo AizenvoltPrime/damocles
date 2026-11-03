@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { WebContentsView, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent, type WebContents } from 'electron';
 import { MAX_CREDENTIAL_HOST_CHARS } from '../../shared/git-credential';
 import { HOST_THEME_STYLE_ID } from '../../shared/host-theme';
-import { isHostTone } from '../../shared/host-tones';
+import { isHostColor } from '../../shared/host-colors';
 import {
   MAX_OVERLAY_COORDINATE,
   MAX_COMMAND_ID_LENGTH,
@@ -21,6 +21,7 @@ import {
   MAX_SSH_CONFIG_ALIASES,
   OVERLAY_ACK_TIMEOUT_MS,
   OVERLAY_CHANNELS,
+  OVERLAY_REQUEST_PUSHES,
   OVERLAY_CLIPBOARD_ACTIONS,
   OVERLAY_ICONS,
   OVERLAY_QUICK_PICK_ICONS,
@@ -99,7 +100,7 @@ import { isFullRefName, MAX_SCM_HISTORY_REFS } from '../preload/scm-channels';
 import { MAX_INPUT_VALUE_LENGTH } from '../../shared/input-validation';
 import type { PanelTheme } from '../preload/panel-channels';
 import { TERMINAL_COLORS, TERMINAL_CUSTOM_ICONS, TERMINAL_ICONS, type TerminalColor, type TerminalGlyph } from '../preload/terminal-channels';
-import { DEFAULT_GRID_LAYOUT, GRID_PANES, GRID_SLOTS, MAX_EDITOR_LINE, MAX_TAG_LENGTH, PROJECT_CONNECTIONS, type GridPane, type GridSlot, type ProjectConnection, type ShellPlatform } from '../preload/shell-channels';
+import { DEFAULT_GRID_LAYOUT, GRID_PANES, GRID_SLOTS, MAX_EDITOR_LINE, MAX_TAG_LENGTH, PROJECT_CONNECTIONS, type GridPane, type GridSlot, type ProjectConnection, type ShellLocale, type ShellPlatform } from '../preload/shell-channels';
 import { isRelativeFilePath } from '../../shared/relative-path';
 import { isWorktreeId } from '../../shared/worktree-id';
 import { visibleText } from '../../shared/visible-text';
@@ -731,7 +732,7 @@ function parseHostCard(raw: unknown): HostCardInfo | undefined {
   const devices = field(raw, 'devices') === undefined ? undefined : parseList(field(raw, 'devices'), MAX_HOST_DEVICES, parseDevice);
   if (!isNonEmptyText(hostId, MAX_OVERLAY_ID_LENGTH) || !isNonEmptyText(name, MAX_HOST_NAME_LENGTH * 2) || !isNonEmptyText(destinationLabel, MAX_OVERLAY_LABEL_LENGTH * 4)) return undefined;
   if (!(PROJECT_CONNECTIONS as readonly unknown[]).includes(connection) || typeof signInNeeded !== 'boolean' || !recentFolders || !projectFolders || !notices) return undefined;
-  if ((color !== undefined && !isHostTone(color)) || (os !== undefined && !SHELL_PLATFORMS.has(os)) || (lastUsed !== undefined && !isTime(lastUsed))) return undefined;
+  if ((color !== undefined && !isHostColor(color)) || (os !== undefined && !SHELL_PLATFORMS.has(os)) || (lastUsed !== undefined && !isTime(lastUsed))) return undefined;
   if ((clockSkewMs !== undefined && !Number.isSafeInteger(clockSkewMs)) || (installFolder !== undefined && !isNonEmptyText(installFolder, MAX_REMOTE_PATH_LENGTH))) return undefined;
   if (defaultPermissionMode !== undefined && !(PERMISSION_MODES as readonly unknown[]).includes(defaultPermissionMode)) return undefined;
   if (!flags.every((flag) => typeof flag === 'boolean') || (agentForwarding !== undefined && typeof agentForwarding !== 'boolean')) return undefined;
@@ -851,7 +852,7 @@ function parseHostSettings(raw: unknown): RemoteHostSettings | undefined {
   const osOverride = field(raw, 'osOverride');
   const installFolder = field(raw, 'installFolder');
   const switches = HOST_SWITCH_KEYS.map((key) => field(raw, key));
-  if ((color !== undefined && !isHostTone(color)) || (defaultPermissionMode !== undefined && !(PERMISSION_MODES as readonly unknown[]).includes(defaultPermissionMode))) return undefined;
+  if ((color !== undefined && !isHostColor(color)) || (defaultPermissionMode !== undefined && !(PERMISSION_MODES as readonly unknown[]).includes(defaultPermissionMode))) return undefined;
   if ((osOverride !== undefined && !SHELL_PLATFORMS.has(osOverride)) || (installFolder !== undefined && !isNonEmptyText(installFolder, MAX_REMOTE_PATH_LENGTH))) return undefined;
   if (!switches.every((value) => typeof value === 'boolean')) return undefined;
   const [allowBypass, forwardAgent, rememberPassword, browserLocalNetwork, openLinksWithoutAsking] = switches as boolean[];
@@ -949,6 +950,8 @@ export function parseConnectRequest(raw: unknown): Extract<OverlayRequest, { kin
   const pick = field(raw, 'pick') === undefined ? undefined : parsePick(field(raw, 'pick'));
   const query = field(raw, 'query');
   const anchor = field(raw, 'anchor') === undefined ? undefined : parseRect(field(raw, 'anchor'));
+  const purpose = field(raw, 'purpose');
+  if (purpose !== undefined && (purpose !== 'signIn' || hostId === undefined || card !== undefined || field(raw, 'pick') !== undefined)) return undefined;
   // an anchored card never shows a timeline, whose Escape would cancel the attempt
   if (field(raw, 'anchor') !== undefined && (!anchor || card !== 'show' || field(raw, 'attempt') !== undefined)) return undefined;
   if (hostId !== undefined && !isNonEmptyText(hostId, MAX_OVERLAY_ID_LENGTH)) return undefined;
@@ -968,6 +971,7 @@ export function parseConnectRequest(raw: unknown): Extract<OverlayRequest, { kin
     ...(attempt ? { attempt } : {}),
     ...(pick ? { pick } : {}),
     ...(query !== undefined ? { query } : {}),
+    ...(purpose === 'signIn' ? { purpose } : {}),
   };
 }
 
@@ -1015,7 +1019,7 @@ export function closeRemoteResult(answer: OverlayAnswer): CloseRemoteResult {
 /** The git consent request (main/remote/git-credential-client.ts) within the overlay's bounds; undefined otherwise. */
 export function parseGitCredentialConsentRequest(consent: GitCredentialConsent): Extract<OverlayRequest, { kind: 'gitCredentialConsent' }> | undefined {
   const { hostName, hostColor, credentialHost, targetHelper } = consent;
-  if (!isNonEmptyText(hostName, MAX_OVERLAY_LABEL_LENGTH) || !isNonEmptyText(credentialHost, MAX_CREDENTIAL_HOST_CHARS) || (hostColor !== undefined && !isHostTone(hostColor))) return undefined;
+  if (!isNonEmptyText(hostName, MAX_OVERLAY_LABEL_LENGTH) || !isNonEmptyText(credentialHost, MAX_CREDENTIAL_HOST_CHARS) || (hostColor !== undefined && !isHostColor(hostColor))) return undefined;
   return { kind: 'gitCredentialConsent', hostName, ...(hostColor !== undefined ? { hostColor } : {}), credentialHost, targetHelper };
 }
 
@@ -1030,7 +1034,7 @@ export function gitCredentialConsentChoice(answer: OverlayAnswer): GitCredential
  */
 export function parseDevcontainerTrustRequest(request: DevcontainerTrustRequest): Extract<OverlayRequest, { kind: 'devcontainerTrust' }> | undefined {
   const { hostName, hostColor, folder, configPath, changed, items } = request;
-  if ((hostName !== undefined && !isNonEmptyText(hostName, MAX_HOST_NAME_LENGTH * 2)) || (hostColor !== undefined && !isHostTone(hostColor))) return undefined;
+  if ((hostName !== undefined && !isNonEmptyText(hostName, MAX_HOST_NAME_LENGTH * 2)) || (hostColor !== undefined && !isHostColor(hostColor))) return undefined;
   if (!isNonEmptyText(folder, MAX_REMOTE_PATH_LENGTH) || !isNonEmptyText(configPath, MAX_REMOTE_PATH_LENGTH) || typeof changed !== 'boolean') return undefined;
   if (!Array.isArray(items) || items.length > DEVCONTAINER_TRUST_FIELDS.length) return undefined;
   let values = 0;
@@ -1118,13 +1122,25 @@ function parseQuickOpenAnswer(raw: Record<string, unknown>): OverlayAnswer | und
   const pick = field(raw, 'pick');
   if (pick === null) return { kind: 'quickOpen', pick: null };
   if (!isRecord(pick)) return undefined;
+  const kind = field(pick, 'kind');
+  const line = field(pick, 'line');
+  const column = field(pick, 'column');
+  const mention = field(pick, 'mention');
+  const isPosition = (value: unknown): boolean => value === undefined || (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_EDITOR_LINE);
+  if (!isPosition(line) || !isPosition(column) || (line === undefined && column !== undefined)) return undefined;
+  const position = { ...(line !== undefined ? { line: line as number } : {}), ...(column !== undefined ? { column: column as number } : {}) };
+  if (kind === 'path') {
+    const authority = field(pick, 'authority');
+    const filePath = field(pick, 'path');
+    // the forms resolveOutside answers: a drive path or a POSIX one, never a UNC or device path
+    const absolute = isNonEmptyText(filePath, MAX_REMOTE_PATH_LENGTH) && !filePath.includes('\0') && (/^[A-Za-z]:[\\/]/.test(filePath) || (filePath.startsWith('/') && !filePath.startsWith('//')));
+    if (!isNonEmptyText(authority, MAX_OVERLAY_ID_LENGTH) || !absolute || mention !== false) return undefined;
+    return { kind: 'quickOpen', pick: { kind, authority, path: filePath, mention, ...position } };
+  }
   const projectKey = field(pick, 'projectKey');
   const relativePath = field(pick, 'relativePath');
-  const line = field(pick, 'line');
-  const mention = field(pick, 'mention');
-  if (!isNonEmptyText(projectKey, MAX_OVERLAY_ID_LENGTH) || !isRelativeFilePath(relativePath) || typeof mention !== 'boolean') return undefined;
-  if (line !== undefined && !(typeof line === 'number' && Number.isInteger(line) && line >= 1 && line <= MAX_EDITOR_LINE)) return undefined;
-  return { kind: 'quickOpen', pick: { projectKey, relativePath, mention, ...(line !== undefined ? { line } : {}) } };
+  if (kind !== 'project' || !isNonEmptyText(projectKey, MAX_OVERLAY_ID_LENGTH) || !isRelativeFilePath(relativePath) || typeof mention !== 'boolean') return undefined;
+  return { kind: 'quickOpen', pick: { kind, projectKey, relativePath, mention, ...position } };
 }
 
 // The ref is checked against fresh options when the shell asks for the chat; here only its form.
@@ -1368,12 +1384,12 @@ export function createQuickPickAsker(deps: QuickPickAskerDeps): AskQuickPick {
   };
 }
 
-/** The overlay page main serves at OVERLAY_PAGE_URL: the built overlay app under a fresh script nonce and the current theme. */
-export function overlayHtml(theme: PanelTheme): string {
+/** The overlay page main serves at OVERLAY_PAGE_URL: the built overlay app under a fresh script nonce, the current theme and the UI language. */
+export function overlayHtml(theme: PanelTheme, lang: ShellLocale): string {
   const nonce = randomBytes(16).toString('base64');
   const assets = `${APP_ORIGIN}/desktop-shell/assets`;
   return `<!DOCTYPE html>
-<html lang="en"${theme.reducedMotion ? ' data-reduced-motion' : ''} data-file-icon-theme="${theme.fileIconTheme}">
+<html lang="${lang}"${theme.reducedMotion ? ' data-reduced-motion' : ''} data-file-icon-theme="${theme.fileIconTheme}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1389,31 +1405,29 @@ export function overlayHtml(theme: PanelTheme): string {
 </html>`;
 }
 
-interface OpenRequest {
-  readonly id: string;
+// A request as its caller made it, held, waiting or open; one put back to wait keeps all of it.
+interface PendingRequest {
   readonly request: OverlayRequest;
-  readonly resolve: (answer: OverlayAnswer) => void;
-  readonly reject: (err: Error) => void;
+  readonly returnFocus: WebContents | undefined;
   readonly shown: (() => void) | undefined;
   // an input request's browse button
   readonly browse: InputBrowseHandler | undefined;
+  // pushes addressed to it while the page has not shown it, kept when it goes back to wait
+  readonly pushes: Array<{ readonly channel: string; readonly payload: unknown }>;
+  readonly resolve: (answer: OverlayAnswer) => void;
+  readonly reject: (err: Error) => void;
+}
+
+interface OpenRequest {
+  readonly id: string;
+  readonly request: OverlayRequest;
+  readonly pending: PendingRequest;
   // its browse handler is running, so a second call shows no second dialog
   browsing: boolean;
   readonly sentAt: number;
   cancelAckDeadline: (() => void) | undefined;
   acknowledgedAt: number | undefined;
   shownAt: number | undefined;
-}
-
-// A request made while the page loads or navigates, sent once a page has loaded and no navigation is pending.
-interface HeldRequest {
-  readonly request: OverlayRequest;
-  readonly returnFocus: WebContents | undefined;
-  readonly shown: (() => void) | undefined;
-  readonly browse: InputBrowseHandler | undefined;
-  readonly signal: AbortSignal | undefined;
-  readonly resolve: (answer: OverlayAnswer) => void;
-  readonly reject: (err: Error) => void;
 }
 
 // none: no page, and none is loading (before the first load, or a page left dead)
@@ -1433,8 +1447,9 @@ interface PendingRaster {
 
 /**
  * The window's top-most view: menus, dialogs and the settings modal drawn above every other view (plan AD1). It is
- * hidden, or covers the whole content area while a popup is open; toasts show in the desktop popup window (D52). A message
- * or worktree dialog stacks above whatever is open; any other new request dismisses every open request except those dialogs.
+ * hidden, or covers the whole content area while a popup is open; toasts show in the desktop popup window (D52). Main's
+ * questions (`stacks`) stack above whatever is on screen; any other new request dismisses every open request except those,
+ * and while one of them is open it waits instead, shown once the last of them settles.
  */
 export class OverlayHost {
   readonly view: WebContentsView;
@@ -1444,8 +1459,10 @@ export class OverlayHost {
   private readonly answering = new Set<Promise<unknown>>();
   // in the order they opened
   private open: OpenRequest[] = [];
-  // in the order they were made
-  private held: HeldRequest[] = [];
+  // main's questions made while the page loads or navigates, in the order they were made
+  private held: PendingRequest[] = [];
+  // The newest request that is not a question and not open: the page loads or navigates, or a question's scrim would cover it.
+  private waiting: PendingRequest | undefined;
   // where keyboard focus returns when the last open popup closes; never the overlay itself
   private returnFocus: WebContents | undefined;
   private currentMode: OverlayMode = 'hidden';
@@ -1491,11 +1508,12 @@ export class OverlayHost {
     this.handleWhileOpen(OVERLAY_CHANNELS.inputBrowse, () => this.isOpen('input'), async (raw): Promise<InputBrowseResult | null> => {
       const value = parseBrowseCall(raw);
       const open = this.open.find((entry) => entry.request.kind === 'input');
-      if (!open?.browse || open.browsing) return null;
+      const browse = open?.pending.browse;
+      if (!open || !browse || open.browsing) return null;
       open.browsing = true;
       let result: InputBrowseResult | undefined;
       try {
-        result = await open.browse(value);
+        result = await browse(value);
       } finally {
         open.browsing = false;
       }
@@ -1526,7 +1544,8 @@ export class OverlayHost {
         this.coldShow = false;
         this.deps.log(`[overlay] the first request since the page loaded (${open.request.kind}) was acknowledged in ${open.acknowledgedAt - open.sentAt} ms of ${OVERLAY_ACK_TIMEOUT_MS} and shown in ${open.shownAt - open.sentAt} ms`);
       }
-      open.shown?.();
+      for (const { channel, payload } of open.pending.pushes.splice(0)) this.send(channel, payload);
+      open.pending.shown?.();
     });
     this.on(OVERLAY_CHANNELS.answer, (requestId, raw) => {
       const open = this.openById(requestId);
@@ -1641,6 +1660,11 @@ export class OverlayHost {
     return this.open.some((entry) => entry.request.kind === kind);
   }
 
+  // Whether a request of this kind waits, not yet sent to the page, behind a question or a page load.
+  isWaiting(kind: OverlayRequest['kind']): boolean {
+    return this.waiting?.request.kind === kind;
+  }
+
   /** The newest open request of this kind, for a channel that answers for it (the New menu's options, a dialog's Generate). */
   openRequestOf<K extends OverlayRequest['kind']>(kind: K): Extract<OverlayRequest, { kind: K }> | undefined {
     return [...this.open].reverse().find((entry) => entry.request.kind === kind)?.request as Extract<OverlayRequest, { kind: K }> | undefined;
@@ -1667,26 +1691,24 @@ export class OverlayHost {
    * Shows a validated popup and resolves with the user's answer; a request made while the page loads waits for it. Rejects
    * when no page is loaded or loading, or the page misses the OVERLAY_ACK_TIMEOUT_MS acknowledgement, crashes, reloads or
    * fails to load; `shown` runs once the overlay has rendered it. Focus returns to returnFocus once every open request has
-   * closed. An aborted signal withdraws this request alone: it settles dismissed and closes in the page.
+   * closed. An aborted signal withdraws this request alone: it settles dismissed and closes in the page. A request that is
+   * not one of main's questions, made while one is open, waits until the last of them settles; one the page has not shown
+   * yet goes back to wait when a question opens.
    */
   request(request: OverlayRequest, returnFocus: WebContents | undefined, shown?: () => void, browse?: InputBrowseHandler, signal?: AbortSignal): Promise<OverlayAnswer> {
     if (signal?.aborted) return Promise.resolve({ kind: 'dismissed' });
     if (this.disposed || this.page === 'none' || this.view.webContents.isDestroyed()) {
       return Promise.reject(new Error('The overlay is not available'));
     }
-    if (this.page === 'loading' || this.navigating) return this.hold(request, returnFocus, shown, browse, signal);
-    if (this.view.webContents.isCrashed()) return Promise.reject(new Error('The overlay is not available'));
-    // Focus returns where it was before the first of the requests that are open together.
-    if (this.open.length === 0) this.returnFocus = returnFocus === this.view.webContents ? undefined : returnFocus;
-    if (!stacks(request)) {
-      for (const previous of this.open.filter((entry) => !stacks(entry.request))) this.settle(previous, { kind: 'dismissed' }, { keepFocus: true });
-    }
     return new Promise<OverlayAnswer>((resolve, reject) => {
-      const withdraw = (): void => this.withdraw(open);
+      const withdraw = (): void => this.withdraw(pending);
       const detach = (): void => signal?.removeEventListener('abort', withdraw);
-      const open: OpenRequest = {
-        id: randomUUID(),
+      const pending: PendingRequest = {
         request,
+        returnFocus,
+        shown,
+        browse,
+        pushes: [],
         resolve: (answer) => {
           detach();
           resolve(answer);
@@ -1695,42 +1717,42 @@ export class OverlayHost {
           detach();
           reject(err);
         },
-        shown,
-        browse,
-        browsing: false,
-        sentAt: Date.now(),
-        cancelAckDeadline: undefined,
-        acknowledgedAt: undefined,
-        shownAt: undefined,
       };
       signal?.addEventListener('abort', withdraw, { once: true });
-      open.cancelAckDeadline = tickDeadline(OVERLAY_ACK_TIMEOUT_MS, () => {
-        if (!this.open.includes(open)) return;
-        this.deps.log(`[overlay] the overlay did not acknowledge a ${request.kind} request within ${OVERLAY_ACK_TIMEOUT_MS} ms; hiding it`);
-        this.failAll(new Error('The overlay did not respond'));
-      });
-      this.open = [...this.open, open];
-      this.applyMode();
-      if (this.deps.window.isFocused()) this.focus();
-      else this.deps.awaitActivation();
-      this.send(OVERLAY_CHANNELS.request, { requestId: open.id, request });
+      this.place(pending);
     });
   }
 
-  /** Every open or held request of `kind` settles as dismissed, an open one closing in the page: its window closes, or its asker withdrew it. */
+  /** Every open, held or waiting request of `kind` settles as dismissed, an open one closing in the page: its window closes, or its asker withdrew it. */
   dismiss(kind: OverlayRequest['kind']): void {
     const held = this.held.filter((entry) => entry.request.kind === kind);
     this.held = this.held.filter((entry) => entry.request.kind !== kind);
     for (const entry of held) entry.resolve({ kind: 'dismissed' });
+    const waiting = this.waiting;
+    if (waiting?.request.kind === kind) {
+      this.waiting = undefined;
+      waiting.resolve({ kind: 'dismissed' });
+    }
     const dismissed = this.open.filter((entry) => entry.request.kind === kind);
     if (dismissed.length === 0) return;
     for (const open of dismissed) this.settle(open, { kind: 'dismissed' }, { keepFocus: true });
     this.applyMode();
   }
 
-  // One request settles dismissed and closes in the page; dismiss(kind) would also close another of its kind, such as an unrelated question.
-  private withdraw(open: OpenRequest): void {
-    if (!this.open.includes(open)) return;
+  // One request settles dismissed, closing in the page if open; dismiss(kind) would also close another of its kind, such as an unrelated question.
+  private withdraw(pending: PendingRequest): void {
+    if (this.waiting === pending) {
+      this.waiting = undefined;
+      pending.resolve({ kind: 'dismissed' });
+      return;
+    }
+    if (this.held.includes(pending)) {
+      this.held = this.held.filter((entry) => entry !== pending);
+      pending.resolve({ kind: 'dismissed' });
+      return;
+    }
+    const open = this.open.find((entry) => entry.pending === pending);
+    if (!open) return;
     this.settle(open, { kind: 'dismissed' }, { keepFocus: true });
     this.applyMode();
   }
@@ -1813,50 +1835,118 @@ export class OverlayHost {
     return this.open.find((entry) => entry.id === requestId);
   }
 
-  // Held as they would be open: a later request dismisses every earlier one but main's questions.
-  private hold(request: OverlayRequest, returnFocus: WebContents | undefined, shown: (() => void) | undefined, browse: InputBrowseHandler | undefined, signal: AbortSignal | undefined): Promise<OverlayAnswer> {
-    if (!stacks(request)) {
-      const replaced = this.held.filter((entry) => !stacks(entry.request));
-      this.held = this.held.filter((entry) => stacks(entry.request));
-      for (const entry of replaced) entry.resolve({ kind: 'dismissed' });
+  // A question is held while the page loads or navigates; any other request waits then, and while a question is open.
+  private place(pending: PendingRequest): void {
+    const question = stacks(pending.request);
+    if (this.page === 'loading' || this.navigating) {
+      if (question) this.held = [...this.held, pending];
+      else this.wait(pending);
+      return;
     }
-    return new Promise<OverlayAnswer>((resolve, reject) => {
-      const entry: HeldRequest = { request, returnFocus, shown, browse, signal, resolve, reject };
-      this.held = [...this.held, entry];
-      signal?.addEventListener('abort', () => {
-        if (!this.held.includes(entry)) return;
-        this.held = this.held.filter((held) => held !== entry);
-        resolve({ kind: 'dismissed' });
-      }, { once: true });
+    if (this.view.webContents.isCrashed()) {
+      pending.reject(new Error('The overlay is not available'));
+      return;
+    }
+    if (!question && this.open.some((entry) => stacks(entry.request))) {
+      this.dismissPopups();
+      this.wait(pending);
+      return;
+    }
+    this.present(pending);
+  }
+
+  private present(pending: PendingRequest): void {
+    const { request } = pending;
+    if (stacks(request)) this.holdBackUnshown();
+    // Focus returns where it was before the first of the requests that are open together.
+    if (this.open.length === 0) this.returnFocus = pending.returnFocus === this.view.webContents ? undefined : pending.returnFocus;
+    if (!stacks(request)) this.dismissPopups();
+    const open: OpenRequest = {
+      id: randomUUID(),
+      request,
+      pending,
+      browsing: false,
+      sentAt: Date.now(),
+      cancelAckDeadline: undefined,
+      acknowledgedAt: undefined,
+      shownAt: undefined,
+    };
+    open.cancelAckDeadline = tickDeadline(OVERLAY_ACK_TIMEOUT_MS, () => {
+      if (!this.open.includes(open)) return;
+      this.deps.log(`[overlay] the overlay did not acknowledge a ${request.kind} request within ${OVERLAY_ACK_TIMEOUT_MS} ms; hiding it`);
+      const hung = new Error('The overlay did not respond');
+      this.failAll(hung);
+      // a navigation's new document can still take what is held for it; this page cannot
+      if (!this.navigating) this.failHeld(hung);
     });
+    this.open = [...this.open, open];
+    this.applyMode();
+    if (this.deps.window.isFocused()) this.focus();
+    else this.deps.awaitActivation();
+    this.send(OVERLAY_CHANNELS.request, { requestId: open.id, request });
+  }
+
+  // The page's `shown` is the line: a popup on screen stays under the question, one not yet drawn waits behind it.
+  private holdBackUnshown(): void {
+    for (const open of this.open.filter((entry) => !stacks(entry.request) && entry.shownAt === undefined)) {
+      open.cancelAckDeadline?.();
+      this.open = this.open.filter((entry) => entry !== open);
+      this.send(OVERLAY_CHANNELS.cancel, open.id);
+      // a request already waiting was made after this one opened
+      if (this.waiting) open.pending.resolve({ kind: 'dismissed' });
+      else this.waiting = open.pending;
+    }
+  }
+
+  private dismissPopups(): void {
+    for (const previous of this.open.filter((entry) => !stacks(entry.request))) this.settle(previous, { kind: 'dismissed' }, { keepFocus: true });
+  }
+
+  // One waits at a time, as one is open: a later request replaces it.
+  private wait(pending: PendingRequest): void {
+    const replaced = this.waiting;
+    this.waiting = pending;
+    replaced?.resolve({ kind: 'dismissed' });
+  }
+
+  // Before the settled question's applyMode, so the overlay stays up and keeps focus for the request that waited.
+  private releaseWaiting(): void {
+    const pending = this.waiting;
+    if (!pending || this.page !== 'loaded' || this.navigating || this.open.some((open) => stacks(open.request))) return;
+    this.waiting = undefined;
+    this.place(pending);
   }
 
   private sendHeld(): void {
     const held = this.held;
     this.held = [];
-    for (const entry of held) this.request(entry.request, entry.returnFocus, entry.shown, entry.browse, entry.signal).then(entry.resolve, entry.reject);
+    for (const pending of held) this.place(pending);
+    this.releaseWaiting();
   }
 
+  // No page will take them: the held questions and the waiting request, neither of which the page was sent.
   private failHeld(err: Error): void {
-    const failed = this.held;
+    const failed = this.waiting ? [...this.held, this.waiting] : this.held;
     this.held = [];
-    for (const entry of failed) entry.reject(err);
+    this.waiting = undefined;
+    for (const pending of failed) pending.reject(err);
   }
 
   private settle(open: OpenRequest, answer: OverlayAnswer, options?: { readonly keepFocus: boolean }): void {
     if (!this.open.includes(open)) return;
     open.cancelAckDeadline?.();
     this.open = this.open.filter((entry) => entry !== open);
+    this.releaseWaiting();
     if (options?.keepFocus) {
       this.send(OVERLAY_CHANNELS.cancel, open.id);
-      open.resolve(answer);
+      open.pending.resolve(answer);
       return;
     }
     this.applyMode();
-    open.resolve(answer);
+    open.pending.resolve(answer);
   }
 
-  // A hung, crashed, reloaded or closing overlay rejects every open request.
+  // A hung, crashed, reloaded or closing overlay rejects every open request; what it was never sent goes to failHeld.
   private failAll(err: Error): void {
     const failed = this.open;
     if (failed.length === 0) return;
@@ -1866,7 +1956,7 @@ export class OverlayHost {
       this.send(OVERLAY_CHANNELS.cancel, open.id);
     }
     this.applyMode();
-    for (const open of failed) open.reject(err);
+    for (const open of failed) open.pending.reject(err);
   }
 
   private dropRasters(): void {
@@ -1912,6 +2002,16 @@ export class OverlayHost {
 
   // Main's own overlay features (the settings modal) post and listen on the overlay page through these.
   send(channel: string, payload: unknown): void {
+    // A popup subscribes only once it renders, which can wait on a language load, so its pushes wait for its shown.
+    const push = OVERLAY_REQUEST_PUSHES.get(channel);
+    const addressee = push ? [...this.open].reverse().find((entry) => push.kinds.includes(entry.request.kind)) : undefined;
+    if (push && addressee && addressee.shownAt === undefined) {
+      const held = addressee.pending.pushes;
+      const earlier = push.latest ? held.findIndex((entry) => entry.channel === channel) : -1;
+      if (earlier >= 0) held.splice(earlier, 1);
+      held.push({ channel, payload });
+      return;
+    }
     if (this.disposed || this.page !== 'loaded') return;
     const contents = this.view.webContents;
     if (contents.isDestroyed() || contents.isCrashed()) return;

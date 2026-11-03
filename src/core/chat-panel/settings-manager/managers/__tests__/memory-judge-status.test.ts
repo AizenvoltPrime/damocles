@@ -76,9 +76,10 @@ describe('memory-judge status', () => {
     writeAuthFile(CHATGPT_GRANT);
     expect(await memoryJudgeStatus(platform)).toMatchObject({ memoryJudge: { kind: 'unknown' }, classifierCredentials: { openai: 'chatgpt-active' } });
 
-    await platform.state.workspace.update('damocles.openai.preferApiKey', true);
-    expect(await memoryJudgeStatus(platform)).toMatchObject({ classifierCredentials: { openai: 'chatgpt-active' } });
+    // key-value state holds only a flag the startup migration has not moved yet
     await platform.state.global.update('damocles.openai.preferApiKey', true);
+    expect(await memoryJudgeStatus(platform)).toMatchObject({ classifierCredentials: { openai: 'chatgpt-active' } });
+    await platform.settings.update('damocles.openai.preferApiKey', true, 'user');
     expect(await memoryJudgeStatus(platform)).toMatchObject({ memoryJudge: { kind: 'classifier', via: 'openai' } });
   });
 

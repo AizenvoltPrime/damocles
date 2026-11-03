@@ -5,6 +5,7 @@ import { ArrowLeft, ArrowRight, CircleAlert, ExternalLink, Globe, LoaderCircle, 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { hostColorLook } from '@shared/host-colors';
 import { cn } from '@/lib/utils';
 import { isNotSecurePage, MAX_BROWSER_URL_LENGTH } from '@shared/typed-address';
 import type { BrowserAction, DamoclesShellApi, ShellEditorTab } from '../../preload/shell-channels';
@@ -31,7 +32,11 @@ const shownAddress = (): string => (isBlankPage(page.value.url) ? '' : pageText(
 const canOpenExternally = computed(() => isWebUrl(page.value.url));
 const notSecure = computed(() => isNotSecurePage(page.value.url));
 const title = computed(() => pageTitle(props.tab, t('editor.browser.newPage')));
-const forwarded = computed(() => (page.value.forwardedFrom ? { target: forwardedTarget(page.value.forwardedFrom), tone: page.value.forwardedFrom.hostTone } : undefined));
+const forwarded = computed(() => {
+  const from = page.value.forwardedFrom;
+  if (!from) return undefined;
+  return { target: forwardedTarget(from), look: hostColorLook(from.hostColor) };
+});
 
 // The field shows the page's address except while the user is typing over it.
 watch(() => props.tab.id, () => {
@@ -290,7 +295,8 @@ const BUTTON = 'd-press size-6.5 shrink-0 rounded-md text-(--d-muted) hover:bg-(
             variant="tone"
             data-testid="browser-forwarded-from"
             class="h-4.5 max-w-40 shrink-0 border-0 bg-(--tone)/15 px-1.75 text-10 font-semibold whitespace-nowrap"
-            :class="forwarded.tone ? `d-tone-${forwarded.tone}` : 'd-tone-muted'"
+            :class="forwarded.look.class"
+            :style="forwarded.look.style"
             :title="t('editor.browser.forwardedFrom', { target: forwarded.target })"
           >
             <span class="sr-only">{{ `${t('editor.browser.forwardedFromPrefix')} ` }}</span>

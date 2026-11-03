@@ -629,6 +629,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
     getReleaseIndex: vi.fn(async () => opened(releases.index)),
     getReleaseNotes: vi.fn(async (version: string) => opened({ version, markdown: releases.notes[version] ?? '' })),
     queryQuickOpen: vi.fn(async (query: QuickOpenQuery) => opened(quickOpen.answer(query))),
+    quickOpenPath: vi.fn(async (): Promise<PopupAnswer<QuickOpenResponse | null>> => opened(null)),
     listCommands: vi.fn(async () => opened(commands.list)),
     getTerminalProfiles: vi.fn(async (): Promise<PopupAnswer<TerminalProfileReport>> => opened(terminalProfiles.report)),
     onTerminalProfiles: vi.fn(profilesChanged.listen),

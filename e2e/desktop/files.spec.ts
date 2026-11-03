@@ -9,7 +9,7 @@ import { chooseMenuItem, menuItem, overlayMenu } from './support/overlay';
 import { openProjectChat } from './support/screenshots';
 import { chatInput } from './support/ui';
 import { activeTab, bufferText, codeEditor, DOCUMENT_END, editorShows, editorTab, filesRow, filesTree, openInEditor, quickOpen, quickPick, saveWithKeyboard } from './support/editor';
-import { FILE_DRAG_MIME } from '../../src/shared/file-drag';
+import { FILE_DRAG_MIME, FILES_ROW_DRAG_MIME } from '../../src/shared/file-drag';
 import { clickSectionAction } from './support/shell-ui';
 import { writeUserSettings } from './support/hermetic';
 import { colouredPixelsPerFrame } from './support/frames';
@@ -233,6 +233,107 @@ test('the active editor file is revealed in Files: its folders expand, its row i
   await openInEditor(app, { projectKey: await selectedProjectKey(app), relativePath: 'node_modules/pkg/index.js' });
   await expect(editorTab(shell, 'index.js')).toHaveAttribute('aria-selected', 'true');
   await expect(filesRow(shell, 'node_modules')).toHaveAttribute('aria-expanded', 'false');
+});
+
+test('a row drag held at the bottom edge of Files scrolls the tree at its own pace, not one held mid-tree, and ends with the drag after its row scrolled away', async ({ foreground: _foreground, home, launch }) => {
+  // Eighty folders push the tree past its height.
+  for (let i = 0; i < 80; i++) fs.mkdirSync(path.join(home.project, `dir${String(i).padStart(2, '0')}`));
+  writeUserSettings(home, { 'damocles.desktop.files.confirmDragAndDrop': false });
+  const { app } = await launch();
+  await openProjectChat(app, home.project);
+  const shell = await shellPage(app);
+  await expect(filesRow(shell, 'dir00')).toBeVisible();
+  const tree = filesTree(shell);
+  const box = (await tree.boundingBox())!;
+  const x = box.x + 40;
+  const middle = box.y + box.height / 2;
+  const nearEdge = box.y + box.height - 5;
+
+  // A mouse drag, not dispatched DragEvents: only a drag through Chromium's pipeline starts its own edge scroll.
+  const startDrag = async (row: string) => {
+    const at = (await filesRow(shell, row).boundingBox())!;
+    await shell.mouse.move(at.x + 20, at.y + at.height / 2);
+    await shell.mouse.down();
+    await shell.mouse.move(at.x + 30, at.y + at.height / 2 + 10, { steps: 3 });
+  };
+  // Playwright sends no dragover while the pointer rests, so a 1px move every 50 ms stands in for Chromium's repeats.
+  const hold = async (y: number, ms: number) => {
+    for (let i = 0, end = Date.now() + ms; Date.now() < end; i++) {
+      await shell.mouse.move(x + (i % 2), y);
+      await shell.waitForTimeout(50);
+    }
+  };
+  // The tree each frame from here until `frames.stop`: how far it scrolled since the last frame, its width and overflow.
+  const frames = {
+    start: () => tree.evaluate((element) => {
+      const seen: Array<{ step: number; width: number; overflow: string }> = [];
+      let last = element.scrollTop;
+      let on = true;
+      const tick = () => {
+        seen.push({ step: element.scrollTop - last, width: element.clientWidth, overflow: getComputedStyle(element).overflowY });
+        last = element.scrollTop;
+        if (on) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+      (window as unknown as { stopFrames: () => typeof seen }).stopFrames = () => { on = false; return seen; };
+    }),
+    stop: () => tree.evaluate(() => (window as unknown as { stopFrames: () => Array<{ step: number; width: number; overflow: string }> }).stopFrames()),
+  };
+  const maxStep = await shell.evaluate(() => Math.ceil(Number.parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.875));
+  const source = await filesRow(shell, 'dir00').elementHandle();
+
+  await startDrag('dir00');
+  await shell.mouse.move(x, middle, { steps: 5 });
+  await frames.start();
+  await hold(middle, 500);
+  const held = await frames.stop();
+  // Mid-tree the overflow stays auto, so the wheel and the scrollbar still work during the drag.
+  expect(held.map((frame) => frame.step).filter((step) => step !== 0)).toEqual([]);
+  expect(new Set(held.map((frame) => frame.overflow))).toEqual(new Set(['auto']));
+
+  await frames.start();
+  await shell.mouse.move(x, nearEdge, { steps: 4 });
+  await hold(nearEdge, 700);
+  await shell.mouse.move(x, middle, { steps: 4 });
+  await hold(middle, 200);
+  const edge = await frames.stop();
+  expect(edge.reduce((sum, frame) => sum + frame.step, 0)).toBeGreaterThan(0);
+  // Chromium's own edge scroll, held off by the hidden overflow, would add its steps to ours.
+  expect(Math.max(...edge.map((frame) => frame.step))).toBeLessThanOrEqual(maxStep);
+  expect(new Set(edge.map((frame) => frame.overflow))).toEqual(new Set(['auto', 'hidden']));
+  expect(edge.at(-1)!.overflow).toBe('auto');
+  // scrollbar-gutter keeps the scrollbar's room while the overflow is hidden.
+  expect(new Set(edge.map((frame) => frame.width)).size).toBe(1);
+
+  // Released where nothing takes it, the drag's dragend still reaches the unmounted source row, and the tree lets it go.
+  expect(await source!.evaluate((row) => row.isConnected)).toBe(false);
+  await shell.mouse.move(x, box.y - 10, { steps: 4 });
+  await shell.mouse.up();
+  const stopped = await tree.evaluate((element) => element.scrollTop);
+  await shell.waitForTimeout(300);
+  expect(await tree.evaluate((element) => element.scrollTop)).toBe(stopped);
+  // A row drag is taken only while this tree's own drag is live: over a folder that would take dir00, this one is refused.
+  const forgedTaken = await shell.evaluate(([px, py, mime]) => {
+    const folder = document.elementFromPoint(px as number, py as number)!.closest('[data-tree-path]')!;
+    const data = new DataTransfer();
+    data.setData(mime as string, '');
+    const event = new DragEvent('dragover', { dataTransfer: data, bubbles: true, cancelable: true });
+    folder.dispatchEvent(event);
+    return event.defaultPrevented;
+  }, [x, middle, FILES_ROW_DRAG_MIME] as const);
+  expect(forgedTaken).toBe(false);
+
+  // Dropped on a folder after its row scrolled away, the row moves there.
+  await tree.evaluate((element) => { element.scrollTop = 0; });
+  await startDrag('dir00');
+  await shell.mouse.move(x, nearEdge, { steps: 5 });
+  await hold(nearEdge, 500);
+  await shell.mouse.move(x, middle, { steps: 4 });
+  const target = await shell.evaluate(([px, py]) => document.elementFromPoint(px!, py!)?.closest<HTMLElement>('[data-tree-path]')?.dataset.treePath, [x, middle]);
+  expect(target).toMatch(/^dir[1-7]\d$/);
+  await hold(middle, 200);
+  await shell.mouse.up();
+  await expect.poll(() => fs.existsSync(path.join(home.project, target!, 'dir00'))).toBe(true);
 });
 
 test('the markdown preview fills the pane, and a table keeps its short columns whole beside a long cell', async ({ home, launch }) => {

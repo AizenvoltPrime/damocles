@@ -25,7 +25,7 @@ const KEPT_KEYWORDS = new Set([
   'minimum', 'maximum', 'items', 'properties', 'additionalProperties', 'anyOf', 'required', 'pattern', 'patternErrorMessage',
 ]);
 // VS Code settings-editor keywords with no JSON Schema meaning for a file on disk.
-const DROPPED_KEYWORDS = new Set(['scope', 'enumItemLabels', 'order']);
+const DROPPED_KEYWORDS = new Set(['scope', 'enumItemLabels', 'order', 'ignoreSync']);
 
 // Mirrors FilePermissions in src/core/permission-handler/permission-settings.ts (a test holds the two equal).
 export const PERMISSION_LISTS = {

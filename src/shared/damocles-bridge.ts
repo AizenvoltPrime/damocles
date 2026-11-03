@@ -1,10 +1,10 @@
 import type { ChatConnection, HeldMessageAction } from './host-connection';
-import type { HostTone } from './host-tones';
+import type { HostColor } from './host-colors';
 
 export interface BridgeHost {
   readonly hostId: string;
   readonly name: string;
-  readonly color?: HostTone;
+  readonly color?: HostColor;
   readonly computer: string;
   readonly attention?: 'offline' | 'signIn';
   // a daemon of another protocol still runs agents on the host: its app version, how many, and whether a switch waits for them
@@ -16,7 +16,7 @@ export interface BridgeHost {
 /** A saved host as this computer's host store names it, for pages of this computer's core that show remote data. */
 export interface BridgeHostName {
   readonly name: string;
-  readonly color?: HostTone;
+  readonly color?: HostColor;
 }
 
 /** `window.damoclesBridge`, exposed by the desktop panel preload through contextBridge; payloads are untyped at that boundary. */

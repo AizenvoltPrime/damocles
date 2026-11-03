@@ -2,10 +2,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { destinationLabel, groupsOf, HOST_STORE_FILE, HostStore, hostIdOfAuthority, hostOs, sshAuthorityKey } from '../host-store';
+import { authorityOsOf, destinationLabel, groupsOf, HOST_STORE_FILE, HostStore, hostIdOfAuthority, hostOs, sshAuthorityKey } from '../host-store';
 import { PROJECTS_FILE, ProjectList } from '../../projects';
 import { TRUST_FILE, TrustStore } from '../../trust-store';
 import { folderKey } from '../../../../core/workspace-folders/folder-key';
+import { canonicalHostColor } from '../../../../shared/host-colors';
 
 // The parsers of projects.json and trusted-folders.json as commit 6dd3c95d has them (projects.ts:11-15, trust-store.ts:21-25),
 // frozen here: what an older app reads after this version wrote its stores.
@@ -180,6 +181,13 @@ describe('HostStore', () => {
     expect(host.platform).toEqual({ os: 'win32', windowsShell: 'powershell' });
     expect(hostOs(host)).toBe('win32');
     expect(hostOs({ ...host, osOverride: 'linux' })).toBe('linux');
+    // a host with no connection and no listed project still names its OS through its record
+    expect(authorityOsOf(undefined, undefined, host)).toBe('win32');
+    expect(authorityOsOf(undefined, 'darwin', host)).toBe('darwin');
+    expect(authorityOsOf('linux', 'darwin', host)).toBe('linux');
+    // the record as added, before its platform was detected
+    expect(authorityOsOf(undefined, undefined, added.host)).toBeUndefined();
+    expect(authorityOsOf(undefined, undefined, undefined)).toBeUndefined();
     expect(host.recentFolders).toEqual(['/srv/app', '/srv/billing']);
     expect(host.lastUsed).toBeGreaterThan(0);
   });
@@ -238,22 +246,45 @@ describe('HostStore', () => {
     expect([cleared.identityFile, cleared.installedKeyFingerprint, cleared.installedKeyEntry, cleared.lingerEnabledByDamocles]).toEqual([undefined, undefined, undefined, undefined]);
   });
 
-  it('refuses a color that is no palette tone, an earlier #rrggbb included, at the file boundary', async () => {
+  it('keeps a palette tone or a #rrggbbaa color, canonicalizes a hand-edited hex, and refuses anything else at the file boundary', async () => {
     const log = vi.fn();
+    const ssh = (alias: string, color: unknown): Record<string, unknown> => ({ kind: 'ssh', destination: { kind: 'alias', alias }, name: alias, color, recentFolders: [], settings: {} });
+    const container = (key: string, name: string, color: unknown): Record<string, unknown> => ({ kind: 'container', key: key.repeat(32), via: 'b', engine: 'docker', origin: 'attach', containerName: name, user: 'root', name, color, recentFolders: [], settings: {} });
     fs.writeFileSync(path.join(userData, HOST_STORE_FILE), JSON.stringify({
       version: 1,
       authorities: {},
       hosts: {
-        a: { kind: 'ssh', destination: { kind: 'alias', alias: 'a' }, name: 'a', color: '#ff0000', recentFolders: [], settings: { allowBypass: 'yes', defaultPermissionMode: 'bypassPermissions' } },
-        b: { kind: 'ssh', destination: { kind: 'alias', alias: 'b' }, name: 'b', color: 'success', recentFolders: [], settings: {}, alwaysCredentialHosts: ['github.com', 'evil/host'] },
+        a: { ...ssh('a', '#ff0000'), settings: { allowBypass: 'yes', defaultPermissionMode: 'bypassPermissions' } },
+        b: { ...ssh('b', 'success'), alwaysCredentialHosts: ['github.com', 'evil/host'] },
+        c: ssh('c', '#00808099'),
+        d: ssh('d', '#00ff00ff;background:url(x)'),
+        e: ssh('e', '#00A0A099'),
+        f: ssh('f', '#00a0a000'),
+        g: ssh('g', '#00A0A0'),
+        u: { kind: 'wsl', distro: 'Ubuntu', name: 'Ubuntu', color: '#00808099', recentFolders: [], settings: {} },
+        v: { kind: 'wsl', distro: 'Debian', name: 'Debian', color: 'url(x)', recentFolders: [], settings: {} },
+        k: container('1', 'web', '#00808099'),
+        m: container('2', 'db', 'teal'),
       },
     }));
     const store = await HostStore.open(userData, log);
-    expect(store.host('a')?.color).toBeUndefined();
+    expect(store.host('a')?.color).toBe('#ff0000ff');
     expect(store.host('a')?.settings).toEqual({});
     expect(store.host('b')?.color).toBe('success');
     expect(store.host('b')?.alwaysCredentialHosts).toEqual(['github.com']);
-    expect(log).toHaveBeenCalledWith('[hosts] dropping the color of a: not a palette tone');
+    expect(['c', 'd', 'e', 'f', 'g', 'u', 'v', 'k', 'm'].map((id) => store.host(id)?.color)).toEqual(['#00808099', undefined, '#00a0a099', undefined, '#00a0a0ff', '#00808099', undefined, '#00808099', undefined]);
+    for (const id of ['d', 'v', 'm']) expect(log).toHaveBeenCalledWith(`[hosts] dropping the color of ${id}: not a palette tone or #rrggbbaa color`);
+    expect(log).toHaveBeenCalledWith('[hosts] dropping the color of f: #00a0a000 has zero opacity, which reads as no color');
+    for (const [id, color] of [['a', '#ff0000ff'], ['e', '#00a0a099'], ['g', '#00a0a0ff']]) expect(log).toHaveBeenCalledWith(`[hosts] reading the color of ${id} as ${color}, its canonical form`);
+    expect(log).not.toHaveBeenCalledWith(expect.stringMatching(/(dropping|reading) the color of [bcuk]\b/));
+  });
+
+  it('writes a custom color and reads it back', async () => {
+    const store = await HostStore.open(userData, () => undefined);
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    await store.setHostSetting(added.host.id, { key: 'color', value: canonicalHostColor('#00808099')! });
+    expect((await HostStore.open(userData, () => undefined)).host(added.host.id)?.color).toBe('#00808099');
   });
 
   it('forgets a host with its projects, trust and every order entry, leaving the others', async () => {
