@@ -7,6 +7,7 @@ import {
   type OverlayRequest,
   type PaletteCommand,
   type QuickOpenMode,
+  quickOpenRowKey,
   type QuickOpenPick,
   type QuickOpenResponse,
   type QuickOpenResult,
@@ -19,7 +20,7 @@ import type { ProjectWorkspace } from '../workspace/project-workspace';
 import type { FileListing } from '../workspace/quick-open-listing';
 import type { MenuState } from './menu';
 import { pathFor } from '../../shared/project-location';
-import { typedPathRowAt, typedPathTarget, type TypedPathDeps, type TypedPathRow, type TypedPathTarget } from './quick-open-path';
+import { relativeLabel, typedPathRowsAt, typedPathTarget, type ListingCache, type TypedPathDeps, type TypedPathRows, type TypedPathTarget } from './quick-open-path';
 import { tickDeadline } from './tick-deadline';
 import { OutsideFilesUnsupportedError } from './workspace/remote-workspace';
 import { NotConnectedError, type Workspaces } from './workspace/workspaces';
@@ -51,6 +52,7 @@ export interface QuickOpenDeps {
   readonly log: (line: string) => void;
   // what a typed absolute path resolves by (quick-open-path.ts)
   readonly authorityOs: TypedPathDeps['authorityOs'];
+  readonly spellings: TypedPathDeps['spellings'];
   readonly homedir: TypedPathDeps['homedir'];
   readonly hostName: TypedPathDeps['hostName'];
 }
@@ -81,7 +83,7 @@ interface Pending {
 // The newest query of an open request whose text is a typed path.
 interface PathQuery {
   readonly generation: number;
-  // the typed path's row as the only result; undefined for no row, and once a newer query or the request's end replaced it
+  // the typed path's rows; undefined for none, and once a newer query or the request's end replaced it
   readonly answer: Promise<QuickOpenAnswer | undefined>;
   readonly pending: () => boolean;
   readonly drop: () => void;
@@ -93,11 +95,7 @@ interface Search {
   latest: PathQuery | undefined;
   running: boolean;
   queued: (() => Promise<void>) | undefined;
-}
-
-function itemOf(relativePath: string): { label: string; description: string } {
-  const slash = relativePath.lastIndexOf('/');
-  return { label: relativePath.slice(slash + 1), description: slash < 0 ? '' : relativePath.slice(0, slash) };
+  readonly listings: ListingCache;
 }
 
 /**
@@ -132,7 +130,7 @@ export class QuickOpenIndex {
   /** A new open request's search id, for its queries. */
   open(): number {
     const search = this.nextSearch++;
-    this.searches.set(search, { latest: undefined, running: false, queued: undefined });
+    this.searches.set(search, { latest: undefined, running: false, queued: undefined, listings: {} });
     return search;
   }
 
@@ -152,12 +150,7 @@ export class QuickOpenIndex {
     this.stop();
   }
 
-  /**
-   * The answer to raw, or undefined once a newer query of the same search replaced it or the search ended; never rejects. A
-   * typed absolute path that resolves to a file answers as the only row (VS Code's getAbsolutePathFileResult), and the text
-   * search runs beside its lookup: whichever answers first is the answer, and a text answer that came first while the lookup
-   * still runs says so (`pathPending`), so typedPathAnswer can bring the row.
-   */
+  // Never rejects; the text search never waits for a typed path's lookup, and answers with pathPending while it runs.
   async query(raw: string, context: QuickOpenContext, search: QuickOpenSearch): Promise<QuickOpenAnswer | undefined> {
     const open = this.searches.get(search.id);
     if (!open) return undefined;
@@ -179,10 +172,7 @@ export class QuickOpenIndex {
     return first.answer && pathQuery.pending() ? { ...first.answer, pathPending: true } : first.answer;
   }
 
-  /**
-   * The row of the query of generation when a text answer came first (`pathPending`): its typed path's answer once the lookup
-   * finds a file while that query is still the newest; undefined for no row, a newer query, or the request's end.
-   */
+  // Undefined once a newer query or the request's end replaced generation's query.
   async typedPathAnswer(search: number, generation: number): Promise<QuickOpenAnswer | undefined> {
     const latest = this.searches.get(search)?.latest;
     return latest?.generation === generation ? latest.answer : undefined;
@@ -199,14 +189,8 @@ export class QuickOpenIndex {
       resolve(value);
     };
     open.queued = async () => {
-      const row = await this.typedPath(target);
-      settle(row && {
-        ...(currentProjectKey !== undefined ? { currentProjectKey } : {}),
-        ...(row.line !== undefined ? { line: row.line } : {}),
-        ...(row.column !== undefined ? { column: row.column } : {}),
-        mention: false,
-        results: [row.result],
-      });
+      const rows = await this.typedPath(target, open.listings);
+      settle(rows && { ...(currentProjectKey !== undefined ? { currentProjectKey } : {}), ...rows, mention: false });
     };
     this.runLookups(open);
     return { generation, answer, pending: () => !settled, drop: () => settle(undefined) };
@@ -267,26 +251,32 @@ export class QuickOpenIndex {
     }
   }
 
-  // A resolution that fails gives no row. The host going away and a daemon without files.outside are expected and not logged,
-  // a folder the user may not read is logged once per authority and path root, since every keystroke below it fails alike.
-  private async typedPath(target: TypedPathTarget): Promise<TypedPathRow | undefined> {
+  // A host gone, a daemon without files.outside or a drive that does not answer is not logged; a permission error is logged
+  // once per authority and path root.
+  private async typedPath(target: TypedPathTarget, listings: ListingCache): Promise<TypedPathRows | undefined> {
     try {
-      return await typedPathRowAt(target, this.deps);
+      return await typedPathRowsAt(target, this.deps, listings, (err) => this.lookupFailed(target, err));
     } catch (err) {
-      if (err instanceof OutsideFilesUnsupportedError || err instanceof NotConnectedError) return undefined;
-      const code = (err as NodeJS.ErrnoException | undefined)?.code;
-      if (code === 'EACCES' || code === 'EPERM') {
-        const root = pathFor({ os: target.os }).parse(target.path).root;
-        const key = JSON.stringify([target.authority, root]);
-        if (!this.deniedRoots.has(key)) {
-          this.deniedRoots.add(key);
-          this.deps.log(`[quick-open] a typed path under ${root} on ${target.authority} could not be read (${code}); later ones there are not logged`);
-        }
-        return undefined;
-      }
-      this.deps.log(`[quick-open] a typed path did not resolve: ${err instanceof Error ? err.message : String(err)}`);
+      this.lookupFailed(target, err);
       return undefined;
     }
+  }
+
+  private lookupFailed(target: TypedPathTarget, err: unknown): void {
+    if (err instanceof OutsideFilesUnsupportedError || err instanceof NotConnectedError) return;
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    // a drive that does not answer (the link walk's probe) has no file to show, as listOutside answers missing for it
+    if (code === 'ETIMEDOUT') return;
+    if (code === 'EACCES' || code === 'EPERM') {
+      const root = pathFor({ os: target.os }).parse(target.path).root;
+      const key = JSON.stringify([target.authority, root]);
+      if (!this.deniedRoots.has(key)) {
+        this.deniedRoots.add(key);
+        this.deps.log(`[quick-open] a typed path under ${root} on ${target.authority} could not be read (${code}); later ones there are not logged`);
+      }
+      return;
+    }
+    this.deps.log(`[quick-open] a typed path did not resolve: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   private started(): QuickOpenWorker {
@@ -347,7 +337,7 @@ export class QuickOpenIndex {
       const project = pending.projects.get(result.projectKey);
       if (!project) return undefined;
       if (pending.scope && (project.key !== pending.scope.projectKey || !result.relativePath.startsWith(pending.scope.folder))) return undefined;
-      results.push({ kind: 'project', projectKey: project.key, projectName: project.name, relativePath: result.relativePath, ...itemOf(result.relativePath), labelMatches: result.labelMatches, descriptionMatches: result.descriptionMatches, recent: result.recent });
+      results.push({ kind: 'project', projectKey: project.key, projectName: project.name, relativePath: result.relativePath, ...relativeLabel(result.relativePath), labelMatches: result.labelMatches, descriptionMatches: result.descriptionMatches, recent: result.recent });
     }
     return results;
   }
@@ -426,9 +416,9 @@ export type QuickOpenOutcome =
   // a palette command, for main to run in the context captured when the request opened
   | { readonly kind: 'command'; readonly id: string; readonly context: MenuState };
 
-// A row's file as a pick names it: a project's relative path, or a typed path's authority and path.
-function pickKey(row: QuickOpenResult | QuickOpenPick): string {
-  return JSON.stringify(row.kind === 'project' ? ['project', row.projectKey, row.relativePath] : ['path', row.authority, row.path]);
+// A folder row is never a pick: Enter, Tab and a click on one set the query.
+function addFiles(returned: Set<string>, results: readonly QuickOpenResult[]): void {
+  for (const result of results) if (result.kind !== 'folder') returned.add(quickOpenRowKey(result));
 }
 
 /**
@@ -475,7 +465,7 @@ export class QuickOpenPicker {
       const response = search === undefined ? undefined : await this.index.query(query, { ...this.context(), ...(this.scope ? { scope: this.scope } : {}) }, { id: search, generation });
       // A newer query replaced this one, so the overlay drops its answer.
       if (!response) return { generation, mention: false, results: [] };
-      for (const result of response.results) returned.add(pickKey(result));
+      addFiles(returned, response.results);
       return { generation, ...response };
     });
     overlay.handleWhileOpen(OVERLAY_CHANNELS.quickOpenPath, quickOpenOpen, async (raw) => {
@@ -486,7 +476,7 @@ export class QuickOpenPicker {
       const returned = this.returned;
       const response = search === undefined ? undefined : await this.index.typedPathAnswer(search, generation);
       if (!response) return null;
-      for (const result of response.results) returned.add(pickKey(result));
+      addFiles(returned, response.results);
       return { generation, ...response };
     });
   }
@@ -516,7 +506,7 @@ export class QuickOpenPicker {
     if (answer.kind !== 'quickOpen') return undefined;
     if ('command' in answer) return { kind: 'command', id: answer.command, context };
     if (answer.pick === null) return undefined;
-    if (!this.returned.has(pickKey(answer.pick))) {
+    if (!this.returned.has(quickOpenRowKey(answer.pick))) {
       this.log(`[quick-open] ignoring a ${answer.pick.kind} pick that no query returned`);
       return undefined;
     }

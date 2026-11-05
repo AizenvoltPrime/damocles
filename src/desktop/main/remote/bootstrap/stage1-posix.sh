@@ -3,7 +3,6 @@
 # app's channel, so every tool writes to stderr and only say() writes to stdout, until the bridge takes stdout over.
 # Everything above "BEGIN MAIN" only defines; the tests source that part and call the functions.
 # BEGIN PARAMETERS
-D_VERSION=''
 D_INSTALL_FOLDER=''
 D_PREVIOUS_KIND='none'
 D_PREVIOUS_FOLDER=''
@@ -298,8 +297,10 @@ report_progress() {
   fi
 }
 
-# Progress is the staged file's size against the package's, the same for curl and wget.
+# Progress is the staged file's size against the package's, the same for curl and wget. The URL - (an unpublished
+# build) fails at once, so the upload follows.
 download() {
+  [ "$package_url" != - ] || return 1
   if command -v curl >/dev/null 2>&1; then
     curl -fsSL --retry 3 -o "$1" "$package_url" >&2 </dev/null &
   elif command -v wget >/dev/null 2>&1; then
@@ -516,6 +517,18 @@ clean_previous() {
   if [ -z "$kept" ]; then say '{"kind":"settled"}'; fi
 }
 
+# The package line $1, `<file> <sha256> <size> <server version> <url|->`, none of which holds a space.
+read_package() {
+  package_file=${1%% *}
+  rest=${1#* }
+  package_sha=${rest%% *}
+  rest=${rest#* }
+  package_size=${rest%% *}
+  rest=${rest#* }
+  server_version=${rest%% *}
+  package_url=${rest#* }
+}
+
 # Installs the package into $version_dir under the install lock: downloaded (copied from the app's cache on WSL, or into a
 # container by the app's engine cp) or uploaded into a staging folder, its hash checked before it is unpacked, its self-test
 # run, then renamed into place.
@@ -636,13 +649,7 @@ esac
 if [ -z "$package" ]; then
   fail unknown "\"reason\":\"noPackage\",\"target\":\"$target\""
 fi
-# <file> <sha256> <size> <url>, none of which holds a space
-package_file=${package%% *}
-rest=${package#* }
-package_sha=${rest%% *}
-rest=${rest#* }
-package_size=${rest%% *}
-package_url=${rest#* }
+read_package "$package"
 
 install=$(install_dir "$D_INSTALL_FOLDER" "$user")
 folder=''
@@ -650,7 +657,7 @@ if [ -n "$D_INSTALL_FOLDER" ]; then folder=$(expand_home "$D_INSTALL_FOLDER"); f
 prepare_install "$install" "$folder"
 say "{\"kind\":\"probe\",\"target\":\"$target\",\"install\":\"$(json_str "$install")\"}"
 
-version_dir="$install/$D_VERSION-$target"
+version_dir="$install/$server_version-$target"
 lock="$install/install.lock"
 takeover="$install/install.lock.takeover"
 

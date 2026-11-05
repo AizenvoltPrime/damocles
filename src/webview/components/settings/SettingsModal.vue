@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, shallowRef, useId, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
-import { onKeyStroke, useWindowSize } from '@vueuse/core';
+import { onKeyStroke, unrefElement, useWindowSize } from '@vueuse/core';
 import {
   AppWindow,
   Blocks,
@@ -33,7 +33,7 @@ import SettingsNav from './SettingsNav.vue';
 import SettingsPage from './SettingsPage.vue';
 import SettingButton from './controls/SettingButton.vue';
 import { normalizeQuery, SETTINGS_ROWS, type HostSettings, type SettingsRowMeta, type SettingsScopeView, type SettingsSectionMeta } from './settings-rows';
-import { provideSettingsBanner, provideSettingsChatHost, provideSettingsFiles, provideSettingsMachineHost, provideSettingsTarget, type SettingsBanner, type SettingsMachineHost } from './settings-view';
+import { provideSettingsBanner, provideSettingsBusy, provideSettingsChatHost, provideSettingsFiles, provideSettingsMachineHost, provideSettingsTarget, type SettingsBanner, type SettingsMachineHost } from './settings-view';
 import { prefersReducedMotion } from '@/utils/reducedMotion';
 import './settings.css';
 
@@ -53,14 +53,21 @@ const props = defineProps<{
   backdrop: 'blur' | 'dim';
   /** Where to open; a new object while the modal shows goes there. */
   target?: SettingsTarget | undefined;
-  /** A new value remounts the page, dropping anything typed into it, and asks for the state again (the desktop view re-attached to another chat). */
-  pageKey?: number | undefined;
+  /**
+   * Names the settings the page shows: a new value remounts it, dropping anything typed into it, and asks for the state
+   * again. The desktop changes it only when a re-attach shows other settings.
+   */
+  pageKey?: string | undefined;
+  /** The desktop view's attachment: a new one asks for the state again and keeps the page mounted. */
+  attachment?: number | undefined;
   /** The desktop scope tab: only the rows it lists show, and nothing while it loads. */
   scopeView?: SettingsScopeView | undefined;
   /** The attached chat's host when it is a remote chat. */
   chatHost?: string | undefined;
   /** The host whose machine scope the shown tab edits (a remote chat's host tab). */
   machineHost?: SettingsMachineHost | undefined;
+  /** The shown tab's settings cannot be changed now: the page stays, inert, under the away slot's banner. */
+  busy?: boolean | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -112,13 +119,14 @@ const request = shallowRef<SettingsTarget | null>(props.target ?? null);
 provideSettingsTarget(request);
 provideSettingsChatHost(() => props.chatHost);
 provideSettingsMachineHost(() => props.machineHost);
+provideSettingsBusy(() => props.busy === true);
 const typed = ref('');
 const query = computed(() => normalizeQuery(typed.value));
 const matches = ref(0);
 
 const activeMeta = computed(() => sections.value.find((section) => section.id === active.value) ?? sections.value[0]!);
 const pageSections = computed(() => (query.value ? sections.value : [activeMeta.value]));
-const contentKey = computed(() => `${active.value}\0${props.pageKey ?? 0}`);
+const contentKey = computed(() => `${active.value}\0${props.pageKey ?? ''}`);
 const showNav = computed(() => !narrow.value || narrowPage.value === 'nav');
 const showMain = computed(() => !narrow.value || narrowPage.value === 'section' || query.value !== '');
 const panelId = useId();
@@ -203,13 +211,34 @@ function fileUnavailable(scope: SettingsFileScope): string | null {
 }
 
 // The one request a settings view sends; its sections render what core answers and the changes it pushes after.
-watch(() => props.pageKey, () => postMessage({ type: 'requestSettingsState' }), { immediate: true });
+watch([() => props.pageKey, () => props.attachment], () => postMessage({ type: 'requestSettingsState' }), { immediate: true });
 
 watch(narrow, (isNarrow) => {
   if (!isNarrow) narrowPage.value = 'section';
 });
 
-defineExpose({ close });
+const main = shallowRef<HTMLElement | null>(null);
+const content = shallowRef<HTMLElement | null>(null);
+const footerTrigger = shallowRef<InstanceType<typeof DropdownMenuTrigger> | null>(null);
+const footerOpen = ref(false);
+
+/** Focuses the selected tab of the scope slot, else the dialog. */
+function focusScopeTab(): void {
+  (main.value?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ?? root.value)?.focus();
+}
+
+// Runs before the content turns inert and the footer's trigger disabled, which would drop the focus on them to the body. A
+// layer opened from the page (the footer's menu, closeWhenSettingsBusy) closes with it, and its focus trap lets go only once
+// that close rendered.
+watch(() => props.busy === true, (busy) => {
+  if (!busy) return;
+  footerOpen.value = false;
+  const focused = document.activeElement;
+  if (focused === null || focused === document.body || content.value?.contains(focused) || unrefElement(footerTrigger)?.contains(focused)) focusScopeTab();
+  else if (!root.value?.contains(focused)) void nextTick(focusScopeTab);
+}, { flush: 'pre' });
+
+defineExpose({ close, focusScopeTab });
 </script>
 
 <template>
@@ -261,6 +290,13 @@ defineExpose({ close });
             />
           </button>
         </div>
+        <!-- the narrow section list shows no page, so the away slot sits here; the margins cancel the nav's padding and the slot's own top margin -->
+        <div
+          v-if="!showMain && $slots.away"
+          class="-mx-2.5 -mt-3.5 mb-3.5"
+        >
+          <slot name="away" />
+        </div>
         <div class="sm-search">
           <Search
             class="size-3.25"
@@ -304,10 +340,15 @@ defineExpose({ close });
           class="flex-1"
         />
         <template v-if="!narrow || !query">
-          <DropdownMenu v-if="footer.kind === 'settingsFiles'">
+          <DropdownMenu
+            v-if="footer.kind === 'settingsFiles'"
+            v-model:open="footerOpen"
+          >
             <DropdownMenuTrigger
+              ref="footerTrigger"
               class="sm-footer-link w-full"
               data-testid="settings-footer"
+              :disabled="busy === true"
             >
               <FileJson
                 class="size-3.25"
@@ -358,6 +399,7 @@ defineExpose({ close });
       <section
         v-if="showMain"
         :id="panelId"
+        ref="main"
         class="sm-main"
         :class="{ 'sm-page-in': narrow }"
         role="tabpanel"
@@ -402,40 +444,52 @@ defineExpose({ close });
             />
           </button>
         </header>
+        <!-- why the page is busy, and its live regions: outside the busy, inert content, so its actions stay usable -->
+        <slot name="away" />
+        <!-- the dim sits on a wrapper, so a new page's cross-fade ends at it rather than snapping to it -->
         <div
-          :key="contentKey"
-          class="sm-content"
-          :class="$slots.scope && 'sm-content-swap'"
+          ref="content"
+          class="d-dim-transition flex min-h-0 flex-1 flex-col"
+          :class="busy && 'opacity-(--d-opacity-disabled)'"
+          :inert="busy || undefined"
+          :aria-busy="busy || undefined"
+          data-testid="settings-content"
         >
-          <slot
-            name="scopeBanner"
-            :section="query ? undefined : activeMeta.id"
-          />
           <div
-            v-if="banner"
-            class="sm-banner"
-            role="status"
-            :data-testid="banner.testId"
+            :key="contentKey"
+            class="sm-content"
+            :class="$slots.scope && 'sm-content-swap'"
           >
-            <span class="sm-banner-text">{{ banner.text }}</span>
-            <SettingButton
-              v-for="action in banner.actions"
-              :key="action.label"
-              :variant="action.primary ? 'primary' : 'default'"
-              @click="action.run"
+            <slot
+              name="scopeBanner"
+              :section="query ? undefined : activeMeta.id"
+            />
+            <div
+              v-if="banner"
+              class="sm-banner"
+              role="status"
+              :data-testid="banner.testId"
             >
-              {{ action.label }}
-            </SettingButton>
+              <span class="sm-banner-text">{{ banner.text }}</span>
+              <SettingButton
+                v-for="action in banner.actions"
+                :key="action.label"
+                :variant="action.primary ? 'primary' : 'default'"
+                @click="action.run"
+              >
+                {{ action.label }}
+              </SettingButton>
+            </div>
+            <SettingsPage
+              :sections="pageSections"
+              :query="query"
+              :typed="typed"
+              :host="host"
+              :rows="rows"
+              :scope-view="scopeView"
+              @matches="(count) => (matches = count)"
+            />
           </div>
-          <SettingsPage
-            :sections="pageSections"
-            :query="query"
-            :typed="typed"
-            :host="host"
-            :rows="rows"
-            :scope-view="scopeView"
-            @matches="(count) => (matches = count)"
-          />
         </div>
       </section>
     </div>

@@ -30,6 +30,46 @@ export async function shellState(app: ElectronApplication): Promise<ShellState> 
   return shell.evaluate(() => window.damoclesShell!.getState());
 }
 
+export interface LaunchSelection {
+  // each change of the selected project, the chat the state names with it, and whether a chat view covers the slot
+  readonly states: Array<{ readonly projectKey: string | undefined; readonly chatId: string | undefined; readonly chatViewShown: boolean }>;
+  // each change of the title bar's chat crumb, '' while it shows none
+  readonly titles: string[];
+}
+
+/** Records, from the shell's first state answer on, what a launch selects and what the title bar names; reading it stops the poll. */
+export async function recordLaunchSelection(app: ElectronApplication): Promise<() => Promise<LaunchSelection>> {
+  const shell = await shellPage(app);
+  await shell.waitForFunction(() => window.damoclesShell !== undefined);
+  await shell.evaluate(() => {
+    const seen: LaunchSelection = { states: [], titles: [] };
+    const recorder = window as unknown as { __e2eLaunch: LaunchSelection; __e2eLaunchPoll: number };
+    recorder.__e2eLaunch = seen;
+    const noteState = (state: ShellState): void => {
+      const entry = { projectKey: state.selected.projectKey, chatId: state.selectedChat?.id, chatViewShown: state.chatViewShown };
+      const last = seen.states.at(-1);
+      if (!last || last.projectKey !== entry.projectKey || last.chatId !== entry.chatId || last.chatViewShown !== entry.chatViewShown) seen.states.push(entry);
+    };
+    const noteTitle = (): void => {
+      const text = document.querySelector('[data-testid="breadcrumb-chat"]')?.textContent?.trim() ?? '';
+      if (seen.titles.at(-1) !== text) seen.titles.push(text);
+    };
+    const shellApi = window.damoclesShell!;
+    shellApi.onState(noteState);
+    // a poll as well, so a state the page has not been pushed yet is seen too
+    const poll = (): void => void shellApi.getState().then(noteState);
+    poll();
+    recorder.__e2eLaunchPoll = window.setInterval(poll, 25);
+    noteTitle();
+    new MutationObserver(noteTitle).observe(document.body, { subtree: true, childList: true, characterData: true });
+  });
+  return () => shell.evaluate(() => {
+    const recorder = window as unknown as { __e2eLaunch: LaunchSelection; __e2eLaunchPoll: number };
+    window.clearInterval(recorder.__e2eLaunchPoll);
+    return recorder.__e2eLaunch;
+  });
+}
+
 /**
  * Makes the main window report its focus as the test says, since the OS decides focus and a test runner's window may
  * never hold it; undefined restores the real answer. Losing focus emits 'blur' as the OS does, which a later 'focus'

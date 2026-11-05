@@ -2,6 +2,7 @@
 import { useI18n } from 'vue-i18n';
 import { CircleArrowUp } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
+import { BANNER_TONE } from './banner-tone';
 
 // A daemon of another protocol still runs agents on the host, whose chats show read-only meanwhile; the shell and the chat
 // page show the same strip, so both bundles carry its hostUpdate keys and the one-line min-h-8 matches ConnectionBanner's.
@@ -17,7 +18,8 @@ const { t } = useI18n();
   <div
     data-testid="host-update-banner"
     :data-phase="update.phase"
-    class="@container/banner flex min-h-8 shrink-0 items-center gap-2 border-b border-(--d-info)/28 bg-[color-mix(in_srgb,var(--d-info)_11%,var(--d-bg))] py-1 ps-4 pe-2.5 text-12 text-(--d-info-text)"
+    class="@container/banner flex min-h-8 shrink-0 items-center gap-2 border-b py-1 ps-4 pe-2.5 text-12"
+    :class="BANNER_TONE.info"
   >
     <CircleArrowUp
       aria-hidden="true"

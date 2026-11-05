@@ -72,7 +72,7 @@ export type ResumeOutcome = 'resumed' | 'refused';
 /** One authority's connection after its welcome: the daemon's facts and the endpoints over its control and workspace channels. */
 export interface RemoteConnection {
   readonly facts: HostFacts;
-  // the daemon's app version (welcome.serverVersion)
+  // the daemon's server version, <app version>+<build> for a server package (welcome.serverVersion)
   readonly serverVersion: string;
   // what the daemon lists in welcome.features; a newer command is called only when it is listed
   readonly features: readonly string[];

@@ -98,23 +98,21 @@ describe('hot exit backups', () => {
     expect(await store.list()).toEqual([]);
   });
 
-  it('backs up untitled, settings, host settings, plan and user-named buffers, and nothing for a read-only file outside every project', async () => {
+  it('backs up untitled, settings, host settings and outside path buffers, local and host, and nothing for a plain path such as the log\'s', async () => {
     const store = new BackupStore(dir, (line) => lines.push(line), 60_000);
     store.changed(document({ backupId: '1f8fad5b-d9cb-469f-a165-70867728950e', untitled: true, location: undefined }));
     store.changed(document({ backupId: '2f8fad5b-d9cb-469f-a165-70867728950e', settingsScope: 'user', location: { path: '/home/.damocles/settings.json' } }));
     store.changed(document({ backupId: '3f8fad5b-d9cb-469f-a165-70867728950e', location: { path: '/elsewhere/x.ts' } }));
     store.changed(document({ backupId: '4f8fad5b-d9cb-469f-a165-70867728950e', location: { path: '/srv/.damocles/settings.json', host: 'loopback', outside: 'settings' } }));
-    store.changed(document({ backupId: '5f8fad5b-d9cb-469f-a165-70867728950e', location: { path: '/home/.damocles/plans/a.md', outside: 'plans' } }));
-    store.changed(document({ backupId: '6f8fad5b-d9cb-469f-a165-70867728950e', location: { path: '/srv/.damocles/plans/b.md', host: 'loopback', outside: 'plans' } }));
-    store.changed(document({ backupId: '7f8fad5b-d9cb-469f-a165-70867728950e', location: { path: '/elsewhere/notes.txt', outside: 'user' } }));
-    store.changed(document({ backupId: '8f8fad5b-d9cb-469f-a165-70867728950e', location: { path: '/etc/hosts', host: 'loopback', outside: 'user' } }));
+    store.changed(document({ backupId: '5f8fad5b-d9cb-469f-a165-70867728950e', location: { path: '/home/.damocles/plans/a.md', outside: 'path' } }));
+    store.changed(document({ backupId: '7f8fad5b-d9cb-469f-a165-70867728950e', location: { path: '/elsewhere/notes.txt', outside: 'path' } }));
+    store.changed(document({ backupId: '8f8fad5b-d9cb-469f-a165-70867728950e', location: { path: '/etc/hosts', host: 'loopback', outside: 'path' } }));
     await store.flush();
     expect((await store.list()).map((record) => record.target).sort((a, b) => a.kind.localeCompare(b.kind) || JSON.stringify(a).localeCompare(JSON.stringify(b)))).toEqual([
       { kind: 'hostSettings', authority: 'loopback', path: '/srv/.damocles/settings.json' },
-      { kind: 'outside', authority: 'local', path: '/elsewhere/notes.txt', outside: 'user' },
-      { kind: 'outside', authority: 'local', path: '/home/.damocles/plans/a.md', outside: 'plans' },
-      { kind: 'outside', authority: 'loopback', path: '/etc/hosts', outside: 'user' },
-      { kind: 'outside', authority: 'loopback', path: '/srv/.damocles/plans/b.md', outside: 'plans' },
+      { kind: 'outside', authority: 'local', path: '/elsewhere/notes.txt' },
+      { kind: 'outside', authority: 'local', path: '/home/.damocles/plans/a.md' },
+      { kind: 'outside', authority: 'loopback', path: '/etc/hosts' },
       { kind: 'settings', scope: 'user', path: '/home/.damocles/settings.json' },
       { kind: 'untitled' },
     ]);
@@ -190,9 +188,11 @@ describe('parseBackup', () => {
 
   it('accepts a complete record whose id is its file name', () => {
     expect(parseBackup(JSON.stringify(valid), BACKUP_ID)).toMatchObject({ text: 'x' });
-    for (const target of [{ kind: 'outside', authority: 'local', path: 'C:\\Users\\me\\.damocles\\plans\\a.md', outside: 'plans' }, { kind: 'outside', authority: 'ssh+h1', path: '/home/me/.damocles/plans/a.md', outside: 'plans' }, { kind: 'outside', authority: 'local', path: 'C:\\Users\\me\\notes.txt', outside: 'user' }, { kind: 'outside', authority: 'ssh+h1', path: '/etc/hosts', outside: 'user' }]) {
+    for (const target of [{ kind: 'outside', authority: 'local', path: 'C:\\Users\\me\\notes.txt' }, { kind: 'outside', authority: 'ssh+h1', path: '/etc/hosts' }]) {
       expect(parseBackup(JSON.stringify({ ...valid, target }), BACKUP_ID)?.target).toEqual(target);
     }
+    // a development record's old rule key is ignored
+    expect(parseBackup(JSON.stringify({ ...valid, target: { kind: 'outside', authority: 'ssh+h1', path: '/etc/hosts', outside: 'rule' } }), BACKUP_ID)?.target).toEqual({ kind: 'outside', authority: 'ssh+h1', path: '/etc/hosts' });
     expect(parseBackup(JSON.stringify(valid), '1f8fad5b-d9cb-469f-a165-70867728950e')).toBeUndefined();
   });
 
@@ -204,11 +204,9 @@ describe('parseBackup', () => {
     ['a settings backup with a relative file', { target: { kind: 'settings', scope: 'user', path: 'settings.json' } }],
     ['a host settings backup without its authority', { target: { kind: 'hostSettings', path: '/srv/.damocles/settings.json' } }],
     ['a host settings backup with a relative file', { target: { kind: 'hostSettings', authority: 'loopback', path: 'settings.json' } }],
-    ['an outside backup without its authority', { target: { kind: 'outside', path: '/srv/.damocles/plans/a.md', outside: 'plans' } }],
-    ['an outside backup with a relative file', { target: { kind: 'outside', authority: 'loopback', path: 'plans/a.md', outside: 'plans' } }],
-    ['an outside backup with a NUL in its file', { target: { kind: 'outside', authority: 'loopback', path: '/srv/a.md\0', outside: 'plans' } }],
-    ['an outside backup without its rule', { target: { kind: 'outside', authority: 'loopback', path: '/srv/.damocles/plans/a.md' } }],
-    ['an outside backup under a rule it does not know', { target: { kind: 'outside', authority: 'loopback', path: '/srv/.damocles/plans/a.md', outside: 'settings' } }],
+    ['an outside backup without its authority', { target: { kind: 'outside', path: '/srv/notes.md' } }],
+    ['an outside backup with a relative file', { target: { kind: 'outside', authority: 'loopback', path: 'docs/a.md' } }],
+    ['an outside backup with a NUL in its file', { target: { kind: 'outside', authority: 'loopback', path: '/srv/a.md\0' } }],
     ['an unknown encoding', { encoding: 'latin1' }],
     ['a lone CR line ending', { eol: '\r' }],
     ['another schema', { version: 2 }],

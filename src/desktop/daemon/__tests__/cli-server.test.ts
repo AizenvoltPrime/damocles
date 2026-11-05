@@ -100,10 +100,10 @@ describe('the daemon\'s CLI sockets', () => {
 
   it('answers main\'s refusal with its message', async () => {
     const cli = await server();
-    cli.connected('conn', client('laptop', async () => ({ ok: false, message: 'damocles: /etc/hosts is outside the projects open on prod-1. Open its folder with: damocles /etc' })));
+    cli.connected('conn', client('laptop', async () => ({ ok: false, message: 'damocles: /srv/other was not added as a project.' })));
     const hook = cli.open('term-1', {})[CLI_HOOK_ENV]!;
     cli.attached('term-1', 'conn');
-    await expect(ask(hook, OPEN)).resolves.toEqual({ ok: false, code: 'refused', message: 'damocles: /etc/hosts is outside the projects open on prod-1. Open its folder with: damocles /etc' });
+    await expect(ask(hook, OPEN)).resolves.toEqual({ ok: false, code: 'refused', message: 'damocles: /srv/other was not added as a project.' });
   });
 
   it('answers not connected, in the language of the client that last attached the view, once no client is attached', async () => {

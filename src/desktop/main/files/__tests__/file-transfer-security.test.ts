@@ -67,7 +67,7 @@ function harness(hosts: readonly Host[], options: { readonly platform?: NodeJS.P
       if (update.state === 'done' || update.state === 'failed' || update.state === 'cancelled') waiting.get(update.transferId)?.(update.state);
     },
     changed: vi.fn(),
-    reveal: vi.fn(async () => undefined),
+    revealDownload: vi.fn(async () => undefined),
     t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_, index: string) => String(args[Number(index)])),
     log: () => undefined,
   };

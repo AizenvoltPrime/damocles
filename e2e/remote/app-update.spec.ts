@@ -11,8 +11,8 @@ import { openTerminal, runInTerminal } from '../desktop/support/terminal';
 import { awaitTurnEnd, chatInput } from '../desktop/support/ui';
 import { shutdownHostDaemon } from './support/daemon-teardown';
 import { daemonVersions, installOlderServer, versionFolder } from './support/older-server';
-import { APP_VERSION, LINUX_TARGET, SERVER_PACKAGES_DIR, serverPackage } from './support/release-mirror';
-import { addHost, control, expect, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
+import { APP_VERSION, LINUX_TARGET, SERVER_PACKAGES_DIR, serverPackage, serverVersionOf } from './support/release-mirror';
+import { addHost, control, expect, lastConnectStep, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
 import { allowSleep, chatShowing, closeRemoteDialog, exited, requestQuit, sleeping, SLEEP, targetSessions } from './support/remote-runs';
 import type { SshdFixture } from './support/sshd';
 import { newRemoteChat, startTargetStub } from './support/target-agent';
@@ -104,7 +104,7 @@ test('after an update the app attaches to the busy older daemon of its protocol 
     const live = await chatShowing(app, 'Update part one.');
     expect(await daemonVersions(fixture)).toEqual([OLD]);
     // installing the new version pruned nothing the running daemon uses
-    expect(await fixture.sh(`test -x '${versionFolder(APP_VERSION)}/bin/damocles-server' && test -x '${versionFolder(OLD)}/bin/damocles-server' && echo both`, 'dev')).toContain('both');
+    expect(await fixture.sh(`test -x '${versionFolder(serverVersionOf(LINUX_TARGET))}/bin/damocles-server' && test -x '${versionFolder(OLD)}/bin/damocles-server' && echo both`, 'dev')).toContain('both');
 
     release();
     await expect(live.getByText('Update part one. Update part two.', { exact: false })).toBeVisible({ timeout: 60_000 });
@@ -114,7 +114,7 @@ test('after an update the app attaches to the busy older daemon of its protocol 
     expect(await daemonVersions(fixture)).toEqual([OLD]);
 
     await fixture.sh(`pkill -u dev -f '^${TERMINAL_SLEEP}$'`);
-    await expect.poll(() => daemonVersions(fixture), { timeout: 120_000 }).toEqual([APP_VERSION]);
+    await expect.poll(() => daemonVersions(fixture), { timeout: 120_000 }).toEqual([serverVersionOf(LINUX_TARGET)]);
     await remoteProjectKey(app, { authorityKey: `ssh+${hostId}` }, APP);
     await chatShowing(app, 'Update part one. Update part two.');
     await shutdownHostDaemon(app, hostId, fixture);
@@ -138,8 +138,40 @@ test('an idle older daemon with no other client is shut down at once and the app
   const { app } = await launch({ env });
   const hostId = await hostIdOf(app);
   await remoteProjectKey(app, { authorityKey: `ssh+${hostId}` }, APP);
-  await expect.poll(() => daemonVersions(fixture), { timeout: 120_000 }).toEqual([APP_VERSION]);
+  await expect.poll(() => daemonVersions(fixture), { timeout: 120_000 }).toEqual([serverVersionOf(LINUX_TARGET)]);
   await shutdownHostDaemon(app, hostId, fixture);
+});
+
+test('an earlier build of this version, idle on the host, gives way to this build, which installs beside it once', { tag: SSH_TAG }, async ({ foreground: _foreground, launch, mirror, ssh, sshd }) => {
+  test.setTimeout(600_000);
+  const fixture = await sshd('prod-1');
+  // a host an earlier development build of this version installed: its plain-version folder, its server running
+  await installOlderServer(fixture, CURRENT_PACKAGE, { version: APP_VERSION });
+  const env = remoteEnv(ssh, mirror);
+  const earlier = await launch({ env: { ...env, DAMOCLES_E2E_APP_VERSION: APP_VERSION } });
+  await connect(earlier.app);
+  expect(await daemonVersions(fixture)).toEqual([APP_VERSION]);
+  await earlier.close();
+
+  const current = await launch({ env });
+  const hostId = await hostIdOf(current.app);
+  await remoteProjectKey(current.app, { authorityKey: `ssh+${hostId}` }, APP);
+  const build = serverVersionOf(LINUX_TARGET);
+  await expect.poll(() => daemonVersions(fixture), { timeout: 120_000 }).toEqual([build]);
+  expect(await fixture.sh(`test -x '${versionFolder(build)}/bin/damocles-server' && test -x '${versionFolder(APP_VERSION)}/bin/damocles-server' && echo both`, 'dev')).toContain('both');
+  // the connect after the replacement found this build installed
+  await expect.poll(async () => (await lastConnectStep(current.app, hostId))?.step, { timeout: 60_000 }).toBe('connected');
+  expect((await lastConnectStep(current.app, hostId))?.visited).not.toContain('installing');
+  const downloads = mirror.downloads.length;
+  await current.close();
+
+  // connecting again with the same build installs nothing and downloads nothing
+  const again = await launch({ env });
+  await remoteProjectKey(again.app, { authorityKey: `ssh+${hostId}` }, APP);
+  expect((await lastConnectStep(again.app, hostId))?.visited).not.toContain('installing');
+  expect(mirror.downloads).toHaveLength(downloads);
+  expect(await daemonVersions(fixture)).toEqual([build]);
+  await shutdownHostDaemon(again.app, hostId, fixture);
 });
 
 test('a busy daemon of another protocol shows its running chats read-only from the session mirror, kept up to date; Switch when they finish waits for them, then the app runs its own version', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
@@ -173,7 +205,7 @@ test('a busy daemon of another protocol shows its running chats read-only from t
     await expect(banner.getByRole('status')).toHaveText('Waiting for the agents on prod-1 to finish');
     expect(await daemonVersions(fixture)).toEqual([OLD]);
     releaseFirst();
-    await expect.poll(() => daemonVersions(fixture), { timeout: 120_000 }).toEqual([APP_VERSION]);
+    await expect.poll(() => daemonVersions(fixture), { timeout: 120_000 }).toEqual([serverVersionOf(LINUX_TARGET)]);
     await remoteProjectKey(app, { authorityKey: `ssh+${hostId}` }, APP);
     // on its own version the chat is live again, its whole transcript included
     const resumed = await chatShowing(app, 'Second old one. Second old two.');
@@ -214,7 +246,7 @@ test('Switch now confirms with the old daemon\'s running agents and terminals, s
     await expect(confirm.getByText(/^Terminal: /)).toHaveCount(1);
     await confirm.getByRole('button', { name: 'Switch now' }).click();
 
-    await expect.poll(() => daemonVersions(fixture), { timeout: 120_000 }).toEqual([APP_VERSION]);
+    await expect.poll(() => daemonVersions(fixture), { timeout: 120_000 }).toEqual([serverVersionOf(LINUX_TARGET)]);
     expect(await targetSessions(fixture)).toContain(TURN_STOPPED);
     expect(await sleeping(fixture)).toBe(false);
     expect(await terminalSleeping(fixture)).toBe(false);

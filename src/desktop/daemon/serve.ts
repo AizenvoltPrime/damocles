@@ -43,6 +43,7 @@ import { forkChild, type ForkedChild } from './process-starts';
 import { createRemoteCoreHost } from './remote-core-host';
 import { createRunRegistry } from './run-registry';
 import { daemonE2eHooks, e2eConnectionLimits, terminalBinFolder } from './server-package';
+import { readServerVersion } from './server-version';
 import { acquireDaemonLock } from './singleton';
 import { createTerminalHub } from './terminal-hub';
 import { createPortDetector, scannerFor } from './ports/port-detector';
@@ -64,6 +65,7 @@ const RELAY_SOCKET_NAME = 'askpass.sock';
 
 export interface DaemonDeps {
   readonly root: string;
+  // readServerVersion: the welcome, the pid file and the CLI status carry it
   readonly version: string;
   readonly facts: HostFacts;
   readonly paths: RunPaths;
@@ -392,12 +394,6 @@ function plain(message: string, ...args: string[]): string {
   return message.replace(/\{(\d+)\}/g, (_match, index: string) => args[Number(index)] ?? '');
 }
 
-async function readVersion(root: string): Promise<string> {
-  const manifest = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8')) as { version?: unknown };
-  if (typeof manifest.version !== 'string') throw new Error(`${root}/package.json names no version`);
-  return manifest.version;
-}
-
 export interface ListenOptions {
   readonly paths: RunPaths;
   readonly version: string;
@@ -604,7 +600,7 @@ export async function serve(root: string): Promise<void> {
   flushLogs = () => logSinks.endAsyncWrites();
   logUncaughtErrors(process, 'daemon', log);
   const start = async (): Promise<void> => {
-    const version = await readVersion(root);
+    const version = await readServerVersion(root);
     log(`Damocles daemon ${version} starting (pid ${process.pid})`);
     await mergeLoginShellEnv(processLauncher(), log);
     // the login shell's environment may set them again

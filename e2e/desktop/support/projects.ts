@@ -4,7 +4,7 @@ import { expect, type Locator, type Page } from '@playwright/test';
 import type { ProjectsView } from '../../../src/desktop/preload/shell-channels';
 import { filesRow } from './editor';
 import { settled } from './screenshots';
-import { cssString, projectsList } from './shell-ui';
+import { clickSectionAction, cssString, projectsList } from './shell-ui';
 
 // The Projects section's views, groups and reordering (en locale), as a user reaches them.
 
@@ -12,16 +12,18 @@ export const LOCAL_GROUP = 'local';
 export const THIS_COMPUTER = 'This computer';
 
 export const viewToggle = (shell: Page): Locator => shell.getByTestId('projects-view');
-export const viewButton = (shell: Page, view: ProjectsView): Locator => shell.getByTestId(`projects-view-${view}`);
 export const projectGroup = (shell: Page, group: string): Locator => shell.locator(`[data-testid="project-group"][data-group=${cssString(group)}]`);
 export const groupHeader = (shell: Page, group: string): Locator => shell.locator(`[data-testid="project-group-header"][data-group=${cssString(group)}]`);
 export const projectsRefusal = (shell: Page): Locator => shell.getByTestId('projects-refusal');
 export const projectsAnnouncement = (shell: Page): Locator => shell.getByTestId('projects-announcement');
 
-/** Switches the view with its toggle and waits until the list shows it. */
+/**
+ * Switches the view with the header's title action, as a user does, and waits until the list shows it. The action shows
+ * only while the header is hovered, so callers hold the `foreground` fixture.
+ */
 export async function showView(shell: Page, view: ProjectsView): Promise<void> {
-  await viewButton(shell, view).click();
-  await expect(viewButton(shell, view)).toHaveAttribute('aria-pressed', 'true');
+  if (await viewToggle(shell).getAttribute('data-view') !== view) await clickSectionAction(shell, 'projects-view');
+  await expect(viewToggle(shell)).toHaveAttribute('data-view', view);
   await expect(projectsList(shell).getByTestId('project-group')).toHaveCount(view === 'grouped' ? await projectGroupCount(shell) : 0);
 }
 

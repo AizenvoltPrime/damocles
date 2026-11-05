@@ -10,7 +10,9 @@ import { DAEMON_LOG } from '../logs';
 import { daemonChildEnv } from '../child-env';
 import { dropInheritedVariables, EXIT_START_FAILED, shutdownOnSignals } from '../serve';
 import { localRunPaths } from '../token';
+import { connectToDaemon } from '../attach';
 import { REPO_ROOT } from './in-process-daemon';
+import { connectClient } from './test-client';
 
 describe('a daemon start that fails', () => {
   let root: string;
@@ -43,6 +45,34 @@ describe('a daemon start that fails', () => {
     expect(log).toContain(path.join(root, 'package.json'));
     fs.rmSync(home, { recursive: true, force: true });
   }, 60_000);
+
+  it('runs as its server package\'s server version, which its pid file and its welcome carry', async () => {
+    const serverVersion = '0.0.0-test+0123456789ab';
+    const packaged = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-serve-root-'));
+    fs.cpSync(path.join(root, 'dist'), path.join(packaged, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(packaged, 'package.json'), JSON.stringify({ version: '0.0.0-test' }));
+    fs.writeFileSync(path.join(packaged, 'server-package.json'), JSON.stringify({ name: 'damocles-server', version: '0.0.0-test', serverVersion }));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-serve-home-'));
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, NODE_PATH: path.join(REPO_ROOT, 'node_modules') };
+    delete env['ELECTRON_RUN_AS_NODE'];
+    const daemon = spawn(process.execPath, [path.join(packaged, 'dist', 'daemon.js'), 'serve'], { env, stdio: 'ignore' });
+    const exited = once(daemon, 'exit');
+    try {
+      const paths = await localRunPaths(home);
+      await vi.waitFor(() => expect(fs.existsSync(paths.pidFile)).toBe(true), { timeout: 30_000, interval: 100 });
+      expect(JSON.parse(fs.readFileSync(paths.pidFile, 'utf8'))).toMatchObject({ version: serverVersion, pid: daemon.pid });
+      const { socket, rest } = await connectToDaemon({ paths, start: () => Promise.reject(new Error('the spawned daemon is not running')), deadlineMs: 10_000, log: () => undefined });
+      if (rest.length > 0) socket.unshift(Buffer.from(rest));
+      const client = await connectClient(socket);
+      expect(client.outcome).toMatchObject({ kind: 'welcome', welcome: { serverVersion } });
+      await client.control.request('shutdownNow', {});
+      await exited;
+    } finally {
+      daemon.kill();
+      fs.rmSync(home, { recursive: true, force: true, maxRetries: 5 });
+      fs.rmSync(packaged, { recursive: true, force: true, maxRetries: 5 });
+    }
+  }, 90_000);
 
   it.runIf(process.platform !== 'win32')('removes the git credential relay\'s folder when the start fails after making it', async () => {
     const versioned = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-serve-root-'));

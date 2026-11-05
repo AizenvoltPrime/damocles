@@ -86,8 +86,8 @@ describe('shell locale parity', () => {
   it('keeps every placeholder and translates every string that has words', () => {
     const placeholders = (value: string): string[] => (value.match(/{[a-zA-Z]+}/g) ?? []).sort();
     const mismatched = [...SHELL_EN].filter(([key, value]) => String(placeholders(value)) !== String(placeholders(SHELL_EL.get(key) ?? '')));
-    // Only a pure placeholder pattern such as "{title}, {project}" may read the same in both.
-    const untranslated = [...SHELL_EN].filter(([key, value]) => SHELL_EL.get(key) === value && /[a-zA-Z]{2,}/.test(value.replace(/{[a-zA-Z]+}/g, '')));
+    // Only a pure placeholder pattern such as "{title}, {project}", or Greek's loanword «agent», may read the same in both.
+    const untranslated = [...SHELL_EN].filter(([key, value]) => SHELL_EL.get(key) === value && /[a-zA-Z]{2,}/.test(value.replace(/{[a-zA-Z]+}|\b(sub)?agents?\b/gi, '')));
 
     expect({ mismatched, untranslated }).toEqual({ mismatched: [], untranslated: [] });
   });
@@ -171,12 +171,20 @@ describe('MCP copy', () => {
     expect(EL.get('mcp.form.errors.nameShadowedByProject')).not.toContain(' server ');
   });
 
-  it('uses one Greek word each for "server" and "agent" across the MCP panel', () => {
+  it('uses one Greek word for "server" across the MCP panel', () => {
     // Input placeholders and the `"mcpServers"` JSON key keep their English spelling.
     const offenders = [...EL]
       .filter(([key]) => key.startsWith('mcp.') && !key.endsWith('Placeholder'))
-      .filter(([, value]) => /\bservers?\b|\bagents?\b/i.test(value.replace('"mcpServers"', '')))
+      .filter(([, value]) => /\bservers?\b/i.test(value.replace('"mcpServers"', '')))
       .map(([key]) => key);
+
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe('Greek terms', () => {
+  it('says «agent» and «subagent» in every Greek bundle, never «πράκτορας»', () => {
+    const offenders = [EL, SHELL_EL, NLS_EL, L10N_EL].flatMap((strings) => [...strings].filter(([, value]) => /πράκτορ|πρακτόρ/iu.test(value)).map(([key]) => key));
 
     expect(offenders).toEqual([]);
   });

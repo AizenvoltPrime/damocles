@@ -275,7 +275,7 @@ describe('overlay requests', () => {
 
   it('dismisses the open request of a kind as its window closes, closing it in the page and leaving a message dialog open', async () => {
     loaded();
-    const settings = host.request({ kind: 'settings', generation: 1 }, returnFocus as never);
+    const settings = host.request({ kind: 'settings', generation: 1, page: { authority: 'local', chat: 'new:p1' } }, returnFocus as never);
     const settingsId = lastRequestId();
     const question = host.request({ kind: 'message', severity: 'warning', message: 'Quit?', actions: ['Quit'], cancelLabel: 'Cancel' }, undefined);
     host.dismiss('settings');
@@ -1026,7 +1026,7 @@ const QUESTION: Extract<OverlayRequest, { kind: 'message' }> = {
   actions: ['Trust Folder'],
   cancelLabel: "Don't Trust",
 };
-const SETTINGS: OverlayRequest = { kind: 'settings', generation: 1 };
+const SETTINGS: OverlayRequest = { kind: 'settings', generation: 1, page: { authority: 'local', chat: 'new:p1' } };
 const HOST_CARD: OverlayRequest = { kind: 'connect', hostId: 'h1', card: 'show', hosts: [], distros: [], sshConfigAliases: [] };
 
 describe('overlay message dialogs (D41)', () => {

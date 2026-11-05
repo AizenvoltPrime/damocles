@@ -147,7 +147,8 @@ export const SHELL_CHANNELS = {
   // { open: boolean }: main hides the chat view while the focus overlay is open
   editorFocusOverlay: 'damocles:shell:editor:focus-overlay',
   // Editor pane, renderer → main, send
-  // EditorEditReport, trailing-throttled by the shell (<= EDITOR_EDIT_THROTTLE_MS) and flushed before save, conflict and flushed
+  // EditorEditReport, leading- and trailing-throttled by the shell (<= EDITOR_EDIT_THROTTLE_MS) and flushed before save,
+  // conflict and flushed
   editorEdit: 'damocles:shell:editor:edit',
   // EditorSelectionReport, throttled; feeds the IDE context of the selected chat
   editorSelection: 'damocles:shell:editor:selection',
@@ -167,6 +168,9 @@ export const SHELL_CHANNELS = {
   // EditorFlushRequest: quit, window close or a save in their prompts; the shell formats the named documents, sends its
   // pending edits, then editor:flushed
   editorFlush: 'damocles:shell:editor:flush',
+  // { documentId }: main could not apply an editor:edit (a seq gap, a change outside its text, a malformed report); the shell
+  // answers with an editor:edit carrying its whole buffer
+  editorResync: 'damocles:shell:editor:resync',
   // { tabId }: main opened a tab the user asked for (Quick Open, a tool card); the shell focuses its editor
   editorFocus: 'damocles:shell:editor:focus',
   // EditorReveal: an open named a line; the shell scrolls the tab's editor to it and puts the caret there, focus unchanged
@@ -284,10 +288,11 @@ export const MAX_REPLACE_OCCURRENCES = 1_000_000;
 export const MAX_REPLACE_FILES = 100_000;
 // A file or folder name in Files' create and rename.
 export const MAX_FILE_NAME_LENGTH = 255;
-// Characters of buffer text in one editor:edit or save; EDITOR_MAX_DOCUMENT_BYTES of UTF-16 text at most.
-export const MAX_EDITOR_TEXT_CHARS: number = 10 * 1024 * 1024;
+// Characters of buffer text in one editor:edit or save; must stay equal to EDITOR_HARD_MAX_DOCUMENT_BYTES in src/shared/types/messages.ts.
+export const MAX_EDITOR_TEXT_CHARS: number = 64 * 1024 * 1024;
 export const MAX_EDITOR_LINE = 10_000_000;
-// The shell sends editor:edit at most this often per document.
+// The shell sends editor:edit at most this often per document: each message costs main one copy of the whole text, so a
+// burst of keystrokes goes as one batch of changes.
 export const EDITOR_EDIT_THROTTLE_MS = 250;
 
 // Bounds the shell may send; main clamps nothing, it rejects anything outside these.
@@ -724,7 +729,7 @@ export const SHELL_FOCUS_PARTS: readonly ShellFocusPart[] = ['sidebar', 'editor'
 
 // Editor pane (main's editor-pane.ts relay). Ids are issued by main; the shell passes them back verbatim.
 export type EditorTabKind = 'code' | 'diff' | 'markdownPreview' | 'image' | 'untitled' | 'settings' | 'log' | 'notDisplayed' | 'browser' | 'searchEditor' | 'changes' | 'review' | 'timeline' | 'merge';
-export type EditorReadOnlyReason = 'encoding' | 'log' | 'outsideProject' | 'tooLarge';
+export type EditorReadOnlyReason = 'encoding' | 'log' | 'snapshot' | 'tooLarge';
 
 // A browser page of the selected chat (D14), as main observed it from the host messages core posts to the page.
 export interface ShellBrowserPage {
@@ -761,15 +766,19 @@ export interface ShellEditorTab {
   readonly browser?: ShellBrowserPage;
   // a browser tab's is the page's own title, which the shell shows without bidi controls
   readonly title: string;
-  // absent for files outside every project (agent opens), untitled and core-generated documents; the root key (folder-root.ts)
+  // absent for files outside every project, untitled and core-generated documents; the root key (folder-root.ts)
   // of the project folder or chat worktree the file is in
   readonly projectKey?: string;
   // a file of a chat worktree: its branch, for the tab's branch chip (D31)
   readonly worktreeBranch?: string;
   // '/' separated; the breadcrumbs; absent outside projects
   readonly relativePath?: string;
+  // a file outside every project on another host: that host's authority key (a project file's host is its project's)
+  readonly host?: string;
   // the tooltip and the breadcrumb fallback
   readonly displayPath: string;
+  // this computer's file manager can show the file: this computer's own or a WSL distro's, never another host's
+  readonly revealable?: true;
   readonly dirty: boolean;
   readonly readOnly: boolean;
   readonly readOnlyReason?: EditorReadOnlyReason;
@@ -928,7 +937,8 @@ export type ShellDocumentContent =
     }
   // dataUrl: a size-capped data: URL of a png, jpeg, gif, webp, bmp, x-icon or svg+xml image, for an <img> only
   | { readonly kind: 'image'; readonly documentId: string; readonly dataUrl: string; readonly bytes: number }
-  | { readonly kind: 'notDisplayed'; readonly documentId: string; readonly reason: NotDisplayedReason; readonly bytes?: number }
+  // openAnyway: a file past the confirm threshold and within the hard maximum, which the tab's Open Anyway opens as text
+  | { readonly kind: 'notDisplayed'; readonly documentId: string; readonly reason: NotDisplayedReason; readonly bytes?: number; readonly openAnyway?: true }
   // a remote file whose host is not connected; its tab takes a new documentId once the host connects
   | { readonly kind: 'offline'; readonly documentId: string; readonly hostId: string; readonly hostName: string };
 
@@ -983,6 +993,8 @@ export const EDITOR_TAB_ACTIONS = [
   'openSource',
   // a diff tab's file, or the file of a preview
   'openFile',
+  // a notice tab's file past the confirm threshold, as text in the same tab
+  'openAnyway',
   // a code tab's file as a diff against git HEAD (slice 10); refused until then
   'openChanges',
   'copyPath',
@@ -1003,13 +1015,22 @@ export interface EditorTextRequest {
   readonly text: string;
 }
 
-// editor:edit. seq: the shell's per-document edit counter, increasing. overReload: the keystrokes were typed over text main
-// replaced before it saw them, so main keeps them as the buffer and flags the conflict instead of taking them as edits of
-// the new text.
-export interface EditorEditReport extends EditorTextRequest {
-  readonly seq: number;
-  readonly overReload: boolean;
+// One of Monaco's content changes (IModelContentChange): length UTF-16 units at offset replaced by text, offset counted in
+// the text the changes before it left.
+export interface EditorTextChange {
+  readonly offset: number;
+  readonly length: number;
+  readonly text: string;
 }
+
+// editor:edit. version: the ShellDocumentContent version the buffer is based on. seq: the shell's per-document message counter,
+// one more per message. changes: Monaco's changes since the previous message, in Monaco's order. text: the whole buffer,
+// answering editor:resync, or with overReload when the keystrokes were typed over text main replaced before it saw them, so
+// main keeps them as the buffer and flags the conflict instead of taking them as edits of the new text.
+export type EditorEdit =
+  | { readonly version: number; readonly seq: number; readonly changes: readonly EditorTextChange[] }
+  | { readonly version: number; readonly seq: number; readonly text: string; readonly overReload: boolean };
+export type EditorEditReport = EditorEdit & { readonly documentId: string };
 
 export type EditorSaveResult =
   | { readonly ok: true }
@@ -1518,8 +1539,8 @@ export interface ShellState {
   // a chat view covers the chat slot: the selected chat, or another project's kept while the project's core opens its own;
   // false while none is selected or the kept one is withheld (keptChatWithheld), and the slot shows the shell's placeholder
   readonly chatViewShown: boolean;
-  // the breadcrumb's chat
-  readonly selectedChat?: { readonly id: string; readonly title: string; readonly status: ChatStatus };
+  // the breadcrumb's chat; title is absent until main has read it, and '' for a chat with no title yet
+  readonly selectedChat?: { readonly id: string; readonly title?: string; readonly status: ChatStatus };
   // by project key, every project of the list (D31)
   readonly shownFolders: { readonly [projectKey: string]: ShownFolder };
   readonly effectiveTheme: 'dark' | 'light';
@@ -1671,7 +1692,7 @@ export interface DamoclesShellApi {
   onDocumentChanged(listener: (change: EditorDocumentChange) => void): () => void;
   openEditor(request: EditorOpenRequest): Promise<EditorOpenResult>;
   editorTab(request: EditorTabRequest): Promise<void>;
-  // trailing-throttled by the caller to at most one per EDITOR_EDIT_THROTTLE_MS per document
+  // throttled by the caller to at most one per EDITOR_EDIT_THROTTLE_MS per document
   reportEdit(edit: EditorEditReport): void;
   saveDocument(request: EditorTextRequest): Promise<EditorSaveResult>;
   saveDocumentAs(request: EditorTextRequest): Promise<EditorSaveResult>;
@@ -1688,6 +1709,8 @@ export interface DamoclesShellApi {
   // answer each with editorFlushed(requestId) after formatting the named documents and sending every pending edit
   onEditorFlush(listener: (request: EditorFlushRequest) => void): () => void;
   editorFlushed(requestId: string): void;
+  // answer each with reportEdit carrying the document's whole buffer
+  onEditorResync(listener: (documentId: string) => void): () => void;
   onEditorFocus(listener: (tabId: string) => void): () => void;
   onEditorReveal(listener: (reveal: EditorReveal) => void): () => void;
   // Browser tabs

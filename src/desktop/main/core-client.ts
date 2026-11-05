@@ -2,6 +2,7 @@ import type { CatalogResult } from '../../core/chat-panel/session-catalog';
 import type { PanelWorktreeStateEvent } from '../../core/chat-panel/panel-worktrees';
 import type { ChatChangeTotals } from '../../core/pi-session/chat-review';
 import type { ChatActivity, TurnOutcome } from '../../core/pi-session/session-state';
+import type { SessionFileWrite } from '../../core/pi-session/session-store/session-file-write';
 import type { UsageThresholdCrossing } from '../../core/pi-session/usage-thresholds';
 import type { Disposable } from '../../platform/disposable';
 import type { InputBoxOptions } from '../../platform/dialog-service';
@@ -295,6 +296,12 @@ export class CoreClient implements Disposable {
 
   deleteSession(sessionId: string): Promise<CatalogResult> {
     return this.request('catalog.delete', { sessionId });
+  }
+
+  // ---- the session store's files, which only their core writes
+
+  writeSessionFile(path: string, bytes: Uint8Array, expectedSha256: string | null): Promise<SessionFileWrite> {
+    return this.request('sessionFiles.write', { path, bytes, expectedSha256 });
   }
 
   // ---- folders, browser pages, worktrees

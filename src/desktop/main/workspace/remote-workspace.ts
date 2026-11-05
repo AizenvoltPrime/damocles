@@ -1,5 +1,5 @@
 import type { Disposable } from '../../../platform/disposable';
-import { EDITOR_MAX_DOCUMENT_BYTES } from '../../../shared/types/messages';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { authorityKeyOfProject, targetFolderKeyOf } from '../../../shared/project-location';
 import type { Endpoint } from '../../core-protocol/endpoint';
 import type { StreamChannel } from '../../../remote/mux';
@@ -40,13 +40,39 @@ export class TransfersUnsupportedError extends Error {
 // files.resolveOutside, files.readOutside and files.writeOutside
 export const OUTSIDE_FILES_FEATURE = 'files.outside';
 
-/** A method for a file outside every project of a host whose daemon does not list OUTSIDE_FILES_FEATURE; nothing was sent. */
+/** A daemon whose core answers sessionFiles.write and whose workspace reports and refuses session files. */
+export const SESSION_FILES_FEATURE = 'sessionFiles';
+export const READ_OUTSIDE_LIMIT_FEATURE = 'files.readOutsideLimit';
+
+// A file outside every project may be a session file, which only a daemon that reports and refuses session files opens, and
+// may be over the editor's confirm size, which only a daemon that takes readOutside's limit reads whole.
+export const OUTSIDE_FILES_FEATURES: readonly string[] = [OUTSIDE_FILES_FEATURE, SESSION_FILES_FEATURE, READ_OUTSIDE_LIMIT_FEATURE];
+
+export function carriesOutsideFiles(features: readonly string[]): boolean {
+  return OUTSIDE_FILES_FEATURES.every((feature) => features.includes(feature));
+}
+
+/** A method for a file outside every project of a host whose daemon does not list OUTSIDE_FILES_FEATURES; nothing was sent. */
 export class OutsideFilesUnsupportedError extends Error {
   override readonly name = 'OutsideFilesUnsupportedError';
   readonly authorityKey: string;
 
   constructor(authorityKey: string) {
     super(`The Damocles server on ${authorityKey} does not open files outside its projects`);
+    this.authorityKey = authorityKey;
+  }
+}
+
+// files.listOutside
+export const OUTSIDE_LISTING_FEATURE = 'files.listOutside';
+
+/** A typed folder's listing on a host whose daemon does not list OUTSIDE_LISTING_FEATURE; nothing was sent. */
+export class ListingUnsupportedError extends Error {
+  override readonly name = 'ListingUnsupportedError';
+  readonly authorityKey: string;
+
+  constructor(authorityKey: string) {
+    super(`The Damocles server on ${authorityKey} does not list folders outside its projects`);
     this.authorityKey = authorityKey;
   }
 }
@@ -65,8 +91,10 @@ export interface RemoteWorkspaceDeps {
   readonly watchReady: boolean;
   // the daemon lists TRANSFER_FEATURES; without it every transfer method throws TransfersUnsupportedError before sending
   readonly transfers: boolean;
-  // the daemon lists OUTSIDE_FILES_FEATURE; without it every outside method throws OutsideFilesUnsupportedError before sending
+  // the daemon lists OUTSIDE_FILES_FEATURES; without them every outside method throws OutsideFilesUnsupportedError before sending
   readonly outside: boolean;
+  // the daemon lists OUTSIDE_LISTING_FEATURE; without it listOutside throws ListingUnsupportedError before sending
+  readonly listing: boolean;
   // a stream for a transfer's bytes, held until its reader subscribes
   readonly openStream: () => StreamChannel;
   readonly log: (line: string) => void;
@@ -172,26 +200,31 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
         return found && project && { project, relativePath: found.relativePath, path: found.path };
       },
       realpath: (target) => call('files.realpath', { target }),
-      read: async (filePath, limitBytes) => fromWireBytes(await call('files.read', { path: filePath, ...(limitBytes !== undefined ? { limitBytes } : {}) }), limitBytes ?? EDITOR_MAX_DOCUMENT_BYTES),
+      read: async (filePath, limitBytes) => fromWireBytes(await call('files.read', { path: filePath, ...(limitBytes !== undefined ? { limitBytes } : {}) }), limitBytes ?? EDITOR_CONFIRM_DOCUMENT_BYTES),
       readText: (filePath) => call('files.readText', { path: filePath }),
       writeInPlace: async (project, location, bytes) => call('files.writeInPlace', { project: toWire(project), location: locationToWire(location), bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength) }),
       readHostSettings: async () => {
         const { path, read } = await call('files.readHostSettings', {});
-        return { path, read: read.kind === 'outside' ? read : fromWireBytes(read, EDITOR_MAX_DOCUMENT_BYTES) };
+        return { path, read: read.kind === 'outside' ? read : fromWireBytes(read, EDITOR_CONFIRM_DOCUMENT_BYTES) };
       },
       writeHostSettings: (bytes) => call('files.writeHostSettings', { bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength) }),
-      resolveOutside: async (target, rule) => {
+      resolveOutside: async (target) => {
         requireOutside();
-        return call('files.resolveOutside', { target, ...rule });
+        return call('files.resolveOutside', { target });
       },
-      readOutside: async (filePath, rule) => {
+      readOutside: async (filePath, limitBytes) => {
         requireOutside();
-        const read = await call('files.readOutside', { path: filePath, ...rule });
-        return read.kind === 'outside' ? read : fromWireBytes(read, EDITOR_MAX_DOCUMENT_BYTES);
+        const read = await call('files.readOutside', { path: filePath, ...(limitBytes !== undefined ? { limitBytes } : {}) });
+        return read.kind === 'outside' ? read : fromWireBytes(read, limitBytes ?? EDITOR_CONFIRM_DOCUMENT_BYTES);
       },
-      writeOutside: async (filePath, bytes, rule) => {
+      writeOutside: async (filePath, bytes) => {
         requireOutside();
-        return call('files.writeOutside', { path: filePath, bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), ...rule });
+        return call('files.writeOutside', { path: filePath, bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength) });
+      },
+      listOutside: async (folder, prefix) => {
+        if (closed) throw deps.notConnected();
+        if (!deps.listing) throw new ListingUnsupportedError(authorityKey);
+        return call('files.listOutside', { folder, prefix });
       },
       createEntry: async (project, relativeDir, name, kind) => call('files.createEntry', { project: toWire(project), relativeDir, name, kind }),
       renameEntry: async (project, relativePath, newName) => call('files.renameEntry', { project: toWire(project), relativePath, newName }),

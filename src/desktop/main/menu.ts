@@ -69,6 +69,8 @@ export type FocusPart = 'sidebar' | 'editor' | 'terminal' | 'chat' | 'toasts';
 // state takes a check (packaged, and not checking, downloading or holding an update). The commands' context (AD11).
 export interface MenuState {
   readonly chat: boolean;
+  // the selected chat runs in a core; false for an offline transcript, whose core view refuses every request
+  readonly liveChat: boolean;
   // the editor pane has an active tab
   readonly editor: boolean;
   readonly browser: boolean;

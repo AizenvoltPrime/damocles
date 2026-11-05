@@ -1,5 +1,39 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_CHAT_TITLE_CHARS, storedTitle } from '../chat-title';
+import type { StoredSession } from '../../../shared/types/session';
+import { MAX_CHAT_TITLE_CHARS, chatTitle, storedTitle } from '../chat-title';
+
+const row = (id: string, preview: string): StoredSession => ({ id, timestamp: 0, preview });
+
+describe('chatTitle', () => {
+  it('is undefined before any read titled the session', () => {
+    expect(chatTitle(undefined, new Map(), 's1')).toBeUndefined();
+  });
+
+  it("takes the session's row, '' for a row with no title", () => {
+    expect(chatTitle([row('s0', 'other'), row('s1', 'fix the build')], new Map([['s1', 'old']]), 's1')).toBe('fix the build');
+    expect(chatTitle([row('s1', ' ')], new Map(), 's1')).toBe('');
+  });
+
+  it('keeps the known title while the catalog reloads or lacks the row, and names nothing for an unread session', () => {
+    const known = new Map([['s1', 'fix the build']]);
+    expect(chatTitle(undefined, known, 's1')).toBe('fix the build');
+    expect(chatTitle([row('s0', 'other')], known, 's1')).toBe('fix the build');
+    expect(chatTitle([row('s0', 'other')], new Map(), 's1')).toBeUndefined();
+  });
+
+  it("never names a chat that switched sessions by its earlier session's title", () => {
+    const known = new Map([['s1', 'fix the build']]);
+    expect(chatTitle(undefined, known, 's2')).toBeUndefined();
+    expect(chatTitle([row('s1', 'fix the build')], known, 's2')).toBeUndefined();
+  });
+
+  it('keeps New chat for the session a new chat started until a read titles it, and lets the read win', () => {
+    expect(chatTitle(undefined, new Map(), 's1', true)).toBe('');
+    expect(chatTitle([row('s0', 'other')], new Map(), 's1', true)).toBe('');
+    expect(chatTitle([row('s1', 'fix the build')], new Map(), 's1', true)).toBe('fix the build');
+    expect(chatTitle(undefined, new Map([['s1', 'fix the build']]), 's1', true)).toBe('fix the build');
+  });
+});
 
 describe('storedTitle', () => {
   it('takes the custom title, else the AI title, else the preview, skipping blank ones', () => {

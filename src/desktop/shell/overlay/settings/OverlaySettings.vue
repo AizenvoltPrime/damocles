@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, provide, ref, shallowRef } from 'vue';
+import { computed, nextTick, onBeforeUnmount, provide, ref, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { FileCode2, FolderSearch, GitBranch, Info, Palette, Server, SquareTerminal } from 'lucide-vue-next';
+import { unrefElement } from '@vueuse/core';
+import { CircleArrowUp, CloudOff, FileCode2, FolderSearch, GitBranch, Info, KeyRound, Palette, RefreshCw, RotateCw, Server, SquareTerminal, TriangleAlert } from 'lucide-vue-next';
 import type { SettingsAccountId, SettingsSectionId, SettingsTarget } from '@shared/settings-sections';
 import type { ExtensionToWebviewMessage, SettingsFileScope } from '@shared/types/messages';
 import SettingsModal, { type SettingsFooter } from '@/components/settings/SettingsModal.vue';
 import ExtensionUiDialog from '@/components/ExtensionUiDialog.vue';
+import { Button } from '@/components/ui/button';
+import { BANNER_TONE } from '@/components/banner-tone';
 import { provideAllowHostYolo, type AllowHostYolo } from '@/components/settings/settings-view';
 import { MCP_HOST_SERVERS_ROW, NO_HOST_SETTINGS, type HostSettings, type HostSettingsSection, type SettingsScopeView } from '@/components/settings/settings-rows';
 import { useSettingWritesStore } from '@/components/settings/settings-writes';
@@ -14,7 +17,8 @@ import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useExtensionUiStore } from '@/stores/useExtensionUiStore';
 import { useVoiceJarvisStore } from '@/stores/useVoiceJarvisStore';
-import type { DamoclesOverlayApi, OverlaySettingsScope, OverlaySettingsScopes } from '../../../preload/overlay-channels';
+import type { DamoclesOverlayApi, OverlaySettingsAway, OverlaySettingsAwayState, OverlaySettingsPage, OverlaySettingsScope, OverlaySettingsScopes } from '../../../preload/overlay-channels';
+import { ran } from '../popup-answer';
 import SettingsScopeTabs from './SettingsScopeTabs.vue';
 import AboutSection from './AboutSection.vue';
 import AppearanceSection from './AppearanceSection.vue';
@@ -114,6 +118,7 @@ const props = defineProps<{
   api: DamoclesOverlayApi;
   bridge: OverlaySettingsBridge;
   generation: number;
+  page: OverlaySettingsPage;
   section?: SettingsSectionId | undefined;
   account?: SettingsAccountId | undefined;
   release?: string | undefined;
@@ -340,26 +345,66 @@ const DESKTOP_SETTINGS = computed((): HostSettings => ({
   ],
 }));
 
-// Changes on every re-attach, so the page remounts, nothing typed for the previous chat survives, and the modal asks for the new chat's state.
+// The attachment shown; each new one asks for its state.
 const attachment = ref(props.generation);
+// Changes only when a re-attach shows other settings (another core, tab or settings folder, or another chat on a page that
+// lists This chat rows), so the page remounts and nothing typed for those settings survives.
+const pageKey = ref('');
 // A remote chat's tabs, as main attached the modal: active is always the tab of the attached core.
 const scopes = shallowRef<OverlaySettingsScopes | undefined>(props.scopes);
-// the tab clicked while main re-attaches the modal to that tab's core; the page lists nothing meanwhile
+// the tab clicked last while main re-attaches the modal to that tab's core; the page lists nothing meanwhile
 const pending = ref<OverlaySettingsScope | undefined>();
 // the tab main could not attach the modal to, until the next attach
 const failed = ref<OverlaySettingsScope | undefined>();
-const shownScope = computed(() => (scopes.value === undefined ? undefined : pending.value ?? scopes.value.active));
+// the host or Project tab shown waits for its host's core: its page stays, inert, until main attaches it again
+const away = shallowRef<OverlaySettingsAwayState | undefined>();
+const awayState = computed((): OverlaySettingsAway | undefined => away.value?.state);
+// A click during the wait leaves the waiting tab selected and its page mounted until main answers it.
+const shownPending = computed(() => (awayState.value === undefined ? pending.value : undefined));
+const shownScope = computed(() => (scopes.value === undefined ? undefined : shownPending.value ?? scopes.value.active));
 
 function tabName(scope: OverlaySettingsScope): string {
   if (scope === 'machine') return scopes.value?.host.name ?? '';
   return scope === 'user' ? t('settingsScope.user') : t('settingsScope.project');
 }
 
+// the icons and motion of the banners whose words each state uses: the chat's connection banner, the engine pill, the update banner
+const AWAY_ICONS = { reconnecting: RefreshCw, signIn: KeyRound, failed: TriangleAlert, restarting: RotateCw, offline: CloudOff, switchOffered: CircleArrowUp, halted: TriangleAlert } as const;
+const AWAY_MOTION: Partial<Record<OverlaySettingsAway, string>> = { reconnecting: 'd-pulsing', restarting: 'd-spinning' };
+// danger asks for the user; warning heals by itself
+const awayTone = computed(() => {
+  if (awayState.value === 'switchOffered') return BANNER_TONE.info;
+  return BANNER_TONE[awayState.value === 'halted' || awayState.value === 'failed' ? 'danger' : 'warning'];
+});
+// Reconnecting and restarting end by themselves, so their banner offers nothing to do.
+const offersActions = computed(() => awayState.value !== undefined && awayState.value !== 'reconnecting' && awayState.value !== 'restarting');
+// the words the chat's connection banner, the editor's offline placeholder, the title bar's engine pill and the update banner
+// use for the same states
+const awayText = computed(() => {
+  const name = scopes.value?.host.name ?? '';
+  const current = away.value;
+  switch (current?.state) {
+    case 'reconnecting': return t('remote.banner.reconnecting', { name });
+    case 'signIn': return t('remote.banner.signIn', { name });
+    case 'failed': return t('remote.banner.announce.failed', { name });
+    case 'offline': return t('remote.editor.offline', { name });
+    case 'switchOffered': return t('hostUpdate.running', current.update.runningAgents, { named: { host: name, count: current.update.runningAgents, version: current.update.serverVersion } });
+    case 'restarting': return t('engine.hostRestarting', { host: name });
+    case 'halted': return t('engine.hostStopped', { host: name });
+    default: return '';
+  }
+});
+// Switch now can stop running agents, so the choice stays on the update banner the user sees once Settings close.
+const awayHint = computed(() => (awayState.value === 'switchOffered' ? t('settingsScope.switchOnBanner') : ''));
+
 // The desktop app's own settings are this computer's, so only the User tab lists them.
 const DESKTOP = computed((): HostSettings => (shownScope.value === undefined || shownScope.value === 'user' ? DESKTOP_SETTINGS.value : NO_HOST_SETTINGS));
 
 // Voice runs on this computer whatever host the chat is on, so only the User tab lists it.
 const USER_TAB_SECTIONS: ReadonlySet<SettingsSectionId> = new Set(['voice']);
+
+// The page lists This chat rows: a local chat's modal (no tabs) and a remote chat's host tab.
+const listsChatRows = (tab: OverlaySettingsScope | undefined): boolean => tab === undefined || tab === 'machine';
 
 // Each tab lists only what it writes: the User tab every file setting (the chat's own rows are the remote chat's, on its
 // host tab), the host and Project tabs the keys core says they may write, the host tab also the attached chat's rows.
@@ -369,7 +414,7 @@ const scopeView = computed((): SettingsScopeView | undefined => {
   if (current === undefined || tab === undefined) return undefined;
   const writable = settingsStore.writableKeys;
   const hidden = tab === 'user' ? {} : { hidden: USER_TAB_SECTIONS };
-  if (pending.value !== undefined || (tab !== 'user' && writable === undefined)) {
+  if (shownPending.value !== undefined || (tab !== 'user' && writable === undefined)) {
     return { listed: () => false, loading: t('settingsScope.loading', { tab: tabName(tab) }), ...hidden };
   }
   if (tab === 'user') {
@@ -379,7 +424,7 @@ const scopeView = computed((): SettingsScopeView | undefined => {
     };
   }
   return {
-    listed: (meta) => (tab === 'machine' && (meta.section === 'chat' || meta.id === MCP_HOST_SERVERS_ROW)) || (meta.keys ?? []).some((key) => writable!.has(key)),
+    listed: (meta) => (listsChatRows(tab) && meta.section === 'chat') || (tab === 'machine' && meta.id === MCP_HOST_SERVERS_ROW) || (meta.keys ?? []).some((key) => writable!.has(key)),
     ...hidden,
   };
 });
@@ -392,20 +437,55 @@ const footer = computed((): SettingsFooter => {
   return { kind: 'settingsFiles', files: current.active === 'user' ? [{ scope: 'user' }] : [{ scope: 'project' }, { scope: 'local' }] };
 });
 
+// A click while another waits for main supersedes it: main attaches them in order, and only the last click's answer counts.
+let lastClick = 0;
 async function selectScope(scope: OverlaySettingsScope): Promise<void> {
   const current = scopes.value;
-  if (!current || pending.value !== undefined || current.active === scope) return;
+  if (!current || pending.value === scope || (pending.value === undefined && current.active === scope)) return;
+  const click = ++lastClick;
   pending.value = scope;
   failed.value = undefined;
   try {
     const answer = await props.api.setSettingsScope(scope);
-    if (answer.ok && scopes.value) scopes.value = { ...scopes.value, active: answer.value };
+    if (click === lastClick && answer.ok && scopes.value) scopes.value = { ...scopes.value, active: answer.value };
   } catch {
-    failed.value = scope;
+    if (click === lastClick) failed.value = scope;
   } finally {
-    pending.value = undefined;
+    if (click === lastClick) pending.value = undefined;
   }
 }
+
+// Show User settings leaves with its banner, so focus moves to the tab it opened.
+async function showUser(): Promise<void> {
+  await selectScope('user');
+  if (scopes.value?.active !== 'user') return;
+  await nextTick();
+  modal.value?.focusScopeTab();
+}
+
+// Main answers once the Connect dialog took the modal's place, or opened nothing. aria-disabled rather than disabled meanwhile,
+// so the button keeps focus.
+const signingIn = ref(false);
+async function signIn(): Promise<void> {
+  if (signingIn.value) return;
+  signingIn.value = true;
+  try {
+    await ran(props.api.signInScopeHost());
+  } finally {
+    signingIn.value = false;
+  }
+}
+
+const awayActions = shallowRef<HTMLElement | null>(null);
+const signInButton = shallowRef<InstanceType<typeof Button> | null>(null);
+// Runs before a new state takes the focused banner button away, which would drop the focus to the body.
+watch(awayState, (next) => {
+  const focused = document.activeElement;
+  if (!awayActions.value?.contains(focused)) return;
+  const signInLeaves = next !== 'signIn' && unrefElement(signInButton)?.contains(focused) === true;
+  if (!offersActions.value || signInLeaves) modal.value?.focusScopeTab();
+}, { flush: 'pre' });
+
 const target = shallowRef<SettingsTarget>({
   ...(props.section !== undefined ? { section: props.section } : {}),
   ...(props.account !== undefined ? { account: props.account } : {}),
@@ -419,28 +499,39 @@ function dispatch(message: ExtensionToWebviewMessage): void {
   handler(message, ctx);
 }
 
-// The overlay's stores outlive the modal, so each open and each attachment starts from none of another chat's values.
-function attach(generation: number): void {
+// The overlay's stores outlive the modal, so each open and each page of other settings starts from none of their values.
+// Write markers and host prompts belong to one attachment; core posts the prompts again on requestSettingsState.
+function attach(generation: number, page: OverlaySettingsPage): void {
   props.bridge.setGeneration(generation);
-  settingsStore.$reset();
   extensionUiStore.$reset();
   writes.$reset();
+  const tab = scopes.value?.active;
+  const key = JSON.stringify([page.authority, tab ?? null, page.folder ?? null, listsChatRows(tab) ? page.chat : null]);
+  if (key !== pageKey.value) {
+    settingsStore.$reset();
+    pageKey.value = key;
+  }
   attachment.value = generation;
 }
 
 const stops: Array<() => void> = [];
-attach(props.generation);
+attach(props.generation, props.page);
 stops.push(props.bridge.onMessage(dispatch));
-stops.push(props.api.onSettingsAttached(({ generation, scopes: next }) => {
+stops.push(props.api.onSettingsAttached(({ generation, page, scopes: next }) => {
   scopes.value = next;
   // a re-attach of the previous tab follows a failed switch, which stays reported
   if (next === undefined || next.active === failed.value) failed.value = undefined;
-  attach(generation);
+  attach(generation, page);
 }));
 stops.push(props.api.onSettingsTarget((next) => (target.value = next)));
 // the scope tab's host renamed or recolored while the modal shows it
 stops.push(props.api.onSettingsScopeHost((host) => {
   if (scopes.value) scopes.value = { ...scopes.value, host };
+}));
+stops.push(props.api.onSettingsAway((next) => {
+  // a tab that failed to open during the wait can be tried again once the wait ended
+  if (next === null && away.value !== undefined) failed.value = undefined;
+  away.value = next ?? undefined;
 }));
 
 onBeforeUnmount(() => {
@@ -467,12 +558,14 @@ const modal = ref<InstanceType<typeof SettingsModal> | null>(null);
 <template>
   <SettingsModal
     ref="modal"
-    :page-key="attachment"
+    :page-key="pageKey"
+    :attachment="attachment"
     :scope-view="scopeView"
     :chat-host="scopes && scopes.active !== 'user' ? scopes.host.name : undefined"
     :machine-host="scopes?.active === 'machine' ? scopes.host : undefined"
     :host="DESKTOP"
     :footer="footer"
+    :busy="awayState !== undefined"
     backdrop="dim"
     :target="target"
     @closed="emit('closed')"
@@ -484,24 +577,90 @@ const modal = ref<InstanceType<typeof SettingsModal> | null>(null);
     >
       <SettingsScopeTabs
         :scopes="scopes"
-        :pending="pending"
+        :pending="shownPending"
         @select="selectScope"
       />
     </template>
     <template
       v-if="scopes"
-      #scopeBanner="{ section: pageSection }"
+      #away
     >
+      <!-- text only and always mounted, so a screen reader hears each state once and never the button -->
       <p
-        class="text-11.5 leading-[1.45] text-(--d-danger-text)"
+        class="sr-only"
+        role="status"
+        data-testid="settings-scope-away-announcement"
+      >
+        {{ awayText }} {{ awayHint }}
+      </p>
+      <Transition name="t-banner">
+        <div
+          v-if="awayState"
+          class="mx-7 mt-3.5 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border px-2.5 py-2 text-11.5 leading-[1.45] transition-colors duration-200 ease-out in-[.sm-narrow]:mx-4"
+          :class="awayTone"
+          data-testid="settings-scope-away"
+          :data-state="awayState"
+        >
+          <component
+            :is="AWAY_ICONS[awayState]"
+            aria-hidden="true"
+            class="mt-0.5 size-3.25 shrink-0 self-start"
+            :class="AWAY_MOTION[awayState]"
+          />
+          <span class="min-w-0 flex-1">
+            <span
+              class="block"
+              data-testid="settings-scope-away-text"
+            >{{ awayText }}</span>
+            <span
+              v-if="awayHint"
+              class="block"
+              data-testid="settings-scope-away-hint"
+            >{{ awayHint }}</span>
+          </span>
+          <div
+            v-if="offersActions"
+            ref="awayActions"
+            class="flex shrink-0 flex-wrap items-center gap-1.5"
+          >
+            <Button
+              v-if="awayState === 'signIn'"
+              ref="signInButton"
+              size="sm"
+              class="h-6 rounded-7 px-2 text-11 aria-disabled:cursor-default aria-disabled:opacity-(--d-opacity-disabled)"
+              :aria-disabled="signingIn || undefined"
+              data-testid="settings-scope-away-sign-in"
+              @click="signIn"
+            >
+              {{ t('remote.banner.signInAction', { name: scopes.host.name }) }}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              class="h-6 rounded-7 border-(--d-border2) bg-(--d-card) px-2 text-11 text-(--d-text)"
+              data-testid="settings-scope-away-user"
+              @click="showUser"
+            >
+              {{ t('settingsScope.showUser', { tab: tabName('user') }) }}
+            </Button>
+          </div>
+        </div>
+      </Transition>
+      <p
+        class="shrink-0 px-7 text-11.5 leading-[1.45] text-(--d-danger-text) in-[.sm-narrow]:px-4"
         role="status"
         data-testid="settings-scope-failed"
       >
         <span
           v-if="failed"
-          class="mb-1 block px-2.5"
+          class="mt-2.5 block px-2.5"
         >{{ t('settingsScope.switchFailed', { tab: tabName(failed) }) }}</span>
       </p>
+    </template>
+    <template
+      v-if="scopes"
+      #scopeBanner="{ section: pageSection }"
+    >
       <div
         v-if="!scopeView?.loading"
         class="mb-1 flex items-center gap-2 rounded-lg bg-(--d-panel) px-2.5 py-2 text-11.5 leading-[1.45] text-(--d-muted)"

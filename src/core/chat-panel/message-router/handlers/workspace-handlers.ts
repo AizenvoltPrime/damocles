@@ -11,6 +11,7 @@ import { findAgentFile, subagentsDir } from "../../../pi-session/agent-records";
 import { piSessionDirOf } from "../../../pi-session/session-store/reading";
 import { log } from "../../../logger";
 import { errorTextOf, l } from "../../../l10n";
+import { LocalizedError } from "../../../../shared/localized-text";
 import { openMarkdownPreview } from "../../markdown-preview";
 import { mentionInChat } from "../../mention-resolver";
 import { parseFileDragTarget } from "../../../../shared/file-drag";
@@ -132,16 +133,20 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
         void platform.notifications.info(l("No active session to view"));
         return;
       }
-      await platform.editor.openFile(filePath, { editor: "text", preview: false, panelId: ctx.panelId });
+      try {
+        await platform.editor.openFile(filePath, { editor: "text", preview: false, panelId: ctx.panelId });
+      } catch (err) {
+        void platform.notifications.warn(l("Could not open the session log: {0}", errorTextOf(err)));
+      }
     },
 
     openAgentLog: async (msg, ctx) => {
       if (msg.type !== "openAgentLog") return;
+      // agentId is webview-supplied: reject traversal at the boundary.
+      if (hasPathTraversal(msg.agentId)) throw new Error("Invalid agent id");
       try {
-        // agentId is webview-supplied: reject traversal at the boundary.
-        if (hasPathTraversal(msg.agentId)) throw new Error("Invalid agent id");
         const sessionId = ctx.session.persistenceSessionId;
-        if (!sessionId) throw new Error("No active session");
+        if (!sessionId) throw new LocalizedError(l("No active session"));
         const filePath = await findAgentFile(subagentsDir(piSessionDirOf(ctx.folder.fsPath, sessionId), sessionId), msg.agentId);
         if (!filePath) {
           void platform.notifications.info(
@@ -151,9 +156,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
         }
         await platform.editor.openFile(filePath, { editor: "text", preview: false, panelId: ctx.panelId });
       } catch (err) {
-        void platform.notifications.warn(
-          l("Agent log file not found: {0}", errorTextOf(err))
-        );
+        void platform.notifications.warn(l("Could not open the agent log: {0}", errorTextOf(err)));
       }
     },
 

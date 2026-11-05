@@ -167,6 +167,8 @@ function remote(daemon: ReturnType<typeof fakeDaemon>, lastEpoch: string | null,
   const views: Array<{ viewId: string; panelToken: string }> = [];
   const reattached: Array<'server' | 'engine' | undefined> = [];
   let coresEnded = 0;
+  // the title bar pill's state at each change
+  const pills: string[] = [];
   // the chats being reopened settle only once released
   let reopening: Promise<void> | undefined;
   const holdReopens = (): (() => void) => {
@@ -207,7 +209,7 @@ function remote(daemon: ReturnType<typeof fakeDaemon>, lastEpoch: string | null,
     subscribe: () => [],
     sharedLoopback: true,
     relays,
-    changed: () => undefined,
+    changed: () => pills.push(core.engineState()),
     keptChats: () => 0,
     reattached: (restarted) => reattached.push(restarted),
     coreEnded: () => { coresEnded += 1; },
@@ -215,7 +217,7 @@ function remote(daemon: ReturnType<typeof fakeDaemon>, lastEpoch: string | null,
     log: () => undefined,
   });
   cleanups.push(() => core.dispose());
-  return { core, opened, views, main, holdReopens, reattached, coresEnded: () => coresEnded, relays, mcp };
+  return { core, opened, views, main, holdReopens, reattached, coresEnded: () => coresEnded, relays, mcp, pills };
 }
 
 const chat = (viewId: string): ChatEntry => ({ panelId: 'host-1', viewId, hasConversation: true, folder: target, permissions: PLAN });
@@ -378,7 +380,7 @@ describe('RemoteCore', () => {
     const { core, opened } = remote(daemon, null);
     core.connected(daemon.connection);
     await vi.waitFor(() => expect(core.host.halted()).toBe(true));
-    expect(core.coreState()?.phase).toBe('halted');
+    expect(core.coreStateOn(daemon.connection)?.phase).toBe('halted');
     expect(opened).toEqual([]);
 
     // another client restarted the core while this one was away
@@ -390,6 +392,77 @@ describe('RemoteCore', () => {
     expect(core.host.halted()).toBe(false);
     expect(core.epoch()).toBe(EPOCH_B);
     expect(daemon.attaches.map((attach) => attach.attach)).toEqual([1, 2]);
+  });
+
+  it("reads a connection's core state only from that connection, until the next one's attach answers", async () => {
+    const daemon = fakeDaemon(EPOCH_A, 'halted');
+    const { core } = remote(daemon, null);
+    const first = daemon.connection;
+    core.connected(first);
+    await vi.waitFor(() => expect(core.host.halted()).toBe(true));
+    expect(core.coreStateOn(first)?.phase).toBe('halted');
+
+    // the daemon restarted while this client was away: the halt was the old daemon's
+    const reconnected = daemon.reconnect();
+    daemon.newEpoch(EPOCH_B);
+    let release = daemon.holdAttaches();
+    core.connected(reconnected);
+    expect(core.coreStateOn(reconnected)).toBeUndefined();
+    release();
+    await core.host.ready();
+    expect(core.coreStateOn(reconnected)?.phase).toBe('running');
+    expect(core.coreStateOn(first)).toBeUndefined();
+
+    // a drop while the engine restarts
+    daemon.restarting();
+    expect(core.coreStateOn(reconnected)?.phase).toBe('restarting');
+    release = daemon.holdAttaches();
+    const again = daemon.reconnect();
+    core.connected(again);
+    expect(core.coreStateOn(again)).toBeUndefined();
+    release();
+  });
+
+  it("keeps the pill halted over a reconnect to a halted core until the next attach answers", async () => {
+    const daemon = fakeDaemon(EPOCH_A, 'halted');
+    const { core, pills } = remote(daemon, null);
+    core.connected(daemon.connection);
+    await vi.waitFor(() => expect(core.host.halted()).toBe(true));
+    expect(core.engineState()).toBe('halted');
+    pills.length = 0;
+
+    const release = daemon.holdAttaches();
+    const reconnected = daemon.reconnect();
+    core.connected(reconnected);
+    await vi.waitFor(() => expect(daemon.attaches).toHaveLength(2));
+    // the reload cleared the halt, but the next attach has not answered yet
+    expect(core.host.halted()).toBe(false);
+    expect(core.engineState()).toBe('halted');
+    release();
+    await vi.waitFor(() => expect(core.coreStateOn(reconnected)?.phase).toBe('halted'));
+    await vi.waitFor(() => expect(core.host.halted()).toBe(true));
+    expect(pills.length).toBeGreaterThan(0);
+    expect(new Set(pills)).toEqual(new Set(['halted']));
+  });
+
+  it("tells whether a connection's chats reopened on it once", async () => {
+    const daemon = fakeDaemon(EPOCH_A);
+    const { core, holdReopens } = remote(daemon, EPOCH_A);
+    const release = holdReopens();
+    core.connected(daemon.connection);
+    await core.host.ready();
+    expect(core.reopenedOn(daemon.connection)).toBe(false);
+    release();
+    await vi.waitFor(() => expect(core.reopenedOn(daemon.connection)).toBe(true));
+    // an engine restart on the same connection: its chats reopened on it before
+    daemon.newEpoch(EPOCH_B);
+    expect(core.reopenedOn(daemon.connection)).toBe(true);
+    const previous = daemon.connection;
+    const next = daemon.reconnect();
+    core.connected(next);
+    expect(core.reopenedOn(next)).toBe(false);
+    expect(core.reopenedOn(previous)).toBe(false);
+    await vi.waitFor(() => expect(core.reopenedOn(next)).toBe(true));
   });
 
   it('a Restart is in flight until the core runs again, and ends when the core halts or the connection drops', async () => {

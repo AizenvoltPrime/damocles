@@ -6,6 +6,7 @@ import type { SettingsStore } from '../../platform/settings-store';
 import type { SettingsFileScope } from '../../shared/types/messages';
 import { folderKey, folderKeyOn } from '../../core/workspace-folders/folder-key';
 import { visibleText } from '../../shared/visible-text';
+import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import {
   type EditorCommand,
   type EditorConflictResult,
@@ -54,7 +55,7 @@ import {
   isDesktopSettingValue,
 } from '../local-services/desktop-configuration';
 import type { BackupRecord } from './documents/backups';
-import { isDocumentDirty, movedPath, uploadMergeLabels, type Document, type DocumentService, type Location, type ShellEdit, type TextDocument } from './documents/document-service';
+import { isDocumentDirty, movedPath, RefusedPathError, uploadMergeLabels, type Document, type DocumentService, type Location, type ShellEdit, type TextDocument } from './documents/document-service';
 import type { FormatTarget } from './formatting/format-service';
 import { DEFAULT_SEARCH_EDITOR_CONFIG, resultLocation } from './search/search-editor-format';
 import { projectOfPath, type Project } from '../local-services/confine';
@@ -92,6 +93,9 @@ export const FORMAT_FLUSH_MS_PER_DOCUMENT: number = 2 * EDITOR_FORMAT_TIMEOUT_MS
 
 type FileTabKind = Exclude<EditorTabKind, 'browser'>;
 
+// Tabs that are no file, whatever document they hold.
+const NO_PATH_TAB_KINDS: ReadonlySet<EditorTabKind> = new Set(['untitled', 'changes', 'review', 'timeline', 'merge']);
+
 // A side main never sends as text (a git blob that is missing, too large or binary), shown as its reason only.
 export interface NotShownSide {
   readonly name: string;
@@ -99,8 +103,11 @@ export interface NotShownSide {
   readonly bytes?: number;
 }
 
-// A remote diff's side: a project file of that host by FileRef, a core-originated text, or a side not shown as text.
-export type RemoteDiffSide = { readonly file: FileRef } | { readonly name: string; readonly content: string } | NotShownSide;
+// A remote diff's file: a file of that host's roots by FileRef, or any other absolute path on the host.
+export type RemoteDiffTarget = FileRef | { readonly authority: string; readonly path: string };
+
+// A remote diff's side: a file of that host, a core-originated text, or a side not shown as text.
+export type RemoteDiffSide = { readonly file: RemoteDiffTarget } | { readonly name: string; readonly content: string } | NotShownSide;
 
 // The repository a source control diff shows a change of, and the change's file and group when its git side refreshes.
 export interface ScmDiffOrigin {
@@ -125,11 +132,12 @@ export interface ChangesTabState {
   readonly changes: ScmChangesTab;
 }
 
-// Where a file is: its native path, and its project place when it lies inside an open project.
+// Where a file is: its native path, and its project place when it lies inside an open project, else the host holding it.
 interface Place {
   readonly path: string;
   readonly projectKey?: string;
   readonly relativePath?: string;
+  readonly host?: string;
 }
 
 // The file a diff shows, which names its tab: a side's document when one is that file (it follows a rename itself), else
@@ -173,13 +181,10 @@ export type ActiveEditorGit = 'file' | 'workingTreeDiff' | 'indexDiff' | null;
 // A persisted tab names its file; ids are issued again on restore.
 export type PersistedTab =
   | { readonly kind: 'code' | 'markdownPreview' | 'image' | 'notDisplayed'; readonly file: FileRef; readonly backupId?: string }
-  | { readonly kind: 'code' | 'markdownPreview' | 'image' | 'notDisplayed'; readonly path: string }
-  // a file of this computer outside every project that the user named, reopened editable only while its path resolves to itself
-  | { readonly kind: 'code' | 'markdownPreview' | 'image' | 'notDisplayed'; readonly path: string; readonly editable: true; readonly backupId?: string }
-  // a plan file of this computer, reopened editable only while its plans rule accepts it
-  | { readonly kind: 'code' | 'markdownPreview' | 'image' | 'notDisplayed'; readonly path: string; readonly outside: 'plans'; readonly backupId?: string }
-  // a host's file outside every project, by its path there and the rule it reopens by once the host connects
-  | { readonly kind: 'code' | 'markdownPreview' | 'image' | 'notDisplayed'; readonly authority: string; readonly path: string; readonly outside: 'plans' | 'user' }
+  // a file of this computer outside every project, by its realpath, reopened only while that path still resolves to itself
+  | { readonly kind: 'code' | 'markdownPreview' | 'image' | 'notDisplayed'; readonly path: string; readonly backupId?: string }
+  // a host's file outside every project, by its realpath there, reopened the same way once the host connects
+  | { readonly kind: 'code' | 'markdownPreview' | 'image' | 'notDisplayed'; readonly authority: string; readonly path: string }
   | { readonly kind: 'settings'; readonly scope: SettingsFileScope; readonly backupId?: string }
   // a file of the logs directory, by name
   | { readonly kind: 'log'; readonly name: string }
@@ -211,6 +216,8 @@ export interface EditorPaneDeps {
   readonly settings: SettingsStore;
   readonly ask: AskMessage;
   readonly t: (message: string, ...args: Array<string | number>) => string;
+  // a LocalizedError's text in main's language
+  readonly render: (text: LocalizedText) => string;
   readonly log: (line: string) => void;
   // damocles.desktop.restoreLayout: quit keeps dirty buffers as backups instead of asking
   readonly restoreLayout: () => boolean;
@@ -321,9 +328,10 @@ function shownTitle(tab: ShellEditorTab): ShellEditorTab {
   return { ...tab, title: visibleText(tab.title) };
 }
 
-function placeFields(place: Place): Pick<ShellEditorTab, 'projectKey' | 'relativePath' | 'displayPath'> {
+function placeFields(place: Place): Pick<ShellEditorTab, 'projectKey' | 'relativePath' | 'displayPath' | 'host'> {
   return {
     ...(place.projectKey !== undefined ? { projectKey: place.projectKey } : {}),
+    ...(place.projectKey === undefined && place.host !== undefined ? { host: place.host } : {}),
     ...(place.relativePath !== undefined ? { relativePath: place.relativePath } : {}),
     displayPath: place.path,
   };
@@ -402,7 +410,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
 
   state(): ShellEditorState {
     return {
-      tabs: [...this.tabs.map((tab) => shownTitle(this.shellTab(tab))), ...this.browserTabs()],
+      tabs: [...this.tabs.map((tab) => shownTitle(this.revealableTab(tab))), ...this.browserTabs()],
       activeTabId: this.activeId,
       settings: editorSettings(this.deps.settings),
       documents: this.shellDocuments(),
@@ -741,19 +749,15 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return new Promise((resolve) => this.closeWaiters.set(tabId, [...(this.closeWaiters.get(tabId) ?? []), resolve]));
   }
 
-  /** A path core named (a tool card click, the agent): shown in the pane, focused only for a user's click. */
-  async openPath(filePath: string, opts: { readonly line?: number; readonly focus: boolean; readonly preview?: boolean }): Promise<void> {
-    const document = await this.deps.documents.openPath(filePath);
+  /**
+   * A path someone named on authority (a core's link or tool card, Source control, the damocles command): shown in the pane,
+   * focused only for a user's click; resolves its tab's id. Throws as DocumentService.openNamedPath does.
+   */
+  async openNamedPath(authority: string, filePath: string, opts: { readonly line?: number; readonly column?: number; readonly focus: boolean; readonly preview?: boolean }): Promise<string> {
+    const document = await this.deps.documents.openNamedPath(authority, filePath);
     const tab = this.showDocument(document, opts.preview === true && isMarkdown(document) ? 'markdownPreview' : undefined);
-    this.afterOpen(tab, { focus: opts.focus, ...(opts.line !== undefined ? { line: opts.line } : {}) });
-  }
-
-  /** A path outside a host's projects its remote core named: shown editable when the host's plans rule accepts it; resolves whether it opened. */
-  async openPlan(authority: string, targetPath: string, opts: { readonly line?: number; readonly focus: boolean }): Promise<boolean> {
-    const document = await this.deps.documents.openPlan(authority, targetPath);
-    if (!document) return false;
-    this.afterOpen(this.showDocument(document), opts);
-    return true;
+    this.afterOpen(tab, { focus: opts.focus, ...(opts.line !== undefined ? { line: opts.line } : {}), ...(opts.column !== undefined ? { column: opts.column } : {}) });
+    return tab.id;
   }
 
   /**
@@ -762,7 +766,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
    * the row the user chose; activated and focused with the caret at line and column. Resolves whether it opened.
    */
   async openPathFromUser(authority: string, targetPath: string, opts: { readonly line?: number; readonly column?: number }): Promise<boolean> {
-    const document = await this.deps.documents.openUserPath(authority, targetPath);
+    const document = await this.deps.documents.openResolvedPath(authority, targetPath);
     if (!document) return false;
     this.afterOpen(this.showDocument(document), { focus: true, ...opts });
     return true;
@@ -835,12 +839,12 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   }
 
   /**
-   * A remote core's diff: its file sides are project files of that host, opened by FileRef through its workspace, so a target
-   * path is never matched against this computer's files or editors; a file side not on disk yet shows empty.
+   * A remote core's diff: its file sides are files of that host, opened by FileRef or by host path through its workspace, so a
+   * target path is never matched against this computer's files or editors; a file side not on disk yet shows empty.
    */
   async showRemoteDiff(
     title: (fileName: string) => string,
-    file: FileRef,
+    file: RemoteDiffTarget,
     left: RemoteDiffSide,
     right: RemoteDiffSide,
     opts: { readonly focus: boolean; readonly scm?: ScmDiffOrigin },
@@ -848,6 +852,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     const side = async (diffSide: RemoteDiffSide): Promise<Document> => {
       if ('notDisplayed' in diffSide) return this.deps.documents.openPlaceholder(diffSide.name, diffSide.notDisplayed, diffSide.bytes);
       if (!('file' in diffSide)) return this.deps.documents.openMemory(diffSide.name, diffSide.content, { untitled: false });
+      if (!('projectKey' in diffSide.file)) return this.deps.documents.openNamedPath(diffSide.file.authority, diffSide.file.path);
       const opened = await this.deps.documents.openProjectFile(diffSide.file.projectKey, diffSide.file.relativePath);
       if (opened.ok) return opened.document;
       if (opened.reason !== 'missing') throw new Error(`${diffSide.file.relativePath} cannot be shown: ${opened.reason}`);
@@ -855,7 +860,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     };
     const [original, modified] = await Promise.all([side(left), side(right)]);
     const fileSide = 'file' in right ? modified : 'file' in left ? original : undefined;
-    const subject: DiffSubject = fileSide ? { documentId: fileSide.id } : { place: this.placeOfFile(file) };
+    const subject: DiffSubject = fileSide ? { documentId: fileSide.id } : { place: 'projectKey' in file ? this.placeOfFile(file) : { path: file.path, host: file.authority } };
     const tab = this.openDiffTab(title, original, modified, subject, scmFlags(opts.scm));
     this.afterOpen(tab, { focus: opts.focus });
     const closed = new Promise<void>((resolve) => this.diffClosed.set(tab.id, resolve));
@@ -864,13 +869,22 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
 
   /**
    * Each file's tab opened without taking the active tab, unless the pane shows none (VS Code's background open); the shell
-   * gets the tabs in one state push.
+   * gets the tabs in one state push. A path the outside rule refuses is skipped and logged, and the first refusal is shown.
    */
   async openInBackground(files: ReadonlyArray<{ readonly path: string } | { readonly file: FileRef }>): Promise<void> {
     let first: Tab | undefined;
+    let refused: RefusedPathError | undefined;
     try {
       for (const entry of files) {
-        const document = 'path' in entry ? await this.deps.documents.openPath(entry.path) : await this.projectDocument(entry.file);
+        let document: Document;
+        try {
+          document = 'path' in entry ? await this.deps.documents.openNamedPath('local', entry.path) : await this.projectDocument(entry.file);
+        } catch (err) {
+          if (!(err instanceof RefusedPathError)) throw err;
+          this.deps.log(`[editor] not opening ${err.path}: ${err.message}`);
+          refused ??= err;
+          continue;
+        }
         const kind = this.kindFor(document);
         const tab = this.tabs.find((candidate) => candidate.documentId === document.id && candidate.kind === kind) ?? this.addTab({ id: randomUUID(), kind, documentId: document.id }, false);
         first ??= tab;
@@ -882,6 +896,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
         this.stateChanged();
       }
     }
+    if (refused) this.deps.warn(this.deps.render(refused.text));
   }
 
   /** Close All Diff Editors: the diff tabs source control opened for the repository, asking about unsaved edits. */
@@ -1039,7 +1054,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       return;
     }
     const tab = this.tab(tabId);
-    const document = tab.documentId !== undefined ? this.deps.documents.get(tab.documentId) : tab.diff ? this.deps.documents.get(tab.diff.modifiedId) : undefined;
+    const document = this.actionDocument(tab);
     switch (action) {
       case 'activate':
         this.activate(tab.id);
@@ -1061,6 +1076,15 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
         if (!document) return;
         this.afterOpen(this.showDocument(document, document.kind === 'text' ? 'code' : undefined), { focus: true });
         return;
+      case 'openAnyway': {
+        if (document?.kind !== 'notDisplayed') return;
+        await this.deps.documents.openAnyway(document.id);
+        const opened = this.deps.documents.get(document.id);
+        if (!opened || !this.tabs.includes(tab)) return;
+        for (const shown of this.tabs) if (shown.documentId === opened.id) shown.kind = this.kindFor(opened, shown.kind);
+        this.afterOpen(tab, { focus: true });
+        return;
+      }
       case 'openChanges':
         if (document?.location) await this.deps.openChanges(document.location);
         return;
@@ -1075,16 +1099,23 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       case 'revealInExplorer': {
         if (!document?.location) return;
         const shown = revealPathOf(document.location, this.deps.wslDistro);
-        if (shown === undefined) this.deps.warn(this.deps.t('The file is not on this computer.'));
-        else await this.deps.reveal(shown);
+        if (shown === undefined) {
+          this.deps.warn(this.deps.t('The file is not on this computer.'));
+          return;
+        }
+        // a refusal tells the user itself; a check that could not run rejects
+        await this.deps.reveal(shown).catch((err: unknown) => {
+          const reason = err instanceof LocalizedError ? this.deps.render(err.text) : err instanceof Error ? err.message : String(err);
+          this.deps.warn(this.deps.t('Could not show {0} in File Explorer: {1}', visibleText(shown), visibleText(reason)));
+        });
         return;
       }
     }
   }
 
-  edit(documentId: string, edit: ShellEdit): void {
-    if (!this.holds(documentId)) return;
-    this.deps.documents.edit(documentId, edit);
+  // true: ask the shell for the document's whole buffer (DocumentService.edit)
+  edit(documentId: string, edit: ShellEdit | undefined): boolean {
+    return this.holds(documentId) && this.deps.documents.edit(documentId, edit);
   }
 
   async save(documentId: string, version: number, text: string, as: boolean): Promise<EditorSaveResult> {
@@ -1189,7 +1220,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     });
   }
 
-  /** Whether a tab shows a host's file outside every project: its settings file, a plan, a file the user named, or a placeholder of one. */
+  /** Whether a tab shows a host's file outside every project: its settings file, any other file outside every project, or a placeholder of one. */
   hasHostFileTab(authority: string): boolean {
     return this.tabs.some((tab) => {
       const documentId = tab.documentId ?? tab.diff?.modifiedId;
@@ -1211,6 +1242,13 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     const tab = this.tabs.find((candidate) => candidate.id === this.activeId);
     if (tab?.kind !== 'code' && tab?.kind !== 'markdownPreview') return undefined;
     return tab.documentId !== undefined ? this.deps.documents.get(tab.documentId)?.location : undefined;
+  }
+
+  /** The authority of the file activeContext describes ('local' for this computer); undefined while the active tab shows none. */
+  activeAuthority(): string | undefined {
+    const location = this.activeLocation();
+    if (!location) return undefined;
+    return location.host ?? (location.projectKey === undefined ? 'local' : authorityKeyOfProject(location.projectKey));
   }
 
   /** The project key of the document activeContext describes; undefined for one outside every project. */
@@ -1315,7 +1353,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     this.contextListeners.clear();
   }
 
-  // A saved tab that names no backup: the file as it is on disk.
+  // A saved tab that names no backup: the file as it is on disk, up to the hard maximum when the tab showed it as text.
   private async restoreTab(persisted: PersistedTab): Promise<Tab | undefined> {
     if (persisted.kind === 'untitled') return undefined;
     if (persisted.kind === 'searchEditor' && !('file' in persisted)) {
@@ -1329,31 +1367,23 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       return this.addTab({ id: randomUUID(), kind: 'log', documentId: document.id }, false);
     }
     let document: Document | undefined;
+    const acceptLarge = persisted.kind === 'code' || persisted.kind === 'markdownPreview';
     if (persisted.kind === 'settings') {
       document = await this.deps.documents.openSettingsFile(persisted.scope);
     } else if ('file' in persisted && this.deps.documents.awaitsHost({ projectKey: persisted.file.projectKey })) {
       // a remote file whose host is not connected shows the offline placeholder, never anything from this computer's disk
-      return this.placeholderTab(this.deps.documents.openOffline(persisted.file), persisted.kind);
+      return this.placeholderTab(this.deps.documents.openOffline(persisted.file, acceptLarge), persisted.kind);
     } else if ('file' in persisted) {
-      const opened = await this.deps.documents.openProjectFile(persisted.file.projectKey, persisted.file.relativePath);
+      const opened = await this.deps.documents.openProjectFile(persisted.file.projectKey, persisted.file.relativePath, { acceptLarge });
       if (!opened.ok) throw new Error(`${persisted.file.relativePath} is ${opened.reason}`);
       document = opened.document;
     } else if ('authority' in persisted && this.deps.documents.awaitsHost({ host: persisted.authority })) {
-      return this.placeholderTab(this.deps.documents.openOffline({ host: persisted.authority, path: persisted.path, outside: persisted.outside }), persisted.kind);
-    } else if ('authority' in persisted && persisted.outside === 'plans') {
-      document = await this.deps.documents.openPlan(persisted.authority, persisted.path);
-      if (!document) throw new Error(`${persisted.path} on ${persisted.authority} is no longer a plan file`);
-    } else if ('authority' in persisted) {
-      document = await this.deps.documents.openUserPath(persisted.authority, persisted.path);
-      if (!document) throw new Error(`${persisted.path} on ${persisted.authority} no longer resolves to itself`);
-    } else if ('editable' in persisted) {
-      document = await this.deps.documents.openUserPath('local', persisted.path);
-      if (!document) throw new Error(`${persisted.path} no longer resolves to itself`);
-    } else if ('outside' in persisted) {
-      document = await this.deps.documents.openPlan('local', persisted.path);
-      if (!document) throw new Error(`${persisted.path} is no longer a plan file`);
+      return this.placeholderTab(this.deps.documents.openOffline({ host: persisted.authority, path: persisted.path }, acceptLarge), persisted.kind);
     } else {
-      document = await this.deps.documents.openPath(persisted.path);
+      // a path a link replaced since is dropped, never followed
+      const authority = 'authority' in persisted ? persisted.authority : 'local';
+      document = await this.deps.documents.openResolvedPath(authority, persisted.path, { acceptLarge });
+      if (!document) throw new Error(`${persisted.path} on ${authority} no longer resolves to itself`);
     }
     if (!document) return undefined;
     return this.addTab({ id: randomUUID(), kind: persisted.kind === 'settings' ? 'settings' : this.kindFor(document, persisted.kind), documentId: document.id }, false);
@@ -1404,11 +1434,9 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       const os = this.deps.authorityOs(target.authority);
       if (!document.location || folderKeyOn(os, document.location.path) !== folderKeyOn(os, target.path)) return this.refuseBackup(document, this.deps.t('That settings file does not apply now.'));
     } else if (target.kind === 'outside') {
-      // the rule it opened by decides again on its own machine; a host's throws while it is not connected, which keeps the text
-      // in an untitled editor. A file the user named that is gone opens orphaned, and a save writes it back.
-      const opened = target.outside === 'plans'
-        ? await this.deps.documents.openPlan(target.authority, target.path)
-        : await this.deps.documents.openUserPath(target.authority, target.path, { missing: backup });
+      // only while its path still resolves to itself on its own machine; a host's throws while it is not connected, which keeps
+      // the text in an untitled editor. A file that is gone opens orphaned, and a save writes it back.
+      const opened = await this.deps.documents.openResolvedPath(target.authority, target.path, { missing: backup, acceptLarge: true });
       if (!opened) return this.deps.t('The editor cannot change it as it is on disk now.');
       document = opened;
       const os = this.deps.authorityOs(target.authority);
@@ -1421,7 +1449,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
         // its host is not connected: the buffer opens dirty with the backup's text and takes the file's disk text once it connects
         document = this.deps.documents.openAwaitingHost(target.projectKey, target.relativePath, { encoding: backup.encoding, bom: backup.bom, eol: backup.eol });
       } else {
-        const opened = await this.deps.documents.openProjectFile(target.projectKey, target.relativePath, { missing: backup });
+        const opened = await this.deps.documents.openProjectFile(target.projectKey, target.relativePath, { missing: backup, acceptLarge: true });
         if (!opened.ok) {
           if (opened.reason === 'outside') return this.deps.t('It is now outside its project.');
           return opened.reason === 'missing' ? this.deps.t('Its project folder is missing.') : this.deps.t('It cannot be read.');
@@ -1464,7 +1492,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
 
   private async sideDocument(side: DiffSide | NotShownSide): Promise<Document> {
     if ('notDisplayed' in side) return this.deps.documents.openPlaceholder(side.name, side.notDisplayed, side.bytes);
-    if ('path' in side) return this.deps.documents.openPath(side.path);
+    if ('path' in side) return this.deps.documents.openNamedPath('local', side.path);
     return this.deps.documents.openMemory(side.name, side.content, { untitled: false });
   }
 
@@ -1497,17 +1525,17 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
 
   private sameSubject(a: DiffSubject, b: DiffSubject): boolean {
     if ('documentId' in a || 'documentId' in b) return 'documentId' in a && 'documentId' in b && a.documentId === b.documentId;
-    if (a.place.projectKey !== b.place.projectKey || a.place.relativePath !== b.place.relativePath) return false;
+    if (a.place.projectKey !== b.place.projectKey || a.place.relativePath !== b.place.relativePath || a.place.host !== b.place.host) return false;
     const os = this.osOf(a.place);
     return folderKeyOn(os, a.place.path) === folderKeyOn(os, b.place.path);
   }
 
   // The OS a project's file is on; this computer's outside every project.
-  private osOf(place: { readonly projectKey?: string }): NodeJS.Platform {
-    return this.deps.authorityOs(place.projectKey === undefined ? 'local' : authorityKeyOfProject(place.projectKey));
+  private osOf(place: { readonly projectKey?: string; readonly host?: string }): NodeJS.Platform {
+    return this.deps.authorityOs(place.host ?? (place.projectKey === undefined ? 'local' : authorityKeyOfProject(place.projectKey)));
   }
 
-  private flavorOf(place: { readonly projectKey?: string }): path.PlatformPath {
+  private flavorOf(place: { readonly projectKey?: string; readonly host?: string }): path.PlatformPath {
     return pathFor({ os: this.osOf(place) });
   }
 
@@ -1731,6 +1759,18 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return tab;
   }
 
+  // The document a tab's menu acts on: a diff's modified side.
+  private actionDocument(tab: Tab): Document | undefined {
+    return tab.documentId !== undefined ? this.deps.documents.get(tab.documentId) : tab.diff ? this.deps.documents.get(tab.diff.modifiedId) : undefined;
+  }
+
+  private revealableTab(tab: Tab): ShellEditorTab {
+    const shell = this.shellTab(tab);
+    if (NO_PATH_TAB_KINDS.has(shell.kind)) return shell;
+    const location = this.actionDocument(tab)?.location;
+    return location && revealPathOf(location, this.deps.wslDistro) !== undefined ? { ...shell, revealable: true } : shell;
+  }
+
   private shellTab(tab: Tab): ShellEditorTab {
     if (tab.changes) {
       return { id: tab.id, kind: 'changes', title: tab.changes.title, displayPath: tab.changes.title, dirty: false, readOnly: true, conflict: false, changes: tab.changes.changes };
@@ -1835,7 +1875,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return scope === 'local' ? 'settings.local.json' : 'settings.json';
   }
 
-  private placeOf(document: Document | undefined): Pick<ShellEditorTab, 'projectKey' | 'worktreeBranch' | 'relativePath' | 'displayPath'> {
+  private placeOf(document: Document | undefined): Pick<ShellEditorTab, 'projectKey' | 'worktreeBranch' | 'relativePath' | 'displayPath' | 'host'> {
     const location = document?.location;
     const projectKey = document?.kind === 'text' && document.searchEditor ? document.searchEditor.projectKey : location?.projectKey;
     const branch = projectKey !== undefined ? this.deps.worktreeBranch(projectKey) : undefined;
@@ -1843,11 +1883,12 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       ...(projectKey !== undefined ? { projectKey } : {}),
       ...(branch !== undefined ? { worktreeBranch: branch } : {}),
       ...(location?.relativePath !== undefined ? { relativePath: location.relativePath } : {}),
+      ...(projectKey === undefined && location?.host !== undefined ? { host: location.host } : {}),
       displayPath: location?.path ?? document?.name ?? '',
     };
   }
 
-  private withBranch(fields: Pick<ShellEditorTab, 'projectKey' | 'relativePath' | 'displayPath'>): Pick<ShellEditorTab, 'projectKey' | 'worktreeBranch' | 'relativePath' | 'displayPath'> {
+  private withBranch(fields: Pick<ShellEditorTab, 'projectKey' | 'relativePath' | 'displayPath' | 'host'>): Pick<ShellEditorTab, 'projectKey' | 'worktreeBranch' | 'relativePath' | 'displayPath' | 'host'> {
     const branch = fields.projectKey !== undefined ? this.deps.worktreeBranch(fields.projectKey) : undefined;
     return branch !== undefined ? { ...fields, worktreeBranch: branch } : fields;
   }
@@ -1887,12 +1928,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     if (file) return { kind: tab.kind, file, ...withBackup };
     const location = document.location;
     // a host's path never comes back as one of this computer's, and its settings file is opened again only from its host tab
-    if (location?.host !== undefined) {
-      return location.outside === 'plans' || location.outside === 'user' ? { kind: tab.kind, authority: location.host, path: location.path, outside: location.outside } : undefined;
-    }
-    if (location?.outside === 'user') return { kind: tab.kind, path: location.path, editable: true, ...withBackup };
-    if (location?.outside === 'plans') return { kind: tab.kind, path: location.path, outside: 'plans', ...withBackup };
-    return location ? { kind: tab.kind, path: location.path } : undefined;
+    if (location?.outside !== 'path') return undefined;
+    return location.host !== undefined ? { kind: tab.kind, authority: location.host, path: location.path } : { kind: tab.kind, path: location.path, ...withBackup };
   }
 
   private persist(): void {

@@ -264,6 +264,7 @@ export const MAIN_WORKSPACE_IMPORTS = [
   // the error main rebuilds off the workspace channel
   'WriteRefusedError',
   // pure helpers and constants
+  'MAX_NAME_PREFIX_LENGTH',
   'NONCE_ENV',
   'REPLACE_REGEX_TIMEOUT_MS',
   'applyEdits',
@@ -272,6 +273,8 @@ export const MAIN_WORKSPACE_IMPORTS = [
   'excludeTest',
   'keepMatchText',
   'lineStarts',
+  'namePrefixMatches',
+  'outsideSegments',
   'parseGlobList',
   'planReplacements',
   'planWithin',

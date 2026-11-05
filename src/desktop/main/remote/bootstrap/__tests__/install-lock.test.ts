@@ -97,6 +97,23 @@ LOCK_WAIT_S=2; take_lock`;
     await runSh(withPosixDefinitions(`HOME='${shellPath(home)}'; prune '${shellPath(install)}' '${shellPath(path.join(install, '5.0.0-linux-x64'))}'`));
     expect(readdirSync(install).sort()).toEqual(['1.0.0-linux-x64', '4.0.0-linux-x64', '5.0.0-linux-x64', ...lookAlikes, 'run-0123456789abcdef', 'run-fedcba9876543210'].sort());
   });
+
+  it('prunes builds of one version as versions: a plain version a live pid file names stays, the newest previous build stays', async () => {
+    const home = scratchDir('prune-home-');
+    const install = path.join(home, '.damocles', 'server');
+    const [current, previous, older] = ['a', 'b', 'c'].map((digit) => `3.7.0+${digit.repeat(12)}-linux-x64`);
+    // oldest first: the removed build, the plain version, the newest previous build, the current one
+    [older!, '3.7.0-linux-x64', previous!, current!].forEach((name, index, all) => {
+      mkdirSync(path.join(install, name), { recursive: true });
+      writeFileSync(path.join(install, name, 'server-package.json'), '{}');
+      const at = new Date(Date.now() - (all.length - index) * 3600_000);
+      utimesSync(path.join(install, name), at, at);
+    });
+    mkdirSync(path.join(install, 'run-0123456789abcdef'));
+    writeFileSync(path.join(install, 'run-0123456789abcdef', 'daemon.pid'), JSON.stringify({ version: '3.7.0', pid: 1, hostname: 'nfs-peer' }));
+    await runSh(withPosixDefinitions(`HOME='${shellPath(home)}'; prune '${shellPath(install)}' '${shellPath(path.join(install, current!))}'`));
+    expect(readdirSync(install).sort()).toEqual([current!, previous!, '3.7.0-linux-x64', 'run-0123456789abcdef'].sort());
+  });
 });
 
 describe('install.lock in a real PowerShell', { timeout: 120_000 }, async () => {
@@ -150,6 +167,22 @@ describe('install.lock in a real PowerShell', { timeout: 120_000 }, async () => 
     writeFileSync(path.join(install, 'run-0123456789abcdef', 'daemon.pid'), JSON.stringify({ version: '1.0.0', pid: 1, hostname: 'nfs-peer' }));
     await runPowerShell(shell!, withWindowsDefinitions(`$env:USERPROFILE = '${home}'\nInvoke-DamoclesPrune '${install}' '${path.join(install, '4.0.0-win32-x64')}'`));
     expect(readdirSync(install).sort()).toEqual(['1.0.0-win32-x64', '3.0.0-win32-x64', '4.0.0-win32-x64', ...lookAlikes, 'run-0123456789abcdef'].sort());
+  });
+
+  it.skipIf(shell === undefined)('prunes builds of one version as versions: a plain version a live pid file names stays, the newest previous build stays', async () => {
+    const home = scratchDir('prune-home-');
+    const install = path.join(home, '.damocles', 'server');
+    const [current, previous, older] = ['a', 'b', 'c'].map((digit) => `3.7.0+${digit.repeat(12)}-win32-x64`);
+    [older!, '3.7.0-win32-x64', previous!, current!].forEach((name, index, all) => {
+      mkdirSync(path.join(install, name), { recursive: true });
+      writeFileSync(path.join(install, name, 'server-package.json'), '{}');
+      const at = new Date(Date.now() - (all.length - index) * 3600_000);
+      utimesSync(path.join(install, name), at, at);
+    });
+    mkdirSync(path.join(install, 'run-0123456789abcdef'));
+    writeFileSync(path.join(install, 'run-0123456789abcdef', 'daemon.pid'), JSON.stringify({ version: '3.7.0', pid: 1, hostname: 'nfs-peer' }));
+    await runPowerShell(shell!, withWindowsDefinitions(`$env:USERPROFILE = '${home}'\nInvoke-DamoclesPrune '${install}' '${path.join(install, current!)}'`));
+    expect(readdirSync(install).sort()).toEqual([current!, previous!, '3.7.0-win32-x64', 'run-0123456789abcdef'].sort());
   });
 
   it.skipIf(shell === undefined)('reads an owner file it cannot read as no owner, judging the lock by its age', async () => {

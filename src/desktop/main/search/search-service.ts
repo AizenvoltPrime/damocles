@@ -15,7 +15,8 @@ import {
   type SearchRange,
   type SearchSortOrder,
 } from '../../../shared/text-search';
-import { MAX_EDITOR_TEXT_CHARS, type SearchBufferWarning, type SearchCopyTarget, type SearchDone, type SearchFileUpdate, type SearchResultsBatch, type SearchStartResult } from '../../preload/shell-channels';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
+import type { SearchBufferWarning, SearchCopyTarget, SearchDone, SearchFileUpdate, SearchResultsBatch, SearchStartResult } from '../../preload/shell-channels';
 import { keepMatchText, lineStarts, type KeptText } from '../../workspace/search/replace';
 import { parseGlobList, rgSearchArgs } from '../../workspace/search/rg-args';
 import type { RgEvent, SearchRun, SearchRunEnd } from '../../workspace/search/search-runner';
@@ -123,7 +124,7 @@ interface Run extends RecordedSearch {
   limitHit: boolean;
   // the buffers' regex ran out of its time once; no buffer is searched for this run again
   bufferWarning: SearchBufferWarning | undefined;
-  // characters of preview and context lines a Search Editor run holds; past MAX_EDITOR_TEXT_CHARS it stops as at the limit
+  // characters of preview and context lines a Search Editor run holds; past EDITOR_CONFIRM_DOCUMENT_BYTES it stops as at the limit
   editorChars: number;
   onEditorDone?: (result: EditorRunResult) => void;
 }
@@ -678,10 +679,10 @@ export class SearchService {
     this.charge(run, cut.length);
   }
 
-  // A Search Editor run never holds more text than its editor can: past the bound it ends as a run at the result limit.
+  // A Search Editor run never holds more text than a file the editor opens without asking: past it the run ends as at the result limit.
   private charge(run: Run, chars: number): void {
     run.editorChars += chars;
-    if (run.editorChars <= MAX_EDITOR_TEXT_CHARS || run.done) return;
+    if (run.editorChars <= EDITOR_CONFIRM_DOCUMENT_BYTES || run.done) return;
     run.limitHit = true;
     this.endFile(run);
     this.finish(run, undefined, false);

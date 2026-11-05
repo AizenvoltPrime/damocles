@@ -15,7 +15,7 @@ const run: SshRun = async (_file, args) => ({
 });
 
 const PASSWORD_PROMPT: CredentialPrompt = { kind: 'password', text: "deploy@prod-1's password:" };
-const manifest: ServerManifest = { version: '3.7.0', protocolVersion: 1, packages: {} };
+const manifest: ServerManifest = { version: '3.7.0', protocolVersion: 1, published: false, packages: {} };
 
 // A password-only host from a client without a master connection: every ssh process asks askpass for the password, and
 // the remote command runs once the answer is right. The stage stops at the probe, which ends the attempt.

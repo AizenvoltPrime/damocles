@@ -1,5 +1,5 @@
 <script setup lang="ts" generic="T extends string">
-import { computed, useId } from 'vue';
+import { computed, ref, useId } from 'vue';
 import { Check, ChevronsUpDown } from 'lucide-vue-next';
 import {
   SelectContent,
@@ -13,6 +13,7 @@ import {
 } from 'reka-ui';
 import { usePopperZIndex } from '@/composables/useOverlayEscape';
 import { remPx } from '@/composables/useRemPx';
+import { closeWhenSettingsBusy } from '../settings-view';
 
 export interface SelectOption<V extends string> {
   value: V;
@@ -37,6 +38,8 @@ const emit = defineEmits<{
 }>();
 
 const popperZIndex = usePopperZIndex();
+const open = ref(false);
+closeWhenSettingsBusy(open);
 const selected = computed(() => props.options.find((option) => option.value === props.modelValue));
 // A disabled option's hint is why it cannot run, so the trigger keeps showing it while that option stays selected.
 const selectedReason = computed(() => (selected.value?.disabled ? selected.value.hint : undefined));
@@ -57,6 +60,7 @@ function cancelPick(option: SelectOption<T>, event: Event): void {
 
 <template>
   <SelectRoot
+    v-model:open="open"
     :model-value="modelValue"
     :disabled="disabled ?? false"
     @update:model-value="onUpdate"

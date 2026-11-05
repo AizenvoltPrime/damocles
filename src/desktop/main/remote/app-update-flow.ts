@@ -1,7 +1,8 @@
-// App updates: docs/invariants.md "Remote daemon and wire", an updated app never stops a busy daemon of another version.
+// App updates: docs/invariants.md "Remote daemon and wire", an updated app never stops a busy daemon of another build.
 import type { AttachedClient, Run } from '../../daemon/control-messages';
 import type { HostUpdate } from '../../preload/shell-channels';
 import type { OtherProtocolDaemon, RemoteConnection } from './connection';
+import { appVersionOf, serverVersionsOf, type ServerManifest } from './server-manifest-format';
 
 // the daemon's own shutdown bound (lock-timing.ts SHUTDOWN_MAX_MS); it ends its connections first, so the end comes well within
 export const DAEMON_END_WAIT_MS = 10_000;
@@ -25,7 +26,7 @@ export async function shutDownNow(connection: Pick<RemoteConnection, 'control' |
 
 export type { HostUpdate };
 
-/** current: the daemon is this app's version; replaceNow: it was idle and stopped; switchWhenIdle: it exits once idle. */
+/** current: the daemon is this build's; replaceNow: it was idle and stopped; switchWhenIdle: it exits once idle. */
 export type CompatibleOutcome = 'current' | 'replaceNow' | 'switchWhenIdle';
 
 export interface CompatibleDaemon {
@@ -47,18 +48,18 @@ export function otherDeviceCount(devices: readonly AttachedClient[]): number | u
 }
 
 /**
- * What a compatible daemon of another app version does once attached: idle and known to serve no other device, replaced now;
- * else it exits once idle.
+ * What a compatible daemon does once attached: current when its server version is one of `manifest`'s; else, idle and known
+ * to serve no other device, replaced now, or asked to exit once idle.
  */
-export async function adoptCompatibleDaemon(appVersion: string, daemon: CompatibleDaemon, log: (line: string) => void): Promise<CompatibleOutcome> {
-  if (daemon.serverVersion === appVersion) return 'current';
+export async function adoptCompatibleDaemon(manifest: ServerManifest, daemon: CompatibleDaemon, log: (line: string) => void): Promise<CompatibleOutcome> {
+  if (serverVersionsOf(manifest).has(daemon.serverVersion)) return 'current';
   const runs = await daemon.listRuns();
   if (runs.length === 0 && daemon.otherDevices() === 0) {
-    log(`[update] the daemon of ${daemon.serverVersion} is idle with no other device; stopping it for ${appVersion}`);
+    log(`[update] the daemon of ${daemon.serverVersion} is idle with no other device; stopping it for this build of ${manifest.version}`);
     await daemon.shutdownNow();
     return 'replaceNow';
   }
-  log(`[update] the daemon of ${daemon.serverVersion} has ${runs.length} runs or other devices; it exits once idle, then ${appVersion} starts`);
+  log(`[update] the daemon of ${daemon.serverVersion} has ${runs.length} runs or other devices; it exits once idle, then this build of ${manifest.version} starts`);
   await daemon.shutdownWhenIdle();
   return 'switchWhenIdle';
 }
@@ -100,7 +101,7 @@ const listingOf = (runs: readonly Run[]): SwitchListing => ({
 });
 
 /**
- * Starts following a daemon of another protocol: with no run and no terminal it is stopped now and this app's version
+ * Starts following a daemon of another protocol: with no run and no terminal it is stopped now and this build
  * connects; else its chats stay readable from the mirror, which a poll keeps live, and the banner offers the switch. Its
  * connection closing (it exited, or the network dropped) ends the banner and connects again.
  */
@@ -124,7 +125,7 @@ export function followOtherProtocolDaemon(deps: OtherProtocolHostDeps): OtherPro
       await daemon.control.request('shutdownNow', {});
       return;
     }
-    setBanner({ serverVersion: daemon.serverVersion, runningAgents: runs.filter((run) => run.kind === 'chat').length, phase: banner?.phase ?? 'offer' });
+    setBanner({ serverVersion: appVersionOf(daemon.serverVersion), runningAgents: runs.filter((run) => run.kind === 'chat').length, phase: banner?.phase ?? 'offer' });
     await deps.syncMirror();
   };
   const poll = (): void => {

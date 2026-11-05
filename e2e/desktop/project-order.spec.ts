@@ -6,10 +6,10 @@ import { expectNoAxeViolations } from './support/axe';
 import { expect, test } from './support/fixtures';
 import { readUserSettings, type HermeticHome } from './support/hermetic';
 import { chooseMenuItem, menuItem, overlayMenu, readyOverlay } from './support/overlay';
-import { dragRow, groupHeader, LOCAL_GROUP, projectGroup, projectsAnnouncement, showInFiles, showView, shownProjectOrder, storedSidebar, THIS_COMPUTER, viewButton, viewToggle } from './support/projects';
+import { dragRow, groupHeader, LOCAL_GROUP, projectGroup, projectsAnnouncement, showInFiles, showView, shownProjectOrder, storedSidebar, THIS_COMPUTER, viewToggle } from './support/projects';
 import { filesRow, quickPick } from './support/editor';
 import { selectedProjectKey, shellState } from './support/shell';
-import { projectKeyOf, projectRow, projectsList, readyShell, sectionAction, sidebarSectionOf } from './support/shell-ui';
+import { projectKeyOf, projectRow, projectsList, readyShell, sectionAction } from './support/shell-ui';
 import { answerDialogs, askedDialogs, clickMenu, TRUST_PROMPT } from './support/ui';
 
 const NAMES = ['alpha', 'beta', 'gamma'] as const;
@@ -56,7 +56,7 @@ test('flat view: a dragged project keeps its place after a relaunch, and main wr
   const shell = await readyShell(first.app);
   await readyProjects(shell);
   expect(await shownNames(shell)).toEqual(['alpha', 'beta', 'gamma']);
-  await expect(viewButton(shell, 'flat')).toHaveAttribute('aria-pressed', 'true');
+  await expect(viewToggle(shell)).toHaveAttribute('data-view', 'flat');
   const keys = await keysByName(shell);
   const selectedBefore = await selectedProjectKey(first.app);
 
@@ -140,7 +140,7 @@ test('By host groups the projects under This computer, collapse and the view out
   await expectNoAxeViolations(shell, '[data-testid="sidebar-projects"]');
 
   await showView(shell, 'grouped');
-  await expect(viewButton(shell, 'flat')).toHaveAttribute('aria-pressed', 'false');
+  await expect(viewToggle(shell)).toHaveAccessibleName('View as List');
   expect(readUserSettings(home)['damocles.desktop.projects.view']).toBe('grouped');
   const local = projectGroup(shell, LOCAL_GROUP);
   await expect(local).toHaveAttribute('role', 'group');
@@ -179,7 +179,7 @@ test('By host groups the projects under This computer, collapse and the view out
 
   const second = await launch();
   const relaunched = await readyShell(second.app);
-  await expect(viewButton(relaunched, 'grouped')).toHaveAttribute('aria-pressed', 'true');
+  await expect(viewToggle(relaunched)).toHaveAttribute('data-view', 'grouped');
   await expect(groupHeader(relaunched, LOCAL_GROUP)).toHaveAttribute('aria-label', `${THIS_COMPUTER}, collapsed`);
   await expect(projectsList(relaunched).locator('[role="option"][data-project-key]')).toHaveCount(0);
   await groupHeader(relaunched, LOCAL_GROUP).click();
@@ -190,47 +190,55 @@ test('By host groups the projects under This computer, collapse and the view out
   expect(readUserSettings(home)['damocles.desktop.projects.view']).toBe('flat');
 });
 
-test('at the narrowest sidebar the view toggle shows in full inside the section header, its actions revealed or not', async ({ foreground: _foreground, home, launch }) => {
-  seedProjects(home);
-  fs.writeFileSync(path.join(home.userData, 'window-layout.json'), JSON.stringify({
-    version: 2,
-    sidebar: { sidebarVisible: true, sidebarWidth: MIN_SIDEBAR_WIDTH, sections: { projects: { collapsed: false, size: 180 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 } }, grid: DEFAULT_GRID_LAYOUT },
-  }));
-  const { app } = await launch();
-  const shell = await readyShell(app);
-  await readyProjects(shell);
-  await expect.poll(async () => Math.round((await shell.getByTestId('sidebar').boundingBox())?.width ?? 0)).toBe(MIN_SIDEBAR_WIDTH);
-  const header = sidebarSectionOf(shell, viewToggle(shell)).getByTestId('sidebar-section-header');
-  const fits = async (): Promise<void> => {
-    const box = await viewToggle(shell).boundingBox();
-    const outer = await header.boundingBox();
-    expect(box && outer).toBeTruthy();
-    expect(box!.x).toBeGreaterThanOrEqual(outer!.x);
-    expect(box!.x + box!.width).toBeLessThanOrEqual(outer!.x + outer!.width + 0.5);
-    expect(box!.y).toBeGreaterThanOrEqual(outer!.y);
-    expect(box!.y + box!.height).toBeLessThanOrEqual(outer!.y + outer!.height + 0.5);
-    // neither label is cut: each button's text fits its own box
-    for (const view of ['flat', 'grouped'] as const) {
-      expect(await viewButton(shell, view).evaluate((button) => button.scrollWidth <= button.clientWidth)).toBe(true);
-    }
-    await expect(viewButton(shell, 'flat')).toHaveText('Flat');
-    await expect(viewButton(shell, 'grouped')).toHaveText('By host');
-  };
-  await fits();
-  const connect = shell.getByTestId('connect-host');
-  await expect(connect).toBeHidden();
-  // the title actions show on hover, Connect to host before Open a project folder, and the title gives way, never the toggle
-  const add = await sectionAction(shell, 'add-project');
-  await fits();
-  await expect(connect).toBeVisible();
-  await expect(connect).toHaveAccessibleName('Connect to host');
-  const [connectBox, addBox, outer] = await Promise.all([connect.boundingBox(), add.boundingBox(), header.boundingBox()]);
-  expect(connectBox!.x + connectBox!.width).toBeLessThanOrEqual(addBox!.x);
-  expect(addBox!.x + addBox!.width).toBeLessThanOrEqual(outer!.x + outer!.width + 0.5);
-  await expectNoAxeViolations(shell, '[data-testid="sidebar-projects"]');
-  await connect.click();
-  await expect((await readyOverlay(app)).getByTestId('connect-dialog')).toBeVisible();
-});
+const HEADER_TEXTS = [
+  { lang: 'en-US', title: 'Projects', connect: 'Connect to host', viewByHost: 'View by Host', viewAsList: 'View as List' },
+  { lang: 'el-GR', title: 'Έργα', connect: 'Σύνδεση σε υπολογιστή', viewByHost: 'Προβολή ανά υπολογιστή', viewAsList: 'Προβολή ως λίστα' },
+] as const;
+
+for (const texts of HEADER_TEXTS) {
+  test(`at the narrowest sidebar the Projects title reads in full, its actions revealed or not (${texts.lang})`, async ({ foreground: _foreground, home, launch }) => {
+    seedProjects(home);
+    fs.writeFileSync(path.join(home.userData, 'window-layout.json'), JSON.stringify({
+      version: 2,
+      sidebar: { sidebarVisible: true, sidebarWidth: MIN_SIDEBAR_WIDTH, sections: { projects: { collapsed: false, size: 180 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 } }, grid: DEFAULT_GRID_LAYOUT },
+    }));
+    const { app } = await launch({ args: [`--lang=${texts.lang}`] });
+    const shell = await readyShell(app);
+    await readyProjects(shell);
+    await expect.poll(async () => Math.round((await shell.getByTestId('sidebar').boundingBox())?.width ?? 0)).toBe(MIN_SIDEBAR_WIDTH);
+    const section = shell.getByTestId('sidebar-projects');
+    const header = section.getByTestId('sidebar-section-header');
+    const title = section.getByTestId('sidebar-section-title');
+    await expect(title).toHaveText(texts.title);
+    const readsInFull = async (): Promise<void> => {
+      expect(await title.evaluate((span) => span.scrollWidth <= span.clientWidth)).toBe(true);
+    };
+    await readsInFull();
+    const toggle = viewToggle(shell);
+    const connect = shell.getByTestId('connect-host');
+    await expect(toggle).toBeHidden();
+    await expect(connect).toBeHidden();
+    // the title actions show on hover, the view switch, then Connect to host, then Open a project folder, and the title keeps its room
+    const add = await sectionAction(shell, 'add-project');
+    await readsInFull();
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAccessibleName(texts.viewByHost);
+    await expect(toggle).toHaveAttribute('title', texts.viewByHost);
+    await expect(connect).toHaveAccessibleName(texts.connect);
+    const [toggleBox, connectBox, addBox, outer] = await Promise.all([toggle.boundingBox(), connect.boundingBox(), add.boundingBox(), header.boundingBox()]);
+    expect(toggleBox!.x).toBeGreaterThanOrEqual(outer!.x);
+    expect(toggleBox!.x + toggleBox!.width).toBeLessThanOrEqual(connectBox!.x);
+    expect(connectBox!.x + connectBox!.width).toBeLessThanOrEqual(addBox!.x);
+    expect(addBox!.x + addBox!.width).toBeLessThanOrEqual(outer!.x + outer!.width + 0.5);
+    await expectNoAxeViolations(shell, '[data-testid="sidebar-projects"]');
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('data-view', 'grouped');
+    await expect(toggle).toHaveAccessibleName(texts.viewAsList);
+    await readsInFull();
+    await connect.click();
+    await expect((await readyOverlay(app)).getByTestId('connect-dialog')).toBeVisible();
+  });
+}
 
 test('Files Open as project asks the trust question, adds the subfolder right after its project and selects it; asked again, it selects the one it added', async ({ foreground: _foreground, home, launch }) => {
   const folders = seedProjects(home);

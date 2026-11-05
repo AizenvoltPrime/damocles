@@ -675,9 +675,12 @@ describe('editor, Files, layout and Quick Open channels', () => {
     await expect(call(SHELL_CHANNELS.editorFocusOverlay, { open: 'yes' })).rejects.toThrow(/Malformed/);
     send(SHELL_CHANNELS.editorSelection, { documentId: 'd', selection: { startLine: 0, startColumn: 1, endLine: 1, endColumn: 1 } });
     send(SHELL_CHANNELS.editorEdit, { documentId: 'd', version: 1 });
+    send(SHELL_CHANNELS.editorEdit, { documentId: 3, version: 1, seq: 1, changes: [] });
     send(SHELL_CHANNELS.dropZonesPointer, { x: Number.NaN, y: 0, released: false });
     expect(editor['selection']).not.toHaveBeenCalled();
-    expect(editor['edit']).not.toHaveBeenCalled();
+    // a malformed edit of a named document is refused whole, which asks the shell for its buffer
+    expect(editor['edit']).toHaveBeenCalledOnce();
+    expect(editor['edit']).toHaveBeenCalledWith('d', undefined);
     expect(actions.dropZonesPointer).not.toHaveBeenCalled();
 
     send(SHELL_CHANNELS.editorSelection, { documentId: 'd', selection: { startLine: 2, startColumn: 1, endLine: 1, endColumn: 4 } });

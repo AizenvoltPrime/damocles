@@ -36,6 +36,7 @@ export interface ConnectStepEvent {
   /** The steps the attempt entered, in order, which the timeline's rows show. */
   readonly visited: readonly ConnectStep[];
   readonly progress?: number;
+  readonly prompt?: { readonly promptId: string; readonly kind: string };
   readonly failure?: { readonly code: string; readonly params: Record<string, string | number> };
 }
 

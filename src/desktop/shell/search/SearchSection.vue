@@ -12,6 +12,7 @@ import { MAX_REPLACEMENT_LENGTH, MAX_SEARCH_GLOBS_LENGTH, MAX_SEARCH_PATTERN_LEN
 import { EDITOR_STORE } from '../editor/editor-store';
 import { tidyMenu } from '../../preload/overlay-channels';
 import SidebarSection from '../components/SidebarSection.vue';
+import { TOOLBAR_BUTTON } from '../components/sidebar-section';
 import SearchField from './SearchField.vue';
 import SearchOption from './SearchOption.vue';
 import SearchResultRow from './SearchResultRow.vue';
@@ -594,8 +595,6 @@ const inserted = (row: ResultRow): string | undefined => {
   const query = store.replaceQuery.value;
   return replacing.value && row.kind === 'match' && query ? insertedText(query, row.match, replacement.value, view.value.preserveCase, store.previewRegExp.value) : undefined;
 };
-
-const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25';
 </script>
 
 <template>
@@ -614,7 +613,7 @@ const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border
         variant="ghost"
         size="icon-sm"
         data-testid="search-cancel"
-        :class="toolbarButton"
+        :class="TOOLBAR_BUTTON"
         :aria-label="t('search.cancel')"
         :title="t('search.cancel')"
         @click="store.cancel()"
@@ -627,7 +626,7 @@ const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border
         variant="ghost"
         size="icon-sm"
         data-testid="search-refresh"
-        :class="toolbarButton"
+        :class="TOOLBAR_BUTTON"
         :disabled="view.pattern === '' || projectKey === undefined"
         :aria-label="t('search.refresh')"
         :title="t('search.refresh')"
@@ -640,7 +639,7 @@ const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border
         variant="ghost"
         size="icon-sm"
         data-testid="search-clear"
-        :class="toolbarButton"
+        :class="TOOLBAR_BUTTON"
         :disabled="view.pattern === '' && !hasResults"
         :aria-label="t('search.clear')"
         :title="t('search.clear')"
@@ -653,7 +652,7 @@ const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border
         variant="ghost"
         size="icon-sm"
         data-testid="search-new-editor"
-        :class="toolbarButton"
+        :class="TOOLBAR_BUTTON"
         :disabled="projectKey === undefined"
         :aria-label="t('search.openNewEditor')"
         :title="t('search.openNewEditor')"
@@ -667,7 +666,7 @@ const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border
         size="icon-sm"
         data-testid="search-view-mode"
         :data-view-mode="view.viewMode"
-        :class="toolbarButton"
+        :class="TOOLBAR_BUTTON"
         :aria-label="view.viewMode === 'list' ? t('search.viewAsTree') : t('search.viewAsList')"
         :title="view.viewMode === 'list' ? t('search.viewAsTree') : t('search.viewAsList')"
         @click="update({ viewMode: view.viewMode === 'list' ? 'tree' : 'list' })"
@@ -687,7 +686,7 @@ const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border
         size="icon-sm"
         data-testid="search-collapse-all"
         :data-action="store.anyExpanded.value || !hasResults ? 'collapse' : 'expand'"
-        :class="toolbarButton"
+        :class="TOOLBAR_BUTTON"
         :disabled="!hasResults"
         :aria-label="store.anyExpanded.value || !hasResults ? t('search.collapseAll') : t('search.expandAll')"
         :title="store.anyExpanded.value || !hasResults ? t('search.collapseAll') : t('search.expandAll')"

@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { corePid } from './support/app';
-import { expect, test } from './support/fixtures';
+import { activeChat, chatById, expect, test } from './support/fixtures';
 import { git, initRepo } from './support/git';
 import { writeAuth, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { activePageTab, browserTabs, chromeEnv, PAGE_TIMEOUT, systemChrome } from './support/browser';
@@ -13,7 +13,7 @@ import { cleanUp, daemonPid, endLeftoverDaemon, filesUnder, listRuns, LOCAL_DAEM
 import { chatRequests, type OpenAIStub, type StubReply } from './support/openai-stub';
 import { readyOverlay } from './support/overlay';
 import { openProjectChat, setReducedMotion, showShellTheme, THEMES } from './support/screenshots';
-import { holdToast, overlayPage, popupPage, popupToasts, recordedToasts, recordShellMouse, recordToasts, setWindowFocused, shellPage, shellState } from './support/shell';
+import { holdToast, overlayPage, popupPage, popupToasts, recordedToasts, recordLaunchSelection, recordShellMouse, recordToasts, setWindowFocused, shellPage, shellState } from './support/shell';
 import { awaitTurnEnd, chatInput, clickMenu, hostMessages, postFromWebview, recordHostMessages } from './support/ui';
 import { openTerminal } from './support/terminal';
 import { openedExternally, recordOpenExternal } from './support/updates';
@@ -215,7 +215,15 @@ test('a loopback turn keeps running across an app quit; the relaunched view rejo
   try {
     const first = await launch(LOOPBACK_ENV);
     current = first.app;
-    const { tab } = await newLoopbackChat(first.app, folder);
+    // the launch's own local chat, given a conversation so the relaunch reopens it beside the loopback one: an empty new chat
+    // is dropped once the selection leaves it
+    const local = await activeChat(first.app);
+    await sendPrompt(local, 'Keep me local');
+    await expect(local.getByText('Echo: Keep me local', { exact: true })).toBeVisible({ timeout: 60_000 });
+    await awaitTurnEnd(local);
+    await expect.poll(async () => (await shellState(first.app)).selected.chatId?.startsWith('new:')).toBe(false);
+    const localChatId = (await shellState(first.app)).selected.chatId!;
+    const { key, tab } = await newLoopbackChat(first.app, folder);
     stub.replies.push(reply);
     await sendPrompt(tab, 'Tell me a long story');
     await whileAway.reached;
@@ -239,8 +247,24 @@ test('a loopback turn keeps running across an app quit; the relaunched view rejo
 
     const second = await launch(LOOPBACK_ENV);
     current = second.app;
+    const launchSelection = await recordLaunchSelection(second.app);
     // Only a views.join shows parts of a reply that has not ended: a restore replays the session file, which holds none yet.
     const rejoined = await pageShowing(second.app, 'part three,');
+    // The saved remote selection holds from the first state on: no local chat shows first, and the title bar names the
+    // loopback chat only once its title loaded, never as a new chat.
+    const crumb = (await shellPage(second.app)).getByTestId('breadcrumb-chat');
+    await expect(crumb).toHaveText(/\S/, { timeout: 60_000 });
+    await expect(crumb).not.toHaveText('New chat');
+    await chatById(second.app, localChatId);
+    const seen = await launchSelection();
+    expect(seen.states.length).toBeGreaterThan(0);
+    for (const state of seen.states) {
+      expect(state.chatId).not.toBe(localChatId);
+      if (state.chatId !== undefined) expect(state.projectKey).toBe(key);
+      // a chat view with no chat of the selected project would be another authority's
+      if (state.chatViewShown) expect(state.chatId).toBeDefined();
+    }
+    expect(seen.titles).not.toContain('New chat');
     await expect(rejoined.getByText('part four,')).toHaveCount(0);
     afterRejoin.open();
     const whole = PARTS.join('');

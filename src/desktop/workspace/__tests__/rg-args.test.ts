@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { rgPath } from '@vscode/ripgrep';
 import { describe, expect, it } from 'vitest';
 import type { SearchQuery } from '../../../shared/text-search';
-import { EDITOR_MAX_DOCUMENT_BYTES } from '../../../shared/types/messages';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { excludeSettingGlobs, parseGlobList, rgSearchArgs } from '../search/rg-args';
 
 const query = (overrides: Partial<SearchQuery> = {}): SearchQuery => ({
@@ -44,7 +44,7 @@ describe('rgSearchArgs', () => {
     const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-rg-'));
     try {
       const line = `${'x'.repeat(80)}\n`;
-      fs.writeFileSync(path.join(folder, 'big.txt'), `${line.repeat(Math.ceil(EDITOR_MAX_DOCUMENT_BYTES / line.length) + 1)}needle\n`);
+      fs.writeFileSync(path.join(folder, 'big.txt'), `${line.repeat(Math.ceil(EDITOR_CONFIRM_DOCUMENT_BYTES / line.length) + 1)}needle\n`);
       const out = execFileSync(rgPath, args(), { cwd: folder, encoding: 'utf8', maxBuffer: 1024 * 1024 });
       const matches = out.split('\n').filter((event) => event.startsWith('{"type":"match"'));
       expect(matches).toHaveLength(1);

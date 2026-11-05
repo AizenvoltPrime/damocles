@@ -3,7 +3,6 @@
 # bytes as text, so tool output goes to stderr and only Send-DamoclesLine writes to stdout until the bridge copies bytes.
 # Everything above "BEGIN MAIN" only defines; the tests dot-source that part and call the functions.
 # BEGIN PARAMETERS
-$D_VERSION = ''
 $D_INSTALL_FOLDER = ''
 $D_PREVIOUS_KIND = 'none'
 $D_PREVIOUS_FOLDER = ''
@@ -355,8 +354,10 @@ function Invoke-DamoclesDownloadTry([string]$url, [string]$file, [int64]$size) {
 }
 
 # curl --retry's policy: up to DOWNLOAD_RETRIES more tries, waiting 1 s and doubling; an HTTP 4xx other than 408 and 429 is
-# final. Progress is the staged file's size against the package's, as on POSIX targets.
+# final. Progress is the staged file's size against the package's, as on POSIX targets. The URL - (an unpublished build)
+# fails at once, so the upload follows.
 function Invoke-DamoclesDownload([string]$url, [string]$file, [int64]$size) {
+  if ($url -eq '-') { return $false }
   [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
   $delay = 1
   for ($attempt = 1; ; $attempt++) {
@@ -767,8 +768,8 @@ $target = "win32-$arch"
 $package = $D_WIN32_X64
 if ($arch -eq 'arm64') { $package = $D_WIN32_ARM64 }
 if ($package -eq '') { Send-DamoclesFail 'unknown' @{ reason = 'noPackage'; target = $target } }
-# <file> <sha256> <size> <url>, none of which holds a space
-$packageFile, $packageSha, $packageSize, $packageUrl = $package -split ' '
+# <file> <sha256> <size> <server version> <url|->, none of which holds a space
+$packageFile, $packageSha, $packageSize, $serverVersion, $packageUrl = $package -split ' '
 $packageSize = [int64]$packageSize
 
 $user = $env:USERNAME
@@ -778,7 +779,7 @@ $install = Get-DamoclesInstallDir $D_INSTALL_FOLDER $user
 Initialize-DamoclesInstall $install ($D_INSTALL_FOLDER -ne '')
 Send-DamoclesLine (ConvertTo-Json -Compress -InputObject @{ kind = 'probe'; target = $target; install = $install })
 
-$versionDir = Join-Path $install "$D_VERSION-$target"
+$versionDir = Join-Path $install "$serverVersion-$target"
 $lock = Join-Path $install 'install.lock'
 if (-not (Test-DamoclesInstalled $versionDir)) { Install-DamoclesVersion }
 

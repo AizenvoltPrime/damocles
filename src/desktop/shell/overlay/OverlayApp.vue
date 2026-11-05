@@ -44,8 +44,8 @@ function applyState(state: OverlayState): void {
   platform.value = state.platform;
 }
 
-// In arrival order; the last one is on top and receives Escape.
-const open = shallowRef<ReadonlyArray<{ readonly id: string; readonly request: OverlayRequest }>>([]);
+// In arrival order; the last one is on top and receives Escape. shown settles once main has been told the popup is on screen.
+const open = shallowRef<ReadonlyArray<{ readonly id: string; readonly request: OverlayRequest; readonly shown: Promise<void> }>>([]);
 
 function close(id: string): boolean {
   const before = open.value.length;
@@ -153,6 +153,11 @@ function quickOpenLabels(): QuickOpenLabels {
     goToLine: (line) => t('quickOpen.goToLine', { line }),
     goToLineColumn: (line, column) => t('quickOpen.goToLineColumn', { line, column }),
     mention: t('quickOpen.mention'),
+    truncated: (count) => t('quickOpen.folderTruncated', { count: new Intl.NumberFormat(locale.value).format(count) }, count),
+    stopped: t('quickOpen.folderStopped'),
+    noEntries: (name) => t('quickOpen.folderNoMatch', { name }),
+    folderEmpty: t('quickOpen.folderEmpty'),
+    denied: t('quickOpen.folderDenied'),
   };
 }
 
@@ -187,9 +192,13 @@ onMounted(async () => {
         paletteCommands = undefined;
         quickOpenScope = request.scope;
       }
-      open.value = [...open.value, { id, request }];
+      let reported!: () => void;
+      const shown = new Promise<void>((resolve) => (reported = resolve));
+      open.value = [...open.value, { id, request, shown }];
       void nextTick(() => {
-        if (open.value.some((entry) => entry.id === id)) props.api.shown(id);
+        if (!open.value.some((entry) => entry.id === id)) return;
+        props.api.shown(id);
+        reported();
       });
     }, request.kind === 'settings' ? settingsLocalePending : undefined);
   }));
@@ -225,6 +234,7 @@ onBeforeUnmount(() => {
             :api="api"
             :bridge="settingsBridge"
             :generation="entry.request.generation"
+            :page="entry.request.page"
             :section="entry.request.section"
             :account="entry.request.account"
             :release="entry.request.release"
@@ -303,6 +313,7 @@ onBeforeUnmount(() => {
           <ConnectDialog
             :api="api"
             :request="entry.request"
+            :shown="entry.shown"
             @answer="answer(entry.id, $event)"
           />
         </div>

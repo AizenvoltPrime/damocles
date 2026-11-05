@@ -13,6 +13,7 @@ import { MAX_REF_PICKER_REFS } from '../../preload/overlay-channels';
 import type { ScmArtifactsResult, ScmCommitDetailsResult, ScmHistoryCommit, ScmHistoryLoad, ScmHistoryRef, ScmHistoryResult, ScmRunRequest } from '../../preload/scm-channels';
 import type { DamoclesShellApi, GraphRefChoice } from '../../preload/shell-channels';
 import SidebarSection from '../components/SidebarSection.vue';
+import { TOOLBAR_BUTTON } from '../components/sidebar-section';
 import ScmStateCard from '../scm/ScmStateCard.vue';
 import type { ScmStateCard as StateCard } from '../scm/scm-state';
 import { SCM_STORE } from '../scm/scm-store';
@@ -719,7 +720,7 @@ onBeforeUnmount(() => {
   for (const timer of arrivalTimers) clearTimeout(timer);
 });
 
-const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25 disabled:opacity-40';
+const toolbarButton = `${TOOLBAR_BUTTON} disabled:opacity-40`;
 // Pull and Push give way first in a narrow header (Source control's sync does both), so the title beside them reads whole.
 const SYNC_ACTION = '@max-[15.5rem]/header:hidden';
 const raw = <T,>(value: T): T => toRaw(value);

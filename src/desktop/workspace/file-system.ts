@@ -1,12 +1,17 @@
-import { promises as fs, type BigIntStats, type Dirent, type Stats } from 'node:fs';
+import { isUtf8 } from 'node:buffer';
+import { promises as fs, type BigIntStats, type Stats } from 'node:fs';
 import * as path from 'node:path';
 import type { Disposable } from '../../platform/disposable';
 import type { FileWatcherFactory } from '../../platform/file-watcher';
+import { requireRootAnswers } from '../../core/local-links';
+import { piAgentDirIn, sessionFileAt, sessionsRootIn } from '../../core/pi-session/session-store/session-file-path';
 import { folderKey } from '../../core/workspace-folders/folder-key';
-import { confineEntry, confineExisting, confineMissing, confineOrCreateFolder, followsLocalLinksOnly, isInsideRealRoot, projectOfPath, type ConfineFailure, type Confined, type Project } from '../local-services/confine';
+import { confineEntry, confineExisting, confineMissing, confineOrCreateFolder, followsLocalLinksOnly, projectOfPath, type ConfineFailure, type Confined, type Project } from '../local-services/confine';
+import { isUncOrDevicePath } from '../../shared/project-location';
 import { isUnsafeWindowsName } from '../../shared/relative-path';
 import { readFileBytes, readOpenedFile, type FileBytes } from '../local-services/file-bytes';
 import type { ProjectFileLocation } from './search/types';
+import { namePrefixMatches } from './outside-listing';
 import { createdThroughLink, createTransferOps, type TransferOps } from './transfer-ops';
 
 export interface WatchEvent {
@@ -32,8 +37,28 @@ export type DeleteResult = { readonly ok: true } | { readonly ok: false; readonl
 // A folder of the folder browser: its subfolders by name.
 export type BrowseResult = { readonly ok: true; readonly path: string; readonly folders: readonly string[] } | { readonly ok: false; readonly reason: 'missing' | 'failed' };
 
-// Why a write Damocles refuses itself was refused; the caller words it for the user.
-export type WriteRefusal = 'outsideProject' | 'outsideFile' | 'replaced' | 'notAFile' | 'diskFull';
+// kind: FileEntry's words; link: the entry is a link, listed as what it leads to; target: a link to a file's native realpath
+export interface OutsideListingEntry {
+  readonly name: string;
+  readonly kind: 'dir' | 'file';
+  readonly link: boolean;
+  readonly target?: string;
+}
+
+// path: the folder's native realpath; entries in no set order (main sorts); docs/invariants.md "Desktop host", Confinement.
+export type OutsideListing =
+  | { readonly kind: 'folder'; readonly path: string; readonly entries: readonly OutsideListingEntry[]; readonly truncated: boolean }
+  | { readonly kind: 'missing' | 'outside' | 'notAFolder' | 'denied' };
+
+// The bounds of one outside listing (docs/invariants.md "Desktop host", Confinement): entries kept, names examined, and
+// milliseconds from the request.
+export const OUTSIDE_LISTING_MAX_ENTRIES = 1000;
+const OUTSIDE_LISTING_MAX_SCANNED = 50_000;
+const OUTSIDE_LISTING_DEADLINE_MS = 2000;
+
+// Why a write Damocles refuses itself was refused; the caller words it for the user. sessionFile: a session file of this
+// machine's engine, which only that engine writes (feature sessionFiles).
+export type WriteRefusal = 'outsideProject' | 'outsideFile' | 'replaced' | 'notAFile' | 'diskFull' | 'sessionFile';
 
 export class WriteRefusedError extends Error {
   override readonly name = 'WriteRefusedError';
@@ -54,13 +79,18 @@ export interface HostSettingsRead {
   readonly read: FileBytes | { readonly kind: 'outside' };
 }
 
-// within 'plans': the plans rule as well, a .md file below the realpath of <damoclesHome>/plans with no other hard link
-export interface OutsideRule {
-  readonly within?: 'plans';
-}
+// D27: share, a UNC or device path or one a link or realpath leads to; name, a path part the system reads differently than written.
+export type OutsideRefusal = 'share' | 'name';
 
-// path: the native realpath, which readOutside and writeOutside take
-export type OutsideResolution = { readonly kind: 'file' | 'folder'; readonly path: string } | { readonly kind: 'missing' | 'outside' };
+// path: the native realpath, which readOutside and writeOutside take; other, an entry that is neither a file nor a folder.
+// share: a path written locally whose realpath is a share or device path (a mapped drive), which only a project holding that
+// realpath opens; everything else refuses it as 'share'.
+export type OutsideEntryKind = 'file' | 'folder' | 'other';
+export type OutsideResolution =
+  | { readonly kind: OutsideEntryKind; readonly path: string }
+  | { readonly kind: 'share'; readonly path: string; readonly entry: OutsideEntryKind }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'outside'; readonly reason: OutsideRefusal };
 
 // Project paths are confined on the host that holds them (docs/invariants.md "Desktop host", Confinement).
 export interface WorkspaceFileSystem extends TransferOps {
@@ -71,21 +101,24 @@ export interface WorkspaceFileSystem extends TransferOps {
   projectOfPath(projects: readonly Project[], target: string): Promise<{ project: Project; relativePath: string; path: string } | undefined>;
   // undefined: missing
   realpath(target: string): Promise<string | undefined>;
+  // sessionFile on an existing file of this host's session store, by its canonical path
   read(filePath: string, limitBytes?: number): Promise<FileBytes>;
   // undefined: missing
   readText(filePath: string): Promise<string | undefined>;
-  // resolves the written file's mtime; throws WriteRefusedError for a write Damocles refuses itself
+  // resolves the written file's mtime; throws WriteRefusedError for a write Damocles refuses itself, a session file included
   writeInPlace(project: Project, location: ProjectFileLocation, bytes: Buffer): Promise<number>;
   // the host's ~/.damocles/settings.json and nothing else: a link that leads anywhere but that file reads as outside
   readHostSettings(): Promise<HostSettingsRead>;
   // writeInPlace confined to that one file
   writeHostSettings(bytes: Buffer): Promise<number>;
   // a file or folder outside every project by this host's rules (docs/invariants.md "Desktop host", Confinement)
-  resolveOutside(target: string, rule: OutsideRule): Promise<OutsideResolution>;
-  // only while filePath is still its own realpath and meets the rule, else outside
-  readOutside(filePath: string, rule: OutsideRule): Promise<FileBytes | { readonly kind: 'outside' }>;
-  // resolves the written file's mtime; throws WriteRefusedError (outsideFile, replaced, notAFile, diskFull) for a write Damocles refuses itself
-  writeOutside(filePath: string, bytes: Buffer, rule: OutsideRule): Promise<number>;
+  resolveOutside(target: string): Promise<OutsideResolution>;
+  // only while filePath is still its own realpath, else outside; sessionFile as read reports it
+  readOutside(filePath: string, limitBytes?: number): Promise<FileBytes | { readonly kind: 'outside' }>;
+  // resolves the written file's mtime; throws WriteRefusedError (outsideFile, replaced, notAFile, diskFull, sessionFile) for a write Damocles refuses itself
+  writeOutside(filePath: string, bytes: Buffer): Promise<number>;
+  // the entries of a folder outside every project whose name starts with prefix, within the listing's bounds
+  listOutside(folder: string, prefix: string): Promise<OutsideListing>;
   createEntry(project: Project, relativeDir: string, name: string, kind: 'file' | 'dir'): Promise<EntryResult>;
   // relativePath is the entry itself; a link is renamed, never its target
   renameEntry(project: Project, relativePath: string, newName: string): Promise<EntryResult>;
@@ -106,7 +139,7 @@ export interface FileSystemDeps {
   readonly trash: (absolutePath: string) => Promise<void>;
   // deletes for good, a folder with its contents and a link as itself
   readonly remove?: (absolutePath: string) => Promise<void>;
-  // the host's ~/.damocles, which holds HOST_SETTINGS_FILE and the plans folder
+  // the host's ~/.damocles, which holds HOST_SETTINGS_FILE and its engine's session store
   readonly damoclesHome: string;
   readonly log: (line: string) => void;
   // the host's OS, which transfers check names for; process.platform unless a test names another
@@ -234,23 +267,58 @@ async function writeChecked(
 }
 
 /** A project file in place, only while its path still resolves to that file inside the project (reconfine, writeChecked). */
-export async function writeInPlace(project: Project, location: ProjectFileLocation, bytes: Buffer, log: (line: string) => void): Promise<number> {
-  return writeChecked(location.path, await reconfine(project, location), bytes, log);
+export async function writeInPlace(project: Project, location: ProjectFileLocation, bytes: Buffer, log: (line: string) => void, sessionsRoot: string): Promise<number> {
+  const identity = await reconfine(project, location);
+  if (await isSessionFile(location.path, sessionsRoot)) throw sessionFileRefusal(location.path);
+  return writeChecked(location.path, identity, bytes, log);
+}
+
+// The realpath of target, or of its deepest existing folder with the missing names below it.
+async function canonicalOf(target: string): Promise<string> {
+  try {
+    return await fs.realpath(target);
+  } catch (err) {
+    const parent = path.dirname(target);
+    if (!isGone(err) || parent === target) throw err;
+    return path.join(await canonicalOf(parent), path.basename(target));
+  }
+}
+
+// By canonical paths, so a link into the session folder or another spelling of it is one too (docs/invariants.md "Session store").
+async function isSessionFile(filePath: string, sessionsRoot: string): Promise<boolean> {
+  return sessionFileAt(await canonicalOf(filePath), await canonicalOf(sessionsRoot)) !== undefined;
+}
+
+// A path the check cannot resolve reads as no session file; every write checks again before its first byte.
+async function withSessionFlag<R extends FileBytes | { readonly kind: 'outside' }>(read: R, filePath: string, sessionsRoot: string): Promise<R> {
+  if (read.kind !== 'bytes' && read.kind !== 'missing') return read;
+  const sessionFile = await isSessionFile(filePath, sessionsRoot).catch(() => false);
+  return sessionFile ? { ...read, sessionFile: true as const } : read;
+}
+
+function sessionFileRefusal(filePath: string): WriteRefusedError {
+  return new WriteRefusedError(`${filePath} is a session file, which only its engine writes`, 'sessionFile');
+}
+
+interface OutsideSegments {
+  readonly root: string;
+  readonly segments: readonly string[];
 }
 
 // A path outside every project as this host spells one, split at its root: absolute, without NUL, and on win32 a drive path
 // whose every segment Windows opens as written, so no UNC, device (\\?\, \\.\), drive-relative or root-relative path, no
-// '.' or '..', no stream or device name; undefined for any other, before any file system call.
-function outsideSegments(target: string): { readonly root: string; readonly segments: readonly string[] } | undefined {
-  if (target.includes('\0')) return undefined;
+// '.' or '..', no stream or device name; the refusal's reason for any other, before any file system call.
+export function outsideSegments(target: string): OutsideSegments | OutsideRefusal {
+  if (target.includes('\0')) return 'name';
   if (process.platform === 'win32') {
-    if (!/^[A-Za-z]:[\\/]/.test(target)) return undefined;
+    if (isUncOrDevicePath(target)) return 'share';
+    if (!/^[A-Za-z]:[\\/]/.test(target)) return 'name';
     const segments = target.slice(3).split(/[\\/]/).filter((segment) => segment.length > 0);
-    return segments.some(isUnsafeWindowsName) ? undefined : { root: `${target.slice(0, 2)}\\`, segments };
+    return segments.some(isUnsafeWindowsName) ? 'name' : { root: `${target.slice(0, 2)}\\`, segments };
   }
-  if (!target.startsWith('/')) return undefined;
+  if (!target.startsWith('/')) return 'name';
   const segments = target.split('/').filter((segment) => segment.length > 0);
-  return segments.some((segment) => segment === '.' || segment === '..') ? undefined : { root: '/', segments };
+  return segments.some((segment) => segment === '.' || segment === '..') ? 'name' : { root: '/', segments };
 }
 
 function isGone(err: unknown): boolean {
@@ -259,7 +327,7 @@ function isGone(err: unknown): boolean {
 }
 
 // The walk from the path's own root: no link on the way leads to a share or device. A missing segment leaves nothing to follow.
-async function walksLocally(lexical: { readonly root: string; readonly segments: readonly string[] }): Promise<boolean> {
+async function walksLocally(lexical: OutsideSegments): Promise<boolean> {
   try {
     return await followsLocalLinksOnly(lexical.root, lexical.segments);
   } catch (err) {
@@ -268,49 +336,26 @@ async function walksLocally(lexical: { readonly root: string; readonly segments:
   }
 }
 
-// The realpath of <damoclesHome>/plans, walked first like any other path; undefined while there is none.
-async function plansFolder(damoclesHome: string): Promise<string | undefined> {
-  const plans = path.join(damoclesHome, 'plans');
-  const lexical = outsideSegments(plans);
-  if (!lexical || !(await walksLocally(lexical))) return undefined;
-  try {
-    return await fs.realpath(plans);
-  } catch (err) {
-    if (isGone(err)) return undefined;
-    throw err;
-  }
-}
-
-// The name and place half of the plans rule, on a realpath (isPlanFilePath folds case on win32 alone, and so does this).
-async function isPlanPlace(realPath: string, damoclesHome: string): Promise<boolean> {
-  const named = process.platform === 'win32' ? realPath.toLowerCase().endsWith('.md') : realPath.endsWith('.md');
-  if (!named) return false;
-  const plans = await plansFolder(damoclesHome);
-  return plans !== undefined && isInsideRealRoot(plans, realPath) && folderKey(plans) !== folderKey(realPath);
-}
-
-// A hard link shares the plan's bytes with a name outside the plans folder, which no path comparison sees.
-function isSingleFile(stat: { isFile(): boolean; readonly nlink: number | bigint }): boolean {
-  return stat.isFile() && Number(stat.nlink) === 1;
-}
-
-async function resolveOutside(target: string, rule: OutsideRule, damoclesHome: string): Promise<OutsideResolution> {
+async function resolveOutside(target: string): Promise<OutsideResolution> {
   const lexical = outsideSegments(target);
-  if (!lexical) return { kind: 'outside' };
+  if (typeof lexical === 'string') return { kind: 'outside', reason: lexical };
   let real: string;
   let stat: Stats;
   try {
-    if (!(await followsLocalLinksOnly(lexical.root, lexical.segments))) return { kind: 'outside' };
+    await requireRootAnswers(target);
+    if (!(await followsLocalLinksOnly(lexical.root, lexical.segments))) return { kind: 'outside', reason: 'share' };
     real = await fs.realpath(target);
-    stat = await fs.stat(real);
+    // the path the walk checked, never a share realpath
+    stat = await fs.stat(target);
   } catch (err) {
     if (isGone(err)) return { kind: 'missing' };
     throw err;
   }
-  if (!outsideSegments(real)) return { kind: 'outside' };
-  if (rule.within === 'plans') return isSingleFile(stat) && (await isPlanPlace(real, damoclesHome)) ? { kind: 'file', path: real } : { kind: 'outside' };
-  if (stat.isFile()) return { kind: 'file', path: real };
-  return stat.isDirectory() ? { kind: 'folder', path: real } : { kind: 'outside' };
+  const entry: OutsideEntryKind = stat.isFile() ? 'file' : stat.isDirectory() ? 'folder' : 'other';
+  const resolved = outsideSegments(real);
+  if (resolved === 'share') return { kind: 'share', path: real, entry };
+  if (typeof resolved === 'string') return { kind: 'outside', reason: resolved };
+  return { kind: entry, path: real };
 }
 
 function unreadableOf(err: unknown): FileBytes {
@@ -321,7 +366,7 @@ function unreadableOf(err: unknown): FileBytes {
 // After the open, the path walked and resolved again must still be its own realpath and its entry the opened file, so a path
 // swapped away and back around the checks is refused: 'outside' when it now resolves elsewhere, 'replaced' when its entry is
 // gone or another file.
-async function leadsToHandle(filePath: string, lexical: { readonly root: string; readonly segments: readonly string[] }, opened: BigIntStats): Promise<'same' | 'outside' | 'replaced'> {
+async function leadsToHandle(filePath: string, lexical: OutsideSegments, opened: BigIntStats): Promise<'same' | 'outside' | 'replaced'> {
   if (!(await walksLocally(lexical))) return 'outside';
   let now: BigIntStats;
   try {
@@ -337,9 +382,9 @@ async function leadsToHandle(filePath: string, lexical: { readonly root: string;
 
 // Read from the one handle the checks lead to: its bigint dev and ino, taken before the realpath check as a write takes them,
 // must match the opened handle, which leadsToHandle checks again.
-async function readOutside(filePath: string, rule: OutsideRule, damoclesHome: string): Promise<FileBytes | { readonly kind: 'outside' }> {
+async function readOutside(filePath: string, limitBytes?: number): Promise<FileBytes | { readonly kind: 'outside' }> {
   const lexical = outsideSegments(filePath);
-  if (!lexical) return { kind: 'outside' };
+  if (typeof lexical === 'string') return { kind: 'outside' };
   let checked: BigIntStats;
   let real: string;
   try {
@@ -351,7 +396,6 @@ async function readOutside(filePath: string, rule: OutsideRule, damoclesHome: st
     return isGone(err) ? { kind: 'missing' } : unreadableOf(err);
   }
   if (folderKey(real) !== folderKey(filePath)) return { kind: 'outside' };
-  if (rule.within === 'plans' && !(isSingleFile(checked) && (await isPlanPlace(real, damoclesHome)))) return { kind: 'outside' };
   // opening a FIFO blocks a libuv thread until a writer appears
   if (!checked.isFile()) return { kind: 'notAFile', folder: checked.isDirectory() };
   let handle: fs.FileHandle;
@@ -363,9 +407,8 @@ async function readOutside(filePath: string, rule: OutsideRule, damoclesHome: st
   try {
     const opened = await handle.stat({ bigint: true });
     if (opened.dev !== checked.dev || opened.ino !== checked.ino) return { kind: 'outside' };
-    if (rule.within === 'plans' && !isSingleFile(opened)) return { kind: 'outside' };
     if ((await leadsToHandle(filePath, lexical, opened)) !== 'same') return { kind: 'outside' };
-    return await readOpenedFile(handle);
+    return await readOpenedFile(handle, limitBytes);
   } catch (err) {
     return unreadableOf(err);
   } finally {
@@ -375,12 +418,7 @@ async function readOutside(filePath: string, rule: OutsideRule, damoclesHome: st
 
 // The identity writeChecked compares the handle with, or undefined for a file to create exclusively in its folder, which
 // must still resolve to itself and is never created.
-async function checkOutsideWrite(
-  filePath: string,
-  lexical: { readonly root: string; readonly segments: readonly string[] },
-  rule: OutsideRule,
-  damoclesHome: string,
-): Promise<{ readonly dev: bigint; readonly ino: bigint } | undefined> {
+async function checkOutsideWrite(filePath: string, lexical: OutsideSegments): Promise<{ readonly dev: bigint; readonly ino: bigint } | undefined> {
   // The walk comes first, so no stat follows a link to a share; the identity is taken before the realpath, as reconfine takes it.
   if (!(await walksLocally(lexical))) throw outsideFileRefusal(filePath);
   const identity = await identityOf(filePath);
@@ -393,23 +431,12 @@ async function checkOutsideWrite(
   if (real !== undefined) {
     if (folderKey(real) !== folderKey(filePath)) throw outsideFileRefusal(filePath);
     if (!identity) throw replacedRefusal(filePath);
-    if (rule.within === 'plans') {
-      let stat: Stats;
-      try {
-        stat = await fs.stat(real);
-      } catch (err) {
-        if (isGone(err)) throw replacedRefusal(filePath);
-        throw err;
-      }
-      if (!(isSingleFile(stat) && (await isPlanPlace(real, damoclesHome)))) throw outsideFileRefusal(filePath);
-    }
     return identity;
   }
   // An entry whose realpath is missing is a dangling link, which Windows' exclusive create would follow to its target.
   if (await fs.lstat(filePath).then(() => true, (err: unknown) => (isMissing(err) ? false : Promise.reject(err)))) throw outsideFileRefusal(filePath);
   const folder = path.dirname(filePath);
   if (folderKey(await fs.realpath(folder)) !== folderKey(folder)) throw outsideFileRefusal(filePath);
-  if (rule.within === 'plans' && !(await isPlanPlace(filePath, damoclesHome))) throw outsideFileRefusal(filePath);
   return undefined;
 }
 
@@ -421,13 +448,13 @@ function replacedRefusal(filePath: string): WriteRefusedError {
   return new WriteRefusedError(`${filePath} changed while it was being saved`, 'replaced');
 }
 
-async function writeOutside(filePath: string, bytes: Buffer, rule: OutsideRule, damoclesHome: string, log: (line: string) => void): Promise<number> {
+async function writeOutside(filePath: string, bytes: Buffer, log: (line: string) => void, sessionsRoot: string): Promise<number> {
   const lexical = outsideSegments(filePath);
-  if (!lexical) throw outsideFileRefusal(filePath);
-  const identity = await checkOutsideWrite(filePath, lexical, rule, damoclesHome);
+  if (typeof lexical === 'string') throw outsideFileRefusal(filePath);
+  const identity = await checkOutsideWrite(filePath, lexical);
+  if (await isSessionFile(filePath, sessionsRoot)) throw sessionFileRefusal(filePath);
   // The checks ran before the open, so a path swapped away and back between them is checked again against the handle.
   const accepted = async (opened: BigIntStats): Promise<void> => {
-    if (rule.within === 'plans' && !isSingleFile(opened)) throw new WriteRefusedError(`${filePath} gained another hard link`, 'outsideFile');
     const leads = await leadsToHandle(filePath, lexical, opened);
     if (leads === 'outside') throw outsideFileRefusal(filePath);
     if (leads === 'replaced') throw replacedRefusal(filePath);
@@ -461,14 +488,128 @@ async function readHostSettings(damoclesHome: string): Promise<HostSettingsRead>
   return { path: location.path, read: await readFileBytes(confined.path) };
 }
 
-// A folder, or a link that leads to one: the link is followed only after the walk finds no share or device on its way.
-async function isFolderEntry(folder: string, dirent: Dirent): Promise<boolean> {
-  if (!dirent.isSymbolicLink()) return dirent.isDirectory();
+interface EntryType {
+  isDirectory(): boolean;
+  isFile(): boolean;
+  isSymbolicLink(): boolean;
+}
+
+// A link is followed only after the walk finds no share or device; one that cannot be followed is skipped, never failing its folder.
+async function entryKindOf(folder: string, name: string, entry: EntryType): Promise<'dir' | 'file' | undefined> {
+  if (entry.isDirectory()) return 'dir';
+  if (entry.isFile()) return 'file';
+  if (!entry.isSymbolicLink()) return undefined;
   try {
-    return (await followsLocalLinksOnly(folder, [dirent.name])) && (await fs.stat(path.join(folder, dirent.name))).isDirectory();
+    if (!(await followsLocalLinksOnly(folder, [name], { baseIsReal: true }))) return undefined;
+    const stat = await fs.stat(path.join(folder, name));
+    return stat.isDirectory() ? 'dir' : stat.isFile() ? 'file' : undefined;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+// Entries typed at once: each is an lstat where the folder read gave no type, or a link's walk and stat, on the libuv pool.
+const TYPE_BATCH = 16;
+
+// A listed name of the folder real as an entry, typed by the folder read when it gave the type, else by an lstat; undefined
+// for one gone or unreadable since the read, a FIFO, socket or device, or a link that cannot be followed or whose realpath
+// the lexical check refuses.
+async function outsideEntry(real: string, name: string, typed: EntryType | undefined): Promise<OutsideListingEntry | undefined> {
+  const entryPath = path.join(real, name);
+  let entry: EntryType;
+  try {
+    entry = typed ?? (await fs.lstat(entryPath));
+  } catch {
+    return undefined;
+  }
+  const kind = await entryKindOf(real, name, entry);
+  if (kind === undefined) return undefined;
+  if (!entry.isSymbolicLink()) return { name, kind, link: false };
+  let target: string;
+  try {
+    target = await fs.realpath(entryPath);
+  } catch {
+    // replaced or broken since its stat: it leads to neither, as entryKindOf decides
+    return undefined;
+  }
+  // a link that leads to a share or device, or to a name the system reads differently than written, is not listed
+  if (typeof outsideSegments(target) === 'string') return undefined;
+  return kind === 'dir' ? { name, kind, link: true } : { name, kind, link: true, target };
+}
+
+// The folder's names, as bytes so a name that is no valid UTF-8 reaches keep as it is on disk, with their types where the read
+// gives every one: libuv types each Windows entry from its attributes, so a file that refuses an lstat (pagefile.sys) is
+// listed too. Elsewhere names only: Node's Dir types a DT_UNKNOWN entry (some FUSE, NFS or CIFS mounts, XFS without ftype)
+// with a synchronous lstat on the calling thread, and withFileTypes lstats every such entry at once.
+async function readNames(real: string): Promise<Array<{ readonly name: Buffer; readonly type?: EntryType }>> {
+  if (process.platform === 'win32') return (await fs.readdir(real, { withFileTypes: true, encoding: 'buffer' })).map((dirent) => ({ name: dirent.name, type: dirent }));
+  return (await fs.readdir(real, { encoding: 'buffer' })).map((name) => ({ name }));
+}
+
+async function scanOutside(real: string, keep: (name: Buffer) => string | undefined, deadline: number): Promise<{ readonly entries: OutsideListingEntry[]; readonly truncated: boolean }> {
+  const names = await readNames(real);
+  const scanned = Math.min(names.length, OUTSIDE_LISTING_MAX_SCANNED);
+  const entries: OutsideListingEntry[] = [];
+  let index = 0;
+  while (index < scanned && entries.length < OUTSIDE_LISTING_MAX_ENTRIES && performance.now() < deadline) {
+    const batch: Array<{ readonly name: string; readonly type?: EntryType }> = [];
+    while (batch.length < TYPE_BATCH && index < scanned) {
+      const read = names[index++]!;
+      const name = keep(read.name);
+      if (name !== undefined) batch.push({ name, ...(read.type ? { type: read.type } : {}) });
+    }
+    for (const entry of await Promise.all(batch.map(({ name, type }) => outsideEntry(real, name, type)))) if (entry) entries.push(entry);
+  }
+  if (entries.length > OUTSIDE_LISTING_MAX_ENTRIES) return { entries: entries.slice(0, OUTSIDE_LISTING_MAX_ENTRIES), truncated: true };
+  return { entries, truncated: index < names.length };
+}
+
+// C0 and C1 controls, NUL included
+const CONTROL = /\p{Cc}/u;
+
+async function listOutside(folder: string, prefix: string): Promise<OutsideListing> {
+  const deadline = performance.now() + OUTSIDE_LISTING_DEADLINE_MS;
+  const lexical = outsideSegments(folder);
+  if (typeof lexical === 'string') return { kind: 'outside' };
+  let real: string;
+  try {
+    await requireRootAnswers(folder);
+    if (!(await walksLocally(lexical))) return { kind: 'outside' };
+    real = await fs.realpath(folder);
+    if (typeof outsideSegments(real) === 'string') return { kind: 'outside' };
+    if (!(await fs.stat(real)).isDirectory()) return { kind: 'notAFolder' };
+  } catch (err) {
+    if (namesNothing(err)) return { kind: 'missing' };
+    if (isDenied(err)) return { kind: 'denied' };
+    throw err;
+  }
+  // a name that is no valid UTF-8 or holds a control character could be neither typed nor opened
+  const keep = (raw: Buffer): string | undefined => {
+    if (!isUtf8(raw)) return undefined;
+    const name = raw.toString('utf8');
+    if (CONTROL.test(name) || !namePrefixMatches(name, prefix)) return undefined;
+    return typeof outsideSegments(path.join(real, name)) === 'string' ? undefined : name;
+  };
+  let scanned: Awaited<ReturnType<typeof scanOutside>>;
+  try {
+    scanned = await scanOutside(real, keep, deadline);
+  } catch (err) {
+    if (namesNothing(err)) return { kind: 'missing' };
+    if (isDenied(err)) return { kind: 'denied' };
+    throw err;
+  }
+  return { kind: 'folder', path: real, entries: scanned.entries, truncated: scanned.truncated };
+}
+
+// A path that loops, runs past the system's length or leads onto a drive that does not answer within a second lists nothing.
+function namesNothing(err: unknown): boolean {
+  const code = errnoCode(err);
+  return isGone(err) || code === 'ELOOP' || code === 'ENAMETOOLONG' || code === 'ETIMEDOUT';
+}
+
+function isDenied(err: unknown): boolean {
+  const code = errnoCode(err);
+  return code === 'EACCES' || code === 'EPERM';
 }
 
 async function isAnotherEntry(target: string, entry: string): Promise<boolean> {
@@ -485,6 +626,7 @@ async function isAnotherEntry(target: string, entry: string): Promise<boolean> {
 
 export function createFileSystem(deps: FileSystemDeps): WorkspaceFileSystem {
   const remove = deps.remove ?? ((target: string) => fs.rm(target, { recursive: true }));
+  const sessionsRoot = sessionsRootIn(piAgentDirIn(deps.damoclesHome));
   return {
     ...createTransferOps({ platform: deps.platform ?? process.platform, log: deps.log }),
     confineExisting,
@@ -497,6 +639,8 @@ export function createFileSystem(deps: FileSystemDeps): WorkspaceFileSystem {
       return { ok: true, path: entry.path, folder: stat.isDirectory(), identity: { dev: stat.dev, ino: stat.ino, birthtimeNs: stat.birthtimeNs } };
     },
     async realpath(target) {
+      // a realpath under an offline drive or share holds a pool thread about 21 s; the shared probe holds at most one per root
+      await requireRootAnswers(target);
       try {
         return await fs.realpath(target);
       } catch (err) {
@@ -504,7 +648,11 @@ export function createFileSystem(deps: FileSystemDeps): WorkspaceFileSystem {
         throw err;
       }
     },
-    read: readFileBytes,
+    async read(filePath, limitBytes) {
+      const read = await readFileBytes(filePath, limitBytes);
+      // a missing file is not resolved, so no folder of a project on a share is named; its first write refuses a session file
+      return read.kind === 'bytes' ? withSessionFlag(read, filePath, sessionsRoot) : read;
+    },
     async readText(filePath) {
       try {
         return await fs.readFile(filePath, 'utf8');
@@ -513,15 +661,15 @@ export function createFileSystem(deps: FileSystemDeps): WorkspaceFileSystem {
         throw err;
       }
     },
-    writeInPlace: (project, location, bytes) => writeInPlace(project, location, bytes, deps.log),
+    writeInPlace: (project, location, bytes) => writeInPlace(project, location, bytes, deps.log, sessionsRoot),
     readHostSettings: () => readHostSettings(deps.damoclesHome),
     async writeHostSettings(bytes) {
       const { project, location } = await hostSettingsLocation(deps.damoclesHome);
-      return writeInPlace(project, location, bytes, deps.log);
+      return writeInPlace(project, location, bytes, deps.log, sessionsRoot);
     },
-    resolveOutside: (target, rule) => resolveOutside(target, rule, deps.damoclesHome),
-    readOutside: (filePath, rule) => readOutside(filePath, rule, deps.damoclesHome),
-    writeOutside: (filePath, bytes, rule) => writeOutside(filePath, bytes, rule, deps.damoclesHome, deps.log),
+    resolveOutside,
+    readOutside: async (filePath, limitBytes) => withSessionFlag(await readOutside(filePath, limitBytes), filePath, sessionsRoot),
+    writeOutside: (filePath, bytes) => writeOutside(filePath, bytes, deps.log, sessionsRoot),
     async createEntry(project, relativeDir, name, kind) {
       const parent = await confineExisting(project, relativeDir);
       if (!parent.ok) return parent;
@@ -580,17 +728,25 @@ export function createFileSystem(deps: FileSystemDeps): WorkspaceFileSystem {
       throw err;
     }),
     mtimes: (folder, relativePaths) => Promise.all(relativePaths.map((relativePath) => fs.lstat(path.join(folder, ...relativePath.split('/'))).then((stat) => stat.mtimeMs, () => undefined))),
+    listOutside,
     async browse(folder) {
-      let dirents: Dirent[];
-      let real: string;
       try {
-        real = await fs.realpath(folder);
-        dirents = await fs.readdir(real, { withFileTypes: true });
+        const real = await fs.realpath(folder);
+        // the promise readdir types a DT_UNKNOWN entry with an lstat on the pool, never on this thread
+        const dirents = await fs.readdir(real, { withFileTypes: true });
+        const folders: string[] = [];
+        for (let index = 0; index < dirents.length; index += TYPE_BATCH) {
+          const batch = dirents.slice(index, index + TYPE_BATCH);
+          const kinds = await Promise.all(batch.map((dirent) => entryKindOf(real, dirent.name, dirent)));
+          batch.forEach((dirent, offset) => {
+            if (kinds[offset] === 'dir') folders.push(dirent.name);
+          });
+        }
+        return { ok: true, path: real, folders };
       } catch (err) {
         const code = errnoCode(err);
         return { ok: false, reason: code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'failed' };
       }
-      return { ok: true, path: real, folders: (await Promise.all(dirents.map(async (dirent) => ((await isFolderEntry(real, dirent)) ? [dirent.name] : [])))).flat() };
     },
     watch(base, glob, listener) {
       const watcher = deps.watchers.watch(base, glob);

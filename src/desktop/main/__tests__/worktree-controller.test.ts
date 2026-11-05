@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { testWorkspaces } from './test-workspaces';
+import { noSessionFiles, testWorkspaces, unretainedSpellings } from './test-workspaces';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 
 const H = vi.hoisted(() => ({ trail: [] as string[], folderState: 'worktree' as 'worktree' | 'leftover' | 'gone', removeError: undefined as Error | undefined, applyOutcome: undefined as unknown, uncommitted: [] as Array<{ path: string; letter: string }>, unmerged: [] as Array<{ hash: string; subject: string }>, contained: false }));
@@ -469,6 +469,29 @@ describe('WorktreeController', () => {
     expect(notices.at(-1)).toEqual({ severity: 'warn', message: 'A file of the worktree was edited while Damocles was deleting it, so the worktree was not deleted. Try again.', actions: [] });
   });
 
+  it('tells the user why a leftover worktree\'s Reveal could not be checked', async () => {
+    const leftover = path.join(WT, 'leftover');
+    dialogAnswers = [{ dialog: 'leftovers', choice: 'reveal', path: leftover }];
+    const revealed: string[] = [];
+    await controller({
+      engine: { scanLeftovers: async () => [{ path: leftover, reason: 'unregistered' }] } as unknown as WorktreeControllerDeps['engine'],
+      notify: {
+        info: async () => 'Review',
+        warn: async () => undefined,
+        error: async (message, ...actions) => {
+          notices.push({ severity: 'error', message, actions });
+          return undefined;
+        },
+      },
+      reveal: async (target) => {
+        revealed.push(target);
+        throw new Error('The drive Z:\\ did not answer within a second.');
+      },
+    }).scanAtStartup([PROJECT]);
+    expect(revealed).toEqual([leftover]);
+    expect(notices).toEqual([{ severity: 'error', message: `Could not show ${leftover} in File Explorer: The drive Z:\\ did not answer within a second.`, actions: [] }]);
+  });
+
   it('offers no worktree without a repository source control opened for the project (D9, D30)', async () => {
     expect(await controller({ projectRepositoryWhenReady: async () => undefined }).options({ fsPath: PROJECT, name: 'alpha' })).toEqual({ available: false, reason: 'notGit' });
   });
@@ -618,6 +641,8 @@ describe('Delete with a dirty editor tab of the worktree', () => {
     fs.writeFileSync(path.join(folder, 'b.ts'), 'disk');
     let worktrees!: WorktreeController;
     const documents = new DocumentService({
+      spellings: unretainedSpellings(),
+      sessionFiles: noSessionFiles,
       render: englishText,
       hostLabel: (authority) => ({ hostId: authority, name: authority }),
       uploadsConflicted: () => undefined,
@@ -640,6 +665,7 @@ describe('Delete with a dirty editor tab of the worktree', () => {
       settings: platform.settings,
       ask,
       t,
+      render: englishText,
       log: () => undefined,
       restoreLayout: () => true,
       persist: () => undefined,

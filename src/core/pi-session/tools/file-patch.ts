@@ -1,10 +1,10 @@
 import { createTwoFilesPatch, FILE_HEADERS_ONLY } from 'diff';
-import { EDITOR_MAX_DOCUMENT_BYTES } from '../../../shared/types/messages';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import type { FilePatch } from '../../../shared/types/file-patch';
 import { stripBom } from '../../config/bom';
 
 /** A file the editor will not open is not diffed either; this also bounds what a patch adds to the session file. */
-export const FILE_PATCH_MAX_BYTES: number = EDITOR_MAX_DOCUMENT_BYTES;
+export const FILE_PATCH_MAX_BYTES: number = EDITOR_CONFIRM_DOCUMENT_BYTES;
 
 /**
  * Inserted plus deleted lines above which no patch is computed. jsdiff's cost grows with the square of

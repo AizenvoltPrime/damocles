@@ -129,7 +129,7 @@ function setup(root: string, opts: { worktrees?: Artifacts['rows']; picks?: stri
     showDiff: vi.fn(async () => ({ close: () => undefined })),
     showRemoteDiff: vi.fn(async () => ({ close: () => undefined })),
     openFromUser: vi.fn(async () => ({ ok: true, tabId: 't' })),
-    openPath: vi.fn(async () => undefined),
+    openNamedPath: vi.fn(async () => 'tab'),
     openInBackground: vi.fn(async () => undefined),
     openReadOnly: vi.fn(),
     openPlaceholder: vi.fn(),
@@ -196,7 +196,7 @@ function setup(root: string, opts: { worktrees?: Artifacts['rows']; picks?: stri
       adoptCreated: vi.fn(async () => undefined),
       markRemoved: vi.fn(async () => undefined),
       closeProject: vi.fn(async () => 'closed' as const),
-      chatOf: (...args: unknown[]) => void worktreeCalls.push(['chatOf', ...args]),
+      chatOf: async (...args: unknown[]) => void worktreeCalls.push(['chatOf', ...args]),
       newChatTargetAt: () => undefined,
       selectChat: async () => undefined,
       showProjectFolder: () => undefined,
@@ -250,7 +250,7 @@ const opened = (h: Setup): unknown[] => [
   ...vi.mocked(h.editorPane.showRemoteDiff).mock.calls,
   ...vi.mocked(h.editorPane.showDiff).mock.calls,
   ...vi.mocked(h.editorPane.openFromUser).mock.calls,
-  ...vi.mocked(h.editorPane.openPath).mock.calls,
+  ...vi.mocked(h.editorPane.openNamedPath).mock.calls,
   ...vi.mocked(h.editorPane.openInBackground).mock.calls,
   ...vi.mocked(h.service.stageRanges).mock.calls,
   ...vi.mocked(h.service.quickDiffBase).mock.calls,
@@ -263,7 +263,7 @@ describe('remote source control: every path resolves through remoteFileRef', () 
     expect(h.resolved.length).toBeGreaterThan(0);
     expect(h.resolved.every((target) => target.startsWith('/srv/app/'))).toBe(true);
     expect(h.editorPane.showDiff).not.toHaveBeenCalled();
-    expect(h.editorPane.openPath).not.toHaveBeenCalled();
+    expect(h.editorPane.openNamedPath).not.toHaveBeenCalled();
     const files = [
       ...vi.mocked(h.editorPane.showRemoteDiff).mock.calls.map((call) => call[1]),
       ...vi.mocked(h.editorPane.openFromUser).mock.calls.map((call) => ({ projectKey: call[0], relativePath: call[1] })),
@@ -472,7 +472,7 @@ describe('remote source control: the merge editor and file moves', () => {
     expect(vi.mocked(h.editorPane.fileRenamed).mock.calls[0]!.slice(0, 2)).toEqual([APP, 'src/a.ts']);
     expect(h.service.move).toHaveBeenCalledWith('repo-r', 'src/a.ts', 'src/b.ts');
     expect(h.editorPane.closeActive).not.toHaveBeenCalled();
-    expect(h.editorPane.openPath).not.toHaveBeenCalled();
+    expect(h.editorPane.openNamedPath).not.toHaveBeenCalled();
   });
 
   it('moves no file when the new name is not a relative path inside the repository', async () => {

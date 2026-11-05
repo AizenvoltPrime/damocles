@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { LocalizedError, type LocalizedText } from '../../../shared/localized-text';
 import { filesFailureMessage, settleFilesAction } from '../files/files-failure';
 
 const t = (message: string, ...args: string[]): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => args[Number(index)]!);
@@ -25,10 +26,13 @@ describe('Files failures', () => {
       .toBe("Damocles could not delete a\\u{202E}b.ts: EBUSY: resource busy or locked, unlink 'C:\\p\\a\\u{202E}b.ts'");
   });
 
-  it('turns an action that throws into a failure carrying its message', async () => {
+  it("turns an action that throws into a failure carrying its message, a LocalizedError's in the user's language", async () => {
     const logged: string[] = [];
-    expect(await settleFilesAction(async () => { throw new Error('boom'); }, (line) => logged.push(line))).toEqual({ ok: false, reason: 'failed', message: 'boom' });
-    expect(await settleFilesAction(async () => ({ ok: true as const }), (line) => logged.push(line))).toEqual({ ok: true });
-    expect(logged).toEqual(['[files] boom']);
+    const render = (text: LocalizedText): string => `[el] ${text.message}`;
+    expect(await settleFilesAction(async () => { throw new Error('boom'); }, (line) => logged.push(line), render)).toEqual({ ok: false, reason: 'failed', message: 'boom' });
+    expect(await settleFilesAction(async () => ({ ok: true as const }), (line) => logged.push(line), render)).toEqual({ ok: true });
+    const drive = new LocalizedError({ message: 'The drive {0} did not answer within a second.', args: ['Q:\\'] });
+    expect(await settleFilesAction(async () => { throw drive; }, (line) => logged.push(line), render)).toEqual({ ok: false, reason: 'failed', message: '[el] The drive {0} did not answer within a second.' });
+    expect(logged).toEqual(['[files] boom', '[files] The drive Q:\\ did not answer within a second.']);
   });
 });

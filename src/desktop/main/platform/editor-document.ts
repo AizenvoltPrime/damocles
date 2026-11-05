@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import type { DiffSide } from '../../../platform/editor-service';
-import { EDITOR_MAX_DOCUMENT_BYTES, type EditorDocument, type EditorDocumentBody } from '../../../shared/types/messages';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES, type EditorDocument, type EditorDocumentBody } from '../../../shared/types/messages';
 import { readFileBytes } from '../../local-services/file-bytes';
 import type { TextEncoding } from '../../workspace/search/types';
 
@@ -66,7 +66,7 @@ export function knownLanguageId(language: string): string {
 }
 
 function tooLarge(bytes: number): EditorDocumentBody {
-  return { kind: 'tooLarge', bytes, limitBytes: EDITOR_MAX_DOCUMENT_BYTES };
+  return { kind: 'tooLarge', bytes, limitBytes: EDITOR_CONFIRM_DOCUMENT_BYTES };
 }
 
 /** File bytes as the text VS Code shows: a UTF-8 or UTF-16 byte order mark picks the encoding and is not part of the text; undefined for binary. */
@@ -87,7 +87,7 @@ function bytesBody(bytes: Buffer, languageId: string): EditorDocumentBody {
 /** The body for in-memory text, under the same size and binary rules as a file. */
 export function textBody(content: string, languageId: string): EditorDocumentBody {
   const bytes = Buffer.byteLength(content, 'utf8');
-  if (bytes > EDITOR_MAX_DOCUMENT_BYTES) return tooLarge(bytes);
+  if (bytes > EDITOR_CONFIRM_DOCUMENT_BYTES) return tooLarge(bytes);
   // Every character is at least one UTF-8 byte, so the first BINARY_SNIFF_BYTES bytes lie within as many characters.
   if (Buffer.from(content.slice(0, BINARY_SNIFF_BYTES), 'utf8').subarray(0, BINARY_SNIFF_BYTES).includes(0)) return { kind: 'binary' };
   return { kind: 'text', content, languageId };

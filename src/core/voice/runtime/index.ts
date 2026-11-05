@@ -241,6 +241,18 @@ export class VoiceRuntimeInstaller {
 
     if (!opts.allowInstall) return this.verifyInstalled(effective, smokeOpts, onProgress);
 
+    let requirementsFile: string;
+    try {
+      requirementsFile = opts.requirementsFile ?? defaultRequirementsPath(opts.extensionRoot);
+      await assertReadable(requirementsFile);
+    } catch (err) {
+      if (err instanceof LocalizedError) {
+        onProgress({ stage: "error", pct: 2, message: err.text });
+        return { ok: false, pythonExe: this.paths.pythonExe, device: effective, errorMessage: err.text };
+      }
+      throw err;
+    }
+
     onProgress({ stage: "detecting", pct: 3, message: l("Checking C++ toolchain...") });
     let cxxEnv: Record<string, string> | undefined;
     try {
@@ -298,7 +310,7 @@ export class VoiceRuntimeInstaller {
           onProgress({ stage: "done", pct: 100, message: l("Voice runtime ready.") });
           return { ok: true, pythonExe: this.paths.pythonExe, device: effective };
         }
-        const repaired = await this.tryRepairRequirements(effective, opts, onProgress, cxxEnv);
+        const repaired = await this.tryRepairRequirements(effective, requirementsFile, opts, onProgress, cxxEnv);
         if (repaired) {
           const recheck = await runImportSmokeCheck(this.paths.pythonExe, smokeOpts);
           if (recheck.ok) {
@@ -315,7 +327,7 @@ export class VoiceRuntimeInstaller {
       }
     }
 
-    const installResult = await this.tryFullInstall(effective, opts, onProgress, cxxEnv);
+    const installResult = await this.tryFullInstall(effective, requirementsFile, opts, onProgress, cxxEnv);
     if (!installResult.ok) {
       return { ok: false, pythonExe: this.paths.pythonExe, device: effective, errorMessage: installResult.errorMessage };
     }
@@ -357,12 +369,13 @@ export class VoiceRuntimeInstaller {
 
   private async tryFullInstall(
     detection: GpuDetection,
+    requirementsFile: string,
     opts: InstallAllOptions,
     onProgress: RuntimeProgressCallback,
     cxxEnv: Record<string, string> | undefined,
   ): Promise<{ ok: true } | { ok: false; errorMessage: LocalizedText }> {
     try {
-      await this.runFullInstall(detection, opts, onProgress, cxxEnv);
+      await this.runFullInstall(detection, requirementsFile, opts, onProgress, cxxEnv);
       return { ok: true };
     } catch (err) {
       if (opts.signal?.aborted === true) throw err;
@@ -381,17 +394,11 @@ export class VoiceRuntimeInstaller {
 
   private async tryRepairRequirements(
     detection: GpuDetection,
+    requirementsFile: string,
     opts: InstallAllOptions,
     onProgress: RuntimeProgressCallback,
     cxxEnv: Record<string, string> | undefined,
   ): Promise<boolean> {
-    let requirementsFile: string;
-    try {
-      requirementsFile = opts.requirementsFile ?? defaultRequirementsPath(opts.extensionRoot);
-      await assertReadable(requirementsFile);
-    } catch {
-      return false;
-    }
     onProgress({
       stage: "installing-pip",
       pct: 20,
@@ -428,6 +435,7 @@ export class VoiceRuntimeInstaller {
 
   private async runFullInstall(
     detection: GpuDetection,
+    requirementsFile: string,
     opts: InstallAllOptions,
     onProgress: RuntimeProgressCallback,
     cxxEnv: Record<string, string> | undefined,
@@ -453,8 +461,6 @@ export class VoiceRuntimeInstaller {
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     });
 
-    const requirementsFile = opts.requirementsFile ?? defaultRequirementsPath(opts.extensionRoot);
-    await assertReadable(requirementsFile);
     const torchChannel = detection.kind === "cuda"
       ? pickTorchWheelChannel(detection.kind, detection.torchWheelChannel)
       : pickTorchWheelChannel(detection.kind, undefined);

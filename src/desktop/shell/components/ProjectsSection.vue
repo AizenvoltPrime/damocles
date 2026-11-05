@@ -4,15 +4,16 @@ import { useI18n } from 'vue-i18n';
 import { useEventListener } from '@vueuse/core';
 import { FolderPlus, LoaderCircle, Plug } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
-import SegmentedToggle, { type SegmentedOption } from '@/components/SegmentedToggle.vue';
 import { remPx } from '@/composables/useRemPx';
 import { playAttention } from '@/composables/useAttention';
 import { prefersReducedMotion } from '@/utils/reducedMotion';
 import type { DamoclesShellApi, ProjectConnection, ProjectsView, ShellHost, ShellPlatform, ShellProject, ShellProjectGroups } from '../../preload/shell-channels';
 import type { NameCheck, OverlayMenuItem, OverlayRect } from '../../preload/overlay-channels';
 import SidebarSection from './SidebarSection.vue';
+import { TOOLBAR_BUTTON } from './sidebar-section';
 import ProjectEntry from './ProjectEntry.vue';
 import ProjectGroup from './ProjectGroup.vue';
+import ViewModeToggle from './ViewModeToggle.vue';
 import { moveGroup, moveProject, moveProjectInGroup, stepGroup, stepProject, type OrderedProject, type ReorderResult } from './project-reorder';
 import { distroHint, offersReopenInWsl, reopenFailureText, wslNoticeDistro } from './wsl-reopen';
 
@@ -125,11 +126,6 @@ function setView(view: ProjectsView): void {
   refusal.value = undefined;
   void props.api.setProjectsView(view);
 }
-
-const viewOptions = computed((): SegmentedOption<ProjectsView>[] => [
-  { value: 'flat', label: t('projects.view.flat'), attrs: { 'data-testid': 'projects-view-flat', title: t('projects.view.flatTitle') } },
-  { value: 'grouped', label: t('projects.view.grouped'), attrs: { 'data-testid': 'projects-view-grouped', title: t('projects.view.groupedTitle') } },
-]);
 
 function toggleGroup(group: GroupView): void {
   refusal.value = undefined;
@@ -737,25 +733,20 @@ defineExpose({
     :body-size="bodySize"
     @toggle="emit('toggle')"
   >
-    <template #chip>
-      <SegmentedToggle
-        variant="equal"
-        data-testid="projects-view"
-        :model-value="view"
-        :options="viewOptions"
-        :aria-label="t('projects.view.label')"
-        class="bg-(--d-hover) shadow-[inset_0_0_0_1px_var(--d-border)]"
-        indicator-class="text-(--d-card) shadow-[0_0_0_1px_var(--d-border2)]"
-        @update:model-value="setView"
-      />
-    </template>
     <template #actions>
+      <ViewModeToggle
+        data-testid="projects-view"
+        :data-view="view"
+        :target="grouped ? 'list' : 'tree'"
+        :label="grouped ? t('projects.viewAsList') : t('projects.viewByHost')"
+        @click="setView(grouped ? 'flat' : 'grouped')"
+      />
       <Button
         type="button"
         variant="ghost"
         size="icon-sm"
         data-testid="connect-host"
-        class="size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
+        :class="TOOLBAR_BUTTON"
         :aria-label="t('projects.connect')"
         :title="t('projects.connect')"
         @click="openConnect"
@@ -771,7 +762,7 @@ defineExpose({
         variant="ghost"
         size="icon-sm"
         data-testid="add-project"
-        class="size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
+        :class="TOOLBAR_BUTTON"
         aria-haspopup="menu"
         :aria-expanded="addMenuOpen"
         :aria-label="t('projects.add')"

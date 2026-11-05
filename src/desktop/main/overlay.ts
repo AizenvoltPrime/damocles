@@ -1132,7 +1132,8 @@ function parseQuickOpenAnswer(raw: Record<string, unknown>): OverlayAnswer | und
   if (kind === 'path') {
     const authority = field(pick, 'authority');
     const filePath = field(pick, 'path');
-    // the forms resolveOutside answers: a drive path or a POSIX one, never a UNC or device path
+    // the forms a path row holds, a realpath the host checked (resolveOutside or listOutside): a drive path or a POSIX one,
+    // never a UNC or device path
     const absolute = isNonEmptyText(filePath, MAX_REMOTE_PATH_LENGTH) && !filePath.includes('\0') && (/^[A-Za-z]:[\\/]/.test(filePath) || (filePath.startsWith('/') && !filePath.startsWith('//')));
     if (!isNonEmptyText(authority, MAX_OVERLAY_ID_LENGTH) || !absolute || mention !== false) return undefined;
     return { kind: 'quickOpen', pick: { kind, authority, path: filePath, mention, ...position } };

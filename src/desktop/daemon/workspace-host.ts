@@ -113,9 +113,10 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
       endpoint.serve('files.writeInPlace', ({ project, location, bytes }) => files.writeInPlace(project, location, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)));
       endpoint.serve('files.readHostSettings', () => files.readHostSettings());
       endpoint.serve('files.writeHostSettings', ({ bytes }) => files.writeHostSettings(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)));
-      endpoint.serve('files.resolveOutside', ({ target, within }) => files.resolveOutside(target, within !== undefined ? { within } : {}));
-      endpoint.serve('files.readOutside', ({ path, within }) => files.readOutside(path, within !== undefined ? { within } : {}));
-      endpoint.serve('files.writeOutside', ({ path, bytes, within }) => files.writeOutside(path, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength), within !== undefined ? { within } : {}));
+      endpoint.serve('files.resolveOutside', ({ target }) => files.resolveOutside(target));
+      endpoint.serve('files.readOutside', ({ path, limitBytes }) => files.readOutside(path, limitBytes));
+      endpoint.serve('files.writeOutside', ({ path, bytes }) => files.writeOutside(path, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)));
+      endpoint.serve('files.listOutside', ({ folder, prefix }) => files.listOutside(folder, prefix));
       endpoint.serve('files.createEntry', ({ project, relativeDir, name, kind }) => files.createEntry(project, relativeDir, name, kind));
       endpoint.serve('files.renameEntry', ({ project, relativePath, newName }) => files.renameEntry(project, relativePath, newName));
       endpoint.serve('files.deleteEntry', ({ project, relativePath, confirmed }) =>

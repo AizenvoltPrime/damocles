@@ -62,7 +62,8 @@ export interface FileTransferDeps {
   readonly renameInProject: (projectKey: string, from: string, renameOnDisk: () => Promise<FilesMutationResult>) => Promise<FilesMutationResult>;
   readonly progress: (progress: FilesTransferProgress) => void;
   readonly changed: (change: FilesChanged) => void;
-  readonly reveal: (absolutePath: string) => Promise<void>;
+  // shows a download's landed path, below the folder the user picked in the Save or folder dialog
+  readonly revealDownload: (absolutePath: string) => Promise<void>;
   readonly t: (message: string, ...args: Array<string | number>) => string;
   readonly log: (line: string) => void;
   readonly now?: () => number;
@@ -866,11 +867,13 @@ export class FileTransferService {
     const skippedText = skipped.length > 0 ? ` ${t('{0} skipped', skipped.length)}` : '';
     if (request.destination.kind === 'download') {
       const top = plan.tops[0] ?? request.destination.name ?? (request.sources[0]?.kind === 'project' ? path.posix.basename(request.sources[0].relativePath) : '');
-      const landedAt = path.join(dest.project.fsPath, top);
+      // only a name the plan landed or the Save dialog gave, so the unchecked reveal stays below the folder the user picked
+      const landedName = plan.tops[0] ?? request.destination.name;
+      const landedAt = landedName !== undefined ? path.join(dest.project.fsPath, landedName) : dest.project.fsPath;
       const message = skipped.length > 0 ? `${counts}${skippedText}` : t('Downloaded \'{0}\' to {1}.', visibleText(top), visibleText(dest.project.fsPath));
       const actions = skipped.length > 0 ? [reveal, showDetails] : [reveal];
       void this.deps.notify(skipped.length > 0 ? 'warning' : 'info', message, actions).then((answer) => {
-        if (answer === 0) this.deps.reveal(landedAt).catch((err: unknown) => this.deps.log(`[files] revealing ${landedAt} failed: ${errorText(err)}`));
+        if (answer === 0) this.deps.revealDownload(landedAt).catch((err: unknown) => this.deps.log(`[files] revealing ${landedAt} failed: ${errorText(err)}`));
         offerDetails(answer, 1);
       });
       return;

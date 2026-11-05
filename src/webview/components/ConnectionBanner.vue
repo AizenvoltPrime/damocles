@@ -7,8 +7,9 @@ import { chatHostAction, useChatHost } from '@/composables/useChatHost';
 import { useHostConnection } from '@/composables/useHostConnection';
 import { useConnectionStore } from '@/stores/useConnectionStore';
 import HostUpdateBanner from './HostUpdateBanner.vue';
+import { BANNER_TONE } from './banner-tone';
 
-// The shell's ConnectionBanner edge continues this strip across the chat pane's gutter: keep the one-line min-h-8 height and colors equal.
+// The shell's ConnectionBanner edge continues this strip across the chat pane's gutter: keep the one-line min-h-8 height equal (both take their colors from BANNER_TONE).
 const { t } = useI18n();
 const host = useChatHost();
 const connection = useConnectionStore();
@@ -24,12 +25,7 @@ const view = useHostConnection(() => {
   };
 });
 const kind = view.kind;
-const TONE = {
-  warning: 'border-(--d-warning)/25 bg-[color-mix(in_srgb,var(--d-warning)_11%,var(--d-bg))] text-(--d-warning-text)',
-  danger: 'border-(--d-danger)/28 bg-[color-mix(in_srgb,var(--d-danger)_11%,var(--d-bg))] text-(--d-danger-text)',
-  success: 'border-(--d-success)/28 bg-[color-mix(in_srgb,var(--d-success)_11%,var(--d-bg))] text-(--d-success-text)',
-} as const;
-const tone = computed(() => TONE[kind.value === 'failed' ? 'danger' : kind.value === 'reconnected' ? 'success' : 'warning']);
+const tone = computed(() => BANNER_TONE[kind.value === 'failed' ? 'danger' : kind.value === 'reconnected' ? 'success' : 'warning']);
 
 // The live region says what changed and never counts down, so a screen reader hears each state once.
 const announcement = computed(() => {

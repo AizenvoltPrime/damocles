@@ -70,7 +70,8 @@ function handleLinkClick(e: MouseEvent, href: string) {
     values = { line: parseInt(match[2]) };
   }
 
-  if (!isAbsolutePath(filePath) && !filePath.startsWith('./')) {
+  // a leading ~ names the home of the chat's machine, which core expands
+  if (!isAbsolutePath(filePath) && !filePath.startsWith('./') && !/^~(?:[\\/]|$)/.test(filePath)) {
     filePath = './' + filePath;
   }
 

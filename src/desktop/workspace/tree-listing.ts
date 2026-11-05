@@ -50,7 +50,7 @@ export function createTreeListing(log: (line: string) => void): TreeListing {
     if (dirent.isDirectory()) return 'dir';
     if (!dirent.isSymbolicLink()) return 'file';
     try {
-      if (!(await followsLocalLinksOnly(dir, [dirent.name]))) return 'file';
+      if (!(await followsLocalLinksOnly(dir, [dirent.name], { baseIsReal: true }))) return 'file';
       const stat = await fs.stat(path.join(dir, dirent.name));
       return stat.isDirectory() ? 'dir' : 'file';
     } catch (err) {

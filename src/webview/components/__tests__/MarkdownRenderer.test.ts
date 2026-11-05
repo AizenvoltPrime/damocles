@@ -1,8 +1,29 @@
 // @vitest-environment happy-dom
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import MarkdownRenderer from '../MarkdownRenderer.vue';
 import { i18n } from '@/i18n';
+import type { WebviewToExtensionMessage } from '@shared/types/messages';
+
+const posted = vi.hoisted((): WebviewToExtensionMessage[] => []);
+vi.mock('@/composables/usePlatformBridge', () => ({
+  usePlatformBridge: () => ({ postMessage: (m: WebviewToExtensionMessage) => posted.push(m) }),
+}));
+
+describe('MarkdownRenderer file links', () => {
+  it.each([
+    ['~/.bashrc', '~/.bashrc'],
+    ['~', '~'],
+    ['~\\notes.txt', '~\\notes.txt'],
+    ['src/a.ts', './src/a.ts'],
+    ['~notes.txt', './~notes.txt'],
+  ])('sends a link to %s to core as %s', async (href, filePath) => {
+    posted.length = 0;
+    const wrapper = mount(MarkdownRenderer, { global: { plugins: [i18n] }, props: { content: `[x](<${href}>)` } });
+    await wrapper.find('a').trigger('click');
+    expect(posted).toEqual([{ type: 'openFile', filePath }]);
+  });
+});
 
 const REMOTE = '![x](https://attacker/leak?d=1)';
 const DATA_IMG = '![y](data:image/png;base64,iVBORw0KGgo=)';

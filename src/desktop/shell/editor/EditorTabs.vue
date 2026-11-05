@@ -4,8 +4,7 @@ import { useI18n } from 'vue-i18n';
 import { useEventListener, useResizeObserver } from '@vueuse/core';
 import { CloudOff, CloudUpload, FileDiff, GitCompare, GitMerge, Globe, History, LoaderCircle, MessageSquareDiff, ScrollText, Search, Settings2, X } from 'lucide-vue-next';
 import type { Component } from 'vue';
-import type { DamoclesShellApi, FileRef, ShellEditorTab, ShellProject } from '../../preload/shell-channels';
-import { parseRootKey } from '../../preload/folder-root';
+import type { DamoclesShellApi, FileRef, ShellEditorTab, ShellHost, ShellProject } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import { useSlidingIndicator, type IndicatorBox } from '@/composables/useSlidingIndicator';
 import { remPx } from '@/composables/useRemPx';
@@ -21,8 +20,9 @@ import { SCM_STORE } from '../scm/scm-store';
 import { TONE_TEXT } from '../scm/scm-list';
 import StatusLetter from '../scm/StatusLetter.vue';
 import { isBlankPage, pageText, pageTitle } from './browser-page';
+import { tabDescriptions, tabHostName } from './tab-labels';
 
-const props = defineProps<{ api: DamoclesShellApi; closeShortcut: string; projects: readonly ShellProject[] }>();
+const props = defineProps<{ api: DamoclesShellApi; closeShortcut: string; projects: readonly ShellProject[]; hosts: readonly ShellHost[] }>();
 const emit = defineEmits<{ revealInFiles: [file: FileRef]; focusOverlay: [] }>();
 const { t } = useI18n();
 const store = inject(EDITOR_STORE)!;
@@ -79,6 +79,9 @@ const KIND_ICONS: Partial<Record<ShellEditorTab['kind'], { icon: Component; colo
   merge: { icon: GitMerge, color: 'var(--d-warning)' },
 };
 const titleOf = (tab: ShellEditorTab): string => (tab.browser ? pageTitle(tab, t('editor.browser.newPage')) : tab.title);
+const hostOf = (tab: ShellEditorTab): string | undefined => tabHostName(tab, props.projects, props.hosts);
+// A same-named tab's description, as VS Code tells such tabs apart.
+const descriptions = computed(() => tabDescriptions(store.tabs.value, hostOf, t('projects.group.local')));
 
 // A tab is capped at 12.5rem; one with a place chip gets 9rem more, so the chip's label shows whole beside a fair title.
 const TAB_WIDTH = 'max-w-50';
@@ -92,7 +95,7 @@ const foldedChips = shallowRef<ReadonlySet<string>>(new Set());
 const stripResizes = ref(0);
 const chipInputs = computed(() => store.tabs.value.map((tab) => {
   const place = placeOf(tab, places.value);
-  return place ? `${tab.id}\u0000${titleOf(tab)}\u0000${place.kind === 'worktree' ? place.label ?? '' : ''}` : '';
+  return place ? `${tab.id}\u0000${titleOf(tab)}\u0000${descriptions.value.get(tab.id) ?? ''}\u0000${place.kind === 'worktree' ? place.label ?? '' : ''}` : '';
 }).join('\n'));
 watch([chipInputs, stripResizes], async () => {
   foldedChips.value = new Set();
@@ -106,7 +109,11 @@ watch([chipInputs, stripResizes], async () => {
   }
   foldedChips.value = folded;
 }, { flush: 'post' });
-const tooltipOf = (tab: ShellEditorTab): string => (tab.browser ? pageText(tab.displayPath) : visibleText(tab.displayPath));
+const tooltipOf = (tab: ShellEditorTab): string => {
+  if (tab.browser) return pageText(tab.displayPath);
+  const host = hostOf(tab);
+  return host === undefined ? visibleText(tab.displayPath) : t('editor.tab.hostPath', { host, path: visibleText(tab.displayPath) });
+};
 // A deleted or conflicted file's tab says so under its path, as VS Code's "Deleted" decoration does.
 const hoverOf = (tab: ShellEditorTab): string =>
   [tooltipOf(tab), ...(tab.deleted ? [t('editor.tab.deleted')] : []), ...(tab.conflict ? [t('editor.tab.conflict')] : [])].join('\n');
@@ -122,8 +129,7 @@ const decorationOf = (tab: ShellEditorTab) => {
   return decoration?.letter === undefined ? undefined : { letter: decoration.letter, tone: decoration.tone, color: TONE_TEXT[decoration.tone], strike: decoration.strike, title: decoration.status ? t(`scm.status.${decoration.status}`) : undefined };
 };
 // An offline save names the host as ShellState names it now, so a rename shows at once.
-const hostOf = (tab: ShellEditorTab): string => props.projects.find((project) => project.key === parseRootKey(tab.projectKey)?.projectKey)?.authority.name ?? '';
-const pendingText = (tab: ShellEditorTab): string => t('editor.tab.pendingUpload', { host: hostOf(tab) });
+const pendingText = (tab: ShellEditorTab): string => t('editor.tab.pendingUpload', { host: hostOf(tab) ?? '' });
 // ms the cloud-up glyph shows after a pending save uploaded
 const UPLOADED_MS = 2400;
 const uploaded = ref<ReadonlySet<string>>(new Set());
@@ -291,7 +297,7 @@ function onKeydown(event: KeyboardEvent, index: number, tab: ShellEditorTab): vo
   }
 }
 
-// Tabs that are no file: no path to copy or reveal.
+// Tabs that are no file: no path to copy.
 const NO_PATH_KINDS: ReadonlySet<ShellEditorTab['kind']> = new Set(['untitled', 'changes', 'review', 'timeline', 'merge']);
 
 async function openMenu(tab: ShellEditorTab, anchor: { left: number; top: number; width: number; height: number }): Promise<void> {
@@ -328,7 +334,7 @@ async function openMenu(tab: ShellEditorTab, anchor: { left: number; top: number
     separator,
     ...(NO_PATH_KINDS.has(tab.kind) ? [] : [item('copyPath', t('editor.menu.copyPath'), 'copy')]),
     ...(file ? [item('revealInFiles', t('editor.menu.revealInFiles'), 'list-tree')] : []),
-    ...(NO_PATH_KINDS.has(tab.kind) ? [] : [item('revealInExplorer', t('editor.menu.revealInExplorer'), 'folder-search')]),
+    ...(tab.revealable ? [item('revealInExplorer', t('editor.menu.revealInExplorer'), 'folder-search')] : []),
   ];
   const answer = await props.api.requestOverlay({
     kind: 'menu',
@@ -447,6 +453,11 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
               :class="tab.deleted ? 'text-(--d-danger-text) line-through' : tab.conflict ? 'text-(--d-warning-text)' : decorationOf(tab)?.strike ? 'line-through' : ''"
               :style="decorationOf(tab) ? { color: decorationOf(tab)!.color } : undefined"
             >{{ titleOf(tab) }}</span>
+            <span
+              v-if="descriptions.get(tab.id)"
+              data-testid="editor-tab-description"
+              class="min-w-0 shrink-4 truncate text-11 text-(--d-faint-text)"
+            >{{ descriptions.get(tab.id) }}</span>
             <!-- D31: a worktree file's tab names the branch; the project folder's copy says so while its project has worktree tabs open. -->
             <Transition
               name="t-chip"
@@ -488,11 +499,11 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
                 v-else-if="uploaded.has(tab.id)"
                 data-testid="editor-tab-uploaded"
                 class="flex shrink-0 text-(--d-success-text)"
-                :title="t('editor.tab.uploaded', { host: hostOf(tab) })"
+                :title="t('editor.tab.uploaded', { host: hostOf(tab) ?? '' })"
               ><CloudUpload
                 aria-hidden="true"
                 class="size-3"
-              /><span class="sr-only">{{ t('editor.tab.uploaded', { host: hostOf(tab) }) }}</span></span>
+              /><span class="sr-only">{{ t('editor.tab.uploaded', { host: hostOf(tab) ?? '' }) }}</span></span>
             </Transition>
             <span
               v-if="tab.conflict"

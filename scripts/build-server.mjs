@@ -11,8 +11,8 @@
  * package's bin/helpers/browser.exe (scripts/browser-helper.mjs) download into dist/server-packages/.cache/, each checked against
  * its pinned SHA-256 or its package-lock.json integrity; `--signed-browser-helper` puts the release's signed copy of that
  * browser.exe in its place once it proves to be it. Archives land in dist/server-packages/, and dist/desktop/server-manifest.json lists every
- * package there for this version (the dev manifest). `--write-manifest` writes the release manifest from all eight packages
- * in <dir>. Alpine targets need `--node-pty-binary`, node-pty compiled against musl (the release workflow builds it in
+ * package there for this version (the dev manifest, unpublished). `--write-manifest` writes the release manifest, the only
+ * published one, from all eight packages in <dir>. Alpine targets need `--node-pty-binary`, node-pty compiled against musl (the release workflow builds it in
  * node:<version>-alpine); `--all` builds the other six.
  */
 
@@ -185,7 +185,7 @@ export function npmPackageEntries(name, tarball) {
  * Every file of `spec`'s package, without the node and native parts: launchers, dist/ from `distDir`, the portable
  * node_modules closure from `nodeModules`, and the checkout's root files. Entries carry `source` (a file to read) or `data`.
  */
-export function packageEntries({ spec, target, version, nodeVersion, distDir, nodeModules = join(ROOT, 'node_modules'), root = ROOT, portable, externals }) {
+export function packageEntries({ spec, distDir, nodeModules = join(ROOT, 'node_modules'), root = ROOT, portable }) {
   const entries = [...launchers(spec), ...cliScripts(spec, root)];
   for (const name of walk(distDir)) if (!name.endsWith('.map')) entries.push(file(`dist/${name}`, join(distDir, name)));
   for (const name of portable) {
@@ -198,9 +198,37 @@ export function packageEntries({ spec, target, version, nodeVersion, distDir, no
   }
   for (const name of ROOT_FILES) entries.push(file(name, join(root, name)));
   for (const folder of ROOT_FOLDERS) for (const relative of walk(join(root, folder))) entries.push(file(`${folder}/${relative}`, join(root, folder, relative)));
-  const packages = [...portable, ...spec.natives].sort();
-  entries.push(bytes('server-package.json', `${JSON.stringify({ name: 'damocles-server', version, target, node: nodeVersion, externals, packages }, null, 2)}\n`));
   return entries;
+}
+
+const SERVER_PACKAGE_FILE = 'server-package.json';
+
+/** server-package.json's fields but `serverVersion`, in the order packageBuild hashes them. */
+export function packageInfo({ spec, target, version, nodeVersion, portable }) {
+  return { name: 'damocles-server', version, target, node: nodeVersion, externals: selfTestExternals(spec), packages: [...portable, ...spec.natives].sort() };
+}
+
+/**
+ * The package's build: the first 12 hex digits of SHA-256 over every loaded entry but server-package.json, sorted by path, each
+ * as `<path>\0<mode octal>\0<sha256 of data>\n`, then `server-package.json\0<JSON of info>\n`.
+ */
+export function packageBuild(entries, info) {
+  const hash = createHash('sha256');
+  const files = entries.filter((entry) => entry.path !== SERVER_PACKAGE_FILE).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  for (const entry of files) hash.update(`${entry.path}\0${entry.mode.toString(8)}\0${sha256(entry.data)}\n`);
+  hash.update(`${SERVER_PACKAGE_FILE}\0${JSON.stringify(info)}\n`);
+  return hash.digest('hex').slice(0, 12);
+}
+
+// src/remote/handshake.ts VERSION, which the welcome's serverVersion and the pid file's version must pass
+const SERVER_VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
+
+/** `<version>+<build>`, the server version of a package: server-package.json, the manifest, the host's folder and the welcome carry it. */
+export function serverVersionOf(version, build) {
+  if (version.includes('+')) throw new Error(`package.json's version ${version} holds a +, which only the server version's build may add`);
+  const serverVersion = `${version}+${build}`;
+  if (!SERVER_VERSION.test(serverVersion)) throw new Error(`The server version ${serverVersion} is not 1 to 64 letters, digits, dots, pluses and hyphens`);
+  return serverVersion;
 }
 
 /** The roots self-test imports: what the bundles require, minus node-pty and the Dev Containers CLI, which load by path. */
@@ -266,22 +294,19 @@ export async function buildBundles(stage = STAGE_DIR) {
 }
 
 /** Reads every `source` entry into `data`. */
-export function loaded(entries) {
+function loaded(entries) {
   return entries.map((entry) => (entry.data ? entry : { path: entry.path, mode: entry.mode, data: readFileSync(entry.source) }));
 }
 
-/**
- * All of `target`'s entries; `nodePtyBinary` replaces the prebuild of an Alpine target, and `signedBrowserHelper`, the release's
- * signed copy of the browser.exe built here, the Windows one.
- */
-export async function targetEntries(target, { version, nodeVersion, distDir, nodePtyBinary, signedBrowserHelper }) {
+// All of `target`'s entries but server-package.json; `nodePtyBinary` replaces the prebuild of an Alpine target, and
+// `signedBrowserHelper`, the release's signed copy of the browser.exe built here, the Windows one.
+async function targetEntries(target, { version, nodeVersion, distDir, nodePtyBinary, signedBrowserHelper, portable }) {
   const spec = SERVER_TARGETS[target];
-  const { portable } = serverClosure(spec);
   const archive = nodeArchive(target, nodeVersion);
   const archiveName = basename(new URL(archive.url).pathname);
   const nodeArchiveData = await cachedDownload(archive.url, archiveName, (data) => sha256(data) === archive.sha256);
   const entries = [
-    ...packageEntries({ spec, target, version, nodeVersion, distDir, portable, externals: selfTestExternals(spec) }),
+    ...packageEntries({ spec, distDir, portable }),
     ...nodeEntries(spec, archiveName, nodeArchiveData),
     ...(await nativeEntries(spec)),
   ];
@@ -296,27 +321,62 @@ export async function targetEntries(target, { version, nodeVersion, distDir, nod
   return entries;
 }
 
+/** Every loaded entry of `target`'s package, server-package.json last, naming the server version the others hash to. */
+export async function assemblePackage(target, { version, nodeVersion, distDir, nodePtyBinary, signedBrowserHelper }) {
+  const spec = SERVER_TARGETS[target];
+  const { portable } = serverClosure(spec);
+  const entries = loaded(await targetEntries(target, { version, nodeVersion, distDir, nodePtyBinary, signedBrowserHelper, portable }));
+  const info = packageInfo({ spec, target, version, nodeVersion, portable });
+  return [...entries, serverPackageEntry(info, serverVersionOf(version, packageBuild(entries, info)))];
+}
+
+/** server-package.json: info's fields in info's order with serverVersion after version, so dropping it gives back what packageBuild hashed. */
+export function serverPackageEntry(info, serverVersion) {
+  const fields = Object.fromEntries(Object.entries(info).flatMap((field) => (field[0] === 'version' ? [field, ['serverVersion', serverVersion]] : [field])));
+  return bytes(SERVER_PACKAGE_FILE, `${JSON.stringify(fields, null, 2)}\n`);
+}
+
 /** `target`'s archive of loaded `entries`. */
 export function archiveOf(target, entries) {
   return SERVER_TARGETS[target].platform === 'win32' ? zip(entries) : tarGz(entries);
 }
 
-/** The release manifest of the packages in `dir` for `targets`: `{ version, protocolVersion, packages }`. */
-export function serverManifest(dir, version, targets) {
+const BUILD = /^[0-9a-f]{12}$/;
+
+// The server-package.json of `target`'s archive `data`.
+function archivedPackageInfo(target, data) {
+  const entries = SERVER_TARGETS[target].platform === 'win32' ? readZip(data) : readTarGz(data);
+  const found = entries.find((entry) => entry.path === SERVER_PACKAGE_FILE);
+  if (!found) throw new Error(`The ${target} package has no ${SERVER_PACKAGE_FILE}`);
+  return JSON.parse(found.data.toString('utf8'));
+}
+
+/**
+ * The manifest of the packages in `dir` for `targets`: `{ version, protocolVersion, published, packages }`, each package with the
+ * server version its server-package.json names. Only the release's manifest is `published`, so only its hosts download.
+ */
+export function serverManifest(dir, version, targets, { published }) {
   const { protocolVersion } = readProtocolVersion();
   const packages = {};
   for (const target of targets) {
     const name = serverArtifact(target, version);
     const data = readFileSync(join(dir, name));
-    packages[target] = { file: name, sha256: sha256(data), size: data.length };
+    const info = archivedPackageInfo(target, data);
+    if (info.version !== version || info.target !== target) throw new Error(`${name} holds the server package of ${info.version} for ${info.target}`);
+    const serverVersion = info.serverVersion;
+    if (typeof serverVersion !== 'string' || !serverVersion.startsWith(`${version}+`) || !BUILD.test(serverVersion.slice(version.length + 1))) {
+      const ptyOption = SERVER_TARGETS[target].alpine ? ' --node-pty-binary <pty.node compiled against musl>' : '';
+      throw new Error(`${name} names the server version ${serverVersion}, not ${version}+<12 hex digits>; build it again with npm run build:server -- --target ${target}${ptyOption}, or delete it`);
+    }
+    packages[target] = { file: name, sha256: sha256(data), size: data.length, serverVersion };
   }
-  return { version, protocolVersion, packages };
+  return { version, protocolVersion, published, packages };
 }
 
-function writeManifest(dir, version, targets) {
+function writeManifest(dir, version, targets, published) {
   mkdirSync(dirname(MANIFEST_PATH), { recursive: true });
-  writeFileSync(MANIFEST_PATH, `${JSON.stringify(serverManifest(dir, version, targets), null, 2)}\n`);
-  console.log(`Wrote ${MANIFEST_PATH} for ${targets.join(', ') || 'no package'}`);
+  writeFileSync(MANIFEST_PATH, `${JSON.stringify(serverManifest(dir, version, targets, { published }), null, 2)}\n`);
+  console.log(`Wrote ${MANIFEST_PATH} for ${targets.join(', ') || 'no package'}${published ? ', published' : ''}`);
 }
 
 function option(name) {
@@ -332,7 +392,7 @@ async function main() {
     const targets = Object.keys(SERVER_TARGETS);
     const missing = targets.filter((target) => !existsSync(join(manifestDir, serverArtifact(target, version))));
     if (missing.length) throw new Error(`${manifestDir} lacks the server packages of ${missing.join(', ')}`);
-    writeManifest(manifestDir, version, targets);
+    writeManifest(manifestDir, version, targets, true);
     return;
   }
   const target = option('--target');
@@ -350,15 +410,15 @@ async function main() {
   const distDir = await buildBundles();
   mkdirSync(OUT_DIR, { recursive: true });
   for (const name of targets) {
-    const entries = loaded(await targetEntries(name, { version, nodeVersion, distDir, nodePtyBinary, signedBrowserHelper }));
+    const entries = await assemblePackage(name, { version, nodeVersion, distDir, nodePtyBinary, signedBrowserHelper });
     const archive = archiveOf(name, entries);
     const out = join(OUT_DIR, serverArtifact(name, version));
     writeFileSync(out, archive);
-    console.log(`${out}: ${entries.length} files, ${archive.length} bytes, sha256 ${sha256(archive)}`);
+    console.log(`${out}: server ${JSON.parse(entries.at(-1).data.toString('utf8')).serverVersion}, ${entries.length} files, ${archive.length} bytes, sha256 ${sha256(archive)}`);
     if (SERVER_TARGETS[name].alpine) console.log(`node-pty for ${name}: sha256 ${sha256(readFileSync(nodePtyBinary))}`);
   }
   const built = Object.keys(SERVER_TARGETS).filter((name) => existsSync(join(OUT_DIR, serverArtifact(name, version))));
-  writeManifest(OUT_DIR, version, built);
+  writeManifest(OUT_DIR, version, built, false);
 }
 
 if (isEntryPoint(import.meta.url)) {

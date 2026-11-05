@@ -29,6 +29,8 @@ afterEach(() => {
 
 async function setup(overrides: Partial<RemoteHostsDeps> = {}, connect: (hostId: string, connections: RemoteConnections) => Promise<void> = () => new Promise(() => undefined), startSsh: (request: SshStartRequest) => Promise<never> = () => new Promise(() => undefined)) {
   const store = await HostStore.open(userData, () => undefined);
+  // what hears an attempt change, as main's index.ts wires it to hostChanged; nothing unless a test sets it
+  const wiring: { changed?: (hostId: string) => void } = {};
   const connections: RemoteConnections = new RemoteConnections({
     host: (id) => store.host(id),
     startSsh,
@@ -38,7 +40,7 @@ async function setup(overrides: Partial<RemoteHostsDeps> = {}, connect: (hostId:
     installFolderSettled: async () => undefined,
     connect: (hostId) => connect(hostId, connections),
     connection: () => undefined,
-    changed: () => undefined,
+    changed: (hostId) => wiring.changed?.(hostId),
     log: () => undefined,
   });
   const writeClipboard = vi.fn();
@@ -90,7 +92,7 @@ async function setup(overrides: Partial<RemoteHostsDeps> = {}, connect: (hostId:
     openContainerFolder: async () => '',
     ...overrides,
   });
-  return { store, connections, hosts, writeClipboard, renamed };
+  return { store, connections, hosts, writeClipboard, renamed, wiring };
 }
 
 // The open overlay: which pages show, and the host operation snapshots main sent it.
@@ -107,20 +109,28 @@ function fakeOverlay(...shown: Array<'connect' | 'settings'>) {
   return { open, snapshots, overlay };
 }
 
-// An overlay whose page reports a request shown only when the test says so; steps holds the attempts main pushed.
+// An overlay whose page reports a request shown only when the test says so, open until answered; steps holds the attempts main
+// pushed, channels every push in order.
 function screenedOverlay() {
   const requests: Array<{ readonly request: OverlayRequest; readonly show: () => void; readonly answer: () => void }> = [];
   const steps: unknown[] = [];
+  const channels: string[] = [];
+  let open = 0;
   const overlay = {
     request: (request: OverlayRequest, shown?: () => void) => new Promise<{ kind: 'dismissed' }>((resolve) => {
-      requests.push({ request, show: () => shown?.(), answer: () => resolve({ kind: 'dismissed' }) });
+      open++;
+      requests.push({ request, show: () => shown?.(), answer: () => {
+        open--;
+        resolve({ kind: 'dismissed' });
+      } });
     }),
     send: (channel: string, payload: unknown) => {
+      channels.push(channel);
       if (channel === OVERLAY_CHANNELS.connectStep) steps.push(payload);
     },
-    isOpen: () => false,
+    isOpen: (kind: string) => kind === 'connect' && open > 0,
   };
-  return { overlay, requests, steps };
+  return { overlay, requests, steps, channels };
 }
 
 // A saved host whose unwatched attempt waits on an unknown host key, as a reconnect's does behind the sign-in banner.
@@ -223,13 +233,16 @@ describe('RemoteHosts', () => {
   it('pushes the open dialog only cards and steps rebuilt by the request\'s parser, and nothing past its bounds', async () => {
     const sent: Array<[string, unknown]> = [];
     const logs: string[] = [];
-    const overlay = { request: async () => ({ kind: 'dismissed' as const }), send: (channel: string, payload: unknown) => void sent.push([channel, payload]), isOpen: (kind: string) => kind === 'connect' };
+    const overlay = { request: () => new Promise<never>(() => undefined), send: (channel: string, payload: unknown) => void sent.push([channel, payload]), isOpen: (kind: string) => kind === 'connect' };
     let latency: unknown = { latencyMs: 38, slow: false, history: [38], measurements: 1, extra: 'dropped' };
     const { hosts, store, connections } = await setup({ overlay: () => overlay, latency: () => latency as never, log: (line) => logs.push(line) });
     const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
     if (!added.ok) throw new Error('setup');
     const step = { attemptId: 'a1', hostId: added.host.id, transport: 'ssh', step: 'connecting', visited: ['connecting'], notices: [], extra: 'dropped' };
     const attempt = vi.spyOn(connections, 'attempt').mockReturnValue(step as never);
+    // a dialog opened on a1, the only one that hears a1's steps
+    void hosts.openConnect(added.host.id);
+    await vi.waitFor(() => expect(attempt).toHaveBeenCalled());
     hosts.hostChanged(added.host.id);
     expect(sent.map(([channel]) => channel)).toEqual(['damocles:overlay:connect:step', 'damocles:overlay:connect:hosts', 'damocles:overlay:connect:distros']);
     expect(sent[0]![1]).toEqual({ attemptId: 'a1', hostId: added.host.id, transport: 'ssh', step: 'connecting', visited: ['connecting'], notices: [] });
@@ -395,7 +408,7 @@ describe('RemoteHosts', () => {
     expect(connections.attempt(added.host.id)?.attemptId).toBe(attemptId);
   });
 
-  it('shows a running attempt on the timeline, but a card hung from a chip without it', async () => {
+  it('shows a running attempt on the timeline, but no card, hung from a chip or not, with it', async () => {
     const requests: Array<{ attempt?: { attemptId: string }; anchor?: unknown }> = [];
     const overlay = { request: async (request: unknown) => { requests.push(request as (typeof requests)[number]); return { kind: 'dismissed' as const }; }, send: () => undefined, isOpen: () => false };
     const { hosts, store, connections } = await setup({ overlay: () => overlay });
@@ -405,9 +418,11 @@ describe('RemoteHosts', () => {
     const anchor = { x: 120, y: 6, width: 90, height: 28 };
     await hosts.openConnect(added.host.id, { card: 'show', anchor });
     await hosts.openConnect(added.host.id, { card: 'show' });
+    await hosts.openConnect(added.host.id);
     expect(requests[0]).toMatchObject({ card: 'show', anchor });
     expect(requests[0]).not.toHaveProperty('attempt');
-    expect(requests[1]?.attempt).toMatchObject({ attemptId });
+    expect(requests[1]).not.toHaveProperty('attempt');
+    expect(requests[2]?.attempt).toMatchObject({ attemptId });
     expect(connections.attempt(added.host.id)?.step).not.toBe('failed');
   });
 
@@ -429,6 +444,19 @@ describe('RemoteHosts', () => {
     expect(steps).toMatchObject([{ hostId, prompt: { kind: 'hostKey' } }]);
     requests[1]!.answer();
     await dialog;
+  });
+
+  it.each(['show', 'rename'] as const)('carries no reconnect waiting on a host key to its %s card opened without an anchor, and pushes it no step', async (card) => {
+    const { overlay, requests, steps } = screenedOverlay();
+    const { hosts, connections, hostId } = await hostKeyWaiting(() => overlay);
+    const opened = hosts.openConnect(hostId, { card });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]!.request).not.toHaveProperty('attempt');
+    requests[0]!.show();
+    expect(steps).toEqual([]);
+    expect(connections.signInNeeded(hostId)).toBe(true);
+    requests[0]!.answer();
+    await opened;
   });
 
   it('pushes nothing to a card\'s rename on a host whose attempt met a changed host key, and that attempt to the dialog that shows it', async () => {
@@ -472,6 +500,70 @@ describe('RemoteHosts', () => {
     requests[1]!.answer();
     await expect(seen).resolves.toEqual({ shown: true });
     expect(connections.signInNeeded(hostId)).toBe(true);
+  });
+
+  it('pushes a card hung from a chip and the host list their cards but no step of a reconnect waiting on a host key', async () => {
+    const { overlay, requests, steps, channels } = screenedOverlay();
+    const { hosts, connections, hostId, wiring } = await hostKeyWaiting(() => overlay);
+    wiring.changed = (id) => hosts.hostChanged(id);
+    const card = hosts.openConnect(hostId, { card: 'show', anchor: { x: 120, y: 6, width: 90, height: 28 } });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    requests[0]!.show();
+    hosts.hostChanged(hostId);
+    expect(channels).toContain(OVERLAY_CHANNELS.connectHosts);
+    expect(steps).toEqual([]);
+    requests[0]!.answer();
+    await card;
+
+    const list = hosts.openConnect();
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    requests[1]!.show();
+    hosts.hostChanged(hostId);
+    expect(steps).toEqual([]);
+    expect(connections.signInNeeded(hostId)).toBe(true);
+    requests[1]!.answer();
+    await list;
+  });
+
+  it('binds a card\'s Connect to the attempt it joins and pushes that attempt before the start answers', async () => {
+    const { overlay, requests, steps } = screenedOverlay();
+    const { hosts, connections, hostId, wiring } = await hostKeyWaiting(() => overlay);
+    wiring.changed = (id) => hosts.hostChanged(id);
+    const waiting = connections.attempt(hostId)!.attemptId;
+    const card = hosts.openConnect(hostId, { card: 'show', anchor: { x: 120, y: 6, width: 90, height: 28 } });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    requests[0]!.show();
+    const started = hosts.start({ hostId });
+    // connect told the join before the dialog was bound, so that one push is connectWatched's own
+    expect(steps).toMatchObject([{ attemptId: waiting, prompt: { kind: 'hostKey' } }]);
+    await expect(started).resolves.toEqual({ ok: true, attemptId: waiting, hostId });
+    expect(connections.signInNeeded(hostId)).toBe(false);
+    requests[0]!.answer();
+    await card;
+  });
+
+  it('pushes a dialog none of a background attempt\'s steps once the attempt it started failed', async () => {
+    const { overlay, requests, steps } = screenedOverlay();
+    const refused = Object.assign(new Error('refused'), { code: 'refused', params: {} });
+    let calls = 0;
+    const { hosts, store, connections, wiring } = await setup({ overlay: () => overlay }, () => (calls++ === 0 ? Promise.reject(refused) : new Promise(() => undefined)));
+    wiring.changed = (id) => hosts.hostChanged(id);
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    const dialog = hosts.openConnect(added.host.id);
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    requests[0]!.show();
+    const started = await hosts.start({ hostId: added.host.id });
+    if (!started.ok) throw new Error('setup');
+    await vi.waitFor(() => expect(steps).toContainEqual(expect.objectContaining({ attemptId: started.attemptId, step: 'failed' })));
+    steps.length = 0;
+    // the reconnect loop's next attempt, which nobody in this dialog started
+    const background = connections.connect(added.host.id, false);
+    expect(connections.attempt(added.host.id)?.attemptId).toBe(background);
+    hosts.hostChanged(added.host.id);
+    expect(steps).toEqual([]);
+    requests[0]!.answer();
+    await dialog;
   });
 
   it('refuses an install folder the stage rule refuses, and copies the host key command only for a changed key', async () => {

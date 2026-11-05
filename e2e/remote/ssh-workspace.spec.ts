@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test';
 import { chatRequests } from '../desktop/support/openai-stub';
 import { writeUserSettings } from '../desktop/support/hermetic';
 import { sendPrompt } from '../desktop/support/loopback-agent';
-import { activeTab, codeEditor, conflictBar, diffEditor, DOCUMENT_END, editorShows, filesRow, openInEditor, quickOpen, quickPick, saveWithKeyboard } from '../desktop/support/editor';
+import { activeTab, codeEditor, conflictBar, diffEditor, DOCUMENT_END, editorShows, editorTab, filesRow, openInEditor, quickOpen, quickPick, saveWithKeyboard } from '../desktop/support/editor';
 import { moreActions, commitMessage, scmSection, setSection } from '../desktop/support/scm';
 import { overlayPage, pressKeys, PRIMARY, shellPage } from '../desktop/support/shell';
 import { openTerminal, runInTerminal, waitForOutputLine } from '../desktop/support/terminal';
@@ -94,6 +94,20 @@ test('on an SSH project, Files, the editor, a terminal with shell integration, s
     const picker = quickPick(await quickOpen(app, 'remote'));
     await expect(picker.locator('[data-testid="quick-pick-item"]', { hasText: 'remote.ts' })).toBeVisible();
     await overlay.keyboard.press('Escape');
+
+    // Quick Open browses the target's home, and ~/.bashrc opens editable in a tab named with its host.
+    // the mark goes first, since the editor renders only the lines in view of a .bashrc taller than it
+    await fixture.sh("sed -i '1i # quick open mark' ~/.bashrc", 'dev');
+    const browse = await quickOpen(app, '~/');
+    const bashrc = quickPick(browse).locator('[data-testid="quick-pick-item"][aria-label^=".bashrc,"]');
+    await expect(bashrc).toHaveCount(1);
+    await expect(bashrc.getByTestId('quick-pick-badge')).toHaveText('prod-1');
+    await browse.getByTestId('quick-pick-input').fill('~/.bashrc');
+    await expect(quickPick(browse).getByTestId('quick-pick-item').first()).toContainText('.bashrc');
+    await browse.getByTestId('quick-pick-input').press('Enter');
+    await expect(editorTab(shell, 'prod-1: .bashrc')).toHaveAttribute('aria-selected', 'true');
+    await editorShows(shell, '# quick open mark');
+    await expect.poll(async () => (await activeTab(app))?.readOnly).toBe(false);
 
     // A terminal on the target, in the project folder, with shell integration.
     const terminalShell = await openTerminal(app);

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { testWorkspaces } from './test-workspaces';
+import { noSessionFiles, testWorkspaces, unretainedSpellings } from './test-workspaces';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { SearchQuery, SearchRange } from '../../../shared/text-search';
@@ -25,6 +25,8 @@ beforeEach(() => {
   project = { key: folderKey(root), fsPath: root, name: 'proj' };
   notices = [];
   documents = new DocumentService({
+    spellings: unretainedSpellings(),
+    sessionFiles: noSessionFiles,
     render: englishText,
     hostLabel: (authority) => ({ hostId: authority, name: authority }),
     uploadsConflicted: () => undefined,

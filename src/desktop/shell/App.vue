@@ -11,6 +11,7 @@ import EditorPane from './editor/EditorPane.vue';
 import FocusOverlay from './editor/FocusOverlay.vue';
 import ConnectionBanner from './components/ConnectionBanner.vue';
 import ChatPlaceholder from './components/ChatPlaceholder.vue';
+import { chatTitleText } from './components/chat-title';
 import { createEditorStore, EDITOR_STORE } from './editor/editor-store';
 import { createTerminalStore, TERMINAL_STORE } from './terminal/terminal-store';
 import { createScmStore, SCM_STORE } from './scm/scm-store';
@@ -180,7 +181,7 @@ onBeforeUnmount(() => {
             class="flex min-h-0 flex-1 flex-col items-center justify-center p-6"
           >
             <FocusOverlay
-              :title="state.selectedChat.title || t('chats.newChat')"
+              :title="chatTitleText(state.selectedChat, t)"
               :status="state.selectedChat.status"
             />
           </div>

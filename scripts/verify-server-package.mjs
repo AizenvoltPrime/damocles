@@ -5,6 +5,7 @@
  *     [--signed-browser-helper <browser.exe>] [--require-self-test | --skip-self-test]
  *
  * - the bytes: the same inputs assemble the identical archive, so the file list is exact and the build reproducible;
+ * - server-package.json's serverVersion is its version and the build its other entries hash to;
  * - the Node it bundles is the version Electron embeds;
  * - exactly one node-pty prebuild, the target's, and on darwin, linux and alpine exactly one @parcel/watcher prebuild for
  *   the target and its libc;
@@ -27,7 +28,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PE_MACHINES, peMachine } from './browser-helper.mjs';
-import { archiveOf, BROWSER_HELPER_PATH, clampsLoadAlign, loaded, modeOf, STAGE_DIR, targetEntries } from './build-server.mjs';
+import { archiveOf, assemblePackage, BROWSER_HELPER_PATH, clampsLoadAlign, modeOf, packageBuild, STAGE_DIR } from './build-server.mjs';
 import { PAGE_SIZE } from './elf-load-align.mjs';
 import { isEntryPoint } from './entry-point.mjs';
 import { gzipHeader, readTarGz, readZip, sha256 } from './server-archive.mjs';
@@ -50,6 +51,16 @@ function newer(version, ceiling) {
 
 // A registry DelayedExpansion=1 would eat a ! in a .cmd's arguments unless the script turns it off before using them.
 const DISABLES_DELAYED_EXPANSION = /^setlocal DisableDelayedExpansion\r$/im;
+
+/** Problems with server-package.json's serverVersion, which must be its version plus the build the package's other entries hash to (build-server.mjs packageBuild). */
+export function serverVersionProblems(entries) {
+  const file = entries.find((entry) => entry.path === 'server-package.json');
+  if (!file) return ['no server-package.json'];
+  const { serverVersion, ...info } = JSON.parse(file.data.toString('utf8'));
+  if (typeof info.version !== 'string') return ['server-package.json names no version'];
+  const expected = `${info.version}+${packageBuild(entries, info)}`;
+  return serverVersion === expected ? [] : [`server-package.json names the server version ${serverVersion}, its entries make ${expected}`];
+}
 
 /** Problems with the git credential relay helpers a daemon's core gives git (src/core/scm/askpass/credential-relay.ts). */
 export function credentialRelayProblems(entries) {
@@ -253,6 +264,11 @@ function option(name) {
   return at === -1 ? undefined : process.argv[at + 1];
 }
 
+function failed(archive, problems) {
+  console.error(`${basename(archive)} failed verification:\n- ${problems.join('\n- ')}`);
+  process.exit(1);
+}
+
 async function main() {
   const target = option('--target');
   const spec = SERVER_TARGETS[target];
@@ -270,7 +286,10 @@ async function main() {
 
   const signedHelper = option('--signed-browser-helper');
   const signedBrowserHelper = signedHelper ? readFileSync(signedHelper) : undefined;
-  const rebuilt = loaded(await targetEntries(target, { version: info.version, nodeVersion, distDir: join(STAGE_DIR, 'dist'), nodePtyBinary: option('--node-pty-binary'), signedBrowserHelper }));
+  problems.push(...serverVersionProblems(entries));
+  // the rebuild needs the version
+  if (typeof info.version !== 'string') failed(archive, problems);
+  const rebuilt = await assemblePackage(target, { version: info.version, nodeVersion, distDir: join(STAGE_DIR, 'dist'), nodePtyBinary: option('--node-pty-binary'), signedBrowserHelper });
   const again = archiveOf(target, rebuilt);
   if (sha256(again) !== sha256(data)) {
     const expected = new Set(rebuilt.map((entry) => entry.path));
@@ -296,10 +315,7 @@ async function main() {
   if (plan.note) console.log(plan.note);
   if (problems.length === 0 && plan.run) problems.push(...selfTest(spec, archive));
 
-  if (problems.length) {
-    console.error(`${basename(archive)} failed verification:\n- ${problems.join('\n- ')}`);
-    process.exit(1);
-  }
+  if (problems.length) failed(archive, problems);
   console.log(`${basename(archive)} (${target}, ${entries.length} files, sha256 ${sha256(data)}) passed verification.`);
 }
 

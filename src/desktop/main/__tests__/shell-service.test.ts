@@ -14,19 +14,36 @@ import { createDesktopShellService } from '../platform/shell-service';
 
 let dir: string;
 let lines: string[];
+// the paths the Reveal check refused with their reasons, and its verdict on the next
+let refused: string[];
+let revealable: true | 'share' | 'name';
+// the paths the check was asked about
+let checked: string[];
+// what the check rejects with, as one that could not walk the path does
+let checkError: Error | undefined;
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-shell-'));
   lines = [];
+  refused = [];
+  revealable = true;
+  checked = [];
+  checkError = undefined;
+  shell.showItemInFolder.mockReset();
   shell.openExternal.mockReset().mockResolvedValue(undefined);
   shell.openPath.mockReset().mockResolvedValue('');
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-const service = () => createDesktopShellService((line) => lines.push(line));
+const service = () => createDesktopShellService((line) => lines.push(line), async (absolutePath) => {
+  checked.push(absolutePath);
+  if (checkError) throw checkError;
+  return revealable;
+}, (absolutePath, reason) => refused.push(`${absolutePath} ${reason}`));
 
 describe('desktop shell service', () => {
   it('opens a web URL in the canonical form it checked', async () => {
@@ -54,7 +71,54 @@ describe('desktop shell service', () => {
     await expect(service().openFolder(path.join(dir, 'missing'))).resolves.toBe(false);
 
     expect(shell.openPath.mock.calls).toEqual([[dir]]);
+    expect(checked).toEqual([dir, script, path.join(dir, 'missing')]);
     expect(lines.some((line) => line.includes('not a folder'))).toBe(true);
+  });
+
+  it('reveals a path the Reveal check allows', async () => {
+    await expect(service().revealPath('C:\\work\\a.ts')).resolves.toBeUndefined();
+    expect(shell.showItemInFolder.mock.calls).toEqual([['C:\\work\\a.ts']]);
+    expect(checked).toEqual(['C:\\work\\a.ts']);
+    expect(refused).toEqual([]);
+  });
+
+  it('refuses a path the Reveal check refuses: logs it, tells the user and never asks the OS, resolving all the same', async () => {
+    revealable = 'share';
+    const share = '\\\\server\\share\\a.ts';
+    await expect(service().revealPath(share)).resolves.toBeUndefined();
+    expect(shell.showItemInFolder).not.toHaveBeenCalled();
+    expect(refused).toEqual([`${share} share`]);
+    expect(lines).toEqual([`[shell] refused to show ${share}: the Reveal check refused it (share)`]);
+  });
+
+  it('opens no folder the Reveal check refuses, before any stat of it, telling the user', async () => {
+    revealable = 'share';
+    const share = '\\\\server\\share\\models';
+    const stat = vi.spyOn(fs.promises, 'stat');
+    await expect(service().openFolder(share)).resolves.toBe(false);
+    expect(stat).not.toHaveBeenCalled();
+    expect(shell.openPath).not.toHaveBeenCalled();
+    expect(refused).toEqual([`${share} share`]);
+    expect(lines).toEqual([`[shell] refused to show ${share}: the Reveal check refused it (share)`]);
+  });
+
+  it('rejects a reveal or folder open whose check could not run, asking the OS nothing', async () => {
+    checkError = new Error('EACCES: permission denied');
+    const stat = vi.spyOn(fs.promises, 'stat');
+    await expect(service().revealPath('C:\\locked\\a.ts')).rejects.toBe(checkError);
+    await expect(service().openFolder(dir)).rejects.toBe(checkError);
+    expect(stat).not.toHaveBeenCalled();
+    expect(shell.showItemInFolder).not.toHaveBeenCalled();
+    expect(shell.openPath).not.toHaveBeenCalled();
+    expect(refused).toEqual([]);
+  });
+
+  it('reveals a path below a folder the user chose without the Reveal check', async () => {
+    revealable = 'share';
+    const download = '\\\\server\\share\\downloads\\a.zip';
+    await service().revealChosenPath(download);
+    expect(shell.showItemInFolder.mock.calls).toEqual([[download]]);
+    expect(refused).toEqual([]);
   });
 
   it('reports a folder the OS could not open', async () => {

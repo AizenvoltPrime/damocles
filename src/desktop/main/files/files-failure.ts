@@ -1,3 +1,4 @@
+import { LocalizedError, type LocalizedText } from '../../../shared/localized-text';
 import { visibleText } from '../../../shared/visible-text';
 import type { FilesDeleteResult, FilesListResult, FilesMutationResult } from '../../preload/shell-channels';
 
@@ -9,14 +10,17 @@ type Translate = (message: string, ...args: string[]) => string;
 
 export type FilesFailed = { readonly ok: false; readonly reason: 'failed'; readonly message: string };
 
-/** A Files action that throws resolves as one that failed, so its failure is reported the same way. */
-export async function settleFilesAction<T extends FilesResult>(run: () => Promise<T>, log: (line: string) => void): Promise<T | FilesFailed> {
+/**
+ * A Files action that throws resolves as one that failed, so its failure is reported the same way: a LocalizedError in the
+ * user's language (render), any other error as written.
+ */
+export async function settleFilesAction<T extends FilesResult>(run: () => Promise<T>, log: (line: string) => void, render: (text: LocalizedText) => string): Promise<T | FilesFailed> {
   try {
     return await run();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log(`[files] ${message}`);
-    return { ok: false, reason: 'failed', message };
+    return { ok: false, reason: 'failed', message: err instanceof LocalizedError ? render(err.text) : message };
   }
 }
 

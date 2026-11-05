@@ -1,12 +1,15 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { FileX2 } from 'lucide-vue-next';
+import { EDITOR_HARD_MAX_DOCUMENT_BYTES } from '@shared/types/messages';
 import type { NotDisplayedReason } from '../../preload/shell-channels';
 import { fileSize } from './file-size';
 
 // VS Code's binary and large file placeholder: why a file or a diff side is not shown, with the slot's actions under it.
-defineProps<{ reason: NotDisplayedReason; bytes?: number | undefined }>();
+const props = defineProps<{ reason: NotDisplayedReason; bytes?: number | undefined }>();
 const { t, locale } = useI18n();
+const overLimit = computed(() => props.reason === 'tooLarge' && props.bytes !== undefined && props.bytes > EDITOR_HARD_MAX_DOCUMENT_BYTES);
 </script>
 
 <template>
@@ -21,7 +24,7 @@ const { t, locale } = useI18n();
       {{ t('editor.notDisplayed.title') }}
     </p>
     <p class="max-w-80 text-11.5 text-(--d-muted)">
-      {{ t(`editor.notDisplayed.${reason}`) }}
+      {{ overLimit ? t('editor.notDisplayed.overLimit', { limit: fileSize(EDITOR_HARD_MAX_DOCUMENT_BYTES, locale) }) : t(`editor.notDisplayed.${reason}`) }}
       <template v-if="bytes !== undefined">
         {{ fileSize(bytes, locale) }}
       </template>

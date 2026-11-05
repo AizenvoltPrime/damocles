@@ -13,12 +13,14 @@ import type { HostPlatform, HostServicesDeps, HostState, HostTrust, HostUi, Host
 import type { DesktopEditorService, HostDiffView } from '../platform/editor-service';
 import type { ActiveEditorContext, DiffRequest } from '../../../platform/editor-service';
 import type { ChatReviewScope, SettingsFileScope } from '../../../shared/types/messages';
-import { authorityKeyOfProject, isInsideFolder } from '../../../shared/project-location';
+import { authorityKeyOfProject, isAbsoluteOn, isInsideFolder } from '../../../shared/project-location';
 import type { SpawnSpec } from '../../../core/process-launcher';
 import { windowsExplorer } from '../../../core/system-tools';
 import type { PickOptions } from './remote-hosts';
 import { linuxToWslUnc } from './wsl/wsl-paths';
 import { OutsideFilesUnsupportedError } from '../workspace/remote-workspace';
+import { l } from '../../../core/l10n';
+import { LocalizedError } from '../../../shared/localized-text';
 
 export interface RemoteServicesDeps {
   readonly authority: string;
@@ -27,6 +29,8 @@ export interface RemoteServicesDeps {
   readonly wslDistro?: string;
   // the host's name as this computer's host store names it; a target never names itself
   readonly hostName: () => string;
+  // the host's OS, whose rules its paths follow
+  readonly os: () => NodeJS.Platform;
   // the core's own shell.openExternal: OpenUrl.coreOpenExternal, which always asks the user first
   readonly openLink: (url: string) => Promise<boolean>;
   // main's own platform, whose services the allowed requests use
@@ -40,13 +44,15 @@ export interface RemoteServicesDeps {
   // the authority's project list changed (remote-hosts.json)
   readonly onProjectsChanged: (listener: () => void) => Disposable;
   readonly workspace: () => ProjectWorkspace;
+  // the editor pane's active context of any machine (EditorPane.activeContext), which ownContext filters; the platform's
+  // editor already withholds every context that is not this computer's
+  readonly activeContext: () => ActiveEditorContext | undefined;
+  readonly onDidChangeActiveContext: (listener: (context: ActiveEditorContext | undefined) => void) => Disposable;
   readonly trust: HostTrust;
-  // opens a project file in the editor pane by its project key and relative path
-  readonly openInEditor: (projectKey: string, relativePath: string, line: number | undefined, focus: boolean) => Promise<void>;
-  // opens a path outside the host's projects editable when the host's plans rule accepts it, through its workspace; resolves
-  // whether it opened, and throws OutsideFilesUnsupportedError for a daemon without files.outside
-  readonly openPlan: (targetPath: string, line: number | undefined, focus: boolean) => Promise<boolean>;
-  // an Edit/Write approval or checkpoint diff, its target paths resolved only inside this host's projects (remote-files.ts)
+  // opens any absolute path of the host editable through its workspace (EditorPane.openNamedPath); throws RefusedPathError
+  // for a path the host's outside rule refuses, and OutsideFilesUnsupportedError for a daemon without files.outside
+  readonly openNamedPath: (targetPath: string, line: number | undefined, focus: boolean) => Promise<void>;
+  // an Edit/Write approval or checkpoint diff, its target paths resolved through this host's roots, else as host paths
   readonly showDiff: (request: DiffRequest) => Promise<HostDiffView>;
   // a rendered Markdown preview of text the core sent, titled after its file on the target, which main never reads
   readonly showMarkdown: (targetPath: string, content: string) => Promise<void>;
@@ -119,43 +125,37 @@ export const NO_CLIENT_STATE: HostState = {
 
 export function remoteServices(deps: RemoteServicesDeps): Omit<HostServicesDeps, 'endpoint'> {
   const { platform, t } = deps;
-  // what the editor shows reaches a core only while its document is of that core's host
+  // what the editor shows reaches a core only while its document is of that core's host (D17)
+  const ownAuthority = (): string | undefined => (platform.editor.activeAuthority() === deps.authority ? deps.authority : undefined);
   const ownProjectKey = (): string | undefined => {
     const projectKey = platform.editor.activeProjectKey();
     return projectKey !== undefined && authorityKeyOfProject(projectKey) === deps.authority ? projectKey : undefined;
   };
-  const ownContext = (context: ActiveEditorContext | undefined): ActiveEditorContext | undefined => (context === undefined || ownProjectKey() !== undefined ? context : NO_CONTEXT);
-  const projectOf = async (target: string): Promise<{ project: Project; relativePath: string } | undefined> =>
-    deps.workspace().files.projectOfPath(deps.fileRoots(), target);
+  const ownContext = (context: ActiveEditorContext | undefined): ActiveEditorContext | undefined => (context === undefined || ownAuthority() !== undefined ? context : NO_CONTEXT);
   const editor: DesktopEditorService = {
-    // a path outside the host's projects opens only as a plan file, by the host's own plans rule
+    // any absolute path of the host opens editable on the host; an error names only the path, never this computer's name for the host
     openFile: async (filePath, opts) => {
       const line = opts?.line !== undefined && Number.isInteger(opts.line) && opts.line > 0 ? opts.line : undefined;
-      const focus = opts?.preserveFocus !== true;
-      const found = await projectOf(filePath);
-      if (found) {
-        await deps.openInEditor(found.project.key, found.relativePath, line, focus);
-        return;
-      }
-      const opened = await deps.openPlan(filePath, line, focus).catch((err: unknown) => {
+      await deps.openNamedPath(filePath, line, opts?.preserveFocus !== true).catch((err: unknown) => {
         if (!(err instanceof OutsideFilesUnsupportedError)) throw err;
         deps.base.log(`[remote] ${deps.authority}'s daemon opens no file outside its projects, so ${filePath} stays closed`);
-        return false;
+        throw new LocalizedError(l('The Damocles server is older than this app and opens no file outside its projects.'));
       });
-      if (!opened) throw new Error(`${filePath} is not in an open project`);
     },
     openUntitled: (content, language, opts) => platform.editor.openUntitled(content, language, opts),
+    // any absolute host path, as the agent's tools read it; the bytes go only to the host's own core
     readText: async (filePath) => {
-      if (!(await projectOf(filePath))) throw new Error(`${filePath} is not in an open project`);
+      if (!isAbsoluteOn({ os: deps.os() }, filePath)) throw new Error(`${filePath} is not an absolute path`);
       const text = await deps.workspace().files.readText(filePath);
       if (text === undefined) throw new Error(`${filePath} cannot be opened as text`);
       return text;
     },
     showDiff: (request) => deps.showDiff(request),
     showMarkdownPreview: (filePath, opts) => (opts?.content === undefined ? refused('A Markdown preview of a file on the host') : deps.showMarkdown(filePath, opts.content)),
-    getActiveContext: () => ownContext(platform.editor.getActiveContext()),
+    getActiveContext: () => ownContext(deps.activeContext()),
     activeProjectKey: ownProjectKey,
-    onDidChangeActiveContext: (listener) => platform.editor.onDidChangeActiveContext((context) => listener(ownContext(context))),
+    activeAuthority: ownAuthority,
+    onDidChangeActiveContext: (listener) => deps.onDidChangeActiveContext((context) => listener(ownContext(context))),
     openHostSettings: (query, section) => platform.editor.openHostSettings(query, section),
     openSettingsFile: (scope, opts) => deps.openSettingsFile(scope, opts?.key),
     showChatReview: (panelId, scope) => deps.showChatReview(panelId, scope),

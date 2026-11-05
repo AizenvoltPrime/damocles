@@ -18,7 +18,7 @@ vi.mock('electron', () => ({
   protocol: {},
 }));
 
-import { SHELL_CHANNELS } from '../../preload/shell-channels';
+import { MAX_EDITOR_TEXT_CHARS, SHELL_CHANNELS } from '../../preload/shell-channels';
 import type { OverlayRequest } from '../../preload/overlay-channels';
 import { parseOverlayAnswer } from '../overlay';
 import { SHELL_PAGE_URL } from '../protocol';
@@ -161,14 +161,39 @@ describe('search channels', () => {
     ];
     for (const [channel, payload] of bad) await expect(call(channel, payload)).rejects.toThrow(/Malformed/);
   });
+
+  it('asks the shell for the whole buffer when main refuses an edit, a malformed one included', () => {
+    const edit = vi.fn(() => true);
+    const host = new ShellHost(window, { search, searchEditor, editor: { edit } } as unknown as ShellActions, () => undefined, () => undefined);
+    (host as unknown as { loaded: boolean }).loaded = true;
+    ipc.listeners.get(SHELL_CHANNELS.editorEdit)!(own, { documentId: 'd', version: 1, seq: 4, changes: [] });
+    expect(edit).toHaveBeenCalledWith('d', { version: 1, seq: 4, changes: [] });
+    expect(contents.send).toHaveBeenLastCalledWith(SHELL_CHANNELS.editorResync, { documentId: 'd' });
+    ipc.listeners.get(SHELL_CHANNELS.editorEdit)!(own, { documentId: 'e', version: 1, seq: 4, changes: 'x' });
+    expect(edit).toHaveBeenLastCalledWith('e', undefined);
+    expect(contents.send).toHaveBeenLastCalledWith(SHELL_CHANNELS.editorResync, { documentId: 'e' });
+  });
 });
 
 describe('editor edit reports', () => {
-  it('takes the edit counter and the typed-over-reload flag, and refuses a report without them', () => {
-    expect(parseEditorEdit({ documentId: 'd', version: 2, seq: 7, text: 'x', overReload: true, extra: 1 })).toEqual({ documentId: 'd', version: 2, seq: 7, text: 'x', overReload: true });
-    expect(parseEditorEdit({ documentId: 'd', version: 2, text: 'x' })).toBeUndefined();
-    expect(parseEditorEdit({ documentId: 'd', version: 2, seq: -1, text: 'x', overReload: false })).toBeUndefined();
-    expect(parseEditorEdit({ documentId: 'd', version: 2, seq: 1, text: 'x', overReload: 'yes' })).toBeUndefined();
+  it('takes Monaco\'s changes or the whole buffer with the edit counter, and names the document of a malformed report', () => {
+    expect(parseEditorEdit({ documentId: 'd', version: 2, seq: 7, changes: [{ offset: 1, length: 0, text: 'x', extra: 1 }], extra: 1 }))
+      .toEqual({ documentId: 'd', edit: { version: 2, seq: 7, changes: [{ offset: 1, length: 0, text: 'x' }] } });
+    expect(parseEditorEdit({ documentId: 'd', version: 2, seq: 7, text: 'x', overReload: true, extra: 1 })).toEqual({ documentId: 'd', edit: { version: 2, seq: 7, text: 'x', overReload: true } });
+    const half = 'x'.repeat(MAX_EDITOR_TEXT_CHARS / 2 + 1);
+    const malformed = [
+      { version: 2, text: 'x' },
+      { version: 2, seq: -1, text: 'x', overReload: false },
+      { version: 2, seq: 1, text: 'x', overReload: 'yes' },
+      { version: 2, seq: 1, changes: 'x' },
+      { version: 2, seq: 1, changes: [{ offset: -1, length: 0, text: '' }] },
+      { version: 2, seq: 1, changes: [{ offset: 0, length: 1.5, text: '' }] },
+      { version: 2, seq: 1, changes: [{ offset: 0, length: 0 }] },
+      { version: 2, seq: 1, changes: [null] },
+      { version: 2, seq: 1, changes: [{ offset: 0, length: 0, text: half }, { offset: 0, length: 0, text: half }] },
+    ];
+    for (const report of malformed) expect(parseEditorEdit({ documentId: 'd', ...report })).toEqual({ documentId: 'd', edit: undefined });
+    expect(parseEditorEdit({ version: 2, seq: 1, changes: [] })).toBeUndefined();
   });
 });
 

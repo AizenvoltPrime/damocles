@@ -29,10 +29,10 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 // Main's selection over the loopback authority's CoreHost, whose reopening ends with coreOpened as openRemoteChats' does; a
-// chat selected moves the selected project to its own, as showChat does.
-function desktop(opened?: Promise<void>) {
-  let selectedProject: string | undefined = LOCAL_PROJECT;
-  let selectedChat: Chat | undefined = LOCAL_CHAT;
+// chat selected moves the selected project to its own, as showChat does. launching: nothing is selected yet.
+function desktop(opened?: Promise<void>, launching = false) {
+  let selectedProject: string | undefined = launching ? undefined : LOCAL_PROJECT;
+  let selectedChat: Chat | undefined = launching ? undefined : LOCAL_CHAT;
   const selections: Array<readonly [FakeCore, string]> = [];
   const host: CoreHost<FakeCore> = new CoreHost<FakeCore>({
     start: () => {
@@ -94,6 +94,18 @@ describe('remote project selection', () => {
 
   it('a remote project selected while its core is down gets its chat once the core starts', async () => {
     const { host, selection, selections, breadcrumb } = desktop();
+    await selection.select(REMOTE_PROJECT);
+    expect(selections).toEqual([]);
+    expect(breadcrumb()).toEqual([REMOTE_PROJECT, undefined]);
+
+    const core = await started(host);
+    expect(selections).toEqual([[core, REMOTE_PROJECT]]);
+    expect(breadcrumb()).toEqual([REMOTE_PROJECT, 'new:1']);
+  });
+
+  // index.ts selecting the saved project before openTabsAtLaunch is guarded by offline-launch.spec and loopback-agent.spec
+  it('a remote project selected while its core is down and no chat is selected shows no chat until that core opened its chats', async () => {
+    const { host, selection, selections, breadcrumb } = desktop(undefined, true);
     await selection.select(REMOTE_PROJECT);
     expect(selections).toEqual([]);
     expect(breadcrumb()).toEqual([REMOTE_PROJECT, undefined]);

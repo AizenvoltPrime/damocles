@@ -1,9 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
-import { RELEASES_URL } from '../../src/desktop/main/updater';
 // @ts-expect-error -- plain .mjs helper, no types
-import { manifestProblem, matchesPackage, outputDirectory, packagedUserData, refuseReleased, releasesUrl } from '../dist-local.mjs';
+import { manifestProblem, matchesPackage, outputDirectory, packagedUserData } from '../dist-local.mjs';
 // @ts-expect-error -- plain .mjs helper, no types
 import { sha256 } from '../server-archive.mjs';
 
@@ -26,30 +24,6 @@ describe('the packaged app\'s userData', () => {
   it('refuses sudo on Linux, whose home is root\'s, but not a user who merely has SUDO_USER set', () => {
     expect(() => packagedUserData({ platform: 'linux', env: { SUDO_USER: 'a' }, home: '/root', uid: 0 })).toThrow('Run npm run dist:local as a, not under sudo');
     expect(packagedUserData({ platform: 'linux', env: { SUDO_USER: 'a' }, home: '/home/a', uid: 1000 })).toBe(join('/home/a', '.config', 'damocles'));
-  });
-});
-
-describe('the release check', () => {
-  const url = 'https://github.com/o/r/releases/download/v1.2.3/damocles-server-1.2.3-linux-x64.tar.gz';
-  const answering = (status: number) => vi.fn(async () => new Response(null, { status }));
-
-  it('derives the releases URL updater.ts uses from package.json', () => {
-    expect(releasesUrl(JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')))).toBe(RELEASES_URL);
-  });
-
-  it('proceeds only on a 404, asking with a HEAD that follows redirects', async () => {
-    const fetchImpl = answering(404);
-    await expect(refuseReleased(url, '1.2.3', fetchImpl)).resolves.toBeUndefined();
-    expect(fetchImpl).toHaveBeenCalledWith(url, expect.objectContaining({ method: 'HEAD', redirect: 'follow' }));
-  });
-
-  it('refuses a version GitHub has packages for, naming the fix', async () => {
-    await expect(refuseReleased(url, '1.2.3', answering(200))).rejects.toThrow('bump the version in package.json');
-  });
-
-  it('refuses when the check cannot decide', async () => {
-    await expect(refuseReleased(url, '1.2.3', answering(503))).rejects.toThrow(`${url} answered 503`);
-    await expect(refuseReleased(url, '1.2.3', vi.fn(async () => { throw new Error('getaddrinfo ENOTFOUND github.com'); }))).rejects.toThrow('Could not check whether 1.2.3 has a GitHub release');
   });
 });
 

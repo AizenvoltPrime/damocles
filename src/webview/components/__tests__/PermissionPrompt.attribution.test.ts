@@ -49,7 +49,7 @@ describe('PermissionPrompt attribution', () => {
     i18n.global.locale.value = 'el';
     try {
       expect(prompt({ toolName: 'Bash', toolInput: { command: 'ls' }, command: 'ls', owner: TEAM }).text())
-        .toContain('Ο πράκτορας Mira της ομάδας Lockout θέλει να εκτελέσει αυτή την εντολή:');
+        .toContain('Ο agent Mira της ομάδας Lockout θέλει να εκτελέσει αυτή την εντολή:');
     } finally {
       i18n.global.locale.value = 'en';
     }

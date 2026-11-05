@@ -494,7 +494,7 @@ test('`git worktree remove` in a terminal on a chat worktree: Delete then succee
   });
 });
 
-test('at a larger font in a 1000px window a worktree file\'s breadcrumbs end inside their bar: the folders and the place give way before the file name truncates', async ({ foreground: _foreground, home, launch }) => {
+test('at a larger font in a 1000px window a worktree file\'s breadcrumbs end inside their bar: the folders fold into the ellipsis and the place gives way before the file name truncates', async ({ foreground: _foreground, home, launch }) => {
   const file = 'src/a folder with a long name/another long folder name/a-file-whose-name-is-long-enough-to-need-truncating.ts';
   const repo = await worktreeRepo(home, path.join(home.root, 'acme'), { files: { 'a.ts': 'export const a = 1;\n', [file]: 'export const x = 1;\n' } });
   await withStub(home, SKIP_PERMISSIONS, async (stub) => {
@@ -518,9 +518,13 @@ test('at a larger font in a 1000px window a worktree file\'s breadcrumbs end ins
       return {
         fileInside: file.getBoundingClientRect().right <= bar.right,
         fileTruncated: file.scrollWidth > file.clientWidth,
-        foldersGone: crumbs.slice(0, -1).every((crumb) => crumb.getBoundingClientRect().width < 1),
+        shown: crumbs.map((crumb) => (crumb === file ? 'file' : crumb.textContent)),
+        projectWhole: crumbs[0]!.scrollWidth <= crumbs[0]!.clientWidth,
+        ellipsis: document.querySelector('[data-testid="editor-breadcrumbs"] [data-crumb-ellipsis] button')?.getAttribute('aria-label'),
         placeIconOnly: place.getBoundingClientRect().width <= place.querySelector('svg')!.getBoundingClientRect().width + 1,
       };
-    })).toEqual({ fileInside: true, fileTruncated: true, foldersGone: true, placeIconOnly: true });
+    })).toEqual({ fileInside: true, fileTruncated: true, shown: ['acme', 'file'], projectWhole: true, ellipsis: 'Hidden folders', placeIconOnly: true });
+    await shell.locator('[data-testid="editor-breadcrumbs"] [data-crumb-ellipsis] button').focus();
+    await expect(shell.locator('[data-reka-popper-content-wrapper] ol').first().locator('li')).toHaveText(['src', 'a folder with a long name', 'another long folder name']);
   });
 });

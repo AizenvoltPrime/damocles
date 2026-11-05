@@ -13,3 +13,13 @@ export function storedTitle(session: Pick<StoredSession, 'customTitle' | 'aiTitl
   }
   return '';
 }
+
+/**
+ * The title of the chat on `sessionId`: its catalog row's, else the one an earlier read gave that session (`known`, by session
+ * id), since a catalog that is reloading or still parsing may lack the row. With neither, '' when the chat had no session
+ * before this one (`untitledBefore`: a new chat whose first message started it, which no read has titled yet), else undefined.
+ */
+export function chatTitle(rows: readonly StoredSession[] | undefined, known: ReadonlyMap<string, string>, sessionId: string, untitledBefore = false): string | undefined {
+  const row = rows?.find((session) => session.id === sessionId);
+  return row ? storedTitle(row) : (known.get(sessionId) ?? (untitledBefore ? '' : undefined));
+}

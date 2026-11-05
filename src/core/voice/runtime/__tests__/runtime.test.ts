@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -65,6 +65,13 @@ describe("disk-check", () => {
   });
 });
 
+/** A requirements file the install finds, which it checks before it changes anything. */
+async function requirementsIn(dir: string): Promise<string> {
+  const file = join(dir, "requirements.txt");
+  await writeFile(file, "");
+  return file;
+}
+
 describe("VoiceRuntimeInstaller — smoke-check error path", () => {
   let tmp: string;
   beforeEach(async () => {
@@ -94,7 +101,7 @@ describe("VoiceRuntimeInstaller — smoke-check error path", () => {
       new Error("network blocked in unit test"),
     );
     try {
-      const result = await installer.installAll({ onProgress: () => {}, allowInstall: true });
+      const result = await installer.installAll({ onProgress: () => {}, allowInstall: true, requirementsFile: await requirementsIn(tmp) });
       expect(result.ok).toBe(false);
       expect(result.errorMessage && englishText(result.errorMessage)).toMatch(/network|download|smoke check/i);
     } finally {
@@ -180,7 +187,7 @@ describe("VoiceRuntimeInstaller — disk space", () => {
       vi.spyOn(installer, "detectDevice").mockResolvedValue(CPU_NO_SMI);
       const GiB = 1024 * 1024 * 1024;
       vi.spyOn(installer, "checkDisk").mockResolvedValue({ ok: false, freeBytes: 1.24 * GiB, requiredBytes: 12.34 * GiB });
-      const result = await installer.installAll({ allowInstall: true, onProgress: () => {} });
+      const result = await installer.installAll({ allowInstall: true, onProgress: () => {}, requirementsFile: await requirementsIn(tmp) });
       expect(result.errorMessage?.args).toEqual([{ number: 12.3 }, tmp, { number: 1.2 }]);
     } finally {
       await rm(tmp, { recursive: true, force: true });

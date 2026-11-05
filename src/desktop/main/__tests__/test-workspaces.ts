@@ -16,6 +16,8 @@ import type { TerminalBackend } from '../../workspace/terminal/terminal-backend'
 import { createTreeListing } from '../../workspace/tree-listing';
 import { createRemoteWorkspace } from '../workspace/remote-workspace';
 import { createWorkspaces, NotConnectedError, type Workspaces } from '../workspace/workspaces';
+import { RootSpellings } from '../workspace/root-spellings';
+import type { SessionFileEngines } from '../documents/session-files';
 
 export interface TestWorkspaceOptions {
   readonly watchers: FileWatcherFactory;
@@ -51,6 +53,16 @@ function localModules(options: TestWorkspaceOptions): ProjectWorkspace {
     terminals: options.terminals ?? unused<TerminalBackend>('terminal backend'),
   };
 }
+
+/** Root spellings no retain has run on: each root's open path and its WSL alias only, so no realpath is ever taken. */
+export function unretainedSpellings(): RootSpellings {
+  return new RootSpellings({ os: process.platform, realpath: () => Promise.reject(new Error('no realpath in this test')), log: () => undefined });
+}
+
+/** Engines a test saves no session file through. */
+export const noSessionFiles: SessionFileEngines = {
+  write: () => Promise.reject(new Error('no session file in this test')),
+};
 
 /** The local workspace's real modules over the test's watchers and ripgrep, with the parts a test does not use refusing calls. */
 export function testWorkspaces(options: TestWorkspaceOptions): Workspaces {
@@ -111,6 +123,7 @@ export function testRemote(options: TestWorkspaceOptions & { readonly authorityK
     watchReady: true,
     transfers: false,
     outside: true,
+    listing: true,
     openStream: () => { throw new Error('no transfer streams in this suite'); },
     log,
   });

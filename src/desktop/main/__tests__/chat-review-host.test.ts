@@ -76,7 +76,7 @@ function setup() {
   const host: ChatReviewHost = new ChatReviewHost({
     session: () => (loaded ? (session as unknown as ChatSession) : undefined),
     sessionId: () => sessionId,
-    title: () => 'Fix it',
+    title: async () => 'Fix it',
     editorPane: () => pane as unknown as EditorPane,
     warn: (message) => warnings.push(message),
     t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)])),

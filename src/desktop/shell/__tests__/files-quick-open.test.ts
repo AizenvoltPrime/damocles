@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import { ancestorsOf, autoRevealExcluded, flattenTree, type Listing } from '../files-tree';
-import { highlightSegments, quickOpenItemId, quickOpenModel, quickOpenPick } from '../overlay/quick-pick';
+import { highlightSegments, quickOpenModel, quickOpenPick } from '../overlay/quick-pick';
 import { dropZoneAt } from '../overlay/drop-zones';
 import { markdownPreviewHtml, previewLink } from '../editor/markdown-html';
-import type { QuickOpenPathResult, QuickOpenProjectResult, QuickOpenResponse } from '../../preload/overlay-channels';
+import { quickOpenRowKey, type QuickOpenFolderResult, type QuickOpenPathResult, type QuickOpenProjectResult, type QuickOpenResponse } from '../../preload/overlay-channels';
 
 const loaded = (...entries: Array<[string, 'file' | 'dir']>): Listing => ({ state: 'loaded', entries: entries.map(([name, kind]) => ({ name, kind })) });
 
@@ -62,6 +62,7 @@ describe('Quick Open rows', () => {
   const labels = {
     recent: 'recently opened', current: (p: string) => `${p} · current`, other: (p: string) => p, goToLine: (n: number) => `line ${n}`,
     goToLineColumn: (n: number, c: number) => `line ${n} column ${c}`, mention: 'mention',
+    truncated: (count: number) => `first ${count}`, stopped: 'stopped', noEntries: (name: string) => `none start with ${name}`, folderEmpty: 'no entries', denied: 'denied',
   };
   const response: QuickOpenResponse = {
     generation: 1, currentProjectKey: 'a', mention: false,
@@ -88,7 +89,7 @@ describe('Quick Open rows', () => {
   });
 
   it('ids each file by project and path, so equal paths in two projects stay apart', () => {
-    expect(quickOpenItemId(result('a', 'x'))).not.toBe(quickOpenItemId(result('b', 'x')));
+    expect(quickOpenRowKey(result('a', 'x'))).not.toBe(quickOpenRowKey(result('b', 'x')));
   });
 
   const pathResult = (authority: string, path: string, host?: string): QuickOpenPathResult => {
@@ -125,23 +126,105 @@ describe('Quick Open rows', () => {
 
   it('ids a typed path apart from every project file, and by its authority', () => {
     const path = pathResult('local', '/x');
-    expect(quickOpenItemId(path)).not.toBe(quickOpenItemId(result('local', '/x')));
-    expect(quickOpenItemId(path)).not.toBe(quickOpenItemId(result('path', 'local')));
-    expect(quickOpenItemId(path)).not.toBe(quickOpenItemId(pathResult('ssh-remote+box', '/x')));
+    expect(quickOpenRowKey(path)).not.toBe(quickOpenRowKey(result('local', '/x')));
+    expect(quickOpenRowKey(path)).not.toBe(quickOpenRowKey(result('path', 'local')));
+    expect(quickOpenRowKey(path)).not.toBe(quickOpenRowKey(pathResult('ssh-remote+box', '/x')));
   });
 
   it('picks a typed path with its authority, path, line and column, never as a mention', () => {
     const path = pathResult('ssh-remote+box', '/home/u/a.txt', 'box');
     const answer: QuickOpenResponse = { generation: 1, mention: true, line: 3, column: 5, results: [path] };
-    expect(quickOpenPick(answer, quickOpenItemId(path))).toEqual({ kind: 'path', authority: 'ssh-remote+box', path: '/home/u/a.txt', line: 3, column: 5, mention: false });
-    expect(quickOpenPick({ generation: 1, mention: false, results: [path] }, quickOpenItemId(path))).toEqual({ kind: 'path', authority: 'ssh-remote+box', path: '/home/u/a.txt', mention: false });
+    expect(quickOpenPick(answer, quickOpenRowKey(path))).toEqual({ kind: 'path', authority: 'ssh-remote+box', path: '/home/u/a.txt', line: 3, column: 5, mention: false });
+    expect(quickOpenPick({ generation: 1, mention: false, results: [path] }, quickOpenRowKey(path))).toEqual({ kind: 'path', authority: 'ssh-remote+box', path: '/home/u/a.txt', mention: false });
   });
 
   it('picks a project file with the line and column of the query, and nothing for an id the answer does not hold', () => {
     const answer: QuickOpenResponse = { ...response, line: 12, column: 4 };
-    expect(quickOpenPick(answer, quickOpenItemId(result('b', 'z.ts')))).toEqual({ kind: 'project', projectKey: 'b', relativePath: 'z.ts', line: 12, column: 4, mention: false });
-    expect(quickOpenPick({ ...response, mention: true }, quickOpenItemId(result('b', 'z.ts')))).toEqual({ kind: 'project', projectKey: 'b', relativePath: 'z.ts', mention: true });
-    expect(quickOpenPick(answer, quickOpenItemId(pathResult('local', 'z.ts')))).toBeUndefined();
+    expect(quickOpenPick(answer, quickOpenRowKey(result('b', 'z.ts')))).toEqual({ kind: 'project', projectKey: 'b', relativePath: 'z.ts', line: 12, column: 4, mention: false });
+    expect(quickOpenPick({ ...response, mention: true }, quickOpenRowKey(result('b', 'z.ts')))).toEqual({ kind: 'project', projectKey: 'b', relativePath: 'z.ts', mention: true });
+    expect(quickOpenPick(answer, quickOpenRowKey(pathResult('local', 'z.ts')))).toBeUndefined();
+  });
+
+  const folderResult = (input: string, label: string, caret?: number, host?: string): QuickOpenFolderResult => ({
+    kind: 'folder', authority: host === undefined ? 'local' : `ssh+${host}`, label, labelMatches: [[0, label.length]], input,
+    ...(caret === undefined ? {} : { caret }), ...(host === undefined ? {} : { host }),
+  });
+  const listing = (extra: Partial<QuickOpenResponse> = {}): QuickOpenResponse => ({
+    generation: 1, mention: false, ...extra,
+    results: [
+      folderResult('C:\\tmp\\', '..'),
+      folderResult('C:\\tmp\\work\\src\\', 'src'),
+      folderResult('"C:\\tmp\\work\\ space\\"', ' space', 22),
+      { ...pathResult('local', 'C:\\tmp\\work\\a.txt'), complete: { input: 'C:\\tmp\\work\\a.txt' } },
+      { ...pathResult('local', 'C:\\tmp\\work\\b (2).txt'), complete: { input: '"C:\\tmp\\work\\b (2).txt"', caret: 22 } },
+    ],
+  });
+  const items = (response: QuickOpenResponse) => quickOpenModel(response, false, labels).rows.flatMap((row) => (row.kind === 'item' ? [row.item] : []));
+
+  it('maps a folder row to the query it goes to and a file row to the query Tab completes, in main\'s order with no groups', () => {
+    const model = quickOpenModel(listing(), true, labels);
+    expect(model.rows.map((row) => row.kind)).toEqual(['item', 'item', 'item', 'item', 'item']);
+    const [up, src, spaced, a, b] = items(listing());
+    expect(up).toMatchObject({ label: '..', folder: true, file: '..', descend: 'C:\\tmp\\' });
+    expect(src).toMatchObject({ label: 'src', folder: true, file: 'src', descend: 'C:\\tmp\\work\\src\\', labelMatches: [[0, 3]], descriptionMatches: [] });
+    expect(src!.caret).toBeUndefined();
+    expect(src!.complete).toBeUndefined();
+    expect(spaced).toMatchObject({ descend: '"C:\\tmp\\work\\ space\\"', caret: 22 });
+    expect(a).toMatchObject({ label: 'a.txt', complete: 'C:\\tmp\\work\\a.txt', file: 'C:\\tmp\\work\\a.txt' });
+    expect(a!.folder).toBeUndefined();
+    expect(a!.descend).toBeUndefined();
+    expect(b).toMatchObject({ complete: '"C:\\tmp\\work\\b (2).txt"', caret: 22 });
+  });
+
+  it('gives a host\'s folder row the host chip, and a project file of a listing its completion', () => {
+    const response: QuickOpenResponse = {
+      generation: 1, mention: false,
+      results: [folderResult('~/projects/', 'projects', undefined, 'box'), { ...result('a', 'src/x.ts'), complete: { input: '~/a/src/x.ts' } }],
+    };
+    const [folder, file] = items(response);
+    expect(folder).toMatchObject({ badge: 'box', folder: true });
+    expect(file).toMatchObject({ project: 'A', complete: '~/a/src/x.ts' });
+  });
+
+  it('ids every row by main\'s row key, a folder by its authority and input, and never picks a folder', () => {
+    const response = listing();
+    expect(items(response).map((item) => item.id)).toEqual(response.results.map(quickOpenRowKey));
+    expect(new Set(items(response).map((item) => item.id)).size).toBe(response.results.length);
+    expect(quickOpenRowKey(folderResult('/x/', 'x'))).not.toBe(quickOpenRowKey(folderResult('/x/', 'x', undefined, 'box')));
+    expect(quickOpenPick({ ...response, line: 2 }, quickOpenRowKey(response.results[1]!))).toBeUndefined();
+    expect(quickOpenPick({ ...response, line: 2, column: 4 }, quickOpenRowKey(response.results[3]!))).toEqual({ kind: 'path', authority: 'local', path: 'C:\\tmp\\work\\a.txt', line: 2, column: 4, mention: false });
+  });
+
+  it('gives the typed :line[:column] to the exact row alone when the answer has one', () => {
+    const exact = { ...pathResult('local', 'C:\\tmp\\work\\ab.txt'), complete: { input: 'C:\\tmp\\work\\ab.txt' }, exact: true as const };
+    const sibling = { ...pathResult('local', 'C:\\tmp\\work\\ab.txt.bak'), complete: { input: 'C:\\tmp\\work\\ab.txt.bak' } };
+    const response: QuickOpenResponse = { generation: 1, mention: false, line: 2, column: 4, results: [exact, folderResult('C:\\tmp\\work\\ab\\', 'ab'), sibling] };
+    expect(quickOpenPick(response, quickOpenRowKey(exact))).toEqual({ kind: 'path', authority: 'local', path: 'C:\\tmp\\work\\ab.txt', line: 2, column: 4, mention: false });
+    expect(quickOpenPick(response, quickOpenRowKey(sibling))).toEqual({ kind: 'path', authority: 'local', path: 'C:\\tmp\\work\\ab.txt.bak', mention: false });
+  });
+
+  it('notes a listing cut at its bounds beside the line hint, counting the entries main says it listed', () => {
+    expect(quickOpenModel(listing({ truncated: { listed: 4 } }), false, labels)).toMatchObject({ notice: 'first 4' });
+    expect(quickOpenModel(listing({ truncated: { listed: 3 }, line: 2 }), false, labels)).toMatchObject({ hint: 'line 2', notice: 'first 3' });
+    expect(quickOpenModel(listing(), false, labels).notice).toBeUndefined();
+    // a listing the bounds cut before it kept an entry says so, beside .. or in place of rows
+    const up = listing().results[0]!;
+    expect(quickOpenModel({ generation: 1, mention: false, results: [up], truncated: { listed: 0 } }, false, labels)).toMatchObject({ notice: 'stopped' });
+    expect(quickOpenModel({ generation: 1, mention: false, results: [], truncated: { listed: 0 } }, false, labels)).toEqual({ rows: [], empty: 'stopped' });
+  });
+
+  it('starts on the first entry after .., and on .. only when it is the folder\'s one row', () => {
+    const response = listing();
+    expect(quickOpenModel(response, false, labels).activeId).toBe(quickOpenRowKey(response.results[1]!));
+    expect(quickOpenModel({ ...response, results: response.results.slice(0, 1) }, false, labels).activeId).toBeUndefined();
+    expect(quickOpenModel({ ...response, results: response.results.slice(1) }, false, labels).activeId).toBeUndefined();
+  });
+
+  it('says why a typed folder has no rows: no entry starts with the typed name, it has none, or it cannot be read', () => {
+    expect(quickOpenModel({ generation: 1, mention: false, results: [], emptyText: 'folderNoMatch', emptyName: 'zzz' }, false, labels)).toEqual({ rows: [], empty: 'none start with zzz' });
+    expect(quickOpenModel({ generation: 1, mention: false, results: [], emptyText: 'folderEmpty' }, false, labels)).toEqual({ rows: [], empty: 'no entries' });
+    expect(quickOpenModel({ generation: 1, mention: false, results: [], emptyText: 'folderDenied' }, false, labels)).toEqual({ rows: [], empty: 'denied' });
+    expect(quickOpenModel({ generation: 1, mention: false, results: [] }, false, labels).empty).toBeUndefined();
   });
 
   it('cuts text at its match ranges, clamping ranges outside the text', () => {

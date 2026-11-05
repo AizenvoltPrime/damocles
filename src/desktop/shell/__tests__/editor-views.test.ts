@@ -18,10 +18,12 @@ vi.mock('../editor/merge/merge-worker', () => ({ createMergeWorker: () => ({ ali
 
 const disposable = { dispose: () => {} };
 
+type ChangeListener = (event: { changes: Array<{ rangeOffset: number; rangeLength: number; text: string }> }) => void;
+
 // A Monaco model double: whole-text reads and replacements, with the change listeners the store and the preview add.
 class FakeModel {
   disposed = false;
-  readonly listeners = new Set<() => void>();
+  readonly listeners = new Set<ChangeListener>();
   text: string;
   readonly uri: { toString(): string };
   constructor(text: string, uri: { toString(): string }) {
@@ -34,14 +36,15 @@ class FakeModel {
   detectIndentation(): void {}
   getLanguageId(): string { return 'markdown'; }
   getOptions(): { tabSize: number; indentSize: number; insertSpaces: boolean } { return { tabSize: 4, indentSize: 4, insertSpaces: true }; }
-  onDidChangeContent(listener: () => void): { dispose(): void } {
+  onDidChangeContent(listener: ChangeListener): { dispose(): void } {
     this.listeners.add(listener);
     return { dispose: () => this.listeners.delete(listener) };
   }
-  /** A keystroke in a source tab. */
+  /** A keystroke in a source tab, reported as Monaco's change of the whole text. */
   type(text: string): void {
+    const changes = [{ rangeOffset: 0, rangeLength: this.text.length, text }];
     this.text = text;
-    for (const listener of [...this.listeners]) listener();
+    for (const listener of [...this.listeners]) listener({ changes });
   }
   dispose(): void { this.disposed = true; }
   isDisposed(): boolean { return this.disposed; }

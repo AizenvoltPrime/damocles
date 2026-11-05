@@ -18,6 +18,7 @@ import { forkChild } from './process-starts';
 import { createRemoteCoreHost } from './remote-core-host';
 import { createRunRegistry } from './run-registry';
 import { daemonStarters } from './serve';
+import { readServerVersion } from './server-version';
 import { localRunPaths } from './token';
 
 const STEP_TIMEOUT_MS = 60_000;
@@ -176,7 +177,7 @@ export async function selfTest(root: string): Promise<boolean> {
     ['devcontainers CLI', () => runDevcontainersCli(root)],
     ['Damocles Core', () => startCore(root, info.version, log)],
   ];
-  process.stdout.write(`self-test: Damocles server ${info.version} (${info.target}) on Node ${process.versions.node}\n`);
+  process.stdout.write(`self-test: Damocles server ${await readServerVersion(root)} (${info.target}) on Node ${process.versions.node}\n`);
   for (const [name, run] of steps) {
     try {
       process.stdout.write(`self-test: ${name} ok (${await within(name, Promise.resolve().then(run))})\n`);

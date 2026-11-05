@@ -4,9 +4,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { SettingsSectionId } from '../../../shared/settings-sections';
-import { EDITOR_MAX_DOCUMENT_BYTES, type ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES, type ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { fileBody, fileDocument, languageIdForName, memoryDocument, textBody } from '../platform/editor-document';
 import { createDesktopEditorService, type ChatTabMessenger } from '../platform/editor-service';
+import type { ActiveEditorContext } from '../../../platform/editor-service';
 import type { EditorPane } from '../editor-pane';
 import { englishText } from '../../../shared/localized-text';
 
@@ -36,11 +37,11 @@ describe('editor documents', () => {
   it('refuses a file over the limit from its size without reading it', async () => {
     const file = path.join(dir, 'huge.log');
     const handle = fs.openSync(file, 'w');
-    fs.ftruncateSync(handle, EDITOR_MAX_DOCUMENT_BYTES + 1);
+    fs.ftruncateSync(handle, EDITOR_CONFIRM_DOCUMENT_BYTES + 1);
     fs.closeSync(handle);
     const open = vi.spyOn(fs.promises, 'open');
     try {
-      expect(await fileBody(file, 'plaintext')).toEqual({ kind: 'tooLarge', bytes: EDITOR_MAX_DOCUMENT_BYTES + 1, limitBytes: EDITOR_MAX_DOCUMENT_BYTES });
+      expect(await fileBody(file, 'plaintext')).toEqual({ kind: 'tooLarge', bytes: EDITOR_CONFIRM_DOCUMENT_BYTES + 1, limitBytes: EDITOR_CONFIRM_DOCUMENT_BYTES });
       expect(open).not.toHaveBeenCalled();
     } finally {
       open.mockRestore();
@@ -77,8 +78,8 @@ describe('editor documents', () => {
 
   it('applies the size and NUL rules to in-memory text', () => {
     expect(textBody('a\0b', 'plaintext')).toEqual({ kind: 'binary' });
-    const over = 'é'.repeat(EDITOR_MAX_DOCUMENT_BYTES / 2 + 1);
-    expect(textBody(over, 'plaintext')).toEqual({ kind: 'tooLarge', bytes: EDITOR_MAX_DOCUMENT_BYTES + 2, limitBytes: EDITOR_MAX_DOCUMENT_BYTES });
+    const over = 'é'.repeat(EDITOR_CONFIRM_DOCUMENT_BYTES / 2 + 1);
+    expect(textBody(over, 'plaintext')).toEqual({ kind: 'tooLarge', bytes: EDITOR_CONFIRM_DOCUMENT_BYTES + 2, limitBytes: EDITOR_CONFIRM_DOCUMENT_BYTES });
     expect(memoryDocument('abc-original-app.tsx', 'x')).toEqual({ name: 'abc-original-app.tsx', body: { kind: 'text', content: 'x', languageId: 'typescript' } });
   });
 
@@ -102,7 +103,7 @@ describe('editor documents', () => {
   it('reads a file as text for the editor, refusing what it cannot show', async () => {
     const huge = path.join(dir, 'huge-read.log');
     const handle = fs.openSync(huge, 'w');
-    fs.ftruncateSync(handle, EDITOR_MAX_DOCUMENT_BYTES + 1);
+    fs.ftruncateSync(handle, EDITOR_CONFIRM_DOCUMENT_BYTES + 1);
     fs.closeSync(handle);
     const service = createDesktopEditorService({} as ChatTabMessenger, () => ({}) as EditorPane, () => undefined, () => Promise.resolve(), englishText);
 
@@ -131,6 +132,7 @@ describe('desktop editor service (D15 routing)', () => {
     posted: Array<[string, ExtensionToWebviewMessage]>;
     pane: string[];
     settingsOpened: Array<SettingsSectionId | undefined>;
+    activate: (context: ActiveEditorContext, authority: string | undefined) => void;
   } {
     const delivered: Array<[string | undefined, ExtensionToWebviewMessage]> = [];
     const posted: Array<[string, ExtensionToWebviewMessage]> = [];
@@ -143,9 +145,18 @@ describe('desktop editor service (D15 routing)', () => {
       },
       post: (panelId, message) => { posted.push([panelId, message]); },
     };
+    let active: { readonly context: ActiveEditorContext; readonly authority: string | undefined } = { context: { filePath: undefined, selection: undefined }, authority: undefined };
+    const contextListeners: Array<(context: ActiveEditorContext | undefined) => void> = [];
     const fakePane = {
-      openPath: async (filePath: string, opts: { line?: number; focus: boolean; preview?: boolean }) => {
-        pane.push(`openPath:${path.basename(filePath)}:${JSON.stringify(opts)}`);
+      openNamedPath: async (authority: string, filePath: string, opts: { line?: number; focus: boolean; preview?: boolean }) => {
+        pane.push(`openNamedPath:${authority}:${path.basename(filePath)}:${JSON.stringify(opts)}`);
+        return 'tab-1';
+      },
+      activeContext: () => active.context,
+      activeAuthority: () => active.authority,
+      onDidChangeActiveContext: (listener: (context: ActiveEditorContext | undefined) => void) => {
+        contextListeners.push(listener);
+        return { dispose: () => undefined };
       },
       openUntitled: (content: string, name: string, languageId: string, opts: { focus: boolean }) => {
         pane.push(`untitled:${name}:${languageId}:${content}:${String(opts.focus)}`);
@@ -159,14 +170,18 @@ describe('desktop editor service (D15 routing)', () => {
         pane.push(`settings:${scope}:${key ?? ''}`);
       },
     } as unknown as EditorPane;
-    return { editor: createDesktopEditorService(tabs, () => fakePane, (section) => { settingsOpened.push(section); }, () => Promise.resolve(), englishText), delivered, posted, pane, settingsOpened };
+    const activate = (context: ActiveEditorContext, authority: string | undefined): void => {
+      active = { context, authority };
+      for (const listener of contextListeners) listener(context);
+    };
+    return { editor: createDesktopEditorService(tabs, () => fakePane, (section) => { settingsOpened.push(section); }, () => Promise.resolve(), englishText), delivered, posted, pane, settingsOpened, activate };
   }
 
   it('opens files in the editor pane, focused only when the caller did not set preserveFocus, at a valid line only', async () => {
     const { editor, delivered, pane } = service();
     await editor.openFile('/w/lines.py', { line: 2, panelId: 'host-1' });
     await editor.openFile('/w/lines.py', { line: 0, preserveFocus: true });
-    expect(pane).toEqual(['openPath:lines.py:{"focus":true,"line":2}', 'openPath:lines.py:{"focus":false}']);
+    expect(pane).toEqual(['openNamedPath:local:lines.py:{"focus":true,"line":2}', 'openNamedPath:local:lines.py:{"focus":false}']);
     expect(delivered).toEqual([]);
   });
 
@@ -177,7 +192,7 @@ describe('desktop editor service (D15 routing)', () => {
     await editor.openUntitled('x', 'brainfuck');
     await editor.openSettingsFile('project', { key: 'damocles.desktop.files.exclude' });
     expect(pane).toEqual([
-      'openPath:damocles-system-prompt.md:{"focus":true,"preview":true}',
+      'openNamedPath:local:damocles-system-prompt.md:{"focus":true,"preview":true}',
       'untitled:untitled.html:html:<p>hi</p>:true',
       'untitled:untitled.brainfuck:plaintext:x:true',
       'settings:project:damocles.desktop.files.exclude',
@@ -227,6 +242,22 @@ describe('desktop editor service (D15 routing)', () => {
   it('reads the disk text, never an unsaved buffer', async () => {
     const { editor } = service();
     await expect(editor.readText(write('disk.ts', 'on disk\n'))).resolves.toBe('on disk\n');
+  });
+
+  it('tells a local core about the active file only while it is on this computer, at a read and on every change', () => {
+    const { editor, activate } = service();
+    const local = { filePath: '/home/me/notes.md', selection: { text: 'mine', startLine: 1, endLine: 1 } };
+    const host = { filePath: '/srv/app/.env', selection: { text: 'API_KEY=sk-host', startLine: 1, endLine: 1 } };
+    const empty = { filePath: undefined, selection: undefined };
+    const heard: unknown[] = [];
+    editor.onDidChangeActiveContext((context) => heard.push(context));
+    activate(local, 'local');
+    expect(editor.getActiveContext()).toEqual(local);
+    expect(editor.activeAuthority()).toBe('local');
+    activate(host, 'loopback');
+    expect(editor.getActiveContext()).toEqual(empty);
+    activate(local, undefined);
+    expect(heard).toEqual([local, empty, empty]);
   });
 
   it('opens host settings in the app settings at the section asked for, without a round trip through a chat', async () => {

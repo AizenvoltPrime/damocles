@@ -9,7 +9,6 @@ import {
   listKnownWorkspaces,
   workspaceContaining,
   attributeFilesToWorkspace,
-  createFolderProbe,
 } from '../workspaces';
 
 const dbHolder = vi.hoisted(() => ({ path: '' }));
@@ -97,46 +96,6 @@ describe('listKnownWorkspaces', () => {
     const known = await listKnownWorkspaces(db, ['c:\\GameDev\\open'], [], exists, folder => folder.startsWith('c:'), 'win32');
     expect(known).toEqual(['c:\\GameDev\\damocles', 'c:\\GameDev\\open']);
     expect(exists.mock.calls).toEqual([['c:\\GameDev\\damocles']]);
-  });
-});
-
-describe('createFolderProbe', () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it('answers false for a check still running after the timeout, then the settled answer from the cache', async () => {
-    vi.useFakeTimers();
-    let settle!: () => void;
-    const access = vi.fn(() => new Promise<void>((resolve) => (settle = resolve)));
-    const exists = createFolderProbe(1000, 60_000, access, () => Date.now());
-
-    const first = exists('Z:\\');
-    const concurrent = exists('Z:\\');
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(await first).toBe(false);
-    expect(await concurrent).toBe(false);
-
-    settle();
-    expect(await exists('Z:\\')).toBe(true);
-    expect(access).toHaveBeenCalledTimes(1);
-  });
-
-  it('checks a folder again once its answer is older than the TTL', async () => {
-    let now = 0;
-    const access = vi.fn(async (folder: string) => {
-      if (folder === 'gone') throw new Error('ENOENT');
-    });
-    const exists = createFolderProbe(1000, 60_000, access, () => now);
-
-    expect(await exists('here')).toBe(true);
-    expect(await exists('gone')).toBe(false);
-    now = 59_999;
-    await exists('here');
-    expect(access).toHaveBeenCalledTimes(2);
-    now = 60_000;
-    expect(await exists('here')).toBe(true);
-    expect(access).toHaveBeenCalledTimes(3);
   });
 });
 

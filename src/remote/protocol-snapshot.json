@@ -131,7 +131,10 @@
   "files.walkEntryError",
   "files.moveLeftMore",
   "tools.setOnHost",
-  "files.outside"
+  "files.outside",
+  "files.listOutside",
+  "sessionFiles",
+  "files.readOutsideLimit"
  ],
  "contracts": {
   "CoreRequests": {
@@ -4675,6 +4678,92 @@
        "result": {
         "optional": false,
         "type": "unknown"
+       }
+      }
+     }
+    },
+    "sessionFiles.write": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "bytes": {
+           "optional": false,
+           "type": {
+            "named": "Uint8Array<ArrayBufferLike>"
+           }
+          },
+          "expectedSha256": {
+           "optional": false,
+           "type": {
+            "union": [
+             "null",
+             "string"
+            ]
+           }
+          },
+          "path": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "variants": "kind",
+         "of": {
+          "\"changed\"": {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": "\"changed\""
+            }
+           }
+          },
+          "\"outside\"": {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": "\"outside\""
+            }
+           }
+          },
+          "\"refused\"": {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": "\"refused\""
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"held\"",
+               "\"otherProcess\""
+              ]
+             }
+            }
+           }
+          },
+          "\"written\"": {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": "\"written\""
+            },
+            "mtimeMs": {
+             "optional": false,
+             "type": "number"
+            }
+           }
+          }
+         }
+        }
        }
       }
      }
@@ -9577,6 +9666,96 @@
       }
      }
     },
+    "files.listOutside": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "folder": {
+           "optional": false,
+           "type": "string"
+          },
+          "prefix": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "union": [
+          {
+           "object": {
+            "entries": {
+             "optional": false,
+             "type": {
+              "array": {
+               "object": {
+                "kind": {
+                 "optional": false,
+                 "type": {
+                  "union": [
+                   "\"dir\"",
+                   "\"file\""
+                  ]
+                 }
+                },
+                "link": {
+                 "optional": false,
+                 "type": "boolean"
+                },
+                "name": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "target": {
+                 "optional": true,
+                 "type": "string"
+                }
+               }
+              }
+             }
+            },
+            "kind": {
+             "optional": false,
+             "type": "\"folder\""
+            },
+            "path": {
+             "optional": false,
+             "type": "string"
+            },
+            "truncated": {
+             "optional": false,
+             "type": "boolean"
+            }
+           }
+          },
+          {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"denied\"",
+               "\"missing\"",
+               "\"notAFolder\"",
+               "\"outside\""
+              ]
+             }
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
     "files.makeFolder": {
      "optional": false,
      "type": {
@@ -10063,6 +10242,10 @@
             "mtimeMs": {
              "optional": false,
              "type": "number"
+            },
+            "sessionFile": {
+             "optional": true,
+             "type": "true"
             }
            }
           },
@@ -10071,6 +10254,10 @@
             "kind": {
              "optional": false,
              "type": "\"missing\""
+            },
+            "sessionFile": {
+             "optional": true,
+             "type": "true"
             }
            }
           },
@@ -10249,6 +10436,10 @@
                "mtimeMs": {
                 "optional": false,
                 "type": "number"
+               },
+               "sessionFile": {
+                "optional": true,
+                "type": "true"
                }
               }
              },
@@ -10257,6 +10448,10 @@
                "kind": {
                 "optional": false,
                 "type": "\"missing\""
+               },
+               "sessionFile": {
+                "optional": true,
+                "type": "true"
                }
               }
              },
@@ -10325,13 +10520,13 @@
         "optional": false,
         "type": {
          "object": {
+          "limitBytes": {
+           "optional": true,
+           "type": "number"
+          },
           "path": {
            "optional": false,
            "type": "string"
-          },
-          "within": {
-           "optional": true,
-           "type": "\"plans\""
           }
          }
         }
@@ -10364,6 +10559,10 @@
             "mtimeMs": {
              "optional": false,
              "type": "number"
+            },
+            "sessionFile": {
+             "optional": true,
+             "type": "true"
             }
            }
           },
@@ -10372,6 +10571,10 @@
             "kind": {
              "optional": false,
              "type": "\"missing\""
+            },
+            "sessionFile": {
+             "optional": true,
+             "type": "true"
             }
            }
           },
@@ -10790,10 +10993,6 @@
           "target": {
            "optional": false,
            "type": "string"
-          },
-          "within": {
-           "optional": true,
-           "type": "\"plans\""
           }
          }
         }
@@ -10804,14 +11003,19 @@
          "union": [
           {
            "object": {
-            "kind": {
+            "entry": {
              "optional": false,
              "type": {
               "union": [
                "\"file\"",
-               "\"folder\""
+               "\"folder\"",
+               "\"other\""
               ]
              }
+            },
+            "kind": {
+             "optional": false,
+             "type": "\"share\""
             },
             "path": {
              "optional": false,
@@ -10823,12 +11027,42 @@
            "object": {
             "kind": {
              "optional": false,
+             "type": "\"missing\""
+            }
+           }
+          },
+          {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": "\"outside\""
+            },
+            "reason": {
+             "optional": false,
              "type": {
               "union": [
-               "\"missing\"",
-               "\"outside\""
+               "\"name\"",
+               "\"share\""
               ]
              }
+            }
+           }
+          },
+          {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"file\"",
+               "\"folder\"",
+               "\"other\""
+              ]
+             }
+            },
+            "path": {
+             "optional": false,
+             "type": "string"
             }
            }
           }
@@ -11378,10 +11612,6 @@
           "path": {
            "optional": false,
            "type": "string"
-          },
-          "within": {
-           "optional": true,
-           "type": "\"plans\""
           }
          }
         }

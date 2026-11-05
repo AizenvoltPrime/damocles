@@ -361,6 +361,16 @@ describe('the POSIX removal stage in a real sh', { timeout: 120_000 }, () => {
     expect(Number(readFileSync(age, 'utf8'))).toBeLessThanOrEqual(LOCK_STALE_MS / 1000);
   });
 
+  it('deletes builds\' folders as version folders, and keeps the build another machine\'s live daemon names', async () => {
+    const { home, server } = targetHome();
+    const kept = '3.6.0+aaaaaaaaaaaa';
+    writeFileSync(path.join(server, `run-${OTHER_RUN}`, 'daemon.pid'), JSON.stringify({ version: kept, pid: 1, hostname: 'lab-2', endpoint: '/x', socketFolder: null, updatedAt: 1 }));
+    installVersions(server, [`${kept}-linux-x64`, '3.7.0+bbbbbbbbbbbb-linux-x64', '3.7.0-linux-x64']);
+    const output = await run(home, { runKey: RUN_KEY, disableLinger: false }, 'id() { echo dev; }');
+    expect(lines(output)).toEqual([{ kind: 'notice', code: 'versionKept', params: { version: kept, machine: 'lab-2' } }, { kind: 'notice', code: 'serverFolderKept', params: {} }, { kind: 'removed' }]);
+    expect(readdirSync(server).sort()).toEqual([`${kept}-linux-x64`, ...LOOK_ALIKES, `run-${OTHER_RUN}`].sort());
+  });
+
   it('keeps a version only another machine\'s recently touched pid file names', async () => {
     const { home, server } = targetHome();
     installVersions(server, ['3.6.0-linux-x64']);
@@ -397,6 +407,16 @@ describe('the Windows removal stage in a real PowerShell', { timeout: 120_000 },
     expect(readdirSync(server).sort()).toEqual(['3.6.0-win32-x64', ...LOOK_ALIKES, `run-${OTHER_RUN}`].sort());
     expect(readdirSync(path.join(folder, 'dev')).sort()).toEqual([...LOOK_ALIKES].sort());
     expect(readdirSync(folder).sort()).toEqual(['README', 'dev']);
+  });
+
+  it.skipIf(shell === undefined)('deletes builds\' folders as version folders, and keeps the build another machine\'s live daemon names', async () => {
+    const { home, server } = targetHome();
+    const kept = '3.6.0+aaaaaaaaaaaa';
+    writeFileSync(path.join(server, `run-${OTHER_RUN}`, 'daemon.pid'), JSON.stringify({ version: kept, pid: 1, hostname: 'lab-2', endpoint: '/x', socketFolder: null, updatedAt: 1 }));
+    installVersions(server, [`${kept}-win32-x64`, '3.7.0+bbbbbbbbbbbb-win32-x64', '3.7.0-win32-x64']);
+    const output = await run(home, path.join(home, 'ProgramData'), { runKey: RUN_KEY, disableLinger: false });
+    expect(lines(output)).toEqual([{ kind: 'notice', code: 'versionKept', params: { version: kept, machine: 'lab-2' } }, { kind: 'notice', code: 'serverFolderKept', params: {} }, { kind: 'removed' }]);
+    expect(readdirSync(server).sort()).toEqual([`${kept}-win32-x64`, ...LOOK_ALIKES, `run-${OTHER_RUN}`].sort());
   });
 
   it.skipIf(shell === undefined)('removes the key line only from the file the install wrote, never another one', async () => {

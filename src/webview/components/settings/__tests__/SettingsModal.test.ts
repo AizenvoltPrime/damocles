@@ -189,6 +189,23 @@ describe('state', () => {
     expect(row('damocles.maxBudgetUsd')).toBe(budget);
     expect(posted).toEqual([{ type: 'requestSettingsState' }]);
   });
+
+  it('asks again for a new attachment of the same page without remounting it, and remounts for a new page', async () => {
+    const wrapper = await open();
+    await wrapper.setProps({ pageKey: 'chat-a', attachment: 1 });
+    await type('budget');
+    posted = [];
+    const budget = row('damocles.maxBudgetUsd');
+    expect(budget).not.toBeNull();
+
+    await wrapper.setProps({ attachment: 2 });
+    expect(posted).toEqual([{ type: 'requestSettingsState' }]);
+    expect(row('damocles.maxBudgetUsd')).toBe(budget);
+
+    await wrapper.setProps({ pageKey: 'chat-b', attachment: 3 });
+    expect(posted).toEqual([{ type: 'requestSettingsState' }, { type: 'requestSettingsState' }]);
+    expect(row('damocles.maxBudgetUsd')).not.toBe(budget);
+  });
 });
 
 describe('a request while the modal shows', () => {
@@ -1561,5 +1578,92 @@ describe('wake phrase row', () => {
     expect(error.textContent!.trim()).toBe(t('settingsModal.invalid.wakePhrase'));
     expect(input.getAttribute('aria-invalid')).toBe('true');
     expect(posted.filter((message) => message.type === 'setVoiceWakeWord')).toHaveLength(0);
+  });
+});
+
+describe('busy', () => {
+  async function openBusy(): Promise<VueWrapper> {
+    const wrapper = mount(SettingsModal, {
+      props: { host: NO_HOST_SETTINGS, footer: { kind: 'settingsFiles' }, backdrop: 'dim', target: { section: 'defaults' }, busy: false },
+      slots: { away: '<button type="button" data-testid="away-action">Show</button>' },
+      attachTo: document.body,
+      global: { plugins: [i18n] },
+    });
+    mounted.push(wrapper);
+    await nextTick();
+    return wrapper;
+  }
+  const content = (): HTMLElement => document.querySelector<HTMLElement>('[data-testid="settings-content"]')!;
+  const away = (): HTMLElement => document.querySelector<HTMLElement>('[data-testid="away-action"]')!;
+
+  it('keeps the page mounted but inert and busy, outside the away slot, and disables the footer, until it is no longer busy', async () => {
+    const wrapper = await openBusy();
+    const field = row('model')!;
+    await wrapper.setProps({ busy: true });
+    expect(content().hasAttribute('inert')).toBe(true);
+    expect(content().getAttribute('aria-busy')).toBe('true');
+    expect(content().classList.contains('opacity-(--d-opacity-disabled)')).toBe(true);
+    expect(document.querySelector('[role="tabpanel"]')!.hasAttribute('aria-busy')).toBe(false);
+    expect(away().closest('[aria-busy], [inert]')).toBeNull();
+    expect(document.querySelector<HTMLButtonElement>('[data-testid="settings-footer"]')!.disabled).toBe(true);
+    expect(row('model')).toBe(field);
+
+    await wrapper.setProps({ busy: false });
+    expect(content().hasAttribute('inert')).toBe(false);
+    expect(content().hasAttribute('aria-busy')).toBe(false);
+    expect(document.querySelector<HTMLButtonElement>('[data-testid="settings-footer"]')!.disabled).toBe(false);
+  });
+
+  it('moves focus out of the page as it turns inert', async () => {
+    const wrapper = await openBusy();
+    const control = content().querySelector<HTMLElement>('button')!;
+    control.focus();
+    await wrapper.setProps({ busy: true });
+    expect(document.activeElement).toBe(modal());
+  });
+
+  it('moves focus off the footer as it turns disabled', async () => {
+    const wrapper = await openBusy();
+    const footer = document.querySelector<HTMLButtonElement>('[data-testid="settings-footer"]')!;
+    footer.focus();
+    expect(document.activeElement).toBe(footer);
+    await wrapper.setProps({ busy: true });
+    expect(document.activeElement).toBe(modal());
+  });
+
+  it('shows the away slot once in the narrow layout, on its section list as on a section page', async () => {
+    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(600);
+    try {
+      mounted.push(mount(SettingsModal, {
+        props: { host: NO_HOST_SETTINGS, footer: { kind: 'settingsFiles' }, backdrop: 'dim', busy: true },
+        slots: { away: '<p role="status" data-testid="away-status">Reconnecting</p><button type="button" data-testid="away-action">Show</button>' },
+        attachTo: document.body,
+        global: { plugins: [i18n] },
+      }));
+      await nextTick();
+      expect(modal().parentElement!.classList.contains('sm-narrow')).toBe(true);
+      expect(document.querySelector('[data-testid="settings-nav-defaults"]')).not.toBeNull();
+      expect(document.querySelector('[role="tabpanel"]')).toBeNull();
+      expect(document.querySelectorAll('[data-testid="away-status"]')).toHaveLength(1);
+      expect(away().closest('[aria-busy], [inert]')).toBeNull();
+
+      document.querySelector<HTMLElement>('[data-testid="settings-nav-defaults"]')!.click();
+      await nextTick();
+      expect(document.querySelector('[role="tabpanel"]')).not.toBeNull();
+      expect(document.querySelectorAll('[data-testid="away-status"]')).toHaveLength(1);
+      expect(away().closest('[aria-busy], [inert]')).toBeNull();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('traps Tab and Shift+Tab among the controls outside the inert page', async () => {
+    const wrapper = await openBusy();
+    await wrapper.setProps({ busy: true });
+    away().focus();
+    expect(press('Tab').defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(search());
+    expect(press('Tab', { shiftKey: true }).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(away());
   });
 });

@@ -1,6 +1,6 @@
 import { vi } from 'vitest';
 import { DEFAULT_GRID_LAYOUT, SIDEBAR_SECTIONS, type DamoclesShellApi, type DropZonesPointer, type EditorCommand, type EditorDocumentChange, type EditorFlushRequest, type EditorReveal, type FileRef, type FilesChanged, type FilesClipboardChanged, type FilesTransferProgress, type SearchCommandMessage, type SearchDone, type SearchEditorHighlights, type SearchFileUpdate, type SearchFocus, type SearchResultsBatch, type ShellSearchSettings, type ChatsContinueWorktree, type ChatsWorktreeOptions, type ShellChat, type ShellChatList, type ShownFolder, type ShellEditorState, type ShellFocusPart, type ShellState } from '../../preload/shell-channels';
-import type { CloseRemoteRow, ConnectStepEvent, LingerResult, DamoclesOverlayApi, HeldMemoryResult, HostOperations, RemoteHostEntry, HostCardInfo, InputBrowseResult, OverlayAnswer, PaletteCommand, OverlayPrefs, OverlayRasterRequest, OverlayRequest, OverlaySettingsScope, OverlaySettingsScopes, OverlayState, OverlayToast, PopupAnswer, QuickOpenQuery, QuickOpenResponse, RemoveServerResult, WslDistroInfo } from '../../preload/overlay-channels';
+import type { CloseRemoteRow, ConnectStepEvent, LingerResult, DamoclesOverlayApi, HeldMemoryResult, HostOperations, RemoteHostEntry, HostCardInfo, InputBrowseResult, OverlayAnswer, PaletteCommand, OverlayPrefs, OverlayRasterRequest, OverlayRequest, OverlaySettingsAttached, OverlaySettingsAway, OverlaySettingsAwayState, OverlaySettingsPage, OverlaySettingsScope, OverlaySettingsScopes, OverlayState, OverlayToast, PopupAnswer, QuickOpenQuery, QuickOpenResponse, RemoveServerResult, WslDistroInfo } from '../../preload/overlay-channels';
 import type { ChimeTone, NotificationCenterState } from '../../preload/notifications';
 import type { DamoclesPortsApi, PortsView } from '../../preload/ports-channels';
 import type { DamoclesTerminalApi, TerminalData, TerminalProfileReport, TerminalRunAction, TerminalScreen, TerminalState } from '../../preload/terminal-channels';
@@ -256,6 +256,7 @@ export type FakeShellApi = DamoclesShellApi & {
   documentChanged: (change: EditorDocumentChange) => void;
   editorCommand: (command: EditorCommand) => void;
   editorFlush: (request: EditorFlushRequest) => void;
+  editorResync: (documentId: string) => void;
   editorFocus: (tabId: string) => void;
   editorReveal: (reveal: EditorReveal) => void;
   filesChanged: (change: FilesChanged) => void;
@@ -299,6 +300,7 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
   const documentChanged = emitter<EditorDocumentChange>();
   const editorCommand = emitter<EditorCommand>();
   const editorFlush = emitter<EditorFlushRequest>();
+  const editorResync = emitter<string>();
   const editorFocus = emitter<string>();
   const editorReveal = emitter<EditorReveal>();
   const filesChanged = emitter<FilesChanged>();
@@ -398,6 +400,7 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     setFocusOverlay: vi.fn(async () => {}),
     onEditorCommand: vi.fn(editorCommand.listen),
     onEditorFlush: vi.fn(editorFlush.listen),
+    onEditorResync: vi.fn(editorResync.listen),
     editorFlushed: vi.fn(),
     onEditorFocus: vi.fn(editorFocus.listen),
     onEditorReveal: vi.fn(editorReveal.listen),
@@ -466,6 +469,7 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     documentChanged: documentChanged.emit,
     editorCommand: editorCommand.emit,
     editorFlush: editorFlush.emit,
+    editorResync: editorResync.emit,
     editorFocus: editorFocus.emit,
     editorReveal: editorReveal.emit,
     filesChanged: filesChanged.emit,
@@ -481,8 +485,13 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
   };
 }
 
+// A settings request or push without a page names a chat of its own generation, so each attachment shows other settings.
+const fakeSettingsPage = (generation: number): OverlaySettingsPage => ({ authority: 'local', chat: `chat-${generation}` });
+type SettingsRequest = Extract<OverlayRequest, { kind: 'settings' }>;
+type FakeOverlayRequest = Exclude<OverlayRequest, SettingsRequest> | (Omit<SettingsRequest, 'page'> & { readonly page?: OverlaySettingsPage });
+
 export type FakeOverlayApi = DamoclesOverlayApi & {
-  request: (id: string, request: OverlayRequest) => void;
+  request: (id: string, request: FakeOverlayRequest) => void;
   cancel: (id: string) => void;
   toast: (toast: OverlayToast) => void;
   dismissToast: (id: string) => void;
@@ -491,7 +500,7 @@ export type FakeOverlayApi = DamoclesOverlayApi & {
   pushState: (state: OverlayState) => void;
   // main's side of the settings attachment
   settingsMessage: (message: ExtensionToWebviewMessage) => void;
-  settingsAttached: (generation: number, scopes?: OverlaySettingsScopes) => void;
+  settingsAttached: (generation: number, scopes?: OverlaySettingsScopes, page?: OverlaySettingsPage) => void;
   settingsTarget: (target: SettingsTarget) => void;
   prefsChanged: (prefs: OverlayPrefs) => void;
   // main's center: what getNotifications answers, and a push while the center is open
@@ -527,6 +536,8 @@ export type FakeOverlayApi = DamoclesOverlayApi & {
   pushHostOperations: (operations: Omit<HostOperations, 'revision'> & { readonly revision?: number }) => void;
   // main's push after the attached scope tab's host was renamed or recolored
   settingsScopeHost: (host: OverlaySettingsScopes['host']) => void;
+  // main's push while the tab shown waits for its host's core, and null once it attached again; a bare state carries no facts
+  settingsAway: (away: Exclude<OverlaySettingsAway, 'switchOffered'> | OverlaySettingsAwayState | null) => void;
   // main's live rows while a closeRemote request is open
   closeRemoteRows: (rows: readonly CloseRemoteRow[]) => void;
 };
@@ -558,7 +569,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
   const toastsFocusListeners = new Set<() => void>();
   const stateListeners = new Set<(state: OverlayState) => void>();
   const settingsListeners = new Set<(message: ExtensionToWebviewMessage) => void>();
-  const attachedListeners = new Set<(attached: { generation: number; scopes?: OverlaySettingsScopes }) => void>();
+  const attachedListeners = new Set<(attached: OverlaySettingsAttached) => void>();
   const targetListeners = new Set<(target: SettingsTarget) => void>();
   const prefsListeners = new Set<(prefs: OverlayPrefs) => void>();
   const notificationListeners = new Set<(state: NotificationCenterState) => void>();
@@ -581,6 +592,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
   const hostOperations = new Map<string, HostOperations>();
   let operationsRevision = 0;
   const settingsScopeHost = emitter<OverlaySettingsScopes['host']>();
+  const settingsAway = emitter<OverlaySettingsAwayState | null>();
   const remoteHosts: { list: readonly RemoteHostEntry[] } = { list: [] };
   const worktree: FakeOverlayApi['worktree'] = { options: opened({ available: false, reason: 'notGit' }), continue: opened([]), message: opened(null) };
   return {
@@ -610,6 +622,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
     settingsSend: vi.fn(),
     setSettingsScope: vi.fn(async (scope: OverlaySettingsScope) => ({ ok: true as const, value: scope })),
     allowHostYolo: vi.fn(async () => ({ ok: true as const, value: false })),
+    signInScopeHost: vi.fn(async () => opened(undefined)),
     onSettingsMessage: vi.fn((listener) => { settingsListeners.add(listener); return () => settingsListeners.delete(listener); }),
     onSettingsAttached: vi.fn((listener) => { attachedListeners.add(listener); return () => attachedListeners.delete(listener); }),
     onSettingsTarget: vi.fn((listener) => { targetListeners.add(listener); return () => targetListeners.delete(listener); }),
@@ -680,6 +693,8 @@ export function fakeOverlayApi(): FakeOverlayApi {
     onHostOperations: vi.fn(operationsChanged.listen),
     onSettingsScopeHost: vi.fn(settingsScopeHost.listen),
     settingsScopeHost: settingsScopeHost.emit,
+    onSettingsAway: vi.fn(settingsAway.listen),
+    settingsAway: (away) => settingsAway.emit(typeof away === 'string' ? { state: away } : away),
     remoteHosts,
     hostEntries: hostEntries.emit,
     hostOperations,
@@ -695,14 +710,17 @@ export function fakeOverlayApi(): FakeOverlayApi {
     connectDistros: connectDistros.emit,
     closeRemoteRows: closeRemoteRows.emit,
     worktree,
-    request: (id, request) => { for (const l of requestListeners) l(id, request); },
+    request: (id, request) => {
+      const full = (request.kind === 'settings' ? { ...request, page: request.page ?? fakeSettingsPage(request.generation) } : request) as OverlayRequest;
+      for (const l of requestListeners) l(id, full);
+    },
     cancel: (id) => { for (const l of cancelListeners) l(id); },
     toast: (toast) => { for (const l of toastListeners) l(toast); },
     dismissToast: (id) => { for (const l of dismissListeners) l(id); },
     focusToasts: () => { for (const l of toastsFocusListeners) l(); },
     pushState: (state) => { for (const l of stateListeners) l(state); },
     settingsMessage: (message) => { for (const l of settingsListeners) l(message); },
-    settingsAttached: (generation, scopes) => { for (const l of attachedListeners) l({ generation, ...(scopes ? { scopes } : {}) }); },
+    settingsAttached: (generation, scopes, page = fakeSettingsPage(generation)) => { for (const l of attachedListeners) l({ generation, page, ...(scopes ? { scopes } : {}) }); },
     settingsTarget: (target) => { for (const l of targetListeners) l(target); },
     prefsChanged: (prefs) => { for (const l of prefsListeners) l(prefs); },
     center,

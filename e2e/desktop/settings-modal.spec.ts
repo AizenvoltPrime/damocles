@@ -11,7 +11,7 @@ import { overlayViewState } from './support/overlay';
 import { OVERLAY_URL, overlayPage, pressKeys, PRIMARY, shellPage, shellState, viewFocused } from './support/shell';
 import { logBeforeQuit } from './support/app';
 import { OVERLAY_ACK_TIMEOUT_MS } from '../../src/desktop/preload/overlay-channels';
-import { chooseSegment, closeSettingsModal, openSettingsModal, settingsModal, settingsNav, settingsRow, waitForSettingsState } from './support/settings';
+import { chooseSegment, closeSettingsModal, markElement, openSettingsModal, recordSettingsAttachments, settingsAttachments, settingsModal, settingsNav, settingsRow, waitForSettingsState } from './support/settings';
 
 test('the title-bar gear opens settings over the window, and This chat changes the selected chat', async ({ foreground: _foreground, launch }) => {
   const { app } = await launch();
@@ -186,6 +186,33 @@ test('Appearance applies live, and the modal re-attaches to the chat the user se
   expect((await shellState(app)).selected.chatId).not.toBe(firstId);
   await expect(settingsModal(overlay)).toBeVisible();
   await expect(mode.getByRole('button', { name: 'Ask before edits', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await closeSettingsModal(overlay);
+});
+
+type ReloadGlobals = typeof globalThis & { __damoclesE2e?: { reloadCore(): Promise<void> } };
+
+// The restarted engine reopens the same chat, so the re-attach shows the same settings and the page stays mounted.
+test('an engine reload while settings show keeps a half-typed key and the open section', async ({ launch }) => {
+  const { app } = await launch({ env: { DAMOCLES_E2E_HOOKS: '1' } });
+  await expect(chatInput(await activeChat(app))).toBeVisible();
+  const overlay = await openSettingsModal(app, 'accounts');
+  await waitForSettingsState(overlay);
+  const deepseek = settingsRow(overlay, 'account-deepseek');
+  await deepseek.getByRole('button', { name: /Add key/ }).click();
+  const key = deepseek.getByLabel('API Key', { exact: true });
+  await key.fill('sk-e2e-half-typed');
+  await markElement(key);
+  await recordSettingsAttachments(overlay);
+
+  await app.evaluate(() => (globalThis as ReloadGlobals).__damoclesE2e!.reloadCore());
+  await expect.poll(async () => (await settingsAttachments(overlay)).length, { timeout: 30_000 }).toBeGreaterThan(0);
+  await expect(settingsModal(overlay)).toBeVisible();
+  await expect(settingsNav(overlay, 'accounts')).toHaveAttribute('aria-selected', 'true');
+  await expect(key).toHaveAttribute('data-e2e-kept', '');
+  await expect(key).toHaveValue('sk-e2e-half-typed');
+  // the new engine saves the key typed before it started, and its status comes back to the row
+  await key.press('Enter');
+  await expect(deepseek.getByRole('status').first()).toHaveText('Key saved');
   await closeSettingsModal(overlay);
 });
 

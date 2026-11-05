@@ -67,7 +67,8 @@ export class RemoteCore {
   private readonly deps: RemoteCoreDeps;
   private readonly kept = new KeptPermissions();
   private generation = 0;
-  private state: CoreState | undefined;
+  // the daemon's last core state, and the connection that reported it
+  private state: { readonly value: CoreState; readonly on: RemoteConnection } | undefined;
   // the epoch the chats are open under: remote-state.json's at launch, then each attach's
   private openEpoch: string | null;
   private restarting = false;
@@ -94,9 +95,22 @@ export class RemoteCore {
     });
   }
 
-  /** The daemon's last core state; undefined before the first attach answered. */
-  coreState(): CoreState | undefined {
-    return this.state;
+  /** The daemon's core state as connection reported it; undefined until that connection reported a state. */
+  coreStateOn(connection: RemoteConnection): CoreState | undefined {
+    return this.state?.on === connection ? this.state.value : undefined;
+  }
+
+  /** The title bar pill: the last core state any connection reported, kept until the next attach answers. */
+  engineState(): 'restarting' | 'halted' | 'running' | 'starting' {
+    const phase = this.state?.value.phase;
+    if (this.restarting) return 'restarting';
+    if (this.host.halted() || phase === 'halted') return 'halted';
+    return phase === 'running' ? 'running' : 'starting';
+  }
+
+  /** Whether connection is the current one and the chats reopened on it at least once. */
+  reopenedOn(connection: RemoteConnection): boolean {
+    return this.connection === connection && this.reopening !== connection;
   }
 
   /** The epoch the authority's chats are open under, which remote-state.json keeps. */
@@ -116,7 +130,7 @@ export class RemoteCore {
     this.reopening = connection;
     this.coreStates?.dispose();
     this.connectionClosed?.dispose();
-    const subscription = connection.control.onEvent('coreState', (state) => this.stateChanged(state));
+    const subscription = connection.control.onEvent('coreState', (state) => this.stateChanged(state, connection));
     this.coreStates = subscription;
     this.connectionClosed = connection.onClose(() => {
       subscription.dispose();
@@ -144,7 +158,7 @@ export class RemoteCore {
     this.restarting = true;
     this.deps.changed();
     try {
-      this.stateChanged(await connection.control.request('restartCore', {}));
+      this.stateChanged(await connection.control.request('restartCore', {}), connection);
     } catch (err) {
       this.restartSettled();
       throw err;
@@ -167,9 +181,9 @@ export class RemoteCore {
   }
 
   // A new epoch ends the running attach: the chats restore into the next one, or wait for Restart while the core is halted.
-  private stateChanged(state: CoreState): void {
+  private stateChanged(state: CoreState, connection: RemoteConnection): void {
     if (this.disposed) return;
-    this.state = state;
+    this.state = { value: state, on: connection };
     // a restart that ends halted offers Restart again
     if (state.phase === 'running' || state.phase === 'halted') this.restarting = false;
     const current = this.host.started();
@@ -200,7 +214,7 @@ export class RemoteCore {
     const rejoin = core.epoch() !== null && core.epoch() === previous;
     const kept = this.kept.reopening(afterRestart && !rejoin);
     this.openEpoch = core.epoch();
-    const ppid = this.state?.ppid ?? null;
+    const ppid = this.state?.value.ppid ?? null;
     const restarted = rejoin || this.openPpid === undefined ? undefined : ppid !== this.openPpid ? 'server' : 'engine';
     const { authority, log } = this.deps;
     if (rejoin) log(`[remote] ${authority}: rejoining ${this.deps.keptChats()} chats through views.join (epoch ${core.epoch() ?? 'none'})`);
@@ -274,7 +288,7 @@ export class RemoteCore {
         });
       });
       const state = await connection.control.request('attachCore', payload);
-      this.state = state;
+      this.state = { value: state, on: connection };
       epoch = state.epoch;
       this.deps.changed();
       if (state.phase === 'halted') {

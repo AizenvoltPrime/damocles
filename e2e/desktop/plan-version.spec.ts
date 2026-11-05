@@ -35,6 +35,12 @@ async function planFilePath(tab: Page, h: HermeticHome): Promise<string> {
   return path.join(h.damoclesDir, 'plans', `plan-${crypto.createHash('sha256').update(sessionId!).digest('hex').slice(0, 8)}.md`);
 }
 
+/** The editor tabs main saved in window-layout.json; empty until it wrote the file. */
+function savedTabs(h: HermeticHome): unknown[] {
+  const file = path.join(h.userData, 'window-layout.json');
+  return fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, 'utf8')) as { editor?: { tabs?: unknown[] } }).editor?.tabs ?? [] : [];
+}
+
 async function writePlanFile(tab: Page, h: HermeticHome): Promise<void> {
   const file = await planFilePath(tab, h);
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -114,7 +120,7 @@ test('D51: a plan after a compaction is Version 3 on its card and the banner, an
   }
 });
 
-// D7: approval reads the plan file, so a plan the user edits in the editor before approving is the plan the agent gets.
+// Approval reads the plan file, so a plan the user edits in the editor before approving is the plan the agent gets.
 test('a local plan opened from the plan overlay is an editable tab that saves the plan file, and the approval carries the edited text', async ({ foreground: _foreground, home, launch }) => {
   const stub = await startOpenAIStub();
   try {
@@ -142,6 +148,8 @@ test('a local plan opened from the plan overlay is an editable tab that saves th
     await shell.keyboard.type('2. Roll back first');
     await saveWithKeyboard(desktop.app);
     await expect.poll(() => fs.readFileSync(planFile, 'utf8')).toBe(`${PLAN}2. Roll back first`);
+    // a 'path' document: its saved tab names only its realpath, the record a file outside every project restores from
+    await expect.poll(() => savedTabs(home)).toContainEqual({ kind: 'code', path: fs.realpathSync.native(planFile) });
 
     stub.replies.push({ chunks: ['Shipping.'] });
     await tab.getByRole('button', { name: 'Yes, manually approve' }).click();

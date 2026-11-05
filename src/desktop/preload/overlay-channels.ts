@@ -42,6 +42,9 @@ export const OVERLAY_CHANNELS = {
   // renderer → main, invoke { anchor }: the host or Project tab asks to allow YOLO on the attached tab's host; answers whether
   // it is allowed, and closed unless the settings modal is open
   settingsAllowYolo: 'damocles:overlay:settings:allow-yolo',
+  // renderer → main, invoke {}: the Sign in of a tab whose host waits for one; main ends the modal and opens the Connect
+  // dialog on that host's prompt; answers closed unless the settings modal is open
+  settingsSignIn: 'damocles:overlay:settings:sign-in',
   // (id, png: Uint8Array | null): the answer to a rasterize request; main validates the PNG before using it
   rasterized: 'damocles:overlay:rasterized',
   // renderer → main, invoke
@@ -177,10 +180,12 @@ export const OVERLAY_CHANNELS = {
   theme: 'damocles:overlay:theme',
   // main → renderer, ExtensionToWebviewMessage for the settings modal
   settingsMessage: 'damocles:overlay:settings:message',
-  // main → renderer, { generation }: the modal is attached to another chat now, and drops that chat's state
+  // main → renderer, OverlaySettingsAttached: the modal is attached to another panel now, which may show the same page
   settingsAttached: 'damocles:overlay:settings:attached',
   // main -> renderer, OverlaySettingsScopes['host']: the attached remote chat's host was renamed or recolored while the modal shows
   settingsScopeHost: 'damocles:overlay:settings:scope-host',
+  // main -> renderer, OverlaySettingsAwayState | null: the host or Project tab shown waits for its host's core; null once it attached
+  settingsAway: 'damocles:overlay:settings:away',
   // main → renderer, SettingsTarget: settings were asked for again while the modal shows
   settingsTarget: 'damocles:overlay:settings:target',
   // main → renderer, OverlayPrefs after a damocles.desktop.* setting changed while the modal shows
@@ -227,6 +232,7 @@ export const OVERLAY_REQUEST_PUSHES: ReadonlyMap<string, OverlayRequestPush> = n
   [OVERLAY_CHANNELS.settingsMessage, { kinds: ['settings'], latest: false }],
   [OVERLAY_CHANNELS.settingsAttached, { kinds: ['settings'], latest: false }],
   [OVERLAY_CHANNELS.settingsScopeHost, { kinds: ['settings'], latest: true }],
+  [OVERLAY_CHANNELS.settingsAway, { kinds: ['settings'], latest: true }],
   [OVERLAY_CHANNELS.settingsTarget, { kinds: ['settings'], latest: true }],
   [OVERLAY_CHANNELS.prefsChanged, { kinds: ['settings'], latest: true }],
   [OVERLAY_CHANNELS.terminalProfilesChanged, { kinds: ['settings'], latest: true }],
@@ -1021,6 +1027,7 @@ export type OverlayRequest =
       // a saved host's id, which the Remote hosts section shows
       readonly host?: string;
       readonly generation: number;
+      readonly page: OverlaySettingsPage;
       // present while the selected chat is remote: its User, host and Project tabs
       readonly scopes?: OverlaySettingsScopes;
     }
@@ -1460,6 +1467,8 @@ export type QuickOpenPick =
 export const MAX_QUICK_OPEN_QUERY_LENGTH = 512;
 // Results of a non-empty query.
 export const MAX_QUICK_OPEN_RESULTS = 30;
+// Rows of a typed folder's listing answer (docs/invariants.md "Desktop host", Quick Open).
+export const MAX_QUICK_OPEN_LISTING_RESULTS = 1000;
 
 // generation: the overlay's counter; a response carries the query's, so a late answer to an older query is ignored
 export interface QuickOpenQuery {
@@ -1482,9 +1491,20 @@ export interface QuickOpenProjectResult {
   readonly labelMatches: readonly QuickOpenMatch[];
   readonly descriptionMatches: readonly QuickOpenMatch[];
   readonly recent: boolean;
+  // a typed folder's entry: what Tab puts in the query
+  readonly complete?: QuickOpenCompletion;
+  // the file the typed path names; the response's line and column belong to this row alone
+  readonly exact?: true;
 }
 
-// A typed absolute path outside every project that main resolved to a file; it is a response's only row.
+// A query main built for a row of a typed folder's listing; the renderer sets it as given and does no path arithmetic.
+export interface QuickOpenCompletion {
+  readonly input: string;
+  // UTF-16 offset into input for the caret, before a closing quote; absent for its end
+  readonly caret?: number;
+}
+
+// A file a typed absolute path names, or an entry of a typed folder, outside every project; path is its realpath.
 export interface QuickOpenPathResult {
   readonly kind: 'path';
   // 'local' or the host authority main resolved it on
@@ -1500,9 +1520,35 @@ export interface QuickOpenPathResult {
   // the host's name for its chip; absent on this computer
   readonly host?: string;
   readonly recent: false;
+  // a typed folder's entry: what Tab puts in the query
+  readonly complete?: QuickOpenCompletion;
+  // the file the typed path names; the response's line and column belong to this row alone
+  readonly exact?: true;
 }
 
-export type QuickOpenResult = QuickOpenProjectResult | QuickOpenPathResult;
+// A folder of a typed folder's listing, `..` included; never a pick: Enter, Tab and a click set the query to input.
+export interface QuickOpenFolderResult {
+  readonly kind: 'folder';
+  // 'local' or the host authority main listed it on
+  readonly authority: string;
+  // the folder's name, or '..'
+  readonly label: string;
+  readonly labelMatches: readonly QuickOpenMatch[];
+  readonly input: string;
+  // UTF-16 offset into input for the caret, before a closing quote; absent for its end
+  readonly caret?: number;
+  // the host's name for its chip; absent on this computer
+  readonly host?: string;
+}
+
+export type QuickOpenResult = QuickOpenProjectResult | QuickOpenPathResult | QuickOpenFolderResult;
+
+/** A row's key, which main and the overlay share: a pick is accepted only under a key a row of the open request carried. */
+export function quickOpenRowKey(row: QuickOpenResult | QuickOpenPick): string {
+  if (row.kind === 'project') return JSON.stringify(['project', row.projectKey, row.relativePath]);
+  if (row.kind === 'path') return JSON.stringify(['path', row.authority, row.path]);
+  return JSON.stringify(['folder', row.authority, row.input]);
+}
 
 export interface QuickOpenResponse {
   readonly generation: number;
@@ -1518,6 +1564,14 @@ export interface QuickOpenResponse {
   readonly failed?: true;
   // the text search answered while the query's typed path was still being resolved; quickOpenPath brings its row
   readonly pathPending?: true;
+  // a typed folder's listing stopped at its bounds, more entries matching than the results hold; listed counts the listing's
+  // entries among the results, the way up and a typed file the listing did not hold left out
+  readonly truncated?: { readonly listed: number };
+  // a typed folder answered with no rows: none of its entries starts with the typed name, it lists nothing and has no
+  // parent, or it could not be read
+  readonly emptyText?: 'folderNoMatch' | 'folderEmpty' | 'folderDenied';
+  // folderNoMatch's typed name, the text after the query's last separator
+  readonly emptyName?: string;
 }
 
 // A notification-center entry on screen; its id is the entry's.
@@ -1552,7 +1606,16 @@ export interface OverlayToastArea {
 
 export interface OverlaySettingsAttached {
   readonly generation: number;
+  readonly page: OverlaySettingsPage;
   readonly scopes?: OverlaySettingsScopes;
+}
+
+// The settings an attachment shows: the core's authority, the chat's settings folder (absent for none) and the chat
+// (settingsPageChat in main/overlay-settings.ts).
+export interface OverlaySettingsPage {
+  readonly authority: string;
+  readonly folder?: string;
+  readonly chat: string;
 }
 
 export type OverlaySettingsScope = 'user' | 'machine' | 'project';
@@ -1565,6 +1628,16 @@ export interface OverlaySettingsScopes {
   readonly projectFile?: string;
   readonly active: OverlaySettingsScope;
 }
+
+// Why the tab shown has no core: its host reconnects, waits for the user to sign in, failed for good, is offline with
+// nothing reconnecting it (disconnected, removed), or runs a daemon of another version whose update banner waits for the
+// user's switch; or the host is connected and its engine restarts, or is halted until the user restarts it.
+export type OverlaySettingsAway = 'reconnecting' | 'signIn' | 'failed' | 'offline' | 'switchOffered' | 'restarting' | 'halted';
+
+// What the waiting tab's banner says: switchOffered carries the update banner's facts (HostUpdate).
+export type OverlaySettingsAwayState =
+  | { readonly state: Exclude<OverlaySettingsAway, 'switchOffered'> }
+  | { readonly state: 'switchOffered'; readonly update: { readonly serverVersion: string; readonly runningAgents: number } };
 
 export interface OverlayPrefs {
   // every damocles.desktop.* setting, from user settings
@@ -1622,11 +1695,15 @@ export interface DamoclesOverlayApi {
   onSettingsAttached(listener: (attached: OverlaySettingsAttached) => void): () => void;
   // the host tab's name and color after a rename or recolor; returns the unsubscribe
   onSettingsScopeHost(listener: (host: OverlaySettingsScopes['host']) => void): () => void;
+  // the tab shown waits for its host's core, or (null) attached again; returns the unsubscribe
+  onSettingsAway(listener: (away: OverlaySettingsAwayState | null) => void): () => void;
   // a remote chat's settings tab; main re-attaches the modal and answers the tab attached, or rejects when it could not
   setSettingsScope(scope: OverlaySettingsScope): Promise<PopupAnswer<OverlaySettingsScope>>;
   // the host or Project tab's Allow YOLO: main asks, hung from anchor, and answers whether the attached tab's host now allows
   // YOLO, or closed while the modal is closed
   allowHostYolo(anchor: OverlayRect): Promise<PopupAnswer<boolean>>;
+  // the waiting tab's Sign in: main ends the modal and opens the Connect dialog on its host's prompt
+  signInScopeHost(): Promise<PopupAnswer<void>>;
   onSettingsTarget(listener: (target: SettingsTarget) => void): () => void;
   getPrefs(): Promise<OverlayPrefs>;
   onPrefsChanged(listener: (prefs: OverlayPrefs) => void): () => void;

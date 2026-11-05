@@ -89,6 +89,20 @@ describe('Windows stage 1 download retries under a real PowerShell', { timeout: 
     expect(failures).toEqual([1, 2, 3, 4].map((attempt) => ({ kind: 'downloadFailed', attempt, reason: 'http503' })));
   });
 
+  it.skipIf(shell === undefined)('fails at once for the URL - of an unpublished build, trying nothing, so the upload follows', async () => {
+    const dir = scratchDir('stage-download-');
+    const tried = path.join(dir, 'tried');
+    const file = path.join(dir, 'package.zip');
+    const script = [
+      `function Invoke-DamoclesDownloadTry([string]$url, [string]$file, [int64]$size) { [IO.File]::WriteAllText(${psQuote(tried)}, $url); return 'other' }`,
+      `if (Invoke-DamoclesDownload '-' ${psQuote(file)} ${BODY.length}) { exit 0 } else { exit 3 }`,
+    ].join('\n');
+    const output = await runPowerShell(shell!, withWindowsDefinitions(script));
+    expect(output.exit?.code).toBe(3);
+    expect(stageMessages(output)).toEqual([]);
+    expect([existsSync(tried), existsSync(file)]).toEqual([false, false]);
+  });
+
   it.skipIf(shell === undefined)('does not retry an HTTP 404, which no retry changes, and retries a 429', async () => {
     const missing = await download([status(404)]);
     expect(missing.exit).toBe(3);

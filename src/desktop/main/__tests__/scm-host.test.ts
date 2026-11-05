@@ -14,7 +14,7 @@ import { MAX_SCM_COMMIT_FILES, MAX_SCM_HISTORY_TIPS, MAX_SCM_ID_LENGTH, SCM_HIST
 import { rootKey } from '../../preload/folder-root';
 import type { AskInputRequest } from '../overlay';
 import type { EditorPane } from '../editor-pane';
-import type { DocumentService } from '../documents/document-service';
+import { RefusedPathError, type DocumentService } from '../documents/document-service';
 import type { MessageQuestion } from '../message-dialog';
 import { ScmHost, type ScmHostDeps } from '../scm/scm-host';
 import { visibleText } from '../../../shared/visible-text';
@@ -245,7 +245,7 @@ function setup(overrides: SetupOptions = {}) {
     openReadOnly: vi.fn(),
     openPlaceholder: vi.fn(),
     openFromUser: vi.fn(async () => ({ ok: true })),
-    openPath: vi.fn(async () => undefined),
+    openNamedPath: vi.fn(async () => 'tab'),
     closeScmDiffs: vi.fn(async () => undefined),
     closeUnmodified: vi.fn(async () => undefined),
     dirtyFiles: async () => (overrides.dirty ?? []).map((file, index) => ({ documentId: `doc-${index}`, path: file })),
@@ -306,7 +306,7 @@ function setup(overrides: SetupOptions = {}) {
         removedProjects.push(projectKey);
         return overrides.closeProject ?? 'closed';
       }),
-      chatOf: () => undefined,
+      chatOf: async () => undefined,
       newChatTargetAt: () => undefined,
       selectChat: async () => undefined,
       showProjectFolder: () => undefined,
@@ -416,6 +416,18 @@ describe('source control host', () => {
     const refused = setup({ render: el.render, commit: async () => ({ ok: false, reason: 'failed', error: { message: 'Invalid branch name' } }) });
     expect(await refused.host.commit({ repoId: 'repo-1', message: 'x', variant: PLAIN })).toEqual({ ok: false, reason: 'failed' });
     expect(refused.notices).toEqual([{ severity: 'error', message: 'Μη έγκυρο όνομα κλάδου', actions: ['Show Git Output'] }]);
+  });
+
+  it('shows the editor\'s refusal of a parent repository\'s file in main\'s language', async () => {
+    const el = createDesktopLocalizationService(process.cwd(), 'el', () => undefined);
+    // the project is a folder of the repository, so the repository's own files are outside every project
+    const { host, editorPane, notices } = setup({ render: el.render, projectFolder: path.join(projectPath, 'sub') });
+    const refusal = new RefusedPathError(path.join(projectPath, 'src', 'a.ts'), 'share');
+    vi.mocked(editorPane.openNamedPath).mockRejectedValueOnce(refusal);
+    await host.runRequest({ op: 'openFile', repoId: 'repo-1', path: 'src/a.ts' });
+    expect(editorPane.openNamedPath).toHaveBeenCalledWith('local', path.join(projectPath, 'src', 'a.ts'), { focus: true });
+    expect(notices.at(-1)).toMatchObject({ severity: 'error', message: el.render(refusal.text) });
+    expect(notices.at(-1)!.message).toMatch(/^Το Damocles δεν ανοίγει/);
   });
 
   it('refuses a commit without a well-formed variant before anything runs', async () => {
@@ -2166,7 +2178,7 @@ describe('source control host: a remote repository', () => {
     expect(editorPane.openFromUser).toHaveBeenCalledWith('ssh+h1|/srv/app', 'src/a.ts');
     await host.runRequest({ op: 'mention', repoId: 'repo-1', path: 'src/a.ts' });
     expect(mentioned).toEqual([{ projectKey: 'ssh+h1|/srv/app', relativePath: 'src/a.ts' }]);
-    expect(editorPane.openPath).not.toHaveBeenCalled();
+    expect(editorPane.openNamedPath).not.toHaveBeenCalled();
   });
 
   it('names a remote change the editor could not open in the user\'s language', async () => {
@@ -2184,7 +2196,7 @@ describe('source control host: a remote repository', () => {
       await host.runRequest({ op: 'mention', repoId: 'repo-1', path: 'src/a.ts' });
       await host.runRequest({ op: 'reveal', repoId: 'repo-1', path: 'src/a.ts' });
       expect(editorPane.openFromUser).not.toHaveBeenCalled();
-      expect(editorPane.openPath).not.toHaveBeenCalled();
+      expect(editorPane.openNamedPath).not.toHaveBeenCalled();
       expect(mentioned).toEqual([]);
       expect(revealed).toEqual([]);
     }

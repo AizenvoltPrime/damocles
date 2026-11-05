@@ -69,13 +69,8 @@
     "slowConnection": "Slow connection to {host} ({ms} ms)",
     "latencyShort": "Connected · {ms} ms",
     "slowConnectionShort": "Slow connection ({ms} ms)",
-    "view": {
-      "label": "Project view",
-      "flat": "Flat",
-      "flatTitle": "One list of all projects",
-      "grouped": "By host",
-      "groupedTitle": "Group projects by host"
-    },
+    "viewByHost": "View by Host",
+    "viewAsList": "View as List",
     "group": {
       "local": "This computer",
       "expanded": "expanded",
@@ -279,6 +274,8 @@
     "chatOnHost": "This chat runs on {host}. Change its settings on the {host} tab.",
     "loading": "Loading the {tab} settings…",
     "switchFailed": "The {tab} settings could not be opened.",
+    "showUser": "Show {tab} settings",
+    "switchOnBanner": "Close Settings to choose when to switch, on the banner at the top of the chat.",
     "editHostFile": "Edit settings.json on {host}"
   },
   "settingsHost": {
@@ -1016,6 +1013,7 @@
     "empty": "Click a file in the sidebar to open it here.",
     "emptyHint": "Or press {shortcut} to search files in every project.",
     "breadcrumbs": "File path",
+    "breadcrumbsHidden": "Hidden folders",
     "diffStats": "{added} lines added, {removed} removed",
     "saveFailed": "Failed to save '{name}': Damocles could not finish the save. Try again.",
     "loadFailed": "Damocles could not open '{name}'.",
@@ -1029,6 +1027,7 @@
       "conflict": "Changed on disk",
       "closeTitle": "Close ({shortcut})",
       "pendingUpload": "Saved on this computer. Uploads when {host} reconnects.",
+      "hostPath": "{host}: {path}",
       "uploaded": "Uploaded to {host}."
     },
     "menu": {
@@ -1062,7 +1061,7 @@
     "readOnly": {
       "encoding": "Read-only: this file is not valid UTF-8, so saving could change its bytes.",
       "log": "Read-only: a log shows what its writer recorded.",
-      "outsideProject": "Read-only: this file is outside every open project.",
+      "snapshot": "Read-only: this is a copy of the text, not a file you can save.",
       "tooLarge": "Read-only: this file is too large to edit here."
     },
     "image": {
@@ -1090,6 +1089,7 @@
       "title": "This file is not displayed",
       "binary": "It is a binary file.",
       "tooLarge": "It is too large to open in the editor.",
+      "overLimit": "It is over the editor's {limit} limit.",
       "unreadable": "Damocles could not read it.",
       "missing": "It does not exist in this version.",
       "openAnyway": "Open Anyway"
@@ -1291,7 +1291,13 @@
     "mention": "Enter mentions the file in the chat",
     "loadFailed": "Damocles could not search the files.",
     "scopedLabel": "Go to a file in {scope}",
-    "scopedPlaceholder": "Search files in this folder (append : to go to line, {'@'} to mention in chat)"
+    "scopedPlaceholder": "Search files in this folder (append : to go to line, {'@'} to mention in chat)",
+    "folderNoMatch": "No entries here start with '{name}'.",
+    "folderEmpty": "This folder has no entries to show.",
+    "folderDenied": "Damocles can't read this folder.",
+    "folderTruncated": "Showing the first entry. Type more of a name to narrow the list. | Showing the first {count} entries. Type more of a name to narrow the list.",
+    "folderStopped": "Damocles stopped reading this folder before it found an entry to show. Type a file's full name to open it.",
+    "folderKind": "folder"
   },
   "search": {
     "heading": "Search",
@@ -2460,6 +2466,7 @@
       "installFolderUnsafe": "Other users on {name} can change {folder}, so Damocles does not install there. Make it writable only by you, or choose another install folder.",
       "hashMismatch": "The downloaded server package did not match its checksum, so nothing was installed.",
       "downloadAndUploadFailed": "The server package could neither be downloaded on {name} nor uploaded from this computer.",
+      "downloadAndUploadFailed_unpublished": "This build of Damocles was never published, so {name} cannot download its server, and this computer holds no copy of it. Build the app again on this computer with npm run dist:local, then install it.",
       "selfTestFailed": "The Damocles server did not pass its self-test on {name}.",
       "bridgeFailed": "The Damocles server on {name} did not start.",
       "destinationRefused": "Damocles no longer accepts the saved {setting} of {name}, so ssh did not start. Forget the host and add it again.",

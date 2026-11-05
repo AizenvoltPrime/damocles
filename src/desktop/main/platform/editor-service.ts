@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import type { Disposable } from '../../../platform/disposable';
-import type { DiffRequest, DiffView, EditorService } from '../../../platform/editor-service';
+import type { ActiveEditorContext, DiffRequest, DiffView, EditorService } from '../../../platform/editor-service';
 import type { WindowService } from '../../../platform/window-service';
 import type { ChatReviewScope, ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { EditorPane } from '../editor-pane';
@@ -25,7 +25,11 @@ export interface DesktopEditorService extends EditorService {
   showDiff(req: DiffRequest): Promise<HostDiffView>;
   // the project key of the document getActiveContext describes, read in the same turn as it; undefined outside every project
   activeProjectKey(): string | undefined;
+  // the authority of the file getActiveContext describes ('local' for this computer); undefined while no file tab is active
+  activeAuthority(): string | undefined;
 }
+
+const NO_CONTEXT: ActiveEditorContext = { filePath: undefined, selection: undefined };
 
 /**
  * D15: an approval diff (showDiff with approvalId) goes to the asking chat's Monaco overlay, held there until the permission
@@ -40,10 +44,12 @@ export function createDesktopEditorService(
   render: (text: LocalizedText) => string,
 ): DesktopEditorService {
   const unavailable = (feature: string): Promise<never> => Promise.reject(new Error(`${feature} is not available in the desktop app yet`));
+  // a local core is told only about a file on this computer (D17)
+  const localContext = (context: ActiveEditorContext | undefined): ActiveEditorContext | undefined => (context === undefined || pane().activeAuthority() === 'local' ? context : NO_CONTEXT);
   return {
-    openFile: (filePath, opts) => {
+    openFile: async (filePath, opts) => {
       const line = opts?.line !== undefined && Number.isInteger(opts.line) && opts.line > 0 ? opts.line : undefined;
-      return pane().openPath(filePath, { focus: opts?.preserveFocus !== true, ...(line !== undefined ? { line } : {}) });
+      await pane().openNamedPath('local', filePath, { focus: opts?.preserveFocus !== true, ...(line !== undefined ? { line } : {}) });
     },
     openUntitled: (content, language) => {
       pane().openUntitled(content, `untitled.${language}`, knownLanguageId(language), { focus: true });
@@ -82,10 +88,13 @@ export function createDesktopEditorService(
       };
     },
     // A rendered preview tab in the pane, never the OS, so a model-named file is not launched.
-    showMarkdownPreview: (filePath) => pane().openPath(filePath, { focus: true, preview: true }),
-    getActiveContext: () => pane().activeContext(),
+    showMarkdownPreview: async (filePath) => {
+      await pane().openNamedPath('local', filePath, { focus: true, preview: true });
+    },
+    getActiveContext: () => localContext(pane().activeContext()),
     activeProjectKey: () => pane().activeProjectKey(),
-    onDidChangeActiveContext: (listener): Disposable => pane().onDidChangeActiveContext(listener),
+    activeAuthority: () => pane().activeAuthority(),
+    onDidChangeActiveContext: (listener): Disposable => pane().onDidChangeActiveContext((context) => listener(localContext(context))),
     // The app settings open at the section; their search box is the user's, so the query (a setting key) is not forwarded.
     openHostSettings: (_query, section) => {
       openAppSettings(section);

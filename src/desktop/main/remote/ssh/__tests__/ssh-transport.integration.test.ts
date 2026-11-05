@@ -131,7 +131,7 @@ describe.skipIf(!runnable)('startSshTransport against a Docker sshd (needs Docke
     installFolderSettled: vi.fn(async () => undefined),
     askpass,
     // a build without the target's package: the attempt runs to the probe's report and stops there
-    manifest: { version: '3.7.0', protocolVersion: 1, packages: {} } satisfies ServerManifest,
+    manifest: { version: '3.7.0', protocolVersion: 1, published: false, packages: {} } satisfies ServerManifest,
     releasesUrl: 'http://127.0.0.1:9/releases',
     artifacts: { packageFolder: () => 'unused', packagePath: async () => { throw new Error('no upload in this test'); } },
     sshConfigFile: config,
@@ -191,14 +191,15 @@ describe.skipIf(!runnable)('startSshTransport against a Docker sshd (needs Docke
   }, 120_000);
 
   // A stand-in package: self-test passes, and attach answers every byte after its greeting, as the bridge copies bytes.
-  const stubPackage = (version: string): { manifest: ServerManifest; file: string; data: Buffer } => {
+  const stubPackage = (version: string): { manifest: ServerManifest; file: string; data: Buffer; serverVersion: string } => {
     const script = "#!/bin/sh\ncase \"$1\" in\n  self-test) echo 'self-test: passed'; exit 0 ;;\n  attach) printf 'BRIDGE:'; exec cat ;;\nesac\nexit 64\n";
+    const serverVersion = `${version}+${createHash('sha256').update(version).digest('hex').slice(0, 12)}`;
     // server-package.json marks an installed version, as every built package carries it
-    const data: Buffer = tarGz([{ path: 'bin/damocles-server', mode: 0o755, data: Buffer.from(script) }, { path: 'server-package.json', mode: 0o644, data: Buffer.from(`{"version":"${version}"}\n`) }]);
+    const data: Buffer = tarGz([{ path: 'bin/damocles-server', mode: 0o755, data: Buffer.from(script) }, { path: 'server-package.json', mode: 0o644, data: Buffer.from(`{"version":"${version}","serverVersion":"${serverVersion}"}\n`) }]);
     const file = path.join(scratchDir('stub-package-'), `damocles-server-${version}-alpine-x64.tar.gz`);
     writeFileSync(file, data);
-    const manifest: ServerManifest = { version, protocolVersion: 1, packages: { 'alpine-x64': { file: path.basename(file), sha256: createHash('sha256').update(data).digest('hex'), size: data.length } } };
-    return { manifest, file, data };
+    const manifest: ServerManifest = { version, protocolVersion: 1, published: false, packages: { 'alpine-x64': { file: path.basename(file), sha256: createHash('sha256').update(data).digest('hex'), size: data.length, serverVersion } } };
+    return { manifest, file, data, serverVersion };
   };
   const quietHooks = (progress: number[] = [], steps: string[] = []): SshAttemptHooks => ({ step: (step) => steps.push(step), progress: (fraction) => progress.push(fraction), prompt: async () => ({ answer: 'connect', remember: false }), notice: () => undefined });
 
@@ -222,7 +223,8 @@ describe.skipIf(!runnable)('startSshTransport against a Docker sshd (needs Docke
       });
       result.stream.write(Buffer.from([0x00, 0xff, 0x0a, 0x0d]));
       expect(await echoed).toBe(`BRIDGE:${Buffer.from([0x00, 0xff, 0x0a, 0x0d]).toString('latin1')}`);
-      expect(await run(['exec', name, 'ls', '-a', '/home/dev/.damocles/server'])).toMatch(/3\.7\.1-alpine-x64/);
+      // the folder is the manifest's server version, the app version and the package's build
+      expect((await run(['exec', name, 'ls', '-a', '/home/dev/.damocles/server'])).split('\n')).toContain(`${stub.serverVersion}-alpine-x64`);
       expect(await run(['exec', name, 'sh', '-c', 'ls -a /home/dev/.damocles/server | grep -c staging || true'])).toBe('0\n');
     } finally {
       result.dispose();
@@ -252,7 +254,7 @@ describe.skipIf(!runnable)('startSshTransport against a Docker sshd (needs Docke
     const result = await startSshTransport(attempt);
     result.dispose();
     expect(result.probe.installDir).toBe(`${folder}/dev`);
-    expect(await run(['exec', name, 'ls', `${folder}/dev`])).toMatch(/3\.7\.3-alpine-x64/);
+    expect((await run(['exec', name, 'ls', `${folder}/dev`])).split('\n')).toContain(`${stub.serverVersion}-alpine-x64`);
     expect(attempt.installFolderSettled).toHaveBeenCalledTimes(1);
     expect((await run(['exec', name, 'ls', '-a', '/home/dev/.damocles/server'])).split('\n').filter((entry) => entry !== '' && entry !== '.' && entry !== '..')).toEqual(['run-0123456789abcdef']);
   }, 120_000);

@@ -16,7 +16,7 @@ import { parseInspect, parsePs, type InspectedContainer } from './docker-ps';
 
 export interface ContainerConnectDeps {
   readonly side: ContainerSide;
-  readonly install: () => Promise<{ readonly manifest: ServerManifest; readonly artifacts: ArtifactCache; readonly releasesUrl: string }>;
+  readonly install: () => Promise<{ readonly manifest: ServerManifest; readonly artifacts: ArtifactCache; readonly releasesUrl?: string }>;
   // folder trust, read-configuration and the confirmation (devcontainer-trust.ts), for a devcontainer record
   readonly gate: () => Promise<DevcontainerTrustVerdict>;
   readonly recordContainer: (found: ContainerFound) => Promise<void>;
@@ -128,7 +128,7 @@ export async function connectContainer(deps: ContainerConnectDeps, record: Conta
     hooks: deps.hooks,
     installFolderSettled: () => deps.installFolderSettled(),
     manifest,
-    releasesUrl,
+    ...(releasesUrl !== undefined ? { releasesUrl } : {}),
     artifacts,
     log: deps.log,
   });

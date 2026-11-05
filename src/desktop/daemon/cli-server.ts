@@ -41,7 +41,7 @@ export interface CliServer extends TerminalCli {
 
 export interface CliServerDeps {
   readonly platform: NodeJS.Platform;
-  // the daemon's version, which `damocles --version` and status report
+  // the daemon's server version (readServerVersion), which status reports
   readonly version: string;
   // the folder holding remote-cli and helpers (terminalBinFolder)
   readonly bin: string;

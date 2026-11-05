@@ -4,9 +4,10 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia, type Pinia } from 'pinia';
 import { installPlatformBridge } from '@/composables/usePlatformBridge';
 import { useSettingsStore } from '@/stores/useSettingsStore';
+import { useSettingWritesStore } from '@/components/settings/settings-writes';
 import ExtensionUiDialog from '@/components/ExtensionUiDialog.vue';
 import { VSCODE_HOST_CAPABILITIES } from '@shared/types/messages';
-import type { OverlayPrefs, OverlayPrefWrite, PopupAnswer } from '../../preload/overlay-channels';
+import type { OverlayPrefs, OverlayPrefWrite, OverlaySettingsPage, PopupAnswer, RemoteHostEntry } from '../../preload/overlay-channels';
 import OverlayApp from '../overlay/OverlayApp.vue';
 import { createOverlaySettingsBridge } from '../overlay/settings/overlay-bridge';
 import { addSettingsMessages } from '../overlay/settings/settings-messages';
@@ -33,10 +34,10 @@ function mountOverlay(): VueWrapper {
   return wrapper;
 }
 
-async function openSettings(generation = 1, section?: 'application' | 'appearance' | 'accounts'): Promise<VueWrapper> {
+async function openSettings(generation = 1, section?: 'application' | 'appearance' | 'accounts' | 'remoteHosts', page?: OverlaySettingsPage): Promise<VueWrapper> {
   const wrapper = mountOverlay();
   await flushPromises();
-  api.request('s1', { kind: 'settings', generation, ...(section ? { section } : {}) });
+  api.request('s1', { kind: 'settings', generation, ...(section ? { section } : {}), ...(page ? { page } : {}) });
   await flushPromises();
   return wrapper;
 }
@@ -225,8 +226,10 @@ describe('overlay settings', () => {
     expect(api.answer).toHaveBeenCalledWith('s1', { kind: 'settings', closed: true });
   });
 
-  it('drops a host prompt and its typed text, and sends with the new generation, when main re-attaches', async () => {
-    await openSettings(1);
+  const CHAT_A: OverlaySettingsPage = { authority: 'local', folder: '/work/alpha', chat: 'session-a' };
+
+  it('drops a host prompt and its typed text, and sends with the new generation, when main re-attaches to other settings', async () => {
+    await openSettings(1, undefined, CHAT_A);
     api.settingsMessage({ type: 'extensionUiRequest', requestId: 'host-prompt:1', kind: 'input', title: 'API key', password: true });
     await flushPromises();
     const field = document.querySelector<HTMLInputElement>('[data-testid="extension-ui-dialog"] input')!;
@@ -235,11 +238,69 @@ describe('overlay settings', () => {
     field.dispatchEvent(new Event('input'));
     expect(field.getAttribute('value')).toBeNull();
 
-    api.settingsAttached(2);
+    api.settingsAttached(2, undefined, { ...CHAT_A, chat: 'session-b' });
     await flushPromises();
     expect(document.querySelector('[data-testid="extension-ui-dialog"]')).toBeNull();
     expect(document.body.innerHTML).not.toContain('sk-typed-secret');
     expect(sent()).toContainEqual([2, { type: 'requestSettingsState' }]);
+  });
+
+  it('keeps a typed key and its page across a re-attach to the same settings, asks for the state once, and drops host prompts and write markers', async () => {
+    await openSettings(1, 'accounts', CHAT_A);
+    api.settingsTarget({ section: 'accounts', account: 'kimi-coding' });
+    await flushPromises();
+    const key = (): HTMLInputElement => document.querySelector<HTMLInputElement>('[data-testid="settings-row-account-kimi-coding"] input')!;
+    key().value = 'sk-half-typed';
+    key().dispatchEvent(new Event('input'));
+    const typed = key();
+    api.settingsMessage({ type: 'extensionUiRequest', requestId: 'host-prompt:1', kind: 'input', title: 'API key', password: true });
+    api.settingsMessage({ type: 'settingWriteResult', key: 'damocles.explore.model', ok: false, error: { message: 'The file is read-only.' } });
+    await flushPromises();
+    expect(document.querySelector('[data-testid="extension-ui-dialog"]')).not.toBeNull();
+    vi.mocked(api.settingsSend).mockClear();
+
+    api.settingsAttached(2, undefined, CHAT_A);
+    await flushPromises();
+    expect(key()).toBe(typed);
+    expect(key().value).toBe('sk-half-typed');
+    expect(sent()).toEqual([[2, { type: 'requestSettingsState' }]]);
+    expect(document.querySelector('[data-testid="extension-ui-dialog"]')).toBeNull();
+    expect(useSettingWritesStore().feedback).toEqual({});
+  });
+
+  it('keeps an open host color picker across a re-attach to the same settings', async () => {
+    document.documentElement.setAttribute('data-reduced-motion', '');
+    const host: RemoteHostEntry = {
+      hostId: 'h1',
+      kind: 'ssh',
+      authorityKey: 'ssh+h1',
+      name: 'prod-1',
+      destinationLabel: 'deploy@prod-1',
+      os: 'linux',
+      detectedOs: 'linux',
+      connection: 'connected',
+      settings: { allowBypass: false, forwardAgent: false, rememberPassword: false, browserLocalNetwork: false, openLinksWithoutAsking: false },
+      facts: { passwordless: false, keyInstalledByDamocles: false, lingerEnabledByDamocles: false, alwaysCredentialHosts: [] },
+      heldMemoryQueues: [],
+    };
+    api.remoteHosts.list = [host];
+    try {
+      await openSettings(1, 'remoteHosts', CHAT_A);
+      document.querySelector<HTMLElement>('[data-testid="remote-host"] [data-tone="custom"]')!.click();
+      await flushPromises();
+      const picker = document.querySelector('[data-testid="host-color-picker"]');
+      expect(picker).not.toBeNull();
+
+      api.settingsAttached(2, undefined, CHAT_A);
+      await flushPromises();
+      expect(document.querySelector('[data-testid="host-color-picker"]')).toBe(picker);
+
+      api.settingsAttached(3, undefined, { ...CHAT_A, authority: 'ssh+h1' });
+      await flushPromises();
+      expect(document.querySelector('[data-testid="host-color-picker"]')).toBeNull();
+    } finally {
+      api.remoteHosts.list = [];
+    }
   });
 
   it('writes desktop preferences through main and reverts one main refuses', async () => {

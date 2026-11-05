@@ -7,21 +7,17 @@ import { hostAttention, type ShellHost } from '../../preload/shell-channels';
 import HostStatusDot from './HostStatusDot.vue';
 import { hostStateLabel } from '../host-label';
 import HostUpdateBanner from '@/components/HostUpdateBanner.vue';
+import { BANNER_TONE } from '@/components/banner-tone';
 
 // The attempt main started at launch never opens a dialog itself; Sign in opens it on the waiting prompt.
-// edge: the strip alone, continuing a chat page's banner (webview ConnectionBanner.vue) across the gutter; keep the one-line min-h-8 and colors equal.
+// edge: the strip alone, continuing a chat page's banner (webview ConnectionBanner.vue) across the gutter; keep the one-line min-h-8 equal (both take their colors from BANNER_TONE).
 const props = defineProps<{ host: ShellHost | undefined; edge?: boolean }>();
 const emit = defineEmits<{ reconnect: [hostId: string]; signIn: [hostId: string]; showLog: [hostId: string]; editHost: [hostId: string]; switchWhenIdle: [hostId: string]; switchNow: [hostId: string] }>();
 const { t } = useI18n();
 
 const view = useHostConnection(() => (props.host ? { hostId: props.host.hostId, connected: props.host.connection === 'connected', reconnect: props.host.reconnect, attention: hostAttention(props.host) } : undefined));
 const kind = view.kind;
-const TONE = {
-  warning: 'border-(--d-warning)/25 bg-[color-mix(in_srgb,var(--d-warning)_11%,var(--d-bg))] text-(--d-warning-text)',
-  danger: 'border-(--d-danger)/28 bg-[color-mix(in_srgb,var(--d-danger)_11%,var(--d-bg))] text-(--d-danger-text)',
-  success: 'border-(--d-success)/28 bg-[color-mix(in_srgb,var(--d-success)_11%,var(--d-bg))] text-(--d-success-text)',
-} as const;
-const tone = computed(() => TONE[kind.value === 'failed' ? 'danger' : kind.value === 'reconnected' ? 'success' : 'warning']);
+const tone = computed(() => BANNER_TONE[kind.value === 'failed' ? 'danger' : kind.value === 'reconnected' ? 'success' : 'warning']);
 const STRIP = 'flex min-h-8 shrink-0 items-center gap-2 border-b transition-colors duration-200 ease-out';
 
 // The live region says what changed and never counts down, so a screen reader hears each state once.
@@ -47,7 +43,7 @@ const announcement = computed(() => {
       aria-hidden="true"
       data-testid="connection-banner-edge"
       data-state="update"
-      :class="[STRIP, 'border-(--d-info)/28 bg-[color-mix(in_srgb,var(--d-info)_11%,var(--d-bg))]']"
+      :class="[STRIP, BANNER_TONE.info]"
     />
     <HostUpdateBanner
       v-else-if="host?.update"

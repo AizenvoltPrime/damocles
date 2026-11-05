@@ -9,6 +9,7 @@ import { withVolatileSecretsNotice } from '../../../core/volatile-secrets-notice
 import { defaultProjectPath, DEFAULT_WORKSPACE_FOLDER_STATE_KEY } from '../../../core/workspace-folders/folder-registry';
 import type { ProjectList } from '../projects';
 import type { TrustStore } from '../trust-store';
+import type { RevealVerdict } from '../reveal-guard';
 import { createDesktopAppInfo } from './app-info';
 import { createDesktopAppPaths, watchWorkerPath, type DesktopLayout } from './app-paths';
 import { desktopHostCapabilities } from '../../local-services/capabilities';
@@ -26,7 +27,7 @@ import type { DesktopKeyValueState } from '../../local-services/key-value-state'
 import type { DesktopLocalizationService } from '../../local-services/localization-service';
 import { createDesktopSecretsStore } from './secrets-store';
 import { DesktopSettingsStore, type ChatFolders } from '../../local-services/settings-store';
-import { createDesktopShellService } from './shell-service';
+import { createDesktopShellService, type DesktopShellService } from './shell-service';
 import { createDesktopTrustService } from './trust-service';
 import { createWorkerTreeHost } from '../../local-services/watch-worker-host';
 import { createDesktopWindowService } from './window-service';
@@ -56,12 +57,17 @@ export interface DesktopPlatformDeps {
   readonly showChatReview: EditorService['showChatReview'];
   readonly chatFolders: ChatFolders;
   readonly reload: () => Promise<void>;
+  // whether Explorer may show a path (reveal-guard.ts), checked in the shell service's reveal and folder open
+  readonly revealable: (absolutePath: string) => Promise<RevealVerdict>;
+  // warns that a reveal was refused, naming its reason
+  readonly revealRefused: (absolutePath: string, reason: Exclude<RevealVerdict, true>) => void;
   // lines logged before the core log sink is installed
   readonly log: (line: string) => void;
 }
 
 export interface DesktopPlatform extends Platform {
   readonly editor: DesktopEditorService;
+  readonly shell: DesktopShellService;
   readonly settings: DesktopSettingsStore;
   readonly state: DesktopKeyValueState;
   readonly fileWatchers: DesktopFileWatcherFactory;
@@ -78,7 +84,7 @@ export function createDesktopPlatform(deps: DesktopPlatformDeps): DesktopPlatfor
   const paths = createDesktopAppPaths(deps.layout);
   const windowsTree = createWorkerTreeHost(() => new Worker(watchWorkerPath(paths)), deps.log);
   const fileWatchers = new DesktopFileWatcherFactory(workspaceFolders, deps.log, windowsTree);
-  const shell = createDesktopShellService(deps.log);
+  const shell = createDesktopShellService(deps.log, deps.revealable, deps.revealRefused);
   const trust = createDesktopTrustService(deps.trust);
   const { state } = deps;
   const notifications = localizedNotifications(deps.notifications, (text) => deps.localization.render(text));

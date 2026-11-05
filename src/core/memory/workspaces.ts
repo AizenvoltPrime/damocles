@@ -1,4 +1,3 @@
-import * as fs from 'fs';
 import type { DatabaseInstance } from './types';
 
 /** Separator- and (on win32) case-insensitive comparison key for a folder or file path. */
@@ -18,39 +17,6 @@ export function matchKnownWorkspace(
   platform: NodeJS.Platform = process.platform,
 ): string | null {
   return known.find(k => sameWorkspace(k, candidate, platform)) ?? null;
-}
-
-type FolderCheck = { result: Promise<boolean>; settledAt: number | null };
-
-/**
- * Whether a folder exists, each answer cached for `ttlMs`. A check still running after `timeoutMs` answers false and
- * keeps running to fill the cache: a disconnected mapped drive takes about 21 s to fail on Windows, holding one libuv
- * pool thread that long, so a caller never waits on it and concurrent callers share one check.
- */
-export function createFolderProbe(
-  timeoutMs: number,
-  ttlMs: number,
-  access: (folder: string) => Promise<unknown> = folder => fs.promises.access(folder),
-  now: () => number = Date.now,
-): (folder: string) => Promise<boolean> {
-  const checks = new Map<string, FolderCheck>();
-  return async folder => {
-    let check = checks.get(folder);
-    if (!check || (check.settledAt !== null && now() - check.settledAt >= ttlMs)) {
-      const started: FolderCheck = { result: access(folder).then(() => true, () => false), settledAt: null };
-      void started.result.then(() => { started.settledAt = now(); });
-      checks.set(folder, started);
-      check = started;
-    }
-    if (check.settledAt !== null) return check.result;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const late = new Promise<boolean>(resolve => { timer = setTimeout(resolve, timeoutMs, false); });
-    try {
-      return await Promise.race([check.result, late]);
-    } finally {
-      clearTimeout(timer);
-    }
-  };
 }
 
 /**

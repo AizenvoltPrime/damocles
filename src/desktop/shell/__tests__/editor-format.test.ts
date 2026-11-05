@@ -12,7 +12,7 @@ class FakeModel {
   text: string;
   readonly history: string[] = [];
   disposed = false;
-  readonly listeners: Array<() => void> = [];
+  readonly listeners: Array<(event: { changes: Array<{ rangeOffset: number; rangeLength: number; text: string }> }) => void> = [];
   readonly uri = { toString: () => 'damocles-document:/doc' };
   private readonly language: string;
   constructor(text: string, language: string) {
@@ -26,7 +26,7 @@ class FakeModel {
   setEOL(): void {}
   updateOptions(): void {}
   detectIndentation(): void {}
-  onDidChangeContent(listener: () => void): { dispose(): void } {
+  onDidChangeContent(listener: FakeModel['listeners'][number]): { dispose(): void } {
     this.listeners.push(listener);
     return { dispose: () => {} };
   }
@@ -45,16 +45,21 @@ class FakeModel {
   pushStackElement(): void { this.history.push('|'); }
   pushEditOperations(_selections: unknown, edits: Array<{ range: Range; text: string }>): void {
     const sorted = [...edits].sort((a, b) => this.offsetOf(b.range.startLineNumber, b.range.startColumn) - this.offsetOf(a.range.startLineNumber, a.range.startColumn));
-    for (const { range, text } of sorted) {
-      this.text = this.text.slice(0, this.offsetOf(range.startLineNumber, range.startColumn)) + text + this.text.slice(this.offsetOf(range.endLineNumber, range.endColumn));
-    }
+    // As Monaco reports one edit: its changes from the bottom up.
+    const changes = sorted.map(({ range, text }) => {
+      const start = this.offsetOf(range.startLineNumber, range.startColumn);
+      const end = this.offsetOf(range.endLineNumber, range.endColumn);
+      this.text = this.text.slice(0, start) + text + this.text.slice(end);
+      return { rangeOffset: start, rangeLength: end - start, text };
+    });
     this.history.push('edit');
-    for (const listener of this.listeners) listener();
+    for (const listener of this.listeners) listener({ changes });
   }
   /** A keystroke: the user's edit, which the store reports. */
   type(text: string): void {
+    const changes = [{ rangeOffset: 0, rangeLength: this.text.length, text }];
     this.text = text;
-    for (const listener of this.listeners) listener();
+    for (const listener of this.listeners) listener({ changes });
   }
   dispose(): void { this.disposed = true; }
   isDisposed(): boolean { return this.disposed; }
@@ -257,7 +262,10 @@ describe('format on save in the shell', () => {
     api.editorFlush({ requestId: 'r1', format: ['doc-t1'] });
     await vi.runAllTimersAsync();
     expect(model.text).toBe('const a = 1;\n');
-    expect(api.reportEdit).toHaveBeenLastCalledWith(expect.objectContaining({ documentId: 'doc-t1', text: 'const a = 1;\n' }));
+    const sent = vi.mocked(api.reportEdit).mock.lastCall![0];
+    if (!('changes' in sent)) throw new Error('the format went as the whole buffer');
+    expect(sent.documentId).toBe('doc-t1');
+    expect(sent.changes.reduce((text, change) => text.slice(0, change.offset) + change.text + text.slice(change.offset + change.length), 'const a=1')).toBe('const a = 1;\n');
     expect(vi.mocked(api.reportEdit).mock.invocationCallOrder.at(-1)!).toBeLessThan(vi.mocked(api.editorFlushed).mock.invocationCallOrder[0]!);
     expect(api.editorFlushed).toHaveBeenCalledWith('r1');
   });

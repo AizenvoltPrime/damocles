@@ -338,7 +338,10 @@ const api: DamoclesShellApi = {
     }) as Promise<EditorOpenResult>,
   editorTab: (request) => ipcRenderer.invoke(SHELL_CHANNELS.editorTab, { action: request.action, tabId: request.tabId }) as Promise<void>,
   reportEdit: (edit) => {
-    ipcRenderer.send(SHELL_CHANNELS.editorEdit, { documentId: edit.documentId, version: edit.version, seq: edit.seq, text: edit.text, overReload: edit.overReload });
+    const { documentId, version, seq } = edit;
+    ipcRenderer.send(SHELL_CHANNELS.editorEdit, 'changes' in edit
+      ? { documentId, version, seq, changes: edit.changes.map((change) => ({ offset: change.offset, length: change.length, text: change.text })) }
+      : { documentId, version, seq, text: edit.text, overReload: edit.overReload });
   },
   saveDocument: (request) => ipcRenderer.invoke(SHELL_CHANNELS.editorSave, { documentId: request.documentId, version: request.version, text: request.text }) as Promise<EditorSaveResult>,
   saveDocumentAs: (request) => ipcRenderer.invoke(SHELL_CHANNELS.editorSaveAs, { documentId: request.documentId, version: request.version, text: request.text }) as Promise<EditorSaveResult>,
@@ -369,6 +372,7 @@ const api: DamoclesShellApi = {
   editorFlushed: (requestId) => {
     ipcRenderer.send(SHELL_CHANNELS.editorFlushed, { requestId });
   },
+  onEditorResync: (listener) => subscribe<{ documentId: string }>(SHELL_CHANNELS.editorResync, (message) => listener(message.documentId)),
   onEditorFocus: (listener) => subscribe<{ tabId: string }>(SHELL_CHANNELS.editorFocus, (message) => listener(message.tabId)),
   onEditorReveal: (listener) => subscribe<EditorReveal>(SHELL_CHANNELS.editorReveal, listener),
   browserAction: (request) => ipcRenderer.invoke(SHELL_CHANNELS.browserAction, { tabId: request.tabId, action: request.action }) as Promise<void>,

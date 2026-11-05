@@ -218,6 +218,7 @@ export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainReques
   'catalog.rename': 'core',
   'catalog.tag': 'core',
   'catalog.delete': 'core',
+  'sessionFiles.write': 'core',
   'folders.setDefault': 'core',
   'browser.newPage': 'refused',
   'worktree.retrySetup': 'core',

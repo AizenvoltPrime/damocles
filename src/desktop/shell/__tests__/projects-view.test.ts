@@ -83,23 +83,34 @@ const menuLabels = (api: FakeShellApi): string[] => {
 };
 
 describe('Projects view toggle', () => {
-  it('shows Flat and By host as an equal toggle and sets the view main stores', async () => {
+  it('is one title action named for the other view, and a click sets the view main stores', async () => {
     const { wrapper, api } = mountSection({ view: 'flat' });
-    const toggle = wrapper.get('[data-testid="projects-view"]');
-    expect(toggle.attributes('aria-label')).toBe('Project view');
-    expect(wrapper.get('[data-testid="projects-view-flat"]').text()).toBe('Flat');
-    expect(wrapper.get('[data-testid="projects-view-flat"]').attributes('aria-pressed')).toBe('true');
-    expect(wrapper.get('[data-testid="projects-view-grouped"]').text()).toBe('By host');
-    expect(wrapper.get('[data-testid="segmented-pill"]').attributes('style')).toContain('translateX(0%)');
+    const toggle = () => wrapper.get('[data-testid="projects-view"]');
+    expect(wrapper.findAll('[data-testid="projects-view"]')).toHaveLength(1);
+    expect(toggle().element.closest('[data-testid="sidebar-section-actions"]')).not.toBeNull();
+    expect(wrapper.find('[data-testid="sidebar-section-chip"]').exists()).toBe(false);
+    expect(toggle().attributes('data-view')).toBe('flat');
+    expect(toggle().attributes('aria-label')).toBe('View by Host');
+    expect(toggle().attributes('title')).toBe('View by Host');
+    expect(toggle().attributes('aria-pressed')).toBeUndefined();
 
-    await wrapper.get('[data-testid="projects-view-grouped"]').trigger('click');
+    await toggle().trigger('click');
     expect(api.setProjectsView).toHaveBeenCalledWith('grouped');
 
     await wrapper.setProps({ view: 'grouped' });
-    expect(wrapper.get('[data-testid="projects-view-grouped"]').attributes('aria-pressed')).toBe('true');
-    expect(wrapper.get('[data-testid="segmented-pill"]').attributes('style')).toContain('translateX(100%)');
-    await wrapper.get('[data-testid="projects-view-flat"]').trigger('click');
+    expect(toggle().attributes('data-view')).toBe('grouped');
+    expect(toggle().attributes('aria-label')).toBe('View as List');
+    expect(toggle().attributes('title')).toBe('View as List');
+    expect(toggle().attributes('aria-pressed')).toBeUndefined();
+    await toggle().trigger('click');
     expect(api.setProjectsView).toHaveBeenLastCalledWith('flat');
+  });
+
+  it('names the action in Greek', () => {
+    shellI18n.global.locale.value = 'el';
+    const toggle = (view: ProjectsView) => mountSection({ view }).wrapper.get('[data-testid="projects-view"]');
+    expect(toggle('flat').attributes('aria-label')).toBe('Προβολή ανά υπολογιστή');
+    expect(toggle('grouped').attributes('aria-label')).toBe('Προβολή ως λίστα');
   });
 
   it('folds the Untrusted badge of a remote row to its shield in a narrow flat row, so the name keeps room', () => {

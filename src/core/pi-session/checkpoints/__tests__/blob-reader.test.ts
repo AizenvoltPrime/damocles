@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SPAWN_TEST_TIMEOUT_MS } from '../../../../__mocks__/spawn-budget';
-import { EDITOR_MAX_DOCUMENT_BYTES } from '../../../../shared/types/messages';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../../shared/types/messages';
 import { gitExecutable } from '../../../git-executable';
 import { processLauncher, type LaunchedProcess, type Launcher, type SpawnSpec } from '../../../process-launcher';
 import { createBlobReaders, openBlobReader } from '../blob-reader';
@@ -79,7 +79,7 @@ describe('the checkpoint blob reader', { timeout: SPAWN_TEST_TIMEOUT_MS * 2 }, (
   });
 
   it('reads through content past the review\'s bound as too large and answers the next read', async () => {
-    const { repoDir, commit } = repoWith({ 'big.txt': 'x'.repeat(EDITOR_MAX_DOCUMENT_BYTES + 1), 'after.txt': 'after\n' });
+    const { repoDir, commit } = repoWith({ 'big.txt': 'x'.repeat(EDITOR_CONFIRM_DOCUMENT_BYTES + 1), 'after.txt': 'after\n' });
     const reader = openBlobReader(repoDir);
     expect(await Promise.all([reader.read(commit, 'big.txt'), reader.read(commit, 'after.txt')])).toEqual([{ kind: 'tooLarge' }, { kind: 'text', text: 'after\n' }]);
     await reader.close();

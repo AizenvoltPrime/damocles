@@ -443,9 +443,8 @@ function parseBackupId(raw: unknown): { ok: boolean; backupId?: string } {
 }
 
 /**
- * One saved tab, or undefined when any field is missing or malformed. An absolute path reopens through the rules main opens a
- * core-named path by, with editable through openUserPath only while it still resolves to itself, or with outside 'plans'
- * through openPlan.
+ * One saved tab, or undefined when any field is missing or malformed. An absolute path names a file outside every project,
+ * which reopens through openResolvedPath only while it still resolves to itself.
  */
 export function parsePersistedTab(raw: unknown): PersistedTab | undefined {
   if (!isRecord(raw)) return undefined;
@@ -481,21 +480,15 @@ export function parsePersistedTab(raw: unknown): PersistedTab | undefined {
   }
   const filePath = field(raw, 'path');
   const authority = field(raw, 'authority');
-  const editable = field(raw, 'editable');
   if (authority !== undefined) {
-    // a host's path, in its own OS's rules; it reopens only through the rule it names, once that host connects
-    const outside = field(raw, 'outside');
-    const valid = typeof authority === 'string' && authority.length > 0 && authority.length <= MAX_ID_LENGTH && authority !== 'local' && (outside === 'plans' || outside === 'user');
-    return valid && typeof filePath === 'string' && filePath.length <= MAX_PATH_LENGTH && isAbsoluteFolderKey(filePath) && !filePath.includes('\0') && backup.backupId === undefined && editable === undefined
-      ? { kind, authority, path: filePath, outside }
+    // a host's path, in its own OS's rules, reopened once that host connects; its backup names no tab
+    const valid = typeof authority === 'string' && authority.length > 0 && authority.length <= MAX_ID_LENGTH && authority !== 'local';
+    return valid && typeof filePath === 'string' && filePath.length <= MAX_PATH_LENGTH && isAbsoluteFolderKey(filePath) && !filePath.includes('\0') && backup.backupId === undefined
+      ? { kind, authority, path: filePath }
       : undefined;
   }
   if (typeof filePath !== 'string' || filePath.length > MAX_PATH_LENGTH || !path.isAbsolute(filePath) || filePath.includes('\0')) return undefined;
-  const outside = field(raw, 'outside');
-  // only a file the user named or a plan opens editable outside every project, so only their buffers have a backup
-  if (editable === true && outside === undefined) return { kind, path: filePath, editable, ...withBackup };
-  if (outside === 'plans' && editable === undefined) return { kind, path: filePath, outside, ...withBackup };
-  return editable === undefined && outside === undefined && backup.backupId === undefined ? { kind, path: filePath } : undefined;
+  return { kind, path: filePath, ...withBackup };
 }
 
 /** The saved editor: each malformed tab or recent file is dropped and logged, the rest kept. */

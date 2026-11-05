@@ -4,7 +4,8 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { findOnAbsolutePathAsync } from '../../../../../core/system-tools';
 import { runProcess } from '../../../../../core/process-launcher';
-import { buildPosixStage1 } from '../stage1';
+import { buildPosixStage1, buildWindowsStage1 } from '../stage1';
+import WINDOWS_STAGE1 from '../stage1-windows.ps1';
 import { powerShell, runPowerShell, runSh, scratchDir, shellPath, stageMessages, withPosixDefinitions, withWindowsDefinitions } from './shells';
 
 // pinned as scripts/server-targets.mjs ALPINE_TARGET_IMAGE pins it
@@ -142,7 +143,7 @@ clean_previous '${previous}/' '${home}/current'; kill "$daemon"`, home);
 
   it.skipIf(posixOnly || process.platform !== 'linux')('stops before choosing <install> when the user name is empty', async () => {
     const home = scratchDir('home-');
-    const stage = buildPosixStage1({ manifest: { version: '3.7.0', protocolVersion: 1, packages: {} }, releasesUrl: 'https://example.invalid/releases', installFolder: shellPath(home) });
+    const stage = buildPosixStage1({ manifest: { version: '3.7.0', protocolVersion: 1, published: true, packages: {} }, releasesUrl: 'https://example.invalid/releases', installFolder: shellPath(home) });
     const output = await runSh(`HOME='${shellPath(home)}'\nid() { :; }\n${stage}`);
     expect(stageMessages(output)).toEqual([{ kind: 'step', step: 'checking' }, { kind: 'fail', code: 'unknown', params: { reason: 'noUserName' } }]);
     expect(readdirSync(home)).toEqual([]);
@@ -184,6 +185,40 @@ clean_previous '${previous}/' '${home}/current'; kill "$daemon"`, home);
       expect(readdirSync(path.join(home, 'install'))).toEqual(['3.7.0-linux-x64']);
       expect(readFileSync(path.join(home, 'self-test-stdin'), 'utf8')).toBe('');
       expect(output.stdout.toString('utf8')).toContain('rest=PROTOCOL BYTES');
+    });
+
+    // stage 1's main from its package line on: the folder is named by the line's server version
+    const lineBody = (home: string, fixture: { archive: string; sha: string; size: number }, serverVersion: string, url: string): string => [
+      tarPrelude,
+      `install='${shellPath(path.join(home, 'install'))}'; mkdir -p "$install"; target=linux-x64`,
+      `read_package 'package.tar.gz ${fixture.sha} ${fixture.size} ${serverVersion} ${url}'`,
+      'version_dir="$install/$server_version-$target"; lock="$install/install.lock"; takeover="$install/install.lock.takeover"',
+      // a download tool that ran leaves its mark; the upload hands over the fixture
+      `curl() { : > '${shellPath(path.join(home, 'curl-ran'))}'; return 1; }`,
+      `wget() { : > '${shellPath(path.join(home, 'wget-ran'))}'; return 1; }`,
+      `upload() { say '{"kind":"upload"}'; cp '${shellPath(fixture.archive)}' "$1"; }`,
+      'if ! installed "$version_dir"; then install_version; fi; say \'{"kind":"settled"}\'',
+    ].join('\n');
+
+    it('installs another build of the same version beside the plain version\'s folder, and the same build again installs nothing', async () => {
+      const home = scratchDir('home-');
+      const fixture = await packageFixture(home);
+      const install = path.join(home, 'install');
+      versionFolder(install, '3.7.0-linux-x64');
+      writeFileSync(path.join(install, '3.7.0-linux-x64', 'bin', 'damocles-server'), '#!/bin/sh\n', { mode: 0o755 });
+      const build = '3.7.0+0123456789ab';
+      expect(stageMessages(await sh(lineBody(home, fixture, build, 'https://example.invalid/v3.7.0/package.tar.gz'), home))).toEqual([{ kind: 'step', step: 'installing' }, { kind: 'upload' }, { kind: 'settled' }]);
+      expect(readdirSync(install).filter((name) => !name.startsWith('install.lock')).sort()).toEqual(['3.7.0+0123456789ab-linux-x64', '3.7.0-linux-x64']);
+      expect(readdirSync(path.join(install, `${build}-linux-x64`)).sort()).toEqual(['bin', 'server-package.json']);
+      expect(stageMessages(await sh(lineBody(home, fixture, build, 'https://example.invalid/v3.7.0/package.tar.gz'), home))).toEqual([{ kind: 'settled' }]);
+    });
+
+    it('asks for the upload at once for the URL -, running neither curl nor wget', async () => {
+      const home = scratchDir('home-');
+      const fixture = await packageFixture(home);
+      expect(stageMessages(await sh(lineBody(home, fixture, '3.7.0+0123456789ab', '-'), home))).toEqual([{ kind: 'step', step: 'installing' }, { kind: 'upload' }, { kind: 'settled' }]);
+      expect(readdirSync(path.join(home, 'install')).filter((name) => !name.startsWith('install.lock'))).toEqual(['3.7.0+0123456789ab-linux-x64']);
+      expect([existsSync(path.join(home, 'curl-ran')), existsSync(path.join(home, 'wget-ran'))]).toEqual([false, false]);
     });
 
     it('fails with notWritable, releasing the lock, when the staging folder cannot be made', async () => {
@@ -338,6 +373,25 @@ describe('the install folder in a real PowerShell', { timeout: 120_000 }, async 
     expect(readdirSync(versionDir).sort()).toEqual(['dist', 'node', 'server-package.json']);
     expect(readdirSync(install)).toEqual(['3.7.0-win32-x64']);
     expect(output.stdout.toString('utf8')).toContain('rest=PROTOCOL BYTES');
+  });
+
+  it.skipIf(windowsOnly)('runs stage 1\'s main into the folder its package line\'s server version names, with the line\'s URL', async () => {
+    const home = scratchDir('home-');
+    const pkg = { file: 'damocles-server-3.7.0-win32-x64.zip', sha256: 'a'.repeat(64), size: 10, serverVersion: '3.7.0+0123456789ab' };
+    const stage = buildWindowsStage1({ manifest: { version: '3.7.0', protocolVersion: 1, published: false, packages: { 'win32-x64': pkg, 'win32-arm64': { ...pkg, file: 'damocles-server-3.7.0-win32-arm64.zip' } } } });
+    const parameters = /# BEGIN PARAMETERS\n([\s\S]*?)\n# END PARAMETERS/.exec(stage)![1]!;
+    const script = [
+      // the probe's checks pass, and the install and the bridge report what main gave them
+      'function Test-DamoclesWindowsBuild { }', 'function Test-DamoclesSpace { }', 'function Test-DamoclesGitBash { }', 'function Test-DamoclesWmi { }',
+      'function Install-DamoclesVersion { [Console]::Out.Write("install=$(Split-Path -Leaf $versionDir) url=$packageUrl size=$packageSize|") }',
+      'function Start-DamoclesBridge([string]$dir) { [Console]::Out.Write("bridge=$dir") }',
+      parameters,
+      WINDOWS_STAGE1.slice(WINDOWS_STAGE1.indexOf('# BEGIN MAIN')),
+    ].join('\n');
+    const stdout = (await ps(script, home)).stdout.toString('utf8');
+    expect(stdout).toContain('install=3.7.0+0123456789ab-win32-');
+    expect(stdout).toContain(' url=- size=10|');
+    expect(stdout).toContain(`bridge=${path.join(home, '.damocles', 'server', '3.7.0+0123456789ab-win32-')}`);
   });
 
   it.skipIf(windowsOnly)('takes a previous folder reached through a junction as the current one, and leaves it alone', async () => {

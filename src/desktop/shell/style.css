@@ -7,6 +7,7 @@
 @source "../../webview/components/icons/ProviderLogo.vue";
 @source "../../webview/components/HostBadge.vue";
 @source "../../webview/components/HostUpdateBanner.vue";
+@source "../../webview/components/banner-tone.ts";
 
 @theme {
   --font-mono: var(--d-mono);
@@ -79,6 +80,14 @@
 .engine-host-pill-leave-active {
   pointer-events: none;
   animation: d-fade 0.16s ease-in reverse both;
+}
+
+/* Its tone eases from danger to warning as a Restart starts; this replaces d-press's transition, which Tailwind cannot outrank. */
+.engine-tone {
+  transition:
+    transform 0.1s var(--ease-out),
+    color 0.2s var(--ease-out),
+    border-color 0.2s var(--ease-out);
 }
 
 .update-pill-leave-active,

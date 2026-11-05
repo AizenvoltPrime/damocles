@@ -1,4 +1,5 @@
 import type { Disposable } from '../../../platform/disposable';
+import { LocalizedError } from '../../../shared/localized-text';
 import { isRelativeFilePath } from '../../../shared/relative-path';
 import { visibleText } from '../../../shared/visible-text';
 import { pathFor } from '../../../shared/project-location';
@@ -52,7 +53,7 @@ const fileNameCollator = new Intl.Collator(undefined, { numeric: true });
 
 // VS Code's default explorer order (explorer.sortOrder "default", compareFileNamesDefault): folders first, then a numeric
 // collation, the shorter name first among names it ranks equal.
-export function compareEntries(a: FileEntry, b: FileEntry): number {
+export function compareEntries(a: Pick<FileEntry, 'kind' | 'name'>, b: Pick<FileEntry, 'kind' | 'name'>): number {
   if (a.kind !== b.kind) return a.kind === 'dir' ? -1 : 1;
   const result = fileNameCollator.compare(a.name, b.name);
   if (result !== 0) return result;
@@ -249,6 +250,8 @@ export class FileTree implements Disposable {
       await run();
       return { ok: true };
     } catch (err) {
+      // thrown on whole, so its text renders in the user's language, which a message string here would not
+      if (err instanceof LocalizedError) throw err;
       this.deps.log(`[files] ${action} ${relativePath} failed: ${errorText(err)}`);
       return { ok: false, reason: 'failed', message: errorText(err) };
     }

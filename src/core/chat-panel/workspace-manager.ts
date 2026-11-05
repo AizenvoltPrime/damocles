@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import { homedir } from "os";
 import type { Platform } from "../../platform/platform";
 import * as path from "path";
 import { SlashCommandService } from "./slash-command-service";
@@ -15,8 +16,17 @@ import type { HostInstance } from "./types";
 import type { PanelHost } from "../../platform/window-service";
 import type { FolderTarget } from "../workspace-folders/folder-registry";
 import { log } from "../logger";
-import { l } from "../l10n";
+import { errorTextOf, l } from "../l10n";
 import { isWithinRoot } from "../compass/util";
+import { isInsideFolder, isUncOrDevicePath } from "../../shared/project-location";
+import { LocalizedError } from "../../shared/localized-text";
+
+/** `~`, `~/…` (and `~\…` on Windows) name this machine's home, as pi's `normalizePath` reads them. */
+function expandHome(filePath: string): string {
+  if (filePath === "~") return homedir();
+  if (filePath.startsWith("~/") || (process.platform === "win32" && filePath.startsWith("~\\"))) return path.join(homedir(), filePath.slice(2));
+  return filePath;
+}
 
 export interface WorkspaceManagerConfig {
   postMessage: (host: PanelHost, message: ExtensionToWebviewMessage) => void;
@@ -142,19 +152,42 @@ export class WorkspaceManager {
     // than against the drive root (`\hello_world.ts`). Deliberately no containment
     // guard here (unlike the rewind diff): the agent legitimately reads/writes files outside the folder,
     // and this only opens a file in the editor (no write), so absolute and `..` paths must resolve to the
-    // real file the card names.
-    const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(folder.fsPath, filePath);
+    // real file the card names. A leading `~` is this machine's home, the chat's, as pi's tools expand it.
+    const expanded = expandHome(filePath);
+    const resolvedPath = path.isAbsolute(expanded) ? expanded : path.resolve(folder.fsPath, expanded);
 
-    // VS Code's default editor shows an error placeholder for a missing path instead of rejecting.
-    const stats = await fs.promises.stat(resolvedPath);
+    // A stat of a share or device path contacts that machine with the user's credentials: the host's editor decides it, unless
+    // a workspace folder holds it as written.
+    if (process.platform === "win32" && isUncOrDevicePath(resolvedPath) && !this.platform.workspaceFolders.folders().some((f) => isInsideFolder({ os: "win32" }, f.fsPath, resolvedPath))) {
+      await this.platform.editor.openFile(resolvedPath, { ...(line && line > 0 ? { line } : {}), panelId });
+      return;
+    }
+    const editorOptions = { ...(line && line > 0 ? { line } : {}), panelId };
+    const absolute = path.resolve(resolvedPath);
+    const holder = this.platform.workspaceFolders.folders().filter((f) => isWithinRoot(absolute, f.fsPath)).sort((a, b) => b.fsPath.length - a.fsPath.length)[0];
+    // The host's confinement resolves the path before the stat (desktop's walks it first, so no stat follows a link on it to a
+    // share); a path it does not confine there, a link leading out or a realpath that fails, is the host's editor's to decide.
+    const walkedFrom = holder?.fsPath ?? path.parse(absolute).root;
+    const confined = await this.platform.confinement.confineExisting(walkedFrom, path.relative(walkedFrom, absolute).split(path.sep).join("/"));
+    if (!confined.ok) {
+      if (confined.reason === "missing") throw new LocalizedError(l("Could not open file: {0}", filePath));
+      await this.platform.editor.openFile(resolvedPath, editorOptions);
+      return;
+    }
+    // a mapped drive's realpath is its share, which only a workspace folder's own makes safe to stat
+    if (!holder && process.platform === "win32" && isUncOrDevicePath(confined.path)) {
+      await this.platform.editor.openFile(resolvedPath, editorOptions);
+      return;
+    }
+    const stats = await fs.promises.stat(confined.path);
     if (stats.isDirectory()) {
       // VS Code's explorer reveal silently does nothing for a folder outside every workspace folder.
-      if (!this.platform.workspaceFolders.folders().some((f) => isWithinRoot(path.resolve(resolvedPath), f.fsPath))) throw new Error(`${resolvedPath} is a folder outside the workspace`);
-      await this.platform.shell.revealPath(resolvedPath);
+      if (!holder) throw new LocalizedError(l("Could not open file: {0}", filePath));
+      await this.platform.shell.revealPath(absolute);
       return;
     }
     // The default editor for the file type: image preview for images, the text editor for text.
-    await this.platform.editor.openFile(resolvedPath, { ...(line && line > 0 ? { line } : {}), panelId });
+    await this.platform.editor.openFile(resolvedPath, editorOptions);
   }
 
   async handleOpenFile(panelId: string, filePath: string, line: number | undefined, folder: FolderTarget): Promise<void> {
@@ -162,7 +195,7 @@ export class WorkspaceManager {
       await this.openFile(filePath, line, folder, panelId);
     } catch (err) {
       log("[WorkspaceManager] Error opening file:", err);
-      void this.platform.notifications.error(l("Could not open file: {0}", filePath));
+      void this.platform.notifications.error(err instanceof LocalizedError ? err.text : l("Could not open {0}: {1}", filePath, errorTextOf(err)));
     }
   }
 

@@ -1,5 +1,5 @@
 import type { SettingsStore } from '../../../platform/settings-store';
-import { MAX_EDITOR_TEXT_CHARS } from '../../preload/shell-channels';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { folderGlob, matchingPattern, MAX_SEARCH_RESULTS, replaceRegExp, type SearchQuery } from '../../../shared/text-search';
 import type {
   FileRef,
@@ -128,7 +128,7 @@ export function searchBuffers(documents: DocumentService, projectKey: string): B
     if (document.kind !== 'text' || document.searchEditor || document.settingsScope !== undefined) return [];
     if (document.untitled) return [{ documentId: document.id, target: { kind: 'untitled', title: document.name }, text: document.text }];
     const location = document.location;
-    if (location?.projectKey !== projectKey || location.relativePath === undefined || document.readOnlyReason === 'outsideProject') return [];
+    if (location?.projectKey !== projectKey || location.relativePath === undefined) return [];
     return [{
       documentId: document.id,
       target: { kind: 'file', relativePath: location.relativePath },
@@ -544,7 +544,7 @@ export class SearchHost {
     };
     let kept = files;
     let serialized = serializeSearchResults(kept, limitHit, labels);
-    while (serialized.text.length > MAX_EDITOR_TEXT_CHARS) {
+    while (serialized.text.length > EDITOR_CONFIRM_DOCUMENT_BYTES) {
       const last = kept.at(-1)!;
       kept = kept.length > 1 ? kept.slice(0, Math.ceil(kept.length / 2)) : [{ ...last, matches: last.matches.slice(0, Math.floor(last.matches.length / 2)) }];
       serialized = serializeSearchResults(kept, true, labels);

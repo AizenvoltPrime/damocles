@@ -119,6 +119,21 @@ export function useSettingsTarget(): Readonly<ShallowRef<SettingsTarget | null>>
   return target;
 }
 
+/** The page is busy: its content is inert under the away banner, and its settings cannot be changed meanwhile. */
+const BUSY: InjectionKey<() => boolean> = Symbol('settingsBusy');
+
+export function provideSettingsBusy(busy: () => boolean): void {
+  provide(BUSY, busy);
+}
+
+/** Closes a layer opened from the page (a select's list, a panel) when the page turns busy, since a choice made there would be dropped. */
+export function closeWhenSettingsBusy(open: Ref<boolean>): void {
+  const busy = inject(BUSY, () => false);
+  watch(busy, (isBusy) => {
+    if (isBusy) open.value = false;
+  });
+}
+
 /** The attached chat's host when it is a remote chat, which a model it cannot reach is named against. */
 const CHAT_HOST: InjectionKey<() => string | undefined> = Symbol('settingsChatHost');
 

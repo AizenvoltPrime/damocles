@@ -93,7 +93,7 @@ function parseFields(body: Uint8Array): Fields | undefined {
 const VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
 const NAME = /^[A-Za-z0-9._-]{1,128}$/;
 const UNSAFE_TEXT = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
-const isVersionText = (value: unknown): value is string => typeof value === 'string' && VERSION.test(value);
+export const isVersionText = (value: unknown): value is string => typeof value === 'string' && VERSION.test(value);
 const isName = (value: unknown): value is string => typeof value === 'string' && NAME.test(value);
 const isDisplayText = (value: unknown, max: number): value is string => typeof value === 'string' && value.length <= max && !UNSAFE_TEXT.test(value);
 

@@ -1021,6 +1021,7 @@ function fakeConnection(live: readonly LiveTerminal[] = []): FakeConnection {
     watchReady: false,
     transfers: false,
     outside: false,
+    listing: false,
     openStream: () => { throw new Error('no transfer streams in this suite'); },
     log: () => undefined,
   });

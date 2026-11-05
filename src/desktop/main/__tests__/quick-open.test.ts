@@ -9,12 +9,13 @@ import { build } from 'esbuild';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { QuickOpenListingDeps } from '../../workspace/quick-open-listing';
-import { testRemote, testWorkspaces } from './test-workspaces';
+import { testRemote, testWorkspaces, unretainedSpellings } from './test-workspaces';
 import { FileTree } from '../files/file-tree';
 import { projectKeyOf } from '../../../shared/project-location';
+import { LocalizedError } from '../../../shared/localized-text';
 import * as fuzzy from '../../../core/quick-open/fuzzy-match';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
-import { OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRequest, type PopupAnswer, type QuickOpenPick, type QuickOpenProjectResult, type QuickOpenResult } from '../../preload/overlay-channels';
+import { OVERLAY_CHANNELS, quickOpenRowKey, type OverlayAnswer, type OverlayRequest, type PopupAnswer, type QuickOpenPick, type QuickOpenProjectResult, type QuickOpenResponse, type QuickOpenResult } from '../../preload/overlay-channels';
 import { createQuickOpenFileSearch } from '../../quick-open-worker/file-search';
 import { ripgrepFileArgs, type WorkerReply, type WorkerRequest } from '../../quick-open-worker/protocol';
 import type { Project } from '../../local-services/confine';
@@ -22,7 +23,7 @@ import type { MenuState } from '../menu';
 import { QUICK_OPEN_WORKER_SILENCE_MS, QuickOpenIndex, QuickOpenPicker, type QuickOpenAnswer, type QuickOpenWorker } from '../quick-open';
 import { MAX_EDITOR_LINE } from '../../preload/shell-channels';
 import type { ProjectWorkspace } from '../../workspace/project-workspace';
-import { OutsideFilesUnsupportedError } from '../workspace/remote-workspace';
+import { ListingUnsupportedError, OutsideFilesUnsupportedError } from '../workspace/remote-workspace';
 import { fakeHandleWhileOpen } from './fake-popup-channels';
 import { NO_SCM_MENU_STATE } from '../scm/scm-host';
 
@@ -34,6 +35,7 @@ vi.mock('../../../core/quick-open/fuzzy-match', async (importOriginal) => {
 // This computer alone: no host is known, and ~ is the test's root.
 const TYPED_PATHS = {
   authorityOs: (authority: string) => (authority === 'local' ? process.platform : undefined),
+  spellings: unretainedSpellings(),
   homedir: (authority: string) => (authority === 'local' ? root : undefined),
   hostName: (authority: string) => authority,
 };
@@ -50,7 +52,7 @@ async function openValue(answer: unknown): Promise<unknown> {
   return answered.value;
 }
 
-const CONTEXT: MenuState = { chat: true, editor: true, browser: false, page: false, focus: 'editor', updateCheck: false, terminalCreate: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false };
+const CONTEXT: MenuState = { chat: true, liveChat: true, editor: true, browser: false, page: false, focus: 'editor', updateCheck: false, terminalCreate: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false };
 
 let root: string;
 let alpha: Project;
@@ -656,17 +658,18 @@ describe('Quick Open of a typed path', () => {
     fs.writeFileSync(file, 'notes\n');
   });
 
-  const pathRow = (filePath: string): QuickOpenResult => {
+  // the exact row of a typed file, completed to input as its folder's listing offers it
+  const pathRow = (filePath: string, input: string = filePath, caret?: number): QuickOpenResult => {
     const label = path.basename(filePath);
     const description = path.dirname(filePath);
-    return { kind: 'path', authority: 'local', path: filePath, label, description, labelMatches: [[0, label.length]], descriptionMatches: [[0, description.length]], recent: false };
+    const complete = { input, ...(caret !== undefined ? { caret } : {}) };
+    return { kind: 'path', authority: 'local', path: filePath, label, description, labelMatches: [[0, label.length]], descriptionMatches: [[0, description.length]], recent: false, complete, exact: true };
   };
 
-  // An index over this computer's workspace whose resolveOutside is the test's.
-  const indexResolving = (worker: QuickOpenWorker, resolveOutside: (real: ProjectWorkspace['files']['resolveOutside'], target: string) => ReturnType<ProjectWorkspace['files']['resolveOutside']>): QuickOpenIndex => {
+  // An index over this computer's workspace whose files' methods the test replaces.
+  const indexWith = (worker: QuickOpenWorker, change: (real: ProjectWorkspace['files']) => Partial<ProjectWorkspace['files']>): QuickOpenIndex => {
     const workspaces = testWorkspaces({ watchers: createFakePlatform().fileWatchers, rgPath: async () => rgPath, log: (line) => logged.push(line) });
-    const real = workspaces.local.files.resolveOutside;
-    const local: ProjectWorkspace = { ...workspaces.local, files: { ...workspaces.local.files, resolveOutside: (target) => resolveOutside(real, target) } };
+    const local: ProjectWorkspace = { ...workspaces.local, files: { ...workspaces.local.files, ...change(workspaces.local.files) } };
     return new QuickOpenIndex({
       projects: () => [alpha, beta],
       workspaces: { ...workspaces, local, forAuthority: () => local },
@@ -679,6 +682,10 @@ describe('Quick Open of a typed path', () => {
     });
   };
 
+  // An index over this computer's workspace whose resolveOutside is the test's.
+  const indexResolving = (worker: QuickOpenWorker, resolveOutside: (real: ProjectWorkspace['files']['resolveOutside'], target: string) => ReturnType<ProjectWorkspace['files']['resolveOutside']>): QuickOpenIndex =>
+    indexWith(worker, (real) => ({ resolveOutside: (target) => resolveOutside(real.resolveOutside, target) }));
+
   // The text search's answer to the worker query of raw, once main posted it.
   const answerText = async (worker: ScriptedWorker, raw: string, results: readonly unknown[] = []): Promise<void> => {
     await worker.posted((request) => request.kind === 'query' && request.raw === raw);
@@ -686,14 +693,14 @@ describe('Quick Open of a typed path', () => {
     worker.emit('message', { kind: 'answer', id: query.id, results });
   };
 
-  it('answers a file outside every project as the only row, fully highlighted, with its :line:column, ahead of the text search', async () => {
+  it('answers a file outside every project as the first row, fully highlighted, with its :line:column, ahead of the text search', async () => {
     const worker = new ScriptedWorker();
     const quickOpen = index(() => worker);
     const search = quickOpen.open();
     const context = { currentProjectKey: alpha.key, recent: [] };
     expect(await quickOpen.query(`${file}:3:5`, context, { id: search, generation: 0 })).toEqual({ currentProjectKey: alpha.key, line: 3, column: 5, mention: false, results: [pathRow(file)] });
-    expect(await quickOpen.query(`"${file}"`, context, { id: search, generation: 1 })).toEqual({ currentProjectKey: alpha.key, mention: false, results: [pathRow(file)] });
-    expect(await quickOpen.query('~/elsewhere/notes.txt(7)', context, { id: search, generation: 2 })).toEqual({ currentProjectKey: alpha.key, line: 7, mention: false, results: [pathRow(file)] });
+    expect(await quickOpen.query(`"${file}"`, context, { id: search, generation: 1 })).toEqual({ currentProjectKey: alpha.key, mention: false, results: [pathRow(file, `"${file}"`, file.length + 1)] });
+    expect(await quickOpen.query('~/elsewhere/notes.txt(7)', context, { id: search, generation: 2 })).toEqual({ currentProjectKey: alpha.key, line: 7, mention: false, results: [pathRow(file, '~/elsewhere/notes.txt')] });
     // the worker never answered: the text search ran beside each lookup
     expect(worker.queries).toHaveLength(3);
     quickOpen.dispose();
@@ -703,16 +710,18 @@ describe('Quick Open of a typed path', () => {
     touch(alpha, 'src/app.ts');
     const quickOpen = index(() => new ScriptedWorker());
     const answer = await quickOpen.query(path.join(alpha.fsPath, 'src', 'app.ts'), { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
-    expect(answer?.results).toEqual([{ kind: 'project', projectKey: alpha.key, projectName: 'alpha', relativePath: 'src/app.ts', label: 'app.ts', description: 'src', labelMatches: [[0, 6]], descriptionMatches: [[0, 3]], recent: false }]);
+    expect(answer?.results).toEqual([
+      { kind: 'project', projectKey: alpha.key, projectName: 'alpha', relativePath: 'src/app.ts', label: 'app.ts', description: 'src', labelMatches: [[0, 6]], descriptionMatches: [[0, 3]], recent: false, complete: { input: path.join(alpha.fsPath, 'src', 'app.ts') }, exact: true },
+    ]);
     quickOpen.dispose();
   });
 
-  it('searches a missing file, a folder, an @ mention or a scoped request\'s typed path as text in the worker', async () => {
+  it('sends a typed path, an @ mention and a scoped request\'s typed path to the worker\'s text search', async () => {
     const worker = new ScriptedWorker();
     const quickOpen = index(() => worker);
     const search = quickOpen.open();
     const context = { currentProjectKey: alpha.key, recent: [] };
-    const queries = [path.join(elsewhere, 'gone.txt'), elsewhere, `@${file}`];
+    const queries = [path.join(root, 'gone', 'x.txt'), elsewhere, `@${file}`];
     queries.forEach((raw, generation) => void quickOpen.query(raw, context, { id: search, generation }));
     void quickOpen.query(file, { ...context, scope: { projectKey: alpha.key, projectName: 'alpha', folder: '' } }, { id: search, generation: 3 });
     expect(worker.queries.map((query) => query.raw).sort()).toEqual([...queries, file].sort());
@@ -744,7 +753,7 @@ describe('Quick Open of a typed path', () => {
     const gates: Array<() => void> = [];
     const quickOpen = indexResolving(worker, (real, target) => {
       looked.push(target);
-      return new Promise((resolve) => gates.push(() => resolve(real(target, {}))));
+      return new Promise((resolve) => gates.push(() => resolve(real(target))));
     });
     const search = quickOpen.open();
     const context = { currentProjectKey: alpha.key, recent: [] };
@@ -768,7 +777,7 @@ describe('Quick Open of a typed path', () => {
     quickOpen.dispose();
   });
 
-  it('gives no row and answers the text search when a lookup fails, logging an unexpected error, a permission error once per root, and no daemon without files.outside', async () => {
+  it('gives no row and answers the text search when a lookup fails, logging an unexpected error, a permission error once per root, and no daemon without files.outside or drive that does not answer', async () => {
     const worker = new ScriptedWorker();
     let failure: Error = new Error('the disk caught fire');
     let calls = 0;
@@ -784,20 +793,28 @@ describe('Quick Open of a typed path', () => {
       await turnsUntil(() => calls > before);
       await new Promise((resolve) => setImmediate(resolve));
       await answerText(worker, raw);
-      return asked;
+      const answer = await asked;
+      // the listing of the missing folder settles on the file system; the lookup brings no rows once it has
+      expect(await quickOpen.typedPathAnswer(search, generation)).toBeUndefined();
+      return answer;
     };
     const noRow = { currentProjectKey: alpha.key, mention: false, results: [] };
-    expect(await ask(file, 0)).toEqual(noRow);
+    expect(await ask(path.join(root, 'gone', 'notes.txt'), 0)).toMatchObject(noRow);
     expect(logged).toEqual(['[quick-open] a typed path did not resolve: the disk caught fire']);
     logged.length = 0;
     failure = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
-    expect(await ask(path.join(elsewhere, 'a.txt'), 1)).toEqual(noRow);
-    expect(await ask(path.join(elsewhere, 'b.txt'), 2)).toEqual(noRow);
-    const root = path.parse(file).root;
-    expect(logged).toEqual([`[quick-open] a typed path under ${root} on local could not be read (EACCES); later ones there are not logged`]);
+    expect(await ask(path.join(root, 'gone', 'a.txt'), 1)).toMatchObject(noRow);
+    expect(await ask(path.join(root, 'gone', 'b.txt'), 2)).toMatchObject(noRow);
+    const drive = path.parse(file).root;
+    expect(logged).toEqual([`[quick-open] a typed path under ${drive} on local could not be read (EACCES); later ones there are not logged`]);
     logged.length = 0;
     failure = new OutsideFilesUnsupportedError('ssh-remote+box');
-    expect(await ask(path.join(elsewhere, 'c.txt'), 3)).toEqual(noRow);
+    expect(await ask(path.join(root, 'gone', 'c.txt'), 3)).toMatchObject(noRow);
+    expect(logged).toEqual([]);
+    // the link walk's answer for a drive that does not answer, on every keystroke under it
+    failure = Object.assign(new LocalizedError({ message: 'The drive {0} did not answer within a second.', args: ['Q:\\'] }), { code: 'ETIMEDOUT' });
+    expect(await ask(path.join(root, 'gone', 'd.txt'), 4)).toMatchObject(noRow);
+    expect(await ask(path.join(root, 'gone', 'e.txt'), 5)).toMatchObject(noRow);
     expect(logged).toEqual([]);
     quickOpen.dispose();
   });
@@ -833,7 +850,7 @@ describe('Quick Open of a typed path', () => {
   it('brings the row of a typed path whose lookup returned after the text search answered, and opens a pick of it', async () => {
     const worker = new ScriptedWorker();
     const gates: Array<() => void> = [];
-    const quickOpen = indexResolving(worker, (real, target) => new Promise((resolve) => gates.push(() => resolve(real(target, {})))));
+    const quickOpen = indexResolving(worker, (real, target) => new Promise((resolve) => gates.push(() => resolve(real(target)))));
     const handlers = new Map<string, (...args: unknown[]) => unknown>();
     let open = false;
     const responses: unknown[] = [];
@@ -864,6 +881,153 @@ describe('Quick Open of a typed path', () => {
       { generation: 1, currentProjectKey: alpha.key, line: 3, mention: false, results: [pathRow(file)] },
     ]);
     quickOpen.dispose();
+  });
+
+  describe('a typed folder\'s listing', () => {
+    const labels = (answer: QuickOpenAnswer | undefined): string[] => (answer?.results ?? []).map((row) => row.label);
+    const context = () => ({ currentProjectKey: alpha.key, recent: [] });
+    // an index whose listOutside the test gates, counting the requests that reached it
+    const gatedListing = (worker: QuickOpenWorker): { readonly quickOpen: QuickOpenIndex; readonly asked: string[]; readonly release: () => void } => {
+      const asked: string[] = [];
+      let open: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => (open = resolve));
+      const quickOpen = indexWith(worker, (real) => ({
+        listOutside: async (folder, prefix) => {
+          asked.push(prefix);
+          await gate;
+          return real.listOutside(folder, prefix);
+        },
+      }));
+      return { quickOpen, asked, release: () => open!() };
+    };
+
+    beforeEach(() => {
+      fs.mkdirSync(path.join(elsewhere, 'Sub'));
+      fs.writeFileSync(path.join(elsewhere, 'a.txt'), '');
+    });
+
+    it('answers ahead of the text search: .. then folders then files, the typed file first and listed once', async () => {
+      const quickOpen = index(() => new ScriptedWorker());
+      const search = quickOpen.open();
+      expect(labels(await quickOpen.query(`${elsewhere}${path.sep}`, context(), { id: search, generation: 0 }))).toEqual(['..', 'Sub', 'a.txt', 'notes.txt']);
+      const exact = await quickOpen.query(`${path.join(elsewhere, 'a.txt')}:2`, context(), { id: search, generation: 1 });
+      expect(exact).toEqual({ currentProjectKey: alpha.key, line: 2, mention: false, results: [pathRow(path.join(elsewhere, 'a.txt'))] });
+      quickOpen.dispose();
+    });
+
+    it('lists a project\'s file as its project row', async () => {
+      touch(alpha, 'src/app.ts');
+      const quickOpen = index(() => new ScriptedWorker());
+      const answer = await quickOpen.query(path.join(alpha.fsPath, 'src', 'a'), context(), { id: quickOpen.open(), generation: 0 });
+      expect(answer?.results).toEqual([expect.objectContaining({ kind: 'project', projectKey: alpha.key, relativePath: 'src/app.ts', complete: { input: path.join(alpha.fsPath, 'src', 'app.ts') } })]);
+      quickOpen.dispose();
+    });
+
+    it('says a folder has no match or cannot be read, and leaves a missing folder to the text search', async () => {
+      const worker = new ScriptedWorker();
+      const quickOpen = index(() => worker);
+      const search = quickOpen.open();
+      expect(await quickOpen.query(path.join(elsewhere, 'zzz'), context(), { id: search, generation: 0 })).toEqual({ currentProjectKey: alpha.key, mention: false, results: [], emptyText: 'folderNoMatch', emptyName: 'zzz' });
+      const missing = path.join(root, 'gone', 'x');
+      const asked = quickOpen.query(missing, context(), { id: search, generation: 1 });
+      const text = { projectKey: alpha.key, relativePath: 'x.ts', labelMatches: [], descriptionMatches: [], recent: false };
+      await answerText(worker, missing, [text]);
+      expect(await asked).toMatchObject({ results: [expect.objectContaining({ kind: 'project', relativePath: 'x.ts' })] });
+      expect(await quickOpen.typedPathAnswer(search, 1)).toBeUndefined();
+      quickOpen.dispose();
+      const denied = indexWith(new ScriptedWorker(), () => ({ listOutside: async () => ({ kind: 'denied' }) }));
+      expect(await denied.query(`${elsewhere}${path.sep}`, context(), { id: denied.open(), generation: 0 })).toEqual({ currentProjectKey: alpha.key, mention: false, results: [], emptyText: 'folderDenied' });
+      denied.dispose();
+    });
+
+    it('answers the text search while the listing runs, marked pending, then brings the listing in its place', async () => {
+      const worker = new ScriptedWorker();
+      const { quickOpen, release } = gatedListing(worker);
+      const search = quickOpen.open();
+      const raw = `${elsewhere}${path.sep}`;
+      const asked = quickOpen.query(raw, context(), { id: search, generation: 0 });
+      await answerText(worker, raw);
+      expect(await asked).toEqual({ currentProjectKey: alpha.key, mention: false, results: [], pathPending: true });
+      const listed = quickOpen.typedPathAnswer(search, 0);
+      release();
+      expect(labels(await listed)).toEqual(['..', 'Sub', 'a.txt', 'notes.txt']);
+      quickOpen.dispose();
+    });
+
+    it('holds one lookup per request while a listing hangs, and serves a longer name in the same folder from its last whole listing', async () => {
+      const worker = new ScriptedWorker();
+      const { quickOpen, asked, release } = gatedListing(worker);
+      const search = quickOpen.open();
+      const first = quickOpen.query(`${elsewhere}${path.sep}`, context(), { id: search, generation: 0 });
+      await turnsUntil(() => asked.length === 1);
+      void quickOpen.query(`${elsewhere}${path.sep}n`, context(), { id: search, generation: 1 });
+      const newest = quickOpen.query(`${elsewhere}${path.sep}no`, context(), { id: search, generation: 2 });
+      expect(await settled(newest)).toBe(false);
+      expect(asked).toEqual(['']);
+      release();
+      expect(await settled(first)).toBe(false);
+      expect(labels(await newest)).toEqual(['notes.txt']);
+      expect(labels(await quickOpen.query(`${elsewhere}${path.sep}N`, context(), { id: search, generation: 3 }))).toEqual(['notes.txt']);
+      // the whole listing of '' served 'no' and 'N'; another folder asks again, and so does the next request
+      expect(asked).toEqual(['']);
+      await quickOpen.query(`${path.join(elsewhere, 'Sub')}${path.sep}`, context(), { id: search, generation: 4 });
+      await quickOpen.query(`${elsewhere}${path.sep}no`, context(), { id: quickOpen.open(), generation: 0 });
+      expect(asked).toEqual(['', '', 'no']);
+      quickOpen.dispose();
+    });
+
+    it('says an unreadable folder cannot be read when a name follows it too, logging the file lookup\'s refusal once', async () => {
+      const denied = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      const quickOpen = indexWith(new ScriptedWorker(), () => ({ resolveOutside: () => Promise.reject(denied), listOutside: async () => ({ kind: 'denied' }) }));
+      const search = quickOpen.open();
+      for (const [generation, name] of ['x', 'xy'].entries()) {
+        expect(await quickOpen.query(path.join(elsewhere, name), context(), { id: search, generation })).toEqual({ currentProjectKey: alpha.key, mention: false, results: [], emptyText: 'folderDenied' });
+      }
+      expect(logged).toEqual([`[quick-open] a typed path under ${path.parse(file).root} on local could not be read (EACCES); later ones there are not logged`]);
+      quickOpen.dispose();
+    });
+
+    it('gives the file row alone, logging nothing, from a daemon that cannot list', async () => {
+      const quickOpen = indexWith(new ScriptedWorker(), () => ({ listOutside: () => Promise.reject(new ListingUnsupportedError('local')) }));
+      const answer = await quickOpen.query(file, context(), { id: quickOpen.open(), generation: 0 });
+      expect(answer?.results).toEqual([expect.objectContaining({ kind: 'path', path: file })]);
+      expect(logged).toEqual([]);
+      quickOpen.dispose();
+    });
+
+    it('keys each row once and accepts a pick of a listed file by that key, never one of a folder row', async () => {
+      const show = async (pick: QuickOpenPick): Promise<{ readonly outcome: unknown; readonly keys: string[]; readonly logs: string[] }> => {
+        const handlers = new Map<string, (...args: unknown[]) => unknown>();
+        let open = false;
+        const logs: string[] = [];
+        let keys: string[] = [];
+        const picker = new QuickOpenPicker(
+          { handleWhileOpen: fakeHandleWhileOpen(handlers), isOpen: () => open, request: async () => {
+            open = true;
+            const response = (await openValue(handlers.get(OVERLAY_CHANNELS.quickOpenQuery)!({ query: `${elsewhere}${path.sep}`, generation: 1 }))) as QuickOpenResponse;
+            keys = response.results.map(quickOpenRowKey);
+            open = false;
+            return { kind: 'quickOpen', pick };
+          } },
+          index(() => new ScriptedWorker()),
+          context,
+          { capture: () => CONTEXT, list: () => [] },
+          (line) => logs.push(line),
+        );
+        return { outcome: await picker.show(undefined, 'files'), keys, logs };
+      };
+      const listed: QuickOpenPick = { kind: 'path', authority: 'local', path: path.join(elsewhere, 'a.txt'), mention: false };
+      const first = await show(listed);
+      expect(first.outcome).toEqual({ kind: 'pick', pick: listed });
+      expect(new Set(first.keys).size).toBe(first.keys.length);
+      expect(first.keys).toContain(quickOpenRowKey(listed));
+      // a folder row's key is in the answer, yet nothing a pick names can be one
+      const folder = { kind: 'folder', authority: 'local', input: `${elsewhere}${path.sep}Sub${path.sep}` } as unknown as QuickOpenPick;
+      expect(first.keys).toContain(quickOpenRowKey(folder));
+      const refused = await show(folder);
+      expect(refused.outcome).toBeUndefined();
+      expect(refused.logs).toEqual(['[quick-open] ignoring a folder pick that no query returned']);
+    });
   });
 });
 

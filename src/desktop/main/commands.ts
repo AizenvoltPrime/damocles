@@ -334,6 +334,8 @@ const hasEditor = (context: MenuState): boolean => context.editor;
 const editorFocus = (context: MenuState): boolean => context.focus === 'editor';
 
 const hasChat = (context: MenuState): boolean => context.chat;
+// A command that needs the selected chat's core.
+const hasLiveChat = (context: MenuState): boolean => context.liveChat;
 
 const hasTerminal = (context: MenuState): boolean => context.terminal !== undefined;
 
@@ -812,14 +814,14 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
     // The xterm takes Ctrl+Up and Ctrl+Down itself while it has command marks, so the menu shows the keys without owning them.
     { id: MENU_IDS.scrollToPreviousTerminalCommand, title: t('Scroll to Previous Command'), category: terminal, accelerator: 'CmdOrCtrl+Up', registerAccelerator: false, enabled: hasTerminal, run: () => actions.runTerminalAction('scrollToPreviousCommand') },
     { id: MENU_IDS.scrollToNextTerminalCommand, title: t('Scroll to Next Command'), category: terminal, accelerator: 'CmdOrCtrl+Down', registerAccelerator: false, enabled: hasTerminal, run: () => actions.runTerminalAction('scrollToNextCommand') },
-    { id: MENU_IDS.newBrowserPage, title: t('New Browser Page'), category: view, enabled: (context) => context.chat && context.browser, run: () => actions.newBrowserPage() },
+    { id: MENU_IDS.newBrowserPage, title: t('New Browser Page'), category: view, enabled: (context) => context.liveChat && context.browser, run: () => actions.newBrowserPage() },
     { id: MENU_IDS.toggleBrowserDevTools, title: t('Toggle Browser Developer Tools'), category: view, accelerator: 'F12', enabled: (context) => context.page, run: () => actions.toggleBrowserDevTools() },
     { id: MENU_IDS.newSession, title: pkg('command.newSession.title'), category: chat, run: () => actions.newSession() },
     { id: MENU_IDS.cancelSession, title: pkg('command.cancelSession.title'), category: chat, run: () => actions.cancelSession() },
     { id: MENU_IDS.togglePromptNavigator, title: t('Toggle Prompt Navigator'), category: chat, accelerator: 'CmdOrCtrl+K', enabled: hasChat, run: () => actions.togglePromptNavigator() },
-    ...CHAT_FEATURES.map((feature): Command => ({ id: feature.id, title: feature.title, category: chat, enabled: hasChat, run: () => actions.runChatCommand(feature.command) })),
+    ...CHAT_FEATURES.map((feature): Command => ({ id: feature.id, title: feature.title, category: chat, enabled: hasLiveChat, run: () => actions.runChatCommand(feature.command) })),
     // D60: the selected chat's changes tab, in the Chat menu and the palette, while that chat has changes
-    { id: MENU_IDS.chatReviewChanges, title: t('Review Changes'), category: chat, enabled: (context) => context.selectedChatHasChanges, run: () => actions.reviewChatChanges() },
+    { id: MENU_IDS.chatReviewChanges, title: t('Review Changes'), category: chat, enabled: (context) => context.liveChat && context.selectedChatHasChanges, run: () => actions.reviewChatChanges() },
     // D61: the selected chat moves between its project folder and its worktree while it is idle
     { id: MENU_IDS.chatHandOffToWorktree, title: t('Hand Off to Worktree'), category: chat, enabled: (context) => context.handOff?.canHandOff === true && context.handOff.place === 'project', run: () => actions.handOff('worktree') },
     { id: MENU_IDS.chatHandOffToProjectFolder, title: t('Hand Off to Project Folder'), category: chat, enabled: (context) => context.handOff?.canHandOff === true && context.handOff.place === 'worktree', run: () => actions.handOff('project') },

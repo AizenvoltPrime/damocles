@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { AtSign, CircleAlert, CloudOff, FolderSearch, LoaderCircle, Maximize2, Minimize2, MousePointerClick, X } from 'lucide-vue-next';
+import { AtSign, CircleAlert, CloudOff, ExternalLink, FolderSearch, LoaderCircle, Maximize2, Minimize2, MousePointerClick, X } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import type { DamoclesShellApi, FileRef, ShellEditorTab, ShellState } from '../../preload/shell-channels';
 import PaneGrip from '../layout/PaneGrip.vue';
@@ -9,6 +9,7 @@ import { EDITOR_STORE } from './editor-store';
 import EditorTabs from './EditorTabs.vue';
 import Breadcrumbs from './Breadcrumbs.vue';
 import { placeOf, tabFileName, tabPlaces } from './editor-place';
+import { tabHostName } from './tab-labels';
 import ConflictBar from './ConflictBar.vue';
 import CodeEditor from './CodeEditor.vue';
 import DiffEditor from './DiffEditor.vue';
@@ -35,14 +36,15 @@ const tab = computed(() => store.activeTab.value);
 const TEXT_KINDS: ReadonlySet<ShellEditorTab['kind']> = new Set(['code', 'untitled', 'settings', 'log']);
 // A tab's key is its root's (D31); its breadcrumb names the place first, then the project.
 const projectName = computed(() => props.state.projects.find((project) => project.key === parseRootKey(tab.value?.projectKey)?.projectKey)?.name);
+const outsideHostName = computed(() => (tab.value?.host === undefined ? undefined : tabHostName(tab.value, props.state.projects, props.state.hosts)));
 const place = computed(() => (tab.value ? placeOf(tab.value, tabPlaces(store.tabs.value)) : undefined));
 const notDisplayed = computed(() => {
   const documentId = tab.value?.kind === 'notDisplayed' ? tab.value.documentId : undefined;
   const content = documentId === undefined ? undefined : store.contents.value.get(documentId);
   return content?.kind === 'notDisplayed' ? content : undefined;
 });
-// A core-originated placeholder (a git side) is no file, so there is nothing to reveal.
-const notDisplayedOnDisk = computed(() => tab.value?.documentId !== undefined && store.state.value?.documents[tab.value.documentId]?.path !== undefined);
+// Open Anyway sends the document's text before the tab that turns into a code tab.
+const openedAnyway = computed(() => tab.value?.kind === 'notDisplayed' && tab.value.documentId !== undefined && store.contents.value.get(tab.value.documentId)?.kind === 'text');
 // A text tab's content is loaded here too, since a remote file whose host is offline shows a placeholder, never the editor.
 const loadsHere = (current: ShellEditorTab | null): current is ShellEditorTab & { documentId: string } =>
   current !== null && current.documentId !== undefined && (current.kind === 'notDisplayed' || TEXT_KINDS.has(current.kind));
@@ -147,6 +149,7 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
         :api="api"
         :close-shortcut="state.shortcuts.closeEditor"
         :projects="state.projects"
+        :hosts="state.hosts"
         @reveal-in-files="emit('revealInFiles', $event)"
         @focus-overlay="store.setFocusOverlay(true)"
       />
@@ -222,6 +225,7 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
         v-if="!OWN_HEADER_KINDS.has(tab.kind)"
         :tab="tab"
         :project-name="projectName"
+        :host-name="outsideHostName"
         :place="place"
         :diff-stats="store.diffStats.value.get(tab.id)"
       >
@@ -367,22 +371,37 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
           :tab="browserTab"
         />
         <NotDisplayedNotice
-          v-else
+          v-else-if="!openedAnyway"
           :key="tab.id"
           data-testid="editor-not-displayed"
           :reason="notDisplayed?.reason ?? 'binary'"
           :bytes="notDisplayed?.bytes"
         >
-          <Button
-            v-if="notDisplayedOnDisk"
-            size="sm"
-            variant="outline"
-            data-testid="editor-reveal"
-            class="d-press mt-1 h-7 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-12 hover:border-(--d-accent) hover:bg-(--d-card) [&_svg]:size-3.5"
-            @click="api.editorTab({ action: 'revealInExplorer', tabId: tab.id })"
+          <div
+            v-if="notDisplayed?.openAnyway || tab.revealable"
+            class="mt-1 flex flex-wrap justify-center gap-2"
           >
-            <FolderSearch aria-hidden="true" />{{ t('editor.menu.revealInExplorer') }}
-          </Button>
+            <Button
+              v-if="notDisplayed?.openAnyway"
+              size="sm"
+              variant="outline"
+              data-testid="editor-open-anyway"
+              class="d-press h-7 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-12 hover:border-(--d-accent) hover:bg-(--d-card) [&_svg]:size-3.5"
+              @click="api.editorTab({ action: 'openAnyway', tabId: tab.id })"
+            >
+              <ExternalLink aria-hidden="true" />{{ t('editor.notDisplayed.openAnyway') }}
+            </Button>
+            <Button
+              v-if="tab.revealable"
+              size="sm"
+              variant="outline"
+              data-testid="editor-reveal"
+              class="d-press h-7 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-12 hover:border-(--d-accent) hover:bg-(--d-card) [&_svg]:size-3.5"
+              @click="api.editorTab({ action: 'revealInExplorer', tabId: tab.id })"
+            >
+              <FolderSearch aria-hidden="true" />{{ t('editor.menu.revealInExplorer') }}
+            </Button>
+          </div>
         </NotDisplayedNotice>
       </div>
     </template>

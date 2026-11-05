@@ -8,6 +8,7 @@ import { remPx } from '@/composables/useRemPx';
 import type { ScmArtifactsResult, ScmRunRequest } from '../../preload/scm-channels';
 import type { DamoclesShellApi, ShellPlatform } from '../../preload/shell-channels';
 import SidebarSection from '../components/SidebarSection.vue';
+import { TOOLBAR_BUTTON } from '../components/sidebar-section';
 import ArtifactRow from './ArtifactRow.vue';
 import ScmStateCard from './ScmStateCard.vue';
 import { SCM_STORE } from './scm-store';
@@ -542,8 +543,6 @@ onBeforeUnmount(() => {
   clearInterval(ageTimer);
   for (const timer of bumpTimers.values()) clearTimeout(timer);
 });
-
-const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25';
 </script>
 
 <template>
@@ -568,7 +567,7 @@ const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border
           size="icon-sm"
           data-testid="repositories-reopen-closed"
           :aria-busy="reopenOpen || undefined"
-          :class="toolbarButton"
+          :class="TOOLBAR_BUTTON"
           :aria-label="t('scm.action.reopenClosed')"
           :title="t('scm.action.reopenClosed')"
           @click="reopenClosed"
@@ -582,7 +581,7 @@ const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border
         variant="ghost"
         size="icon-sm"
         data-testid="repositories-collapse-all"
-        :class="toolbarButton"
+        :class="TOOLBAR_BUTTON"
         :aria-label="t('repositories.collapseAll')"
         :title="t('repositories.collapseAll')"
         @click="collapseAll"

@@ -48,7 +48,7 @@ type View = 'hosts' | 'name' | 'card' | 'timeline' | 'folders' | 'where' | 'atta
 // Connect to Host: the saved hosts, ~/.ssh/config aliases and WSL distros as cards, "+ New host" typed or pasted into the search
 // box, the Name step for a host being saved, a host's card, the attempt's timeline and then the host's folders. Main owns the
 // attempt; every step arrives on onConnectStep, every host change on onConnectHosts and the distros with it on onConnectDistros.
-const props = defineProps<{ api: DamoclesOverlayApi; request: Extract<OverlayRequest, { kind: 'connect' }> }>();
+const props = defineProps<{ api: DamoclesOverlayApi; request: Extract<OverlayRequest, { kind: 'connect' }>; shown: Promise<void> }>();
 const emit = defineEmits<{ answer: [answer: OverlayAnswer] }>();
 const { t } = useI18n();
 
@@ -309,6 +309,9 @@ let started: string | undefined;
 const attemptFromInput = ref(false);
 
 async function start(target: ConnectTarget, shown?: { name: string; destination: string; kind: HostCardInfo['kind'] }): Promise<void> {
+  // Main must hear the dialog shown before a start that may ask a question (a folder's trust), or it takes the dialog back
+  // behind that question and sends it again once answered, whose mount would start a second attempt.
+  await props.shown;
   const result = await act(() => answerOf(props.api.startConnect(target)));
   if (!result) return;
   if (!result.ok) {
@@ -373,7 +376,8 @@ function onStep(event: ConnectStepEvent): void {
     showStarted(event);
     return;
   }
-  if (event.attemptId !== attempt.value?.attemptId && event.hostId !== hostId.value) return;
+  // Another attempt of the host (a reconnect behind a card) is not this dialog's: its question waits for Sign in.
+  if (event.attemptId !== attempt.value?.attemptId) return;
   attempt.value = event;
   // Cancel, which held focus, goes with the attempt; the failure's first action takes it.
   if ((event.step === 'failed' || event.folderFailure) && view.value === 'timeline') void nextTick(() => frame.value?.querySelector<HTMLElement>('[data-failure-actions] button')?.focus());

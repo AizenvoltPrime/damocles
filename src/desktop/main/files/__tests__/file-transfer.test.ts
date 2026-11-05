@@ -62,7 +62,7 @@ function deps(overrides: Partial<FileTransferDeps> = {}): FileTransferDeps {
     },
     progress: (update) => progress.push(update),
     changed: () => undefined,
-    reveal: async () => undefined,
+    revealDownload: async () => undefined,
     t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)])),
     log: () => undefined,
     ...overrides,
@@ -596,7 +596,7 @@ describe('download summary', () => {
         notices.push({ severity, message, actions });
         return 0;
       },
-      reveal: async (absolutePath) => {
+      revealDownload: async (absolutePath) => {
         revealed.push(absolutePath);
       },
     }));
@@ -605,6 +605,28 @@ describe('download summary', () => {
     expect(questions.map((question) => question.actions)).toEqual([['Keep both', 'Skip']]);
     await vi.waitFor(() => expect(revealed).toEqual([path.join(picked, 'logs copy')]));
     expect(fs.readFileSync(path.join(picked, 'logs copy', 'app.log'), 'utf8')).toBe('log');
+  });
+
+  it('reveals the picked folder itself when no item landed in it', async () => {
+    write(PROD1, 'logs/app.log', 'log');
+    const picked = path.join(root, 'downloads');
+    fs.mkdirSync(picked);
+    fs.writeFileSync(path.join(picked, 'logs'), 'a file already named logs');
+    const revealed: string[] = [];
+    service = new FileTransferService(deps({
+      notify: async (severity, message, actions) => {
+        notices.push({ severity, message, actions });
+        return 0;
+      },
+      revealDownload: async (absolutePath) => {
+        revealed.push(absolutePath);
+      },
+    }));
+    answers.push({ action: 1, checked: false });
+    await run({ op: 'download', sources: [{ kind: 'project', projectKey: PROD1, relativePath: 'logs' }], destination: { kind: 'download', folder: picked } });
+    expect(questions.map((question) => question.actions)).toEqual([['Keep both', 'Skip']]);
+    await vi.waitFor(() => expect(revealed).toEqual([picked]));
+    expect(fs.readFileSync(path.join(picked, 'logs'), 'utf8')).toBe('a file already named logs');
   });
 });
 

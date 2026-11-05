@@ -21,7 +21,12 @@ const WIN32_RESERVED_NAME = /^(con|prn|aux|clock\$|nul|com[0-9¹²³]|lpt[0-9¹�
  */
 export function isUnsafeWindowsName(name: string): boolean {
   const control = [...name].some((character) => character.charCodeAt(0) < 0x20);
-  return control || /[<>:"|?*]/.test(name) || /[. ]$/.test(name) || WIN32_RESERVED_NAME.test(name);
+  return control || /[<>:"|?*]/.test(name) || /[. ]$/.test(name) || isReservedWindowsName(name);
+}
+
+/** Whether name is a device name Windows reserves in every folder ('con', 'lpt1.txt'). */
+export function isReservedWindowsName(name: string): boolean {
+  return WIN32_RESERVED_NAME.test(name);
 }
 
 /** Whether any segment of a '/' separated relative path is a name Windows would resolve elsewhere. */

@@ -519,7 +519,7 @@ describe('ExtensionUiDialog — host prompts (desktop input box and quick pick)'
     const wrapper = mountDialog();
     await wrapper.vm.$nextTick();
 
-    expect(wrapper.text()).toContain('Πράκτορας');
+    expect(wrapper.text()).toContain('Agent');
     expect(wrapper.text()).toContain('1 από 2');
     expect(wrapper.findAll('button').map((b) => b.text())).toEqual(['Ακύρωση', 'Εντάξει']);
   });

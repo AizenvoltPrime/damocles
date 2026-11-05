@@ -207,9 +207,11 @@ interface OperationRun<S, T> {
 }
 
 // The Connect dialog openConnect shows: the host it shows now (the one it opened on, then the host of each start made in it), the
-// controller that withdraws this request alone, and the project a container's folder opened as while it showed that host.
+// attempt whose steps it hears (the one it opened on, then the one each start in it began or joined), the controller that
+// withdraws this request alone, and the project a container's folder opened as while it showed that host.
 interface OpenDialog {
   host: string | undefined;
+  attemptId?: string;
   readonly withdraw: AbortController;
   opened?: string;
 }
@@ -361,12 +363,12 @@ export class RemoteHosts implements ConnectActions {
   /**
    * Opens the Connect dialog on the host list, or with hostId straight to that host: an attempt in flight shows with its
    * waiting prompt, an attempt that met a changed host key shows that failure, and otherwise the dialog starts one itself for
-   * a host that is not connected. card opens the host's card instead, starting nothing; 'rename' with its name field open,
+   * a host that is not connected. card opens the host's card instead, starting nothing and showing a running attempt only in
+   * its status, never its timeline; 'rename' with its name field open,
    * 'rebuild' at a devcontainer's Rebuild Container confirmation. query fills the host list's search, as if typed, starting nothing.
    * The dialog shows the distros and container states last listed; their fresh lists follow once it is on screen. openFolder
    * (Reopen in Container): a connected devcontainer shows its connected attempt while its folder opens, where its folder browser
-   * would show otherwise. anchor (with card 'show'): the chip the card hangs from as a popover, which shows a running attempt
-   * only in the card's status, never its timeline. purpose 'signIn' (a "Sign in to <host>" banner): the dialog closes once the
+   * would show otherwise. anchor (with card 'show'): the chip the card hangs from as a popover. purpose 'signIn' (a "Sign in to <host>" banner): the dialog closes once the
    * host connects, and a host already connected opens nothing. Settles once the dialog closed.
    */
   async openConnect(hostId?: string, options: ConnectDialogOptions = {}): Promise<ConnectDialogEnd> {
@@ -382,10 +384,11 @@ export class RemoteHosts implements ConnectActions {
     const aliases = (await this.configAliases()).filter((alias) => !known.has(alias));
     const joined = openFolder && hostId !== undefined && this.connectionOf(hostId) === 'connected' ? this.deps.connections.connect(hostId, true) : undefined;
     const attempt = hostId === undefined ? undefined : this.deps.connections.attempt(hostId);
-    // the timeline's Escape cancels its attempt, which stops a reconnect loop; a popover opened for details never shows it
-    const running = anchor === undefined && attempt && attempt.step !== 'connected' && attempt.step !== 'failed' ? attempt : undefined;
+    // the timeline's Escape cancels its attempt, which stops a reconnect loop; a card, anchored or not, never shows it, nor its question
+    const running = card === undefined && attempt && attempt.step !== 'connected' && attempt.step !== 'failed' ? attempt : undefined;
     // a changed host key stops every attempt: the dialog shows that failure and starts none until the user retries
     const keyChanged = card === undefined && attempt?.step === 'failed' && attempt.failure?.code === 'hostKeyChanged' ? attempt : undefined;
+    // the one attempt whose steps the dialog hears until a start in it binds another; with none it hears no step
     const shown = running ?? keyChanged ?? (joined !== undefined && attempt?.attemptId === joined ? attempt : undefined);
     const request = parseConnectRequest({
       kind: 'connect',
@@ -402,7 +405,7 @@ export class RemoteHosts implements ConnectActions {
     if (!request) throw new Error('The Connect dialog exceeds the overlay bounds');
     const watching = new Set<string>();
     this.watching = watching;
-    const dialog: OpenDialog = { host: hostId, withdraw: new AbortController() };
+    const dialog: OpenDialog = { host: hostId, ...(shown ? { attemptId: shown.attemptId } : {}), withdraw: new AbortController() };
     this.dialog = dialog;
     // the dialog waits on a devcontainer's timeline for its folder to open
     if (running && hostId !== undefined && record?.kind === 'container' && record.origin === 'devcontainer') void this.openWhenConnected(hostId, running.attemptId);
@@ -423,7 +426,7 @@ export class RemoteHosts implements ConnectActions {
         watching.add(hostId);
       }
       // a dialog that waited behind a question or a page load would show its attempt as it stood when asked
-      this.sendStep(overlay, hostId);
+      this.sendStep(overlay, dialog, hostId);
     }, dialog.withdraw.signal);
     this.refreshLists(dialog, shownOrClosed);
     try {
@@ -462,19 +465,20 @@ export class RemoteHosts implements ConnectActions {
     return !ended.shown || failure === undefined || failure.code === 'cancelled' ? { ok: false, code: 'cancelled' } : { ok: false, code: 'connectFailed', message: failure.code };
   }
 
-  /** A host's attempt or state changed: the open dialog hears it, then its host list. */
+  /** A host's attempt or state changed: the open dialog hears the step only of the attempt it is bound to, then its host list. */
   hostChanged(hostId: string): void {
     // the removal stage's ssh asks its questions as the host's attempt
     if (this.removals.get(hostId)?.running) this.operationsChanged(hostId);
     const overlay = this.deps.overlay();
     if (!overlay?.isOpen('connect')) return;
-    this.sendStep(overlay, hostId);
+    if (this.dialog) this.sendStep(overlay, this.dialog, hostId);
     this.sendCards(overlay);
   }
 
-  private sendStep(overlay: NonNullable<ReturnType<RemoteHostsDeps['overlay']>>, hostId: string): void {
+  // A step reaches only the dialog bound to its attempt, so another attempt's question never opens over a card or the host list.
+  private sendStep(overlay: NonNullable<ReturnType<RemoteHostsDeps['overlay']>>, dialog: OpenDialog, hostId: string): void {
     const attempt = this.deps.connections.attempt(hostId);
-    if (!attempt) return;
+    if (!attempt || attempt.attemptId !== dialog.attemptId) return;
     const step = parseConnectStep(attempt);
     if (step) overlay.send(OVERLAY_CHANNELS.connectStep, step);
     else this.deps.log(`[remote] ${hostId}: the attempt's step exceeds the overlay bounds; the Connect dialog keeps the last one`);
@@ -1447,7 +1451,13 @@ export class RemoteHosts implements ConnectActions {
   private connectWatched(hostId: string): string {
     const attemptId = this.deps.connections.connect(hostId, this.watching !== undefined);
     this.watching?.add(hostId);
-    if (this.dialog) this.dialog.host = hostId;
+    const dialog = this.dialog;
+    if (!dialog) return attemptId;
+    dialog.host = hostId;
+    dialog.attemptId = attemptId;
+    // connect told the attempt before the dialog was bound to it; the dialog reads this step when the start answers
+    const overlay = this.deps.overlay();
+    if (overlay?.isOpen('connect')) this.sendStep(overlay, dialog, hostId);
     return attemptId;
   }
 

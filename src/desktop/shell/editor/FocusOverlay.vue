@@ -6,7 +6,8 @@ import type { ChatStatus } from '../../preload/shell-channels';
 
 // AD1 focus overlay: main hides the chat view while the editor covers the window, so the chat slot shows this card under the
 // shell's scrim, naming the chat and what it is doing.
-const props = defineProps<{ title: string; status: ChatStatus }>();
+// title: undefined until main has read the chat's title
+const props = defineProps<{ title?: string | undefined; status: ChatStatus }>();
 const { t } = useI18n();
 
 const tone = computed(() => ({ running: 'accent', waiting: 'warning', idle: 'faint' } as const)[props.status]);
@@ -23,8 +24,14 @@ const tone = computed(() => ({ running: 'accent', waiting: 'warning', idle: 'fai
         class="size-4.5"
       />
     </span>
-    <p class="w-full truncate text-13 font-semibold text-(--d-text)">
-      {{ title }}
+    <!-- the line keeps its height while the title loads, so the card does not grow when it arrives -->
+    <p
+      data-testid="focus-overlay-title"
+      class="min-h-lh w-full truncate text-13 font-semibold text-(--d-text)"
+    >
+      <Transition enter-active-class="animate-[d-fade_.2s_var(--ease-out)]">
+        <span v-if="title !== undefined">{{ title }}</span>
+      </Transition>
     </p>
     <span
       class="flex items-center gap-1.5 rounded-full px-2 py-0.5 text-11 font-medium"

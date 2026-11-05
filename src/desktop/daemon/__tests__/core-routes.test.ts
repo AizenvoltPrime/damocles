@@ -21,7 +21,7 @@ import {
 } from '../core-routes';
 import type { DaemonState } from '../daemon-state';
 import { createRunRegistry, type RunRegistry } from '../run-registry';
-import { CodecError } from '../../../remote/codec';
+import { CodecError, decode, encode } from '../../../remote/codec';
 
 const quiet = (): void => undefined;
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
@@ -275,6 +275,22 @@ describe('core routes', () => {
     const failure = await client.main.request('scm.call', { method: 'fetch', args: [] }).catch((err: unknown) => err);
     expect(failure).toBeInstanceOf(GitError);
     expect((failure as GitError).exitCode).toBe(128);
+  });
+
+  it('carry a session file write to core with its bytes over the wire\'s codec, and core\'s answer back', async () => {
+    const h = setUp();
+    const client = h.client('c1');
+    const params = { path: '/home/u/.damocles/pi/agent/sessions/--srv-app--/t_s1.jsonl', bytes: new Uint8Array([0x7b, 0x7d, 0x0a]), expectedSha256: 'b'.repeat(64) };
+    const crossed = decode(encode(params), { maxBytes: 1024 });
+    expect(MAIN_TO_CORE.requests['sessionFiles.write'].params(crossed)).toEqual(params);
+    const seen: unknown[] = [];
+    h.core.serve('sessionFiles.write', (received) => {
+      seen.push(received);
+      return { kind: 'refused', reason: 'otherProcess' } as const;
+    });
+
+    expect(await client.main.request('sessionFiles.write', params)).toEqual({ kind: 'refused', reason: 'otherProcess' });
+    expect(seen).toEqual([params]);
   });
 
   it('give every client the held memory queues, a fresh one the last list, and take or discard a queue as the asking client', async () => {

@@ -1,5 +1,6 @@
 import { expect, type ElectronApplication, type Locator, type Page } from '@playwright/test';
 import type { SettingsSectionId } from '../../../src/shared/settings-sections';
+import type { OverlaySettingsAttached } from '../../../src/desktop/preload/overlay-channels';
 import { writeUserSettings, type HermeticHome } from './hermetic';
 import { readyOverlay } from './overlay';
 import { OVERLAY_URL, overlayPage, shellPage } from './shell';
@@ -36,6 +37,24 @@ export async function waitForSettingsState(overlay: Page): Promise<void> {
   await toggle.click();
   await expect(overlay.getByTestId('memory-judge')).toHaveCount(0);
 }
+
+type AttachmentGlobals = typeof window & { __e2eSettingsAttached?: OverlaySettingsAttached[] };
+
+/** Records, from now on, every re-attach main pushes to the open modal; settingsAttachments reads them. */
+export async function recordSettingsAttachments(overlay: Page): Promise<void> {
+  await overlay.evaluate(() => {
+    const globals = window as AttachmentGlobals;
+    if (globals.__e2eSettingsAttached) return;
+    const seen: OverlaySettingsAttached[] = [];
+    globals.__e2eSettingsAttached = seen;
+    window.damoclesOverlay!.onSettingsAttached((attached) => seen.push(attached));
+  });
+}
+
+export const settingsAttachments = (overlay: Page): Promise<OverlaySettingsAttached[]> => overlay.evaluate(() => (window as AttachmentGlobals).__e2eSettingsAttached ?? []);
+
+/** Marks the element, so a later check tells the same element from a remounted copy. */
+export const markElement = (element: Locator): Promise<void> => element.evaluate((node) => node.setAttribute('data-e2e-kept', ''));
 
 /** Closes the modal with its close button and waits until the exit has played and the modal is gone. */
 export async function closeSettingsModal(overlay: Page): Promise<void> {

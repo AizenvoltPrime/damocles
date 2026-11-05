@@ -170,7 +170,7 @@ describe('a team member waiting on the user', () => {
     const card = mount(TeamCard, { props: { team: state, run: state.runs[0]! }, global });
 
     expect(card.get('[data-testid="team-status"]').text()).toBe('Σας χρειάζεται');
-    expect(card.get('[data-testid="team-card-member"]').attributes('aria-label')).toBe('Άνοιγμα πράκτορα Atlas, Σας χρειάζεται');
+    expect(card.get('[data-testid="team-card-member"]').attributes('aria-label')).toBe('Άνοιγμα agent Atlas, Σας χρειάζεται');
   });
 
   it('is never claimed by the card of a run that is not running', () => {

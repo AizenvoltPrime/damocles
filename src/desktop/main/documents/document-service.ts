@@ -2,10 +2,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import type { Disposable } from '../../../platform/disposable';
 import { folderKeyOn } from '../../../core/workspace-folders/folder-key';
-import { EDITOR_MAX_DOCUMENT_BYTES, type SettingsFileScope } from '../../../shared/types/messages';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES, EDITOR_HARD_MAX_DOCUMENT_BYTES, type SettingsFileScope } from '../../../shared/types/messages';
 import type { SettingsFileSaveOutcome } from '../../../core/chat-panel/settings-file-editor';
 import { parseSettingsText, settingsFileVersion } from '../../../core/config/settings-file';
-import type { EditorConflictResult, EditorEditReport, EditorReadOnlyReason, EditorSaveResult, FilesMutationResult, NotDisplayedReason, SearchEditorConfig, SearchEditorMessage, ShellDocumentContent } from '../../preload/shell-channels';
+import type { EditorConflictResult, EditorEdit, EditorReadOnlyReason, EditorSaveResult, FilesMutationResult, NotDisplayedReason, SearchEditorConfig, SearchEditorMessage, ShellDocumentContent } from '../../preload/shell-channels';
 import type { ScmMergeLabels } from '../../preload/scm-channels';
 import {
   DEFAULT_SEARCH_EDITOR_CONFIG,
@@ -21,13 +21,19 @@ import { decodeDocument, encodeDocument, encodedLength, languageIdForName, major
 import { isRelativeFilePath } from '../../../shared/relative-path';
 import { visibleText } from '../../../shared/visible-text';
 import type { Project } from '../../local-services/confine';
-import { authorityKeyOfProject, pathFor, rootHolding } from '../../../shared/project-location';
+import { authorityKeyOfProject, isAbsoluteOn, pathFor } from '../../../shared/project-location';
 import type { FileBytes } from '../../local-services/file-bytes';
-import { WriteRefusedError, type WatchEvent, type WorkspaceFileSystem, type WriteRefusal } from '../../workspace/file-system';
+import { WriteRefusedError, type OutsideRefusal, type WatchEvent, type WorkspaceFileSystem, type WriteRefusal } from '../../workspace/file-system';
 import type { ClosedFileRead, ClosedFileWrite, DiskState, TextEncoding } from '../../workspace/search/types';
 import { NotConnectedError, type Workspaces } from '../workspace/workspaces';
+import { OutsideFilesUnsupportedError } from '../workspace/remote-workspace';
+import { EngineUnavailableError, type EngineAbsence, type SessionFileEngines } from './session-files';
+import type { SessionFileRefusal, SessionFileWrite } from '../../../core/pi-session/session-store/session-file-write';
+import type { RootSpellings } from '../workspace/root-spellings';
 import { markerNames, mergeWithMarkers } from '../../../shared/scm/merge-markers';
-import type { LocalizedText } from '../../../shared/localized-text';
+import { applyTextChanges } from './text-changes';
+import { LocalizedError, type LocalizedText } from '../../../shared/localized-text';
+import { l } from '../../../core/l10n';
 
 // Images preview from a data: URL of at most this many bytes; a larger one is not displayed.
 export const MAX_IMAGE_BYTES: number = 10 * 1024 * 1024;
@@ -49,7 +55,8 @@ export function imageMimeOf(name: string): string | undefined {
   return Object.hasOwn(IMAGE_MIME, extension) ? IMAGE_MIME[extension] : undefined;
 }
 
-const readLimitOf = (name: string): number => (imageMimeOf(name) ? MAX_IMAGE_BYTES : EDITOR_MAX_DOCUMENT_BYTES);
+// acceptLarge: text the user took past the confirm threshold (Open Anyway, a restored text tab or backup, any read of an open document)
+const readLimitOf = (name: string, acceptLarge: boolean): number => (imageMimeOf(name) ? MAX_IMAGE_BYTES : acceptLarge ? EDITOR_HARD_MAX_DOCUMENT_BYTES : EDITOR_CONFIRM_DOCUMENT_BYTES);
 
 type FileContent =
   | { readonly kind: 'tooLarge'; readonly bytes: number }
@@ -72,6 +79,14 @@ function fileContentOf(name: string, read: FileBytes | { readonly kind: 'outside
   return decoded ? { kind: 'text', decoded, bytes } : { kind: 'binary', bytes: bytes?.length ?? 0 };
 }
 
+// A file the editor did not open for its size, which Open Anyway reads again up to the hard maximum; an image keeps its own bound,
+// and only a project file or a file outside every project has a rule to read it again by.
+function offersOpenAnyway(document: NotDisplayedDocument): boolean {
+  const { location, bytes } = document;
+  return document.reason === 'tooLarge' && bytes !== undefined && bytes <= EDITOR_HARD_MAX_DOCUMENT_BYTES && imageMimeOf(document.name) === undefined
+    && location !== undefined && (location.outside === 'path' || (location.projectKey !== undefined && location.relativePath !== undefined));
+}
+
 type Eol = '\n' | '\r\n';
 
 const MISSING: DiskState = { exists: false, mtimeMs: 0, size: 0, sha256: '' };
@@ -83,17 +98,33 @@ export interface Location {
   readonly projectKey?: string;
   readonly relativePath?: string;
   // the authority key of the host holding a file outside every project, read and written only through that authority's
-  // workspace; its path is native to that host
+  // workspace, or its engine for one of that engine's session files; its path is native to that host
   readonly host?: string;
-  // a file outside every project that opened editable, and the rule each read and write checks again on its own machine: the
-  // host's own settings file (HOST_SETTINGS_FILE), a file the plans rule accepts, or a file the user named (Quick Open), which
-  // is written only while its path still resolves to itself
-  readonly outside?: 'settings' | 'plans' | 'user';
+  // a file outside every project, editable, and the rule each read and write checks again on its own machine: settings, the
+  // host's own settings file (HOST_SETTINGS_FILE); path, any other file, named by its native realpath on its authority, read
+  // only through readOutside and written through writeOutside while that path is still its own realpath, except a session
+  // file, which its engine writes (TextDocument.sessionFile)
+  readonly outside?: 'settings' | 'path';
 }
 
-// What an offline placeholder stands for: a remote project's file, or a host's file outside every project with the rule it
-// reopens by once its host connects.
-export type HostFile = { readonly projectKey: string; readonly relativePath: string } | { readonly host: string; readonly path: string; readonly outside: 'plans' | 'user' };
+// What an offline placeholder stands for: a remote project's file, or a host's file outside every project, which reopens
+// through openResolvedPath once its host connects.
+export type HostFile = { readonly projectKey: string; readonly relativePath: string } | { readonly host: string; readonly path: string };
+
+/** A path outside every project that the outside rule refuses (D27); its text names why. No document holds it. */
+export class RefusedPathError extends LocalizedError {
+  readonly path: string;
+  readonly reason: OutsideRefusal;
+
+  constructor(filePath: string, reason: OutsideRefusal) {
+    super(reason === 'share'
+      ? l('Damocles does not open {0}: it is on a network share or a device outside your projects.', visibleText(filePath))
+      : l('Damocles does not open {0}: part of this path would be read differently than it is written, such as a trailing dot or space, a stream or a reserved device name.', visibleText(filePath)));
+    this.name = 'RefusedPathError';
+    this.path = filePath;
+    this.reason = reason;
+  }
+}
 
 export interface TextDocument {
   readonly id: string;
@@ -111,6 +142,8 @@ export interface TextDocument {
   version: number;
   // the seq of the last shell edit applied (EditorEditReport)
   editSeq: number;
+  // main asked the shell for its whole buffer (editor:resync) and has applied no edit since
+  resyncAsked?: true;
   readOnlyReason: EditorReadOnlyReason | undefined;
   // set when the disk changed under a dirty buffer or a save found the disk changed
   conflict: boolean;
@@ -120,6 +153,8 @@ export interface TextDocument {
   orphaned: boolean;
   // a write failed (VS Code's error mode): dirty until a save lands or Revert, since the write may have torn the file
   saveFailed: boolean;
+  // its machine's workspace read it as a session file of that machine's engine, which alone writes it (writeSessionFile)
+  sessionFile?: true;
   // a .damocles settings file, saved through the settings file rules
   settingsScope: SettingsFileScope | undefined;
   // the hot-exit backup's file id
@@ -181,6 +216,8 @@ export interface OfflineDocument {
   readonly kind: 'offline';
   location: Location;
   name: string;
+  // its file opens as text up to the hard maximum once the host connects (a restored text tab)
+  readonly acceptLarge?: true;
 }
 
 export type Document = TextDocument | ImageDocument | NotDisplayedDocument | OfflineDocument;
@@ -191,7 +228,7 @@ export interface DocumentReplacement {
   readonly to: string;
 }
 
-export type ShellEdit = Omit<EditorEditReport, 'documentId'>;
+export type ShellEdit = EditorEdit;
 
 export type OpenProjectResult = { readonly ok: true; readonly document: Document } | { readonly ok: false; readonly reason: 'outside' | 'missing' | 'failed' };
 
@@ -229,6 +266,8 @@ export interface SettingsFiles {
 
 export interface DocumentServiceDeps {
   readonly projects: () => readonly Project[];
+  // the spellings of the local roots' folders, which a named or resolved path is matched against
+  readonly spellings: Pick<RootSpellings, 'match' | 'confirms'>;
   readonly workspaces: Workspaces;
   // the OS whose path rules an authority's paths follow: this computer's, or the target's
   readonly authorityOs: (authority: string) => NodeJS.Platform;
@@ -241,6 +280,8 @@ export interface DocumentServiceDeps {
   readonly pickSavePath: (defaultPath: string) => Promise<string | undefined>;
   readonly backups: Backups;
   readonly settings: SettingsFiles;
+  // the engines that save their own session files (TextDocument.sessionFile)
+  readonly sessionFiles: SessionFileEngines;
   // a remote authority's host as this computer names it, for the offline placeholder
   readonly hostLabel: (authority: string) => { readonly hostId: string; readonly name: string };
   // one reconnect's offline saves that found the target changed, each now holding its uploadConflict, all of one authority
@@ -367,18 +408,19 @@ export class DocumentService {
 
   /**
    * A file a renderer named: confined to the project's realpath, links followed. With missing, a file that is gone opens as
-   * an orphaned document in that format (a hot-exit backup's file deleted on disk).
+   * an orphaned document in that format (a hot-exit backup's file deleted on disk). With acceptLarge, text past the confirm
+   * threshold opens up to the hard maximum.
    */
-  openProjectFile(projectKey: string, relativePath: string, opts: { readonly missing?: MissingFileFormat } = {}): Promise<OpenProjectResult> {
+  openProjectFile(projectKey: string, relativePath: string, opts: { readonly missing?: MissingFileFormat; readonly acceptLarge?: boolean } = {}): Promise<OpenProjectResult> {
     return this.outsideRenames(() => this.openProjectFileNow(projectKey, relativePath, opts));
   }
 
-  private async openProjectFileNow(projectKey: string, relativePath: string, opts: { readonly missing?: MissingFileFormat }): Promise<OpenProjectResult> {
+  private async openProjectFileNow(projectKey: string, relativePath: string, opts: { readonly missing?: MissingFileFormat; readonly acceptLarge?: boolean }): Promise<OpenProjectResult> {
     const project = this.deps.projects().find((candidate) => candidate.key === projectKey);
     // '' would name the project folder itself, which is no document.
     if (!project || !isRelativeFilePath(relativePath)) return { ok: false, reason: 'outside' };
     const confined = await this.files(project.key).confineExisting(project, relativePath);
-    if (confined.ok) return { ok: true, document: await this.openResolved(confined.path, { projectKey: project.key, relativePath }) };
+    if (confined.ok) return { ok: true, document: await this.openResolved(confined.path, { projectKey: project.key, relativePath }, undefined, undefined, opts.acceptLarge === true) };
     return confined.reason === 'missing' && opts.missing ? this.openMissing(project, relativePath, opts.missing) : confined;
   }
 
@@ -392,25 +434,24 @@ export class DocumentService {
    * once the host connects the file opens by the rule it was opened with (connectionsChanged). A document of that file
    * already open (a backup restored into it) is that document.
    */
-  openOffline(file: HostFile): Document {
+  openOffline(file: HostFile, acceptLarge = false): Document {
     const location = 'projectKey' in file ? this.awaitingLocation(file.projectKey, file.relativePath) : this.hostFileLocation(file);
     const existing = this.fileDocument(location);
     if (existing) return existing;
-    const document: OfflineDocument = { id: randomUUID(), kind: 'offline', location, name: this.nameOf(location) };
+    const document: OfflineDocument = { id: randomUUID(), kind: 'offline', location, name: this.nameOf(location), ...(acceptLarge ? { acceptLarge: true as const } : {}) };
     this.documents.set(document.id, document);
     return document;
   }
 
   // A host's file outside every project as its placeholder names it, in the host's path rules.
   private hostFileLocation(file: Extract<HostFile, { readonly host: string }>): Location {
-    if (file.host === 'local' || !this.flavorOf({ host: file.host }).isAbsolute(file.path)) throw new Error(`${file.path} is not a file of a remote host`);
-    return { path: file.path, host: file.host, outside: file.outside };
+    if (file.host === 'local' || !isAbsoluteOn({ os: this.deps.authorityOs(file.host) }, file.path)) throw new Error(`${file.path} is not a file of a remote host`);
+    return { path: file.path, host: file.host, outside: 'path' };
   }
 
-  // A file outside every project on a host is named with that host, as a host's settings file is.
+  // The file's own name, as a project file's; its tab names the host apart (ShellEditorTab.host).
   private nameOf(location: Location): string {
-    const name = this.flavorOf(location).basename(location.path);
-    return location.host === undefined ? name : this.deps.t('{0}: {1}', this.deps.hostLabel(location.host).name, name);
+    return this.flavorOf(location).basename(location.path);
   }
 
   /**
@@ -469,8 +510,12 @@ export class DocumentService {
   private async openMissing(project: Project, relativePath: string, format: MissingFileFormat): Promise<OpenProjectResult> {
     const confined = await this.files(project.key).confineMissing(project, relativePath);
     if (!confined.ok) return confined;
-    const location: Location = { path: confined.path, projectKey: project.key, relativePath };
-    return { ok: true, document: this.fileDocument(location) ?? (await this.orphaned(location, this.flavorOf(location).basename(confined.path), format)) };
+    return { ok: true, document: await this.openMissingAt(project, relativePath, confined.path, format) };
+  }
+
+  private async openMissingAt(project: Project, relativePath: string, confinedPath: string, format: MissingFileFormat): Promise<Document> {
+    const location: Location = { path: confinedPath, projectKey: project.key, relativePath };
+    return this.fileDocument(location) ?? (await this.orphaned(location, this.flavorOf(location).basename(confinedPath), format));
   }
 
   // A document of a file that is gone, which a save writes back; watched, since the file may come back meanwhile.
@@ -542,7 +587,7 @@ export class DocumentService {
     const files = this.files(projectKey);
     const confined = await files.confineExisting(project, relativePath);
     if (!confined.ok) return { kind: 'missing' };
-    const read = await files.read(confined.path);
+    const read = await files.read(confined.path, EDITOR_HARD_MAX_DOCUMENT_BYTES);
     if (read.kind === 'missing') return { kind: 'missing' };
     if (read.kind !== 'bytes') return { kind: 'readOnly' };
     const decoded = decodeDocument(read.bytes);
@@ -551,7 +596,7 @@ export class DocumentService {
       kind: 'text',
       location: { path: confined.path, projectKey, relativePath },
       text: decoded.text,
-      eol: majorityEol(decoded.text),
+      eol: majorityEol(decoded.text, this.deps.authorityOs(authorityKeyOfProject(projectKey))),
       encoding: decoded.encoding,
       bom: decoded.bom,
       disk: { exists: true, mtimeMs: read.mtimeMs, size: read.bytes.length, sha256: sha256(read.bytes) },
@@ -593,35 +638,33 @@ export class DocumentService {
   }
 
   /**
-   * A path core named on this computer (the agent's openFile, a plan file, a checkpoint side): a file inside an open project is
-   * that project's, a file the plans rule accepts opens editable (openPlan), and any other opens read-only.
+   * A path someone named on authority (a core's openFile, a diff side, Source control, the damocles command), links followed:
+   * a path a project of authority holds in any spelling of its folder opens as that project's file, a missing one as an empty
+   * document its first save creates; any other opens editable outside every project (openOutsideNow). Throws RefusedPathError
+   * for a path the outside rule refuses, NotConnectedError while a host is away, and OutsideFilesUnsupportedError for a daemon
+   * without files.outside.
    */
-  openPath(filePath: string): Promise<Document> {
-    return this.outsideRenames(() => this.openPathNow(filePath));
+  openNamedPath(authority: string, target: string): Promise<Document> {
+    return this.outsideRenames(() => this.openNamedPathNow(authority, target));
   }
 
-  private async openPathNow(filePath: string): Promise<Document> {
-    const absolute = path.resolve(filePath);
-    // a project confines the paths it holds before any outside rule, which refuses every path of a share or a mapped drive
-    const inRoot = rootHolding({ os: this.deps.authorityOs('local') }, this.rootsOn('local'), absolute);
+  private async openNamedPathNow(authority: string, target: string): Promise<Document> {
+    const os = this.deps.authorityOs(authority);
+    if (authority !== 'local' && !isAbsoluteOn({ os }, target)) throw new RefusedPathError(target, 'name');
+    // '..' folds by text in the path's own flavor, as pi's file tools resolve it, so the editor opens the file a tool named
+    const absolute = authority === 'local' ? path.resolve(target) : pathFor({ os }).resolve(target);
+    // a project confines the paths it holds in any spelling before any outside rule, which refuses every path of a share
+    const inRoot = await this.deps.spellings.match({ authority, os }, this.rootsOn(authority), absolute);
     if (inRoot) {
       const { root: project, relativePath } = inRoot;
       const files = this.files(project.key);
       const existing = await files.confineExisting(project, relativePath);
       const confined = !existing.ok && existing.reason === 'missing' ? await files.confineMissing(project, relativePath) : existing;
-      if (confined.ok) return this.openResolved(confined.path, { projectKey: project.key, relativePath });
-      if (confined.reason === 'failed') throw new Error(`${absolute} could not be resolved in its project`);
-      // a path its project does not confine (a link out of it, its folder gone) is outside every project
+      if (confined.ok && this.deps.spellings.confirms(inRoot, confined.path)) return this.openResolved(confined.path, { projectKey: project.key, relativePath });
+      if (!confined.ok && confined.reason === 'failed') throw new LocalizedError(l('{0} could not be opened.', visibleText(absolute)));
+      // a path its project does not confine (a link out of it, its folder gone) or a remapped spelling is outside every project
     }
-    const { files } = this.deps.workspaces.local;
-    // resolveOutside refuses a UNC, device or relative-to-a-drive path before any stat, so nothing here reaches a share
-    const resolved = await files.resolveOutside(absolute, {});
-    if (resolved.kind === 'outside') return this.heldDocument(this.identity({ path: absolute }), undefined) ?? this.documentOf({ path: absolute }, { kind: 'outside' }, 'outsideProject', undefined);
-    const real = 'path' in resolved ? resolved.path : absolute;
-    const inProject = await files.projectOfPath(this.rootsOn('local'), real);
-    if (inProject) return this.openResolved(real, { projectKey: inProject.project.key, relativePath: inProject.relativePath });
-    const plan = resolved.kind === 'file' ? await this.openPlanNow('local', real) : undefined;
-    return plan ?? this.openResolved(real, {}, 'outsideProject');
+    return this.openOutsideNow(authority, absolute, { exact: false });
   }
 
   /** A file of Damocles' own logs folder, read-only, which main names itself and no outside rule decides. */
@@ -630,46 +673,142 @@ export class DocumentService {
   }
 
   /**
-   * A file the user named by its path (Quick Open's typed path, which main resolved and returned), only while that path is
-   * still its own realpath: a file inside one of that authority's roots opens as that project's file, any other opens
-   * editable and is written only while its path still resolves to itself. A read-only document of the file turns editable in
-   * place. missing: a file that is gone opens as an orphaned document in that format (a hot-exit backup's). Undefined for a
-   * folder, a missing file, or a path the authority's rules refuse; throws NotConnectedError while a host is away, and
-   * OutsideFilesUnsupportedError for a daemon without files.outside.
+   * A path main resolved earlier (a Quick Open pick, a restored tab or backup, a placeholder's reopen), only while it is still
+   * its own realpath: a file a project of authority holds in any spelling opens as that project's file, any other through
+   * openOutsideNow.
+   * missing: a file that is gone opens as an orphaned document in that format (a hot-exit backup's). Undefined when the path
+   * no longer resolves to itself, or names a missing file without missing; throws as openNamedPath does. acceptLarge: as
+   * openProjectFile.
    */
-  openUserPath(authority: string, target: string, opts: { readonly missing?: MissingFileFormat } = {}): Promise<Document | undefined> {
-    return this.outsideRenames(() => this.openUserPathNow(authority, target, opts));
+  openResolvedPath(authority: string, realPath: string, opts: { readonly missing?: MissingFileFormat; readonly acceptLarge?: boolean } = {}): Promise<Document | undefined> {
+    return this.outsideRenames(() => this.openResolvedPathNow(authority, realPath, opts));
   }
 
-  private async openUserPathNow(authority: string, target: string, opts: { readonly missing?: MissingFileFormat }): Promise<Document | undefined> {
+  private async openResolvedPathNow(authority: string, realPath: string, opts: { readonly missing?: MissingFileFormat; readonly acceptLarge?: boolean }): Promise<Document | undefined> {
     const host = authority === 'local' ? {} : { host: authority };
-    // a project confines the paths it holds before any outside rule
-    const inRoot = rootHolding({ os: this.deps.authorityOs(authority) }, this.rootsOn(authority), target);
+    // a project confines the paths it holds in any spelling before any outside rule
+    const inRoot = await this.deps.spellings.match({ authority, os: this.deps.authorityOs(authority) }, this.rootsOn(authority), realPath);
     if (inRoot) {
       const { root: project, relativePath } = inRoot;
       const confined = await this.files(project.key).confineExisting(project, relativePath);
-      if (confined.ok) return this.identity({ path: confined.path, ...host }) === this.identity({ path: target, ...host }) ? this.openResolved(confined.path, { projectKey: project.key, relativePath }) : undefined;
+      if (confined.ok) {
+        if (!this.deps.spellings.confirms(inRoot, confined.path)) return this.openOutsideNow(authority, realPath, { exact: true, ...opts });
+        return this.identity({ path: confined.path, ...host }) === this.identity({ path: realPath, ...host }) ? this.openResolved(confined.path, { projectKey: project.key, relativePath }, undefined, undefined, opts.acceptLarge === true) : undefined;
+      }
       if (confined.reason !== 'missing' || !opts.missing) return undefined;
-      const missing = await this.openMissing(project, relativePath, opts.missing);
-      return missing.ok ? missing.document : undefined;
+      const missing = await this.files(project.key).confineMissing(project, relativePath);
+      if (!missing.ok) return undefined;
+      if (!this.deps.spellings.confirms(inRoot, missing.path)) return this.openOutsideNow(authority, realPath, { exact: true, ...opts });
+      return this.openMissingAt(project, relativePath, missing.path, opts.missing);
     }
+    return this.openOutsideNow(authority, realPath, { exact: true, ...opts });
+  }
+
+  /**
+   * A file outside every project of authority, editable, read only through readOutside and written only through writeOutside,
+   * a session file excepted (write).
+   * exact: undefined unless target is still its own realpath, a missing file included unless missing names its format, which
+   * opens it orphaned. A path the outside rule refuses is the document of it already open by another rule (Damocles' log),
+   * else RefusedPathError; a path whose realpath is a share (a mapped drive) opens only as the file of a project holding that
+   * realpath. Without exact a missing file opens as an empty document whose first save creates it.
+   */
+  private async openOutsideNow(authority: string, target: string, opts: { readonly exact: false }): Promise<Document>;
+  private async openOutsideNow(authority: string, target: string, opts: { readonly exact: true; readonly missing?: MissingFileFormat; readonly acceptLarge?: boolean }): Promise<Document | undefined>;
+  private async openOutsideNow(authority: string, target: string, opts: { readonly exact: boolean; readonly missing?: MissingFileFormat; readonly acceptLarge?: boolean }): Promise<Document | undefined> {
+    const host = authority === 'local' ? {} : { host: authority };
+    const acceptLarge = opts.acceptLarge === true;
     const { files } = this.deps.workspaces.forAuthority(authority);
-    const resolved = await files.resolveOutside(target, {});
-    if (resolved.kind !== 'file' && !(resolved.kind === 'missing' && opts.missing)) return undefined;
-    const real = resolved.kind === 'file' ? resolved.path : target;
-    if (this.identity({ path: real, ...host }) !== this.identity({ path: target, ...host })) return undefined;
-    const inProject = await files.projectOfPath(this.rootsOn(authority), real);
-    if (inProject) {
-      const opened = await this.openProjectFileNow(inProject.project.key, inProject.relativePath, opts.missing ? { missing: opts.missing } : {});
-      return opened.ok ? opened.document : undefined;
+    // resolveOutside refuses a UNC, device or relative path before any file call, so nothing here reaches a share
+    const resolved = await files.resolveOutside(target);
+    if (resolved.kind === 'outside') {
+      // a path refused for its name is read differently than it is written, so only a share path names a held one
+      const held = resolved.reason === 'share' ? this.heldDocument(this.identity({ path: target, ...host }), undefined) : undefined;
+      if (held) return held;
+      throw new RefusedPathError(target, resolved.reason);
     }
-    const location: Location = { path: real, outside: 'user', ...host };
+    if (resolved.kind === 'share') {
+      if (opts.exact && this.identity({ path: resolved.path, ...host }) !== this.identity({ path: target, ...host })) return undefined;
+      const onShare = await this.projectFileOf(authority, resolved.path, 'existing');
+      if (onShare) return this.openResolved(onShare.path, { projectKey: onShare.project.key, relativePath: onShare.relativePath }, undefined, undefined, acceptLarge);
+      const held = this.heldDocument(this.identity({ path: target, ...host }), undefined);
+      if (held) return held;
+      throw new RefusedPathError(target, 'share');
+    }
+    if (resolved.kind === 'missing') {
+      if (opts.exact) {
+        if (!opts.missing) return undefined;
+        const location: Location = { path: target, outside: 'path', ...host };
+        return this.fileDocument(location) ?? (await this.orphaned(location, this.nameOf(location), opts.missing));
+      }
+      const created = await this.creationPath(files, authority, target);
+      if (created.share) {
+        const onShare = await this.projectFileOf(authority, created.path, 'missing');
+        if (onShare) return this.openResolved(onShare.path, { projectKey: onShare.project.key, relativePath: onShare.relativePath });
+        const held = this.heldDocument(this.identity({ path: target, ...host }), undefined);
+        if (held) return held;
+        throw new RefusedPathError(target, 'share');
+      }
+      // a folder a link leads into a project holds that project's new file
+      const inProject = (await this.projectFileOf(authority, created.path, 'missing')) ?? (await this.hostProjectFileOf(authority, created.path, 'missing'));
+      if (inProject) return this.openResolved(inProject.path, { projectKey: inProject.project.key, relativePath: inProject.relativePath });
+      return this.openOutsideLocation(files, { path: created.path, outside: 'path', ...host });
+    }
+    if (opts.exact && this.identity({ path: resolved.path, ...host }) !== this.identity({ path: target, ...host })) return undefined;
+    const inProject = (await this.projectFileOf(authority, resolved.path, 'existing')) ?? (await this.hostProjectFileOf(authority, resolved.path, 'existing'));
+    if (inProject) return this.openResolved(inProject.path, { projectKey: inProject.project.key, relativePath: inProject.relativePath }, undefined, undefined, acceptLarge);
+    return this.openOutsideLocation(files, { path: resolved.path, outside: 'path', ...host }, acceptLarge);
+  }
+
+  // Opens of one file share one read, whichever rule opened it.
+  private openOutsideLocation(files: WorkspaceFileSystem, location: Location, acceptLarge = false): Promise<Document> {
     const key = this.identity(location);
     const existing = this.heldDocument(key, undefined);
-    if (existing) return this.editableInPlace(existing, location);
-    if (resolved.kind === 'missing' && opts.missing) return this.fileDocument(location) ?? (await this.orphaned(location, this.nameOf(location), opts.missing));
-    // a core's open of the file may be reading it under the same key, and this open then joins its read-only document
-    return this.editableInPlace(await this.joined(`${key}\0`, async () => this.documentOf(location, await files.readOutside(real, {}), undefined, undefined, this.nameOf(location))), location);
+    if (existing) return Promise.resolve(existing);
+    const limitBytes = readLimitOf(this.flavorOf(location).basename(location.path), acceptLarge);
+    return this.joined(`${key}\0`, async () => this.documentOf(location, await files.readOutside(location.path, limitBytes), undefined, undefined, this.nameOf(location)));
+  }
+
+  // A realpath's file only as the file of a project holding it in a spelling of its folder, confined and confirmed by that
+  // project (an existing one to that very realpath), with no file system call naming the realpath, which may be a share's.
+  private async projectFileOf(authority: string, realPath: string, state: 'existing' | 'missing'): Promise<{ readonly project: Project; readonly relativePath: string; readonly path: string } | undefined> {
+    const inRoot = await this.deps.spellings.match({ authority, os: this.deps.authorityOs(authority) }, this.rootsOn(authority), realPath);
+    if (!inRoot) return undefined;
+    const { root: project, relativePath } = inRoot;
+    const files = this.files(project.key);
+    const confined = state === 'existing' ? await files.confineExisting(project, relativePath) : await files.confineMissing(project, relativePath);
+    if (!confined.ok || !this.deps.spellings.confirms(inRoot, confined.path)) return undefined;
+    const host = authority === 'local' ? {} : { host: authority };
+    if (state === 'existing' && this.identity({ path: confined.path, ...host }) !== this.identity({ path: realPath, ...host })) return undefined;
+    return { project, relativePath, path: confined.path };
+  }
+
+  // A host's roots have only their open path as a spelling here, so for a realpath none holds the host's own realpath of each
+  // root decides, on the host; never for a share's realpath, which no call names.
+  private async hostProjectFileOf(authority: string, realPath: string, state: 'existing' | 'missing'): Promise<{ readonly project: Project; readonly relativePath: string; readonly path: string } | undefined> {
+    if (authority === 'local') return undefined;
+    const found = await this.deps.workspaces.forAuthority(authority).files.projectOfPath(this.rootsOn(authority), realPath);
+    if (!found) return undefined;
+    const files = this.files(found.project.key);
+    const confined = state === 'existing' ? await files.confineExisting(found.project, found.relativePath) : await files.confineMissing(found.project, found.relativePath);
+    return confined.ok ? { project: found.project, relativePath: found.relativePath, path: confined.path } : undefined;
+  }
+
+  // The path a missing named file's first save writes: below its folder's realpath when that folder exists, since the save
+  // creates the file only while its folder is its own realpath (a link on the way, such as macOS's /tmp, would fail it).
+  // share: the deepest existing folder on its path resolves onto a share, which only a project holding it may create a file in.
+  private async creationPath(files: WorkspaceFileSystem, authority: string, target: string): Promise<{ readonly path: string; readonly share: boolean }> {
+    const flavor = pathFor({ os: this.deps.authorityOs(authority) });
+    const below = [flavor.basename(target)];
+    let folder = flavor.dirname(target);
+    for (;;) {
+      const answer = await files.resolveOutside(folder);
+      if (answer.kind === 'share') return { path: flavor.join(answer.path, ...below), share: true };
+      if (answer.kind === 'folder' && below.length === 1) return { path: flavor.join(answer.path, ...below), share: false };
+      const parent = flavor.dirname(folder);
+      if (answer.kind !== 'missing' || parent === folder) return { path: target, share: false };
+      below.unshift(flavor.basename(folder));
+      folder = parent;
+    }
   }
 
   private rootsOn(authority: string): Project[] {
@@ -677,36 +816,19 @@ export class DocumentService {
   }
 
   /**
-   * A file outside every project that a core named, editable only while the plans rule of the machine holding it accepts it,
-   * which that machine checks again on every read and save; undefined for any other file. Throws NotConnectedError while a
-   * host is away, and OutsideFilesUnsupportedError for a daemon without files.outside.
+   * Open Anyway (VS Code's large file confirmation): a file the editor did not open for its size reads again up to the hard
+   * maximum into the same document id, which its tabs and diff sides keep.
    */
-  openPlan(authority: string, target: string): Promise<Document | undefined> {
-    return this.outsideRenames(() => this.openPlanNow(authority, target));
-  }
-
-  private async openPlanNow(authority: string, target: string): Promise<Document | undefined> {
-    const { files } = this.deps.workspaces.forAuthority(authority);
-    const resolved = await files.resolveOutside(target, { within: 'plans' });
-    if (resolved.kind !== 'file') return undefined;
-    const location: Location = { path: resolved.path, outside: 'plans', ...(authority === 'local' ? {} : { host: authority }) };
-    const key = this.identity(location);
-    const existing = this.heldDocument(key, undefined);
-    if (existing) return this.editableInPlace(existing, location);
-    return this.editableInPlace(await this.joined(`${key}\0`, async () => this.documentOf(location, await files.readOutside(resolved.path, { within: 'plans' }), undefined, undefined, this.nameOf(location))), location);
-  }
-
-  // One document per file: a read-only document a core opened of a file that now opens editable (the plans rule accepts it,
-  // or the user named it) turns editable in place, its tabs kept, and reads its file again through the rule its location
-  // names. Any other document is returned as it is, so an editable one never turns read-only.
-  private async editableInPlace(document: Document, location: Location): Promise<Document> {
-    if (document.kind !== 'text' || document.location?.outside !== undefined || document.readOnlyReason !== 'outsideProject') return document;
-    document.location = location;
-    document.name = this.nameOf(location);
-    document.readOnlyReason = undefined;
-    this.watch(document);
-    if (!(await this.reload(document, { force: true }))) this.emit(document.id, false);
-    return document;
+  openAnyway(id: string): Promise<void> {
+    return this.outsideRenames(async () => {
+      const document = this.documents.get(id);
+      if (document?.kind !== 'notDisplayed' || !offersOpenAnyway(document)) return;
+      const location = document.location!;
+      const read = await this.readLocation(location);
+      if (this.documents.get(id) !== document || document.location !== location) return;
+      this.documentOf(location, read, undefined, undefined, document.name, id);
+      this.emit(id, true);
+    });
   }
 
   /** A .damocles settings file; its save follows the settings file editor's parse and version rules. */
@@ -744,7 +866,7 @@ export class DocumentService {
       disk: MISSING,
       version: 1,
       editSeq: 0,
-      readOnlyReason: opts.untitled ? undefined : 'outsideProject',
+      readOnlyReason: opts.untitled ? undefined : 'snapshot',
       conflict: false,
       untitled: opts.untitled,
       orphaned: false,
@@ -869,7 +991,7 @@ export class DocumentService {
     }
     if (document.kind === 'image') return { kind: 'image', documentId: id, dataUrl: document.dataUrl, bytes: document.bytes };
     if (document.kind === 'notDisplayed') {
-      return { kind: 'notDisplayed', documentId: id, reason: document.reason, ...(document.bytes !== undefined ? { bytes: document.bytes } : {}) };
+      return { kind: 'notDisplayed', documentId: id, reason: document.reason, ...(document.bytes !== undefined ? { bytes: document.bytes } : {}), ...(offersOpenAnyway(document) ? { openAnyway: true as const } : {}) };
     }
     return {
       kind: 'text',
@@ -884,15 +1006,39 @@ export class DocumentService {
     };
   }
 
-  /** The shell's buffer; an edit for another version than main's is dropped, since main replaced that text. */
-  edit(id: string, edit: ShellEdit): void {
+  /**
+   * The shell's edit: Monaco's changes since its last one, or its whole buffer (undefined: a report the shell boundary
+   * refused). An edit for another version than main's is dropped, since main replaced that text, and the shell answers the
+   * replacement with its whole buffer. True when main must ask the shell for its whole buffer (editor:resync): changes that
+   * do not follow the last edit applied or do not fit the text, none of which is applied.
+   */
+  edit(id: string, edit: ShellEdit | undefined): boolean {
     const document = this.text(id);
-    if (!document || document.readOnlyReason !== undefined || edit.version !== document.version) return;
+    if (!document || document.readOnlyReason !== undefined) return false;
+    if (edit === undefined) return this.askWholeBuffer(document);
+    if (edit.version !== document.version) return false;
+    if ('changes' in edit) {
+      const text = edit.seq === document.editSeq + 1 ? applyTextChanges(document.text, edit.changes, EDITOR_HARD_MAX_DOCUMENT_BYTES) : undefined;
+      if (text === undefined) return this.askWholeBuffer(document);
+      document.editSeq = edit.seq;
+      delete document.resyncAsked;
+      if (this.takeText(document, text)) this.emit(id, false);
+      return false;
+    }
     document.editSeq = edit.seq;
+    delete document.resyncAsked;
     // Typed over a reload that replaced the text before main saw them: the buffer keeps them, in conflict with the disk.
     const conflict = edit.overReload && !document.untitled && edit.text !== document.diskText && !document.conflict;
     if (conflict) document.conflict = true;
     if (this.takeText(document, edit.text) || conflict) this.emit(id, false);
+    return false;
+  }
+
+  // Once until an edit applies: every change the shell sent meanwhile has a later seq, which the whole buffer covers.
+  private askWholeBuffer(document: TextDocument): boolean {
+    if (document.resyncAsked) return false;
+    document.resyncAsked = true;
+    return true;
   }
 
   // The text joins the buffer in the order it arrived among the shell's edits; the write takes the buffer as it is once its
@@ -1193,22 +1339,24 @@ export class DocumentService {
     this.textListeners.clear();
   }
 
-  private async openResolved(filePath: string, location: Omit<Location, 'path'>, readOnlyReason?: EditorReadOnlyReason, settingsScope?: SettingsFileScope): Promise<Document> {
+  private async openResolved(filePath: string, location: Omit<Location, 'path'>, readOnlyReason?: EditorReadOnlyReason, settingsScope?: SettingsFileScope, acceptLarge = false): Promise<Document> {
     const key = this.identity({ path: filePath, ...location });
-    const existing = this.heldDocument(key, settingsScope);
+    const log = readOnlyReason === 'log';
+    const existing = this.heldDocument(key, settingsScope, log);
     if (existing) return existing;
-    return this.joined(`${key}\0${settingsScope ?? ''}`, async () => {
-      const read = await this.files(location.projectKey).read(filePath, readLimitOf(this.flavorOf(location).basename(filePath)));
+    return this.joined(`${key}\0${settingsScope ?? ''}${log ? '\0log' : ''}`, async () => {
+      const read = await this.files(location.projectKey).read(filePath, readLimitOf(this.flavorOf(location).basename(filePath), acceptLarge));
       return this.documentOf({ path: filePath, ...location }, read, readOnlyReason, settingsScope);
     });
   }
 
   // The open document of the file with identity key, handed to one more open. A settings file opened by Edit settings.json is
   // a document of its own, so its saves keep the settings file rules. An offline placeholder is no open file: the open
-  // replaces it.
-  private heldDocument(key: string, settingsScope: SettingsFileScope | undefined): Document | undefined {
+  // replaces it. log: only a read-only log document, so Show Log never hands out a tab that saves to the log.
+  private heldDocument(key: string, settingsScope: SettingsFileScope | undefined, log = false): Document | undefined {
     for (const existing of this.documents.values()) {
       if (existing.kind === 'offline') continue;
+      if (log && !(existing.kind === 'text' && existing.readOnlyReason === 'log')) continue;
       const scope = existing.kind === 'text' ? existing.settingsScope : undefined;
       if (existing.location && existing.location.outside !== 'settings' && this.identity(existing.location) === key && scope === settingsScope && !(existing.kind === 'text' && existing.untitled)) {
         if (existing.kind === 'text') this.tabless.delete(existing);
@@ -1249,9 +1397,9 @@ export class DocumentService {
     readOnlyReason: EditorReadOnlyReason | undefined,
     settingsScope: SettingsFileScope | undefined,
     name: string = this.flavorOf(location).basename(location.path),
+    id: string = randomUUID(),
   ): Document {
     const filePath = location.path;
-    const id = randomUUID();
     // name may carry a host's title; the kind and language follow the file's own name
     const fileName = this.flavorOf(location).basename(filePath);
     const content = fileContentOf(fileName, read);
@@ -1268,7 +1416,8 @@ export class DocumentService {
     } else {
       const { decoded, bytes } = content;
       const parsed = settingsScope === undefined && readOnlyReason === undefined && decoded.valid && isSearchEditorPath(fileName) ? parseSearchEditor(decoded.text) : undefined;
-      const eol = parsed ? '\n' : majorityEol(decoded.text);
+      // a text with no line break takes the line ending of its file's machine
+      const eol = parsed ? '\n' : majorityEol(decoded.text, this.deps.authorityOs(this.authorityOf(location)));
       const text = parsed ? parsed.body : withEol(decoded.text, eol);
       document = {
         id,
@@ -1289,6 +1438,7 @@ export class DocumentService {
         untitled: false,
         orphaned: false,
         saveFailed: false,
+        ...((read.kind === 'bytes' || read.kind === 'missing') && read.sessionFile ? { sessionFile: true as const } : {}),
         settingsScope,
         backupId: randomUUID(),
         watcher: undefined,
@@ -1477,7 +1627,7 @@ export class DocumentService {
   private openFromPlaceholder(placeholder: OfflineDocument): void {
     if (this.placeholderOpens.has(placeholder)) return;
     this.placeholderOpens.add(placeholder);
-    this.reopen(placeholder.location).then((opened) => {
+    this.reopen(placeholder.location, placeholder.acceptLarge === true).then((opened) => {
       this.placeholderOpens.delete(placeholder);
       if (this.documents.get(placeholder.id) !== placeholder) {
         if (opened && this.handedOut.get(opened) === 1) this.release(opened.id, false);
@@ -1489,19 +1639,18 @@ export class DocumentService {
     }, (err: unknown) => {
       this.placeholderOpens.delete(placeholder);
       this.deps.log(`[documents] opening ${placeholder.location.path} once its host connected failed: ${errorText(err)}`);
-      // the host went away again: the placeholder waits for the next connect
-      if (err instanceof NotConnectedError || this.documents.get(placeholder.id) !== placeholder) return;
+      // the host went away again, or its server opens no file outside its projects: the placeholder waits for the next connect
+      if (err instanceof NotConnectedError || err instanceof OutsideFilesUnsupportedError || this.documents.get(placeholder.id) !== placeholder) return;
       this.documents.delete(placeholder.id);
       this.replaced(placeholder.id, this.notDisplayedAt(placeholder).id);
     });
   }
 
   // A placeholder's file, opened by the rule it was opened with before the relaunch; undefined when that rule refuses it now.
-  private async reopen(location: Location): Promise<Document | undefined> {
-    if (location.outside === 'plans' && location.host !== undefined) return this.openPlan(location.host, location.path);
-    if (location.outside === 'user' && location.host !== undefined) return this.openUserPath(location.host, location.path);
+  private async reopen(location: Location, acceptLarge: boolean): Promise<Document | undefined> {
+    if (location.outside === 'path' && location.host !== undefined) return this.openResolvedPath(location.host, location.path, { acceptLarge });
     if (location.projectKey === undefined || location.relativePath === undefined) throw new Error(`${location.path} names no rule to open it by`);
-    const opened = await this.openProjectFile(location.projectKey, location.relativePath);
+    const opened = await this.openProjectFile(location.projectKey, location.relativePath, { acceptLarge });
     return opened.ok ? opened.document : undefined;
   }
 
@@ -1540,7 +1689,7 @@ export class DocumentService {
       return;
     }
     const name = this.flavorOf(location).basename(confined.path);
-    const read = await files.read(confined.path, readLimitOf(name));
+    const read = await files.read(confined.path, readLimitOf(name, true));
     if (!document.awaitingHost || this.documents.get(document.id) !== document) return;
     if (read.kind === 'missing' || read.kind === 'unreadable') {
       if (read.kind === 'missing') this.adoptMissing(document, confined.path);
@@ -1556,6 +1705,7 @@ export class DocumentService {
     delete document.awaitingHost;
     delete document.hostReadFailed;
     document.location = { ...location, path: confined.path };
+    if (read.sessionFile) document.sessionFile = true;
     document.disk = { exists: true, mtimeMs: read.mtimeMs, size: read.bytes.length, sha256: sha256(read.bytes) };
     document.diskText = document.searchEditor ? parseSearchEditor(decoded.text).body : withEol(decoded.text, document.eol);
     document.encoding = decoded.encoding;
@@ -1695,10 +1845,11 @@ export class DocumentService {
     const header = document.searchEditor ? serializeSearchConfiguration(document.searchEditor.config) : undefined;
     const text = document.searchEditor ? buffer : withEol(buffer, document.eol);
     const bytes = encodeDocument(document.searchEditor ? serializeSearchEditor(document.searchEditor.config, buffer) : text, format.encoding, format.bom);
-    let mtimeMs: number;
+    let written: number | EditorSaveResult;
     this.writing.add(document);
     try {
-      mtimeMs = await this.writeConfined(location, bytes);
+      // a Save As names a new location, which the workspace refuses when it is a session file
+      written = location === document.location && document.sessionFile ? await this.writeSessionFile(document, location, bytes) : await this.writeConfined(location, bytes);
     } catch (err) {
       this.writing.delete(document);
       document.saveFailed = true;
@@ -1708,7 +1859,11 @@ export class DocumentService {
       return { ok: false, reason: 'failed', message: this.saveFailure(location, this.writeFailureReason(err)) };
     }
     this.writing.delete(document);
+    // refused before any byte was written, so the file is whole and the buffer stays dirty as it was
+    if (typeof written !== 'number') return written;
+    const mtimeMs = written;
     const unchanged = document.text === buffer && (!document.searchEditor || serializeSearchConfiguration(document.searchEditor.config) === header);
+    if (location !== document.location) delete document.sessionFile;
     document.location = location;
     document.encoding = format.encoding;
     document.bom = format.bom;
@@ -1727,14 +1882,49 @@ export class DocumentService {
     return { ok: true };
   }
 
+  // A session file, of a project or outside every one, is written by its machine's engine alone, under the file's lease or its
+  // run's ownership and only while its bytes are the ones last read. Resolves the written file's mtime, or the refusal.
+  private async writeSessionFile(document: TextDocument, location: Location, bytes: Buffer): Promise<number | EditorSaveResult> {
+    const authority = this.authorityOf(location);
+    let written: SessionFileWrite;
+    try {
+      written = await this.deps.sessionFiles.write(authority, location.path, bytes, document.disk.exists ? document.disk.sha256 : null);
+    } catch (err) {
+      if (!(err instanceof EngineUnavailableError)) throw err;
+      this.deps.log(`[documents] not saving ${location.path}: ${err.message}`);
+      return { ok: false, reason: 'failed', message: this.saveFailure(location, this.engineAbsenceReason(err.absence, authority)) };
+    }
+    switch (written.kind) {
+      case 'written': return written.mtimeMs;
+      case 'changed': return this.refuseConflict(document);
+      case 'outside': return { ok: false, reason: 'failed', message: this.saveFailure(location, this.refusalReason('outsideFile')) };
+      case 'refused': return { ok: false, reason: 'failed', message: this.saveFailure(location, this.sessionFileRefusalReason(written.reason)) };
+    }
+  }
+
+  private sessionFileRefusalReason(reason: SessionFileRefusal): string {
+    return reason === 'held'
+      ? this.deps.t('A chat, an agent run, or a rename, tag or delete of its conversation is using this session file. Wait for it to finish or close the chat, then save again.')
+      : this.deps.t('Another Damocles window is using this session file. Close the chat there, then save again.');
+  }
+
+  private engineAbsenceReason(absence: EngineAbsence, authority: string): string {
+    const host = this.deps.hostLabel(authority).name;
+    switch (absence) {
+      case 'stopped': return authority === 'local'
+        ? this.deps.t('Saving this file needs this computer\'s Damocles engine, which is not running. Restart the engine, then save again.')
+        : this.deps.t('Saving this file needs {0}\'s Damocles engine, which is not running. Restart the engine, then save again.', host);
+      case 'notConnected': return this.deps.t('{0} is not connected.', host);
+      case 'unsupported': return this.deps.t('The Damocles server on {0} is older than this app and cannot save this file.', host);
+    }
+  }
+
   // The in-place write of the workspace that holds the file (WorkspaceFileSystem.writeInPlace), only while the document's
-  // project is still listed; every write names one, a host's own settings file, a file outside every project the plans rule
-  // accepts on its machine at this write, or a file the user named, while its path still resolves to itself. Resolves the
-  // written file's mtime.
+  // project is still listed; every write names one, a host's own settings file, or a file outside every project while its
+  // path still resolves to itself on its machine. Resolves the written file's mtime.
   private async writeConfined(location: Location, bytes: Buffer): Promise<number> {
     if (location.outside === 'settings') return this.filesAt(location).writeHostSettings(bytes);
-    if (location.outside === 'plans') return this.filesAt(location).writeOutside(location.path, bytes, { within: 'plans' });
-    if (location.outside === 'user') return this.filesAt(location).writeOutside(location.path, bytes, {});
+    if (location.outside === 'path') return this.filesAt(location).writeOutside(location.path, bytes);
     if (location.projectKey === undefined || location.relativePath === undefined) throw new WriteRefused(`${location.path} is outside every project`, this.deps.t('Its path now leads outside the project.'));
     const project = this.deps.projects().find((candidate) => candidate.key === location.projectKey);
     if (!project) throw new WriteRefused(`${location.path}: its project is no longer in the project list`, this.deps.t('The project is no longer in the project list.'));
@@ -1780,8 +1970,8 @@ export class DocumentService {
   // Bounded by the bytes the write produces, byte order mark included, as readFileBytes counts them, before anything is encoded.
   private oversize(text: string, format: { readonly encoding: TextEncoding; readonly bom: boolean }): string | undefined {
     const bytes = encodedLength(text, format.encoding, format.bom);
-    if (bytes <= EDITOR_MAX_DOCUMENT_BYTES) return undefined;
-    return this.deps.t('The text is {0} bytes, over the {1}-byte limit, so it was not saved.', bytes, EDITOR_MAX_DOCUMENT_BYTES);
+    if (bytes <= EDITOR_HARD_MAX_DOCUMENT_BYTES) return undefined;
+    return this.deps.t('The text is {0} bytes, over the {1}-byte limit, so it was not saved.', bytes, EDITOR_HARD_MAX_DOCUMENT_BYTES);
   }
 
   private refuseConflict(document: TextDocument): EditorSaveResult {
@@ -1835,6 +2025,7 @@ export class DocumentService {
   private writeFailureReason(err: unknown): string {
     if (err instanceof WriteRefused) return err.reason;
     if (err instanceof NotConnectedError) return err.message;
+    if (err instanceof LocalizedError) return this.deps.render(err.text);
     return err instanceof WriteRefusedError ? this.refusalReason(err.refusal) : this.errnoReason(errnoCode(err));
   }
 
@@ -1846,6 +2037,7 @@ export class DocumentService {
       case 'replaced': return t('The file was replaced while it was being saved.');
       case 'notAFile': return t('The path is not a file.');
       case 'diskFull': return t('The disk stopped accepting data.');
+      case 'sessionFile': return t('It is a Damocles session file, which only the Damocles engine that owns it saves.');
     }
   }
 
@@ -1872,14 +2064,15 @@ export class DocumentService {
 
   // An open project file is read only while its path still confines to the file the editor opened, by confineExisting's
   // walk before anything follows a link, so a file replaced by a link to a share or out of the project is never opened. A
-  // read-only file outside every project reads as it opened; an editable one only while its path is still its own realpath on
-  // its machine, a plan only while that machine's plans rule still holds too.
+  // file outside every project reads only while its path is still its own realpath on its machine; the plain read is left
+  // for Damocles' own log and settings file.
   private async readLocation(location: Location): Promise<FileBytes | { readonly kind: 'outside' }> {
     if (location.outside === 'settings') {
       const { path: filePath, read } = await this.filesAt(location).readHostSettings();
       return this.identity({ ...location, path: filePath }) === this.identity(location) ? read : { kind: 'outside' };
     }
-    if (location.outside !== undefined) return this.filesAt(location).readOutside(location.path, location.outside === 'plans' ? { within: 'plans' } : {});
+    const limitBytes = readLimitOf(this.flavorOf(location).basename(location.path), true);
+    if (location.outside === 'path') return this.filesAt(location).readOutside(location.path, limitBytes);
     if (location.projectKey !== undefined && location.relativePath !== undefined) {
       const project = this.deps.projects().find((candidate) => candidate.key === location.projectKey);
       if (!project) return { kind: 'outside' };
@@ -1890,7 +2083,7 @@ export class DocumentService {
       }
       if (this.identity({ ...location, path: confined.path }) !== this.identity(location)) return { kind: 'outside' };
     }
-    return this.files(location.projectKey).read(location.path, readLimitOf(this.flavorOf(location).basename(location.path)));
+    return this.files(location.projectKey).read(location.path, limitBytes);
   }
 
   // The files of the workspace holding a project; this computer's for a path outside every project.

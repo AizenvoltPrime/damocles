@@ -6,6 +6,7 @@ import { parseCacheWarmingMode } from '../../shared/types/constants';
 import { stripBom } from '../config/bom';
 import { DAMOCLES_HOME_DIR } from '../paths';
 import { log } from '../logger';
+import { piAgentDirIn } from './session-store/session-file-path';
 
 /**
  * Damocles-owned pi config/data directory. pi defaults to `~/.pi/agent`; we point it
@@ -14,7 +15,7 @@ import { log } from '../logger';
  * env var is deliberately NOT set, since one Node process hosts all VS Code extensions
  * and mutating `process.env` would leak into them (FR-12).
  */
-export const PI_AGENT_DIR: string = path.join(DAMOCLES_HOME_DIR, 'pi', 'agent');
+export const PI_AGENT_DIR: string = piAgentDirIn(DAMOCLES_HOME_DIR);
 
 /** Subset of pi's global settings.json that Damocles seeds. */
 interface SeededPiSettings {

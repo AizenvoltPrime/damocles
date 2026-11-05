@@ -128,13 +128,14 @@ describe('checkNoDaemon', () => {
 });
 
 describe('checkServerManifest', () => {
-  const release = (version: string, sha: string) => ({
+  const release = (version: string, sha: string, build = 'a'.repeat(12)) => ({
     version,
     protocolVersion: 1,
-    packages: Object.fromEntries(['linux-x64', 'win32-x64'].map((target) => [target, { file: `damocles-server-${version}-${target}.${target.startsWith('win32') ? 'zip' : 'tar.gz'}`, sha256: sha.repeat(64), size: 10 }])),
+    published: true,
+    packages: Object.fromEntries(['linux-x64', 'win32-x64'].map((target) => [target, { file: `damocles-server-${version}-${target}.${target.startsWith('win32') ? 'zip' : 'tar.gz'}`, sha256: sha.repeat(64), size: 10, serverVersion: `${version}+${build}` }])),
   });
 
-  it('passes a manifest naming exactly the release packages', () => {
+  it('passes a published manifest naming exactly the release packages', () => {
     expect(failures(checkServerManifest(JSON.stringify(release('3.7.0', 'a')), '3.7.0', release('3.7.0', 'a')))).toEqual([]);
   });
 
@@ -142,7 +143,12 @@ describe('checkServerManifest', () => {
     expect(checkServerManifest(undefined, '3.7.0', release('3.7.0', 'a'))[0].detail).toBe('dist/desktop/server-manifest.json is not in app.asar');
     expect(checkServerManifest(JSON.stringify({ ...release('3.7.0', 'a'), version: '..' }), '3.7.0', release('3.7.0', 'a'))[0].detail).toMatch(/does not parse/);
     expect(checkServerManifest(JSON.stringify(release('3.6.0', 'a')), '3.7.0', release('3.7.0', 'a'))[0].detail).toMatch(/it is for 3\.6\.0, the app is 3\.7\.0/);
-    expect(checkServerManifest(JSON.stringify(release('3.7.0', 'b')), '3.7.0', release('3.7.0', 'a'))[0].detail).toBe('linux-x64 is not damocles-server-3.7.0-linux-x64.tar.gz with its SHA-256 and size; win32-x64 is not damocles-server-3.7.0-win32-x64.zip with its SHA-256 and size');
+    expect(checkServerManifest(JSON.stringify(release('3.7.0', 'b')), '3.7.0', release('3.7.0', 'a'))[0].detail).toBe(`linux-x64 is not damocles-server-3.7.0-linux-x64.tar.gz with its SHA-256, size and server version 3.7.0+${'a'.repeat(12)}; win32-x64 is not damocles-server-3.7.0-win32-x64.zip with its SHA-256, size and server version 3.7.0+${'a'.repeat(12)}`);
+  });
+
+  it('fails an unpublished manifest, whose hosts would never download, and another build\'s server versions', () => {
+    expect(checkServerManifest(JSON.stringify({ ...release('3.7.0', 'a'), published: false }), '3.7.0', release('3.7.0', 'a'))[0].detail).toMatch(/^it is unpublished/);
+    expect(checkServerManifest(JSON.stringify(release('3.7.0', 'a', 'b'.repeat(12))), '3.7.0', release('3.7.0', 'a'))[0].detail).toMatch(/^linux-x64 is not .* server version 3\.7\.0\+a{12}; win32-x64/);
   });
 });
 

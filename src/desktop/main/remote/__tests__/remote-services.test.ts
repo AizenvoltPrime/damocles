@@ -1,4 +1,3 @@
-import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { NO_USER_RELAYS } from '../../core-services/host-services';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
@@ -9,18 +8,21 @@ import { hostExtras } from '../../core-services/__tests__/host-deps';
 import { createDesktopNotificationService } from '../../platform/notification-service';
 import { namespacedSecrets, remoteServices } from '../remote-services';
 import { OutsideFilesUnsupportedError } from '../../workspace/remote-workspace';
+import { RefusedPathError } from '../../documents/document-service';
+import { LocalizedError } from '../../../../shared/localized-text';
+import { ERROR_CODEC } from '../../../core-protocol/errors';
 
 const none = (): Disposable => ({ dispose: () => undefined });
 const PROJECT = { key: 'loopback|/srv/app', fsPath: '/srv/app', name: 'app' };
 
-function services(wslDistro?: string, openPlan: (targetPath: string) => Promise<boolean> = async () => false) {
+function services(wslDistro?: string, openNamed: (targetPath: string) => Promise<void> = async () => undefined) {
   const main = createFakePlatform({ chatBrowserPane: true });
   const logged: string[] = [];
   const reviews: unknown[] = [];
   const previews: unknown[] = [];
   const settingsFiles: unknown[] = [];
   const opened: unknown[] = [];
-  const plans: unknown[] = [];
+  const reads: string[] = [];
   const shown: unknown[] = [];
   const notices: unknown[] = [];
   const diffs: unknown[] = [];
@@ -32,11 +34,13 @@ function services(wslDistro?: string, openPlan: (targetPath: string) => Promise<
     hostId: 'loopback',
     ...(wslDistro !== undefined ? { wslDistro } : {}),
     hostName: () => 'Local daemon',
+    os: () => 'linux',
     openLink: async (url) => {
       links.push(url);
       return false;
     },
-    platform: main,
+    // this computer's editor withholds a host's context from this computer's core, so only the pane's reaches a remote core
+    platform: { ...main, editor: { ...main.editor, getActiveContext: () => ({ filePath: undefined, selection: undefined }), onDidChangeActiveContext: () => none() } },
     runProcess: async (spec) => {
       runs.push(spec);
     },
@@ -45,17 +49,19 @@ function services(wslDistro?: string, openPlan: (targetPath: string) => Promise<
     onProjectsChanged: none,
     workspace: () => ({
       files: {
-        projectOfPath: async (_projects: unknown, target: string) => (target.startsWith('/srv/app/') ? { project: PROJECT, relativePath: path.posix.relative('/srv/app', target), path: target } : undefined),
-        readText: async () => 'text',
+        readText: async (target: string) => {
+          reads.push(target);
+          return 'text';
+        },
       },
     }) as never,
+    // the pane's own context of any machine, which the platform's editor already filters for this computer's core
+    activeContext: () => main.editor.getActiveContext(),
+    onDidChangeActiveContext: (listener) => main.editor.onDidChangeActiveContext(listener),
     trust: { trustedKeys: () => [], onDidGrant: none, requestTrust: async () => false },
-    openInEditor: async (...args) => {
+    openNamedPath: async (...args) => {
       opened.push(args);
-    },
-    openPlan: async (...args) => {
-      plans.push(args);
-      return openPlan(args[0]);
+      await openNamed(args[0]);
     },
     showLog: (...args) => shown.push(args),
     showDiff: async (request) => {
@@ -89,7 +95,7 @@ function services(wslDistro?: string, openPlan: (targetPath: string) => Promise<
     base: { terminalToggle: () => ({ shown: false, shortcut: '' }), createView: () => { throw new Error('no view'); }, git: { available: true }, e2eHooks: false, ...hostExtras(), log: (line) => logged.push(line) },
     t: (message, ...args) => args.reduce((text, arg, index) => text.replace(`{${index}}`, arg), message),
   });
-  return { deps, main, opened, plans, shown, notices, diffs, logged, reviews, previews, settingsFiles, picks, links, runs };
+  return { deps, main, opened, reads, shown, notices, diffs, logged, reviews, previews, settingsFiles, picks, links, runs };
 }
 
 describe('a remote core\'s services', () => {
@@ -149,10 +155,11 @@ describe('a remote core\'s services', () => {
     expect(revealPath).toHaveBeenCalledTimes(1);
   });
 
-  it('shows the active editor\'s context only while it shows a file of this host, at attach and on every change', () => {
+  it('shows the active editor\'s context only while it shows a file of this host, project or not, at attach and on every change', () => {
     const { deps, main } = services();
     const local = { filePath: '/home/me/local/secret.ts', selection: { text: 'API_KEY=sk-local', startLine: 1, endLine: 1 } };
     const own = { filePath: '/srv/app/a.ts', selection: { text: 'export const a', startLine: 1, endLine: 1 } };
+    const bashrc = { filePath: '/home/me/.bashrc', selection: undefined };
     const empty = { filePath: undefined, selection: undefined };
     main.editor.setActiveContext(local, '/home/me/local');
     expect(deps.platform.editor.getActiveContext()).toEqual(empty);
@@ -160,11 +167,17 @@ describe('a remote core\'s services', () => {
     deps.platform.editor.onDidChangeActiveContext((context) => heard.push(context));
     main.editor.setActiveContext(own, 'loopback|/srv/app');
     expect(deps.platform.editor.getActiveContext()).toEqual(own);
+    expect(deps.platform.editor.activeAuthority()).toBe('loopback');
+    main.editor.setActiveContext(bashrc, undefined, 'loopback');
+    expect(deps.platform.editor.getActiveContext()).toEqual(bashrc);
+    expect(deps.platform.editor.activeProjectKey()).toBeUndefined();
     main.editor.setActiveContext(local, '/home/me/local');
+    expect(deps.platform.editor.activeAuthority()).toBeUndefined();
     main.editor.setActiveContext(own, 'ssh+h1|/srv/app');
+    main.editor.setActiveContext(bashrc, undefined, 'ssh+h1');
     main.editor.setActiveContext(local);
     main.editor.setActiveContext(undefined);
-    expect(heard).toEqual([own, empty, empty, empty, undefined]);
+    expect(heard).toEqual([own, bashrc, empty, empty, empty, empty, undefined]);
   });
 
   it('shows a chat review of this core by its core panel id, a Markdown preview of the text it sent, and the host\'s settings file', async () => {
@@ -178,38 +191,39 @@ describe('a remote core\'s services', () => {
     expect(settingsFiles).toEqual([['user', 'damocles.model']]);
   });
 
-  it('opens a target file through the authority\'s projects and refuses one outside them', async () => {
-    const { deps, opened } = services();
+  it('opens any host path through the host\'s workspace, never on this computer, and passes its refusal on as it is', async () => {
+    const refusal = new RefusedPathError('/mnt/share/x', 'share');
+    const { deps, opened } = services(undefined, async (target) => {
+      if (target === '/mnt/share/x') throw refusal;
+    });
     await deps.platform.editor.openFile('/srv/app/src/a.ts', { line: 3 });
-    expect(opened).toEqual([['loopback|/srv/app', 'src/a.ts', 3, true]]);
-    // a reply to the core never names the host as this computer calls it
-    await expect(deps.platform.editor.openFile('/home/me/.ssh/id_rsa')).rejects.toThrow(new Error('/home/me/.ssh/id_rsa is not in an open project'));
-    await expect(deps.platform.editor.readText('/etc/passwd')).rejects.toThrow(new Error('/etc/passwd is not in an open project'));
+    await deps.platform.editor.openFile('/home/me/.bashrc', { line: 4, preserveFocus: true });
+    expect(opened).toEqual([['/srv/app/src/a.ts', 3, true], ['/home/me/.bashrc', 4, false]]);
+    // a reply to the core never names the host as this computer calls it, and reaches it as a LocalizedError
+    const refused = await deps.platform.editor.openFile('/mnt/share/x').catch((err: unknown) => err as Error);
+    expect(refused).toBe(refusal);
+    expect(refusal.message).not.toContain('Local daemon');
+    const crossed = ERROR_CODEC.decode(ERROR_CODEC.encode(refused, () => undefined)!, 'editor.openFile');
+    expect(crossed).toBeInstanceOf(LocalizedError);
+    expect((crossed as LocalizedError).text).toEqual(refusal.text);
+  });
+
+  it('reads the text of any absolute host path through the host, and refuses a relative one', async () => {
+    const { deps, reads } = services();
+    await expect(deps.platform.editor.readText('/etc/passwd')).resolves.toBe('text');
     await expect(deps.platform.editor.readText('/srv/app/a.ts')).resolves.toBe('text');
+    await expect(deps.platform.editor.readText('notes.txt')).rejects.toThrow('notes.txt is not an absolute path');
+    expect(reads).toEqual(['/etc/passwd', '/srv/app/a.ts']);
   });
 
-  it('opens a path outside the host\'s projects only through the host\'s plans rule, and refuses every other one as before', async () => {
-    const plan = '/home/me/.damocles/plans/fix-it-0123abcd.md';
-    const accepted = services(undefined, async (target) => target === plan);
-    await accepted.deps.platform.editor.openFile(plan, { line: 4, preserveFocus: true });
-    expect(accepted.plans).toEqual([[plan, 4, false]]);
-    expect(accepted.opened).toEqual([]);
-    for (const target of ['/home/me/.bashrc', '/home/me/.damocles/plans/notes.txt']) {
-      await expect(accepted.deps.platform.editor.openFile(target)).rejects.toThrow(new Error(`${target} is not in an open project`));
-    }
-    // a project file never reaches the plans rule
-    await accepted.deps.platform.editor.openFile('/srv/app/src/a.ts');
-    expect(accepted.plans.map((args) => (args as unknown[])[0])).toEqual([plan, '/home/me/.bashrc', '/home/me/.damocles/plans/notes.txt']);
-    expect(accepted.opened).toEqual([['loopback|/srv/app', 'src/a.ts', undefined, true]]);
-  });
-
-  it('refuses a plan path as before when the host\'s daemon does not carry files outside its projects, and says why in the log', async () => {
-    const plan = '/home/me/.damocles/plans/fix-it-0123abcd.md';
+  it('answers an old server\'s missing outside routes with an error that names no host, and says why in the log', async () => {
     const { deps, logged } = services(undefined, async () => { throw new OutsideFilesUnsupportedError('loopback'); });
-    await expect(deps.platform.editor.openFile(plan)).rejects.toThrow(new Error(`${plan} is not in an open project`));
-    expect(logged).toEqual([`[remote] loopback's daemon opens no file outside its projects, so ${plan} stays closed`]);
+    const older = await deps.platform.editor.openFile('/home/me/.bashrc').catch((err: unknown) => err);
+    expect(older).toBeInstanceOf(LocalizedError);
+    expect((older as LocalizedError).text).toEqual({ message: 'The Damocles server is older than this app and opens no file outside its projects.' });
+    expect(logged).toEqual(['[remote] loopback\'s daemon opens no file outside its projects, so /home/me/.bashrc stays closed']);
     const failing = services(undefined, async () => { throw new Error('the connection ended'); });
-    await expect(failing.deps.platform.editor.openFile(plan)).rejects.toThrow('the connection ended');
+    await expect(failing.deps.platform.editor.openFile('/home/me/.bashrc')).rejects.toThrow('the connection ended');
   });
 
   it('shows notifications through the host-labeled notices, never this computer\'s own', async () => {

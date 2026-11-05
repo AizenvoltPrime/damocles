@@ -505,7 +505,8 @@ describe('the stale part sweep', () => {
     const maps: Array<Map<unknown, unknown>> = [];
     const set = Map.prototype.set;
     vi.spyOn(Map.prototype, 'set').mockImplementation(function record(this: Map<unknown, unknown>, key, value) {
-      if (key === folderKey(at('src')) && !maps.includes(this)) maps.push(this);
+      // the sweep's map holds when each folder was swept; other maps keyed by the folder (a link walk's answers) are not it
+      if (key === folderKey(at('src')) && typeof value === 'number' && !maps.includes(this)) maps.push(this);
       return set.call(this, key, value);
     });
     fs.mkdirSync(at('other'));

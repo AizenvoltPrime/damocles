@@ -3,6 +3,7 @@ import { createEndpoint, CoreProtocolError } from '../endpoint';
 import { createLoopback } from '../loopback';
 import { CORE_TO_MAIN, MAIN_TO_CORE, type CoreToMain, type MainToCore } from '../messages';
 import { arr, data, INVALID, obj, opt, str } from '../schema';
+import { EDITOR_HARD_MAX_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { CLIENT_TO_WORKSPACE } from '../../workspace/messages';
 import { GitError, gitErrorText, GitUntrustedError, RemoteCancelledError, StashKeptError, SyncBranchChangedError } from '../../../core/scm/errors';
 import { createCoreEndpoint, createMainEndpoint } from '..';
@@ -66,6 +67,43 @@ describe('numbers a peer sends', () => {
     const answers = MAIN_TO_CORE.requests['e2e.clientNetworkAnswers'].params;
     expect(answers({ answers: { 'a.test': [['127.0.0.1']] } })).not.toBe(INVALID);
     expect(answers({ answers: { 'a.test': [] } })).toBe(INVALID);
+  });
+});
+
+describe('a session file write', () => {
+  const write = MAIN_TO_CORE.requests['sessionFiles.write'];
+  const sha = 'a'.repeat(64);
+
+  it('takes the bytes as bytes within the editor\'s limit, and the expected hash only as a sha256 or null', () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    expect(write.params({ path: '/home/u/.damocles/pi/agent/sessions/x/a_b.jsonl', bytes, expectedSha256: sha })).toEqual({ path: '/home/u/.damocles/pi/agent/sessions/x/a_b.jsonl', bytes, expectedSha256: sha });
+    expect(write.params({ path: '/s/a_b.jsonl', bytes, expectedSha256: null })).toEqual({ path: '/s/a_b.jsonl', bytes, expectedSha256: null });
+    expect(write.params({ path: '/s/a_b.jsonl', bytes: [1, 2, 3], expectedSha256: sha })).toBe(INVALID);
+    expect(write.params({ path: '/s/a_b.jsonl', bytes: new Uint8Array(EDITOR_HARD_MAX_DOCUMENT_BYTES + 1), expectedSha256: sha })).toBe(INVALID);
+    expect(write.params({ path: '/s/a_b.jsonl', bytes, expectedSha256: 'A'.repeat(64) })).toBe(INVALID);
+    expect(write.params({ path: '/s/a_b.jsonl', bytes })).toBe(INVALID);
+  });
+
+  it('answers only an outcome main acts on', () => {
+    for (const answer of [{ kind: 'written', mtimeMs: 1.5 }, { kind: 'changed' }, { kind: 'outside' }, { kind: 'refused', reason: 'held' }, { kind: 'refused', reason: 'otherProcess' }]) {
+      expect(write.result(answer)).toEqual(answer);
+    }
+    expect(write.result({ kind: 'written', mtimeMs: Number.NaN })).toBe(INVALID);
+    expect(write.result({ kind: 'refused', reason: 'busy' })).toBe(INVALID);
+    expect(write.result({ kind: 'refused', reason: 'held', message: 'free text' })).toEqual({ kind: 'refused', reason: 'held' });
+  });
+
+  it('reaches main from a workspace read as the flag true or nothing, on a file or a missing one', () => {
+    const bytes = new Uint8Array([1]);
+    for (const method of ['files.read', 'files.readOutside'] as const) {
+      const { result } = CLIENT_TO_WORKSPACE.requests[method];
+      const read = { kind: 'bytes', bytes, mtimeMs: 1, dev: 2, ino: 3 };
+      expect(result({ ...read, sessionFile: true }), method).toEqual({ ...read, sessionFile: true });
+      expect(result(read), method).toEqual(read);
+      expect(result({ kind: 'missing', sessionFile: true }), method).toEqual({ kind: 'missing', sessionFile: true });
+      expect(result({ ...read, sessionFile: false }), method).toBe(INVALID);
+      expect(result({ kind: 'missing', sessionFile: 'yes' }), method).toBe(INVALID);
+    }
   });
 });
 

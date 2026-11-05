@@ -12,7 +12,7 @@ import { apply, applyPlan, branchContained, isRewritten, aheadBehind, mergeInto,
 import { WorktreeRegistry, type ChatWorktreeRecord } from '../registry';
 import { folderInRepository, linkedWorktreeOf, scanLeftovers } from '../leftovers';
 import { filesToMove, HandOffMoveError, moveFilesToWorktree, WORKTREE_ENTRY, worktreeGitOf } from '../hand-off';
-import { EDITOR_MAX_DOCUMENT_BYTES } from '../../../shared/types/messages';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { piSessionDir } from '../../pi-session/session-store/session-dir';
 
 /** Worktree creation and D33's finish actions against real git; every repository and worktree lives in a temp sandbox. */
@@ -927,7 +927,7 @@ describe.skipIf(!HAS_GIT)('worktree chats against real git', { timeout: 120_000 
   it('reads a file at the base commit as absent only when git says it is missing there', async () => {
     const { project, registry, run } = setup('at-base');
     write(path.join(project, 'dir', 'x.txt'), 'x\n');
-    fs.writeFileSync(path.join(project, 'big.txt'), Buffer.alloc(EDITOR_MAX_DOCUMENT_BYTES + 1, 0x61));
+    fs.writeFileSync(path.join(project, 'big.txt'), Buffer.alloc(EDITOR_CONFIRM_DOCUMENT_BYTES + 1, 0x61));
     commitAll(project, 'files');
     const record = await create(project, registry, run);
     const reads = worktreeGitOf(record, run);

@@ -10,7 +10,7 @@ import type { AskpassRegistration, AskpassServer } from '../../../../core/scm/as
 import { resolveSshExecutable } from '../../../../core/system-tools';
 import type { CachedPlatform, ConnectStep, HostNotice, SshFailureCode, SshPrompt, SshPromptAnswer } from '../../../preload/overlay-channels';
 import type { ShellPlatform } from '../../../preload/shell-channels';
-import type { ArtifactCache } from '../artifact-cache';
+import { UnpublishedPackageMissingError, type ArtifactCache } from '../artifact-cache';
 import type { ServerManifest, ServerTarget } from '../server-manifest-format';
 import { resolvePlatform } from '../bootstrap/platform-detect';
 import { createStageOutput, StageProtocolError, type StageMessage } from '../bootstrap/probe-parse';
@@ -111,7 +111,8 @@ export interface SshTransportOptions {
   installFolderSettled(): Promise<void>;
   readonly askpass: AskpassServer;
   readonly manifest: ServerManifest;
-  readonly releasesUrl: string;
+  // absent for an unpublished build: the stage never downloads
+  readonly releasesUrl?: string;
   readonly artifacts: ArtifactCache;
   // the e2e hook's -F file
   readonly sshConfigFile?: string;
@@ -389,7 +390,7 @@ export async function startSshTransport(options: SshTransportOptions, deps: SshT
 
     const stageParams = {
       manifest: options.manifest,
-      releasesUrl: options.releasesUrl,
+      ...(options.releasesUrl !== undefined ? { releasesUrl: options.releasesUrl } : {}),
       ...(options.installFolder !== undefined ? { installFolder: options.installFolder } : {}),
       ...(options.previousInstallFolder !== undefined ? { previousInstallFolder: options.previousInstallFolder } : {}),
     };
@@ -542,7 +543,9 @@ export function runStage(
           upload().catch((err: unknown) => {
             if (settled) return;
             log(`the upload failed: ${messageOf(err)}`);
-            fail(err instanceof StageProtocolError ? failure('bridgeFailed', { reason: 'stageProtocol' }) : failure('downloadAndUploadFailed'));
+            fail(err instanceof StageProtocolError
+              ? failure('bridgeFailed', { reason: 'stageProtocol' })
+              : failure('downloadAndUploadFailed', err instanceof UnpublishedPackageMissingError ? { reason: 'unpublished' } : {}));
           });
           return;
         case 'cache':

@@ -2,7 +2,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia } from 'pinia';
-import type { OverlayRequest, OverlayToast } from '../../preload/overlay-channels';
+import {
+  MAX_QUICK_OPEN_LISTING_RESULTS, quickOpenRowKey,
+  type OverlayRequest, type OverlayToast, type QuickOpenCompletion, type QuickOpenFolderResult, type QuickOpenPathResult, type QuickOpenQuery, type QuickOpenResponse, type QuickOpenResult,
+} from '../../preload/overlay-channels';
 import type { NoticeSeverity } from '../../preload/notifications';
 import NotifierApp from '../overlay/NotifierApp.vue';
 import OverlayApp from '../overlay/OverlayApp.vue';
@@ -1129,6 +1132,226 @@ describe('command palette', () => {
     } finally {
       process.off('unhandledRejection', record);
     }
+  });
+
+  describe('a typed folder', () => {
+    const folder = (input: string, label: string, caret?: number): QuickOpenFolderResult => ({
+      kind: 'folder', authority: 'local', label, labelMatches: [], input, ...(caret === undefined ? {} : { caret }),
+    });
+    const file = (name: string, complete: QuickOpenCompletion): QuickOpenPathResult => ({
+      kind: 'path', authority: 'local', path: `C:\\tmp\\${name}`, label: name, description: 'C:\\tmp', labelMatches: [], descriptionMatches: [], recent: false, complete,
+    });
+    const LISTING: readonly QuickOpenResult[] = [
+      folder('C:\\', '..'),
+      folder('C:\\tmp\\src\\', 'src'),
+      folder('"C:\\tmp\\ spaced\\"', ' spaced', 16),
+      file('a.txt', { input: 'C:\\tmp\\a.txt' }),
+      file('ab (2).txt', { input: '"C:\\tmp\\ab (2).txt"', caret: 18 }),
+    ];
+    const listing = (extra: Partial<QuickOpenResponse> = {}) => (query: QuickOpenQuery): QuickOpenResponse => ({ generation: query.generation, mention: false, results: LISTING, ...extra });
+    const field = (wrapper: VueWrapper): HTMLInputElement => wrapper.get('[data-testid="quick-pick-input"]').element as HTMLInputElement;
+    const queries = (): string[] => vi.mocked(api.queryQuickOpen).mock.calls.map(([query]) => query.query);
+    // by attribute value, since a CSS selector would read the keys' backslashes as escapes
+    const rowOf = (wrapper: VueWrapper, result: QuickOpenResult) => wrapper.findAll('[data-testid="quick-pick-item"]').find((row) => row.attributes('data-item-id') === quickOpenRowKey(result))!;
+
+    async function typed(answer: (query: QuickOpenQuery) => QuickOpenResponse, query = 'C:\\tmp\\'): Promise<VueWrapper> {
+      api.quickOpen.answer = answer;
+      const wrapper = mountOverlay();
+      await flushPromises();
+      await open(wrapper, 'q1', { kind: 'quickOpen', mode: 'files' });
+      await type(wrapper, query);
+      return wrapper;
+    }
+
+    it('starts on the first entry after .., which Enter goes into, and on .. only when the folder lists nothing else', async () => {
+      const wrapper = await typed(listing());
+      const input = wrapper.get('[data-testid="quick-pick-input"]');
+      const src = rowOf(wrapper, LISTING[1]!);
+      expect(src.attributes('aria-selected')).toBe('true');
+      expect(rowOf(wrapper, LISTING[0]!).attributes('aria-selected')).toBe('false');
+      expect(input.attributes('aria-activedescendant')).toBe(src.attributes('id'));
+      // a pointer resting where the list opened leaves the first entry active; one that moves onto .. takes it
+      const hover = async (screenX: number): Promise<void> => {
+        rowOf(wrapper, LISTING[0]!).element.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, screenX, screenY: 4 }));
+        await flushPromises();
+      };
+      await hover(4);
+      await hover(4);
+      expect(src.attributes('aria-selected')).toBe('true');
+      await hover(8);
+      expect(rowOf(wrapper, LISTING[0]!).attributes('aria-selected')).toBe('true');
+      expect(input.attributes('aria-activedescendant')).toBe(rowOf(wrapper, LISTING[0]!).attributes('id'));
+
+      api.quickOpen.answer = (query) => ({ generation: query.generation, mention: false, results: [LISTING[0]!] });
+      await type(wrapper, 'C:\\tmp\\empty\\');
+      const up = rowOf(wrapper, LISTING[0]!);
+      expect(up.attributes('aria-selected')).toBe('true');
+      expect(input.attributes('aria-activedescendant')).toBe(up.attributes('id'));
+      press('Enter');
+      await flushPromises();
+      expect(field(wrapper).value).toBe('C:\\');
+      expect(api.answer).not.toHaveBeenCalled();
+    });
+
+    it('goes into a folder on Enter or a click, setting the query and caret main built, and answers nothing', async () => {
+      const wrapper = await typed(listing());
+      press('Enter');
+      await flushPromises();
+      expect(field(wrapper).value).toBe('C:\\tmp\\src\\');
+      expect(field(wrapper).selectionStart).toBe('C:\\tmp\\src\\'.length);
+      expect(queries().at(-1)).toBe('C:\\tmp\\src\\');
+      const slides = (name: string): boolean => rowOf(wrapper, LISTING[1]!).classes().some((css) => css.startsWith(`animate-[${name}_`));
+      // the folder's rows slide in from the end going down, from the start going up
+      expect(slides('d-pane-in')).toBe(true);
+
+      await rowOf(wrapper, LISTING[2]!).trigger('click');
+      await flushPromises();
+      expect(field(wrapper).value).toBe('"C:\\tmp\\ spaced\\"');
+      expect([field(wrapper).selectionStart, field(wrapper).selectionEnd]).toEqual([16, 16]);
+      // Shift+Enter on a folder goes into it too: a folder is never a pick
+      press('ArrowUp');
+      press('Enter', { shiftKey: true });
+      await flushPromises();
+      expect(field(wrapper).value).toBe('C:\\');
+      expect(slides('d-slide')).toBe(true);
+      expect(document.activeElement).toBe(field(wrapper));
+      expect(api.answer).not.toHaveBeenCalled();
+    });
+
+    it('slides in only the rows a folder\'s entry rendered before the list scrolled', async () => {
+      const many = Array.from({ length: 200 }, (_, i) => file(`f${String(i).padStart(3, '0')}.txt`, { input: `C:\\tmp\\f${i}.txt` }));
+      const wrapper = await typed((query) => (query.query === 'C:\\tmp\\src\\' ? { generation: query.generation, mention: false, results: many } : listing()(query)));
+      const slides = (result: QuickOpenResult): boolean => rowOf(wrapper, result).classes().some((css) => css.startsWith('animate-[d-pane-in_'));
+      press('Enter');
+      await flushPromises();
+      expect(slides(many[0]!)).toBe(true);
+      const list = wrapper.get('[data-testid="quick-pick-list"]').element;
+      list.scrollTop = 150 * 28;
+      list.dispatchEvent(new Event('scroll'));
+      await flushPromises();
+      expect(slides(many[150]!)).toBe(false);
+    });
+
+    it('completes the active row on Tab, a file to its path and a folder to the query going into it, never moving focus', async () => {
+      const wrapper = await typed(listing());
+      const tab = (shiftKey = false): KeyboardEvent => {
+        const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+        field(wrapper).dispatchEvent(event);
+        return event;
+      };
+      // the first entry after .. is active from the start
+      expect(tab().defaultPrevented).toBe(true);
+      await flushPromises();
+      expect(field(wrapper).value).toBe('C:\\tmp\\src\\');
+
+      for (let i = 0; i < 3; i++) press('ArrowDown');
+      await flushPromises();
+      expect(tab().defaultPrevented).toBe(true);
+      await flushPromises();
+      expect(field(wrapper).value).toBe('"C:\\tmp\\ab (2).txt"');
+      expect(field(wrapper).selectionStart).toBe(18);
+      expect(document.activeElement).toBe(field(wrapper));
+
+      // Shift+Tab neither completes nor leaves the field
+      expect(tab(true).defaultPrevented).toBe(true);
+      await flushPromises();
+      expect(field(wrapper).value).toBe('"C:\\tmp\\ab (2).txt"');
+      expect(document.activeElement).toBe(field(wrapper));
+      expect(api.answer).not.toHaveBeenCalled();
+    });
+
+    it('opens the typed file on Enter at the line and column main parsed, which no other row of the listing takes', async () => {
+      const exact: QuickOpenPathResult = { ...file('a.txt', { input: 'C:\\tmp\\a.txt' }), exact: true };
+      const sibling = file('a.txt.bak', { input: 'C:\\tmp\\a.txt.bak' });
+      const answer = (query: QuickOpenQuery): QuickOpenResponse => ({ generation: query.generation, mention: false, line: 2, column: 4, results: [exact, sibling] });
+      const wrapper = await typed(answer, 'C:\\tmp\\a.txt:2:4');
+      press('Enter');
+      await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('q1', { kind: 'quickOpen', pick: { kind: 'path', authority: 'local', path: 'C:\\tmp\\a.txt', line: 2, column: 4, mention: false } }));
+      wrapper.unmount();
+      mounted.splice(mounted.indexOf(wrapper), 1);
+
+      vi.mocked(api.answer).mockClear();
+      await typed(answer, 'C:\\tmp\\a.txt:2:4');
+      press('ArrowDown');
+      press('Enter');
+      await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('q1', { kind: 'quickOpen', pick: { kind: 'path', authority: 'local', path: 'C:\\tmp\\a.txt.bak', mention: false } }));
+    });
+
+    it('draws a folder with its folder icon and names it a folder, ids each row by main\'s key, and notes a cut listing beside the line hint', async () => {
+      const wrapper = await typed(listing({ line: 2, truncated: { listed: 4 } }));
+      const rows = wrapper.findAll('[data-testid="quick-pick-item"]');
+      expect(rows.map((row) => row.attributes('data-item-id'))).toEqual(LISTING.map(quickOpenRowKey));
+      expect(rows.map((row) => row.attributes('aria-label'))).toEqual(['.., folder', 'src, folder', ' spaced, folder', 'a.txt, C:\\tmp', 'ab (2).txt, C:\\tmp']);
+      expect(rows.map((row) => row.get('[data-testid="quick-pick-file-icon"]').attributes('data-directory'))).toEqual(['true', 'true', 'true', undefined, undefined]);
+      expect(wrapper.get('[data-testid="quick-pick-hint"]').text()).toBe('Enter opens the file at line 2 · Showing the first 4 entries. Type more of a name to narrow the list.');
+
+      api.quickOpen.answer = listing({ truncated: { listed: 4 } });
+      await type(wrapper, 'C:\\tmp\\a');
+      // the line hint swaps out before the notice stands alone
+      await vi.waitFor(() => expect(wrapper.findAll('[data-testid="quick-pick-hint"]')).toHaveLength(1));
+      const hint = wrapper.get('[data-testid="quick-pick-hint"]');
+      expect(hint.text()).toBe('Showing the first 4 entries. Type more of a name to narrow the list.');
+      api.quickOpen.answer = listing({ truncated: { listed: 1 } });
+      await type(wrapper, 'C:\\tmp\\ab');
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="quick-pick-hint"]').text()).toBe('Showing the first entry. Type more of a name to narrow the list.'));
+      // the Enter glyph marks only what Enter does
+      expect(hint.find('svg').exists()).toBe(false);
+    });
+
+    it('says no entry starts with the typed name, or that the folder cannot be read, in either language', async () => {
+      const wrapper = await typed((query) => ({ generation: query.generation, mention: false, results: [], emptyText: 'folderNoMatch', emptyName: 'zzz' }), 'C:\\tmp\\zzz');
+      const empty = (): string => wrapper.get('[data-testid="quick-pick-empty"]').text();
+      expect(empty()).toBe("No entries here start with 'zzz'.");
+      api.quickOpen.answer = (query) => ({ generation: query.generation, mention: false, results: [], emptyText: 'folderDenied' });
+      await type(wrapper, 'C:\\locked\\');
+      expect(empty()).toBe("Damocles can't read this folder.");
+      shellI18n.global.locale.value = 'el';
+      await type(wrapper, 'C:\\locked\\a');
+      expect(empty()).toBe('Το Damocles δεν μπορεί να διαβάσει αυτόν τον φάκελο.');
+      api.quickOpen.answer = (query) => ({ generation: query.generation, mention: false, results: [], emptyText: 'folderNoMatch', emptyName: 'zzz' });
+      await type(wrapper, 'C:\\tmp\\zzz');
+      expect(empty()).toBe('Καμία καταχώριση εδώ δεν ξεκινά με «zzz».');
+      shellI18n.global.locale.value = 'en';
+    });
+
+    it('says a folder with no parent has no entries, in either language, naming no typed name', async () => {
+      const wrapper = await typed((query) => ({ generation: query.generation, mention: false, results: [], emptyText: 'folderEmpty' }), 'E:\\');
+      const empty = (): string => wrapper.get('[data-testid="quick-pick-empty"]').text();
+      expect(empty()).toBe('This folder has no entries to show.');
+      shellI18n.global.locale.value = 'el';
+      await type(wrapper, 'F:\\');
+      expect(empty()).toBe('Αυτός ο φάκελος δεν έχει καταχωρίσεις για εμφάνιση.');
+      shellI18n.global.locale.value = 'en';
+    });
+
+    it('says the host stopped reading a folder before it kept an entry, in place of a count of none', async () => {
+      const stopped = 'Damocles stopped reading this folder before it found an entry to show. Type a file\'s full name to open it.';
+      const wrapper = await typed((query) => ({ generation: query.generation, mention: false, results: [], truncated: { listed: 0 } }), 'C:\\big\\x');
+      expect(wrapper.get('[data-testid="quick-pick-empty"]').text()).toBe(stopped);
+      expect(wrapper.find('[data-testid="quick-pick-hint"]').exists()).toBe(false);
+      // with only .. listed, the note stands beside it
+      api.quickOpen.answer = (query) => ({ generation: query.generation, mention: false, results: [LISTING[0]!], truncated: { listed: 0 } });
+      await type(wrapper, 'C:\\big\\');
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="quick-pick-hint"]').text()).toBe(stopped));
+      expect(wrapper.find('[data-testid="quick-pick-empty"]').exists()).toBe(false);
+    });
+
+    it('keeps the arrow keys and Enter working over a listing of a thousand rows, rendering only those in view', async () => {
+      const many = Array.from({ length: MAX_QUICK_OPEN_LISTING_RESULTS }, (_, i) => file(`f${String(i).padStart(4, '0')}.txt`, { input: `C:\\tmp\\f${i}.txt` }));
+      const wrapper = await typed((query) => ({ generation: query.generation, mention: false, results: many, truncated: { listed: many.length } }));
+      expect(wrapper.findAll('[data-testid="quick-pick-item"]').length).toBeLessThan(100);
+      const input = wrapper.get('[data-testid="quick-pick-input"]');
+      // ArrowUp from the first row wraps to the last, which the list scrolls to and renders
+      press('ArrowUp');
+      wrapper.get('[data-testid="quick-pick-list"]').element.dispatchEvent(new Event('scroll'));
+      await flushPromises();
+      const last = rowOf(wrapper, many.at(-1)!);
+      expect(last.attributes('aria-selected')).toBe('true');
+      expect(input.attributes('aria-activedescendant')).toBe(last.attributes('id'));
+      expect(wrapper.get('[data-testid="quick-pick-hint"]').text()).toBe('Showing the first 1,000 entries. Type more of a name to narrow the list.');
+      press('Enter');
+      await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('q1', { kind: 'quickOpen', pick: { kind: 'path', authority: 'local', path: 'C:\\tmp\\f0999.txt', mention: false } }));
+    });
   });
 
   it('in Greek finds a command by its English title', async () => {

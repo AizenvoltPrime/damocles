@@ -1,5 +1,6 @@
 // One ProjectWorkspace suite, run against the local adapter and the remote client served by the daemon's workspace host over
 // a real connection, so the two hosts cannot drift.
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -23,10 +24,12 @@ import { NONCE_ENV } from '../../../workspace/terminal/shell-integration-injecti
 import { createTreeListing } from '../../../workspace/tree-listing';
 import { REPO_ROOT, startInProcessDaemon } from '../../../daemon/__tests__/in-process-daemon';
 import { connect } from '../../remote/connection';
-import { carriesTransfers, createRemoteWorkspace, OUTSIDE_FILES_FEATURE, OutsideFilesUnsupportedError, TRANSFER_FEATURES, TransfersUnsupportedError, WATCH_READY_FEATURE } from '../remote-workspace';
+import { carriesOutsideFiles, carriesTransfers, createRemoteWorkspace, ListingUnsupportedError, OUTSIDE_FILES_FEATURE, OUTSIDE_LISTING_FEATURE, OutsideFilesUnsupportedError, READ_OUTSIDE_LIMIT_FEATURE, SESSION_FILES_FEATURE, TRANSFER_FEATURES, TransfersUnsupportedError, WATCH_READY_FEATURE } from '../remote-workspace';
 import { NotConnectedError } from '../workspaces';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import { MAX_OPEN_STREAMS } from '../../../../remote/mux';
+import { CLIENT_TO_WORKSPACE } from '../../../workspace/messages';
+import { INVALID } from '../../../core-protocol/schema';
 import { FileTransferService } from '../../files/file-transfer';
 
 // No pty host or formatter host starts in this suite; the terminal and format members it runs need none.
@@ -85,7 +88,8 @@ async function remoteAdapter(features: (listed: readonly string[]) => readonly s
     notConnected: () => new NotConnectedError('Local daemon is not connected.'),
     watchReady: connection.features.includes(WATCH_READY_FEATURE),
     transfers: carriesTransfers(features(connection.features)),
-    outside: features(connection.features).includes(OUTSIDE_FILES_FEATURE),
+    outside: carriesOutsideFiles(features(connection.features)),
+    listing: features(connection.features).includes(OUTSIDE_LISTING_FEATURE),
     openStream: () => connection.openStream(),
     log: () => undefined,
   });
@@ -214,37 +218,65 @@ describe.each(ADAPTERS)('ProjectWorkspace conformance: %s', (_name, start) => {
     }
   });
 
-  it('resolves, reads and writes a file outside every project by the host\'s own plans rule, and refuses one swapped for a link', async () => {
-    const plans = path.join(DAMOCLES_HOME_DIR, 'plans');
-    fs.mkdirSync(plans, { recursive: true });
-    const plan = path.join(fs.realpathSync.native(plans), `conformance-${path.basename(root)}.md`);
-    const notes = path.join(path.dirname(plan), `conformance-${path.basename(root)}.txt`);
-    fs.writeFileSync(plan, '# Plan\n');
-    fs.writeFileSync(notes, 'notes');
+  it('resolves, reads and writes a file outside every project by the host\'s own rule, and refuses one swapped for a link', async () => {
+    const folder = fs.realpathSync.native(root);
+    const notes = path.join(folder, `conformance-${path.basename(root)}.md`);
+    fs.writeFileSync(notes, '# Notes\n');
     try {
-      expect(await workspace.files.resolveOutside(plan, { within: 'plans' })).toEqual({ kind: 'file', path: plan });
-      expect(await workspace.files.resolveOutside(notes, { within: 'plans' })).toEqual({ kind: 'outside' });
-      expect(await workspace.files.resolveOutside(path.join(root, 'outside.txt'), { within: 'plans' })).toEqual({ kind: 'outside' });
-      expect(await workspace.files.resolveOutside(path.join(root, 'outside.txt'), {})).toEqual({ kind: 'file', path: path.join(root, 'outside.txt') });
-      expect(await workspace.files.resolveOutside(root, {})).toEqual({ kind: 'folder', path: root });
-      expect(await workspace.files.resolveOutside(path.join(root, 'gone.md'), {})).toEqual({ kind: 'missing' });
-      expect(await workspace.files.resolveOutside('relative.md', {})).toEqual({ kind: 'outside' });
-      const read = await workspace.files.readOutside(plan, { within: 'plans' });
-      expect(read.kind === 'bytes' && read.bytes.toString('utf8')).toBe('# Plan\n');
-      expect(await workspace.files.readOutside(notes, { within: 'plans' })).toEqual({ kind: 'outside' });
-      expect(typeof (await workspace.files.writeOutside(plan, Buffer.from('# Edited\n'), { within: 'plans' }))).toBe('number');
-      expect(fs.readFileSync(plan, 'utf8')).toBe('# Edited\n');
-      fs.rmSync(plan);
-      fs.symlinkSync(path.join(root, 'outside.txt'), plan, 'file');
-      expect(await workspace.files.readOutside(plan, { within: 'plans' })).toEqual({ kind: 'outside' });
-      const refused = await workspace.files.writeOutside(plan, Buffer.from('x'), { within: 'plans' }).catch((err: unknown) => err);
+      expect(await workspace.files.resolveOutside(notes)).toEqual({ kind: 'file', path: notes });
+      expect(await workspace.files.resolveOutside(path.join(root, 'outside.txt'))).toEqual({ kind: 'file', path: path.join(root, 'outside.txt') });
+      expect(await workspace.files.resolveOutside(root)).toEqual({ kind: 'folder', path: root });
+      expect(await workspace.files.resolveOutside(path.join(root, 'gone.md'))).toEqual({ kind: 'missing' });
+      expect(await workspace.files.resolveOutside('relative.md')).toEqual({ kind: 'outside', reason: 'name' });
+      if (process.platform === 'win32') expect(await workspace.files.resolveOutside('\\\\server\\share\\a.md')).toEqual({ kind: 'outside', reason: 'share' });
+      const read = await workspace.files.readOutside(notes);
+      expect(read.kind === 'bytes' && read.bytes.toString('utf8')).toBe('# Notes\n');
+      expect(await workspace.files.readOutside(notes, 4)).toEqual({ kind: 'tooLarge', bytes: 8 });
+      expect(typeof (await workspace.files.writeOutside(notes, Buffer.from('# Edited\n')))).toBe('number');
+      expect(fs.readFileSync(notes, 'utf8')).toBe('# Edited\n');
+      fs.rmSync(notes);
+      fs.symlinkSync(path.join(root, 'outside.txt'), notes, 'file');
+      expect(await workspace.files.readOutside(notes)).toEqual({ kind: 'outside' });
+      const refused = await workspace.files.writeOutside(notes, Buffer.from('x')).catch((err: unknown) => err);
       expect(refused).toBeInstanceOf(WriteRefusedError);
       expect((refused as WriteRefusedError).refusal).toBe('outsideFile');
       expect(fs.readFileSync(path.join(root, 'outside.txt'), 'utf8')).toBe('outside\n');
     } finally {
-      fs.rmSync(plan, { force: true });
       fs.rmSync(notes, { force: true });
     }
+  });
+
+  it('lists a typed folder outside every project by the host\'s own rule: entries by prefix, links as what they lead to', async () => {
+    const folder = path.join(fs.realpathSync.native(root), 'listed');
+    fs.mkdirSync(path.join(folder, 'Sub'), { recursive: true });
+    for (const name of ['.hidden', 'a.txt', 'B.txt']) fs.writeFileSync(path.join(folder, name), '');
+    fs.symlinkSync(path.join(folder, 'Sub'), path.join(folder, 'to-sub'), 'junction');
+    const byName = (entries: readonly { readonly name: string }[]) => [...entries].sort((a, b) => a.name.localeCompare(b.name));
+    const listed = await workspace.files.listOutside(`${folder}${path.sep}`, '');
+    expect(listed.kind === 'folder' && { ...listed, entries: byName(listed.entries) }).toEqual({
+      kind: 'folder',
+      path: folder,
+      entries: [
+        { name: '.hidden', kind: 'file', link: false },
+        { name: 'a.txt', kind: 'file', link: false },
+        { name: 'B.txt', kind: 'file', link: false },
+        { name: 'Sub', kind: 'dir', link: false },
+        { name: 'to-sub', kind: 'dir', link: true },
+      ],
+      truncated: false,
+    });
+    expect(await workspace.files.listOutside(folder, 'b')).toEqual({ kind: 'folder', path: folder, entries: [{ name: 'B.txt', kind: 'file', link: false }], truncated: false });
+    expect(await workspace.files.listOutside(path.join(folder, 'gone'), '')).toEqual({ kind: 'missing' });
+    expect(await workspace.files.listOutside(path.join(folder, 'a.txt'), '')).toEqual({ kind: 'notAFolder' });
+    expect(await workspace.files.listOutside('relative', '')).toEqual({ kind: 'outside' });
+    if (process.platform === 'win32') expect(await workspace.files.listOutside('\\\\server\\share\\', '')).toEqual({ kind: 'outside' });
+  });
+
+  it.skipIf(process.platform === 'win32')('resolves an entry that is neither a file nor a folder as other, and reads it as no file', async () => {
+    const fifo = path.join(fs.realpathSync.native(root), 'pipe');
+    execFileSync('mkfifo', [fifo]);
+    expect(await workspace.files.resolveOutside(fifo)).toEqual({ kind: 'other', path: fifo });
+    expect(await workspace.files.readOutside(fifo)).toEqual({ kind: 'notAFile', folder: false });
   });
 
   it('creates, renames and deletes only the entry it confirmed', async () => {
@@ -465,15 +497,22 @@ describe('transfers over a loopback connection', () => {
     expect(await files.confineExisting(project, 'src/a.ts')).toEqual({ ok: true, path: path.join(project.fsPath, 'src', 'a.ts') });
   });
 
-  it('sends nothing for a file outside every project to a daemon that does not list files.outside, and the connection stays up', async () => {
-    await start((listed) => listed.filter((feature) => feature !== OUTSIDE_FILES_FEATURE));
+  it.each([OUTSIDE_FILES_FEATURE, SESSION_FILES_FEATURE, READ_OUTSIDE_LIMIT_FEATURE])('sends nothing for a file outside every project to a daemon that does not list %s, and the connection stays up', async (missing) => {
+    await start((listed) => listed.filter((feature) => feature !== missing));
     const { files } = adapter.workspace;
     const target = path.join(root, 'proj', 'src', 'a.ts');
-    await expect(files.resolveOutside(target, { within: 'plans' })).rejects.toBeInstanceOf(OutsideFilesUnsupportedError);
-    await expect(files.readOutside(target, { within: 'plans' })).rejects.toBeInstanceOf(OutsideFilesUnsupportedError);
-    await expect(files.writeOutside(target, Buffer.from('x'), { within: 'plans' })).rejects.toBeInstanceOf(OutsideFilesUnsupportedError);
+    await expect(files.resolveOutside(target)).rejects.toBeInstanceOf(OutsideFilesUnsupportedError);
+    await expect(files.readOutside(target)).rejects.toBeInstanceOf(OutsideFilesUnsupportedError);
+    await expect(files.writeOutside(target, Buffer.from('x'))).rejects.toBeInstanceOf(OutsideFilesUnsupportedError);
     expect(fs.readFileSync(target, 'utf8')).toBe('a');
     expect(await files.confineExisting(project, 'src/a.ts')).toEqual({ ok: true, path: target });
+  });
+
+  it('sends no listing to a daemon that does not list files.listOutside, and the connection stays up', async () => {
+    await start((listed) => listed.filter((feature) => feature !== OUTSIDE_LISTING_FEATURE));
+    const { files } = adapter.workspace;
+    await expect(files.listOutside(root, '')).rejects.toBeInstanceOf(ListingUnsupportedError);
+    expect(await files.resolveOutside(root)).toEqual({ kind: 'folder', path: root });
   });
 
   it('ends a file\'s stream short once its signal aborts, also while the writer waits for credit, and the host keeps no part', async () => {
@@ -521,7 +560,7 @@ describe('transfers over a loopback connection', () => {
         if (['done', 'failed', 'cancelled'].includes(update.state)) ended.push(update.state);
       },
       changed: () => undefined,
-      reveal: async () => undefined,
+      revealDownload: async () => undefined,
       t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)])),
       log: () => undefined,
     });
@@ -530,4 +569,33 @@ describe('transfers over a loopback connection', () => {
     expect(await service.start({ op: 'download', sources: [{ kind: 'project', projectKey: project.key, relativePath: 'src' }], destination: { kind: 'download', folder: picked } })).toMatchObject({ ok: true });
     await vi.waitFor(() => expect(ended).toEqual(['done']), { timeout: 30_000 });
   }, 60_000);
+});
+
+describe('the outside answer on the wire', () => {
+  it('carries other with its path and a refusal only with its reason, on every platform', () => {
+    const { params, result } = CLIENT_TO_WORKSPACE.requests['files.resolveOutside'];
+    expect(result({ kind: 'other', path: '/srv/pipe' })).toEqual({ kind: 'other', path: '/srv/pipe' });
+    expect(result({ kind: 'outside', reason: 'share' })).toEqual({ kind: 'outside', reason: 'share' });
+    expect(result({ kind: 'outside', reason: 'name' })).toEqual({ kind: 'outside', reason: 'name' });
+    for (const malformed of [{ kind: 'outside' }, { kind: 'outside', reason: 'elsewhere' }, { kind: 'other' }, { kind: 'file' }]) {
+      expect(result(malformed), JSON.stringify(malformed)).toBe(INVALID);
+    }
+    // the parser keeps only the fields it knows
+    expect(params({ target: '/srv/x', extra: 'x' })).toEqual({ target: '/srv/x' });
+  });
+
+  it('carries a listing prefix only as the start of one name, and at most the host\'s 1,000 entries', () => {
+    const { params, result } = CLIENT_TO_WORKSPACE.requests['files.listOutside'];
+    expect(params({ folder: '/srv/', prefix: '.ba' })).toEqual({ folder: '/srv/', prefix: '.ba' });
+    for (const prefix of ['a/b', 'a\\b', 'a\0', 'a\u0007', 'a\u0085', 'x'.repeat(256)]) expect(params({ folder: '/srv/', prefix }), JSON.stringify(prefix)).toBe(INVALID);
+    const entries = (count: number) => Array.from({ length: count }, (_, index) => ({ name: `f${index}`, kind: 'file', link: false }));
+    expect(result({ kind: 'folder', path: '/srv', entries: entries(1000), truncated: true })).not.toBe(INVALID);
+    expect(result({ kind: 'folder', path: '/srv', entries: entries(1001), truncated: true })).toBe(INVALID);
+    expect(result({ kind: 'denied' })).toEqual({ kind: 'denied' });
+    // main joins each name to the folder, so none may name another place
+    for (const name of ['a/b', '.', '..', 'a\0', 'a\u0007', '']) expect(result({ kind: 'folder', path: '/srv', entries: [{ name, kind: 'file', link: false }], truncated: false }), JSON.stringify(name)).toBe(INVALID);
+    // a POSIX host may list a name holding a backslash
+    expect(result({ kind: 'folder', path: '/srv', entries: [{ name: 'a\\b', kind: 'file', link: false }], truncated: false })).not.toBe(INVALID);
+    expect(result({ kind: 'folder', path: '/srv', entries: [{ name: 'l', kind: 'file', link: true, target: '/etc/x' }], truncated: false })).toEqual({ kind: 'folder', path: '/srv', entries: [{ name: 'l', kind: 'file', link: true, target: '/etc/x' }], truncated: false });
+  });
 });

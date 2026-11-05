@@ -10,6 +10,7 @@ import { runCheckpointMaintenance, setCheckpointGitAvailability } from '../../co
 import { setMcpSecretStorage } from '../../core/pi-session/mcp/mcp-auth';
 import { PiRuntime } from '../../core/pi-session/pi-runtime';
 import { getPiCodingAgent } from '../../core/pi-session/pi-loader';
+import { writeSessionFile } from '../../core/pi-session/session-store/session-file-write';
 import { BrowserServices, type BrowserService } from '../../core/browser';
 import { resolveAddresses, type AddressResolver } from '../../core/browser/client-network-policy';
 import { startClientNetworkProxy } from '../../core/browser/client-network-proxy';
@@ -386,6 +387,7 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   endpoint.serve('catalog.rename', ({ sessionId, name }) => catalog.rename(sessionId, name));
   endpoint.serve('catalog.tag', ({ sessionId, tag }) => catalog.tag(sessionId, tag));
   endpoint.serve('catalog.delete', ({ sessionId }) => catalog.delete(sessionId));
+  endpoint.serve('sessionFiles.write', ({ path: filePath, bytes, expectedSha256 }) => writeSessionFile(filePath, bytes, expectedSha256));
   endpoint.serve('folders.setDefault', async ({ key }) => {
     await registry.setDefault(key);
   });

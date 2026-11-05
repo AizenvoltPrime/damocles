@@ -1,7 +1,7 @@
 import type { ElectronApplication, Page } from '@playwright/test';
 import { codeEditor, DOCUMENT_END, editorShows, editorTab, openInEditor } from '../desktop/support/editor';
 import { sendPrompt } from '../desktop/support/loopback-agent';
-import { overlayPage, shellPage, shellState } from '../desktop/support/shell';
+import { overlayPage, recordLaunchSelection, shellPage, shellState } from '../desktop/support/shell';
 import { activeTerminal, openTerminal, runInTerminal, terminalText, waitForOutputLine } from '../desktop/support/terminal';
 import { writeUserSettings } from '../desktop/support/hermetic';
 import { askedDialogs, awaitTurnEnd, chatInput } from '../desktop/support/ui';
@@ -71,6 +71,7 @@ test('a launch with the host unreachable connects only hosts with restored views
     await fixture.stopSshd();
     const second = await launch(env);
     const app = second.app;
+    const launchSelection = await recordLaunchSelection(app);
     const relaunched = await shellPage(app);
     await expect.poll(async () => (await lastConnectStep(app, hostId))?.step, { timeout: 60_000 }).toBe('failed');
     await expect.poll(() => hostState(app, hostId)).not.toBe('connected');
@@ -93,6 +94,16 @@ test('a launch with the host unreachable connects only hosts with restored views
     await expect(waiting).toHaveAttribute('data-status', 'reconnecting');
     await expect(waiting).toContainText('Reconnecting');
     const transcript = await chatShowing(app, 'Echo: Remember this turn');
+    // the saved chat's transcript is the first chat shown: the project stays selected from the first state on, and no
+    // other chat covers the slot before it
+    const transcriptId = (await shellState(app)).selected.chatId;
+    expect(transcriptId).toBeDefined();
+    const seen = await launchSelection();
+    expect(seen.states.length).toBeGreaterThan(0);
+    for (const state of seen.states) {
+      expect(state.projectKey).toBe(key);
+      if (state.chatId !== undefined || state.chatViewShown) expect(state.chatId).toBe(transcriptId);
+    }
     // read-only: a card names the outage in place of the composer
     await expect(transcript.getByTestId('composer-offline')).toContainText('prod-1 is offline');
     await expect(chatInput(transcript)).toHaveCount(0);

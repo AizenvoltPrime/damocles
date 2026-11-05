@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { EDITOR_MAX_DOCUMENT_BYTES } from '../../../../shared/types/messages';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../../shared/types/messages';
 import { gitExecutable } from '../../../git-executable';
 import { readDiskText } from '../../chat-review';
 import { checkpointCommitFile } from '../../checkpoints/blob-reader';
@@ -40,7 +40,7 @@ describe('checkpointCommitFile', () => {
   });
 
   it('stops reading a blob past the editor\'s bound and calls it too large', async () => {
-    const { repoDir, commit } = repoWith({ 'big.txt': 'x'.repeat(EDITOR_MAX_DOCUMENT_BYTES + 1) });
+    const { repoDir, commit } = repoWith({ 'big.txt': 'x'.repeat(EDITOR_CONFIRM_DOCUMENT_BYTES + 1) });
     expect(await checkpointCommitFile(repoDir, commit, 'big.txt')).toEqual({ kind: 'tooLarge' });
   }, 30_000);
 });

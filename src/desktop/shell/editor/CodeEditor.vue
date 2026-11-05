@@ -11,6 +11,7 @@ import { attachEditorGit, type EditorGit } from './editor-git';
 import { attachConflictLens, type ConflictLens } from './merge/code-lens';
 import { addEditorGitKeybindings, editorChordLabels, gitKeyLabels } from './editor-keys';
 import LoadFailedNotice from './LoadFailedNotice.vue';
+import { readOnlyMessageKey } from './read-only-message';
 
 // One Monaco editor for every text tab: switching tabs swaps the shared model and restores that tab's view state, which the
 // store keeps per tab, so it outlives this editor while another kind of tab shows.
@@ -130,7 +131,7 @@ async function show(tab: ShellEditorTab): Promise<void> {
   if (unmounted || props.tab.id !== tab.id || model.isDisposed()) return;
   modelListener?.dispose();
   current.setModel(model);
-  current.updateOptions({ readOnly: tab.readOnly, readOnlyMessage: { value: t(`editor.readOnly.${tab.readOnlyReason ?? 'log'}`) } });
+  current.updateOptions({ readOnly: tab.readOnly, readOnlyMessage: { value: t(readOnlyMessageKey[tab.readOnlyReason ?? 'log']) } });
   shownTabId.value = tab.id;
   const viewState = store.viewStateOf(tab.id);
   const saved = viewState && !('modified' in viewState) ? viewState : undefined;

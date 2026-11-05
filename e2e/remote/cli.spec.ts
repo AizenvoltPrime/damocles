@@ -63,7 +63,7 @@ async function exitOf(shell: Page, command: string): Promise<number> {
   return Number(await readFromTerminal(shell, new RegExp(`${marker}=(\\d+)`)));
 }
 
-test('in a remote terminal, damocles opens a file at its line, refuses a file outside the projects, asks before adding a folder, and opens --diff as a read-only Changes tab', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
+test('in a remote terminal, damocles opens a file at its line, opens a file outside the projects editable, opens a missing file empty and creates it on save, asks before adding a folder, and opens --diff as a read-only Changes tab', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
   test.setTimeout(600_000);
   const { app, shell, hostId, projectKey, fixture } = await openOnProd(home, launch, { mirror, ssh }, sshd);
   await runInTerminal(shell, 'cd /srv/app');
@@ -74,8 +74,18 @@ test('in a remote terminal, damocles opens a file at its line, refuses a file ou
   const lineTop = await codeEditor(shell).locator('.view-line', { hasText: 'const line42 = 42;' }).evaluate((line) => (line as HTMLElement).style.top);
   await expect.poll(() => codeEditor(shell).locator('.view-overlays .current-line').first().evaluate((highlight) => (highlight.parentElement as HTMLElement).style.top)).toBe(lineTop);
 
-  expect(await exitOf(shell, 'damocles /etc/hosts')).toBe(1);
-  expect(await terminalText(shell)).toContain('damocles: /etc/hosts is outside the projects open on billing-prod. Open its folder with: damocles /etc');
+  expect(await exitOf(shell, 'damocles /etc/hosts')).toBe(0);
+  await expect.poll(async () => activeTab(app)).toMatchObject({ kind: 'code', title: 'billing-prod: hosts', readOnly: false, displayPath: '/etc/hosts' });
+  await editorShows(shell, 'localhost');
+
+  expect(await exitOf(shell, 'damocles new.txt')).toBe(0);
+  await expect.poll(async () => activeTab(app)).toMatchObject({ kind: 'code', relativePath: 'new.txt', readOnly: false });
+  expect(await fixture.sh('test -e /srv/app/new.txt && echo exists || echo missing', 'dev')).toBe('missing\n');
+  await replaceText(codeEditor(shell), 'created by the save\n');
+  await expect.poll(async () => (await activeTab(app))?.dirty).toBe(true);
+  await saveWithKeyboard(app);
+  await expect.poll(async () => (await activeTab(app))?.dirty).toBe(false);
+  expect(await fixture.sh('cat /srv/app/new.txt', 'dev')).toBe('created by the save\n');
 
   const added = exitOf(shell, 'damocles /srv/other');
   const overlay = await readyOverlay(app);

@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createArtifactCache, releaseAssetUrl } from '../artifact-cache';
+import { createArtifactCache, releaseAssetUrl, releasesUrlOf, UnpublishedPackageMissingError } from '../artifact-cache';
+import { RELEASES_URL } from '../../updater';
 import type { ServerManifest } from '../server-manifest-format';
 
 const BYTES = Buffer.from('a server package');
@@ -12,7 +13,8 @@ const RELEASES = 'https://github.com/AizenvoltPrime/damocles/releases';
 const manifest: ServerManifest = {
   version: '3.7.0',
   protocolVersion: 1,
-  packages: { 'linux-x64': { file: FILE, sha256: createHash('sha256').update(BYTES).digest('hex'), size: BYTES.length } },
+  published: true,
+  packages: { 'linux-x64': { file: FILE, sha256: createHash('sha256').update(BYTES).digest('hex'), size: BYTES.length, serverVersion: '3.7.0+0123456789ab' } },
 };
 
 const dirs: string[] = [];
@@ -67,6 +69,26 @@ describe('the server artifact cache', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('serves an unpublished build only from its cache, never fetching, and fails without a copy that matches', async () => {
+    const cacheRoot = scratch();
+    const fetch = vi.fn(async (_url: string) => new Response(new Uint8Array(BYTES)));
+    const cache = createArtifactCache({ cacheRoot, manifest: { ...manifest, published: false }, fetch, log: () => undefined });
+    await expect(cache.packagePath('linux-x64')).rejects.toBeInstanceOf(UnpublishedPackageMissingError);
+    mkdirSync(path.join(cacheRoot, '3.7.0'), { recursive: true });
+    writeFileSync(path.join(cacheRoot, '3.7.0', FILE), 'another build');
+    await expect(cache.packagePath('linux-x64')).rejects.toThrow(/an unpublished build has no release/);
+    writeFileSync(path.join(cacheRoot, '3.7.0', FILE), BYTES);
+    expect(await cache.packagePath('linux-x64')).toBe(path.join(cacheRoot, '3.7.0', FILE));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('gives hosts the release to download from only for a published build, unless the e2e hook names one', () => {
+    expect(releasesUrlOf({ published: true }, undefined)).toBe(RELEASES_URL);
+    expect(releasesUrlOf({ published: false }, undefined)).toBeUndefined();
+    expect(releasesUrlOf({ published: false }, 'http://127.0.0.1:4000/releases')).toBe('http://127.0.0.1:4000/releases');
+    expect(releasesUrlOf({ published: true }, 'http://127.0.0.1:4000/releases')).toBe('http://127.0.0.1:4000/releases');
+  });
+
   it('reads a dev build\'s package from dist/server-packages without downloading, after the same check', async () => {
     const devDir = scratch();
     writeFileSync(path.join(devDir, FILE), BYTES);
@@ -74,8 +96,15 @@ describe('the server artifact cache', () => {
     expect(await cache.packagePath('linux-x64')).toBe(path.join(devDir, FILE));
     expect(existsSync(path.join(cacheRoot, '3.7.0'))).toBe(false);
     writeFileSync(path.join(devDir, FILE), 'stale');
-    await expect(cache.packagePath('linux-x64')).rejects.toThrow(/npm run build:server/);
+    await expect(cache.packagePath('linux-x64')).rejects.toThrow(/npm run build:server -- --target linux-x64$/);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('names node-pty\'s musl build in the rebuild hint for an Alpine dev package', async () => {
+    const devDir = scratch();
+    const alpine = { ...manifest, packages: { 'alpine-x64': { ...manifest.packages['linux-x64']!, file: 'damocles-server-3.7.0-alpine-x64.tar.gz' } } };
+    const cache = createArtifactCache({ cacheRoot: scratch(), manifest: alpine, releasesUrl: RELEASES, fetch: vi.fn(), log: () => undefined, devDir });
+    await expect(cache.packagePath('alpine-x64')).rejects.toThrow(/--target alpine-x64 --node-pty-binary <pty\.node compiled against musl>$/);
   });
 
   it('refuses a target the manifest does not carry', async () => {

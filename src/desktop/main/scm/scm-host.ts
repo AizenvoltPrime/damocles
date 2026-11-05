@@ -19,7 +19,7 @@ import type { CommitAttachmentInput } from '../../../shared/types/chat-attachmen
 import { folderKey, folderKeyOn } from '../../../core/workspace-folders/folder-key';
 import { inputProblem } from '../../../shared/input-validation';
 import { visibleText } from '../../../shared/visible-text';
-import type { LocalizedText } from '../../../shared/localized-text';
+import { LocalizedError, type LocalizedText } from '../../../shared/localized-text';
 import type { FileRef, ShellFileGit } from '../../preload/shell-channels';
 import {
   parseScmAmend,
@@ -129,7 +129,7 @@ export interface ScmWorktreeDeps {
   // closes a project and its chats as Remove Project does, asking first about terminals running a process
   closeProject(projectKey: string): Promise<'closed' | 'cancelled' | { readonly reason: string }>;
   // Open on a chat worktree's row of the authority's registry: its most recently viewed chat, or undefined for any other worktree
-  chatOf(authority: string, worktreePath: string): ScmWorktreeChat | undefined;
+  chatOf(authority: string, worktreePath: string): Promise<ScmWorktreeChat | undefined>;
   // New Chat in This Worktree's target for the row: a live chat worktree of an open, trusted project of the authority
   newChatTargetAt(authority: string, worktreePath: string): { readonly projectKey: string; readonly worktreeId: string } | undefined;
   selectChat(chatId: string): Promise<void>;
@@ -640,7 +640,7 @@ export class ScmHost {
         void this.deps.notify.warn(this.syncBranchChanged(err));
         return TOLD;
       }
-      this.failed(gitErrorText(err), this.forwardingOffer(request, err));
+      this.failed(this.failureText(err), this.forwardingOffer(request, err));
       return TOLD;
     }
   }
@@ -1006,13 +1006,13 @@ export class ScmHost {
       if (artifacts.group !== 'worktrees') return { ok: true, artifacts };
       // a worktree path names a chat or a project of its repository's own authority only
       const authority = this.repo(request.repoId).authority;
-      const rows = artifacts.rows.map((row): ScmWorktreeArtifact => {
-        const chat = this.deps.worktrees.chatOf(authority, row.path);
+      const rows = await Promise.all(artifacts.rows.map(async (row): Promise<ScmWorktreeArtifact> => {
+        const chat = await this.deps.worktrees.chatOf(authority, row.path);
         const newChatIn = this.deps.worktrees.newChatTargetAt(authority, row.path);
         const target = newChatIn ? { newChatIn } : {};
         if (chat) return { ...row, opens: 'chat', chat, ...target };
         return { ...row, opens: this.worktreeProject(request.repoId, row.path) === undefined ? 'addProject' : 'project', ...target };
-      });
+      }));
       return { ok: true, artifacts: { group: 'worktrees', rows } };
     } catch (err) {
       this.deps.log(`[scm] reading ${request.group} failed: ${gitErrorText(err)}`);
@@ -1858,7 +1858,7 @@ export class ScmHost {
       void this.deps.notify.warn(this.deps.t('"{0}" is no longer in this repository.', visibleText(worktreePath)));
       return TOLD;
     }
-    const chat = this.deps.worktrees.chatOf(authority, worktree.path);
+    const chat = await this.deps.worktrees.chatOf(authority, worktree.path);
     if (chat) {
       await this.deps.worktrees.selectChat(chat.chatId);
       return OK;
@@ -2008,7 +2008,7 @@ export class ScmHost {
   }
 
   // A file inside a project opens editable through the document service; a parent repository's file outside every project
-  // opens read-only as a core-originated document (AD5).
+  // opens editable under the outside rule.
   async openAbsolute(absolute: string): Promise<void> {
     const ref = this.fileRefOf(absolute);
     if (ref) {
@@ -2016,7 +2016,7 @@ export class ScmHost {
       if (!opened.ok) throw this.notOpened(ref.relativePath, opened.reason);
       return;
     }
-    await this.deps.editorPane.openPath(absolute, { focus: true });
+    await this.deps.editorPane.openNamedPath('local', absolute, { focus: true });
   }
 
   // A diff of a repository's file. 'file' is the file on disk as the editable side: a local one at localPath, a remote one only as
@@ -2154,8 +2154,13 @@ export class ScmHost {
       await flow();
     } catch (err) {
       this.deps.log(`[scm] ${op} failed: ${err instanceof Error ? err.message : String(err)}`);
-      this.failed(gitErrorText(err));
+      this.failed(this.failureText(err));
     }
+  }
+
+  // A LocalizedError's message is English, so its text is rendered; any other failure shows git's words.
+  private failureText(err: unknown): string {
+    return err instanceof LocalizedError ? this.deps.render(err.text) : gitErrorText(err);
   }
 
   private read<T>(key: string, fallback: T): T {

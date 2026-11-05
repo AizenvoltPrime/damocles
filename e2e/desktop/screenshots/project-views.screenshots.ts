@@ -9,7 +9,7 @@ import { settled, showShellTheme, THEMES } from '../support/screenshots';
 import { projectsList, readyShell, sectionAction } from '../support/shell-ui';
 import type { DesktopApp, LaunchOptions } from '../support/app';
 
-// Review captures of the Projects section's Flat and By host views in both themes, not tests: only the screenshots project matches them.
+// Review captures of the Projects section's flat and by-host views in both themes, not tests: only the screenshots project matches them.
 const SHOTS = process.env['DAMOCLES_PROJECT_SHOTS'] ?? path.join(os.tmpdir(), 'damocles-project-views');
 const HOST = 'h0e2eshots';
 
@@ -46,11 +46,14 @@ async function capture(launch: (options?: LaunchOptions) => Promise<DesktopApp>,
   fs.mkdirSync(SHOTS, { recursive: true });
   for (const view of ['flat', 'grouped'] as const) {
     await showView(shell, view);
+    // the switch keeps focus after its click, which keeps the title actions shown
+    await shell.getByTestId('breadcrumb').hover();
+    await shell.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     for (const theme of THEMES) {
       await showShellTheme(app, theme);
       await settled(shell);
       await shell.getByTestId('sidebar').screenshot({ path: path.join(SHOTS, `${name}-${view}-${theme}.png`), animations: 'disabled' });
-      // the header's Connect to host and Open a project folder, revealed by hover
+      // the header's view switch, Connect to host and Open a project folder, revealed by hover
       await sectionAction(shell, 'connect-host');
       await settled(shell);
       await shell.getByTestId('sidebar').screenshot({ path: path.join(SHOTS, `${name}-${view}-${theme}-actions.png`), animations: 'disabled' });
@@ -59,12 +62,12 @@ async function capture(launch: (options?: LaunchOptions) => Promise<DesktopApp>,
   }
 }
 
-test('Projects section, Flat and By host', async ({ foreground: _foreground, home, launch }) => {
+test('Projects section, flat and by host', async ({ foreground: _foreground, home, launch }) => {
   seed(home);
   await capture(launch, 'projects');
 });
 
-test('Projects section at the narrowest sidebar, Flat and By host', async ({ foreground: _foreground, home, launch }) => {
+test('Projects section at the narrowest sidebar, flat and by host', async ({ foreground: _foreground, home, launch }) => {
   seed(home, MIN_SIDEBAR_WIDTH);
   await capture(launch, 'projects-narrowest');
 });

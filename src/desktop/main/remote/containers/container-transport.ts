@@ -30,7 +30,8 @@ export interface ContainerTransportOptions {
   readonly hooks: Pick<SshAttemptHooks, 'step' | 'progress' | 'notice'>;
   installFolderSettled(): Promise<void>;
   readonly manifest: ServerManifest;
-  readonly releasesUrl: string;
+  // absent for an unpublished build: the stage never downloads
+  readonly releasesUrl?: string;
   readonly artifacts: ArtifactCache;
   readonly log: (line: string) => void;
 }
@@ -61,7 +62,7 @@ export async function startContainerTransport(options: ContainerTransportOptions
   const cacheFolder = containerCacheFolder();
   const stage1 = buildPosixStage1({
     manifest: options.manifest,
-    releasesUrl: options.releasesUrl,
+    ...(options.releasesUrl !== undefined ? { releasesUrl: options.releasesUrl } : {}),
     ...(options.installFolder !== undefined ? { installFolder: options.installFolder } : {}),
     ...(options.previousInstallFolder !== undefined ? { previousInstallFolder: options.previousInstallFolder } : {}),
     containerCacheFolder: cacheFolder,

@@ -8,7 +8,7 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import type { Disposable } from '../../platform/disposable';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
-import { EDITOR_MAX_DOCUMENT_BYTES } from '../../shared/types/messages';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../shared/types/messages';
 import { log } from '../logger';
 import { folderKey } from '../workspace-folders/folder-key';
 import {
@@ -135,7 +135,7 @@ export async function readDiskText(absolute: string): Promise<DiskRead> {
   try {
     const stat = await fs.stat(absolute);
     if (!stat.isFile()) return { kind: 'absent' };
-    if (stat.size > EDITOR_MAX_DOCUMENT_BYTES) return { kind: 'tooLarge' };
+    if (stat.size > EDITOR_CONFIRM_DOCUMENT_BYTES) return { kind: 'tooLarge' };
     return classifyFileBytes(await fs.readFile(absolute));
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;

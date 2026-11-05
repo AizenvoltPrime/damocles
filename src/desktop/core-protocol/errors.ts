@@ -21,6 +21,8 @@ function errnoCodeOf(err: unknown): string | undefined {
   return typeof code === 'string' && ERRNO_CODE.test(code) ? code : undefined;
 }
 
+const errnoCode: Parser<string> = (raw) => (typeof raw === 'string' && ERRNO_CODE.test(raw) ? raw : INVALID);
+
 const FAULTS = {
   GitError: gitFailure,
   GitUntrustedError: obj({}),
@@ -32,9 +34,9 @@ const FAULTS = {
     cause: maybe(obj({ message: str(MAX_MESSAGE_CHARS), git: maybe(gitFailure) })),
   }),
   SyncBranchChangedError: obj({ text, stage: oneOf(['pull', 'push'] as const), confirmed: syncBranch, found: either(syncBranch, nul) }),
-  LocalizedError: obj({ text }),
-  WriteRefusedError: obj({ refusal: oneOf(['outsideProject', 'outsideFile', 'replaced', 'notAFile', 'diskFull'] as const satisfies readonly WriteRefusal[]) }),
-  Errno: obj({ code: (raw: unknown) => (typeof raw === 'string' && ERRNO_CODE.test(raw) ? raw : INVALID) }),
+  LocalizedError: obj({ text, code: maybe(errnoCode) }),
+  WriteRefusedError: obj({ refusal: oneOf(['outsideProject', 'outsideFile', 'replaced', 'notAFile', 'diskFull', 'sessionFile'] as const satisfies readonly WriteRefusal[]) }),
+  Errno: obj({ code: errnoCode }),
 };
 
 const gitData = (err: GitError): { exitCode: number | null; stderr: string } => ({ exitCode: err.exitCode, stderr: err.stderr.slice(-MAX_STDERR_CHARS) });
@@ -45,8 +47,8 @@ const causeData = (cause: unknown): { message: string; git?: { exitCode: number 
 
 /**
  * The errors the host acts on by class (scm-host.ts, ref-flows.ts, document-service.ts), carried by name with their own fields and rebuilt on the
- * other side, any other error with a system error code as that code (Errno), and an error whose text is core's (LocalizedError)
- * as that text; every other error crosses as its message. Only these names are ever rebuilt. `render` puts a rebuilt error's
+ * other side, an error whose text is Damocles' own (LocalizedError) as that text with any system error code beside it, any other
+ * error with a system error code as that code (Errno); every other error crosses as its message. Only these names are ever rebuilt. `render` puts a rebuilt error's
  * text in the receiving side's language as its message (desktop main's); a side that only passes errors on keeps English.
  */
 export function errorCodec(render: (text: LocalizedText) => string = englishText): ErrorCodec {
@@ -75,8 +77,9 @@ export function errorCodec(render: (text: LocalizedText) => string = englishText
       }
       if (err instanceof WriteRefusedError) return { name: 'WriteRefusedError', data: { refusal: err.refusal } };
       const code = errnoCodeOf(err);
+      // a text of Damocles' own wins over the code, which crosses beside it for the callers that branch on it
+      if (err instanceof LocalizedError && sendable(err)) return { name: 'LocalizedError', data: { text: err.text, ...(code !== undefined ? { code } : {}) } };
       if (code !== undefined) return { name: 'Errno', data: { code } };
-      if (err instanceof LocalizedError) return sendable(err) ? { name: 'LocalizedError', data: { text: err.text } } : undefined;
       return undefined;
     },
     decode: (fault, message) => {
@@ -110,7 +113,7 @@ export function errorCodec(render: (text: LocalizedText) => string = englishText
         }
         case 'LocalizedError': {
           const data = FAULTS.LocalizedError(fault.data);
-          return data === INVALID ? undefined : rendered(new LocalizedError(data.text));
+          return data === INVALID ? undefined : rendered(Object.assign(new LocalizedError(data.text), data.code === undefined ? {} : { code: data.code }));
         }
         default:
           return undefined;

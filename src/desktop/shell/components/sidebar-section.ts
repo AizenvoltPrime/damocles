@@ -22,6 +22,9 @@ export const SECTION_TITLES: Readonly<Record<SidebarPanelId, string>> = {
   ports: 'ports.heading',
 };
 
+// A section header's icon button: a ghost `size="icon-sm"` Button.
+export const TOOLBAR_BUTTON = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25';
+
 // The data type a section header drag carries, so a section ignores file drags and drags from other windows.
 export const SECTION_DRAG_MIME = 'application/x-damocles-sidebar-section';
 

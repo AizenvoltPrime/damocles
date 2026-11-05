@@ -13,8 +13,15 @@ export const LINUX_TARGET = `linux-${CPU}`;
 export const ALPINE_TARGET = `alpine-${CPU}`;
 /** scripts/server-targets.mjs serverArtifact for a POSIX target. */
 export const serverPackage = (target: string): string => `damocles-server-${APP_VERSION}-${target}.tar.gz`;
-/** An installed version's folder in `<install>`: `<version>-<target>`. */
-export const installedVersion = (target: string): string => `${APP_VERSION}-${target}`;
+/** The server version this build installs on `target`, from the dev manifest build-server.mjs wrote with its package. */
+export function serverVersionOf(target: string): string {
+  const manifest = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'dist', 'desktop', 'server-manifest.json'), 'utf8')) as { packages: Record<string, { serverVersion?: string } | undefined> };
+  const serverVersion = manifest.packages[target]?.serverVersion;
+  if (serverVersion === undefined) throw new Error(`dist/desktop/server-manifest.json names no server version for ${target}`);
+  return serverVersion;
+}
+/** This build's install folder in `<install>`: `<server version>-<target>`. */
+export const installedVersion = (target: string): string => `${serverVersionOf(target)}-${target}`;
 
 // serve: the packages as built; block: every download fails, so the app uploads; tamper: the bytes differ in one place.
 export type MirrorMode = 'serve' | 'block' | 'tamper';

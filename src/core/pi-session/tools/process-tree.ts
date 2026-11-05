@@ -13,6 +13,10 @@ const EXTENDED_LIMIT_INFORMATION_BYTES = process.arch === 'ia32' ? 112 : 144;
 const LIMIT_FLAGS_OFFSET = 16;
 const PROCESS_TERMINATE = 0x0001;
 const PROCESS_SET_QUOTA = 0x0100;
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const STILL_ACTIVE = 259;
+/** What `OpenProcess` answers for a pid that no longer names a process. */
+const ERROR_INVALID_PARAMETER = 87;
 
 /** A Windows job object holding one spawned shell and, by inheritance, everything it starts. */
 export interface ShellJob {
@@ -35,7 +39,8 @@ export interface ShellSessionJob {
 
 /** Assignment stays off the exported handle: its only failure mode is being called out of order. */
 interface SessionJobInternals extends ShellSessionJob {
-  assign(pid: number): void;
+  /** 'exited' when the process had exited before it could join, so no other job is tried for it. */
+  assign(pid: number): 'exited' | undefined;
 }
 
 /** The POSIX session handle. The win32 job has no use for the exit record, so it stays off that arm. */
@@ -59,19 +64,24 @@ interface JobObjectApi {
   assignProcessToJobObject: (job: Handle, target: Handle) => number;
   terminateJobObject: (job: Handle, exitCode: number) => number;
   closeHandle: (handle: Handle) => number;
+  /** Writes the code into `exitCode[0]`. */
+  getExitCodeProcess: (process: Handle, exitCode: number[]) => number;
+  getLastError: () => number;
 }
 
 interface KoffiModule {
   load: (library: string) => {
-    func: (convention: string, name: string, result: string, parameters: string[]) => unknown;
+    func: (convention: string, name: string, result: string, parameters: unknown[]) => unknown;
   };
+  out: (type: unknown) => unknown;
+  pointer: (type: string) => unknown;
 }
 
 /** `undefined` until the first win32 shell call, then the bound API or `null` when koffi is unusable. */
 let jobObjectApi: JobObjectApi | null | undefined;
 
 /**
- * Bind the six kernel32 entry points the job object needs.
+ * Bind the kernel32 entry points the job object needs.
  *
  * koffi is the project's only native dependency and is required lazily from here, so no POSIX code path
  * ever loads it. A failure here is reported once and leaves Windows on the degraded `taskkill /T` sweep,
@@ -98,6 +108,12 @@ function loadJobObjectApi(): JobObjectApi | null {
       ]) as JobObjectApi['assignProcessToJobObject'],
       terminateJobObject: kernel32.func('__stdcall', 'TerminateJobObject', 'int', ['void*', 'uint32']) as JobObjectApi['terminateJobObject'],
       closeHandle: kernel32.func('__stdcall', 'CloseHandle', 'int', ['void*']) as JobObjectApi['closeHandle'],
+      getExitCodeProcess: kernel32.func('__stdcall', 'GetExitCodeProcess', 'int', [
+        'void*',
+        koffi.out(koffi.pointer('uint32')),
+      ]) as JobObjectApi['getExitCodeProcess'],
+      // koffi keeps the thread's last error from Node and V8 between its calls.
+      getLastError: kernel32.func('__stdcall', 'GetLastError', 'uint32', []) as JobObjectApi['getLastError'],
     };
   } catch (error) {
     log(
@@ -109,14 +125,36 @@ function loadJobObjectApi(): JobObjectApi | null {
   return jobObjectApi;
 }
 
-/** Open the spawned shell for the two operations a job assignment needs. */
-function openShell(api: JobObjectApi, pid: number): Handle | null {
-  const target = api.openProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, pid);
+type JoinOutcome = 'joined' | 'exited' | { readonly call: 'OpenProcess' | 'AssignProcessToJobObject'; readonly code: number };
+
+/**
+ * Put a spawned process in a job. Node cannot start a process suspended, so it may have exited before this
+ * runs; that answers `'exited'`, and only a live process's failure answers its Win32 code.
+ */
+function joinJob(api: JobObjectApi, job: Handle, pid: number): JoinOutcome {
+  const target = api.openProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
   if (!target) {
-    log('[ProcessTree] ERROR: OpenProcess failed for pid %d; stopping this command will not kill what it started', pid);
-    return null;
+    const code = api.getLastError();
+    return code === ERROR_INVALID_PARAMETER ? 'exited' : { call: 'OpenProcess', code };
   }
-  return target;
+  try {
+    if (api.assignProcessToJobObject(job, target) !== 0) return 'joined';
+    const code = api.getLastError();
+    const exitCode = [0];
+    if (api.getExitCodeProcess(target, exitCode) !== 0 && exitCode[0] !== STILL_ACTIVE) return 'exited';
+    return { call: 'AssignProcessToJobObject', code };
+  } finally {
+    // Membership outlives this handle; only the job handle has to be kept.
+    api.closeHandle(target);
+  }
+}
+
+function reportJoinFailure(outcome: Exclude<JoinOutcome, 'joined'>, pid: number, consequence: string): void {
+  if (outcome === 'exited') {
+    log('[ProcessTree] pid %d had exited before it could join a job; anything it started runs outside the job', pid);
+    return;
+  }
+  log('[ProcessTree] ERROR: %s failed for pid %d with Win32 error %d; %s', outcome.call, pid, outcome.code, consequence);
 }
 
 /**
@@ -131,9 +169,10 @@ function createSentinelSessionJob(sentinelPath: string | undefined): SentinelSes
   let sentinel: ShellSentinel | undefined;
   return {
     // The shell is spawned detached, so its pid is also the id of the group the sentinel must kill.
-    assign: (pid: number): void => {
+    assign: (pid: number): undefined => {
       sentinel ??= startShellSentinel(sentinelPath);
       sentinel.register(pid);
+      return undefined;
     },
     shellExited: (pid: number): void => sentinel?.shellExited(pid),
     dispose: (): void => sentinel?.dispose(),
@@ -154,14 +193,15 @@ export function createShellSessionJob(sentinelPath?: string): ShellSessionJob | 
 
   const job = api.createJobObject(null, null);
   if (!job) {
-    log('[ProcessTree] ERROR: CreateJobObject failed for the session; commands left running will not be cleaned up');
+    log('[ProcessTree] ERROR: CreateJobObject failed for the session with Win32 error %d; commands left running will not be cleaned up', api.getLastError());
     return undefined;
   }
   const limits = Buffer.alloc(EXTENDED_LIMIT_INFORMATION_BYTES);
   limits.writeUInt32LE(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, LIMIT_FLAGS_OFFSET);
   if (api.setInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, limits, limits.length) === 0) {
+    const code = api.getLastError();
     api.closeHandle(job);
-    log('[ProcessTree] ERROR: SetInformationJobObject failed for the session; commands left running will not be cleaned up');
+    log('[ProcessTree] ERROR: SetInformationJobObject failed for the session with Win32 error %d; commands left running will not be cleaned up', code);
     return undefined;
   }
 
@@ -172,13 +212,11 @@ function windowsSessionJob(api: JobObjectApi, job: Handle): WindowsSessionJob {
   let open = true;
   return {
     handle: job,
-    assign: (pid: number): void => {
-      if (!open) return;
-      const target = openShell(api, pid);
-      if (!target) return;
-      const assigned = api.assignProcessToJobObject(job, target) !== 0;
-      api.closeHandle(target);
-      if (!assigned) log('[ProcessTree] ERROR: could not put pid %d in the session job; it will outlive the session', pid);
+    assign: (pid: number): 'exited' | undefined => {
+      if (!open) return undefined;
+      const outcome = joinJob(api, job, pid);
+      if (outcome !== 'joined') reportJoinFailure(outcome, pid, 'it will outlive the session');
+      return outcome === 'exited' ? 'exited' : undefined;
     },
     dispose: (): void => {
       if (!open) return;
@@ -211,7 +249,7 @@ export function shellJobHandle(job: ShellJob | undefined): bigint | undefined {
 export function terminateJobHandle(handle: bigint): void {
   const api = loadJobObjectApi();
   if (api === null) return;
-  if (api.terminateJobObject(handle, 1) === 0) log('[ProcessTree] ERROR: TerminateJobObject failed for a job left by a dead launcher worker');
+  if (api.terminateJobObject(handle, 1) === 0) log('[ProcessTree] ERROR: TerminateJobObject failed with Win32 error %d for a job left by a dead launcher worker', api.getLastError());
   api.closeHandle(handle);
 }
 
@@ -230,7 +268,7 @@ export function terminateJobHandle(handle: bigint): void {
 export function createShellJob(pid: number, session: ShellSessionJob | undefined): ShellJob | undefined {
   // This module is the only producer of the handle, so the internal shape is always present.
   const internals = session as SessionJobInternals | undefined;
-  internals?.assign(pid);
+  const sessionOutcome = internals?.assign(pid);
 
   if (process.platform !== 'win32') {
     // No session means no sentinel, so there is nobody to report the exit to.
@@ -248,26 +286,21 @@ export function createShellJob(pid: number, session: ShellSessionJob | undefined
       },
     };
   }
+  // the session's join already reported the exit, and a process that has exited has nothing for a call job to stop
+  if (sessionOutcome === 'exited') return undefined;
   const api = loadJobObjectApi();
   if (api === null) return undefined;
 
   const job = api.createJobObject(null, null);
   if (!job) {
-    log('[ProcessTree] ERROR: CreateJobObject failed for pid %d; stopping this command will not kill what it started', pid);
+    log('[ProcessTree] ERROR: CreateJobObject failed for pid %d with Win32 error %d; stopping this command will not kill what it started', pid, api.getLastError());
     return undefined;
   }
 
-  const target = openShell(api, pid);
-  if (!target) {
+  const outcome = joinJob(api, job, pid);
+  if (outcome !== 'joined') {
     api.closeHandle(job);
-    return undefined;
-  }
-  const assigned = api.assignProcessToJobObject(job, target) !== 0;
-  // Membership outlives this handle; only the job handle has to be kept.
-  api.closeHandle(target);
-  if (!assigned) {
-    api.closeHandle(job);
-    log('[ProcessTree] ERROR: AssignProcessToJobObject failed for pid %d; stopping this command will not kill what it started', pid);
+    reportJoinFailure(outcome, pid, 'stopping this command will not kill what it started');
     return undefined;
   }
 
@@ -275,7 +308,7 @@ export function createShellJob(pid: number, session: ShellSessionJob | undefined
   const callJob: ShellJob & { readonly handle: Handle } = {
     handle: job,
     terminate: (): void => {
-      if (open) api.terminateJobObject(job, 1);
+      if (open && api.terminateJobObject(job, 1) === 0) log('[ProcessTree] ERROR: TerminateJobObject failed for pid %d with Win32 error %d; what it started keeps running', pid, api.getLastError());
     },
     dispose: (): void => {
       if (!open) return;

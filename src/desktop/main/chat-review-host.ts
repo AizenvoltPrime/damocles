@@ -26,7 +26,7 @@ export interface ChatReviewHostDeps {
   // the chat's stored session id, which its drafts are kept under; undefined before its first message
   readonly sessionId: (chatKey: string) => string | undefined;
   // the chat's title, '' for a new chat
-  readonly title: (chatKey: string) => string;
+  readonly title: (chatKey: string) => Promise<string>;
   readonly editorPane: () => EditorPane;
   readonly warn: (message: string) => void;
   readonly t: (message: string, ...args: Array<string | number>) => string;
@@ -272,8 +272,7 @@ export class ChatReviewHost {
     return (this.drafts.get(this.draftKey(chatKey)) ?? []).map((draft) => draft.comment);
   }
 
-  private tabOf(reviewId: string, chatKey: string, scope: ChatScope, snapshot: ChatReviewSnapshot): ChatReviewTab {
-    const title = this.deps.title(chatKey);
+  private tabOf(reviewId: string, chatKey: string, scope: ChatScope, snapshot: ChatReviewSnapshot, title: string): ChatReviewTab {
     return {
       reviewId,
       title: this.deps.t('Changes: {0}', title === '' ? this.deps.t('New chat') : title),
@@ -307,7 +306,7 @@ export class ChatReviewHost {
   private async read(reviewId: string, review: Review, session: ReviewSession, opts: { readonly focus: boolean; readonly fresh: boolean }): Promise<void> {
     const serial = ++review.serial;
     const scope = review.scope;
-    const snapshot = await session.chatReviewSnapshot(scope, { fresh: opts.fresh });
+    const [snapshot, title] = await Promise.all([session.chatReviewSnapshot(scope, { fresh: opts.fresh }), this.deps.title(review.chatKey)]);
     if (this.reviews.get(reviewId) !== review) return;
     const current = review.scope === scope && serial > review.landed;
     if (current) {
@@ -318,10 +317,10 @@ export class ChatReviewHost {
     const open = this.isOpen(reviewId);
     if (opts.focus || !open) {
       // a later read that already filled the tab is kept, and the open only focuses it
-      const tab = current || !open ? this.tabOf(reviewId, review.chatKey, scope, snapshot) : pane.reviewTabs().find((candidate) => candidate.reviewId === reviewId)!;
+      const tab = current || !open ? this.tabOf(reviewId, review.chatKey, scope, snapshot, title) : pane.reviewTabs().find((candidate) => candidate.reviewId === reviewId)!;
       pane.showReview(tab, { focus: opts.focus });
     } else if (current) {
-      pane.updateReview(this.tabOf(reviewId, review.chatKey, scope, snapshot));
+      pane.updateReview(this.tabOf(reviewId, review.chatKey, scope, snapshot, title));
     }
     // A tab opened again shows marks for drafts kept while it was closed, so every read that reaches the tab marks it.
     if (current || opts.focus || !open) await this.markStale(reviewId);

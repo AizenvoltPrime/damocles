@@ -4,6 +4,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Project } from '../../local-services/confine';
 import { CliRequests, resolveRemoteSpec, type CliRequestsDeps, type PatchTab } from '../cli-requests';
 import type { HostRecord } from '../remote/host-store';
+import { OutsideFilesUnsupportedError } from '../workspace/remote-workspace';
+import { RootSpellings } from '../workspace/root-spellings';
+import { englishText, LocalizedError } from '../../../shared/localized-text';
 
 const english = (message: string, ...args: string[]): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => args[Number(index)] ?? '');
 
@@ -15,17 +18,26 @@ interface World {
   readonly files: Map<string, string>;
   readonly folders: Set<string>;
   readonly projects: Project[];
-  // links inside a project: escapes' canonical path is outside every project; leaving lead out on the way, as confineExisting finds
-  readonly escapes: Set<string>;
+  // links: a path, by authority, to the realpath resolveOutside answers; leaving: a project path whose link leads out, as
+  // confineExisting finds
+  readonly links: Map<string, string>;
   readonly leaving: Set<string>;
+  // shares: a local drive path whose realpath, which resolveOutside answers, is a share's (a mapped drive)
+  readonly shares: Map<string, string>;
+  // failing: a project path its confinement cannot resolve (a link to a drive that does not answer)
+  readonly failing: Set<string>;
+  // the host's server lists no files.outside
+  readonly oldServer: boolean;
 }
 
 function fake(world: Partial<World> = {}, overrides: Partial<CliRequestsDeps> = {}) {
   const files = world.files ?? new Map([['ssh+h1:/srv/app/src/app.ts', 'one\ntwo\n'], ['ssh+h1:/srv/app/b.txt', 'one\nthree\n'], ['local:C:\\work\\a.txt', 'a']]);
   const folders = world.folders ?? new Set(['ssh+h1:/srv/app', 'ssh+h1:/srv/app/src', 'ssh+h1:/srv/other', 'local:C:\\work']);
   const projects = world.projects ?? [APP, LOCAL];
-  const escapes = world.escapes ?? new Set<string>();
+  const links = world.links ?? new Map<string, string>();
   const leaving = world.leaving ?? new Set<string>();
+  const shares = world.shares ?? new Map<string, string>();
+  const failing = world.failing ?? new Set<string>();
   const calls: string[] = [];
   // whether each question focused its action (Add Project) rather than Cancel
   const focused: boolean[] = [];
@@ -35,6 +47,8 @@ function fake(world: Partial<World> = {}, overrides: Partial<CliRequestsDeps> = 
   const flavor = (authorityKey: string): typeof path.posix => (os(authorityKey) === 'win32' ? path.win32 : path.posix);
   const deps: CliRequestsDeps = {
     projects: (authorityKey) => projects.filter((project) => (authorityKey === 'local' ? !project.key.startsWith('ssh+') : project.key.startsWith(`${authorityKey}|`))),
+    // no retain: each project's open path alone
+    spellings: new RootSpellings({ os: 'win32', realpath: () => Promise.reject(new Error('no realpath in this test')), log: () => undefined }),
     os,
     // this computer's messages have their own wording and never name it as a host
     hostName: (authorityKey) => {
@@ -42,18 +56,35 @@ function fake(world: Partial<World> = {}, overrides: Partial<CliRequestsDeps> = 
       return 'prod-1';
     },
     isDirectory: async (authorityKey, folder) => folders.has(`${authorityKey}:${folder}`),
-    projectOfPath: async (authorityKey, candidates, target) => {
-      const p = flavor(authorityKey);
-      if (escapes.has(`${authorityKey}:${target}`)) return undefined;
-      const project = candidates.find((candidate) => target.startsWith(candidate.fsPath + p.sep));
-      return project && { project, relativePath: p.relative(project.fsPath, target).split(p.sep).join('/') };
-    },
     confineExisting: async (authorityKey, project, relativePath) => {
       const full = flavor(authorityKey).join(project.fsPath, ...relativePath.split('/'));
       if (leaving.has(`${authorityKey}:${full}`)) return { ok: false, reason: 'outside' };
+      if (failing.has(`${authorityKey}:${full}`)) return { ok: false, reason: 'failed' };
       return files.has(`${authorityKey}:${full}`) ? { ok: true, path: full } : { ok: false, reason: 'missing' };
     },
+    confineMissing: async (authorityKey, project, relativePath) => {
+      const full = flavor(authorityKey).join(project.fsPath, ...relativePath.split('/'));
+      if (leaving.has(`${authorityKey}:${full}`)) return { ok: false, reason: 'outside' };
+      if (failing.has(`${authorityKey}:${full}`)) return { ok: false, reason: 'failed' };
+      return { ok: true, path: full };
+    },
     read: async (authorityKey, file) => {
+      const text = files.get(`${authorityKey}:${file}`);
+      return text === undefined ? { kind: 'missing' } : { kind: 'bytes', bytes: Buffer.from(text), mtimeMs: 0, dev: 0, ino: 0 };
+    },
+    // the outside rule's lexical refusals, before anything else is looked at
+    resolveOutside: async (authorityKey, target) => {
+      calls.push(`resolve ${authorityKey} ${target}`);
+      if (world.oldServer === true && authorityKey !== 'local') throw new OutsideFilesUnsupportedError(authorityKey);
+      if (/^[\\/]{2}/.test(target)) return { kind: 'outside', reason: 'share' };
+      if (os(authorityKey) === 'win32' && target.slice(2).includes(':')) return { kind: 'outside', reason: 'name' };
+      const shared = authorityKey === 'local' ? shares.get(target) : undefined;
+      if (shared !== undefined) return { kind: 'share', path: shared, entry: files.has(`local:${shared}`) ? 'file' : 'folder' };
+      const real = links.get(`${authorityKey}:${target}`) ?? target;
+      if (files.has(`${authorityKey}:${real}`)) return { kind: 'file', path: real };
+      return folders.has(`${authorityKey}:${real}`) ? { kind: 'folder', path: real } : { kind: 'missing' };
+    },
+    readOutside: async (authorityKey, file) => {
       const text = files.get(`${authorityKey}:${file}`);
       return text === undefined ? { kind: 'missing' } : { kind: 'bytes', bytes: Buffer.from(text), mtimeMs: 0, dev: 0, ino: 0 };
     },
@@ -68,9 +99,9 @@ function fake(world: Partial<World> = {}, overrides: Partial<CliRequestsDeps> = 
       focused.push(focusAction);
       return true;
     },
-    openFile: async (projectKey, relativePath, position) => {
-      calls.push(`open ${projectKey} ${relativePath}${position.line !== undefined ? ` @${position.line}` : ''}${position.column !== undefined ? `:${position.column}` : ''}`);
-      return { ok: true, tabId: `tab-${++tabs}` };
+    openNamed: async (authorityKey, filePath, position) => {
+      calls.push(`open ${authorityKey} ${filePath}${position.line !== undefined ? ` @${position.line}` : ''}${position.column !== undefined ? `:${position.column}` : ''}`);
+      return `tab-${++tabs}`;
     },
     showPatch: (tab: PatchTab) => {
       calls.push(`patch ${tab.left.name} ${tab.right.name} ${tab.content.kind}`);
@@ -92,10 +123,13 @@ function fake(world: Partial<World> = {}, overrides: Partial<CliRequestsDeps> = 
     },
     deleteWaitMarker: async (marker) => { calls.push(`marker ${marker}`); },
     t: english,
+    render: englishText,
     log: () => undefined,
     ...overrides,
   };
-  return { requests: new CliRequests(deps), calls, focused, waiting: () => [...closes.keys()], close: (tabId: string) => closes.get(tabId)!() };
+  // what opened and was asked, without the outside rule's lookups
+  const actions = (): string[] => calls.filter((call) => !call.startsWith('resolve '));
+  return { requests: new CliRequests(deps), calls, actions, focused, waiting: () => [...closes.keys()], close: (tabId: string) => closes.get(tabId)!() };
 }
 
 const open = (...paths: Array<string | { path: string; line?: number; column?: number }>) => ({
@@ -106,43 +140,77 @@ describe('the damocles command\'s requests in main', () => {
   it('opens a file inside a project of the terminal\'s host at its line and column, bringing the window forward', async () => {
     const { requests, calls } = fake();
     await expect(requests.fromSocket('ssh+h1', open({ path: '/srv/app/src/app.ts', line: 42, column: 3 }))).resolves.toEqual({ ok: true });
-    expect(calls).toEqual(['window', 'open ssh+h1|/srv/app src/app.ts @42:3']);
+    expect(calls).toEqual(['window', 'open ssh+h1 /srv/app/src/app.ts @42:3']);
   });
 
   it('reads path:line:column so only when the path as typed does not exist', async () => {
     const files = new Map([['ssh+h1:/srv/app/notes:12', 'a file named with a colon'], ['ssh+h1:/srv/app/notes', 'n']]);
-    const { requests, calls } = fake({ files });
+    const { requests, actions } = fake({ files });
     await requests.fromSocket('ssh+h1', open({ path: '/srv/app/notes', line: 12 }));
-    expect(calls).toEqual(['window', 'open ssh+h1|/srv/app notes:12']);
-    // the unsplit name is missing: the position applies
-    const missing = fake({ files: new Map([['ssh+h1:/srv/app/notes', 'n']]) });
-    await missing.requests.fromSocket('ssh+h1', open({ path: '/srv/app/notes', line: 12 }));
-    expect(missing.calls).toEqual(['window', 'open ssh+h1|/srv/app notes @12']);
+    expect(actions()).toEqual(['window', 'open ssh+h1 /srv/app/notes:12']);
+    // the unsplit name is missing: the position applies, inside a project and outside one
+    const missing = fake({ files: new Map([['ssh+h1:/srv/app/notes', 'n'], ['ssh+h1:/home/me/notes', 'n']]) });
+    await missing.requests.fromSocket('ssh+h1', open({ path: '/srv/app/notes', line: 12 }, { path: '/home/me/notes', line: 3 }));
+    expect(missing.actions()).toEqual(['window', 'open ssh+h1 /srv/app/notes @12', 'open ssh+h1 /home/me/notes @3']);
   });
 
-  it('refuses a file outside every project of its host with the exact message, opening nothing', async () => {
-    const { requests, calls } = fake();
-    await expect(requests.fromSocket('ssh+h1', open('/srv/app/src/app.ts', '/etc/hosts'))).resolves.toEqual({
-      ok: false,
-      message: 'damocles: /etc/hosts is outside the projects open on prod-1. Open its folder with: damocles /etc',
+  it('opens a file outside every project of its host on that host, and a file of another host\'s project path as that host\'s own file', async () => {
+    const { requests, actions } = fake({ files: new Map([['ssh+h1:/srv/app/src/app.ts', 'a'], ['ssh+h1:/etc/hosts', '127.0.0.1 localhost\n'], ['ssh+h2:/srv/app/src/app.ts', 'b']]), folders: new Set(['ssh+h1:/etc', 'ssh+h2:/srv/app/src']) });
+    await expect(requests.fromSocket('ssh+h1', open('/srv/app/src/app.ts', '/etc/hosts'))).resolves.toEqual({ ok: true });
+    await expect(requests.fromSocket('ssh+h2', open('/srv/app/src/app.ts'))).resolves.toEqual({ ok: true });
+    expect(actions()).toEqual(['window', 'open ssh+h1 /srv/app/src/app.ts', 'open ssh+h1 /etc/hosts', 'window', 'open ssh+h2 /srv/app/src/app.ts']);
+  });
+
+  it('opens a missing file empty, inside a project or outside one, and refuses one whose folder is missing, opening nothing', async () => {
+    const { requests, actions } = fake({ folders: new Set(['ssh+h1:/srv/app', 'ssh+h1:/home/me']) });
+    await expect(requests.fromSocket('ssh+h1', open('/srv/app/new.txt', '/home/me/new.txt'))).resolves.toEqual({ ok: true });
+    expect(actions()).toEqual(['window', 'open ssh+h1 /srv/app/new.txt', 'open ssh+h1 /home/me/new.txt']);
+    const refused = fake({ folders: new Set(['ssh+h1:/srv/app']) });
+    await expect(refused.requests.fromSocket('ssh+h1', open('/srv/app/b.txt', '/srv/app/nofolder/new.txt'))).resolves.toEqual({ ok: false, message: 'damocles: /srv/app/nofolder/new.txt cannot be created, because its folder does not exist.' });
+    await expect(refused.requests.fromSocket('ssh+h1', open('/home/me/nofolder/new.txt'))).resolves.toEqual({ ok: false, message: 'damocles: /home/me/nofolder/new.txt cannot be created, because its folder does not exist.' });
+    expect(refused.actions()).toEqual([]);
+  });
+
+  it('opens a project path a link leads out of at the path named, which the editor follows to its target', async () => {
+    const { requests, actions } = fake({ files: new Map([['ssh+h1:/home/me/target.txt', 't']]), leaving: new Set(['ssh+h1:/srv/app/link.txt']), links: new Map([['ssh+h1:/srv/app/link.txt', '/home/me/target.txt']]) });
+    await expect(requests.fromSocket('ssh+h1', open('/srv/app/link.txt'))).resolves.toEqual({ ok: true });
+    expect(actions()).toEqual(['window', 'open ssh+h1 /srv/app/link.txt']);
+  });
+
+  it('answers a share or device path and a stream name with the refusal\'s own text, opening nothing and touching nothing past the folder check', async () => {
+    const folderChecks: string[] = [];
+    const { requests, calls } = fake({}, {
+      isDirectory: async (_authorityKey, folder) => {
+        folderChecks.push(folder);
+        return false;
+      },
     });
-    expect(calls).toEqual([]);
-    // a file of another host's project is outside this host's projects
-    await expect(requests.fromSocket('ssh+h2', open('/srv/app/src/app.ts'))).resolves.toMatchObject({ ok: false });
+    await requests.fromCommandLine({ request: { kind: 'open', cwd: 'C:\\', items: [{ path: '\\\\server\\share\\x.txt' }], wait: false } });
+    await requests.fromCommandLine({ request: { kind: 'open', cwd: 'C:\\', items: [{ path: 'C:\\x\\a.txt:s' }], wait: false } });
+    // the folder check of each path and no check of its parent; the outside rule refuses it lexically
+    expect(folderChecks).toEqual(['\\\\server\\share\\x.txt', 'C:\\x\\a.txt:s']);
+    expect(calls).toEqual([
+      'resolve local \\\\server\\share\\x.txt',
+      'notify damocles: Damocles does not open \\\\server\\share\\x.txt: it is on a network share or a device outside your projects.',
+      'resolve local C:\\x\\a.txt:s',
+      'notify damocles: Damocles does not open C:\\x\\a.txt:s: part of this path would be read differently than it is written, such as a trailing dot or space, a stream or a reserved device name.',
+    ]);
+  });
+
+  it('refuses a file outside the projects of a host whose server is too old, naming the host, and still opens a project file there', async () => {
+    const { requests, actions } = fake({ oldServer: true, folders: new Set(['ssh+h1:/srv/app', 'ssh+h1:/srv/app/src', 'ssh+h1:/home/me']) });
+    await expect(requests.fromSocket('ssh+h1', open('/home/me/.bashrc'))).resolves.toEqual({ ok: false, message: 'damocles: the Damocles server on prod-1 cannot open files outside its projects.' });
+    await expect(requests.fromSocket('ssh+h1', open('/srv/app/src/app.ts'))).resolves.toEqual({ ok: true });
+    expect(actions()).toEqual(['window', 'open ssh+h1 /srv/app/src/app.ts']);
   });
 
   it('names paths as the host does, with `.` and `..` resolved and no trailing separator, as a WSL shell\'s `$PWD/.` arrives', async () => {
     const { requests, calls } = fake();
     await requests.fromSocket('ssh+h1', open('/srv/other/.', '/srv/app/src/../src/app.ts', '/srv/app/'));
-    expect(calls).toEqual(['window', 'ask Add /srv/other on prod-1 as a project?', 'add ssh+h1 /srv/other', 'open ssh+h1|/srv/app src/app.ts', 'select ssh+h1|/srv/app']);
+    expect(calls).toEqual(['window', 'ask Add /srv/other on prod-1 as a project?', 'add ssh+h1 /srv/other', 'open ssh+h1 /srv/app/src/app.ts', 'select ssh+h1|/srv/app']);
     const local = fake();
     await local.requests.fromCommandLine({ request: { kind: 'open', cwd: 'C:\\', items: [{ path: 'C:\\work\\.\\a.txt' }, { path: 'C:\\work\\' }], wait: false } });
-    expect(local.calls).toEqual(['window', 'open c:\\work a.txt', 'select c:\\work']);
-  });
-
-  it('refuses a missing file inside a project', async () => {
-    const { requests } = fake();
-    await expect(requests.fromSocket('ssh+h1', open('/srv/app/missing.ts'))).resolves.toEqual({ ok: false, message: 'damocles: /srv/app/missing.ts does not exist.' });
+    expect(local.actions()).toEqual(['window', 'open local C:\\work\\a.txt', 'select c:\\work']);
   });
 
   it('selects a folder that is a project, and asks before adding a folder outside every project', async () => {
@@ -169,6 +237,19 @@ describe('the damocles command\'s requests in main', () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(answered).toBe(false);
     close('tab-2');
+    await expect(answer).resolves.toEqual({ ok: true });
+  });
+
+  it('answers --wait on a file outside every project once its tab closed', async () => {
+    const { requests, close, waiting } = fake({ files: new Map([['ssh+h1:/home/me/.bashrc', 'x']]) });
+    let answered = false;
+    const answer = requests.fromSocket('ssh+h1', { request: { kind: 'open', cwd: '/home/me', items: [{ path: '/home/me/.bashrc', line: 3 }], wait: true } }).then((value) => {
+      answered = true;
+      return value;
+    });
+    await vi.waitFor(() => expect(waiting()).toEqual(['tab-1']));
+    expect(answered).toBe(false);
+    close('tab-1');
     await expect(answer).resolves.toEqual({ ok: true });
   });
 
@@ -200,6 +281,95 @@ describe('the damocles command\'s requests in main', () => {
     expect(patches[1]!.content).toEqual({ kind: 'binary' });
   });
 
+  it('diffs a side outside every project through the outside rule, and refuses a missing or refused side', async () => {
+    const patches: PatchTab[] = [];
+    const files = new Map([['ssh+h1:/srv/app/a.txt', 'one\n'], ['ssh+h1:/home/me/b.txt', 'two\n']]);
+    const { requests } = fake({ files }, { showPatch: (tab) => { patches.push(tab); return 'tab'; } });
+    await expect(requests.fromSocket('ssh+h1', { request: { kind: 'diff', cwd: '/', left: '/srv/app/a.txt', right: '/home/me/b.txt', wait: false } })).resolves.toEqual({ ok: true });
+    expect(patches[0]!.content.kind === 'patch' && patches[0]!.content.patch).toContain('--- /srv/app/a.txt\n+++ /home/me/b.txt\n');
+    await expect(requests.fromSocket('ssh+h1', { request: { kind: 'diff', cwd: '/', left: '/srv/app/a.txt', right: '/home/me/gone.txt', wait: false } })).resolves.toEqual({ ok: false, message: 'damocles: /home/me/gone.txt does not exist.' });
+    const local = fake();
+    await local.requests.fromCommandLine({ request: { kind: 'diff', cwd: 'C:\\', left: 'C:\\work\\a.txt', right: '\\\\server\\share\\b.txt', wait: false } });
+    expect(local.calls.at(-1)).toBe('notify damocles: Damocles does not open \\\\server\\share\\b.txt: it is on a network share or a device outside your projects.');
+  });
+
+  it('opens and diffs a file named by a mapped drive of a project opened at its share path as that project\'s file, and refuses one no project holds', async () => {
+    const SHARED: Project = { key: '\\\\server\\share\\proj', fsPath: '\\\\server\\share\\proj', name: 'proj' };
+    const files = new Map([['local:\\\\server\\share\\proj\\a.txt', 'one\n'], ['local:\\\\server\\share\\proj\\b.txt', 'two\n'], ['local:\\\\server\\other\\c.txt', 'c']]);
+    const shares = new Map([['Z:\\proj\\a.txt', '\\\\server\\share\\proj\\a.txt'], ['Z:\\proj\\b.txt', '\\\\server\\share\\proj\\b.txt'], ['Y:\\c.txt', '\\\\server\\other\\c.txt']]);
+    const patches: PatchTab[] = [];
+    const local = fake({ files, shares, projects: [APP, LOCAL, SHARED] }, { showPatch: (tab) => { patches.push(tab); return 'tab'; } });
+    await local.requests.fromCommandLine({ request: { kind: 'open', cwd: 'C:\\', items: [{ path: 'Z:\\proj\\a.txt' }], wait: false } });
+    expect(local.actions().at(-1)).toBe('open local Z:\\proj\\a.txt');
+    await local.requests.fromCommandLine({ request: { kind: 'diff', cwd: 'C:\\', left: 'Z:\\proj\\a.txt', right: 'Z:\\proj\\b.txt', wait: false } });
+    expect(patches[0]!.content.kind === 'patch' && patches[0]!.content.patch).toContain('-one\n+two\n');
+    const refusal = 'notify damocles: Damocles does not open Y:\\c.txt: it is on a network share or a device outside your projects.';
+    await local.requests.fromCommandLine({ request: { kind: 'open', cwd: 'C:\\', items: [{ path: 'Y:\\c.txt' }], wait: false } });
+    expect(local.calls.at(-1)).toBe(refusal);
+    await local.requests.fromCommandLine({ request: { kind: 'diff', cwd: 'C:\\', left: 'Z:\\proj\\a.txt', right: 'Y:\\c.txt', wait: false } });
+    expect(local.calls.at(-1)).toBe(refusal);
+    // a project's file its confinement no longer finds is refused as the share's, never read by the outside rule
+    const leaving = fake({ files, shares, projects: [APP, LOCAL, SHARED], leaving: new Set(['local:\\\\server\\share\\proj\\b.txt']) });
+    await leaving.requests.fromCommandLine({ request: { kind: 'diff', cwd: 'C:\\', left: 'Z:\\proj\\a.txt', right: 'Z:\\proj\\b.txt', wait: false } });
+    expect(leaving.calls.at(-1)).toBe('notify damocles: Damocles does not open Z:\\proj\\b.txt: it is on a network share or a device outside your projects.');
+  });
+
+  it('diffs a side named by the share spelling of a project on a mapped drive as that project\'s file, and refuses it once the drive is remapped', async () => {
+    // C:\work stands for a mapped drive: its realpath, and every realpath confinement takes under it, is the share's
+    let share = '\\\\server\\share\\work';
+    const spellings = new RootSpellings({ os: 'win32', realpath: async (folder) => (folder === LOCAL.fsPath ? share : folder), log: () => undefined });
+    await spellings.retain([LOCAL, APP]);
+    const patches: PatchTab[] = [];
+    const files = new Map([['local:C:\\work\\a.txt', 'one\n'], ['local:C:\\work\\b.txt', 'two\n']]);
+    const local = fake({ files }, {
+      spellings,
+      confineExisting: async (_authorityKey, project, relativePath) => {
+        const lexical = path.win32.join(project.fsPath, ...relativePath.split('/'));
+        return files.has(`local:${lexical}`) ? { ok: true, path: `${share}${lexical.slice(project.fsPath.length)}` } : { ok: false, reason: 'missing' };
+      },
+      read: async (_authorityKey, file) => {
+        const text = files.get(`local:${LOCAL.fsPath}${file.slice(share.length)}`);
+        return text === undefined ? { kind: 'missing' } : { kind: 'bytes', bytes: Buffer.from(text), mtimeMs: 0, dev: 0, ino: 0 };
+      },
+      showPatch: (tab) => {
+        patches.push(tab);
+        return 'tab';
+      },
+    });
+    const named = '\\\\server\\share\\work\\b.txt';
+    await local.requests.fromCommandLine({ request: { kind: 'diff', cwd: 'C:\\', left: 'C:\\work\\a.txt', right: named, wait: false } });
+    expect(patches[0]).toMatchObject({ left: { path: 'C:\\work\\a.txt' }, right: { name: 'b.txt', path: named } });
+    expect(patches[0]!.content.kind === 'patch' && patches[0]!.content.patch).toContain('-one\n+two\n');
+    // the share side never reaches the outside rule
+    expect(local.calls.filter((call) => call.startsWith('resolve '))).toEqual([]);
+    share = '\\\\other\\share\\work';
+    await local.requests.fromCommandLine({ request: { kind: 'diff', cwd: 'C:\\', left: 'C:\\work\\a.txt', right: named, wait: false } });
+    expect(local.calls.at(-1)).toBe(`notify damocles: Damocles does not open ${named}: it is on a network share or a device outside your projects.`);
+    expect(patches).toHaveLength(1);
+  });
+
+  it('opens a file named by the share spelling of a project on a mapped drive, never asking the outside rule, and refuses it once the drive is remapped', async () => {
+    // C:\work stands for a mapped drive: its realpath, and every realpath confinement takes under it, is the share's
+    let share = '\\\\server\\share\\work';
+    const spellings = new RootSpellings({ os: 'win32', realpath: async (folder) => (folder === LOCAL.fsPath ? share : folder), log: () => undefined });
+    await spellings.retain([LOCAL, APP]);
+    const files = new Map([['local:C:\\work\\b.txt', 'two\n']]);
+    const local = fake({ files }, {
+      spellings,
+      confineExisting: async (_authorityKey, project, relativePath) => {
+        const lexical = path.win32.join(project.fsPath, ...relativePath.split('/'));
+        return files.has(`local:${lexical}`) ? { ok: true, path: `${share}${lexical.slice(project.fsPath.length)}` } : { ok: false, reason: 'missing' };
+      },
+    });
+    const named = '\\\\server\\share\\work\\b.txt';
+    await local.requests.fromCommandLine({ request: { kind: 'open', cwd: 'C:\\', items: [{ path: named }], wait: false } });
+    expect(local.calls.filter((call) => !call.startsWith('claim ') && !call.startsWith('marker '))).toEqual(['window', `open local ${named}`]);
+    share = '\\\\other\\share\\work';
+    await local.requests.fromCommandLine({ request: { kind: 'open', cwd: 'C:\\', items: [{ path: named }], wait: false } });
+    expect(local.calls.at(-1)).toBe(`notify damocles: Damocles does not open ${named}: it is on a network share or a device outside your projects.`);
+    expect(local.calls.filter((call) => call.startsWith('open '))).toHaveLength(1);
+  });
+
   it('sends a target terminal\'s BROWSER address through the link checks', async () => {
     const { requests, calls } = fake();
     await expect(requests.fromSocket('ssh+h1', { request: { kind: 'openExternal', url: 'https://example.test/login' } })).resolves.toEqual({ ok: true });
@@ -214,18 +384,18 @@ describe('the damocles command\'s requests in main', () => {
   });
 
   it('handles the command line on this computer, telling a refusal as a notice and always deleting the wait marker', async () => {
-    const { requests, calls } = fake();
+    const { requests, calls, actions } = fake();
     await requests.fromCommandLine({ request: { kind: 'open', cwd: 'C:\\work', items: [{ path: 'C:\\work\\a.txt' }], wait: false } });
-    expect(calls).toEqual(['window', 'open c:\\work a.txt']);
+    expect(actions()).toEqual(['window', 'open local C:\\work\\a.txt']);
     calls.length = 0;
-    await requests.fromCommandLine({ request: { kind: 'open', cwd: 'C:\\', items: [{ path: 'C:\\Windows\\win.ini' }], wait: true }, waitMarker: 'C:\\Temp\\damocles-wait-1' });
-    expect(calls).toEqual(['claim C:\\Temp\\damocles-wait-1', 'notify damocles: C:\\Windows\\win.ini is outside the projects open on this computer. Open its folder with: damocles C:\\Windows', 'marker C:\\Temp\\damocles-wait-1']);
+    await requests.fromCommandLine({ request: { kind: 'open', cwd: 'C:\\', items: [{ path: 'C:\\nofolder\\win.ini' }], wait: true }, waitMarker: 'C:\\Temp\\damocles-wait-1' });
+    expect(actions()).toEqual(['claim C:\\Temp\\damocles-wait-1', 'notify damocles: C:\\nofolder\\win.ini cannot be created, because its folder does not exist.', 'marker C:\\Temp\\damocles-wait-1']);
   });
 
   it('deletes the wait marker of the command line once the tab closed', async () => {
     const { requests, calls, close } = fake();
     const done = requests.fromCommandLine({ request: { kind: 'open', cwd: 'C:\\work', items: [{ path: 'C:\\work\\a.txt' }], wait: true }, waitMarker: 'm' });
-    await vi.waitFor(() => expect(calls).toContain('open c:\\work a.txt'));
+    await vi.waitFor(() => expect(calls).toContain('open local C:\\work\\a.txt'));
     expect(calls).not.toContain('marker m');
     close('tab-1');
     await done;
@@ -268,10 +438,10 @@ describe('the damocles command\'s requests in main', () => {
   it('asks every folder question before anything opens, so a no opens nothing, and a --wait refused returns at once', async () => {
     const both = fake({ folders: new Set(['ssh+h1:/srv/app', 'ssh+h1:/srv/other', 'ssh+h1:/srv/third']) });
     await both.requests.fromSocket('ssh+h1', open('/srv/other', '/srv/app/b.txt', '/srv/third'));
-    expect(both.calls).toEqual(['window', 'ask Add /srv/other on prod-1 as a project?', 'ask Add /srv/third on prod-1 as a project?', 'add ssh+h1 /srv/other', 'open ssh+h1|/srv/app b.txt', 'add ssh+h1 /srv/third']);
+    expect(both.actions()).toEqual(['window', 'ask Add /srv/other on prod-1 as a project?', 'ask Add /srv/third on prod-1 as a project?', 'add ssh+h1 /srv/other', 'open ssh+h1 /srv/app/b.txt', 'add ssh+h1 /srv/third']);
     const declined = fake({}, { confirm: async (question) => question.includes('/srv/app') });
     await expect(declined.requests.fromSocket('ssh+h1', { request: { kind: 'open', cwd: '/srv/app', items: [{ path: '/srv/app/src/app.ts' }, { path: '/srv/other' }], wait: true } })).resolves.toEqual({ ok: false, message: 'damocles: /srv/other was not added as a project.' });
-    expect(declined.calls).toEqual(['window']);
+    expect(declined.actions()).toEqual(['window']);
     expect(declined.waiting()).toEqual([]);
   });
 
@@ -288,29 +458,57 @@ describe('the damocles command\'s requests in main', () => {
     expect(calls).toContain('ask Add C:\\other on this computer as a project?');
   });
 
-  it('says a path that leads out of its project through a link does so, never that it does not exist, and offers no folder that is already a project', async () => {
-    const { requests } = fake({ files: new Map([['ssh+h1:/srv/app/link.txt', 'x'], ['ssh+h1:/srv/app/escape.txt', 'x']]), leaving: new Set(['ssh+h1:/srv/app/link.txt']), escapes: new Set(['ssh+h1:/srv/app/escape.txt', 'ssh+h1:/srv/app/src/deep.txt']) });
-    await expect(requests.fromSocket('ssh+h1', open('/srv/app/link.txt'))).resolves.toEqual({ ok: false, message: 'damocles: /srv/app/link.txt leads outside its project.' });
-    await expect(requests.fromSocket('ssh+h1', open('/srv/app/escape.txt'))).resolves.toEqual({ ok: false, message: 'damocles: /srv/app/escape.txt leads outside the projects open on prod-1.' });
-    await expect(requests.fromSocket('ssh+h1', open('/srv/app/src/deep.txt'))).resolves.toEqual({ ok: false, message: 'damocles: /srv/app/src/deep.txt leads outside the projects open on prod-1.' });
-    await expect(requests.fromSocket('ssh+h1', { request: { kind: 'diff', cwd: '/', left: '/srv/app/link.txt', right: '/srv/app/b.txt', wait: false } })).resolves.toEqual({ ok: false, message: 'damocles: /srv/app/link.txt leads outside its project.' });
-    const local = fake();
-    await local.requests.fromCommandLine({ request: { kind: 'open', cwd: 'C:\\', items: [{ path: 'C:\\work\\gone.txt' }], wait: false } });
-    expect(local.calls).toEqual(['notify damocles: C:\\work\\gone.txt does not exist.']);
-  });
-
   it('names the path as typed in a refusal, position included, when neither its whole nor its split form opens', async () => {
     const { requests } = fake();
-    await expect(requests.fromSocket('ssh+h1', open({ path: '/etc/hosts', line: 12 }))).resolves.toEqual({ ok: false, message: 'damocles: /etc/hosts:12 is outside the projects open on prod-1. Open its folder with: damocles /etc' });
-    await expect(requests.fromSocket('ssh+h1', open({ path: '/srv/app/nope.ts', line: 3, column: 4 }))).resolves.toEqual({ ok: false, message: 'damocles: /srv/app/nope.ts:3:4 does not exist.' });
+    await expect(requests.fromSocket('ssh+h1', open({ path: '/srv/app/nofolder/nope.ts', line: 3, column: 4 }))).resolves.toEqual({ ok: false, message: 'damocles: /srv/app/nofolder/nope.ts:3:4 cannot be created, because its folder does not exist.' });
     await expect(requests.fromSocket('ssh+h1', open({ path: 'src/a.ts', line: 3 }))).resolves.toEqual({ ok: false, message: 'damocles: src/a.ts:3 is not an absolute path on prod-1.' });
   });
 
-  it('tells why the editor could not open a file in words, never as a code', async () => {
-    for (const [reason, message] of [['missing', 'damocles: /srv/app/b.txt does not exist.'], ['outside', 'damocles: /srv/app/b.txt leads outside its project.'], ['failed', 'damocles: /srv/app/b.txt could not be opened.']] as const) {
-      const { requests } = fake({}, { openFile: async () => ({ ok: false, reason }) });
-      await expect(requests.fromSocket('ssh+h1', open('/srv/app/b.txt'))).resolves.toEqual({ ok: false, message });
-    }
+  it('tells an editor failure in words, a LocalizedError rendered in the user\'s language', async () => {
+    const plain = fake({}, { openNamed: async () => { throw new Error('the connection ended'); } });
+    await expect(plain.requests.fromSocket('ssh+h1', open('/srv/app/b.txt'))).resolves.toEqual({ ok: false, message: 'damocles: the connection ended' });
+    const timedOut = Object.assign(new LocalizedError({ message: 'The drive {0} did not answer within a second.', args: ['Q:\\'] }), { message: 'English message' });
+    const localized = fake({}, { openNamed: async () => { throw timedOut; } });
+    await expect(localized.requests.fromSocket('ssh+h1', open('/srv/app/b.txt'))).resolves.toEqual({ ok: false, message: 'damocles: The drive Q:\\ did not answer within a second.' });
+  });
+
+  it('refuses a project path its project cannot resolve before anything opens', async () => {
+    const { requests, actions } = fake({ failing: new Set(['ssh+h1:/srv/app/b.txt']) });
+    await expect(requests.fromSocket('ssh+h1', open('/srv/app/src/app.ts', { path: '/srv/app/b.txt', line: 2 }))).resolves.toEqual({ ok: false, message: 'damocles: /srv/app/b.txt:2 could not be opened.' });
+    expect(actions()).toEqual([]);
+  });
+
+  it('refuses a new file in a folder whose realpath is a share no project holds before anything opens, and opens one a project holds', async () => {
+    const SHARED: Project = { key: '\\\\server\\share\\proj', fsPath: '\\\\server\\share\\proj', name: 'proj' };
+    const shares = new Map([['Y:\\notes', '\\\\server\\other\\notes'], ['Z:\\proj', '\\\\server\\share\\proj']]);
+    const folders = new Set(['local:C:\\work', 'local:Y:\\notes', 'local:Z:\\proj']);
+    const { requests, calls, actions } = fake({ shares, folders, projects: [APP, LOCAL, SHARED] });
+    await requests.fromCommandLine({ request: { kind: 'open', cwd: 'C:\\', items: [{ path: 'C:\\work\\a.txt' }, { path: 'Y:\\notes\\new.txt' }], wait: false } });
+    expect(calls.at(-1)).toBe('notify damocles: Damocles does not open Y:\\notes\\new.txt: it is on a network share or a device outside your projects.');
+    expect(actions().filter((call) => call.startsWith('open '))).toEqual([]);
+    await requests.fromCommandLine({ request: { kind: 'open', cwd: 'C:\\', items: [{ path: 'Z:\\proj\\new.txt' }], wait: false } });
+    expect(actions().at(-1)).toBe('open local Z:\\proj\\new.txt');
+  });
+
+  it('reads path:line as one name on a host whose server opens no file outside its projects, so a project file still opens at its line', async () => {
+    // a Windows host's project confinement refuses the stream-like name app.ts:12, which the outside rule would judge
+    const { requests, actions } = fake({ oldServer: true, leaving: new Set(['ssh+h1:/srv/app/src/app.ts:12']) });
+    await expect(requests.fromSocket('ssh+h1', open({ path: '/srv/app/src/app.ts', line: 12 }))).resolves.toEqual({ ok: true });
+    expect(actions()).toEqual(['window', 'open ssh+h1 /srv/app/src/app.ts @12']);
+  });
+
+  it('refuses a --diff side that is a folder on a mapped drive as no file', async () => {
+    const SHARED: Project = { key: '\\\\server\\share\\proj', fsPath: '\\\\server\\share\\proj', name: 'proj' };
+    const shares = new Map([['Z:\\proj\\src', '\\\\server\\share\\proj\\src']]);
+    const { requests, calls } = fake({ shares, projects: [APP, LOCAL, SHARED] });
+    await requests.fromCommandLine({ request: { kind: 'diff', cwd: 'C:\\', left: 'C:\\work\\a.txt', right: 'Z:\\proj\\src', wait: false } });
+    expect(calls.at(-1)).toBe('notify damocles: Z:\\proj\\src is not a file.');
+  });
+
+  it('names a refused path as typed, its position included', async () => {
+    const { requests, calls } = fake();
+    await requests.fromCommandLine({ request: { kind: 'open', cwd: 'C:\\', items: [{ path: '\\\\server\\share\\x.txt', line: 3 }], wait: false } });
+    expect(calls.at(-1)).toBe('notify damocles: Damocles does not open \\\\server\\share\\x.txt:3: it is on a network share or a device outside your projects.');
   });
 
   it('claims a command line\'s wait marker before the window is ready, and once the quit began opens nothing and deletes the marker', async () => {
@@ -339,14 +537,14 @@ describe('the damocles command\'s requests in main', () => {
     expect(calls).toEqual([`marker ${marker}`, `marker ${marker}`]);
     await requests.fromArgv(['Damocles.exe', '--disable-gpu'], Promise.resolve(), false);
     await requests.fromArgv(['Damocles.exe', switchOf({ request: { kind: 'open', cwd: 'C:\\', items: [{ path: 'C:\\work\\a.txt' }], wait: false } })], Promise.resolve(), false);
-    expect(calls).toEqual([`marker ${marker}`, `marker ${marker}`, 'window', 'open c:\\work a.txt']);
+    expect(calls).toEqual([`marker ${marker}`, `marker ${marker}`, 'window', 'open local C:\\work\\a.txt']);
   });
 
   it('does not wait on a marker the command already removed', async () => {
     const { requests, calls, waiting } = fake({}, { claimWaitMarker: async () => false });
     await requests.fromCommandLine({ request: { kind: 'open', cwd: 'C:\\work', items: [{ path: 'C:\\work\\a.txt' }], wait: true }, waitMarker: 'm' });
     expect(waiting()).toEqual([]);
-    expect(calls).toEqual(['window', 'open c:\\work a.txt', 'marker m']);
+    expect(calls).toEqual(['window', 'open local C:\\work\\a.txt', 'marker m']);
   });
 
   it('refuses a path that is not absolute on its host, which would resolve against a working folder of Damocles', async () => {

@@ -1,19 +1,21 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import * as esbuild from 'esbuild';
 // @ts-expect-error -- plain .mjs helper, no types
-import { clampsLoadAlign, launchers, modeOf, nodeEntries, npmPackageEntries, packageEntries, serverClosure, serverFlavor, serverRoots, selfTestExternals } from '../build-server.mjs';
+import { clampsLoadAlign, launchers, modeOf, nodeEntries, npmPackageEntries, packageBuild, packageEntries, packageInfo, serverClosure, serverFlavor, serverManifest, serverRoots, serverVersionOf, selfTestExternals } from '../build-server.mjs';
 // @ts-expect-error -- plain .mjs helper, no types
 import { FIXED_MTIME, gzipHeader, readTarGz, readZip, tarGz, zip } from '../server-archive.mjs';
 // @ts-expect-error -- plain .mjs helper, no types
-import { SERVER_TARGETS } from '../server-targets.mjs';
+import { SERVER_TARGETS, serverArtifact } from '../server-targets.mjs';
 // @ts-expect-error -- plain .mjs helper, no types
 import { DESKTOP_ONLY_PACKAGES } from '../sync-vscodeignore.mjs';
 // @ts-expect-error -- plain .mjs helper, no types
 import { EXTENSION_EXTERNALS } from '../extension-externals.mjs';
+import { isVersionText } from '../../src/remote/handshake';
 import { aligns, elf, NODE_LINUX_X64 } from './elf-fixture';
 
 type Entry = { path: string; mode: number; data?: Buffer; source?: string; type?: string };
@@ -90,22 +92,21 @@ describe('the package file list', () => {
   });
 
   it('lists the launchers, dist without maps, the portable closure with one node-pty prebuild, and the root files', () => {
-    const entries = packageEntries({ spec: FAKE_LINUX, target: 'linux-x64', version: '1.0.0', nodeVersion: '24.22.0', distDir: dist(), nodeModules: nodeModules(), root: repo(), portable: ['node-pty', 'zod'], externals: ['zod'] }) as Entry[];
+    const entries = packageEntries({ spec: FAKE_LINUX, distDir: dist(), nodeModules: nodeModules(), root: repo(), portable: ['node-pty', 'zod'] }) as Entry[];
     expect(entries.map((entry) => entry.path).sort()).toEqual([
       'LICENSE', 'THIRD-PARTY-NOTICES.md', 'bin/damocles-server', 'bin/helpers/browser.sh', 'bin/remote-cli/damocles', 'dist/askpass/askpass.sh', 'dist/core-host.js', 'dist/daemon.js',
       'l10n/bundle.l10n.json', 'node_modules/node-pty/lib/index.js', 'node_modules/node-pty/package.json', 'node_modules/node-pty/prebuilds/linux-x64/pty.node',
       'node_modules/zod/index.js', 'node_modules/zod/package.json', 'package.json', 'package.nls.el.json', 'package.nls.json',
-      'resources/grammars/tree-sitter-go.wasm', 'resources/shell-integration/shellIntegration-bash.sh', 'server-package.json',
+      'resources/grammars/tree-sitter-go.wasm', 'resources/shell-integration/shellIntegration-bash.sh',
     ]);
-    const info = JSON.parse(entries.find((entry) => entry.path === 'server-package.json')!.data!.toString('utf8'));
-    expect(info).toEqual({
-      name: 'damocles-server', version: '1.0.0', target: 'linux-x64', node: '24.22.0', externals: ['zod'],
+    expect(packageInfo({ spec: FAKE_LINUX, target: 'linux-x64', version: '1.0.0', nodeVersion: '24.22.0', portable: ['node-pty', 'zod'] })).toEqual({
+      name: 'damocles-server', version: '1.0.0', target: 'linux-x64', node: '24.22.0', externals: selfTestExternals(FAKE_LINUX),
       packages: ['@parcel/watcher-linux-x64-glibc', '@vscode/ripgrep-linux-x64', 'node-pty', 'zod'],
     });
   });
 
   it('keeps the Windows prebuild without its debug symbols, and adds the .cmd launcher and the damocles command\'s sh forms for Git Bash', () => {
-    const entries = packageEntries({ spec: FAKE_WINDOWS, target: 'win32-x64', version: '1.0.0', nodeVersion: '24.22.0', distDir: dist(), nodeModules: nodeModules(), root: repo(), portable: ['node-pty'], externals: [] }) as Entry[];
+    const entries = packageEntries({ spec: FAKE_WINDOWS, distDir: dist(), nodeModules: nodeModules(), root: repo(), portable: ['node-pty'] }) as Entry[];
     const paths = entries.map((entry) => entry.path);
     expect(paths.filter((path) => path.startsWith('node_modules/node-pty/prebuilds/'))).toEqual(['node_modules/node-pty/prebuilds/win32-x64/conpty.node']);
     expect(paths).toContain('bin/damocles-server.cmd');
@@ -149,6 +150,89 @@ describe('the package file list', () => {
     const top = 'node-v24.22.0-linux-x64';
     const archive = tarGz([{ path: `${top}/bin/node`, mode: 0o755, data: Buffer.from('#!/bin/sh\n'.padEnd(80)) }, { path: `${top}/LICENSE`, mode: 0o644, data: Buffer.from('MIT') }]);
     expect(() => nodeEntries(FAKE_LINUX, `${top}.tar.gz`, archive)).toThrow(`${top}.tar.gz ${top}/bin/node: not an ELF file`);
+  });
+});
+
+describe('the server version', () => {
+  const info = { name: 'damocles-server', version: '1.0.0', target: 'linux-x64', node: '24.22.0', externals: ['zod'], packages: ['zod'] };
+  const entries: Entry[] = [
+    { path: 'bin/damocles-server', mode: 0o755, data: Buffer.from('#!/bin/sh\n') },
+    { path: 'dist/daemon.js', mode: 0o644, data: Buffer.from('daemon') },
+    { path: 'package.json', mode: 0o644, data: Buffer.from('{"version":"1.0.0"}') },
+  ];
+  const build = packageBuild(entries, info) as string;
+
+  it('is 12 lowercase hex digits, the same whatever order the entries come in', () => {
+    expect(build).toMatch(/^[0-9a-f]{12}$/);
+    expect(packageBuild([...entries].reverse(), info)).toBe(build);
+  });
+
+  it('changes with one byte, one mode, one path or one field of server-package.json', () => {
+    const changed = (at: number, entry: Partial<Entry>) => entries.map((each, i) => (i === at ? { ...each, ...entry } : each));
+    expect(packageBuild(changed(1, { data: Buffer.from('daemoN') }), info)).not.toBe(build);
+    expect(packageBuild(changed(1, { mode: 0o755 }), info)).not.toBe(build);
+    expect(packageBuild(changed(1, { path: 'dist/daemon2.js' }), info)).not.toBe(build);
+    expect(packageBuild(entries, { ...info, node: '24.22.1' })).not.toBe(build);
+  });
+
+  it('leaves server-package.json\'s own entry out, which carries the result', () => {
+    expect(packageBuild([...entries, { path: 'server-package.json', mode: 0o644, data: Buffer.from('{"serverVersion":"1.0.0+0"}') }], info)).toBe(build);
+  });
+
+  it('refuses a package.json version holding a +, and a server version the handshake would refuse', () => {
+    expect(serverVersionOf('1.0.0', build)).toBe(`1.0.0+${build}`);
+    expect(() => serverVersionOf('1.0.0+local', build)).toThrow('holds a +');
+    expect(() => serverVersionOf(`1.0.0-${'a'.repeat(50)}`, build)).toThrow('is not 1 to 64 letters');
+  });
+
+  it('accepts exactly the server versions the handshake accepts', () => {
+    const accepted = (version: string, suffix: string): boolean => {
+      try {
+        serverVersionOf(version, suffix);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    // 64 and 65 characters, then characters only one pattern might allow
+    for (const [version, suffix] of [['1'.repeat(51), build], ['1'.repeat(52), build], ['1.0.0', 'a_b'], ['1.0.0', 'a+b'], ['1.0.0-rc.1', 'A-Z.0'], ['1.0.0', 'é'], ['1.0.0', 'a b']] as const) {
+      expect(accepted(version, suffix), `${version}+${suffix}`).toBe(isVersionText(`${version}+${suffix}`));
+    }
+  });
+});
+
+describe('the manifest', () => {
+  const VERSION = '1.0.0';
+  const serverVersion = (target: string) => `${VERSION}+${createHash('sha256').update(target).digest('hex').slice(0, 12)}`;
+  const packages = (fields: (target: string) => Record<string, unknown>, targets = ['linux-x64', 'win32-x64']) => {
+    const dir = mkdtempSync(join(tmpdir(), 'build-server-manifest-'));
+    scratch.push(dir);
+    for (const target of targets) {
+      const entries = [{ path: 'server-package.json', mode: 0o644, data: Buffer.from(JSON.stringify({ name: 'damocles-server', version: VERSION, serverVersion: serverVersion(target), target, ...fields(target) })) }];
+      writeFileSync(join(dir, serverArtifact(target, VERSION)), target.startsWith('win32') ? zip(entries) : tarGz(entries));
+    }
+    return dir;
+  };
+
+  it('names each archive\'s server version from its server-package.json, published only when asked, as --write-manifest does', () => {
+    const dir = packages(() => ({}));
+    const manifest = serverManifest(dir, VERSION, ['linux-x64', 'win32-x64'], { published: false });
+    expect(manifest.published).toBe(false);
+    expect(manifest.packages['linux-x64']).toMatchObject({ file: serverArtifact('linux-x64', VERSION), serverVersion: serverVersion('linux-x64') });
+    expect(manifest.packages['win32-x64']).toMatchObject({ file: serverArtifact('win32-x64', VERSION), serverVersion: serverVersion('win32-x64') });
+    expect(serverManifest(dir, VERSION, ['linux-x64'], { published: true }).published).toBe(true);
+    const source = readFileSync(join(__dirname, '..', 'build-server.mjs'), 'utf8');
+    expect(source.match(/writeManifest\([^)]*\);/g)).toEqual(['writeManifest(manifestDir, version, targets, true);', 'writeManifest(OUT_DIR, version, built, false);']);
+  });
+
+  it('refuses an archive of another version or target, or without a server version', () => {
+    expect(() => serverManifest(packages((target) => ({ target: target === 'linux-x64' ? 'linux-arm64' : target })), VERSION, ['linux-x64'], { published: true })).toThrow('for linux-arm64');
+    expect(() => serverManifest(packages(() => ({ version: '0.9.0' })), VERSION, ['linux-x64'], { published: true })).toThrow('package of 0.9.0');
+    expect(() => serverManifest(packages(() => ({ serverVersion: undefined })), VERSION, ['linux-x64'], { published: true })).toThrow('build it again with npm run build:server -- --target linux-x64, or delete it');
+  });
+
+  it('names the musl node-pty option in an Alpine target\'s rebuild hint', () => {
+    expect(() => serverManifest(packages(() => ({ serverVersion: undefined }), ['alpine-x64']), VERSION, ['alpine-x64'], { published: true })).toThrow('--target alpine-x64 --node-pty-binary <pty.node compiled against musl>, or delete it');
   });
 });
 

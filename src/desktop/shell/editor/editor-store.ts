@@ -12,6 +12,7 @@ import {
   type EditorFormatReply,
   type EditorSaveResult,
   type EditorSelectionRange,
+  type EditorTextChange,
   type SearchQuery,
   type SearchRange,
   type ShellDocumentContent,
@@ -63,6 +64,8 @@ interface TextBuffer {
   version: number;
   // the seq of the last edit sent; main echoes the last one it applied as the content's editSeq
   seq: number;
+  // Monaco's changes since the last edit sent, in Monaco's order; set while throttle is
+  unsent: EditorTextChange[];
   throttle: ReturnType<typeof setTimeout> | undefined;
   lastSent: number;
   autoSave: ReturnType<typeof setTimeout> | undefined;
@@ -74,7 +77,7 @@ type SaveRun = () => Promise<EditorSaveResult | undefined>;
 
 /**
  * The editor pane's state: main's tab list and settings, rendered as they come (main owns tabs, dirty and conflict), plus
- * the Monaco model of each open text document, which holds the unsaved text and reports it to main.
+ * the Monaco model of each open text document, which holds the unsaved text and reports its changes to main.
  */
 export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promise<ShellMonacoModule> = () => import('./monaco')) {
   const state = shallowRef<ShellEditorState | null>(null);
@@ -228,7 +231,7 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
     const created = monacoApi.editor.createModel(content.text, content.languageId, modelUri(module, content.documentId));
     created.setEOL(content.eol === '\r\n' ? monacoApi.editor.EndOfLineSequence.CRLF : monacoApi.editor.EndOfLineSequence.LF);
     applyIndentation(created);
-    const buffer: TextBuffer = { model: created, version: content.version, seq: content.editSeq, throttle: undefined, lastSent: 0, autoSave: undefined, saved: undefined };
+    const buffer: TextBuffer = { model: created, version: content.version, seq: content.editSeq, unsent: [], throttle: undefined, lastSent: 0, autoSave: undefined, saved: undefined };
     buffers.set(content.documentId, buffer);
     listenForEdits(content.documentId, buffer);
     modelRevision.value++;
@@ -237,8 +240,10 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
 
   function listenForEdits(documentId: string, buffer: TextBuffer): void {
     const own = buffer.model;
-    own.onDidChangeContent(() => {
-      if (!applyingRemote && buffer.model === own) onLocalEdit(documentId, buffer);
+    own.onDidChangeContent((event) => {
+      if (applyingRemote || buffer.model !== own) return;
+      for (const change of event.changes) buffer.unsent.push({ offset: change.rangeOffset, length: change.rangeLength, text: change.text });
+      onLocalEdit(documentId, buffer);
     });
   }
 
@@ -291,11 +296,24 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
     if (current.detectIndentation) target.detectIndentation(true, current.tabSize);
   }
 
-  function sendEdit(documentId: string, buffer: TextBuffer, overReload = false): void {
+  function sendEdit(documentId: string, buffer: TextBuffer): void {
+    const changes = takeUnsent(buffer);
+    api.reportEdit({ documentId, version: buffer.version, seq: ++buffer.seq, changes });
+  }
+
+  // The whole buffer: main's answer to a report it could not apply, or keystrokes typed over text main replaced (overReload).
+  function sendText(documentId: string, buffer: TextBuffer, overReload: boolean): void {
+    takeUnsent(buffer);
+    api.reportEdit({ documentId, version: buffer.version, seq: ++buffer.seq, text: buffer.model.getValue(), overReload });
+  }
+
+  function takeUnsent(buffer: TextBuffer): EditorTextChange[] {
     clearTimeout(buffer.throttle);
     buffer.throttle = undefined;
     buffer.lastSent = Date.now();
-    api.reportEdit({ documentId, version: buffer.version, seq: ++buffer.seq, text: buffer.model.getValue(), overReload });
+    const changes = buffer.unsent;
+    buffer.unsent = [];
+    return changes;
   }
 
   // Leading and trailing: the first keystroke after a pause tells main at once that the buffer is dirty, so main never
@@ -344,7 +362,7 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
     setContent(content);
     if (unseen) {
       // Keystrokes main had not seen when it replaced the text stay in the buffer; main keeps them and flags the conflict.
-      sendEdit(documentId, buffer, true);
+      sendText(documentId, buffer, true);
       return;
     }
     if (current === content.text) return;
@@ -847,6 +865,10 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
     stops.push(api.onDocumentChanged(applyChange));
     stops.push(api.onEditorCommand((command) => void runCommand(command)));
     stops.push(api.onEditorFlush((request) => void flushFor(request)));
+    stops.push(api.onEditorResync((documentId) => {
+      const buffer = buffers.get(documentId);
+      if (buffer) sendText(documentId, buffer, false);
+    }));
     stops.push(api.onEditorFocus(requestFocus));
     stops.push(api.onSearchEditorHighlights(({ documentId, version, ranges }) => {
       searchHighlights.value = new Map(searchHighlights.value).set(documentId, { version, ranges });

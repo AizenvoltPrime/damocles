@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { PI_AGENT_DIR } from '../agent-dir';
+import { sessionsRootIn } from './session-file-path';
 
 /**
  * The Damocles-owned pi session directory for a workspace.
@@ -13,9 +14,13 @@ import { PI_AGENT_DIR } from '../agent-dir';
  */
 export function piSessionDir(cwd: string, agentDir: string = PI_AGENT_DIR): string {
   const resolvedCwd = path.resolve(cwd);
-  const resolvedAgentDir = path.resolve(agentDir);
   const safePath = `--${resolvedCwd.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')}--`;
-  return path.join(resolvedAgentDir, 'sessions', safePath);
+  return path.join(piSessionsRoot(agentDir), safePath);
+}
+
+/** The folder every pi session dir lies directly in. */
+export function piSessionsRoot(agentDir: string = PI_AGENT_DIR): string {
+  return sessionsRootIn(agentDir);
 }
 
 /**

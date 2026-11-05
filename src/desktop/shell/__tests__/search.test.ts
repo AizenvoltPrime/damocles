@@ -11,6 +11,7 @@ import { comparePaths } from '../../../shared/text-search';
 import { searchResultLanguage } from '../editor/search-result-language';
 import { ariaKeyshortcuts, commandsModel, keycaps } from '../overlay/quick-pick';
 import { EDITOR_STATE, SEARCH_SETTINGS, fakeShellApi } from './fakes';
+import { applyTextChanges } from '../../main/documents/text-changes';
 
 const VIEW: SearchViewState = { ...DEFAULT_SEARCH_VIEW, pattern: 'foo' };
 const QUERY: SearchQuery = { pattern: 'foo', isRegex: false, matchCase: false, wholeWord: false, include: '', exclude: '', useExcludeSettingsAndIgnoreFiles: true, onlyOpenEditors: false };
@@ -456,6 +457,13 @@ async function editorSetup(tabs: ShellEditorTab[], texts: Record<string, string>
   return { api, store };
 }
 
+// main's copy of the buffer: the start text with every edit the store reported applied in order
+const mirrored = (api: ReturnType<typeof fakeShellApi>, start: string): string | undefined =>
+  vi.mocked(api.reportEdit).mock.calls.reduce<string | undefined>((text, [edit]) => {
+    if (text === undefined) return undefined;
+    return 'changes' in edit ? applyTextChanges(text, edit.changes, Number.MAX_SAFE_INTEGER) : edit.text;
+  }, start);
+
 // Monaco keeps models by URI, so each test's store disposes its models before the next one opens the same documents.
 const editorStores: EditorStore[] = [];
 afterEach(() => {
@@ -478,9 +486,29 @@ describe('editor store search', () => {
     expect(model.getValue()).toBe('  let bar_foo = 1;\nlet bar_foo2 = foo;');
     // The buffer reports the replace like a keystroke, so main marks it dirty.
     store.flush('doc-a.ts');
-    expect(api.reportEdit).toHaveBeenLastCalledWith(expect.objectContaining({ documentId: 'doc-a.ts', text: model.getValue() }));
+    expect(mirrored(api, 'let foo = 1;\nlet foo2 = foo;')).toBe(model.getValue());
     model.undo();
     expect(model.getValue()).toBe(typed);
+  }, 60_000);
+
+  it('reports Monaco\'s changes so main, applying them in order, holds the buffer through replace all, a pasted line ending, undo and redo', async () => {
+    const initial = 'foo foo\nbar foo\n';
+    const { api, store } = await editorSetup([codeTab('mirror.ts')], { 'doc-mirror.ts': initial });
+    const model = await store.model('doc-mirror.ts');
+    const ranges = [1, 5].map((column) => ({ startLine: 1, startColumn: column, endLine: 1, endColumn: column + 3 })).concat([{ startLine: 2, startColumn: 5, endLine: 2, endColumn: 8 }]);
+    await store.replaceInBuffer('doc-mirror.ts', ranges.map((range) => ({ range })), 'quux', QUERY, false);
+    model.pushEditOperations([], [{ range: { startLineNumber: 2, startColumn: 1, endLineNumber: 2, endColumn: 1 }, text: 'x\r\ny' }], () => null);
+    model.pushEditOperations([], [{ range: { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 5 }, text: '' }], () => null);
+    store.flush('doc-mirror.ts');
+    expect(mirrored(api, initial)).toBe(model.getValue());
+    model.undo();
+    model.undo();
+    store.flush('doc-mirror.ts');
+    expect(mirrored(api, initial)).toBe(model.getValue());
+    model.redo();
+    store.flush('doc-mirror.ts');
+    expect(mirrored(api, initial)).toBe(model.getValue());
+    expect(vi.mocked(api.reportEdit).mock.calls.every(([edit]) => 'changes' in edit)).toBe(true);
   }, 60_000);
 
   it('replaces with Preserve Case through the shared expansion, as one edit', async () => {

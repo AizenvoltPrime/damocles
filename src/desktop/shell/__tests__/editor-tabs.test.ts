@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import type { ScmDecorations } from '../../preload/scm-channels';
-import type { ShellEditorTab, ShellProject } from '../../preload/shell-channels';
+import type { ShellEditorTab, ShellHost, ShellProject } from '../../preload/shell-channels';
 import ConflictBar from '../editor/ConflictBar.vue';
 import EditorTabs from '../editor/EditorTabs.vue';
 import { tabFileName } from '../editor/editor-place';
@@ -36,7 +36,7 @@ async function mountTabs(tabs: ShellEditorTab[], decorations: ScmDecorations['fi
   const scm = createScmStore(api.scm);
   await scm.start();
   api.scm.pushDecorations({ projectKey: 'home', files: decorations });
-  const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W', projects }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm } }, attachTo: document.body });
+  const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W', projects, hosts: [] }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm } }, attachTo: document.body });
   mounted.push(wrapper);
   await flushPromises();
   return wrapper;
@@ -62,8 +62,24 @@ describe('a deleted file\'s tab', () => {
   });
 });
 
+describe('same-named tabs', () => {
+  it('title each tab by its file name, tell same-named ones apart with a dimmed description, and name another host in the tooltip', async () => {
+    const remoteLog: ShellEditorTab = { id: 'r', kind: 'code', documentId: 'd-r', title: 'x.jsonl', host: 'ssh+h1', displayPath: '/home/me/.damocles/x.jsonl', dirty: false, readOnly: false, conflict: false };
+    const localLog: ShellEditorTab = { id: 'l', kind: 'code', documentId: 'd-l', title: 'x.jsonl', displayPath: 'C:\\Users\\me\\x.jsonl', dirty: false, readOnly: false, conflict: false };
+    const wrapper = await mountTabs([remoteLog, localLog, codeTab('o', 'other.ts')]);
+    await wrapper.setProps({ hosts: [{ authorityKey: 'ssh+h1', name: 'prod-1' } as unknown as ShellHost] });
+    const [remote, local, other] = wrapper.findAll('[data-editor-tab]');
+    expect(remote!.get('[data-testid="editor-tab-title"]').text()).toBe('x.jsonl');
+    expect(remote!.get('[data-testid="editor-tab-description"]').text()).toBe('prod-1');
+    expect(remote!.attributes('title')).toBe('prod-1: /home/me/.damocles/x.jsonl');
+    expect(local!.get('[data-testid="editor-tab-description"]').text()).toBe('This computer');
+    expect(local!.attributes('title')).toBe('C:\\Users\\me\\x.jsonl');
+    expect(other!.find('[data-testid="editor-tab-description"]').exists()).toBe(false);
+  });
+});
+
 describe('a remote file saved while its host is away', () => {
-  const remote = (name: string): ShellProject => ({ key: 'ssh+h1|/srv/app', name: 'app', authority: { name } } as unknown as ShellProject);
+  const remote = (name: string): ShellProject => ({ key: 'ssh+h1|/srv/app', name: 'app', authority: { key: 'ssh+h1', name } } as unknown as ShellProject);
   const pending = codeTab('p', 'notes.md', { projectKey: 'ssh+h1|/srv/app', relativePath: 'notes.md', pendingUpload: true });
   const uploadedTab = codeTab('p', 'notes.md', { projectKey: 'ssh+h1|/srv/app', relativePath: 'notes.md' });
 
@@ -85,7 +101,7 @@ describe('a remote file saved while its host is away', () => {
       await store.start();
       const scm = createScmStore(api.scm);
       await scm.start();
-      const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W', projects: [remote('prod-1')] }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm } }, attachTo: document.body });
+      const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W', projects: [remote('prod-1')], hosts: [] }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm } }, attachTo: document.body });
       await flushPromises();
       api.pushEditorState({ ...EDITOR_STATE, tabs: [uploadedTab], activeTabId: pending.id });
       api.pushEditorState({ ...EDITOR_STATE, tabs: [pending], activeTabId: pending.id });
@@ -108,7 +124,7 @@ describe('a remote file saved while its host is away', () => {
     await store.start();
     const scm = createScmStore(api.scm);
     await scm.start();
-    const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W', projects: [remote('prod-1')] }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm } }, attachTo: document.body });
+    const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W', projects: [remote('prod-1')], hosts: [] }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm } }, attachTo: document.body });
     await flushPromises();
     api.pushEditorState({ ...EDITOR_STATE, tabs: [uploadedTab], activeTabId: pending.id });
     await flushPromises();

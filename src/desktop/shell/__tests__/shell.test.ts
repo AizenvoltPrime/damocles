@@ -307,6 +307,33 @@ describe('App and title bar', () => {
     expect(wrapper.get('[data-testid="breadcrumb-chat"]').text()).toBe('New chat');
   });
 
+  it("names no chat in the title bar or the focus overlay until main has read the chat's title, then New chat for none", async () => {
+    const TAB: ShellEditorTab = { id: 't1', kind: 'code', documentId: 'd1', title: 'a.ts', projectKey: 'p1', relativePath: 'a.ts', displayPath: '/w/alpha/a.ts', dirty: false, readOnly: false, conflict: false };
+    const { title: _title, ...unread } = STATE.selectedChat!;
+    const api = fakeShellApi([], {
+      getState: vi.fn(async () => ({ ...STATE, selectedChat: unread })),
+      getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs: [TAB], activeTabId: TAB.id })),
+    });
+    const wrapper = track(mount(App, { props: { api }, global: { plugins: [shellI18n], stubs: { CodeEditor: true, Breadcrumbs: true } }, attachTo: document.body }));
+    await flushPromises();
+    await wrapper.get('[data-testid="editor-focus-toggle"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[data-testid="breadcrumb-chat"]').exists()).toBe(false);
+    expect(wrapper.findAll('[data-testid="breadcrumb"] svg')).toHaveLength(0);
+    expect(wrapper.get('[data-testid="focus-overlay-title"]').text()).toBe('');
+
+    api.push({ ...STATE, selectedChat: { ...unread, title: '' } });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="breadcrumb-chat"]').text()).toBe('New chat');
+    expect(wrapper.findAll('[data-testid="breadcrumb"] svg')).toHaveLength(1);
+    expect(wrapper.get('[data-testid="focus-overlay-title"]').text()).toBe('New chat');
+
+    api.push(STATE);
+    await flushPromises();
+    expect(wrapper.get('[data-testid="breadcrumb-chat"]').text()).toBe('Fix login');
+    expect(wrapper.get('[data-testid="focus-overlay-title"]').text()).toBe('Fix login');
+  });
+
   it('shows the home folder when the selected project key is not an open project', async () => {
     const api = fakeShellApi([], { getState: vi.fn(async () => ({ ...STATE, projects: [], selected: { projectKey: 'home' } })) });
     const wrapper = mountApp(api);
@@ -549,13 +576,13 @@ describe('projects section', () => {
     expect(api.openConnect).not.toHaveBeenCalled();
   });
 
-  it('puts Connect to host before the add button, opening the Connect dialog on its host list', async () => {
+  it('puts Connect to host after the view switch and before the add button, opening the Connect dialog on its host list', async () => {
     const api = fakeShellApi();
     const wrapper = mountProjects(api, 'p1', [PROD]);
     const actions = wrapper.findAll('[data-testid="sidebar-section-actions"] button');
-    expect(actions.map((button) => button.attributes('data-testid'))).toEqual(['connect-host', 'add-project']);
-    expect(actions[0]!.attributes()).toMatchObject({ 'aria-label': 'Connect to host', title: 'Connect to host' });
-    await actions[0]!.trigger('click');
+    expect(actions.map((button) => button.attributes('data-testid'))).toEqual(['projects-view', 'connect-host', 'add-project']);
+    expect(actions[1]!.attributes()).toMatchObject({ 'aria-label': 'Connect to host', title: 'Connect to host' });
+    await actions[1]!.trigger('click');
     expect(api.openConnect).toHaveBeenCalledWith();
     expect(api.overlayRequests).toEqual([]);
   });

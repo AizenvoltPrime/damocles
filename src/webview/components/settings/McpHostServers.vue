@@ -9,7 +9,7 @@ import { useSettingsStore } from '@/stores/useSettingsStore';
 import SettingsRow from './SettingsRow.vue';
 import SettingButton from './controls/SettingButton.vue';
 import { MCP_HOST_SERVERS_ROW } from './settings-rows';
-import type { SettingsMachineHost } from './settings-view';
+import { closeWhenSettingsBusy, type SettingsMachineHost } from './settings-view';
 
 // A remote chat's host tab: the servers of the host's own ~/.damocles/mcp.json, which its core edits only from here.
 const props = defineProps<{ host: SettingsMachineHost }>();
@@ -21,6 +21,7 @@ const { mcpServers, mcpConfigErrors, mcpLocalUnignored, mcpToolExposureScopes, m
 const writes = useMcpPanelWrites();
 
 const open = ref(false);
+closeWhenSettingsBusy(open);
 // the row names the host's ~/.damocles/mcp.json, so its Codex, Claude and pi imports are not counted
 const machineCount = computed(() => mcpServers.value.filter((server) => server.placement === 'host' && server.source === 'damocles').length);
 

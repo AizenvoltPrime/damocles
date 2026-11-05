@@ -69,6 +69,11 @@ export function isAbsoluteOn(location: { readonly os: NodeJS.Platform }, target:
   return location.os === 'win32' ? /^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/])/.test(target) : path.posix.isAbsolute(target);
 }
 
+/** Whether a win32 path names a network share or a device (`\\server\share`, `\\?\`, `\\.\`): it starts with two separators. */
+export function isUncOrDevicePath(target: string): boolean {
+  return /^[\\/]{2}/.test(target);
+}
+
 /** Whether target is folder or lies below it, in the project's own path flavor; both must be absolute there. */
 export function isInsideFolder(location: { readonly os: NodeJS.Platform }, folder: string, target: string): boolean {
   if (!isAbsoluteOn(location, folder) || !isAbsoluteOn(location, target)) return false;

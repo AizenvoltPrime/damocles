@@ -57,6 +57,9 @@ describe("VoiceRuntimeInstaller.installAll platform gate", () => {
     installFakePlatform();
     tmp = await mkdtemp(join(tmpdir(), "damocles-unsupported-"));
     root = join(tmp, "voice");
+    // The install checks this file before it changes anything.
+    await mkdir(join(tmp, "python", "damocles_voice_sidecar"), { recursive: true });
+    await writeFile(join(tmp, "python", "damocles_voice_sidecar", "requirements.txt"), "");
     calls.detectGpu.mockResolvedValue({ kind: "cpu", reason: "no-smi" });
     calls.checkDiskSpace.mockResolvedValue({ ok: true, freeBytes: 1, requiredBytes: 1 });
     calls.ensureCxxToolchain.mockResolvedValue(null);

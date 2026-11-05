@@ -12,6 +12,9 @@ import { createHostServices, NO_USER_RELAYS, type HostServices, type HostTrust, 
 import type { PageSpec } from '../../../../shared/panel-html';
 import { folderKey } from '../../../../core/workspace-folders/folder-key';
 import { hostExtras } from './host-deps';
+import { createDesktopEditorService, type ChatTabMessenger } from '../../platform/editor-service';
+import type { EditorPane } from '../../editor-pane';
+import { englishText } from '../../../../shared/localized-text';
 
 interface Harness {
   readonly main: FakePlatform;
@@ -54,10 +57,12 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function connect(options: { readonly trusted?: readonly string[]; readonly globalState?: Record<string, unknown>; readonly ui?: Partial<HostUi>; readonly language?: 'en' | 'el'; readonly user?: Partial<HostUser> } = {}): Harness {
+// editor: main's editor service in place of the fake's, built before the core's init reads it
+function connect(options: { readonly trusted?: readonly string[]; readonly globalState?: Record<string, unknown>; readonly ui?: Partial<HostUi>; readonly language?: 'en' | 'el'; readonly user?: Partial<HostUser>; readonly editor?: (main: FakePlatform) => Partial<FakePlatform['editor']> } = {}): Harness {
   let language = options.language ?? 'en';
   const languageListeners = new Set<() => void>();
   const main = createFakePlatform({ chatBrowserPane: true, secrets: { stored: 'one' }, folders: [{ fsPath: path.resolve('/projects/a'), name: 'a' }] });
+  if (options.editor) Object.assign(main.editor, options.editor(main));
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'core-round-trip-'));
   dirs.push(userData);
   if (options.globalState) {
@@ -281,6 +286,28 @@ describe('mirrored services', () => {
     main.editor.setActiveContext(context);
     expect(core.editor.getActiveContext()).toEqual(context);
     expect(changed).toHaveBeenCalledWith(context);
+  });
+
+  it('a local core is told no file is active while a host\'s tab is, at its init and on every change', () => {
+    const host = { filePath: '/home/me/.bashrc', selection: { startLine: 1, endLine: 1, text: 'export TOKEN=x' } };
+    const local = { filePath: path.resolve('/projects/a/x.ts'), selection: undefined };
+    const empty = { filePath: undefined, selection: undefined };
+    const { main, core } = connect({
+      editor: (fake) => {
+        const pane = { activeContext: fake.editor.getActiveContext, activeAuthority: fake.editor.activeAuthority, onDidChangeActiveContext: fake.editor.onDidChangeActiveContext } as unknown as EditorPane;
+        fake.editor.setActiveContext(host, undefined, 'loopback');
+        const filtered = createDesktopEditorService({} as ChatTabMessenger, () => pane, () => undefined, () => Promise.resolve(), englishText);
+        return { getActiveContext: filtered.getActiveContext, onDidChangeActiveContext: filtered.onDidChangeActiveContext };
+      },
+    });
+    expect(core.editor.getActiveContext()).toEqual(empty);
+    const changed = vi.fn();
+    core.editor.onDidChangeActiveContext(changed);
+    main.editor.setActiveContext(local);
+    expect(core.editor.getActiveContext()).toEqual(local);
+    main.editor.setActiveContext(host, 'loopback|/srv/app');
+    expect(core.editor.getActiveContext()).toEqual(empty);
+    expect(changed.mock.calls).toEqual([[local], [empty]]);
   });
 });
 

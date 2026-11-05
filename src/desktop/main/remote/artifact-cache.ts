@@ -1,9 +1,10 @@
 // The server packages this app installs on targets: <userData>/server-cache/<version>/, this app version's only, filled on
-// demand from the release and accepted only with the manifest's SHA-256 and size. An unpackaged app reads
+// demand from the release for a published build only and accepted only with the manifest's SHA-256 and size. An unpackaged app reads
 // <repo>/dist/server-packages/.
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream, promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import { RELEASES_URL } from '../updater';
 import type { ServerManifest, ServerPackage, ServerTarget } from './server-manifest-format';
 
 // a download that receives nothing for this long is abandoned, so the next ask starts it again
@@ -14,8 +15,8 @@ export interface ArtifactCacheOptions {
   // <userData>/server-cache
   readonly cacheRoot: string;
   readonly manifest: ServerManifest;
-  // updater.ts RELEASES_URL; an asset is <releasesUrl>/download/v<version>/<file>
-  readonly releasesUrl: string;
+  // updater.ts RELEASES_URL; an asset is <releasesUrl>/download/v<version>/<file>; absent for an unpublished build, which never downloads
+  readonly releasesUrl?: string;
   // <repo>/dist/server-packages in an unpackaged app, which never downloads
   readonly devDir?: string;
   readonly fetch: (url: string, init: { readonly signal: AbortSignal }) => Promise<Response>;
@@ -52,6 +53,16 @@ export function releaseAssetUrl(releasesUrl: string, version: string, file: stri
   return `${releasesUrl}/download/v${encodeURIComponent(version)}/${encodeURIComponent(file)}`;
 }
 
+/** The release base hosts download `manifest`'s packages from: the e2e hook's, else the release for a published build only. */
+export function releasesUrlOf(manifest: Pick<ServerManifest, 'published'>, e2eReleasesUrl: string | undefined): string | undefined {
+  return e2eReleasesUrl ?? (manifest.published ? RELEASES_URL : undefined);
+}
+
+/** packagePath's refusal for an unpublished build whose cache lacks the package, which no download can fill. */
+export class UnpublishedPackageMissingError extends Error {
+  override readonly name = 'UnpublishedPackageMissingError';
+}
+
 export function createArtifactCache(options: ArtifactCacheOptions): ArtifactCache {
   const { manifest, log } = options;
   const idleTimeoutMs = options.idleTimeoutMs ?? DOWNLOAD_IDLE_TIMEOUT_MS;
@@ -74,8 +85,8 @@ export function createArtifactCache(options: ArtifactCacheOptions): ArtifactCach
   let pruned: Promise<void> | undefined;
 
   // streams the asset to a partial file, refusing more bytes than the manifest names, then checks it and renames it in place
-  const download = async (pkg: ServerPackage, dest: string): Promise<void> => {
-    const url = releaseAssetUrl(options.releasesUrl, manifest.version, pkg.file);
+  const download = async (releasesUrl: string, pkg: ServerPackage, dest: string): Promise<void> => {
+    const url = releaseAssetUrl(releasesUrl, manifest.version, pkg.file);
     log(`[server-cache] downloading ${url}`);
     const controller = new AbortController();
     let idle: NodeJS.Timeout | undefined;
@@ -121,7 +132,9 @@ export function createArtifactCache(options: ArtifactCacheOptions): ArtifactCach
     if (!pkg) throw new Error(`This build carries no server package for ${target}`);
     if (options.devDir !== undefined) {
       const file = path.join(options.devDir, pkg.file);
-      if (!matches(await digestOf(file), pkg)) throw new Error(`${file} is missing or differs from the dev manifest; run npm run build:server -- --target ${target}`);
+      // an Alpine package also needs node-pty compiled against musl, which build:server refuses to build without
+      const ptyOption = target.startsWith('alpine-') ? ' --node-pty-binary <pty.node compiled against musl>' : '';
+      if (!matches(await digestOf(file), pkg)) throw new Error(`${file} is missing or differs from the dev manifest; run npm run build:server -- --target ${target}${ptyOption}`);
       return file;
     }
     pruned ??= prune();
@@ -129,9 +142,10 @@ export function createArtifactCache(options: ArtifactCacheOptions): ArtifactCach
     const dir = path.join(options.cacheRoot, manifest.version);
     const dest = path.join(dir, pkg.file);
     if (matches(await digestOf(dest), pkg)) return dest;
+    if (options.releasesUrl === undefined) throw new UnpublishedPackageMissingError(`${dest} is missing or differs from this build's manifest, and an unpublished build has no release to download it from`);
     await fs.rm(dest, { force: true });
     await fs.mkdir(dir, { recursive: true });
-    await download(pkg, dest);
+    await download(options.releasesUrl, pkg, dest);
     return dest;
   };
 

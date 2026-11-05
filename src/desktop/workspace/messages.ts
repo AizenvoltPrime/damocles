@@ -11,9 +11,10 @@ import type { FileEntry } from '../preload/shell-channels';
 import { MAX_EDITOR_TEXT_CHARS } from '../preload/shell-channels';
 import { MAX_KEPT_SHELL_SEQUENCE_CHARS, MAX_TERMINAL_SCREEN_CHARS, TERMINAL_ICONS, type TerminalLinkKind } from '../preload/terminal-channels';
 import { isTerminalId, parseHostMessage, parseHostRequest, parseTerminalView, type HostMessage, type HostRequest, type TerminalView } from '../pty-host/protocol';
-import type { BrowseResult, DeleteResult, EntryResult, OutsideResolution, OutsideRule, WatchEvent } from './file-system';
+import { OUTSIDE_LISTING_MAX_ENTRIES, type BrowseResult, type DeleteResult, type EntryResult, type OutsideListing, type OutsideResolution, type WatchEvent } from './file-system';
 import type { FormatResolution } from './format/formatter';
 import type { HostOutcome, HostRoot } from './format/formatter-hosts';
+import { MAX_NAME_PREFIX_LENGTH } from './outside-listing';
 import type { RgEvent, SearchRunEnd } from './search/search-runner';
 import type { ProjectFileLocation } from './search/types';
 import type { ShellInjectionRequest } from './terminal/terminal-backend';
@@ -37,10 +38,10 @@ export type WireConfinedEntry =
   | { readonly ok: true; readonly path: string; readonly folder: boolean; readonly identity: WireIdentity }
   | { readonly ok: false; readonly reason: 'outside' | 'missing' | 'failed' };
 
-// FileBytes with its bytes as the Uint8Array the codec decodes; the client wraps it in a Buffer.
+// FileBytes with its bytes as the Uint8Array the codec decodes; the client wraps it in a Buffer. sessionFile: feature sessionFiles.
 export type WireFileBytes =
-  | { readonly kind: 'bytes'; readonly bytes: Uint8Array; readonly mtimeMs: number; readonly dev: number; readonly ino: number }
-  | { readonly kind: 'missing' }
+  | { readonly kind: 'bytes'; readonly bytes: Uint8Array; readonly mtimeMs: number; readonly dev: number; readonly ino: number; readonly sessionFile?: true }
+  | { readonly kind: 'missing'; readonly sessionFile?: true }
   | { readonly kind: 'tooLarge'; readonly bytes: number }
   | { readonly kind: 'notAFile'; readonly folder: boolean }
   | { readonly kind: 'unreadable'; readonly error: string; readonly code?: string };
@@ -95,16 +96,18 @@ export interface WorkspaceRequests {
   'files.folderKey': Call<{ readonly path: string }, string>;
   'files.read': Call<{ readonly path: string; readonly limitBytes?: number }, WireFileBytes>;
   'files.readText': Call<{ readonly path: string }, string | undefined>;
-  // fails with WriteRefusedError by name, with its refusal
+  // fails with WriteRefusedError by name, with its refusal; sessionFile only from a daemon listing sessionFiles
   'files.writeInPlace': Call<{ readonly project: Project; readonly location: ProjectFileLocation; readonly bytes: Uint8Array }, number>;
   // the host's own ~/.damocles/settings.json, which the host names itself
   'files.readHostSettings': Call<object, WireHostSettingsRead>;
   'files.writeHostSettings': Call<{ readonly bytes: Uint8Array }, number>;
-  // a file outside every project, checked by the host's own rules and damoclesHome (feature files.outside); a write fails with
-  // WriteRefusedError by name, with its refusal
-  'files.resolveOutside': Call<{ readonly target: string } & OutsideRule, OutsideResolution>;
-  'files.readOutside': Call<{ readonly path: string } & OutsideRule, WireFileBytes | { readonly kind: 'outside' }>;
-  'files.writeOutside': Call<{ readonly path: string; readonly bytes: Uint8Array } & OutsideRule, number>;
+  // a file outside every project, checked by the host's own rules (feature files.outside); a write fails with
+  // WriteRefusedError by name, with its refusal, sessionFile as files.writeInPlace
+  'files.resolveOutside': Call<{ readonly target: string }, OutsideResolution>;
+  'files.readOutside': Call<{ readonly path: string; readonly limitBytes?: number }, WireFileBytes | { readonly kind: 'outside' }>;
+  'files.writeOutside': Call<{ readonly path: string; readonly bytes: Uint8Array }, number>;
+  // a typed folder outside every project, its entries whose name starts with prefix (feature files.listOutside); main only
+  'files.listOutside': Call<{ readonly folder: string; readonly prefix: string }, OutsideListing>;
   'files.createEntry': Call<{ readonly project: Project; readonly relativeDir: string; readonly name: string; readonly kind: 'file' | 'dir' }, EntryResult>;
   'files.renameEntry': Call<{ readonly project: Project; readonly relativePath: string; readonly newName: string }, EntryResult>;
   'files.deleteEntry': Call<{ readonly project: Project; readonly relativePath: string; readonly confirmed: WireIdentity }, DeleteResult>;
@@ -228,10 +231,27 @@ const deleteResult: Parser<DeleteResult> = either(obj({ ok: okTrue }), obj({ ok:
 const fileEntry: Parser<FileEntry> = obj({ name: nonEmpty(MAX_PATH_CHARS), kind: oneOf(['file', 'dir'] as const), ignored: opt(okTrue) });
 const folderListing: Parser<FolderListing> = either(obj({ ok: okTrue, entries: arr(fileEntry, MAX_ITEMS) as Parser<FileEntry[]> }), obj({ ok: okFalse, reason: confineFailure }));
 const fileBytes: Parser<WireFileBytes> = either(
-  either(obj({ kind: lit('bytes'), bytes: bytes(MAX_DATA_CHARS), mtimeMs: num, dev: num, ino: num }), obj({ kind: lit('missing') })),
+  either(obj({ kind: lit('bytes'), bytes: bytes(MAX_DATA_CHARS), mtimeMs: num, dev: num, ino: num, sessionFile: opt(okTrue) }), obj({ kind: lit('missing'), sessionFile: opt(okTrue) })),
   either(obj({ kind: lit('tooLarge'), bytes: int(0, Number.MAX_SAFE_INTEGER) }), either(obj({ kind: lit('notAFile'), folder: bool }), obj({ kind: lit('unreadable'), error: message, code: opt(str(64)) }))),
 );
-const outsideResolution: Parser<OutsideResolution> = either(obj({ kind: oneOf(['file', 'folder'] as const), path: filePath }), obj({ kind: oneOf(['missing', 'outside'] as const) }));
+const outsideEntryKind = oneOf(['file', 'folder', 'other'] as const);
+const outsideResolution: Parser<OutsideResolution> = either(
+  either(obj({ kind: outsideEntryKind, path: filePath }), obj({ kind: lit('share'), path: filePath, entry: outsideEntryKind })),
+  either(obj({ kind: lit('missing') }), obj({ kind: lit('outside'), reason: oneOf(['share', 'name'] as const) })),
+);
+// the text after a typed path's last separator: the start of one name, so no separator, NUL or other control character
+const namePrefix: Parser<string> = (raw) => (typeof raw === 'string' && raw.length <= MAX_NAME_PREFIX_LENGTH && !/[\\/\p{Cc}]/u.test(raw) ? raw : INVALID);
+// one entry of a folder, which main joins to it: no separator a POSIX host has, no NUL or other control character, no dot name
+const listedName: Parser<string> = (raw) => (typeof raw === 'string' && raw.length > 0 && raw.length <= MAX_PATH_CHARS && raw !== '.' && raw !== '..' && !/[/\p{Cc}]/u.test(raw) ? raw : INVALID);
+const outsideListing: Parser<OutsideListing> = either(
+  obj({
+    kind: lit('folder'),
+    path: filePath,
+    entries: arr(obj({ name: listedName, kind: oneOf(['dir', 'file'] as const), link: bool, target: opt(filePath) }), OUTSIDE_LISTING_MAX_ENTRIES),
+    truncated: bool,
+  }),
+  obj({ kind: oneOf(['missing', 'outside', 'notAFolder', 'denied'] as const) }),
+);
 const browseResult: Parser<BrowseResult> = either(obj({ ok: okTrue, path: filePath, folders: arr(nonEmpty(MAX_PATH_CHARS), MAX_ITEMS) }), obj({ ok: okFalse, reason: oneOf(['missing', 'failed'] as const) }));
 const rgEvent: Parser<RgEvent> = obj({ type: nonEmpty(64), data: data(MAX_DATA_CHARS) as Parser<Record<string, unknown>> });
 const searchEnd: Parser<SearchRunEnd> = either(obj({ code: either(int(-(2 ** 31), 2 ** 32), nul), stderr: message }), obj({ error: message }));
@@ -300,9 +320,10 @@ export const CLIENT_TO_WORKSPACE: Tables<ClientToWorkspace> = {
     'files.writeInPlace': method(obj({ project, location, bytes: bytes(MAX_DATA_CHARS) }), num),
     'files.readHostSettings': method(nothing, obj({ path: filePath, read: either(fileBytes, obj({ kind: lit('outside') })) })),
     'files.writeHostSettings': method(obj({ bytes: bytes(MAX_DATA_CHARS) }), num),
-    'files.resolveOutside': method(obj({ target: filePath, within: opt(lit('plans')) }), outsideResolution),
-    'files.readOutside': method(obj({ path: filePath, within: opt(lit('plans')) }), either(fileBytes, obj({ kind: lit('outside') }))),
-    'files.writeOutside': method(obj({ path: filePath, bytes: bytes(MAX_DATA_CHARS), within: opt(lit('plans')) }), num),
+    'files.resolveOutside': method(obj({ target: filePath }), outsideResolution),
+    'files.readOutside': method(obj({ path: filePath, limitBytes: opt(int(0, MAX_DATA_CHARS)) }), either(fileBytes, obj({ kind: lit('outside') }))),
+    'files.writeOutside': method(obj({ path: filePath, bytes: bytes(MAX_DATA_CHARS) }), num),
+    'files.listOutside': method(obj({ folder: filePath, prefix: namePrefix }), outsideListing),
     'files.createEntry': method(obj({ project, relativeDir: relative, name: fileName, kind: oneOf(['file', 'dir'] as const) }), entryResult),
     'files.renameEntry': method(obj({ project, relativePath: relative, newName: fileName }), entryResult),
     'files.deleteEntry': method(obj({ project, relativePath: relative, confirmed: identity }), deleteResult),

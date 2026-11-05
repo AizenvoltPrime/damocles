@@ -83,6 +83,27 @@ describe('the containers of an SSH host', () => {
     await running;
   });
 
+  it('has the host\'s package cache download a published build\'s package, and asks nothing for an unpublished one, which the stage uploads', async () => {
+    const requests: Array<[string, unknown]> = [];
+    const connection = {
+      features: ['containers'],
+      control: {
+        request: async (name: string, params: unknown) => {
+          requests.push([name, params]);
+          return { result: 'copied' };
+        },
+      },
+    } as unknown as RemoteConnection;
+    const pkg = { file: 'damocles-server-3.7.0-linux-x64.tar.gz', sha256: 'a'.repeat(64), size: 10, serverVersion: '3.7.0+0123456789ab' };
+    const manifest = { version: '3.7.0', protocolVersion: 1, published: true, packages: { 'linux-x64': pkg } };
+    const published = viaContainerSide({ hostId: 'h', hostName: () => 'prod-1', connection: () => connection, manifest: async () => ({ manifest, releasesUrl: 'https://example.invalid/releases' }) });
+    expect(await published.copyPackage('docker', 'c'.repeat(64), '/tmp/damocles-cache-0123456789abcdef', 'linux-x64')).toBe('copied');
+    expect(requests).toEqual([['containers.copyPackage', { engine: 'docker', containerId: 'c'.repeat(64), folder: '/tmp/damocles-cache-0123456789abcdef', file: pkg.file, sha256: pkg.sha256, size: 10, url: `https://example.invalid/releases/download/v3.7.0/${pkg.file}` }]]);
+    const unpublished = viaContainerSide({ hostId: 'h', hostName: () => 'prod-1', connection: () => connection, manifest: async () => ({ manifest: { ...manifest, published: false } }) });
+    expect(await unpublished.copyPackage('docker', 'c'.repeat(64), '/tmp/damocles-cache-0123456789abcdef', 'linux-x64')).toBe('notCopied');
+    expect(requests).toHaveLength(1);
+  });
+
   it('refuses while the host is away or its server runs no containers, naming the host', async () => {
     const away = viaContainerSide({ hostId: 'h', hostName: () => 'prod-1', connection: () => undefined, manifest: async () => { throw new Error('unused'); } });
     await expect(away.list('docker')).rejects.toMatchObject({ code: 'viaNotConnected', params: { host: 'prod-1' } });

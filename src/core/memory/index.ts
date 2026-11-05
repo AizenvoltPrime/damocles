@@ -38,7 +38,8 @@ import {
   type ConsolidationRunPass,
   type PendingConsolidationRequest,
 } from './consolidation';
-import { attributeFilesToWorkspace, createFolderProbe, listKnownWorkspaces, workspaceContaining } from './workspaces';
+import { attributeFilesToWorkspace, listKnownWorkspaces, workspaceContaining } from './workspaces';
+import { createFolderProbe } from '../folder-probe';
 import type {
   ConsolidationResult,
   ConsolidationTrigger,

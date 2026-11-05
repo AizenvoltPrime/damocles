@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import type { ElectronApplication } from '@playwright/test';
 import type { CoreState } from '../../src/desktop/daemon/control-messages';
-import { launchDesktop } from '../desktop/support/app';
+import { launchDesktop, mainLog } from '../desktop/support/app';
 import { createHermeticHome } from '../desktop/support/hermetic';
 import { answerDialogs } from '../desktop/support/ui';
 import { expectNoAxeViolations } from '../desktop/support/axe';
@@ -70,6 +70,22 @@ test('with downloads blocked, the app uploads the package from its own copy and 
   // the target tried the download first, with its retries, and got the package by upload
   expect(mirror.downloads.length).toBeGreaterThan(0);
   expect([...new Set(mirror.downloads)]).toEqual([serverPackage(LINUX_TARGET)]);
+  expect(await installedIn(fixture, DEFAULT_INSTALL)).toBe(true);
+  await shutdownHostDaemon(app, hostId, fixture);
+});
+
+test('an unpublished build installs by upload, asking the release for nothing', { tag: SSH_TAG }, async ({ home, launch, mirror, ssh, sshd }) => {
+  const fixture = await sshd('prod-1');
+  // the dev manifest is unpublished, so without the e2e release URL no host is given one
+  const { DAMOCLES_E2E_RELEASE_URL: _releases, ...env } = remoteEnv(ssh, mirror);
+  const { app } = await launch({ env });
+  const hostId = await connect(app);
+  expect(mirror.downloads).toEqual([]);
+  // main logs the stage's lines in order, so a download try (curl's or wget's stderr, or `download try`) precedes the upload's
+  await expect.poll(() => mainLog(home)).toContain(`[ssh ${hostId}] uploading the ${LINUX_TARGET} package from this computer`);
+  const log = mainLog(home);
+  expect(log).toContain('[remote] this build\'s server manifest is unpublished');
+  expect(log.split('\n').filter((line) => line.includes(`[ssh ${hostId}] curl:`) || line.includes(`[ssh ${hostId}] wget:`) || line.includes(`[ssh ${hostId}] download try `))).toEqual([]);
   expect(await installedIn(fixture, DEFAULT_INSTALL)).toBe(true);
   await shutdownHostDaemon(app, hostId, fixture);
 });

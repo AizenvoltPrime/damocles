@@ -9,7 +9,7 @@ import { startWslTransport, wslStageArgs, type WslTransportOptions } from '../ws
 const CACHE = 'C:\\Users\\me\\AppData\\Roaming\\Damocles\\server-cache\\3.7.0';
 const manifest: ServerManifest = {
   version: '3.7.0',
-  packages: { 'linux-x64': { file: 'damocles-server-3.7.0-linux-x64.tar.gz', sha256: 'a'.repeat(64), size: 10 } },
+  packages: { 'linux-x64': { file: 'damocles-server-3.7.0-linux-x64.tar.gz', sha256: 'a'.repeat(64), size: 10, serverVersion: '3.7.0+0123456789ab' } },
 } as unknown as ServerManifest;
 
 // wsl.exe as the launcher starts it: what it was given on stdin, stage 1's status lines it answers with, its stderr and kills.

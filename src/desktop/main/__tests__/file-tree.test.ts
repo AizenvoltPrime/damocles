@@ -10,6 +10,7 @@ import type { Project } from '../../local-services/confine';
 import { compareEntries, FileTree, type FileTreeDeps } from '../files/file-tree';
 import { testRemote, testWorkspaces } from './test-workspaces';
 import { projectKeyOf } from '../../../shared/project-location';
+import { LocalizedError } from '../../../shared/localized-text';
 import type { FileSystemDeps } from '../../workspace/file-system';
 import type { FileWatcherFactory } from '../../../platform/file-watcher';
 import { fileNameProblem, isValidFileName } from '../../preload/file-names';
@@ -22,6 +23,8 @@ let project: Project;
 let platform: FakePlatform;
 let trashed: string[];
 let revealed: string[];
+// what the next reveal rejects with, as a Reveal check that could not run does
+let revealError: Error | undefined;
 let copied: string[];
 let answer: number | undefined;
 let host: string | undefined;
@@ -46,6 +49,7 @@ beforeEach(() => {
   platform = createFakePlatform();
   trashed = [];
   revealed = [];
+  revealError = undefined;
   copied = [];
   answer = 0;
   host = undefined;
@@ -76,7 +80,10 @@ beforeEach(() => {
       removed.push(target);
       fs.rmSync(target, { recursive: true });
     },
-    reveal: async (target) => { revealed.push(target); },
+    reveal: async (target) => {
+      if (revealError) throw revealError;
+      revealed.push(target);
+    },
     copy: async (text) => { copied.push(text); },
     changed: (change) => changed.push(change),
     ignored: async () => new Set(), target: () => ({ os: process.platform, ...(host !== undefined ? { host } : {}), ...(wslDistro !== undefined ? { wslDistro } : {}) }),
@@ -273,6 +280,14 @@ describe('create and rename', () => {
 });
 
 describe('delete, reveal and copy', () => {
+  it("passes a reveal's LocalizedError on for the toast to word in the user's language, and any other failure as its message", async () => {
+    touch('src/a.ts');
+    revealError = Object.assign(new LocalizedError({ message: 'The drive {0} did not answer within a second.', args: ['Q:\\'] }), { code: 'ETIMEDOUT' });
+    await expect(tree.reveal(project.key, 'src/a.ts')).rejects.toBe(revealError);
+    revealError = new Error('no file manager');
+    expect(await tree.reveal(project.key, 'src/a.ts')).toEqual({ ok: false, reason: 'failed', message: 'no file manager' });
+  });
+
   it('asks first, then moves the entry to the trash', async () => {
     touch('src/old.ts');
     answer = undefined;
@@ -585,5 +600,11 @@ describe('watching', () => {
   it('orders folders before files and numbers numerically', () => {
     const entries: FileEntry[] = [{ name: 'b', kind: 'file' }, { name: 'z', kind: 'dir' }, { name: 'a10', kind: 'file' }, { name: 'a9', kind: 'file' }];
     expect(entries.sort(compareEntries).map((entry) => entry.name)).toEqual(['z', 'a9', 'a10', 'b']);
+  });
+
+  // a typed folder's listing entries carry link and target beside kind and name, and sort by the same rule
+  it('orders a bare kind and name as it orders a Files entry', () => {
+    const entries = [{ kind: 'file' as const, name: 'b.txt', link: true }, { kind: 'dir' as const, name: 'src' }, { kind: 'file' as const, name: '.hidden' }];
+    expect(entries.sort(compareEntries).map((entry) => entry.name)).toEqual(['src', '.hidden', 'b.txt']);
   });
 });

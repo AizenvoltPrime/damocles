@@ -16,7 +16,13 @@ function restart(engine: ShellEngine): void {
   if (engine.state !== 'restarting') void props.api.restartEngine(engine.authority);
 }
 
-const PILL = 'title-bar-control d-press mr-1.5 flex h-6 shrink-0 gap-1.5 rounded-full border-(--d-danger)/45 bg-transparent px-2.5 text-11.5 font-medium text-(--d-danger-text) hover:border-(--d-danger) hover:bg-transparent hover:text-(--d-danger-text) [&_svg]:size-3.25';
+const PILL = 'title-bar-control d-press mr-1.5 flex h-6 shrink-0 gap-1.5 rounded-full bg-transparent px-2.5 text-11.5 font-medium hover:bg-transparent [&_svg]:size-3.25';
+// Danger while stopped, which needs the user's Restart; warning while restarting, which ends by itself. The restarting pill
+// offers no click, so hovering it changes nothing.
+const TONE = {
+  danger: 'border-(--d-danger)/45 text-(--d-danger-text) hover:border-(--d-danger) hover:text-(--d-danger-text)',
+  warning: 'border-(--d-warning)/45 text-(--d-warning-text) hover:border-(--d-warning)/45 hover:text-(--d-warning-text)',
+} as const;
 </script>
 
 <template>
@@ -27,7 +33,7 @@ const PILL = 'title-bar-control d-press mr-1.5 flex h-6 shrink-0 gap-1.5 rounded
       variant="outline"
       size="sm"
       data-testid="engine-pill"
-      :class="PILL"
+      :class="[PILL, TONE.danger]"
       :title="t('engine.stoppedTitle')"
       :aria-label="t('engine.restartLabel')"
       @click="api.restartEngine()"
@@ -49,7 +55,7 @@ const PILL = 'title-bar-control d-press mr-1.5 flex h-6 shrink-0 gap-1.5 rounded
       data-testid="engine-host-pill"
       :data-authority="engine.authority"
       :data-state="engine.state"
-      :class="[PILL, 'aria-disabled:cursor-default']"
+      :class="[PILL, TONE[engine.state === 'restarting' ? 'warning' : 'danger'], 'engine-tone aria-disabled:cursor-default']"
       :aria-disabled="engine.state === 'restarting' || undefined"
       :aria-busy="engine.state === 'restarting' || undefined"
       :title="engine.state === 'restarting' ? t('engine.hostRestarting', { host: engine.name }) : t('engine.hostStoppedTitle', { host: engine.name })"
@@ -61,13 +67,13 @@ const PILL = 'title-bar-control d-press mr-1.5 flex h-6 shrink-0 gap-1.5 rounded
         class="size-3.25 shrink-0"
         :class="engine.state === 'restarting' && 'd-spinning'"
       />
-      <!-- A rename swaps the old name for the new one. -->
+      <!-- A rename or a Restart swaps the old text for the new one. -->
       <Transition
         name="t-swap"
         mode="out-in"
       >
         <span
-          :key="engine.name"
+          :key="`${engine.state}:${engine.name}`"
           class="max-w-60 truncate"
         >{{ engine.state === 'restarting' ? t('engine.hostRestarting', { host: engine.name }) : t('engine.hostStopped', { host: engine.name }) }}</span>
       </Transition>

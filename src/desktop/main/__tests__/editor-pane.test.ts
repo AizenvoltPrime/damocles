@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { testWorkspaces } from './test-workspaces';
+import { noSessionFiles, testWorkspaces, unretainedSpellings } from './test-workspaces';
 import { NotConnectedError } from '../workspace/workspaces';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
@@ -15,8 +15,9 @@ import { DocumentService, type TextDocument } from '../documents/document-servic
 import { EditorPane, revealPathOf, selectionText, settingLine, type BrowserTabSource, type PersistedEditor } from '../editor-pane';
 import type { MessageQuestion } from '../message-dialog';
 import { projectKeyOf } from '../../../shared/project-location';
-import { englishText } from '../../../shared/localized-text';
-import { DAMOCLES_HOME_DIR } from '../../../core/paths';
+import { englishText, LocalizedError } from '../../../shared/localized-text';
+import { visibleText } from '../../../shared/visible-text';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
 
 let root: string;
 let projectDir: string;
@@ -39,6 +40,8 @@ let flushFormats: string[][];
 let shellFormats: (documentIds: readonly string[]) => void;
 let browser: BrowserTabSource | undefined;
 let warnings: string[];
+// what the next Reveal rejects with, as a Reveal check that could not run does
+let revealError: Error | undefined;
 // the OS of the loopback host's paths
 let hostOs: NodeJS.Platform;
 // the loopback host's connection; down, its workspace throws NotConnectedError as main's does
@@ -47,6 +50,8 @@ let loopbackUp: boolean;
 let uploadConflicts: TextDocument[][];
 // runs while a question is up, before it is answered
 let whileAsking: (() => Promise<void>) | undefined;
+// the pane's log lines
+let paneLog: string[];
 
 beforeEach(() => {
   root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dm-pane-')));
@@ -67,7 +72,9 @@ beforeEach(() => {
   shellFormats = () => undefined;
   browser = undefined;
   warnings = [];
+  revealError = undefined;
   whileAsking = undefined;
+  paneLog = [];
   const ask = async (question: MessageQuestion): Promise<number | undefined> => {
     asked.push(question);
     await whileAsking?.();
@@ -78,6 +85,8 @@ beforeEach(() => {
   loopbackUp = true;
   uploadConflicts = [];
   documents = new DocumentService({
+    spellings: unretainedSpellings(),
+    sessionFiles: noSessionFiles,
     render: englishText,
     hostLabel: (authority) => ({ hostId: authority, name: authority }),
     uploadsConflicted: (_authority, conflicted) => void uploadConflicts.push([...conflicted]),
@@ -107,7 +116,8 @@ beforeEach(() => {
     settings: platform.settings,
     ask,
     t,
-    log: () => undefined,
+    render: englishText,
+    log: (line) => paneLog.push(line),
     restoreLayout: () => restoreLayout,
     persist: (editor) => { persisted = editor; },
     flushBackups: async () => { events.push('flushBackups'); },
@@ -130,7 +140,10 @@ beforeEach(() => {
     showPaneBeside: () => events.push('showPaneBeside'),
     projects: () => roots,
     copy: async (text) => { events.push(`copy:${text}`); },
-    reveal: async (target) => { events.push(`reveal:${target}`); },
+    reveal: async (target) => {
+      if (revealError) throw revealError;
+      events.push(`reveal:${target}`);
+    },
     mention: async (target) => { events.push(`mention:${JSON.stringify(target)}`); },
     browser: () => browser,
     warn: (message) => warnings.push(message),
@@ -176,7 +189,7 @@ describe('opens and focus', () => {
     const file = write('src/b.ts', 'b');
     const opened = await pane.openFromUser(project.key, 'src/a.ts', { line: 3 });
     if (!opened.ok) throw new Error('not opened');
-    await pane.openPath(file, { focus: false });
+    await pane.openNamedPath('local', file, { focus: false });
     const agentTab = pane.state().activeTabId!;
     expect(events).toEqual(['showPane', `focus:${opened.tabId}`, `reveal:${opened.tabId}:3`, 'showPane']);
     expect(agentTab).not.toBe(opened.tabId);
@@ -341,7 +354,7 @@ describe('closing dirty tabs and quitting', () => {
     const document = textOf(opened.tabId);
     pane.edit(document.id, { version: document.version, seq: 1, text: '# mine', overReload: false });
     whileAsking = async () => {
-      await pane.openPath(path.join(projectDir, 'README.md'), { focus: false, preview: true });
+      await pane.openNamedPath('local', path.join(projectDir, 'README.md'), { focus: false, preview: true });
     };
     answers = [1];
     await pane.tabAction('close', opened.tabId);
@@ -515,9 +528,10 @@ describe('closing dirty tabs and quitting', () => {
     expect(pane.formatTarget(untitled.documentId!)).toBeUndefined();
     const outside = path.join(root, 'outside.ts');
     fs.writeFileSync(outside, 'o');
-    await pane.openPath(outside, { focus: false });
-    const readOnly = pane.state().tabs.find((tab) => tab.readOnly)!;
-    expect(pane.formatTarget(readOnly.documentId!)).toBeUndefined();
+    const outsideTabId = await pane.openNamedPath('local', outside, { focus: false });
+    const outsideTab = pane.state().tabs.find((tab) => tab.id === outsideTabId)!;
+    expect(outsideTab.readOnly).toBe(false);
+    expect(pane.formatTarget(outsideTab.documentId!)).toBeUndefined();
     expect(pane.formatTarget('not-open')).toBeUndefined();
   });
 
@@ -678,8 +692,67 @@ describe('a host\'s own settings file', () => {
   });
 });
 
+describe('Open Anyway', () => {
+  const big = 'a'.repeat(EDITOR_CONFIRM_DOCUMENT_BYTES + 1);
+  const BACKUP = '0f8fad5b-d9cb-469f-a165-70867728950e';
+
+  it('turns the notice tab into the file\'s code tab in place, keeping its tab and document ids, and saves it as a code tab', async () => {
+    write('big.log', big);
+    const opened = await pane.openFromUser(project.key, 'big.log');
+    if (!opened.ok) throw new Error(opened.reason);
+    const notice = pane.state().tabs.find((tab) => tab.id === opened.tabId)!;
+    expect(notice.kind).toBe('notDisplayed');
+    events.length = 0;
+    await pane.tabAction('openAnyway', opened.tabId);
+    const tab = pane.state().tabs.find((candidate) => candidate.id === opened.tabId)!;
+    expect(tab).toMatchObject({ kind: 'code', documentId: notice.documentId, readOnly: false });
+    expect(textOf(tab.id).text).toBe(big);
+    expect(events).toEqual([`document:${notice.documentId}`, 'showPane', `focus:${tab.id}`]);
+    await vi.waitFor(() => expect(persisted?.tabs).toEqual([{ kind: 'code', file: { projectKey: project.key, relativePath: 'big.log' } }]));
+  });
+
+  it('reopens a saved code tab of a file past the confirm threshold as text, a backup into one, and a saved notice tab as the notice', async () => {
+    write('big.log', big);
+    write('kept.log', big);
+    write('asked.log', big);
+    const backup: BackupRecord = { backupId: BACKUP, name: 'kept.log', languageId: 'plaintext', encoding: 'utf8', bom: false, eol: '\n', text: 'unsaved', target: { kind: 'project', projectKey: project.key, relativePath: 'kept.log' } };
+    await pane.restore({
+      tabs: [
+        { kind: 'code', file: { projectKey: project.key, relativePath: 'big.log' } },
+        { kind: 'code', file: { projectKey: project.key, relativePath: 'kept.log' }, backupId: BACKUP },
+        { kind: 'notDisplayed', file: { projectKey: project.key, relativePath: 'asked.log' } },
+      ],
+      active: 0,
+      recent: [],
+    }, [backup]);
+    expect(pane.state().tabs.map((tab) => [tab.kind, tab.title, tab.dirty])).toEqual([['code', 'big.log', false], ['code', 'kept.log', true], ['notDisplayed', 'asked.log', false]]);
+    expect(warnings).toEqual([]);
+  });
+});
+
+describe('Reveal in File Explorer', () => {
+  it('reveals a project file at its path, and warns with the reason when the Reveal check could not run', async () => {
+    write('src/a.ts', 'x');
+    const opened = await pane.openFromUser(project.key, 'src/a.ts', {});
+    if (!opened.ok) throw new Error(opened.reason);
+    const tab = pane.state().tabs.at(-1)!;
+    expect(tab.revealable).toBe(true);
+    await pane.tabAction('revealInExplorer', tab.id);
+    expect(events).toContain(`reveal:${path.join(projectDir, 'src', 'a.ts')}`);
+    revealError = new Error('EACCES: permission denied');
+    await pane.tabAction('revealInExplorer', tab.id);
+    // a LocalizedError shows its text rendered, never its English message
+    revealError = Object.assign(new LocalizedError({ message: 'The drive {0} did not answer within a second.', args: ['Q:\\'] }), { message: 'English message' });
+    await pane.tabAction('revealInExplorer', tab.id);
+    expect(warnings).toEqual([
+      `Could not show ${path.join(projectDir, 'src', 'a.ts')} in File Explorer: EACCES: permission denied`,
+      `Could not show ${path.join(projectDir, 'src', 'a.ts')} in File Explorer: The drive Q:\\ did not answer within a second.`,
+    ]);
+  });
+});
+
 describe('a file of another host', () => {
-  it('copies its relative path in its host\'s separator, refuses Reveal in File Explorer with a warning, and opens its changes by its project place', async () => {
+  it('copies its relative path in its host\'s separator, offers no Reveal in File Explorer and refuses one with a warning, and opens its changes by its project place', async () => {
     write('src/a.ts', 'x');
     // the other OS than this computer's, so the separator differs from node:path's
     hostOs = process.platform === 'win32' ? 'linux' : 'win32';
@@ -688,6 +761,7 @@ describe('a file of another host', () => {
     const opened = await pane.openFromUser(remote.key, 'src/a.ts', {});
     if (!opened.ok) throw new Error(opened.reason);
     const tab = pane.state().tabs.at(-1)!;
+    expect(tab.revealable).toBeUndefined();
     await pane.tabAction('copyRelativePath', tab.id);
     expect(events).toContain(`copy:${hostOs === 'win32' ? 'src\\a.ts' : 'src/a.ts'}`);
     await pane.tabAction('revealInExplorer', tab.id);
@@ -1431,6 +1505,13 @@ describe('remote files while their host is away', () => {
     expect(textOf(tabs[0]!.id)).toMatchObject({ text: 'first\n', diskText: 'disk\n' });
   });
 
+  it('opens a saved code tab\'s file past the confirm threshold as text once its host connects', async () => {
+    write('big.md', 'a'.repeat(EDITOR_CONFIRM_DOCUMENT_BYTES + 1));
+    await pane.restore({ tabs: [fileTab('code', 'big.md')], active: 0, recent: [] }, []);
+    connect();
+    await vi.waitFor(() => expect(documents.get(pane.state().tabs[0]!.documentId!)?.kind).toBe('text'));
+  });
+
   it('releases the file a placeholder opens when its tab closed while the file was opening', async () => {
     write('notes.md', 'disk\n');
     await pane.restore({ tabs: [fileTab('code', 'notes.md')], active: 0, recent: [] }, []);
@@ -1459,141 +1540,15 @@ describe('remote files while their host is away', () => {
   });
 });
 
-describe('plan files outside every project', () => {
-  const BACKUP_A = '0f8fad5b-d9cb-469f-a165-70867728950e';
-  let hostPlan: string;
-  const hostTab = (): PersistedEditor['tabs'][number] => ({ kind: 'code', authority: 'loopback', path: hostPlan, outside: 'plans' });
-  const backupOf = (text: string, authority = 'loopback'): BackupRecord => ({
-    backupId: BACKUP_A, name: 'loopback: host-plan-4567cdef.md', languageId: 'markdown', encoding: 'utf8', bom: false, eol: '\n', text, target: { kind: 'outside', authority, path: hostPlan, outside: 'plans' },
-  });
-
-  beforeEach(() => {
-    hostPlan = path.join(root, 'host', '.damocles', 'plans', 'host-plan-4567cdef.md');
-    fs.mkdirSync(path.dirname(hostPlan), { recursive: true });
-    fs.writeFileSync(hostPlan, '# Host plan\n');
-  });
-
-  it('opens a host\'s plan as an editable tab titled with its host, persisted by its host and path, never as a path of this computer', async () => {
-    expect(await pane.openPlan('loopback', hostPlan, { line: 2, focus: false })).toBe(true);
-    const [tab, ...others] = pane.state().tabs;
-    expect(others).toEqual([]);
-    expect(tab).toMatchObject({ kind: 'code', title: 'loopback: host-plan-4567cdef.md', readOnly: false, displayPath: hostPlan });
-    expect(events).toContain(`reveal:${tab!.id}:2`);
-    expect(await pane.openPlan('loopback', path.join(root, 'host', '.damocles', 'settings.json'), { focus: false })).toBe(false);
-    const document = textOf(tab!.id);
-    expect(await pane.save(document.id, document.version, '# Mine\n', false)).toEqual({ ok: true });
-    expect(fs.readFileSync(hostPlan, 'utf8')).toBe('# Mine\n');
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(persisted?.tabs).toEqual([hostTab()]);
-  });
-
-  it('restores a host plan tab as the offline placeholder, which opens the plan editable by the plans rule once the host connects', async () => {
-    loopbackUp = false;
-    await pane.restore({ tabs: [hostTab()], active: 0, recent: [] }, []);
-    const [restored] = pane.state().tabs;
-    const placeholderId = restored!.documentId!;
-    expect(documents.content(placeholderId)).toEqual({ kind: 'offline', documentId: placeholderId, hostId: 'loopback', hostName: 'loopback' });
-    expect(restored).toMatchObject({ kind: 'code', title: 'loopback: host-plan-4567cdef.md' });
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(persisted?.tabs).toEqual([hostTab()]);
-    loopbackUp = true;
-    documents.connectionsChanged();
-    await vi.waitFor(() => expect(pane.state().tabs[0]!.documentId).not.toBe(placeholderId));
-    const [tab] = pane.state().tabs;
-    expect(tab).toMatchObject({ id: restored!.id, kind: 'code', title: 'loopback: host-plan-4567cdef.md', readOnly: false });
-    expect(textOf(tab!.id)).toMatchObject({ text: '# Host plan\n', location: { path: hostPlan, host: 'loopback', outside: 'plans' } });
-  });
-
-  it('reopens a host plan tab straight through the plans rule while its host is connected, and drops one the rule now refuses', async () => {
-    const notes = path.join(path.dirname(hostPlan), 'notes.txt');
-    fs.writeFileSync(notes, 'notes');
-    await pane.restore({ tabs: [hostTab(), { kind: 'code', authority: 'loopback', path: notes, outside: 'plans' }], active: 0, recent: [] }, []);
-    const tabs = pane.state().tabs;
-    expect(tabs).toHaveLength(1);
-    expect(textOf(tabs[0]!.id)).toMatchObject({ text: '# Host plan\n', readOnlyReason: undefined });
-  });
-
-  it('restores a dirty host plan into its document while its host is connected', async () => {
-    await pane.restore({ tabs: [hostTab()], active: 0, recent: [] }, [backupOf('# Unsaved\n')]);
-    const tabs = pane.state().tabs;
-    expect(tabs.map((tab) => [tab.kind, tab.title, tab.dirty])).toEqual([['code', 'loopback: host-plan-4567cdef.md', true]]);
-    expect(textOf(tabs[0]!.id)).toMatchObject({ text: '# Unsaved\n', diskText: '# Host plan\n', backupId: BACKUP_A });
-    expect(warnings).toEqual([]);
-  });
-
-  it('restores a dirty host plan shown only as a preview into that one preview tab while its host is connected', async () => {
-    await pane.restore({ tabs: [{ kind: 'markdownPreview', authority: 'loopback', path: hostPlan, outside: 'plans' }], active: 0, recent: [] }, [backupOf('# Unsaved\n')]);
-    const tabs = pane.state().tabs;
-    expect(tabs.map((tab) => [tab.kind, tab.dirty])).toEqual([['markdownPreview', true]]);
-    expect(textOf(tabs[0]!.id)).toMatchObject({ text: '# Unsaved\n', backupId: BACKUP_A });
-  });
-
-  it('restores a dirty host plan as an untitled buffer with a warning while its host is away', async () => {
-    loopbackUp = false;
-    await pane.restore({ tabs: [], active: null, recent: [] }, [backupOf('# Unsaved\n')]);
-    const tabs = pane.state().tabs;
-    expect(tabs.map((tab) => [tab.kind, tab.title, tab.dirty])).toEqual([['untitled', 'loopback: host-plan-4567cdef.md', true]]);
-    expect(textOf(tabs[0]!.id)).toMatchObject({ text: '# Unsaved\n', backupId: BACKUP_A });
-    expect(warnings).toEqual(['The unsaved changes to loopback: host-plan-4567cdef.md are in an untitled editor: It could not be reopened.']);
-  });
-
-  it('persists a local plan tab by its path with its backup, so a dirty plan in a preview restores as that one tab, and keeps another path read-only', async () => {
-    const plans = path.join(DAMOCLES_HOME_DIR, 'plans');
-    fs.mkdirSync(plans, { recursive: true });
-    const localPlan = path.join(fs.realpathSync.native(plans), 'local-plan-0123abcd.md');
-    fs.writeFileSync(localPlan, '# Local plan\n');
-    const notes = path.join(path.dirname(localPlan), 'notes.txt');
-    fs.writeFileSync(notes, 'notes');
-    const record: BackupRecord = {
-      backupId: BACKUP_A, name: 'local-plan-0123abcd.md', languageId: 'markdown', encoding: 'utf8', bom: false, eol: '\n', text: '# Unsaved\n', target: { kind: 'outside', authority: 'local', path: localPlan, outside: 'plans' },
-    };
-    const planTab: PersistedEditor['tabs'][number] = { kind: 'markdownPreview', path: localPlan, outside: 'plans', backupId: BACKUP_A };
-    // a plan path the plans rule now refuses is dropped
-    await pane.restore({ tabs: [planTab, { kind: 'code', path: notes }, { kind: 'code', path: notes, outside: 'plans' }], active: 0, recent: [] }, [record]);
-    const [plan, other, ...rest] = pane.state().tabs;
-    expect(rest).toEqual([]);
-    expect(plan).toMatchObject({ kind: 'markdownPreview', title: 'local-plan-0123abcd.md', readOnly: false, dirty: true });
-    expect(textOf(plan!.id)).toMatchObject({ text: '# Unsaved\n', backupId: BACKUP_A, location: { path: localPlan, outside: 'plans' } });
-    expect(other).toMatchObject({ readOnly: true });
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(persisted?.tabs).toEqual([planTab, { kind: 'code', path: notes }]);
-    const document = textOf(plan!.id);
-    expect(await pane.save(document.id, document.version, '# Unsaved\n', false)).toEqual({ ok: true });
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(persisted?.tabs).toEqual([{ kind: 'markdownPreview', path: localPlan, outside: 'plans' }, { kind: 'code', path: notes }]);
-  });
-
-  it('mentions a host\'s plan by its path on that host, and a local file outside every project as this computer\'s', async () => {
-    expect(await pane.openPlan('loopback', hostPlan, { focus: false })).toBe(true);
-    await pane.mention(pane.state().tabs[0]!.id);
-    const notes = path.join(root, 'notes.txt');
-    fs.writeFileSync(notes, 'notes');
-    await pane.openPath(notes, { focus: false });
-    await pane.mention(pane.state().tabs[1]!.id);
-    expect(events.filter((event) => event.startsWith('mention:'))).toEqual([
-      `mention:${JSON.stringify({ path: hostPlan, authority: 'loopback' })}`,
-      `mention:${JSON.stringify({ path: notes, authority: 'local' })}`,
-    ]);
-  });
-
-  it('answers whether a tab shows a host\'s file outside every project, its offline placeholder included', async () => {
-    expect(pane.hasHostFileTab('loopback')).toBe(false);
-    loopbackUp = false;
-    await pane.restore({ tabs: [hostTab()], active: 0, recent: [] }, []);
-    expect(pane.hasHostFileTab('loopback')).toBe(true);
-    expect(pane.hasHostFileTab('ssh+other')).toBe(false);
-    expect(pane.hasHostFileTab('local')).toBe(false);
-  });
-});
-
-describe('files the user named outside every project', () => {
+describe('files outside every project', () => {
   const BACKUP_A = '0f8fad5b-d9cb-469f-a165-70867728950e';
   let elsewhere: string;
   let file: string;
-  const hostTab = (): PersistedEditor['tabs'][number] => ({ kind: 'code', authority: 'loopback', path: file, outside: 'user' });
+  const hostTab = (): PersistedEditor['tabs'][number] => ({ kind: 'code', authority: 'loopback', path: file });
   const backupOf = (text: string, authority: string, target: string): BackupRecord => ({
-    backupId: BACKUP_A, name: path.basename(target), languageId: 'plaintext', encoding: 'utf8', bom: false, eol: '\n', text, target: { kind: 'outside', authority, path: target, outside: 'user' },
+    backupId: BACKUP_A, name: path.basename(target), languageId: 'plaintext', encoding: 'utf8', bom: false, eol: '\n', text, target: { kind: 'outside', authority, path: target },
   });
+  const settled = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
   beforeEach(() => {
     elsewhere = path.join(root, 'elsewhere');
@@ -1602,52 +1557,57 @@ describe('files the user named outside every project', () => {
     fs.writeFileSync(file, 'one\ntwo\nthree\n');
   });
 
-  it('opens a typed path editable and focused at its line and column, and persists it as editable with its backup while dirty', async () => {
+  it('opens a core\'s path editable at its line, persisted by its path with its backup while dirty, and saves it on disk', async () => {
+    const tabId = await pane.openNamedPath('local', file, { line: 2, focus: false });
+    const [tab, ...others] = pane.state().tabs;
+    expect(others).toEqual([]);
+    expect(tab).toMatchObject({ id: tabId, kind: 'code', title: 'notes.txt', readOnly: false, displayPath: file });
+    expect(tab!.projectKey).toBeUndefined();
+    expect(events).toContain(`reveal:${tabId}:2`);
+    await settled();
+    expect(persisted?.tabs).toEqual([{ kind: 'code', path: file }]);
+    const document = textOf(tabId);
+    documents.edit(document.id, { version: document.version, seq: 1, text: 'edited\n', overReload: false });
+    await settled();
+    expect(persisted?.tabs).toEqual([{ kind: 'code', path: file, backupId: document.backupId }]);
+    expect(await pane.save(document.id, document.version, 'edited\n', false)).toEqual({ ok: true });
+    expect(fs.readFileSync(file, 'utf8')).toBe('edited\n');
+    // no project, so no project formatter
+    expect(pane.formatTarget(document.id)).toBeUndefined();
+  });
+
+  it('opens a typed path focused at its line and column, as the tab a core\'s open of it shows, and nothing for a path that is no longer its own realpath or gone', async () => {
+    const coreTab = await pane.openNamedPath('local', file, { focus: false });
     expect(await pane.openPathFromUser('local', file, { line: 3, column: 2 })).toBe(true);
     const [tab, ...others] = pane.state().tabs;
     expect(others).toEqual([]);
-    expect(tab).toMatchObject({ kind: 'code', title: 'notes.txt', readOnly: false, displayPath: file });
-    expect(events).toEqual(expect.arrayContaining([`focus:${tab!.id}`, `reveal:${tab!.id}:3:2`]));
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(persisted?.tabs).toEqual([{ kind: 'code', path: file, editable: true }]);
-    const document = textOf(tab!.id);
-    documents.edit(document.id, { version: document.version, seq: 1, text: 'edited\n', overReload: false });
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(persisted?.tabs).toEqual([{ kind: 'code', path: file, editable: true, backupId: document.backupId }]);
-    expect(await pane.save(document.id, document.version, 'edited\n', false)).toEqual({ ok: true });
-    expect(fs.readFileSync(file, 'utf8')).toBe('edited\n');
-    expect(await pane.openPathFromUser('local', elsewhere, {})).toBe(false);
-    // the row's path was a realpath; once it is a link, the file it leads to is not what the user chose
+    expect(tab).toMatchObject({ id: coreTab, readOnly: false });
+    expect(events).toEqual(expect.arrayContaining([`focus:${coreTab}`, `reveal:${coreTab}:3:2`]));
     const swapped = path.join(elsewhere, 'swapped.txt');
     fs.symlinkSync(file, swapped, 'file');
     expect(await pane.openPathFromUser('local', swapped, {})).toBe(false);
+    expect(await pane.openPathFromUser('local', path.join(elsewhere, 'gone.txt'), {})).toBe(false);
   });
 
-  it('turns the tab of a core\'s read-only open editable in place when the user opens the path', async () => {
-    await pane.openPath(file, { focus: false });
-    const [readOnly] = pane.state().tabs;
-    expect(readOnly).toMatchObject({ readOnly: true });
-    expect(await pane.openPathFromUser('local', file, {})).toBe(true);
-    const [tab, ...others] = pane.state().tabs;
-    expect(others).toEqual([]);
-    expect(tab).toMatchObject({ id: readOnly!.id, readOnly: false });
-    await pane.openPath(file, { focus: false });
-    expect(pane.state().tabs).toMatchObject([{ id: readOnly!.id, readOnly: false }]);
-  });
-
-  it('restores an editable tab only while its path still resolves to itself', async () => {
+  it('restores an outside tab only while its path still resolves to itself, and drops and logs a refused, moved or deleted one', async () => {
     const moved = path.join(elsewhere, 'moved.txt');
     fs.writeFileSync(moved, 'moved\n');
     const swapped = path.join(elsewhere, 'swapped.txt');
     fs.symlinkSync(moved, swapped, 'file');
-    await pane.restore({ tabs: [{ kind: 'code', path: file, editable: true }, { kind: 'code', path: swapped, editable: true }, { kind: 'code', path: path.join(elsewhere, 'gone.txt'), editable: true }], active: 0, recent: [] }, []);
+    const dotted = `${elsewhere}${path.sep}..${path.sep}elsewhere${path.sep}notes.txt`;
+    await pane.restore({ tabs: [{ kind: 'code', path: file }, { kind: 'code', path: swapped }, { kind: 'code', path: path.join(elsewhere, 'gone.txt') }, { kind: 'code', path: dotted }], active: 0, recent: [] }, []);
     const tabs = pane.state().tabs;
     expect(tabs).toHaveLength(1);
-    expect(textOf(tabs[0]!.id)).toMatchObject({ readOnlyReason: undefined, location: { path: file, outside: 'user' } });
+    expect(textOf(tabs[0]!.id)).toMatchObject({ readOnlyReason: undefined, location: { path: file, outside: 'path' } });
+    expect(paneLog.filter((line) => line.startsWith('[editor] dropping a saved code tab'))).toEqual([
+      `[editor] dropping a saved code tab: ${swapped} on local no longer resolves to itself`,
+      `[editor] dropping a saved code tab: ${path.join(elsewhere, 'gone.txt')} on local no longer resolves to itself`,
+      `[editor] dropping a saved code tab: Damocles does not open ${dotted}: part of this path would be read differently than it is written, such as a trailing dot or space, a stream or a reserved device name.`,
+    ]);
   });
 
   it('restores a dirty buffer into its file, and into an orphaned document a save writes back once the file is gone', async () => {
-    await pane.restore({ tabs: [{ kind: 'code', path: file, editable: true, backupId: BACKUP_A }], active: 0, recent: [] }, [backupOf('unsaved\n', 'local', file)]);
+    await pane.restore({ tabs: [{ kind: 'code', path: file, backupId: BACKUP_A }], active: 0, recent: [] }, [backupOf('unsaved\n', 'local', file)]);
     const [tab] = pane.state().tabs;
     expect(tab).toMatchObject({ kind: 'code', readOnly: false, dirty: true });
     expect(textOf(tab!.id)).toMatchObject({ text: 'unsaved\n', diskText: 'one\ntwo\nthree\n', backupId: BACKUP_A });
@@ -1658,16 +1618,16 @@ describe('files the user named outside every project', () => {
     await pane.restore({ tabs: [], active: null, recent: [] }, [backupOf('kept\n', 'local', gone)]);
     const [orphan] = pane.state().tabs;
     const document = textOf(orphan!.id);
-    expect(document).toMatchObject({ text: 'kept\n', orphaned: true, location: { path: gone, outside: 'user' } });
+    expect(document).toMatchObject({ text: 'kept\n', orphaned: true, location: { path: gone, outside: 'path' } });
     expect(await pane.save(document.id, document.version, 'kept\n', false)).toEqual({ ok: true });
     expect(fs.readFileSync(gone, 'utf8')).toBe('kept\n');
     expect(warnings).toEqual([]);
   });
 
-  it('opens a host\'s typed path titled with its host and persists it by its host, which restores as the offline placeholder and reopens editable on connect', async () => {
-    expect(await pane.openPathFromUser('loopback', file, {})).toBe(true);
-    expect(pane.state().tabs).toMatchObject([{ kind: 'code', title: 'loopback: notes.txt', readOnly: false }]);
-    await new Promise((resolve) => setImmediate(resolve));
+  it('opens a host\'s path titled with its file name and carrying its host, and persists it by its host, which restores as the offline placeholder and reopens editable through openResolvedPath on connect', async () => {
+    await pane.openNamedPath('loopback', file, { focus: false });
+    expect(pane.state().tabs).toMatchObject([{ kind: 'code', title: 'notes.txt', host: 'loopback', readOnly: false }]);
+    await settled();
     expect(persisted?.tabs).toEqual([hostTab()]);
     await pane.tabAction('close', pane.state().tabs[0]!.id);
 
@@ -1676,19 +1636,23 @@ describe('files the user named outside every project', () => {
     const [restored] = pane.state().tabs;
     const placeholderId = restored!.documentId!;
     expect(documents.content(placeholderId)).toEqual({ kind: 'offline', documentId: placeholderId, hostId: 'loopback', hostName: 'loopback' });
-    await new Promise((resolve) => setImmediate(resolve));
+    expect(pane.hasHostFileTab('loopback')).toBe(true);
+    expect(pane.hasHostFileTab('local')).toBe(false);
+    await settled();
     expect(persisted?.tabs).toEqual([hostTab()]);
+    const reopens = vi.spyOn(documents, 'openResolvedPath');
     loopbackUp = true;
     documents.connectionsChanged();
     await vi.waitFor(() => expect(pane.state().tabs[0]!.documentId).not.toBe(placeholderId));
+    expect(reopens.mock.calls).toEqual([['loopback', file, { acceptLarge: true }]]);
     const [tab] = pane.state().tabs;
-    expect(tab).toMatchObject({ id: restored!.id, title: 'loopback: notes.txt', readOnly: false });
-    expect(textOf(tab!.id)).toMatchObject({ text: 'one\ntwo\nthree\n', location: { path: file, host: 'loopback', outside: 'user' } });
+    expect(tab).toMatchObject({ id: restored!.id, title: 'notes.txt', host: 'loopback', readOnly: false });
+    expect(textOf(tab!.id)).toMatchObject({ text: 'one\ntwo\nthree\n', location: { path: file, host: 'loopback', outside: 'path' } });
   });
 
   it('restores a dirty host buffer into its document while its host is connected, and as an untitled buffer while it is away', async () => {
     await pane.restore({ tabs: [hostTab()], active: 0, recent: [] }, [backupOf('unsaved\n', 'loopback', file)]);
-    expect(pane.state().tabs.map((tab) => [tab.kind, tab.title, tab.dirty])).toEqual([['code', 'loopback: notes.txt', true]]);
+    expect(pane.state().tabs.map((tab) => [tab.kind, tab.title, tab.dirty])).toEqual([['code', 'notes.txt', true]]);
     answers = [1];
     await pane.tabAction('close', pane.state().tabs[0]!.id);
 
@@ -1696,5 +1660,53 @@ describe('files the user named outside every project', () => {
     await pane.restore({ tabs: [], active: null, recent: [] }, [backupOf('unsaved\n', 'loopback', file)]);
     expect(pane.state().tabs.map((tab) => [tab.kind, tab.dirty])).toContainEqual(['untitled', true]);
     expect(warnings).toEqual(['The unsaved changes to notes.txt are in an untitled editor: It could not be reopened.']);
+  });
+
+  it('opens the rest of a background batch around refused files, warning once and logging each', async () => {
+    // path.resolve folds '..' in a local path, so the refusal is a stream name on win32 and a NUL elsewhere
+    const refusedA = process.platform === 'win32' ? `${file}:a` : `${file}\0a`;
+    const refusedB = process.platform === 'win32' ? `${file}:b` : `${file}\0b`;
+    await pane.openInBackground([{ path: refusedA }, { path: file }, { path: refusedB }]);
+    expect(pane.state().tabs.map((tab) => tab.displayPath)).toEqual([file]);
+    expect(warnings).toEqual([`Damocles does not open ${visibleText(refusedA)}: part of this path would be read differently than it is written, such as a trailing dot or space, a stream or a reserved device name.`]);
+    expect(paneLog.filter((line) => line.startsWith('[editor] not opening'))).toHaveLength(2);
+  });
+
+  it('shows a remote diff of a host path outside the host\'s roots, its file side opened on the host', async () => {
+    const view = await pane.showRemoteDiff((name) => `${name} (Current ↔ Proposed)`, { authority: 'loopback', path: file }, { name: 'notes.txt', content: 'old\n' }, { file: { authority: 'loopback', path: file } }, { focus: false });
+    const diff = pane.state().tabs.find((tab) => tab.kind === 'diff')!;
+    expect(diff.title).toBe('notes.txt (Current ↔ Proposed)');
+    expect(documents.get(diff.diff!.modifiedId)).toMatchObject({ kind: 'text', text: 'one\ntwo\nthree\n', readOnlyReason: undefined, location: { path: file, host: 'loopback', outside: 'path' } });
+    expect(documents.get(diff.diff!.originalId)).toMatchObject({ readOnlyReason: 'snapshot' });
+    view.close();
+    // two text sides name the subject by its base name in the host's path rules
+    await pane.showRemoteDiff((name) => `${name} (Proposed)`, { authority: 'loopback', path: file }, { name: 'a', content: 'a' }, { name: 'b', content: 'b' }, { focus: false });
+    expect(pane.state().tabs.find((tab) => tab.kind === 'diff')?.title).toBe('notes.txt (Proposed)');
+  });
+
+  it('answers the active file\'s authority: this computer\'s outside or project file, a host\'s file, and none for a tab without a file', async () => {
+    expect(pane.activeAuthority()).toBeUndefined();
+    await pane.openNamedPath('local', file, { focus: false });
+    expect(pane.activeAuthority()).toBe('local');
+    await pane.openNamedPath('loopback', file, { focus: false });
+    expect(pane.activeAuthority()).toBe('loopback');
+    write('src/a.ts', 'a');
+    await pane.openFromUser(project.key, 'src/a.ts');
+    expect(pane.activeAuthority()).toBe('local');
+    pane.openUntitled('x', 'Untitled-1', 'plaintext', { focus: false });
+    expect(pane.activeAuthority()).toBeUndefined();
+  });
+
+  it('mentions a host\'s file by its path on that host, and a local file outside every project as this computer\'s', async () => {
+    await pane.openNamedPath('loopback', file, { focus: false });
+    await pane.mention(pane.state().tabs[0]!.id);
+    const notes = path.join(root, 'notes.txt');
+    fs.writeFileSync(notes, 'notes');
+    await pane.openNamedPath('local', notes, { focus: false });
+    await pane.mention(pane.state().tabs[1]!.id);
+    expect(events.filter((event) => event.startsWith('mention:'))).toEqual([
+      `mention:${JSON.stringify({ path: file, authority: 'loopback' })}`,
+      `mention:${JSON.stringify({ path: notes, authority: 'local' })}`,
+    ]);
   });
 });

@@ -45,7 +45,8 @@ import {
   type EditorSaveResult,
   type EditorSelectionRange,
   type EditorTabRequest,
-  type EditorEditReport,
+  type EditorEdit,
+  type EditorTextChange,
   type EditorTextRequest,
   type FileRef,
   type FilesClipboardChanged,
@@ -393,7 +394,8 @@ export interface ShellEditorActions {
   content(documentId: string): ShellDocumentContent;
   open(request: EditorOpenRequest): Promise<EditorOpenResult>;
   tab(request: EditorTabRequest): Promise<void>;
-  edit(request: EditorEditReport): void;
+  // edit: undefined for a malformed report; true asks the shell for the document's whole buffer
+  edit(documentId: string, edit: EditorEdit | undefined): boolean;
   save(request: EditorTextRequest, as: boolean): Promise<EditorSaveResult>;
   conflict(request: EditorConflictRequest): Promise<EditorConflictResult>;
   // the documentId is resolved against main's open documents; main confines the file and checks the project's trust
@@ -893,13 +895,43 @@ export function parseEditorText(raw: unknown): EditorTextRequest | undefined {
   return typeof text === 'string' && text.length <= MAX_EDITOR_TEXT_CHARS ? { documentId, version, text } : undefined;
 }
 
-export function parseEditorEdit(raw: unknown): EditorEditReport | undefined {
-  const request = parseEditorText(raw);
+/** editor:edit from the shell: its document id, and the edit unless the rest is malformed, which main refuses whole. */
+export function parseEditorEdit(raw: unknown): { readonly documentId: string; readonly edit: EditorEdit | undefined } | undefined {
   const value = record(raw);
-  const seq = value ? own(value, 'seq') : undefined;
-  const overReload = value ? own(value, 'overReload') : undefined;
-  if (!request || !boundedInteger(seq, 0, Number.MAX_SAFE_INTEGER) || typeof overReload !== 'boolean') return undefined;
-  return { ...request, seq, overReload };
+  const documentId = value ? own(value, 'documentId') : undefined;
+  return value && isShellId(documentId) ? { documentId, edit: editorEditOf(value) } : undefined;
+}
+
+function editorEditOf(value: Record<string, unknown>): EditorEdit | undefined {
+  const version = own(value, 'version');
+  const seq = own(value, 'seq');
+  if (!boundedInteger(version, 0, Number.MAX_SAFE_INTEGER) || !boundedInteger(seq, 0, Number.MAX_SAFE_INTEGER)) return undefined;
+  const changes = own(value, 'changes');
+  if (changes !== undefined) {
+    const parsed = textChangesOf(changes);
+    return parsed && { version, seq, changes: parsed };
+  }
+  const text = own(value, 'text');
+  const overReload = own(value, 'overReload');
+  return isText(text, MAX_EDITOR_TEXT_CHARS) && typeof overReload === 'boolean' ? { version, seq, text, overReload } : undefined;
+}
+
+// Offsets and lengths are checked against the text in DocumentService; here only their types and the inserted total.
+function textChangesOf(raw: unknown): EditorTextChange[] | undefined {
+  if (!boundedArray(raw, MAX_EDITOR_TEXT_CHARS)) return undefined;
+  const changes: EditorTextChange[] = [];
+  let inserted = 0;
+  for (const item of raw) {
+    const change = record(item);
+    const offset = change ? own(change, 'offset') : undefined;
+    const length = change ? own(change, 'length') : undefined;
+    const text = change ? own(change, 'text') : undefined;
+    if (!boundedInteger(offset, 0, MAX_EDITOR_TEXT_CHARS) || !boundedInteger(length, 0, MAX_EDITOR_TEXT_CHARS) || typeof text !== 'string') return undefined;
+    inserted += text.length;
+    if (inserted > MAX_EDITOR_TEXT_CHARS) return undefined;
+    changes.push({ offset, length, text });
+  }
+  return changes;
 }
 
 const FORMAT_REASONS = ['save', 'command'] as const;
@@ -1514,9 +1546,9 @@ export class ShellHost {
       editor.setFocusOverlay(open);
     });
     this.on(SHELL_CHANNELS.editorEdit, (raw) => {
-      const request = parseEditorEdit(raw);
-      if (request) editor.edit(request);
-      else this.log('[shell] ignoring a malformed edit');
+      const report = parseEditorEdit(raw);
+      if (!report?.edit) this.log('[shell] refusing a malformed edit');
+      if (report && editor.edit(report.documentId, report.edit)) this.send(SHELL_CHANNELS.editorResync, { documentId: report.documentId });
     });
     this.on(SHELL_CHANNELS.editorSelection, (raw) => {
       const report = parseEditorSelection(raw);

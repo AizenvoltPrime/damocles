@@ -49,6 +49,25 @@ describe('a remote host\'s engine pill', () => {
     expect(api.restartEngine).not.toHaveBeenCalled();
   });
 
+  it('turns from danger to warning as its Restart starts, easing its colors and swapping its text in place', async () => {
+    const { wrapper, button } = pill('halted');
+    expect(button.classes()).toContain('text-(--d-danger-text)');
+    expect(button.classes()).toContain('engine-tone');
+    await wrapper.setProps({ engines: [{ authority: 'ssh+h1', name: 'prod-1', state: 'restarting' }] });
+    expect(button.classes()).toContain('text-(--d-warning-text)');
+    expect(button.classes()).not.toContain('text-(--d-danger-text)');
+    expect(wrapper.get('.t-swap-leave-active').text()).toBe('Engine stopped on prod-1');
+  });
+
+  it('keeps the engine of this computer stopped in danger', () => {
+    const wrapper = mount(EnginePill, {
+      props: { api: fakeShellApi(), halted: true, engines: [] },
+      global: { plugins: [shellI18n], stubs: { transition: false, 'transition-group': false } },
+    });
+    mounted.push(wrapper);
+    expect(wrapper.get('[data-testid="engine-pill"]').classes()).toContain('text-(--d-danger-text)');
+  });
+
   it('truncates a long host name, the full text in its title', () => {
     const name = 'x'.repeat(64);
     const { button } = pill('halted', name);

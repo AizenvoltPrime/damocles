@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { remPx } from '@/composables/useRemPx';
 import { chatListRows, chatOffers as offers, tagCounts, type ChatListRow } from '../chat-list';
 import SidebarSection from './SidebarSection.vue';
+import { TOOLBAR_BUTTON } from './sidebar-section';
 import ChatRow from './ChatRow.vue';
 import { finishActionOf, finishMenuItems } from '../worktree-menu';
 
@@ -447,8 +448,7 @@ defineExpose({
         variant="ghost"
         size="icon-sm"
         data-testid="chat-search-toggle"
-        class="size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
-        :class="searchOpen ? 'bg-(--d-hover) text-(--d-text)' : ''"
+        :class="[TOOLBAR_BUTTON, searchOpen ? 'bg-(--d-hover) text-(--d-text)' : '']"
         :aria-label="t('chats.search')"
         :title="t('chats.search')"
         :aria-expanded="searchOpen"

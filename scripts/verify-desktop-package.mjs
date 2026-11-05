@@ -237,16 +237,20 @@ export function checkCoreHost(entries, unpackedFiles) {
   return [problems.length === 0 ? pass('core host', `${CORE_HOST_BUNDLE} is inside app.asar only`) : fail('core host', problems.join('; '))];
 }
 
-/** The packed server manifest parses as the app reads it, is for `version` and names exactly the packages of `expected`. */
+/**
+ * The packed server manifest parses as the app reads it, is for `version`, is published, so hosts download from the release,
+ * and names exactly the packages of `expected` with their server versions.
+ */
 export function checkServerManifest(packed, version, expected) {
   if (packed === undefined) return [fail('server manifest', `${PACKED_SERVER_MANIFEST} is not in app.asar`)];
   const manifest = parseServerManifest(JSON.parse(packed));
   if (manifest === undefined) return [fail('server manifest', `${PACKED_SERVER_MANIFEST} does not parse as the app reads it`)];
-  const same = (a, b) => a !== undefined && a.file === b.file && a.sha256 === b.sha256 && a.size === b.size;
+  const same = (a, b) => a !== undefined && a.file === b.file && a.sha256 === b.sha256 && a.size === b.size && a.serverVersion === b.serverVersion;
   const problems = [
     ...(manifest.version === version ? [] : [`it is for ${manifest.version}, the app is ${version}`]),
+    ...(manifest.published ? [] : ['it is unpublished, the dev manifest build-server.mjs writes without --write-manifest']),
     ...(manifest.protocolVersion === expected.protocolVersion ? [] : [`it names protocol ${manifest.protocolVersion}, the build ${expected.protocolVersion}`]),
-    ...Object.entries(expected.packages).filter(([target, pkg]) => !same(manifest.packages[target], pkg)).map(([target, pkg]) => `${target} is not ${pkg.file} with its SHA-256 and size`),
+    ...Object.entries(expected.packages).filter(([target, pkg]) => !same(manifest.packages[target], pkg)).map(([target, pkg]) => `${target} is not ${pkg.file} with its SHA-256, size and server version ${pkg.serverVersion}`),
   ];
   return [problems.length === 0 ? pass('server manifest', `names the ${Object.keys(expected.packages).length} release packages`) : fail('server manifest', problems.join('; '))];
 }
@@ -434,7 +438,7 @@ export async function verifyPackage({ platform, arch, app, repoRoot, serverPacka
   if (serverPackages !== undefined) {
     const manifestFile = entries.find(({ path, entry }) => path === PACKED_SERVER_MANIFEST && !entry.unpacked);
     const packed = manifestFile === undefined ? undefined : readAsarFile(asarPath, dataOffset, manifestFile.entry);
-    results.push(...checkServerManifest(packed, repoVersion, serverManifest(serverPackages, repoVersion, Object.keys(SERVER_TARGETS))));
+    results.push(...checkServerManifest(packed, repoVersion, serverManifest(serverPackages, repoVersion, Object.keys(SERVER_TARGETS), { published: true })));
   }
 
   const unpackedFiles = listFiles(unpacked);

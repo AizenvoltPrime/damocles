@@ -4,12 +4,23 @@ import type { ShellDocumentContent, ShellEditorState, ShellEditorTab } from '../
 import { AUTO_SAVE_DELAY_MS, createEditorStore, type ShellMonacoModule } from '../editor/editor-store';
 import { EDITOR_STATE, fakeShellApi } from './fakes';
 
+interface FakeChange { rangeOffset: number; rangeLength: number; text: string }
+type FakeListener = (event: { changes: FakeChange[] }) => void;
+// Monaco's change event for a text replaced by another: the one span between their common start and end.
+const changeOf = (before: string, after: string): FakeChange => {
+  let start = 0;
+  while (start < before.length && start < after.length && before[start] === after[start]) start++;
+  let end = 0;
+  while (end < before.length - start && end < after.length - start && before[before.length - 1 - end] === after[after.length - 1 - end]) end++;
+  return { rangeOffset: start, rangeLength: before.length - start - end, text: after.slice(start, after.length - end) };
+};
+
 // A Monaco model double: the store only reads and replaces whole text, sets the EOL and listens for changes.
 class FakeModel {
   text: string;
   eol = 'LF';
   disposed = false;
-  readonly listeners: Array<() => void> = [];
+  readonly listeners: FakeListener[] = [];
   options = { tabSize: 4, indentSize: 4, insertSpaces: true };
   language: string;
   readonly uri: FakeUri;
@@ -23,7 +34,7 @@ class FakeModel {
   getEndOfLineSequence(): number { return this.eol === 'CRLF' ? 1 : 0; }
   getLanguageId(): string { return this.language; }
   getOptions(): { tabSize: number; indentSize: number; insertSpaces: boolean } { return this.options; }
-  onDidChangeContent(listener: () => void): { dispose(): void } {
+  onDidChangeContent(listener: FakeListener): { dispose(): void } {
     this.listeners.push(listener);
     return { dispose: () => {} };
   }
@@ -36,13 +47,13 @@ class FakeModel {
   // The store either replaces the whole text (a range from 1:1) or appends at the end.
   pushEditOperations(_selections: unknown, [edit]: Array<{ range: { startLineNumber: number; startColumn: number }; text: string }>): void {
     const replace = edit!.range.startLineNumber === 1 && edit!.range.startColumn === 1;
-    this.text = replace ? edit!.text : this.text + edit!.text;
-    for (const listener of this.listeners) listener();
+    this.type(replace ? edit!.text : this.text + edit!.text);
   }
   /** A keystroke: the user's edit, which the store reports. */
   type(text: string): void {
+    const changes = [changeOf(this.text, text)];
     this.text = text;
-    for (const listener of this.listeners) listener();
+    for (const listener of this.listeners) listener({ changes });
   }
   dispose(): void { this.disposed = true; }
   isDisposed(): boolean { return this.disposed; }
@@ -126,13 +137,14 @@ describe('editor store', () => {
     const { api, store } = await setup(state([tab({ id: 't1' })]), { 'doc-t1': text('doc-t1', 'a', 7) });
     const model = (await store.model('doc-t1')) as unknown as FakeModel;
     model.type('ab');
-    expect(api.reportEdit).toHaveBeenLastCalledWith({ documentId: 'doc-t1', version: 7, seq: 1, text: 'ab', overReload: false });
+    expect(api.reportEdit).toHaveBeenLastCalledWith({ documentId: 'doc-t1', version: 7, seq: 1, changes: [{ offset: 1, length: 0, text: 'b' }] });
     model.type('abc');
     model.type('abcd');
     expect(api.reportEdit).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(250);
     expect(api.reportEdit).toHaveBeenCalledTimes(2);
-    expect(api.reportEdit).toHaveBeenLastCalledWith({ documentId: 'doc-t1', version: 7, seq: 2, text: 'abcd', overReload: false });
+    const changes = [{ offset: 2, length: 0, text: 'c' }, { offset: 3, length: 0, text: 'd' }];
+    expect(api.reportEdit).toHaveBeenLastCalledWith({ documentId: 'doc-t1', version: 7, seq: 2, changes });
   });
 
   it('flushes the unsent edit before a save and saves the buffer with its EOL, untitled through Save As', async () => {
@@ -159,7 +171,7 @@ describe('editor store', () => {
     model.type('ab');
     model.type('abc');
     api.editorFlush({ requestId: 'req-1', format: [] });
-    expect(api.reportEdit).toHaveBeenLastCalledWith({ documentId: 'doc-t1', version: 1, seq: 2, text: 'abc', overReload: false });
+    expect(api.reportEdit).toHaveBeenLastCalledWith({ documentId: 'doc-t1', version: 1, seq: 2, changes: [{ offset: 2, length: 0, text: 'c' }] });
     expect(vi.mocked(api.reportEdit).mock.invocationCallOrder.at(-1)!).toBeLessThan(vi.mocked(api.editorFlushed).mock.invocationCallOrder[0]!);
     expect(api.editorFlushed).toHaveBeenCalledWith('req-1');
   });
@@ -172,14 +184,14 @@ describe('editor store', () => {
     expect(api.reportEdit).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1000);
     model.type('new from disk!');
-    expect(api.reportEdit).toHaveBeenLastCalledWith({ documentId: 'doc-t1', version: 2, seq: 1, text: 'new from disk!', overReload: false });
+    expect(api.reportEdit).toHaveBeenLastCalledWith({ documentId: 'doc-t1', version: 2, seq: 1, changes: [{ offset: 13, length: 0, text: '!' }] });
   });
 
   it('keeps a keystroke that was on its way to main when main reloaded the clean buffer, and reports it as typed over the reload', async () => {
     const { api, store } = await setup(state([tab({ id: 't1' })]), { 'doc-t1': text('doc-t1', 'a') });
     const model = (await store.model('doc-t1')) as unknown as FakeModel;
     model.type('ab');
-    expect(api.reportEdit).toHaveBeenLastCalledWith({ documentId: 'doc-t1', version: 1, seq: 1, text: 'ab', overReload: false });
+    expect(api.reportEdit).toHaveBeenLastCalledWith({ documentId: 'doc-t1', version: 1, seq: 1, changes: [{ offset: 1, length: 0, text: 'b' }] });
     // main reloaded before that edit arrived: its content covers no edit of the shell's
     api.documentChanged({ documentId: 'doc-t1', content: text('doc-t1', 'disk', 2) });
     expect(model.text).toBe('ab');
@@ -200,7 +212,7 @@ describe('editor store', () => {
     const { api, store } = await setup(state([tab({ id: 't1' })]), { 'doc-t1': text('doc-t1', 'a', 1, '\n', 4) });
     const model = (await store.model('doc-t1')) as unknown as FakeModel;
     model.type('ab');
-    expect(api.reportEdit).toHaveBeenLastCalledWith({ documentId: 'doc-t1', version: 1, seq: 5, text: 'ab', overReload: false });
+    expect(api.reportEdit).toHaveBeenLastCalledWith({ documentId: 'doc-t1', version: 1, seq: 5, changes: [{ offset: 1, length: 0, text: 'b' }] });
     model.type('a');
     vi.advanceTimersByTime(250);
     api.documentChanged({ documentId: 'doc-t1', content: text('doc-t1', 'disk', 2, '\n', 6) });
@@ -275,7 +287,7 @@ describe('editor store', () => {
 
     vi.advanceTimersByTime(1000);
     moved.type('let a: number = 2;');
-    expect(api.reportEdit).toHaveBeenLastCalledWith(expect.objectContaining({ documentId: 'doc-t1', text: 'let a: number = 2;' }));
+    expect(api.reportEdit).toHaveBeenLastCalledWith(expect.objectContaining({ documentId: 'doc-t1', changes: [{ offset: 16, length: 1, text: '2' }] }));
     api.pushEditorState(state([{ ...first, title: 'a.ts' }], 't1', {}, after));
     expect(await store.model('doc-t1')).toBe(moved);
   });
@@ -415,7 +427,22 @@ describe('editor store', () => {
     model.type('abc');
     api.editorFlush({ requestId: 'req-1', format: ['doc-t2'] });
     await vi.runAllTimersAsync();
-    expect(api.reportEdit).toHaveBeenLastCalledWith(expect.objectContaining({ documentId: 'doc-t1', text: 'abc' }));
+    expect(api.reportEdit).toHaveBeenLastCalledWith(expect.objectContaining({ documentId: 'doc-t1', changes: [{ offset: 2, length: 0, text: 'c' }] }));
     expect(api.editorFlushed).toHaveBeenCalledWith('req-1');
+  });
+
+  it('answers main\'s resync with the whole buffer, which covers the changes it had not sent', async () => {
+    const { api, store } = await setup(state([tab({ id: 't1' })]), { 'doc-t1': text('doc-t1', 'a', 3) });
+    const model = (await store.model('doc-t1')) as unknown as FakeModel;
+    model.type('ab');
+    model.type('abc');
+    api.editorResync('doc-t1');
+    expect(api.reportEdit).toHaveBeenLastCalledWith({ documentId: 'doc-t1', version: 3, seq: 2, text: 'abc', overReload: false });
+    vi.advanceTimersByTime(1000);
+    expect(api.reportEdit).toHaveBeenCalledTimes(2);
+    model.type('abcd');
+    expect(api.reportEdit).toHaveBeenLastCalledWith({ documentId: 'doc-t1', version: 3, seq: 3, changes: [{ offset: 3, length: 0, text: 'd' }] });
+    api.editorResync('doc-other');
+    expect(api.reportEdit).toHaveBeenCalledTimes(3);
   });
 });

@@ -13,7 +13,7 @@
 
 import { createReadStream } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { initPiLoader, type PiCodingAgentModule } from './pi-loader';
@@ -26,6 +26,7 @@ import {
 } from './session-store/constants';
 import { SUBAGENT_RESULTS_CUSTOM_TYPE } from './subagents/background-results';
 import { turnStoppedEntryIds, turnStoppedToolCallIds } from './session-store/turn-stopped';
+import { piSessionFileId } from './session-store/session-file-path';
 import { TOOL_AGENT, TOOL_GET_SUBAGENT_RESULT } from '../../shared/tool-names';
 import type { AgentRecord } from './subagents/types';
 import { addAgentUsage, agentUsageOf, emptyAgentUsage, usageOfEntry, type AgentUsageTotals } from '../../shared/usage-accounting';
@@ -100,13 +101,10 @@ export function teamMemberSessionId(memberId: string, attempt: number): string {
   return id;
 }
 
-// pi names a session file `<timestamp>_<sessionId>.jsonl` and its timestamp holds no `_` (`session-manager.js:713`, `:1241`, `:1396` in pi 1.4.0).
-const SESSION_FILE_NAME = /^[^_]+_(.+)\.jsonl$/;
-
 /** The pi session id of the agent file at `path`, read from its name, so nothing opens the file to learn it. */
 export function agentFileSessionId(path: string): string {
-  const id = SESSION_FILE_NAME.exec(basename(path))?.[1];
-  if (id === undefined || !isSafeAgentPathId(id)) throw new Error(`Agent file ${path} is not named as pi names a session file.`);
+  const id = piSessionFileId(path);
+  if (id === undefined) throw new Error(`Agent file ${path} is not named as pi names a session file.`);
   return id;
 }
 

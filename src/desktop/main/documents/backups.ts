@@ -34,8 +34,8 @@ export interface BackupRecord {
     | { readonly kind: 'settings'; readonly scope: SettingsFileScope; readonly path: string }
     // a host's own settings file, by its authority key and its path on that host
     | { readonly kind: 'hostSettings'; readonly authority: string; readonly path: string }
-    // a file outside every project on authority (local included), by its path there and the rule it opened editable by
-    | { readonly kind: 'outside'; readonly authority: string; readonly path: string; readonly outside: 'plans' | 'user' }
+    // a file outside every project on authority (local included), by its realpath there
+    | { readonly kind: 'outside'; readonly authority: string; readonly path: string }
     | { readonly kind: 'untitled' }
     // an untitled Search Editor, text in the .code-search form; projectKey is resolved again against the open projects on restore
     | { readonly kind: 'searchEditor'; readonly projectKey?: string };
@@ -83,8 +83,7 @@ function parseTarget(raw: unknown): BackupRecord['target'] | undefined {
   if (kind === 'outside') {
     const authority = field(raw, 'authority');
     const filePath = field(raw, 'path');
-    const outside = field(raw, 'outside');
-    return isBoundedText(authority, MAX_ID_LENGTH) && isHostPath(filePath) && (outside === 'plans' || outside === 'user') ? { kind, authority, path: filePath, outside } : undefined;
+    return isBoundedText(authority, MAX_ID_LENGTH) && isHostPath(filePath) ? { kind, authority, path: filePath } : undefined;
   }
   if (kind !== 'project') return undefined;
   const projectKey = field(raw, 'projectKey');
@@ -123,7 +122,7 @@ function targetOf(document: TextDocument): BackupRecord['target'] | undefined {
   if (document.settingsScope !== undefined && document.location) return { kind: 'settings', scope: document.settingsScope, path: document.location.path };
   const location = document.location;
   if (location?.outside === 'settings' && location.host !== undefined) return { kind: 'hostSettings', authority: location.host, path: location.path };
-  if (location?.outside === 'plans' || location?.outside === 'user') return { kind: 'outside', authority: location.host ?? 'local', path: location.path, outside: location.outside };
+  if (location?.outside === 'path') return { kind: 'outside', authority: location.host ?? 'local', path: location.path };
   if (location?.projectKey !== undefined && location.relativePath !== undefined) {
     return { kind: 'project', projectKey: location.projectKey, relativePath: location.relativePath };
   }

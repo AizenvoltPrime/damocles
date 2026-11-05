@@ -4,6 +4,7 @@ import { createCoreEndpoint, createLoopback, createMainEndpoint, CoreProtocolErr
 import { englishText, LocalizedError, type LocalizedText } from '../../../shared/localized-text';
 import { StashKeptError, SyncBranchChangedError } from '../../../core/scm/errors';
 import { MAX_MESSAGE_CHARS } from '../messages';
+import { WriteRefusedError } from '../../workspace/file-system';
 
 const quiet = (): void => undefined;
 const greek = (text: LocalizedText): string => `[el] ${englishText(text)}`;
@@ -39,6 +40,27 @@ describe('the error codec', () => {
     const rebuilt = ERROR_CODEC.decode(fault!, 'ENOSPC: no space left on device, write') as NodeJS.ErrnoException;
     expect(rebuilt).toBeInstanceOf(Error);
     expect([rebuilt.message, rebuilt.code]).toEqual(['ENOSPC: no space left on device, write', 'ENOSPC']);
+  });
+
+  it('carries a LocalizedError with a system code as its text, the code beside it, and one whose text it cannot send as its code', () => {
+    const text = { message: 'The drive {0} did not answer within a second.', args: ['Q:\\'] };
+    const fault = ERROR_CODEC.encode(Object.assign(new LocalizedError(text), { code: 'ETIMEDOUT' }), quiet);
+    expect(fault).toEqual({ name: 'LocalizedError', data: { text, code: 'ETIMEDOUT' } });
+    const rebuilt = ERROR_CODEC.decode(fault!, 'x') as LocalizedError & NodeJS.ErrnoException;
+    expect(rebuilt).toBeInstanceOf(LocalizedError);
+    expect([rebuilt.text, rebuilt.code]).toEqual([text, 'ETIMEDOUT']);
+    expect(ERROR_CODEC.decode({ name: 'LocalizedError', data: { text, code: 'not a code' } }, 'x')).toBeUndefined();
+    const unsendable = Object.assign(new LocalizedError(OUTSIDE_THE_WIRE[0]![1]), { code: 'ELOOP' });
+    expect(ERROR_CODEC.encode(unsendable, quiet)).toEqual({ name: 'Errno', data: { code: 'ELOOP' } });
+  });
+
+  it('carries a write refused for a session file by its refusal, and rebuilds no refusal outside the list', () => {
+    const fault = ERROR_CODEC.encode(new WriteRefusedError('/s/a_b.jsonl is a session file', 'sessionFile'), quiet);
+    expect(fault).toEqual({ name: 'WriteRefusedError', data: { refusal: 'sessionFile' } });
+    const rebuilt = ERROR_CODEC.decode(fault!, 'x');
+    expect(rebuilt).toBeInstanceOf(WriteRefusedError);
+    expect((rebuilt as WriteRefusedError).refusal).toBe('sessionFile');
+    expect(ERROR_CODEC.decode({ name: 'WriteRefusedError', data: { refusal: 'leased' } }, 'x')).toBeUndefined();
   });
 
   it('carries an error with no system code as its message only, and rebuilds no Errno whose code is not one', () => {

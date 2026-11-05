@@ -537,7 +537,8 @@ export class WorktreeController {
       const finding = findings[index];
       if (!finding) return;
       if (answer.choice === 'reveal') {
-        await this.deps.reveal(finding.path);
+        // a Reveal check that could not run rejects, and its message is in the user's language
+        await this.deps.reveal(finding.path).catch((err: unknown) => void this.deps.notify.error(this.deps.t('Could not show {0} in File Explorer: {1}', visibleText(finding.path), visibleLines(errorText(err)))));
         return;
       }
       if (!this.requireGit()) return;

@@ -137,7 +137,8 @@ export interface ViaSideDeps {
   readonly hostName: () => string;
   // the SSH host's connection while it is connected
   readonly connection: () => RemoteConnection | undefined;
-  readonly manifest: () => Promise<{ readonly manifest: ServerManifest; readonly releasesUrl: string }>;
+  // releasesUrl: absent for an unpublished build, whose host never downloads
+  readonly manifest: () => Promise<{ readonly manifest: ServerManifest; readonly releasesUrl?: string }>;
 }
 
 /** A client-opened stream as a stage 0 process: its data is stdout, writing waits for the window, and its end is the exit. */
@@ -221,7 +222,8 @@ export function viaContainerSide(deps: ViaSideDeps): ContainerSide {
       const connection = connected();
       const { manifest, releasesUrl } = await deps.manifest();
       const pkg = manifest.packages[target];
-      if (!pkg) return 'notCopied';
+      // the host's package cache downloads from the release, so without one the stage asks for the upload
+      if (!pkg || releasesUrl === undefined) return 'notCopied';
       const { result } = await connection.control.request('containers.copyPackage', { engine, containerId, folder, file: pkg.file, sha256: pkg.sha256, size: pkg.size, url: releaseAssetUrl(releasesUrl, manifest.version, pkg.file) });
       return result;
     },

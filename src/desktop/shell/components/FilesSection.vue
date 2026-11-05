@@ -22,6 +22,7 @@ import { SCM_STORE } from '../scm/scm-store';
 import { TONE_TEXT } from '../scm/scm-list';
 import StatusLetter from '../scm/StatusLetter.vue';
 import SidebarSection from './SidebarSection.vue';
+import { TOOLBAR_BUTTON } from './sidebar-section';
 import FilesBranchChip from './FilesBranchChip.vue';
 import WslNotice from './WslNotice.vue';
 import FilesTransferRow from './FilesTransferRow.vue';
@@ -882,7 +883,7 @@ defineExpose({ reveal, startCreate, collapseAll });
         variant="ghost"
         size="icon-sm"
         data-testid="files-new-file"
-        class="size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
+        :class="TOOLBAR_BUTTON"
         :disabled="projectKey === undefined"
         :aria-label="t('files.newFile')"
         :title="t('files.newFile')"
@@ -895,7 +896,7 @@ defineExpose({ reveal, startCreate, collapseAll });
         variant="ghost"
         size="icon-sm"
         data-testid="files-new-folder"
-        class="size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
+        :class="TOOLBAR_BUTTON"
         :disabled="projectKey === undefined"
         :aria-label="t('files.newFolder')"
         :title="t('files.newFolder')"
@@ -908,7 +909,7 @@ defineExpose({ reveal, startCreate, collapseAll });
         variant="ghost"
         size="icon-sm"
         data-testid="files-copy-here"
-        class="size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
+        :class="TOOLBAR_BUTTON"
         :disabled="projectKey === undefined || !!unsupportedText"
         :aria-label="t('files.copyHere')"
         :aria-describedby="unsupportedText ? unsupportedId : undefined"
@@ -922,7 +923,7 @@ defineExpose({ reveal, startCreate, collapseAll });
         variant="ghost"
         size="icon-sm"
         data-testid="files-collapse-all"
-        class="size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
+        :class="TOOLBAR_BUTTON"
         :disabled="expanded.size === 0"
         :aria-label="t('files.collapseAll')"
         :title="t('files.collapseAll')"

@@ -34,7 +34,8 @@ export interface WslTransportOptions {
   readonly hooks: Pick<SshAttemptHooks, 'step' | 'progress' | 'notice'>;
   installFolderSettled(): Promise<void>;
   readonly manifest: ServerManifest;
-  readonly releasesUrl: string;
+  // absent for an unpublished build: the stage never downloads
+  readonly releasesUrl?: string;
   readonly artifacts: ArtifactCache;
   readonly log: (line: string) => void;
 }
@@ -100,7 +101,7 @@ export async function startWslTransport(options: WslTransportOptions, deps: WslT
   if (!isWslMappableFolder(cacheFolder)) log(`the package cache ${cacheFolder} is no drive path wslpath maps; the stage downloads or uploads the package`);
   const stage1 = buildPosixStage1({
     manifest: options.manifest,
-    releasesUrl: options.releasesUrl,
+    ...(options.releasesUrl !== undefined ? { releasesUrl: options.releasesUrl } : {}),
     ...(options.installFolder !== undefined ? { installFolder: options.installFolder } : {}),
     ...(options.previousInstallFolder !== undefined ? { previousInstallFolder: options.previousInstallFolder } : {}),
     ...(isWslMappableFolder(cacheFolder) ? { wslCacheFolder: cacheFolder } : {}),

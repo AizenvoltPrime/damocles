@@ -25,9 +25,9 @@ const actions = new Proxy({} as MenuActions, {
 });
 
 const PROJECTS = [{ fsPath: 'C:\\work\\alpha', name: 'alpha' }] as never;
-const CHAT: MenuState = { chat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, terminalCreate: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false };
+const CHAT: MenuState = { chat: true, liveChat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, terminalCreate: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false };
 const EDITOR: MenuState = { ...CHAT, editor: true, focus: 'editor' };
-const NONE: MenuState = { chat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, terminalCreate: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false };
+const NONE: MenuState = { chat: false, liveChat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, terminalCreate: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined, remoteHostConnected: false, remoteHostSaved: false };
 const PLATFORMS = ['win32', 'linux', 'darwin'] as const;
 
 const en = createDesktopLocalizationService(process.cwd(), 'en', () => undefined);
@@ -67,6 +67,20 @@ describe('command registry', () => {
     expect(enabled(MENU_IDS.findInFiles, NONE)).toBe(true);
     expect(enabled(MENU_IDS.toggleBrowserDevTools, { ...CHAT, page: true })).toBe(true);
     expect(enabled(MENU_IDS.checkForUpdates, NONE)).toBe(false);
+  });
+
+  it("disables the commands that need the chat's core on an offline transcript, and keeps the prompt navigator", () => {
+    const byId = new Map(desktopCommands(PROJECTS, actions, 'win32').map((command) => [command.id, command]));
+    const enabled = (id: string, context: MenuState) => isEnabled(byId.get(id)!, context);
+    const offline: MenuState = { ...CHAT, liveChat: false, selectedChatHasChanges: true };
+    const live: MenuState = { ...CHAT, selectedChatHasChanges: true };
+    const needCore = [...CHAT_FEATURE_IDS, MENU_IDS.newBrowserPage, MENU_IDS.chatReviewChanges];
+    expect(needCore).toHaveLength(12);
+    for (const id of needCore) {
+      expect(enabled(id, offline)).toBe(false);
+      expect(enabled(id, live)).toBe(true);
+    }
+    expect(enabled(MENU_IDS.togglePromptNavigator, offline)).toBe(true);
   });
 
   it('has unique ids and registers each accelerator once per platform', () => {

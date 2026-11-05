@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { testWorkspaces } from './test-workspaces';
+import { noSessionFiles, testWorkspaces, unretainedSpellings } from './test-workspaces';
 import { resolveRgPath } from '../../../core/chat-panel/ripgrep';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
@@ -54,6 +54,8 @@ beforeEach(() => {
   copied = [];
   const t = (message: string, ...args: Array<string | number>): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]));
   documents = new DocumentService({
+    spellings: unretainedSpellings(),
+    sessionFiles: noSessionFiles,
     render: englishText,
     hostLabel: (authority) => ({ hostId: authority, name: authority }),
     uploadsConflicted: () => undefined,
@@ -76,6 +78,7 @@ beforeEach(() => {
     settings: platform.settings,
     ask: async () => undefined,
     t,
+    render: englishText,
     log: () => undefined,
     restoreLayout: () => true,
     persist: () => undefined,
@@ -152,7 +155,7 @@ describe('the open documents Search reads', () => {
     fs.writeFileSync(path.join(root, 'settings.json'), '{"needle": 1}');
     const own = await documents.openProjectFile(project.key, 'src/a.ts');
     await documents.openProjectFile(other.key, 'b.ts');
-    await documents.openPath(path.join(root, 'outside.ts'));
+    await documents.openNamedPath('local', path.join(root, 'outside.ts'));
     await documents.openSettingsFile('user');
     documents.openMemory('a.ts', 'needle', { untitled: false });
     const untitled = documents.openMemory('Untitled-1', 'needle', { untitled: true });

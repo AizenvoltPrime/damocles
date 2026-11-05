@@ -7,7 +7,8 @@ import { startOpenAIStub, type OpenAIStub } from './support/openai-stub';
 import { chooseMenuItem, menuItem, overlayMenu, readyOverlay } from './support/overlay';
 import { overlayPage, pressKeys, selectedProjectKey, SHELL_URL, shellPage, viewFocused } from './support/shell';
 import { openProjectChat } from './support/screenshots';
-import { chatInput } from './support/ui';
+import { awaitTurnEnd, chatInput, postFromWebview } from './support/ui';
+import { piSessionDir } from '../../src/core/pi-session/session-store/session-dir';
 import {
   activeTab,
   activeTabTopRow,
@@ -39,6 +40,12 @@ async function approve(tab: Page): Promise<void> {
 async function send(tab: Page, text: string): Promise<void> {
   await chatInput(tab).fill(text);
   await chatInput(tab).press('Enter');
+}
+
+/** pi's session files for chats in `cwd` under an agent dir. */
+function sessionFiles(agentDir: string, cwd: string): string[] {
+  const dir = piSessionDir(cwd, agentDir);
+  return fs.existsSync(dir) ? fs.readdirSync(dir).filter((name) => name.endsWith('.jsonl')).map((name) => path.join(dir, name)) : [];
 }
 
 async function withStub(home: HermeticHome, run: (stub: OpenAIStub) => Promise<void>): Promise<void> {
@@ -240,6 +247,40 @@ test('the shell channel refuses a path outside every project', async ({ home, la
   expect((await editorState(app)).tabs.length).toBe(before);
 });
 
+test('a local chat\'s link to a file outside every project opens it editable and a save writes it, and Open session log opens the conversation\'s .jsonl editable', async ({ foreground: _foreground, home, launch }) => {
+  await withStub(home, async (stub) => {
+    const outside = path.join(home.root, 'm2', 'mutate.sh');
+    fs.mkdirSync(path.dirname(outside), { recursive: true });
+    fs.writeFileSync(outside, 'echo one\n');
+    const { app } = await launch();
+    const tab = await openProjectChat(app, home.project);
+    const shell = await shellPage(app);
+
+    await postFromWebview(tab, { type: 'openFile', filePath: outside });
+    await expect(editorTab(shell, 'mutate.sh')).toHaveAttribute('aria-selected', 'true');
+    await expect.poll(async () => activeTab(app)).toMatchObject({ kind: 'code', readOnly: false, displayPath: fs.realpathSync.native(outside) });
+    await editorShows(shell, 'echo one');
+    await codeEditor(shell).locator('.view-line').first().click();
+    await shell.keyboard.press(DOCUMENT_END);
+    await shell.keyboard.type('echo two');
+    await saveWithKeyboard(app);
+    await expect.poll(() => fs.readFileSync(outside, 'utf8')).toBe('echo one\necho two');
+    await expect.poll(async () => (await activeTab(app))?.dirty).toBe(false);
+
+    // a turn writes the conversation's session file; the reply is fixed, since the active tab's context joins the echoed prompt
+    stub.replies.push({ chunks: ['Logged.'] });
+    await send(tab, 'hello');
+    await expect(tab.getByText('Logged.', { exact: true })).toBeVisible();
+    await awaitTurnEnd(tab);
+    let sessionLog: string | undefined;
+    await expect.poll(() => (sessionLog = sessionFiles(home.agentDir, home.project)[0])).toBeDefined();
+    await postFromWebview(tab, { type: 'openSessionLog' });
+    await expect(editorTab(shell, path.basename(sessionLog!))).toHaveAttribute('aria-selected', 'true');
+    await expect.poll(async () => activeTab(app)).toMatchObject({ kind: 'code', readOnly: false, displayPath: fs.realpathSync.native(sessionLog!) });
+    await editorShows(shell, '"type":"session"');
+  });
+});
+
 test('a PNG opens as an image preview and a binary file as "not displayed" with Reveal in File Explorer', async ({ home, launch }) => {
   // A 1x1 transparent PNG.
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
@@ -262,6 +303,33 @@ test('a PNG opens as an image preview and a binary file as "not displayed" with 
   await expect(notDisplayed).toContainText('It is a binary file.');
   await expect(notDisplayed.getByTestId('editor-reveal')).toBeVisible();
   await expect(editorPane(shell).getByTestId('code-editor')).toHaveCount(0);
+});
+
+test('a file past 10 MiB shows the notice with Open Anyway, which opens it in the editor, and one past 64 MiB offers none', async ({ home, launch }) => {
+  // 11 MiB of 64-byte lines
+  fs.writeFileSync(path.join(home.project, 'big.log'), `${'x'.repeat(63)}\n`.repeat(11 * 16 * 1024));
+  // 65 MiB by extending an empty file, never read
+  const huge = path.join(home.project, 'huge.log');
+  fs.writeFileSync(huge, '');
+  fs.truncateSync(huge, 65 * 1024 * 1024);
+  const { app } = await launch();
+  await openProjectChat(app, home.project);
+  const shell = await shellPage(app);
+  const projectKey = await selectedProjectKey(app);
+  const notice = shell.getByTestId('editor-not-displayed');
+
+  expect(await openInEditor(app, { projectKey, relativePath: 'huge.log' })).toMatchObject({ ok: true });
+  await expect(notice).toContainText('It is over the editor\'s 64 MB limit.');
+  await expect(notice.getByTestId('editor-reveal')).toBeVisible();
+  await expect(notice.getByTestId('editor-open-anyway')).toHaveCount(0);
+
+  expect(await openInEditor(app, { projectKey, relativePath: 'big.log' })).toMatchObject({ ok: true });
+  await expect(notice).toContainText('It is too large to open in the editor.');
+  await notice.getByTestId('editor-open-anyway').click();
+  await editorShows(shell, 'x'.repeat(63));
+  await expect(editorTab(shell, 'big.log')).toHaveAttribute('aria-selected', 'true');
+  await expect(editorTab(shell, 'big.log')).not.toHaveAttribute('data-dirty', 'true');
+  await expect(notice).toHaveCount(0);
 });
 
 test('a code tab keeps its caret and scroll position while an image tab shows in its place', async ({ foreground: _foreground, home, launch }) => {

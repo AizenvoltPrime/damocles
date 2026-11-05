@@ -4,6 +4,16 @@ import { isWslDistroName } from './distro-name';
 // \\wsl.localhost\<distro>\... (Windows 11) and \\wsl$\<distro>\..., either separator, any case
 const WSL_UNC = /^[\\/]{2}(?:wsl\.localhost|wsl\$)[\\/]([^\\/]+)(?:[\\/](.*))?$/i;
 const UNSAFE = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
+// the server segment of a WSL UNC path, which wslUncAlias swaps
+const WSL_SERVER = /^([\\/]{2})(wsl\.localhost|wsl\$)(?=[\\/]|$)/i;
+
+/** The other spelling of a WSL UNC path, `\\wsl$` for `\\wsl.localhost` and back; undefined for any other path. */
+export function wslUncAlias(windowsPath: string): string | undefined {
+  const match = WSL_SERVER.exec(windowsPath);
+  if (!match) return undefined;
+  const server = match[2]!.toLowerCase() === 'wsl$' ? 'wsl.localhost' : 'wsl$';
+  return `${match[1]!}${server}${windowsPath.slice(match[0].length)}`;
+}
 
 /** A WSL UNC path's distro and Linux path; undefined for any other path, one naming no valid distro, or one with . or .. parts. */
 export function wslUncToLinux(windowsPath: string): { readonly distro: string; readonly path: string } | undefined {

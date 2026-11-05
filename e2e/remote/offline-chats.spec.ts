@@ -5,7 +5,8 @@ import type { ElectronApplication, Page } from '@playwright/test';
 import { filesUnder } from '../desktop/support/loopback';
 import { sendPrompt } from '../desktop/support/loopback-agent';
 import type { StubReply } from '../desktop/support/openai-stub';
-import { recordedPopupToasts, recordToasts, shellPage } from '../desktop/support/shell';
+import { quickPick } from '../desktop/support/editor';
+import { overlayPage, pressKeys, PRIMARY, recordedPopupToasts, recordToasts, shellPage } from '../desktop/support/shell';
 import { chatRow, listChats } from '../desktop/support/shell-ui';
 import { awaitTurnEnd, chatInput } from '../desktop/support/ui';
 import { shutdownHostDaemon } from './support/daemon-teardown';
@@ -123,6 +124,17 @@ test('with the host offline its project lists the chats of the session mirror wi
     expect((await transcript.getByTestId('chat-header').boundingBox())?.y).toBe(0);
     await expect(transcript.getByTestId('composer-offline')).toContainText('prod-1 is offline');
     await expect(chatInput(transcript)).toHaveCount(0);
+
+    // The Chat menu's features need the chat's core, which the transcript has none of, so the menu and the palette disable them.
+    const menuEnabled = (id: string) => app.evaluate(({ Menu }, itemId) => Menu.getApplicationMenu()?.getMenuItemById(itemId)?.enabled, id);
+    for (const id of ['damocles.chat.tools', 'damocles.chat.memory', 'damocles.chat.rewind', 'damocles.chat.openSessionLog']) await expect.poll(() => menuEnabled(id)).toBe(false);
+    const overlay = await overlayPage(app);
+    await pressKeys(app, '/shell/', 'P', [PRIMARY, 'shift']);
+    await expect(quickPick(overlay)).toBeVisible();
+    await overlay.getByTestId('quick-pick-input').fill('>Tools');
+    await expect(overlay.locator('[data-testid="quick-pick-item"][data-item-id="damocles.chat.tools"]')).toHaveAttribute('aria-disabled', 'true');
+    await overlay.keyboard.press('Escape');
+    await expect(quickPick(overlay)).toHaveCount(0);
 
     // Listing and reading the mirror changed none of its files.
     await second.close();

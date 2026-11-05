@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Run } from '../../../daemon/control-messages';
 import { adoptCompatibleDaemon, FollowedDaemons, followOtherProtocolDaemon, otherDeviceCount, shutDownNow, type CompatibleDaemon, type SwitchListing } from '../app-update-flow';
 import type { OtherProtocolDaemon } from '../connection';
+import type { ServerManifest } from '../server-manifest-format';
 
 const quiet = (): void => undefined;
 const chat = (id: string, title: string): Run => ({ kind: 'chat', id, projectKey: '/srv/app', title, state: 'running', providers: [] });
@@ -23,34 +24,58 @@ function compatible(serverVersion: string, runs: readonly Run[], otherDevices = 
   return { daemon, calls };
 }
 
-describe('a compatible daemon of another app version', () => {
-  it('is attached as is when it runs this version', async () => {
-    const { daemon, calls } = compatible('3.7.0', [chat('host-1', 'busy')]);
-    expect(await adoptCompatibleDaemon('3.7.0', daemon, quiet)).toBe('current');
-    expect(calls).toEqual([]);
+// this build's manifest: a server version per target, as each target's package hashes to its own
+const BUILD = { linux: '3.7.0+0123456789ab', windows: '3.7.0+ba9876543210' };
+const manifest: ServerManifest = {
+  version: '3.7.0',
+  protocolVersion: 1,
+  published: false,
+  packages: {
+    'linux-x64': { file: 'damocles-server-3.7.0-linux-x64.tar.gz', sha256: 'a'.repeat(64), size: 10, serverVersion: BUILD.linux },
+    'win32-x64': { file: 'damocles-server-3.7.0-win32-x64.zip', sha256: 'b'.repeat(64), size: 10, serverVersion: BUILD.windows },
+  },
+};
+
+describe('a compatible daemon of another build', () => {
+  it('is attached as is when it runs one of this build\'s server versions, whichever target', async () => {
+    for (const serverVersion of [BUILD.linux, BUILD.windows]) {
+      const { daemon, calls } = compatible(serverVersion, [chat('host-1', 'busy')]);
+      expect(await adoptCompatibleDaemon(manifest, daemon, quiet)).toBe('current');
+      expect(calls).toEqual([]);
+    }
+  });
+
+  it('is replaced when it runs another build of this version, or the plain version an earlier build ran as', async () => {
+    for (const serverVersion of ['3.7.0+fedcba987654', '3.7.0']) {
+      const lines: string[] = [];
+      const { daemon, calls } = compatible(serverVersion, [], 0);
+      expect(await adoptCompatibleDaemon(manifest, daemon, (line) => lines.push(line))).toBe('replaceNow');
+      expect(calls).toEqual(['shutdownNow']);
+      expect(lines).toEqual([`[update] the daemon of ${serverVersion} is idle with no other device; stopping it for this build of 3.7.0`]);
+    }
   });
 
   it('keeps its runs: attached, it is asked to exit once idle, never stopped', async () => {
     const { daemon, calls } = compatible('3.6.9', [chat('host-1', 'Fix the parser')]);
-    expect(await adoptCompatibleDaemon('3.7.0', daemon, quiet)).toBe('switchWhenIdle');
+    expect(await adoptCompatibleDaemon(manifest, daemon, quiet)).toBe('switchWhenIdle');
     expect(calls).toEqual(['shutdownWhenIdle']);
   });
 
   it('is kept alive by a terminal alone, which delays the switch until it closes', async () => {
     const { daemon, calls } = compatible('3.6.9', [terminal('term-1', 'bash')]);
-    expect(await adoptCompatibleDaemon('3.7.0', daemon, quiet)).toBe('switchWhenIdle');
+    expect(await adoptCompatibleDaemon(manifest, daemon, quiet)).toBe('switchWhenIdle');
     expect(calls).toEqual(['shutdownWhenIdle']);
   });
 
   it('serving another device, waits for idle though it runs nothing', async () => {
     const { daemon, calls } = compatible('3.6.9', [], 1);
-    expect(await adoptCompatibleDaemon('3.7.0', daemon, quiet)).toBe('switchWhenIdle');
+    expect(await adoptCompatibleDaemon(manifest, daemon, quiet)).toBe('switchWhenIdle');
     expect(calls).toEqual(['shutdownWhenIdle']);
   });
 
-  it('idle and alone, is stopped now so this version starts', async () => {
+  it('idle and alone, is stopped now so this build starts', async () => {
     const { daemon, calls } = compatible('3.6.9', [], 0);
-    expect(await adoptCompatibleDaemon('3.7.0', daemon, quiet)).toBe('replaceNow');
+    expect(await adoptCompatibleDaemon(manifest, daemon, quiet)).toBe('replaceNow');
     expect(calls).toEqual(['shutdownNow']);
   });
 });
@@ -118,6 +143,14 @@ describe('a busy daemon of another protocol', () => {
     expect(host.update()).toEqual({ serverVersion: '3.6.9', runningAgents: 1, phase: 'offer' });
     expect(syncMirror).toHaveBeenCalledTimes(2);
     expect(old.requests).not.toContain('shutdownNow');
+    host.dispose();
+  });
+
+  it('names the app version of a daemon whose server version carries a build', async () => {
+    const old = otherProtocol([chat('host-1', 'Fix the parser')]);
+    const { host } = follow({ ...old.daemon, serverVersion: '3.6.9+0123456789ab' } as OtherProtocolDaemon);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.update()).toEqual({ serverVersion: '3.6.9', runningAgents: 1, phase: 'offer' });
     host.dispose();
   });
 
@@ -242,7 +275,7 @@ describe('the other devices of a daemon', () => {
 
   it('when unknown, an idle daemon is asked to exit once idle, never stopped at once', async () => {
     const { daemon, calls } = compatible('3.6.9', []);
-    expect(await adoptCompatibleDaemon('3.7.0', { ...daemon, otherDevices: () => otherDeviceCount([]) }, quiet)).toBe('switchWhenIdle');
+    expect(await adoptCompatibleDaemon(manifest, { ...daemon, otherDevices: () => otherDeviceCount([]) }, quiet)).toBe('switchWhenIdle');
     expect(calls).toEqual(['shutdownWhenIdle']);
   });
 });

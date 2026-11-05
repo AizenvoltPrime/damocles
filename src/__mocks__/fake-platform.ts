@@ -28,6 +28,7 @@ import { VSCODE_HOST_CAPABILITIES, type ChatReviewScope, type HostCapabilities, 
 import { createVsCodeFileConfinement } from '../vscode/platform/file-confinement';
 import { browserPageHtml, type BrowserPageStrings } from '../shared/browser-page-html';
 import { ERROR_PAGE_STRINGS, type PageSpec } from '../shared/panel-html';
+import { authorityKeyOfProject } from '../shared/project-location';
 
 type SettingsLayer = Readonly<Record<string, unknown>>;
 
@@ -207,11 +208,13 @@ export interface FakeEditorService extends EditorService {
   /** Host extensions start inactive. */
   setHostExtensionActive(id: string, active: boolean): void;
   /**
-   * Sets the focused editor's context (undefined: none focused, the initial state) and the project key of its document, as
-   * desktop's editor reports it, and fires onDidChangeActiveContext.
+   * Sets the focused editor's context (undefined: none focused, the initial state), the project key of its document and its
+   * authority, as desktop's editor reports them, and fires onDidChangeActiveContext. authority defaults to the project key's,
+   * else 'local' for a context with a file.
    */
-  setActiveContext(context: ActiveEditorContext | undefined, projectKey?: string): void;
+  setActiveContext(context: ActiveEditorContext | undefined, projectKey?: string, authority?: string): void;
   activeProjectKey(): string | undefined;
+  activeAuthority(): string | undefined;
 }
 
 export interface FakeLogSink extends LogSink {
@@ -685,6 +688,7 @@ function createEditor(): FakeEditorService {
   const contextListeners = listenerSet<[ActiveEditorContext | undefined]>();
   let activeContext: ActiveEditorContext | undefined;
   let activeProjectKey: string | undefined;
+  let activeAuthority: string | undefined;
   return {
     openedFiles,
     untitled,
@@ -715,10 +719,12 @@ function createEditor(): FakeEditorService {
     },
     getActiveContext: () => activeContext,
     activeProjectKey: () => activeProjectKey,
+    activeAuthority: () => activeAuthority,
     onDidChangeActiveContext: (cb) => contextListeners.add(cb),
-    setActiveContext: (context, projectKey) => {
+    setActiveContext: (context, projectKey, authority) => {
       activeContext = context;
       activeProjectKey = projectKey;
+      activeAuthority = authority ?? (projectKey !== undefined ? authorityKeyOfProject(projectKey) : context?.filePath !== undefined ? 'local' : undefined);
       contextListeners.fire(context);
     },
     openHostSettings: (query) => {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { reopenInWsl, type ReopenDeps } from '../reopen-in-wsl';
-import { linuxToWslUnc, wslUncToLinux } from '../wsl-paths';
+import { linuxToWslUnc, wslUncAlias, wslUncToLinux } from '../wsl-paths';
 
 describe('WSL UNC paths', () => {
   it('maps \\\\wsl.localhost and \\\\wsl$ paths to the distro and the Linux path, in any case and with either separator', () => {
@@ -30,6 +30,18 @@ describe('WSL UNC paths', () => {
     ]) expect(wslUncToLinux(notWsl), notWsl).toBeUndefined();
     // a name with dots and other characters is a name
     expect(wslUncToLinux('\\\\wsl.localhost\\.alpine.3\\x')).toEqual({ distro: '.alpine.3', path: '/x' });
+  });
+
+  it('swaps \\\\wsl$ and \\\\wsl.localhost in the server segment, in any case and with either separator, and nothing else', () => {
+    expect(wslUncAlias('\\\\wsl.localhost\\Ubuntu\\home\\me')).toBe('\\\\wsl$\\Ubuntu\\home\\me');
+    expect(wslUncAlias('\\\\wsl$\\Ubuntu\\home\\me')).toBe('\\\\wsl.localhost\\Ubuntu\\home\\me');
+    expect(wslUncAlias('\\\\WSL.LOCALHOST\\Ubuntu')).toBe('\\\\wsl$\\Ubuntu');
+    expect(wslUncAlias('\\\\Wsl$\\Ubuntu\\')).toBe('\\\\wsl.localhost\\Ubuntu\\');
+    expect(wslUncAlias('//wsl.localhost/Ubuntu/srv')).toBe('//wsl$/Ubuntu/srv');
+    expect(wslUncAlias('\\\\wsl$')).toBe('\\\\wsl.localhost');
+    for (const other of ['\\\\wsl.localhostx\\Ubuntu', '\\\\wsl$x\\Ubuntu', '\\\\server\\wsl$\\x', '\\wsl$\\Ubuntu', 'C:\\wsl$\\Ubuntu', '\\\\?\\wsl$\\Ubuntu', '/home/wsl$']) {
+      expect(wslUncAlias(other), other).toBeUndefined();
+    }
   });
 
   it('names a Linux folder for File Explorer, refusing a path it cannot name', () => {

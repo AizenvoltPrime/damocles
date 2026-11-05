@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, reactive, ref, shallowRef, triggerRef, useId, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Check, Ellipsis, List, ListTree, RefreshCw, TriangleAlert } from 'lucide-vue-next';
+import { Check, Ellipsis, RefreshCw, TriangleAlert } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import { remPx } from '@/composables/useRemPx';
 import { FILE_DRAG_MIME, serializeFileDragPayload } from '@shared/file-drag';
@@ -9,7 +9,9 @@ import { SCM_STATUS_LIMIT, type ScmChange, type ScmCommitVariant, type ScmGroup,
 import type { DamoclesShellApi, ShellPlatform, ShownFolder } from '../../preload/shell-channels';
 import { parseRootKey } from '../../preload/folder-root';
 import SidebarSection from '../components/SidebarSection.vue';
+import { TOOLBAR_BUTTON } from '../components/sidebar-section';
 import FilesBranchChip from '../components/FilesBranchChip.vue';
+import ViewModeToggle from '../components/ViewModeToggle.vue';
 import { useOuterVirtualList } from '../outer-virtual-list';
 import { SCM_STORE } from './scm-store';
 import { EDITOR_STORE } from '../editor/editor-store';
@@ -573,8 +575,6 @@ onBeforeUnmount(() => {
   clearTimeout(armTimer);
   clearInterval(ageTimer);
 });
-
-const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25';
 </script>
 
 <template>
@@ -618,36 +618,19 @@ const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border
       v-if="ready"
       #actions
     >
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-sm"
+      <ViewModeToggle
         data-testid="scm-view-mode"
         :data-view-mode="viewMode"
-        :class="toolbarButton"
-        :aria-label="viewMode === 'list' ? t('scm.action.viewAsTree') : t('scm.action.viewAsList')"
-        :title="viewMode === 'list' ? t('scm.action.viewAsTree') : t('scm.action.viewAsList')"
+        :target="viewMode === 'list' ? 'tree' : 'list'"
+        :label="viewMode === 'list' ? t('scm.action.viewAsTree') : t('scm.action.viewAsList')"
         @click="setViewMode(viewMode === 'list' ? 'tree' : 'list')"
-      >
-        <Transition name="t-letter">
-          <ListTree
-            v-if="viewMode === 'list'"
-            key="tree"
-            aria-hidden="true"
-          />
-          <List
-            v-else
-            key="list"
-            aria-hidden="true"
-          />
-        </Transition>
-      </Button>
+      />
       <Button
         type="button"
         variant="ghost"
         size="icon-sm"
         data-testid="scm-title-commit"
-        :class="toolbarButton"
+        :class="TOOLBAR_BUTTON"
         :aria-label="commitLabel"
         :title="commitLabel"
         @click="commit()"
@@ -659,7 +642,7 @@ const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border
         variant="ghost"
         size="icon-sm"
         data-testid="scm-refresh"
-        :class="toolbarButton"
+        :class="TOOLBAR_BUTTON"
         :aria-label="t('scm.refresh')"
         :title="t('scm.refresh')"
         :aria-busy="refreshing || undefined"
@@ -677,7 +660,7 @@ const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border
         data-testid="scm-more-actions"
         aria-haspopup="menu"
         :aria-expanded="moreOpen"
-        :class="toolbarButton"
+        :class="TOOLBAR_BUTTON"
         :aria-label="t('scm.moreActions')"
         :title="t('scm.moreActions')"
         @click="openMoreActions"

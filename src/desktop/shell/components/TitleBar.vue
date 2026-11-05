@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n';
 import { Bell, BellOff, ChevronRight, Moon, PanelBottom, PanelLeft, PanelRight, Search, Settings, Sun } from 'lucide-vue-next';
 import type { DamoclesShellApi, ShellState } from '../../preload/shell-channels';
 import { hostStateLabel } from '../host-label';
+import { chatTitleText } from './chat-title';
 import EnginePill from './EnginePill.vue';
 import HostStatusDot from './HostStatusDot.vue';
 import ProjectAvatar from './ProjectAvatar.vue';
@@ -50,11 +51,7 @@ async function openHostCard(): Promise<void> {
     hostCardOpen.value = false;
   }
 }
-const chatTitle = computed(() => {
-  const chat = props.state.selectedChat;
-  if (!chat) return undefined;
-  return chat.title || t('chats.newChat');
-});
+const chatTitle = computed(() => chatTitleText(props.state.selectedChat, t));
 const sidebarTitle = computed(() => t('titleBar.toggleSidebar', { shortcut: props.state.shortcuts.toggleSidebar }));
 const settingsTitle = computed(() => t('titleBar.settings', { shortcut: props.state.shortcuts.settings }));
 const themeTitle = computed(() => (props.state.effectiveTheme === 'dark' ? t('titleBar.themeToLight') : t('titleBar.themeToDark')));
@@ -208,17 +205,23 @@ async function openCenter(): Promise<void> {
           data-testid="breadcrumb-project"
         >{{ projectName }}</span>
       </span>
-      <template v-if="chatTitle !== undefined">
-        <ChevronRight
-          aria-hidden="true"
-          class="size-3 shrink-0 text-(--d-faint)"
-        />
+      <!-- the chat's crumb waits for its title, then fades in, so no stand-in name shows first -->
+      <Transition enter-active-class="animate-[d-fade_.2s_var(--ease-out)]">
         <span
-          class="max-w-85 truncate text-(--d-text)"
-          data-testid="breadcrumb-chat"
-          aria-current="page"
-        >{{ chatTitle }}</span>
-      </template>
+          v-if="chatTitle !== undefined"
+          class="flex min-w-0 items-center gap-1.5"
+        >
+          <ChevronRight
+            aria-hidden="true"
+            class="size-3 shrink-0 text-(--d-faint)"
+          />
+          <span
+            class="max-w-85 truncate text-(--d-text)"
+            data-testid="breadcrumb-chat"
+            aria-current="page"
+          >{{ chatTitle }}</span>
+        </span>
+      </Transition>
     </nav>
     <div class="@container/quickopen flex h-full min-w-14 flex-1 items-center justify-center px-3">
       <button

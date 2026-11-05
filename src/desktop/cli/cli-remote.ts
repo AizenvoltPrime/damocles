@@ -8,12 +8,13 @@ import { argErrorText, openItem, parseArgs, usageText } from './args';
 import { cliRequestLimit, sendCliRequest, type CliAnswer, type CliLanguage, type CliRequest } from './cli-protocol';
 import { limitText, translator, type Translate } from './cli-text';
 import { CLI_HOOK_ENV } from '../workspace/terminal/terminal-env';
+import { readServerVersion } from '../daemon/server-version';
 
 export interface RemoteCliIo {
   readonly argv: readonly string[];
   readonly env: NodeJS.ProcessEnv;
   readonly cwd: string;
-  // the server package root, holding package.json and l10n/
+  // the server package root, holding server-package.json, package.json and l10n/
   readonly root: string;
   readonly out: (text: string) => void;
   readonly err: (text: string) => void;
@@ -27,7 +28,7 @@ export async function runRemoteCli(io: RemoteCliIo): Promise<number> {
   const en = { t: text('en') };
   const parsed = parseArgs(io.argv, 'remote');
   if (parsed.kind === 'version') {
-    io.out(`${readVersion(io.root)}\n`);
+    io.out(`${await readServerVersion(io.root)}\n`);
     return 0;
   }
   const hook = io.env[CLI_HOOK_ENV];
@@ -99,14 +100,8 @@ export async function runRemoteCli(io: RemoteCliIo): Promise<number> {
   return 1;
 }
 
-function readVersion(root: string): string {
-  const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')) as { version?: unknown };
-  if (typeof manifest.version !== 'string') throw new Error(`${root}/package.json names no version`);
-  return manifest.version;
-}
-
 if (require.main === module) {
-  // the bundle is dist/cli-remote.js; its package root holds package.json and l10n/
+  // the bundle is dist/cli-remote.js; its package root holds server-package.json, package.json and l10n/
   void runRemoteCli({
     argv: process.argv.slice(2),
     env: process.env,

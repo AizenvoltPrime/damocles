@@ -166,7 +166,8 @@ test('a folder opened through the local daemon has its host badge, and its files
     // Show log: the daemon's log read through control logs.read, as a read-only text tab named with the host.
     await clickMenu(app, 'damocles.developer.showLocalDaemonLog');
     await expect(editorTab(shell, `${LOCAL_DAEMON}: daemon.log`)).toHaveAttribute('aria-selected', 'true');
-    await expect.poll(async () => (await activeTab(app))?.readOnlyReason).toBe('outsideProject');
+    await expect.poll(async () => (await activeTab(app))?.readOnlyReason).toBe('snapshot');
+    await expect(shell.getByTestId('editor-read-only')).toHaveAttribute('title', 'Read-only: this is a copy of the text, not a file you can save.');
     await expect(codeEditor(shell).locator('.view-line').first()).toBeVisible();
 
     // Every file the daemon wrote is in the test home under userData; a daemon of the real ~/.damocles, if one runs, is not it.

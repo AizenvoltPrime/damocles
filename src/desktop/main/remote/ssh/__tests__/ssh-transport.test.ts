@@ -8,6 +8,7 @@ import { createFakeSecretsStore } from '../../../../../__mocks__/fake-platform';
 import type { AskpassRegistration, AskpassServer, PromptCredential } from '../../../../../core/scm/askpass/askpass-server';
 import type { SshPrompt } from '../../../../preload/overlay-channels';
 import { createRememberedSecrets } from '../remembered-secrets';
+import { createArtifactCache } from '../../artifact-cache';
 import type { ServerManifest } from '../../server-manifest-format';
 import type { SshRun } from '../control-master';
 import { parseSshVersion, runSshStage, SshConnectError, sshCallEnv, startSshTransport, type SshStageOptions, type SshTransportDeps, type SshTransportOptions } from '../ssh-transport';
@@ -150,7 +151,7 @@ function transportOptions(askpass: AskpassServer, extra: Partial<SshTransportOpt
     savePlatform: vi.fn(async () => undefined),
     installFolderSettled: vi.fn(async () => undefined),
     askpass,
-    manifest: { version: '3.7.0', protocolVersion: 1, packages: {} } satisfies ServerManifest,
+    manifest: { version: '3.7.0', protocolVersion: 1, published: false, packages: {} } satisfies ServerManifest,
     releasesUrl: 'https://example.com/releases',
     artifacts: { packageFolder: () => 'unused', packagePath: async () => { throw new Error('no upload'); } },
     log: (line) => { logs.push(line); },
@@ -466,7 +467,7 @@ describe('startSshTransport', () => {
     const folder = mkdtempSync(path.join(os.tmpdir(), 'upload-'));
     const file = path.join(folder, 'damocles-server-3.7.0-linux-x64.tar.gz');
     writeFileSync(file, 'PACKAGE');
-    const packaged = (size: number): ServerManifest => ({ version: '3.7.0', protocolVersion: 1, packages: { 'linux-x64': { file: path.basename(file), sha256: '0'.repeat(64), size } } });
+    const packaged = (size: number): ServerManifest => ({ version: '3.7.0', protocolVersion: 1, published: false, packages: { 'linux-x64': { file: path.basename(file), sha256: '0'.repeat(64), size, serverVersion: '3.7.0+0123456789ab' } } });
     const upload = (size: number) => {
       const made = fixture((ssh) => ssh.stdout(`${PROBE}@@DAMOCLES {"kind":"upload"}\n`));
       const { options, logs } = transportOptions(made.askpass, { manifest: packaged(size), artifacts: { packageFolder: () => 'unused', packagePath: async () => file } });
@@ -483,11 +484,23 @@ describe('startSshTransport', () => {
     expect(wrong.logs.some((line) => line.includes('5'))).toBe(true);
   });
 
+  it('fails the upload of an unpublished build its cache lacks with the reason unpublished, downloading and sending nothing', async () => {
+    const manifest: ServerManifest = { version: '3.7.0', protocolVersion: 1, published: false, packages: { 'linux-x64': { file: 'damocles-server-3.7.0-linux-x64.tar.gz', sha256: '0'.repeat(64), size: 7, serverVersion: '3.7.0+0123456789ab' } } };
+    const fetch = vi.fn<(url: string) => Promise<Response>>();
+    const artifacts = createArtifactCache({ cacheRoot: mkdtempSync(path.join(os.tmpdir(), 'unpublished-')), manifest, fetch, log: () => undefined });
+    const { launched, deps, askpass } = fixture((ssh) => ssh.stdout(`${PROBE}@@DAMOCLES {"kind":"upload"}\n`));
+    const failure = await rejection(startSshTransport(transportOptions(askpass, { manifest, artifacts }).options, deps));
+    expect([failure.code, failure.params]).toEqual(['downloadAndUploadFailed', { reason: 'unpublished' }]);
+    expect(fetch).not.toHaveBeenCalled();
+    // stage 1's frame alone: no length line and no package bytes
+    expect(launched[0]!.written).toHaveLength(1);
+  });
+
   it('fails a cache request from an SSH target as a stage protocol error, filling no cache on this computer', async () => {
     const packagePath = vi.fn(async () => '/cache/damocles-server-3.7.0-linux-x64.tar.gz');
     const { launched, deps, askpass } = fixture((ssh) => ssh.stdout(`${PROBE}@@DAMOCLES {"kind":"cache"}\n`));
     const { options } = transportOptions(askpass, {
-      manifest: { version: '3.7.0', protocolVersion: 1, packages: { 'linux-x64': { file: 'damocles-server-3.7.0-linux-x64.tar.gz', sha256: '0'.repeat(64), size: 7 } } },
+      manifest: { version: '3.7.0', protocolVersion: 1, published: false, packages: { 'linux-x64': { file: 'damocles-server-3.7.0-linux-x64.tar.gz', sha256: '0'.repeat(64), size: 7, serverVersion: '3.7.0+0123456789ab' } } },
       artifacts: { packageFolder: () => '/cache', packagePath },
     });
     const failure = await rejection(startSshTransport(options, deps));
@@ -507,7 +520,7 @@ describe('startSshTransport', () => {
     let release!: () => void;
     const { deps, askpass } = fixture((ssh) => ssh.stdout(`${PROBE}@@DAMOCLES {"kind":"upload"}\n`));
     const { options, logs, controller } = transportOptions(askpass, {
-      manifest: { version: '3.7.0', protocolVersion: 1, packages: { 'linux-x64': { file: 'damocles-server-3.7.0-linux-x64.tar.gz', sha256: '0'.repeat(64), size: 7 } } },
+      manifest: { version: '3.7.0', protocolVersion: 1, published: false, packages: { 'linux-x64': { file: 'damocles-server-3.7.0-linux-x64.tar.gz', sha256: '0'.repeat(64), size: 7, serverVersion: '3.7.0+0123456789ab' } } },
       artifacts: { packageFolder: () => 'unused', packagePath: () => new Promise((_resolve, reject) => { release = () => reject(new Error('the download was stopped')); }) },
     });
     const done = rejection(startSshTransport(options, deps));

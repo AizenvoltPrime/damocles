@@ -7,6 +7,7 @@ import type { CatalogResult } from '../../core/chat-panel/session-catalog';
 import type { ChatActivity, TurnOutcome } from '../../core/pi-session/session-state';
 import type { UsageThresholdCrossing } from '../../core/pi-session/usage-thresholds';
 import type { EndedLeaseHolder } from '../../core/pi-session/session-store/session-lease';
+import type { SessionFileWrite } from '../../core/pi-session/session-store/session-file-write';
 import type { AskpassPaths } from '../../core/scm/askpass/askpass-server';
 import type { CommitFailure } from '../../core/scm/repository';
 import type { RemoteOp, RemoteOutcome, RemoteOutcomeKind } from '../../core/scm/scm-service';
@@ -20,9 +21,9 @@ import type { PageSpec } from '../../shared/panel-html';
 import { MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_CONTENT_CHARS, MAX_GLOBAL_MEMORY_ID_CHARS, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_TAGS, MAX_HELD_MEMORY_QUEUES, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, MAX_RELAYED_MCP_TIMEOUT_MS, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, type BrokerAnswer, type BrowserToolAnswer, type ClientAuth, type ClientGlobalProfile, type ClientPolicy, type ClientUser, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type GlobalMemoryWrite, type HeldAuth, type HeldMemoryQueue, type RelayedGlobalMemory, type RelayedMcpServer, type SearchedGlobalMemory } from '../../shared/remote-user';
 import type { UserProfile } from '../../shared/types/memory';
 import { SETTINGS_ACCOUNT_IDS, SETTINGS_SECTION_IDS, type SettingsAccountId, type SettingsSectionId } from '../../shared/settings-sections';
-import { WORKTREE_PHASES, type ChatPlace, type ChatReviewScope, type SettingsFileScope, type WorktreeFinishAction } from '../../shared/types/messages';
+import { EDITOR_HARD_MAX_DOCUMENT_BYTES, WORKTREE_PHASES, type ChatPlace, type ChatReviewScope, type SettingsFileScope, type WorktreeFinishAction } from '../../shared/types/messages';
 import { MAX_CALL_ARGS, REPOSITORY_CALLS, SCM_CALLS, WORKTREE_CALLS, type RepositoryCall, type ScmCall, type WorktreeCall } from './scm-calls';
-import { arr, bool, bytes, data, dict, either, int, INVALID, localized, maybe, nonEmpty, none, num, obj, oneOf, opt, str, type Parser } from './schema';
+import { arr, bool, bytes, data, dict, either, finite, int, INVALID, localized, maybe, nonEmpty, none, num, obj, oneOf, opt, str, type Parser } from './schema';
 import type { LocalizedText } from '../../shared/localized-text';
 
 export const MAX_ID_CHARS = 128;
@@ -270,6 +271,9 @@ export interface MainRequests {
   'catalog.rename': Call<{ readonly sessionId: string; readonly name: string }, CatalogResult>;
   'catalog.tag': Call<{ readonly sessionId: string; readonly tag: string | null }, CatalogResult>;
   'catalog.delete': Call<{ readonly sessionId: string }, CatalogResult>;
+  // a session file of this core's own store, which only this core writes (session-file-write.ts); path is native to its
+  // machine; expectedSha256: the bytes the editor last read, null for a file it found missing
+  'sessionFiles.write': Call<{ readonly path: string; readonly bytes: Uint8Array; readonly expectedSha256: string | null }, SessionFileWrite>;
   'folders.setDefault': Call<{ readonly key: string }, void>;
   // url: an address of a forwarded port, which main checked; absent opens a blank page
   'browser.newPage': Call<{ readonly chatViewId: string; readonly url?: string }, void>;
@@ -768,6 +772,11 @@ const catalogResult: Parser<CatalogResult> = either(
   obj({ ok: yes }),
   either(obj({ ok: no, reason: oneOf(['leased', 'missing'] as const) }), obj({ ok: no, reason: oneOf(['invalid', 'failed'] as const), message: localizedMessage })),
 );
+const sha256Hex: Parser<string> = (raw) => (typeof raw === 'string' && /^[0-9a-f]{64}$/.test(raw) ? raw : INVALID);
+const sessionFileWrite: Parser<SessionFileWrite> = either(
+  either(obj({ kind: oneOf(['written'] as const), mtimeMs: finite }), obj({ kind: oneOf(['changed', 'outside'] as const) })),
+  obj({ kind: oneOf(['refused'] as const), reason: oneOf(['held', 'otherProcess'] as const) }),
+);
 const worktreeStateEvent: Parser<PanelWorktreeStateEvent> = obj({
   panelId: id,
   sessionId: opt(id),
@@ -1058,6 +1067,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'catalog.rename': method(obj({ sessionId: id, name: label }), catalogResult),
   'catalog.tag': method(obj({ sessionId: id, tag: either(label, nul) }), catalogResult),
   'catalog.delete': method(obj({ sessionId: id }), catalogResult),
+  'sessionFiles.write': method(obj({ path: filePath, bytes: bytes(EDITOR_HARD_MAX_DOCUMENT_BYTES), expectedSha256: either(sha256Hex, nul) }), sessionFileWrite),
   'folders.setDefault': method(obj({ key: filePath }), done),
   'browser.newPage': method(obj({ chatViewId: id, url: opt(message) }), done),
   'worktree.retrySetup': method(obj({ worktreeId: id }), done),

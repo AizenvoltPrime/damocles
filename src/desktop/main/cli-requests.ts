@@ -1,16 +1,22 @@
 // The damocles command's requests in main, from a target terminal's CLI socket (relayed by its daemon) and from the app's own
-// command line (dist/cli.js), handled alike; no renderer reaches this (docs/invariants.md "The damocles command"). Opens stay
-// project-relative: a file outside every project of its host is refused.
+// command line (dist/cli.js), handled alike; no renderer reaches this (docs/invariants.md "The damocles command"). A file opens
+// editable on the request's own authority, and a folder joins as a project only after the user agrees.
 import { constants as fsConstants, promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { createTwoFilesPatch } from 'diff';
-import { EDITOR_MAX_DOCUMENT_BYTES } from '../../shared/types/messages';
+import { folderKeyOn } from '../../core/workspace-folders/folder-key';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../shared/types/messages';
 import { pathFor } from '../../shared/project-location';
+import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import type { FileBytes } from '../local-services/file-bytes';
-import type { ConfineFailure, Confined, Project } from '../local-services/confine';
+import type { Confined, Project } from '../local-services/confine';
+import type { OutsideRefusal, OutsideResolution } from '../workspace/file-system';
 import { isRemoteForm, joinPosition } from '../cli/args';
 import { CommandLineRefusal, MAX_CLI_MESSAGE_CHARS, parseCommandLine, WAIT_MARKER_NAME, type CliCommandLine, type CliOpenItem, type CliRelay, type CliRelayAnswer, type CliRequest } from '../cli/cli-protocol';
 import { decodeDocument } from './platform/editor-document';
+import { RefusedPathError } from './documents/document-service';
+import { OutsideFilesUnsupportedError } from './workspace/remote-workspace';
+import type { RootSpellings } from './workspace/root-spellings';
 import { authorityKeyOfHost, destinationLabel, normalizeHostName, type HostRecord, type SshHostRecord, type WslHostRecord } from './remote/host-store';
 
 export type PatchContent = { readonly kind: 'patch'; readonly patch: string } | { readonly kind: 'binary' } | { readonly kind: 'tooLarge' };
@@ -35,21 +41,25 @@ export type RemoteTarget =
   | { readonly kind: 'unsaved'; readonly query: string }
   | { readonly kind: 'loopbackOff' };
 
-export type CliOpenResult = { readonly ok: true; readonly tabId: string } | { readonly ok: false; readonly reason: ConfineFailure };
-
 export interface CliRequestsDeps {
   // the listed projects of an authority, by main's keys
   readonly projects: (authorityKey: string) => readonly Project[];
+  // the spellings of the local projects' folders, which a named path is matched against
+  readonly spellings: Pick<RootSpellings, 'match' | 'confirms'>;
   // the OS whose path rules the authority's paths follow
   readonly os: (authorityKey: string) => NodeJS.Platform;
   // a target's name; this computer's messages have their own wording
   readonly hostName: (authorityKey: string) => string;
   readonly isDirectory: (authorityKey: string, folder: string) => Promise<boolean>;
-  // the deepest of projects holding target, by the host's own rules
-  readonly projectOfPath: (authorityKey: string, projects: readonly Project[], target: string) => Promise<{ readonly project: Project; readonly relativePath: string } | undefined>;
   // an existing file's real path inside its project, every link followed, or why it has none
   readonly confineExisting: (authorityKey: string, project: Project, relativePath: string) => Promise<Confined>;
+  // a missing file's path inside its project: its deepest existing folder confined, plus the missing segments
+  readonly confineMissing: (authorityKey: string, project: Project, relativePath: string) => Promise<Confined>;
   readonly read: (authorityKey: string, file: string) => Promise<FileBytes>;
+  // a path outside every project by the authority's own rules (WorkspaceFileSystem.resolveOutside, readOutside); a host's
+  // throws OutsideFilesUnsupportedError for a daemon without files.outside
+  readonly resolveOutside: (authorityKey: string, target: string) => Promise<OutsideResolution>;
+  readonly readOutside: (authorityKey: string, file: string) => Promise<FileBytes | { readonly kind: 'outside' }>;
   // the folder's project key on the authority, and whether that project is listed
   readonly folderProject: (authorityKey: string, folder: string) => Promise<{ readonly projectKey: string; readonly listed: boolean }>;
   readonly selectProject: (projectKey: string) => Promise<void>;
@@ -57,8 +67,8 @@ export interface CliRequestsDeps {
   readonly addFolder: (authorityKey: string, folder: string) => Promise<void>;
   // a yes or no question whose yes is action, focused only when focusAction
   readonly confirm: (question: string, action: string, focusAction: boolean) => Promise<boolean>;
-  // opens a project file at a position
-  readonly openFile: (projectKey: string, relativePath: string, position: { readonly line?: number; readonly column?: number }) => Promise<CliOpenResult>;
+  // opens a file the request named on its authority, editable, at a position (DocumentService.openNamedPath); resolves its tab
+  readonly openNamed: (authorityKey: string, filePath: string, position: { readonly line?: number; readonly column?: number }) => Promise<string>;
   readonly showPatch: (tab: PatchTab) => string;
   readonly whenClosed: (tabId: string) => Promise<void>;
   readonly showWindow: () => void;
@@ -78,6 +88,8 @@ export interface CliRequestsDeps {
   // --diff's time bound; default DIFF_TIMEOUT_MS
   readonly diffTimeoutMs?: number;
   readonly t: (message: string, ...args: string[]) => string;
+  // a LocalizedError's text in main's language
+  readonly render: (text: LocalizedText) => string;
   readonly log: (line: string) => void;
 }
 
@@ -94,9 +106,9 @@ interface Opened {
   readonly tabs: readonly string[];
 }
 
-// A file inside a project or a folder, resolved before anything opens so a refusal opens nothing; shown is the path as typed.
+// A file or a folder, resolved before anything opens so a refusal opens nothing; shown is the path as typed.
 type Resolved =
-  | { readonly kind: 'file'; readonly shown: string; readonly project: Project; readonly relativePath: string; readonly line?: number; readonly column?: number }
+  | { readonly kind: 'file'; readonly path: string; readonly shown: string; readonly line?: number; readonly column?: number }
   | { readonly kind: 'folder'; readonly folder: string };
 
 // What an open request does once every item resolved and every question was answered.
@@ -199,6 +211,11 @@ export class CliRequests {
 
   private refusalText(err: unknown): string {
     if (err instanceof CliRefusal) return err.message;
+    if (err instanceof OutsideFilesUnsupportedError) {
+      this.deps.log(`[cli] ${err.authorityKey}'s daemon opens no file outside its projects`);
+      return this.deps.t('damocles: the Damocles server on {0} cannot open files outside its projects.', this.deps.hostName(err.authorityKey));
+    }
+    if (err instanceof LocalizedError) return this.deps.t('damocles: {0}', this.deps.render(err.text));
     this.deps.log(`[cli] a request failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
     return this.deps.t('damocles: {0}', err instanceof Error ? err.message : String(err));
   }
@@ -287,9 +304,7 @@ export class CliRequests {
       } else if (step.kind === 'add') {
         await this.deps.addFolder(authorityKey, step.folder);
       } else {
-        const opened = await this.deps.openFile(step.project.key, step.relativePath, { ...(step.line !== undefined ? { line: step.line } : {}), ...(step.column !== undefined ? { column: step.column } : {}) });
-        if (!opened.ok) throw this.unreachable(step.shown, opened.reason);
-        tabs.push(opened.tabId);
+        tabs.push(await this.deps.openNamed(authorityKey, step.path, { ...(step.line !== undefined ? { line: step.line } : {}), ...(step.column !== undefined ? { column: step.column } : {}) }));
       }
     }
     return { tabs };
@@ -309,64 +324,96 @@ export class CliRequests {
     return trimmed.length > root.length ? trimmed : normal;
   }
 
-  // `path:line:column` is read that way only when the path as typed does not exist; a refusal names what was typed.
+  // `path:line:column` is read that way only when the path as typed does not exist; a refusal names what was typed. Any path
+  // that is no folder opens as a file, a missing one empty, which its first save creates.
   private async resolve(authorityKey: string, typedItem: CliOpenItem): Promise<Resolved> {
     const item = { ...typedItem, path: this.clean(authorityKey, typedItem.path, joinPosition(typedItem)) };
     const typed = joinPosition(item);
     if (item.line !== undefined) {
       if (await this.deps.isDirectory(authorityKey, typed)) return { kind: 'folder', folder: typed };
-      const file = await this.projectFile(authorityKey, typed);
-      if (file?.real.ok === true) return { kind: 'file', shown: typed, project: file.project, relativePath: file.relativePath };
+      // an older server cannot judge a stream-like name such as a.ts:12 outside its projects, which then names no file
+      const probed = await this.fileState(authorityKey, typed).catch((err: unknown) => {
+        if (err instanceof OutsideFilesUnsupportedError) return 'other' as const;
+        throw err;
+      });
+      if (probed === 'file') return { kind: 'file', path: typed, shown: typed };
     }
     if (await this.deps.isDirectory(authorityKey, item.path)) return { kind: 'folder', folder: item.path };
-    const file = await this.projectFile(authorityKey, item.path);
-    if (!file) throw await this.outside(authorityKey, typed, item.path);
-    if (!file.real.ok) throw this.unreachable(typed, file.real.reason);
-    return { kind: 'file', shown: typed, project: file.project, relativePath: file.relativePath, ...(item.line !== undefined ? { line: item.line } : {}), ...(item.column !== undefined ? { column: item.column } : {}) };
-  }
-
-  // the project holding target, and its real path inside that project or why it has none
-  private async projectFile(authorityKey: string, target: string): Promise<{ readonly project: Project; readonly relativePath: string; readonly real: Confined } | undefined> {
-    const found = await this.deps.projectOfPath(authorityKey, this.deps.projects(authorityKey), target);
-    if (!found) return undefined;
-    return { project: found.project, relativePath: found.relativePath, real: await this.deps.confineExisting(authorityKey, found.project, found.relativePath) };
-  }
-
-  // a path of a project that cannot be opened there
-  private unreachable(shown: string, reason: ConfineFailure): CliRefusal {
-    const { t } = this.deps;
-    switch (reason) {
-      case 'missing':
-        return new CliRefusal(t('damocles: {0} does not exist.', shown));
-      case 'outside':
-        return new CliRefusal(t('damocles: {0} leads outside its project.', shown));
-      case 'failed':
-        return new CliRefusal(t('damocles: {0} could not be opened.', shown));
+    const state = await this.fileState(authorityKey, item.path);
+    if (typeof state === 'object') throw new RefusedPathError(typed, state.refused);
+    if (state === 'failed') throw new CliRefusal(this.deps.t('damocles: {0} could not be opened.', typed));
+    if (state === 'missing' && !(await this.deps.isDirectory(authorityKey, pathFor({ os: this.deps.os(authorityKey) }).dirname(item.path)))) {
+      throw new CliRefusal(this.deps.t('damocles: {0} cannot be created, because its folder does not exist.', typed));
     }
+    return { kind: 'file', path: item.path, shown: typed, ...(item.line !== undefined ? { line: item.line } : {}), ...(item.column !== undefined ? { column: item.column } : {}) };
   }
 
-  // target lies outside every project; the hint names its folder only when that folder is not a project or inside one, where
-  // the path can lead out only through a link
-  private async outside(authorityKey: string, shown: string, target: string): Promise<CliRefusal> {
-    const { t } = this.deps;
-    const local = authorityKey === 'local';
-    const folder = pathFor({ os: this.deps.os(authorityKey) }).dirname(target);
-    const inProject = (await this.deps.projectOfPath(authorityKey, this.deps.projects(authorityKey), folder)) !== undefined || (await this.deps.folderProject(authorityKey, folder)).listed;
-    if (inProject) {
-      return new CliRefusal(local ? t('damocles: {0} leads outside the projects open on this computer.', shown) : t('damocles: {0} leads outside the projects open on {1}.', shown, this.deps.hostName(authorityKey)));
+  // What a path that is no folder names on its authority before anything opens, decided as DocumentService.openNamedPath
+  // decides it, so a path the open would refuse opens nothing: a path a project holds in any spelling by that project's
+  // confinement, any other by the outside rule, which checks it before any file call. A project path a link leads out of, or
+  // one a remapped drive no longer holds, is the outside rule's. failed: its project could not resolve it.
+  private async fileState(authorityKey: string, target: string): Promise<'file' | 'missing' | 'other' | 'failed' | { readonly refused: OutsideRefusal }> {
+    const os = this.deps.os(authorityKey);
+    const held = await this.deps.spellings.match({ authority: authorityKey, os }, this.deps.projects(authorityKey), target);
+    if (held) {
+      const existing = await this.deps.confineExisting(authorityKey, held.root, held.relativePath);
+      const confined = !existing.ok && existing.reason === 'missing' ? await this.deps.confineMissing(authorityKey, held.root, held.relativePath) : existing;
+      if (confined.ok && this.deps.spellings.confirms(held, confined.path)) return existing.ok ? 'file' : 'missing';
+      if (!confined.ok && confined.reason === 'failed') return 'failed';
     }
-    return new CliRefusal(local
-      ? t('damocles: {0} is outside the projects open on this computer. Open its folder with: damocles {1}', shown, folder)
-      : t('damocles: {0} is outside the projects open on {1}. Open its folder with: damocles {2}', shown, this.deps.hostName(authorityKey), folder));
+    const resolved = await this.deps.resolveOutside(authorityKey, target);
+    if (resolved.kind === 'outside') return { refused: resolved.reason };
+    // a share's entry is a project's or refused, as the open treats it
+    if (resolved.kind === 'share') {
+      if (resolved.entry !== 'file') return (await this.deps.spellings.match({ authority: authorityKey, os }, this.deps.projects(authorityKey), resolved.path)) ? 'other' : { refused: 'share' };
+      return (await this.shareFile(authorityKey, resolved.path, 'existing')) !== undefined ? 'file' : { refused: 'share' };
+    }
+    if (resolved.kind === 'missing') {
+      // a new file in a folder whose realpath is a share's is only a project's to create
+      const flavor = pathFor({ os });
+      const folder = await this.deps.resolveOutside(authorityKey, flavor.dirname(target));
+      if (folder.kind === 'share' && (await this.shareFile(authorityKey, flavor.join(folder.path, flavor.basename(target)), 'missing')) === undefined) return { refused: 'share' };
+      return 'missing';
+    }
+    return resolved.kind === 'file' ? 'file' : 'other';
+  }
+
+  // A --diff side's bytes: a path a project holds in any spelling through that project's confinement, any other through the
+  // outside rule; both sides must exist, as code --diff requires.
+  private async diffSide(authorityKey: string, target: string): Promise<FileBytes | { readonly kind: 'outside' }> {
+    const { t } = this.deps;
+    const held = await this.deps.spellings.match({ authority: authorityKey, os: this.deps.os(authorityKey) }, this.deps.projects(authorityKey), target);
+    if (held) {
+      const confined = await this.deps.confineExisting(authorityKey, held.root, held.relativePath);
+      if (confined.ok && this.deps.spellings.confirms(held, confined.path)) return this.deps.read(authorityKey, confined.path);
+      if (!confined.ok && confined.reason === 'missing') throw new CliRefusal(t('damocles: {0} does not exist.', target));
+      if (!confined.ok && confined.reason === 'failed') throw new CliRefusal(t('damocles: {0} could not be opened.', target));
+    }
+    const resolved = await this.deps.resolveOutside(authorityKey, target);
+    if (resolved.kind === 'outside') throw new RefusedPathError(target, resolved.reason);
+    if (resolved.kind === 'missing') throw new CliRefusal(t('damocles: {0} does not exist.', target));
+    if (resolved.kind !== 'share') return this.deps.readOutside(authorityKey, resolved.path);
+    if (resolved.entry !== 'file') throw new CliRefusal(t('damocles: {0} is not a file.', target));
+    const file = await this.shareFile(authorityKey, resolved.path, 'existing');
+    if (file === undefined) throw new RefusedPathError(target, 'share');
+    return this.deps.read(authorityKey, file);
+  }
+
+  // A share realpath's file only as the file of a project holding it in a spelling, confined and confirmed by that project (an
+  // existing one to that very realpath), with no call naming the realpath itself: the confined path, else undefined.
+  private async shareFile(authorityKey: string, realPath: string, state: 'existing' | 'missing'): Promise<string | undefined> {
+    const os = this.deps.os(authorityKey);
+    const held = await this.deps.spellings.match({ authority: authorityKey, os }, this.deps.projects(authorityKey), realPath);
+    if (!held) return undefined;
+    const confined = state === 'existing' ? await this.deps.confineExisting(authorityKey, held.root, held.relativePath) : await this.deps.confineMissing(authorityKey, held.root, held.relativePath);
+    if (!confined.ok || !this.deps.spellings.confirms(held, confined.path)) return undefined;
+    return state === 'missing' || folderKeyOn(os, confined.path) === folderKeyOn(os, realPath) ? confined.path : undefined;
   }
 
   private async diff(authorityKey: string, left: string, right: string): Promise<Opened> {
     const flavor = pathFor({ os: this.deps.os(authorityKey) });
     const side = async (target: string): Promise<PatchSide & { readonly text: string | 'binary' | 'tooLarge' }> => {
-      const file = await this.projectFile(authorityKey, target);
-      if (!file) throw await this.outside(authorityKey, target, target);
-      if (!file.real.ok) throw this.unreachable(target, file.real.reason);
-      const read = await this.deps.read(authorityKey, file.real.path);
+      const read = await this.diffSide(authorityKey, target);
       const named = { path: target, name: flavor.basename(target), folder: flavor.dirname(target) };
       if (read.kind === 'tooLarge') return { ...named, text: 'tooLarge' };
       if (read.kind !== 'bytes') throw new CliRefusal(this.deps.t('damocles: {0} is not a file.', target));
@@ -383,7 +430,7 @@ export class CliRequests {
       const patch = await new Promise<string | undefined>((resolve) => {
         createTwoFilesPatch(a.path, b.path, aText, bText, undefined, undefined, { timeout: this.deps.diffTimeoutMs ?? DIFF_TIMEOUT_MS, callback: resolve });
       });
-      return patch === undefined || Buffer.byteLength(patch) > EDITOR_MAX_DOCUMENT_BYTES ? { kind: 'tooLarge' } : { kind: 'patch', patch };
+      return patch === undefined || Buffer.byteLength(patch) > EDITOR_CONFIRM_DOCUMENT_BYTES ? { kind: 'tooLarge' } : { kind: 'patch', patch };
     })();
     if (this.disposed) throw new CliRefusal(this.deps.t('damocles: Damocles is quitting, so nothing was opened.'));
     this.deps.showWindow();

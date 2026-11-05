@@ -1,6 +1,6 @@
 // Stage 1's text for one connect: the script with its parameter block replaced by quoted literals only.
 import { ATTACH_DEADLINE_MS } from '../../../daemon/lock-timing';
-import { AUTH_TIMEOUT_MS } from '../../../../remote/handshake';
+import { AUTH_TIMEOUT_MS, isVersionText } from '../../../../remote/handshake';
 import { releaseAssetUrl } from '../artifact-cache';
 import { CONTAINER_DATA_FOLDER } from '../../../daemon/container-commands';
 import type { ServerManifest, ServerTarget } from '../server-manifest-format';
@@ -31,8 +31,8 @@ export function validateInstallFolder(folder: string): InstallFolderCheck {
 
 export interface StageParameters {
   readonly manifest: ServerManifest;
-  // the release base; an asset is <releasesUrl>/download/v<version>/<file>
-  readonly releasesUrl: string;
+  // the release base; an asset is <releasesUrl>/download/v<version>/<file>; absent: the stage never downloads
+  readonly releasesUrl?: string;
   // absent: the default ~/.damocles/server
   readonly installFolder?: string;
   // null: the default folder; absent: nothing to clean
@@ -67,10 +67,14 @@ const POSIX_TARGETS = ['linux-x64', 'linux-arm64', 'alpine-x64', 'alpine-arm64',
 const WINDOWS_TARGETS = ['win32-x64', 'win32-arm64'] as const satisfies readonly ServerTarget[];
 const PARAMETERS = /# BEGIN PARAMETERS\r?\n[\s\S]*?# END PARAMETERS/;
 
-// <file> <sha256> <size> <url>: the manifest's checked file name and hash hold no space, and the URL is encoded.
+// <file> <sha256> <size> <server version> <url|->: the manifest's checked file name and hash hold no space, the server version
+// keeps to the handshake's alphabet, which names the install folder, and the URL is encoded; `-` asks for the upload at once.
 function packageField(params: StageParameters, target: ServerTarget): string {
   const pkg = params.manifest.packages[target];
-  return pkg ? `${pkg.file} ${pkg.sha256} ${pkg.size} ${releaseAssetUrl(params.releasesUrl, params.manifest.version, pkg.file)}` : '';
+  if (!pkg) return '';
+  if (!isVersionText(pkg.serverVersion)) throw new RangeError('a server version outside the handshake\'s version alphabet');
+  const url = params.releasesUrl === undefined ? '-' : releaseAssetUrl(params.releasesUrl, params.manifest.version, pkg.file);
+  return `${pkg.file} ${pkg.sha256} ${pkg.size} ${pkg.serverVersion} ${url}`;
 }
 
 function folders(params: StageParameters): { install: string; previousKind: 'none' | 'default' | 'folder'; previous: string } {
@@ -105,7 +109,6 @@ function withParameters(template: string, block: string): string {
 export function buildPosixStage1(params: StageParameters, template: string = POSIX_STAGE1): string {
   const { install, previousKind, previous } = folders(params);
   const lines = [
-    `D_VERSION=${shellQuote(params.manifest.version)}`,
     `D_INSTALL_FOLDER=${shellQuote(install)}`,
     `D_PREVIOUS_KIND=${shellQuote(previousKind)}`,
     `D_PREVIOUS_FOLDER=${shellQuote(previous)}`,
@@ -120,7 +123,6 @@ export function buildPosixStage1(params: StageParameters, template: string = POS
 export function buildWindowsStage1(params: StageParameters, template: string = WINDOWS_STAGE1): string {
   const { install, previousKind, previous } = folders(params);
   const lines = [
-    `$D_VERSION = ${psQuote(params.manifest.version)}`,
     `$D_INSTALL_FOLDER = ${psQuote(install)}`,
     `$D_PREVIOUS_KIND = ${psQuote(previousKind)}`,
     `$D_PREVIOUS_FOLDER = ${psQuote(previous)}`,

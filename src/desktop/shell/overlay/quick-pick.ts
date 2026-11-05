@@ -1,6 +1,6 @@
 import type { Component } from 'vue';
 import { Folder } from 'lucide-vue-next';
-import type { OverlayQuickPickIcon, OverlayQuickPickItem, PaletteCommand, QuickOpenMatch, QuickOpenPick, QuickOpenResponse, QuickOpenResult } from '../../preload/overlay-channels';
+import { quickOpenRowKey, type OverlayQuickPickIcon, type OverlayQuickPickItem, type PaletteCommand, type QuickOpenMatch, type QuickOpenPick, type QuickOpenResponse, type QuickOpenResult } from '../../preload/overlay-channels';
 import type { TerminalProfileOption, TerminalProjectOption } from '../../preload/terminal-channels';
 import { compareScoredItems, prepareQuery, scoreItem, type FuzzyItem, type ItemScore, type PreparedQuery } from '../../../core/quick-open/fuzzy-match';
 import { glyphLook, terminalGlyph } from '../terminal/terminal-icons';
@@ -34,6 +34,14 @@ export interface QuickPickItem {
   readonly hint?: string;
   // the label in the mono font, as a ref name reads
   readonly mono?: boolean;
+  // a folder: `file` draws as its folder icon, and the accessible name says it is a folder
+  readonly folder?: true;
+  // the query Enter, a click and Tab set instead of accepting the row
+  readonly descend?: string;
+  // the query Tab sets
+  readonly complete?: string;
+  // UTF-16 offset into descend or complete for the caret after it is set; absent for its end
+  readonly caret?: number;
 }
 
 export type QuickPickRow = { readonly kind: 'separator'; readonly label: string } | { readonly kind: 'item'; readonly item: QuickPickItem };
@@ -42,6 +50,10 @@ export interface QuickPickModel {
   readonly rows: readonly QuickPickRow[];
   // what Enter does with the query as typed (go to a line, mention in chat)
   readonly hint?: string;
+  // a quiet note beside the hint, such as a listing cut at its bounds
+  readonly notice?: string;
+  // shown for no rows in place of the picker's own empty text
+  readonly empty?: string;
   // the item the list starts on instead of the first, such as a picker's current value
   readonly activeId?: string;
   // why the list could not load, shown instead of the text for no matches
@@ -77,27 +89,50 @@ export interface QuickOpenLabels {
   goToLine: (line: number) => string;
   goToLineColumn: (line: number, column: number) => string;
   mention: string;
+  // count: the listing's entries shown
+  truncated: (count: number) => string;
+  // the host's bounds cut the listing before it kept any entry
+  stopped: string;
+  noEntries: (name: string) => string;
+  folderEmpty: string;
+  denied: string;
 }
 
-// A project file's id is a 2-tuple and a typed path's a 3-tuple, so no two rows of one answer share an id.
-export const quickOpenItemId = (result: QuickOpenResult): string =>
-  result.kind === 'path' ? JSON.stringify(['path', result.authority, result.path]) : JSON.stringify([result.projectKey, result.relativePath]);
+// main's `..` row is a way up, not one of the folder's entries
+const isParentRow = (result: QuickOpenResult): boolean => result.kind === 'folder' && result.label === '..';
+
+const caretOf = (caret: number | undefined): { caret?: number } => (caret === undefined ? {} : { caret });
 
 /**
  * Quick Open's rows from main's answer. An empty query groups its results (recent files, then each project's, the current
- * project's first as main ordered them); a typed query lists them by score with no groups. A typed path's row, which main
- * answers alone, has no group.
+ * project's first as main ordered them); a typed query lists them by score with no groups. A typed path's rows (its file, its
+ * folder's entries) keep main's order and have no group; a folder row sets the query main built for it, never a pick.
  */
 export function quickOpenModel(response: QuickOpenResponse, grouped: boolean, labels: QuickOpenLabels): QuickPickModel {
   const rows: QuickPickRow[] = [];
   let group: string | undefined;
   for (const result of response.results) {
+    if (result.kind === 'folder') {
+      group = undefined;
+      rows.push({
+        kind: 'item',
+        item: {
+          id: quickOpenRowKey(result), label: result.label, labelMatches: result.labelMatches, descriptionMatches: [], file: result.label, folder: true,
+          descend: result.input, ...caretOf(result.caret), ...(result.host === undefined ? {} : { badge: result.host }),
+        },
+      });
+      continue;
+    }
     const matches = { labelMatches: result.labelMatches, descriptionMatches: result.descriptionMatches };
+    const complete = result.complete === undefined ? {} : { complete: result.complete.input, ...caretOf(result.complete.caret) };
     if (result.kind === 'path') {
       group = undefined;
       rows.push({
         kind: 'item',
-        item: { id: quickOpenItemId(result), label: result.label, description: result.description, ...matches, file: result.path, ...(result.host === undefined ? {} : { badge: result.host }) },
+        item: {
+          id: quickOpenRowKey(result), label: result.label, description: result.description, ...matches, file: result.path, ...complete,
+          ...(result.host === undefined ? {} : { badge: result.host }),
+        },
       });
       continue;
     }
@@ -111,19 +146,37 @@ export function quickOpenModel(response: QuickOpenResponse, grouped: boolean, la
     }
     rows.push({
       kind: 'item',
-      item: { id: quickOpenItemId(result), label: result.label, description: result.description, ...matches, file: result.relativePath, project: result.projectName },
+      item: { id: quickOpenRowKey(result), label: result.label, description: result.description, ...matches, file: result.relativePath, project: result.projectName, ...complete },
     });
   }
   const { line, column } = response;
   const hint = response.mention ? labels.mention : line === undefined ? undefined : column === undefined ? labels.goToLine(line) : labels.goToLineColumn(line, column);
-  return { rows, ...(hint === undefined ? {} : { hint }) };
+  const listed = response.truncated?.listed;
+  const cut = listed === undefined ? undefined : listed === 0 ? labels.stopped : labels.truncated(listed);
+  const empty = response.emptyText === 'folderNoMatch' ? labels.noEntries(response.emptyName ?? '')
+    : response.emptyText === 'folderEmpty' ? labels.folderEmpty
+      : response.emptyText === 'folderDenied' ? labels.denied
+        : rows.length === 0 ? cut : undefined;
+  // `..` leads, but list autocomplete starts on the first suggestion, so Enter and Tab take the folder's first entry
+  const [lead, next] = response.results;
+  return {
+    rows,
+    ...(hint === undefined ? {} : { hint }),
+    ...(cut !== undefined && rows.length > 0 ? { notice: cut } : {}),
+    ...(empty === undefined ? {} : { empty }),
+    ...(lead && next && isParentRow(lead) ? { activeId: quickOpenRowKey(next) } : {}),
+  };
 }
 
-/** The pick of the row `itemId` of main's answer, with the query's :line[:column]; a typed path's pick never mentions. */
+/**
+ * The pick of the row `itemId` of main's answer, with the query's :line[:column], which belongs to the exact row alone when the
+ * answer has one; a typed path's pick never mentions, and a folder is no pick.
+ */
 export function quickOpenPick(response: QuickOpenResponse, itemId: string): QuickOpenPick | undefined {
-  const result = response.results.find((candidate) => quickOpenItemId(candidate) === itemId);
-  if (!result) return undefined;
-  const position = { ...(response.line === undefined ? {} : { line: response.line }), ...(response.column === undefined ? {} : { column: response.column }) };
+  const result = response.results.find((candidate) => quickOpenRowKey(candidate) === itemId);
+  if (!result || result.kind === 'folder') return undefined;
+  const positioned = result.exact === true || !response.results.some((candidate) => candidate.kind !== 'folder' && candidate.exact === true);
+  const position = positioned ? { ...(response.line === undefined ? {} : { line: response.line }), ...(response.column === undefined ? {} : { column: response.column }) } : {};
   if (result.kind === 'path') return { kind: 'path', authority: result.authority, path: result.path, ...position, mention: false };
   return { kind: 'project', projectKey: result.projectKey, relativePath: result.relativePath, ...position, mention: response.mention };
 }

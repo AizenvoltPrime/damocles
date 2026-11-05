@@ -1,9 +1,11 @@
+import * as fs from 'node:fs';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import type { ShellHost } from '../../src/desktop/preload/shell-channels';
 import { overlayPage, popupPage, popupToasts, recordToasts, shellPage, shellState } from '../desktop/support/shell';
 import { activeTerminal, openTerminal, runInTerminal, terminalText } from '../desktop/support/terminal';
 import { writeUserSettings } from '../desktop/support/hermetic';
-import { changedKey, connectDialog, failureAlert } from './support/connect-ui';
+import { openSettingsModal } from '../desktop/support/settings';
+import { changedKey, connectDialog, connectDialogClosed, failureAlert, firstConnection } from './support/connect-ui';
 import { daemonPids, shutdownHostDaemon } from './support/daemon-teardown';
 import { expect, holdFor, pageNow, reconnectPhase, sightings, test, watchConnectionUi, type ProxiedHost } from './support/flaky';
 import { mainLog } from '../desktop/support/app';
@@ -11,7 +13,8 @@ import type { HermeticHome } from '../desktop/support/hermetic';
 import { newRemoteChat, startTargetStub } from './support/target-agent';
 import { sendPrompt } from '../desktop/support/loopback-agent';
 import { awaitTurnEnd } from '../desktop/support/ui';
-import { addHost, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG } from './support/remote';
+import { addHost, exitControlMaster, lastConnectStep, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG } from './support/remote';
+import { knownHostsName } from './support/sshd';
 
 const APP = '/srv/app';
 // a blackhole shows its amber dot and banner within this, well before the 20 s timeout that decides a drop
@@ -21,6 +24,10 @@ const HEAL_BY_MS = 15_000;
 // one latency measurement: 5 pings 2 s apart, run every 60 s, the first 10 s after connecting
 const MEASUREMENT_MS = 60_000 + 5 * 2000;
 const DROP_MS = 120_000;
+
+interface DropHooks {
+  __damoclesE2e: { remote: { dropConnection(hostId: string): void } };
+}
 
 const banner = (shell: Page): Locator => shell.locator('[data-testid="connection-banner"], [data-testid="connection-banner-edge"]').first();
 const dot = (shell: Page): Locator => shell.getByTestId('host-status-dot').first();
@@ -41,6 +48,20 @@ async function retry(app: ElectronApplication): Promise<void> {
     button = undefined;
     for (const page of app.windows().filter((candidate) => !candidate.isClosed())) {
       const candidate = page.locator('[data-testid="chat-connection-banner-reconnect"], [data-testid="connection-banner-reconnect"]').first();
+      if (await candidate.isVisible()) button = candidate;
+    }
+    return button !== undefined;
+  }, { timeout: 30_000 }).toBe(true);
+  await button!.click();
+}
+
+/** Sign in on the banner: the chat page's when a chat of the host covers the chat slot, else the shell's. */
+async function signIn(app: ElectronApplication, hostName: string): Promise<void> {
+  let button: Locator | undefined;
+  await expect.poll(async () => {
+    button = undefined;
+    for (const page of app.windows().filter((candidate) => !candidate.isClosed())) {
+      const candidate = page.locator('[data-testid="chat-connection-banner"], [data-testid="connection-banner"]').getByRole('button', { name: `Sign in to ${hostName}` }).first();
       if (await candidate.isVisible()) button = candidate;
     }
     return button !== undefined;
@@ -199,6 +220,81 @@ test('a changed host key during a reconnect raises the security modal and connec
   await retry(app);
   await expect(dot(shell)).toHaveAttribute('data-shape', 'connected', { timeout: 120_000 });
   expect(await daemonPids(target.fixture)).toEqual([pid]);
+  await shutdownHostDaemon(app, hostId, target.fixture);
+});
+
+test('a reconnect that meets an unknown host key waits behind Sign in while the host card is open; Sign in shows the question and Connect records the key', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, proxied }) => {
+  test.setTimeout(600_000);
+  const target = await proxied('prod-1');
+  const { app } = await launch({ env: remoteEnv(ssh, mirror) });
+  const { hostId, shell } = await connect(app, home);
+  const overlay = await overlayPage(app);
+  await shell.getByTestId('title-bar-host').click();
+  const card = overlay.getByTestId('host-card');
+  await expect(card).toBeVisible();
+  // a question drawn for any moment while the card is open counts
+  await overlay.evaluate(() => {
+    const g = window as unknown as { __e2eHostKeyAsked?: boolean };
+    g.__e2eHostKeyAsked = false;
+    new MutationObserver(() => {
+      if (document.querySelector('[data-testid="host-key-unknown"]')) g.__e2eHostKeyAsked = true;
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+  // the client forgets the host's key, and the next ssh, with no master connection to reuse, meets it as unknown
+  fs.writeFileSync(ssh.knownHosts, '');
+  await exitControlMaster(app, hostId);
+  target.proxy.cut();
+  await expect.poll(async () => (await host(app, hostId)).signInNeeded, { timeout: 120_000 }).toBe(true);
+  const waiting = (await lastConnectStep(app, hostId))!;
+  expect(waiting.prompt).toMatchObject({ kind: 'hostKey' });
+  await expect(card).toBeVisible();
+  expect(await overlay.evaluate(() => (window as unknown as { __e2eHostKeyAsked?: boolean }).__e2eHostKeyAsked)).toBe(false);
+  // Escape closes the card and answers nothing: the attempt still waits on its question
+  await overlay.keyboard.press('Escape');
+  await connectDialogClosed(overlay);
+  expect((await host(app, hostId)).signInNeeded).toBe(true);
+  expect((await lastConnectStep(app, hostId))?.attemptId).toBe(waiting.attemptId);
+
+  await signIn(app, 'prod-1');
+  const prompt = firstConnection(overlay, 'prod-1');
+  await expect(prompt).toBeVisible({ timeout: 60_000 });
+  await expect(prompt.getByTestId('host-key-fingerprint')).toHaveText(`ED25519 ${await target.fixture.fingerprint()}`);
+  await prompt.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(dot(shell)).toHaveAttribute('data-shape', 'connected', { timeout: 120_000 });
+  await connectDialogClosed(overlay);
+  expect(fs.readFileSync(ssh.knownHosts, 'utf8')).toContain(`${knownHostsName(target.fixture.port)} ${await target.fixture.hostKey()}`);
+  expect((await host(app, hostId)).signInNeeded).toBe(false);
+  await shutdownHostDaemon(app, hostId, target.fixture);
+});
+
+test("a fresh attach that meets an unknown host key while Settings shows the host tab offers Sign in on Settings' banner, which ends Settings for the Connect dialog's question", { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, proxied }) => {
+  test.setTimeout(600_000);
+  const target = await proxied('prod-1');
+  const { app } = await launch({ env: remoteEnv(ssh, mirror) });
+  const { hostId, key, shell } = await connect(app, home);
+  await newRemoteChat(app, key);
+  const overlay = await openSettingsModal(app, 'defaults');
+  await expect(overlay.getByTestId('settings-scope-host')).toHaveAttribute('aria-selected', 'true');
+  await expect(overlay.getByTestId('settings-scope-loading')).toHaveCount(0);
+
+  // the client forgets the host's key, and the connection closes for good, so the tab waits for its core while the next
+  // ssh, with no master connection to reuse, meets the key as unknown
+  fs.writeFileSync(ssh.knownHosts, '');
+  await exitControlMaster(app, hostId);
+  await app.evaluate((_electron, id) => (globalThis as unknown as DropHooks).__damoclesE2e.remote.dropConnection(id), hostId);
+  const away = overlay.getByTestId('settings-scope-away');
+  await expect(away).toHaveAttribute('data-state', 'signIn', { timeout: 120_000 });
+  await expect(overlay.getByTestId('settings-scope-away-text')).toHaveText('prod-1 is waiting for you to sign in');
+
+  await overlay.getByTestId('settings-scope-away-sign-in').click();
+  await expect(overlay.getByTestId('settings-modal')).toHaveCount(0, { timeout: 30_000 });
+  const prompt = firstConnection(overlay, 'prod-1');
+  await expect(prompt).toBeVisible({ timeout: 60_000 });
+  await expect(prompt.getByTestId('host-key-fingerprint')).toHaveText(`ED25519 ${await target.fixture.fingerprint()}`);
+  await prompt.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(dot(shell)).toHaveAttribute('data-shape', 'connected', { timeout: 120_000 });
+  await connectDialogClosed(overlay);
+  expect((await host(app, hostId)).signInNeeded).toBe(false);
   await shutdownHostDaemon(app, hostId, target.fixture);
 });
 

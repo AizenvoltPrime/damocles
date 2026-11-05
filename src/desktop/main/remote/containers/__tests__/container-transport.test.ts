@@ -9,7 +9,7 @@ import { startContainerTransport, type ContainerTransportOptions } from '../cont
 const ID = '28f4e6f33d7eb0c2fa0a1a525fdb39d5ef72c206dbca3f397ed48e8b10aa3a24';
 const manifest: ServerManifest = {
   version: '3.7.0',
-  packages: { 'alpine-x64': { file: 'damocles-server-3.7.0-alpine-x64.tar.gz', sha256: 'a'.repeat(64), size: 10 } },
+  packages: { 'alpine-x64': { file: 'damocles-server-3.7.0-alpine-x64.tar.gz', sha256: 'a'.repeat(64), size: 10, serverVersion: '3.7.0+0123456789ab' } },
 } as unknown as ServerManifest;
 
 // stage 0 under exec: what reached its stdin, and the status lines it answers with

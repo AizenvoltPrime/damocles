@@ -197,7 +197,8 @@ describe('confirmed links', () => {
       expect(await resolveTerminalLink('share/app.ts', base, kindOf)).toBeNull();
       expect(await resolveTerminalLink('share', base, kindOf)).toBeNull();
       expect(remote).toEqual([]);
-      expect(realpath).not.toHaveBeenCalled();
+      // the walk takes only the project folder's own realpath, to tell whether the share is the project's
+      expect(realpath.mock.calls.map(([file]) => folderKey(String(file))).filter((file) => file !== folderKey(projectDir))).toEqual([]);
       expect(stat).not.toHaveBeenCalled();
       expect(lines).toEqual([]);
     } finally {

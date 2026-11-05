@@ -420,3 +420,155 @@ describe.runIf(isWindows)('job object, against real processes', () => {
     session?.dispose();
   }, 60_000);
 });
+
+describe.runIf(isWindows)('a process that leaves before it joins its job (real kernel32)', () => {
+  it('reads the exit code through the real binding and logs one plain line', async () => {
+    // The parent keeps a handle to its exited child, so OpenProcess succeeds and GetExitCodeProcess decides.
+    const holder = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      "$p = Start-Process cmd.exe -ArgumentList '/d','/c','exit 0' -PassThru -WindowStyle Hidden; $p.WaitForExit(); [Console]::Out.WriteLine($p.Id); Start-Sleep 60"],
+    { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    try {
+      const pid = await new Promise<number>((resolve) => holder.stdout.once('data', (data: Buffer) => resolve(Number(String(data).trim()))));
+
+      expect(createShellJob(pid, undefined)).toBeUndefined();
+    } finally {
+      holder.kill();
+    }
+
+    const lines = logState.fn.mock.calls.map((call) => String(call[0]));
+    expect(lines.filter((line) => line.includes('ERROR'))).toEqual([]);
+    expect(lines.filter((line) => line.includes('had exited before'))).toHaveLength(1);
+  });
+});
+
+describe('a process that leaves before it joins its job (fake kernel32)', () => {
+  const kernel = { openProcess: 7n, assign: 1, exitCode: 0, exitCodeRead: 1, lastError: 0 };
+  const exitCodeReads = vi.fn();
+  const koffiId = nodeRequire.resolve('koffi');
+  let previousKoffi: NodeJS.Module | undefined;
+
+  const fakeKernel32: Record<string, (...args: never[]) => unknown> = {
+    CreateJobObjectW: () => 3n,
+    SetInformationJobObject: () => 1,
+    OpenProcess: () => kernel.openProcess,
+    AssignProcessToJobObject: () => kernel.assign,
+    TerminateJobObject: () => 1,
+    CloseHandle: () => 1,
+    GetExitCodeProcess: ((_process: bigint, exitCode: number[]) => {
+      exitCodeReads();
+      exitCode[0] = kernel.exitCode;
+      return kernel.exitCodeRead;
+    }) as never,
+    GetLastError: () => kernel.lastError,
+  };
+  const fakeKoffi = {
+    load: () => ({ func: (_convention: string, name: string) => fakeKernel32[name] }),
+    out: (type: unknown) => type,
+    pointer: (type: unknown) => type,
+  };
+
+  beforeEach(() => {
+    Object.assign(kernel, { openProcess: 7n, assign: 1, exitCode: 0, exitCodeRead: 1, lastError: 0 });
+    exitCodeReads.mockClear();
+    previousKoffi = nodeRequire.cache[koffiId];
+    nodeRequire.cache[koffiId] = { id: koffiId, filename: koffiId, loaded: true, exports: fakeKoffi } as unknown as NodeJS.Module;
+    // A fresh registry, so the memoised API binds the fake.
+    vi.resetModules();
+    setPlatform('win32');
+  });
+
+  afterEach(() => {
+    if (previousKoffi === undefined) delete nodeRequire.cache[koffiId];
+    else nodeRequire.cache[koffiId] = previousKoffi;
+  });
+
+  const errors = (): unknown[][] => logState.fn.mock.calls.filter((call) => String(call[0]).includes('ERROR'));
+  const exitedLines = (): unknown[][] => logState.fn.mock.calls.filter((call) => String(call[0]).includes('had exited before'));
+
+  it('logs one plain line and makes no job when the process had already exited', async () => {
+    const fresh = await import('../process-tree');
+    Object.assign(kernel, { assign: 0, lastError: 5, exitCode: 0 });
+
+    expect(fresh.createShellJob(4242, undefined)).toBeUndefined();
+
+    expect(errors()).toEqual([]);
+    expect(exitedLines()).toEqual([[expect.any(String), 4242]]);
+  });
+
+  it('logs an error with the Win32 code when a live process cannot join', async () => {
+    const fresh = await import('../process-tree');
+    Object.assign(kernel, { assign: 0, lastError: 5, exitCode: 259 });
+
+    expect(fresh.createShellJob(4242, undefined)).toBeUndefined();
+
+    expect(exitedLines()).toEqual([]);
+    expect(errors()).toEqual([[expect.any(String), 'AssignProcessToJobObject', 4242, 5, expect.any(String)]]);
+  });
+
+  it('treats OpenProcess answering 87 as a process that is gone', async () => {
+    const fresh = await import('../process-tree');
+    Object.assign(kernel, { openProcess: 0n, lastError: 87 });
+
+    expect(fresh.createShellJob(4242, undefined)).toBeUndefined();
+
+    expect(errors()).toEqual([]);
+    expect(exitedLines()).toHaveLength(1);
+  });
+
+  it('logs any other OpenProcess failure as an error with its code', async () => {
+    const fresh = await import('../process-tree');
+    Object.assign(kernel, { openProcess: 0n, lastError: 5 });
+
+    fresh.createShellJob(4242, undefined);
+
+    expect(errors()).toEqual([[expect.any(String), 'OpenProcess', 4242, 5, expect.any(String)]]);
+  });
+
+  it('applies the same rules to the session job', async () => {
+    const fresh = await import('../process-tree');
+    const session = fresh.createShellSessionJob();
+    Object.assign(kernel, { assign: 0, lastError: 5, exitCode: 0 });
+
+    expect(fresh.createShellJob(4242, session)).toBeUndefined();
+
+    expect(errors()).toEqual([]);
+    // The session's join reports the exit, and no call job is tried for a process that is gone.
+    expect(exitedLines()).toEqual([[expect.any(String), 4242]]);
+    session?.dispose();
+  });
+
+  it('logs the Win32 code of each job call that fails', async () => {
+    const fresh = await import('../process-tree');
+    // the API binds each function at its first load, so both failures are in place before any call
+    fakeKernel32.SetInformationJobObject = () => 0;
+    fakeKernel32.TerminateJobObject = () => 0;
+    try {
+      kernel.lastError = 1450;
+      expect(fresh.createShellSessionJob()).toBeUndefined();
+      const job = fresh.createShellJob(4242, undefined);
+      kernel.lastError = 5;
+      job?.terminate();
+      fresh.terminateJobHandle(9n);
+    } finally {
+      fakeKernel32.SetInformationJobObject = () => 1;
+      fakeKernel32.TerminateJobObject = () => 1;
+    }
+
+    expect(errors()).toEqual([
+      [expect.stringContaining('SetInformationJobObject'), 1450],
+      [expect.stringContaining('TerminateJobObject'), 4242, 5],
+      [expect.stringContaining('TerminateJobObject'), 5],
+    ]);
+  });
+
+  it('reads no exit code when the process joins', async () => {
+    const fresh = await import('../process-tree');
+
+    const job = fresh.createShellJob(4242, undefined);
+
+    expect(job).toBeDefined();
+    expect(exitCodeReads).not.toHaveBeenCalled();
+    expect(logState.fn).not.toHaveBeenCalled();
+    job?.dispose();
+  });
+});

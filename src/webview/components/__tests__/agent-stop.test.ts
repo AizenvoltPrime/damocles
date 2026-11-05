@@ -371,7 +371,7 @@ describe('Stop team', () => {
     await wrapper.get('[data-testid="team-stop"]').trigger('click');
     await settle();
     expect(confirmation()!.textContent).toContain('Να σταματήσει η ομάδα;');
-    expect(confirmation()!.textContent).toContain('1 πράκτορας εργάζεται.');
+    expect(confirmation()!.textContent).toContain('1 agent εργάζεται.');
   });
 
   it('confirming after the team finished posts nothing', async () => {

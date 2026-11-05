@@ -16,10 +16,11 @@ const sha = (text: string): string => createHash('sha256').update(text).digest('
 const manifest: ServerManifest = {
   version: '3.7.0',
   protocolVersion: 1,
+  published: true,
   packages: {
-    'linux-x64': { file: 'damocles-server-3.7.0-linux-x64.tar.gz', sha256: sha('linux'), size: 76_500_000 },
-    'alpine-arm64': { file: 'damocles-server-3.7.0-alpine-arm64.tar.gz', sha256: sha('alpine'), size: 70_000_000 },
-    'win32-x64': { file: 'damocles-server-3.7.0-win32-x64.zip', sha256: sha('win'), size: 73_875_504 },
+    'linux-x64': { file: 'damocles-server-3.7.0-linux-x64.tar.gz', sha256: sha('linux'), size: 76_500_000, serverVersion: '3.7.0+0123456789ab' },
+    'alpine-arm64': { file: 'damocles-server-3.7.0-alpine-arm64.tar.gz', sha256: sha('alpine'), size: 70_000_000, serverVersion: '3.7.0+aaaaaaaaaaaa' },
+    'win32-x64': { file: 'damocles-server-3.7.0-win32-x64.zip', sha256: sha('win'), size: 73_875_504, serverVersion: '3.7.0+bbbbbbbbbbbb' },
   },
 };
 const RELEASES = 'https://github.com/AizenvoltPrime/damocles/releases';
@@ -93,21 +94,38 @@ describe('stage 1 text', () => {
   it('replaces only the POSIX parameter block, with each value as a quoted literal', () => {
     const text = buildPosixStage1({ manifest, releasesUrl: RELEASES, installFolder: "/opt/my 'tools' $x", previousInstallFolder: null });
     const block = [
-      "D_VERSION='3.7.0'",
       "D_INSTALL_FOLDER='/opt/my '\\''tools'\\'' $x'",
       "D_PREVIOUS_KIND='default'",
       "D_PREVIOUS_FOLDER=''",
       "D_WSL_CACHE=''",
       "D_CONTAINER_CACHE=''",
       "D_DATA_FOLDER=''",
-      `D_LINUX_X64='damocles-server-3.7.0-linux-x64.tar.gz ${sha('linux')} 76500000 ${RELEASES}/download/v3.7.0/damocles-server-3.7.0-linux-x64.tar.gz'`,
+      `D_LINUX_X64='damocles-server-3.7.0-linux-x64.tar.gz ${sha('linux')} 76500000 3.7.0+0123456789ab ${RELEASES}/download/v3.7.0/damocles-server-3.7.0-linux-x64.tar.gz'`,
       "D_LINUX_ARM64=''",
       "D_ALPINE_X64=''",
-      `D_ALPINE_ARM64='damocles-server-3.7.0-alpine-arm64.tar.gz ${sha('alpine')} 70000000 ${RELEASES}/download/v3.7.0/damocles-server-3.7.0-alpine-arm64.tar.gz'`,
+      `D_ALPINE_ARM64='damocles-server-3.7.0-alpine-arm64.tar.gz ${sha('alpine')} 70000000 3.7.0+aaaaaaaaaaaa ${RELEASES}/download/v3.7.0/damocles-server-3.7.0-alpine-arm64.tar.gz'`,
       "D_DARWIN_X64=''",
       "D_DARWIN_ARM64=''",
     ].join('\n');
     expect(text).toBe(POSIX_TEMPLATE.replace(/# BEGIN PARAMETERS\n[\s\S]*?# END PARAMETERS/, `# BEGIN PARAMETERS\n${block}\n# END PARAMETERS`));
+    // the folder is named by the server version alone, so no app version parameter is left
+    expect(POSIX_TEMPLATE).not.toContain('D_VERSION');
+    expect(WINDOWS_TEMPLATE).not.toContain('D_VERSION');
+  });
+
+  it('gives an unpublished build, which has no release URL, the URL - on every package line', () => {
+    const unpublished = { manifest: { ...manifest, published: false } };
+    expect(buildPosixStage1(unpublished)).toContain(`\nD_LINUX_X64='damocles-server-3.7.0-linux-x64.tar.gz ${sha('linux')} 76500000 3.7.0+0123456789ab -'\n`);
+    expect(buildWindowsStage1(unpublished)).toContain(`\n$D_WIN32_X64 = 'damocles-server-3.7.0-win32-x64.zip ${sha('win')} 73875504 3.7.0+bbbbbbbbbbbb -'\n`);
+  });
+
+  it('refuses a server version outside the handshake\'s alphabet, which would split the package line or break its quoting', () => {
+    for (const serverVersion of ['3.7.0+0123 456789a', "3.7.0+0123'456789a", '3.7.0+0123"456789a', '3.7.0+0123$456789a', '']) {
+      const odd: ServerManifest = { ...manifest, packages: { 'linux-x64': { ...manifest.packages['linux-x64']!, serverVersion } } };
+      expect(() => buildPosixStage1({ manifest: odd, releasesUrl: RELEASES }), serverVersion).toThrow(RangeError);
+      const oddWindows: ServerManifest = { ...manifest, packages: { 'win32-x64': { ...manifest.packages['win32-x64']!, serverVersion } } };
+      expect(() => buildWindowsStage1({ manifest: oddWindows, releasesUrl: RELEASES }), serverVersion).toThrow(RangeError);
+    }
   });
 
   it('gives a WSL stage its cache folder as a quoted literal, and refuses a folder wslpath -u would not map', () => {
@@ -130,11 +148,10 @@ describe('stage 1 text', () => {
   it('replaces only the Windows parameter block, with each value as a PowerShell literal', () => {
     const text = buildWindowsStage1({ manifest, releasesUrl: RELEASES, previousInstallFolder: "C:\\it's" });
     const block = [
-      "$D_VERSION = '3.7.0'",
       "$D_INSTALL_FOLDER = ''",
       "$D_PREVIOUS_KIND = 'folder'",
       "$D_PREVIOUS_FOLDER = 'C:\\it''s'",
-      `$D_WIN32_X64 = 'damocles-server-3.7.0-win32-x64.zip ${sha('win')} 73875504 ${RELEASES}/download/v3.7.0/damocles-server-3.7.0-win32-x64.zip'`,
+      `$D_WIN32_X64 = 'damocles-server-3.7.0-win32-x64.zip ${sha('win')} 73875504 3.7.0+bbbbbbbbbbbb ${RELEASES}/download/v3.7.0/damocles-server-3.7.0-win32-x64.zip'`,
       "$D_WIN32_ARM64 = ''",
       `$D_ATTACH_DEADLINE_MS = ${ATTACH_DEADLINE_MS}`,
       `$D_AUTH_TIMEOUT_MS = ${AUTH_TIMEOUT_MS}`,

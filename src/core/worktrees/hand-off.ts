@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline';
 import { MAX_CLI_LENGTH, revision, splitInChunks, type GitRunner } from '../scm/git-runner';
 import type { FileText, WorktreeGit } from '../pi-session/chat-changes';
 import { DAMOCLES_WORKTREE_ENTRY } from '../pi-session/session-store/constants';
-import { EDITOR_MAX_DOCUMENT_BYTES } from '../../shared/types/messages';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../shared/types/messages';
 import type { ChatWorktreeRecord } from './registry';
 import { folderContains } from './records';
 import { confinedTarget, copyLink, gitMessage, nulList, projectGit, repositoryOf, repositoryPathKey, uncommittedFiles, type WorktreeFile } from './create';
@@ -66,7 +66,7 @@ export function worktreeGitOf(record: ChatWorktreeRecord, runner: GitRunner): Wo
       // --batch reads one object name per line and says `missing` itself, so a newline in the path cannot be asked.
       if (relativePath.includes('\n')) return { kind: 'unavailable' };
       const name = `${revision(baseCommit)}:${relativePath}`;
-      const out = (await git.run(record.worktreeRoot, ['cat-file', '--batch'], { input: `${name}\n`, maxOutputBytes: EDITOR_MAX_DOCUMENT_BYTES + BATCH_HEADER_BYTES, preview: true })).stdout;
+      const out = (await git.run(record.worktreeRoot, ['cat-file', '--batch'], { input: `${name}\n`, maxOutputBytes: EDITOR_CONFIRM_DOCUMENT_BYTES + BATCH_HEADER_BYTES, preview: true })).stdout;
       const headerEnd = out.indexOf(0x0a);
       const header = out.subarray(0, headerEnd < 0 ? out.length : headerEnd).toString('utf8');
       if (header === `${name} missing`) return { kind: 'absent' };
@@ -74,7 +74,7 @@ export function worktreeGitOf(record: ChatWorktreeRecord, runner: GitRunner): Wo
       if (!match) return { kind: 'unavailable' };
       const size = Number(match[1]);
       // Over the review's bound the output was cut short, so the base cannot be shown.
-      if (size > EDITOR_MAX_DOCUMENT_BYTES) return { kind: 'unavailable' };
+      if (size > EDITOR_CONFIRM_DOCUMENT_BYTES) return { kind: 'unavailable' };
       const blob = out.subarray(headerEnd + 1, headerEnd + 1 + size);
       if (blob.subarray(0, BINARY_PROBE_LENGTH).includes(0)) return { kind: 'binary' };
       return { kind: 'text', text: blob.toString('utf8') };

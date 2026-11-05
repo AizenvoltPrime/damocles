@@ -249,13 +249,12 @@ test('a sidebar section dragged by its header lands on the half it is dropped on
     await dragSection(app, shell, 'scm', 'chats', 6);
     await expect.poll(() => visualOrder(shell)).toEqual(moved);
     await expect(shell.getByTestId('sidebar-announcement')).toHaveText('Source control moved to position 2 of 7');
-    // Tab follows the order on screen (reading-flow), not the DOM's. Collapsing Projects makes its rows inert and disables the
-    // projects and scm sash, so Tab from Projects' header passes its view toggle (one stop) and lands on Source control's.
+    // Tab follows the order on screen (reading-flow), not the DOM's. Collapsing Projects makes its rows inert, hides its title
+    // actions and disables the projects and scm sash, so Tab from Projects' header lands on Source control's.
     expect(await shell.getByTestId('sidebar').evaluate((nav) => getComputedStyle(nav).getPropertyValue('reading-flow'))).toBe('flex-visual');
     await header(shell, 'projects').locator('button[aria-controls][aria-expanded]').click();
     await header(shell, 'projects').locator('button[aria-controls][aria-expanded]').focus();
-    await shell.keyboard.press('Tab');
-    await expect(shell.getByTestId('projects-view-flat')).toBeFocused();
+    await expect(shell.getByTestId('projects-view')).toBeHidden();
     await shell.keyboard.press('Tab');
     await expect(header(shell, 'scm').locator('button[aria-controls][aria-expanded]')).toBeFocused();
     await close();

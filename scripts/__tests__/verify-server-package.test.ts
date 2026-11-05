@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error -- plain .mjs script, no types
-import { browserHelperProblems, cliScriptProblems, credentialRelayProblems, devcontainersCliProblems, dynamicLinkage, loadAlignProblems, muslLinkageProblems, selfTestCommand, selfTestPlan } from '../verify-server-package.mjs';
+import { browserHelperProblems, cliScriptProblems, credentialRelayProblems, devcontainersCliProblems, dynamicLinkage, loadAlignProblems, muslLinkageProblems, selfTestCommand, selfTestPlan, serverVersionProblems } from '../verify-server-package.mjs';
+// @ts-expect-error -- plain .mjs script, no types
+import { packageBuild, serverPackageEntry } from '../build-server.mjs';
+// @ts-expect-error -- plain .mjs script, no types
+import { readTarGz, readZip, tarGz, zip } from '../server-archive.mjs';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -194,5 +198,31 @@ describe('the git credential relay in a server package', () => {
     }
     expect(credentialRelayProblems([sh, entry(cmd.path, '@echo off\r\n')])).toEqual(['dist/git-credential/git-credential-relay.cmd does not turn delayed expansion off']);
     expect(credentialRelayProblems([sh, { path: cmd.path, data: readFileSync(join(__dirname, '..', '..', 'resources', 'git-credential', 'git-credential-relay.cmd')) }])).toEqual([]);
+  });
+});
+
+describe('the server version in a server package', () => {
+  const files = [
+    { path: 'dist/daemon.js', mode: 0o644, data: Buffer.from('daemon') },
+    { path: 'node/node', mode: 0o755, data: Buffer.from('node') },
+    // past ustar's 100-byte name field, so the tar reader joins its prefix
+    { path: `node_modules/${'deep/'.repeat(25)}file.js`, mode: 0o644, data: Buffer.from('deep') },
+  ];
+  const info = { name: 'damocles-server', version: '1.0.0', target: 'linux-x64', node: '24.22.0', externals: ['zod'], packages: ['zod'] };
+  const build = packageBuild(files, info) as string;
+  const assembled = (serverVersion: string) => [...files, serverPackageEntry(info, serverVersion)];
+
+  it('passes the build the archive\'s own entries hash to, through the tar and zip readers', () => {
+    expect(serverVersionProblems(assembled(`1.0.0+${build}`))).toEqual([]);
+    expect(serverVersionProblems(readTarGz(tarGz(assembled(`1.0.0+${build}`))))).toEqual([]);
+    expect(serverVersionProblems(readZip(zip(assembled(`1.0.0+${build}`))))).toEqual([]);
+  });
+
+  it('fails another build, a plain version, no version or no server-package.json', () => {
+    expect(serverVersionProblems(assembled('1.0.0+000000000000'))).toEqual([`server-package.json names the server version 1.0.0+000000000000, its entries make 1.0.0+${build}`]);
+    expect(serverVersionProblems(assembled('1.0.0'))).toEqual([`server-package.json names the server version 1.0.0, its entries make 1.0.0+${build}`]);
+    const { version: _version, ...unversioned } = info;
+    expect(serverVersionProblems([...files, { path: 'server-package.json', mode: 0o644, data: Buffer.from(JSON.stringify(unversioned)) }])).toEqual(['server-package.json names no version']);
+    expect(serverVersionProblems(files)).toEqual(['no server-package.json']);
   });
 });

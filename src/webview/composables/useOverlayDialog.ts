@@ -70,7 +70,8 @@ export function useOverlayDialog(onClose: () => void, options: OverlayDialogOpti
   function focusableItems(): HTMLElement[] {
     const el = root.value;
     if (!el) return [];
-    return Array.from(el.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+    // a control inside an inert subtree takes no focus, so the trap must not wrap to it
+    return Array.from(el.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter((item) => !item.closest('[inert]'));
   }
 
   function focusInitial(): void {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, shallowRef, useId, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowReactive, shallowRef, useId, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useVirtualList } from '@vueuse/core';
 import { Check, CornerDownLeft, Search } from 'lucide-vue-next';
@@ -57,7 +57,48 @@ const renderedActive = computed(() => visible.value.filter(({ data }) => data.ki
 const { box, animate } = useSlidingIndicator(wrapper, '[data-quick-pick-item]', renderedActive);
 
 const optionId = (index: number): string => `${listId}-${index}`;
+const hintText = computed(() => [model.value.hint, model.value.notice].filter((part) => part !== undefined).join(' · '));
 const activeDescendant = computed(() => (renderedActive.value >= 0 && activeRow.value !== undefined ? optionId(activeRow.value) : undefined));
+
+// Rows of a folder just gone into slide in from the side they came from, each at the cascade step of the first render that
+// showed it, by item id; a row rendered first once the list scrolled stays still.
+const entering = ref<'forward' | 'back' | undefined>();
+const entrySteps = shallowReactive(new Map<string, number>());
+let entryScrolled = false;
+let pendingEntry: { query: string; direction: 'forward' | 'back' } | undefined;
+let enteringTimer: ReturnType<typeof setTimeout> | undefined;
+// the longest row cascade (ENTER_STAGGER rows at 14 ms each, as the template's animation-delay) plus its 200 ms slide
+const ENTER_STAGGER = 8;
+const ENTER_MS = ENTER_STAGGER * 14 + 200;
+
+function playEntry(direction: 'forward' | 'back'): void {
+  clearTimeout(enteringTimer);
+  entrySteps.clear();
+  entryScrolled = false;
+  entering.value = direction;
+  enteringTimer = setTimeout(() => {
+    entering.value = undefined;
+    entrySteps.clear();
+  }, ENTER_MS);
+}
+onBeforeUnmount(() => clearTimeout(enteringTimer));
+
+// After the render, so a row's step is its rendered position, capped at ENTER_STAGGER; a row scrolled out of the rendered
+// ones forgets its step.
+watch(visible, (rendered) => {
+  if (!entering.value) return;
+  const ids = new Set(rendered.flatMap(({ data }) => (data.kind === 'item' ? [data.item.id] : [])));
+  for (const id of [...entrySteps.keys()]) if (!ids.has(id)) entrySteps.delete(id);
+  if (entryScrolled) return;
+  rendered.forEach(({ data }, position) => {
+    if (data.kind === 'item' && !entrySteps.has(data.item.id)) entrySteps.set(data.item.id, Math.min(position, ENTER_STAGGER));
+  });
+}, { flush: 'post' });
+
+// show's own scroll to the top is no scroll of the user's
+function onListScroll(): void {
+  if (entering.value && (containerProps.ref.value?.scrollTop ?? 0) > 0) entryScrolled = true;
+}
 
 async function refresh(): Promise<void> {
   const asked = ++generation;
@@ -67,6 +108,11 @@ async function refresh(): Promise<void> {
 function show(asked: number, next: QuickPickModel | undefined): void {
   if (asked !== generation || !next) return;
   if (next.update) void next.update.then((later) => show(asked, later));
+  // the folder's listing is the final model of its query, which a text answer with an update comes before
+  if (pendingEntry?.query === query.value && !next.update) {
+    playEntry(pendingEntry.direction);
+    pendingEntry = undefined;
+  }
   model.value = next;
   loaded.value = true;
   active.value = 0;
@@ -108,9 +154,34 @@ function move(to: number): void {
   reveal(activeRow.value);
 }
 
+// Sets the query main built, then puts the caret where main asked once the field shows it; the field keeps focus.
+function setQuery(text: string, caret: number | undefined): void {
+  query.value = text;
+  void nextTick(() => {
+    const at = caret ?? text.length;
+    input.value?.setSelectionRange(at, at);
+  });
+}
+
+function descend(item: QuickPickItem): void {
+  if (item.descend === undefined) return;
+  // A longer query went down into a folder, a shorter one up to its parent.
+  if (item.descend !== query.value) pendingEntry = { query: item.descend, direction: item.descend.length >= query.value.length ? 'forward' : 'back' };
+  setQuery(item.descend, item.caret);
+}
+
 function accept(rowIndex: number | undefined, shift: boolean): void {
   const row = rowIndex === undefined ? undefined : rows.value[rowIndex];
-  if (row?.kind === 'item' && !row.item.disabled) emit('accept', row.item.id, shift, query.value);
+  if (row?.kind !== 'item' || row.item.disabled) return;
+  if (row.item.descend !== undefined) descend(row.item);
+  else emit('accept', row.item.id, shift, query.value);
+}
+
+function complete(rowIndex: number | undefined): void {
+  const row = rowIndex === undefined ? undefined : rows.value[rowIndex];
+  if (row?.kind !== 'item') return;
+  if (row.item.complete !== undefined) setQuery(row.item.complete, row.item.caret);
+  else descend(row.item);
 }
 
 // A command's label: its "Category: " prefix quieter than its title, with the match highlights cut across both.
@@ -130,7 +201,8 @@ function labelParts(item: QuickPickItem): Array<{ text: string; match: boolean; 
 function optionName(item: QuickPickItem, rowIndex: number): string {
   const previous = rows.value[rowIndex - 1];
   const group = previous?.kind === 'separator' ? previous.label : '';
-  return [item.label, item.badge, item.description, item.hint, item.project, group].filter((part) => part !== undefined && part !== '').join(', ');
+  const kind = item.folder ? t('quickOpen.folderKind') : undefined;
+  return [item.label, kind, item.badge, item.description, item.hint, item.project, group].filter((part) => part !== undefined && part !== '').join(', ');
 }
 
 function onKeydown(event: KeyboardEvent): void {
@@ -142,7 +214,9 @@ function onKeydown(event: KeyboardEvent): void {
   else if (event.key === 'Enter') accept(activeRow.value, event.shiftKey);
   else if (event.key === 'Escape') emit('cancel');
   // Focus stays in the combobox: the list is driven from it, and a Tab into the scroller would strand the keyboard.
-  else if (event.key !== 'Tab') return;
+  else if (event.key === 'Tab') {
+    if (!event.shiftKey) complete(activeRow.value);
+  } else return;
   event.preventDefault();
   event.stopPropagation();
 }
@@ -216,17 +290,18 @@ onMounted(() => {
         @keydown="onKeydown"
       >
     </label>
-    <Transition name="t-swap">
+    <Transition name="t-swap-box">
       <p
-        v-if="model.hint"
-        :key="model.hint"
+        v-if="hintText"
+        :key="hintText"
         data-testid="quick-pick-hint"
         class="flex items-center gap-1.5 px-2 pt-1.5 pb-0.5 text-11.5 text-(--d-faint-text)"
       >
         <CornerDownLeft
+          v-if="model.hint"
           aria-hidden="true"
-          class="size-3"
-        />{{ model.hint }}
+          class="size-3 shrink-0"
+        /><span class="min-w-0">{{ hintText }}</span>
       </p>
     </Transition>
     <div
@@ -236,6 +311,7 @@ onMounted(() => {
       :aria-label="label"
       data-testid="quick-pick-list"
       class="quick-pick-list mt-1 max-h-80 overflow-x-hidden overscroll-contain"
+      @scroll="onListScroll"
     >
       <div
         ref="wrapper"
@@ -276,8 +352,12 @@ onMounted(() => {
             :aria-keyshortcuts="row.item.shortcut ? ariaKeyshortcuts(row.item.shortcut) : undefined"
             :aria-checked="row.item.checked"
             class="relative flex items-center gap-2.25 rounded-7 px-2"
-            :class="row.item.disabled ? 'cursor-default opacity-50' : 'cursor-pointer'"
-            :style="{ height: `${rowHeight(row)}px` }"
+            :class="[
+              row.item.disabled ? 'cursor-default opacity-50' : 'cursor-pointer',
+              entering === 'forward' && entrySteps.has(row.item.id) ? 'animate-[d-pane-in_.2s_var(--ease-out)_both] [animation-delay:calc(var(--enter-step)*14ms)]' : '',
+              entering === 'back' && entrySteps.has(row.item.id) ? 'animate-[d-slide_.2s_var(--ease-out)_both] [animation-delay:calc(var(--enter-step)*14ms)]' : '',
+            ]"
+            :style="{ height: `${rowHeight(row)}px`, ...(entrySteps.has(row.item.id) ? { '--enter-step': entrySteps.get(row.item.id) } : {}) }"
             @pointermove="onPointerMove($event, index)"
             @mousedown.prevent
             @click="accept(index, $event.shiftKey)"
@@ -285,6 +365,9 @@ onMounted(() => {
             <FileIcon
               v-if="row.item.file !== undefined"
               :path="row.item.file"
+              :directory="row.item.folder === true"
+              data-testid="quick-pick-file-icon"
+              :data-directory="row.item.folder ? 'true' : undefined"
               class="size-3.25 shrink-0"
             />
             <component
@@ -366,9 +449,9 @@ onMounted(() => {
     <p
       v-else-if="loaded && rows.length === 0"
       data-testid="quick-pick-empty"
-      class="px-2 py-3 text-center text-12 text-(--d-faint)"
+      class="animate-[d-fade_.16s_var(--ease-out)] px-2 py-3 text-center text-12 text-(--d-faint)"
     >
-      {{ emptyText ?? t('overlay.noMatches') }}
+      {{ model.empty ?? emptyText ?? t('overlay.noMatches') }}
     </p>
   </div>
 </template>

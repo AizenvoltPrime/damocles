@@ -516,8 +516,11 @@ export interface EditorDocument {
   body: EditorDocumentBody;
 }
 
-/** Files up to 10 MiB render; a larger file arrives as `tooLarge` and is never sent. */
-export const EDITOR_MAX_DOCUMENT_BYTES: number = 10 * 1024 * 1024;
+/** Files up to 10 MiB open as text; past it the desktop editor asks first (Open Anyway), and elsewhere a file arrives as `tooLarge`. */
+export const EDITOR_CONFIRM_DOCUMENT_BYTES: number = 10 * 1024 * 1024;
+
+/** No file past 64 MiB opens or saves in the desktop editor; at most MAX_DATA_CHARS, the wire's bound on a file's bytes. */
+export const EDITOR_HARD_MAX_DOCUMENT_BYTES: number = 64 * 1024 * 1024;
 
 export type SettingsFileScope = "user" | "project" | "local";
 

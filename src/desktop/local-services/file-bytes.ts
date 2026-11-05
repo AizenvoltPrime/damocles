@@ -1,12 +1,13 @@
 import { promises as fs } from 'node:fs';
-import { EDITOR_MAX_DOCUMENT_BYTES } from '../../shared/types/messages';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../shared/types/messages';
 
 // Read size once a file outgrows its stat.
 const READ_CHUNK_BYTES = 64 * 1024;
 
+// sessionFile: a session file of its machine's engine, which only that engine writes (WorkspaceFileSystem.read, readOutside)
 export type FileBytes =
-  | { readonly kind: 'bytes'; readonly bytes: Buffer; readonly mtimeMs: number; readonly dev: number; readonly ino: number }
-  | { readonly kind: 'missing' }
+  | { readonly kind: 'bytes'; readonly bytes: Buffer; readonly mtimeMs: number; readonly dev: number; readonly ino: number; readonly sessionFile?: true }
+  | { readonly kind: 'missing'; readonly sessionFile?: true }
   | { readonly kind: 'tooLarge'; readonly bytes: number }
   // a folder, a FIFO or a device, which no read opens
   | { readonly kind: 'notAFile'; readonly folder: boolean }
@@ -28,7 +29,7 @@ function notAFile(stat: { isDirectory(): boolean }): FileBytes {
 }
 
 /** A regular file's bytes up to the document limit; a file over it is refused from its size before any content is read. */
-export async function readFileBytes(filePath: string, limitBytes: number = EDITOR_MAX_DOCUMENT_BYTES): Promise<FileBytes> {
+export async function readFileBytes(filePath: string, limitBytes: number = EDITOR_CONFIRM_DOCUMENT_BYTES): Promise<FileBytes> {
   try {
     // Stat before open: opening a FIFO blocks a libuv thread until a writer appears.
     const stat = await fs.stat(filePath);
@@ -51,7 +52,7 @@ export async function readFileBytes(filePath: string, limitBytes: number = EDITO
 }
 
 /** The bytes of a file already opened, up to the document limit, read from its handle, which the caller closes. */
-export async function readOpenedFile(handle: fs.FileHandle, limitBytes: number = EDITOR_MAX_DOCUMENT_BYTES): Promise<FileBytes> {
+export async function readOpenedFile(handle: fs.FileHandle, limitBytes: number = EDITOR_CONFIRM_DOCUMENT_BYTES): Promise<FileBytes> {
   try {
     // The path may have been replaced or grown since the caller's stat; the read stops one byte past the limit.
     const stat = await handle.stat();

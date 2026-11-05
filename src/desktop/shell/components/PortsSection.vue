@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import type { DamoclesShellApi } from '../../preload/shell-channels';
 import type { OnDetect, PortRow, PortsView } from '../../preload/ports-channels';
 import SidebarSection from './SidebarSection.vue';
+import { TOOLBAR_BUTTON } from './sidebar-section';
 import PortDot from './PortDot.vue';
 import { menuChoice, portActions, portDotShape, portMenu, primaryAction, remoteText, type PortAction } from './ports-section';
 
@@ -246,7 +247,7 @@ const ROW_BUTTON = 'd-press size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-b
         variant="ghost"
         size="icon-sm"
         data-testid="ports-forward"
-        class="size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
+        :class="TOOLBAR_BUTTON"
         :disabled="!connected"
         :aria-label="t('ports.forward')"
         :title="t('ports.forward')"

@@ -789,6 +789,27 @@ describe('connect dialog', () => {
     expect(api.cancelConnect).not.toHaveBeenCalled();
   });
 
+  it('asks the waiting attempt\'s host key question in the dialog a banner\'s Sign in opened, follows only that attempt, and Connect answers it', async () => {
+    const prompt = { promptId: 'k1', kind: 'hostKey' as const, host: '10.0.0.7', keyType: 'ED25519', fingerprint: 'SHA256:q3V8k1Lr9yGfT0w2' };
+    await openConnect({ hostId: 'h1', purpose: 'signIn', attempt: step({ attemptId: 'loop-1', prompt }) });
+    const alert = document.querySelector<HTMLElement>('[role="alertdialog"][data-testid="host-key-unknown"]')!;
+    expect(alert.textContent).toContain('First connection to prod');
+    // a step of another attempt of the host is not this dialog's
+    api.connectStep(step({ attemptId: 'loop-2', step: 'failed', failure: { code: 'refused', params: {} } }));
+    await flushPromises();
+    expect(document.querySelector('[data-testid="host-key-unknown"]')).not.toBeNull();
+    [...alert.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Connect')!.click();
+    await flushPromises();
+    expect(api.answerConnect).toHaveBeenCalledExactlyOnceWith('loop-1', 'k1', 'connect', false);
+    expect(api.startConnect).not.toHaveBeenCalled();
+  });
+
+  it('starts a saved host\'s attempt only after main heard it shown, so a question the start asks stacks above it', async () => {
+    await openConnect({ hostId: 'h1' });
+    expect(api.startConnect).toHaveBeenCalledExactlyOnceWith({ hostId: 'h1' });
+    expect(vi.mocked(api.shown).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(api.startConnect).mock.invocationCallOrder[0]!);
+  });
+
   it('shows the folders of the host a banner\'s Sign in opened on when the user left its timeline and picks it connected', async () => {
     await openConnect({ hostId: 'h1', purpose: 'signIn', attempt: step({ step: 'failed', failure: { code: 'refused', params: {} } }) });
     await vi.waitFor(() => expect(document.activeElement?.textContent?.trim()).toBe('Retry'));
@@ -957,6 +978,43 @@ describe('connect dialog', () => {
       press('Escape');
       await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('c1', { kind: 'dismissed' }));
       expect(api.cancelConnect).not.toHaveBeenCalled();
+    });
+
+    it('never asks a background attempt\'s host key question over the card, and Escape closes it answering nothing', async () => {
+      await openConnect({ hosts: [{ ...PROD, signInNeeded: true, reconnect: { phase: 'running', since: 1 } }], hostId: 'h1', card: 'show', anchor: ANCHOR });
+      await vi.waitFor(() => expect(dialog().querySelector('[data-testid="host-card"]')).not.toBeNull());
+      api.connectStep(step({ attemptId: 'loop-1', prompt: { promptId: 'k1', kind: 'hostKey', host: '10.0.0.7', keyType: 'ED25519', fingerprint: 'SHA256:q3V8k1Lr9yGfT0w2' } }));
+      await flushPromises();
+      expect(document.querySelector('[data-testid="host-key-unknown"]')).toBeNull();
+      expect(dialog().querySelector('[data-testid="host-card"]')).not.toBeNull();
+      press('Escape');
+      await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('c1', { kind: 'dismissed' }));
+      expect(api.answerConnect).not.toHaveBeenCalled();
+      expect(api.cancelConnect).not.toHaveBeenCalled();
+    });
+
+    it('shows the waiting attempt\'s question once the card\'s Connect joins it, and Connect there answers it', async () => {
+      const prompt = { promptId: 'k1', kind: 'hostKey' as const, host: '10.0.0.7', keyType: 'ED25519', fingerprint: 'SHA256:q3V8k1Lr9yGfT0w2' };
+      // main binds the dialog to the joined attempt and pushes it before the start answers
+      vi.mocked(api.startConnect).mockImplementationOnce(async () => {
+        api.connectStep(step({ attemptId: 'loop-1', prompt }));
+        return opened({ ok: true as const, attemptId: 'loop-1', hostId: 'h1' });
+      });
+      await openConnect({ hosts: [{ ...PROD, signInNeeded: true }], hostId: 'h1', card: 'show', anchor: ANCHOR });
+      await vi.waitFor(() => expect(dialog().querySelector('[data-testid="host-card"]')).not.toBeNull());
+      api.connectStep(step({ attemptId: 'loop-1', prompt }));
+      await flushPromises();
+      expect(document.querySelector('[data-testid="host-key-unknown"]')).toBeNull();
+      [...dialog().querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Connect')!.click();
+      await vi.waitFor(() => expect(api.startConnect).toHaveBeenCalledWith({ hostId: 'h1' }));
+      const alert = await vi.waitFor(() => {
+        const shown = document.querySelector<HTMLElement>('[role="alertdialog"][data-testid="host-key-unknown"]');
+        expect(shown).not.toBeNull();
+        return shown!;
+      });
+      [...alert.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Connect')!.click();
+      await flushPromises();
+      expect(api.answerConnect).toHaveBeenCalledWith('loop-1', 'k1', 'connect', false);
     });
 
     it('hangs above the chip when there is more room there', async () => {
@@ -1251,6 +1309,8 @@ describe('connect texts', () => {
     expect(failureText({ code: 'unknown', params: { reason: 'installLocked' } }, 'prod', t)).toBe('The connection to prod failed. Show log has the details.');
     expect(failureText({ code: 'permissionDenied', params: { hop: 'jump@bastion' } }, 'prod', t)).toBe('jump@bastion, a jump host on the way to prod, refused the sign-in. Check your key, agent or password.');
     expect(failureText({ code: 'permissionDenied', params: {} }, 'prod', t)).toBe('prod refused the sign-in. Check your key, agent or password.');
+    expect(failureText({ code: 'downloadAndUploadFailed', params: { reason: 'unpublished' } }, 'prod', t)).toBe('This build of Damocles was never published, so prod cannot download its server, and this computer holds no copy of it. Build the app again on this computer with npm run dist:local, then install it.');
+    expect(failureText({ code: 'downloadAndUploadFailed', params: {} }, 'prod', t)).toBe('The server package could neither be downloaded on prod nor uploaded from this computer.');
     expect(refusalText({ refused: 'command', reason: 'command' }, t)).toBe('Remove the command after the host. Damocles starts its own server there.');
     expect(refusalText({ refused: '-p', reason: 'value' }, t)).toBe('The value given to -p is not allowed.');
     expect(refusalText({ refused: 'port', reason: 'destination' }, t)).toBe('The port must be a number from 1 to 65535.');

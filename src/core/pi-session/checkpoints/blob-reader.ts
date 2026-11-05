@@ -1,6 +1,6 @@
 // Checkpoint blobs as the chat review and the rewind diff read them: one `git show`, or one `git cat-file --batch` per repo.
 import { createHash } from 'node:crypto';
-import { EDITOR_MAX_DOCUMENT_BYTES } from '../../../shared/types/messages';
+import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { gitExecutable } from '../../git-executable';
 import { log } from '../../logger';
 import { processLauncher, type LaunchedProcess, type Launcher } from '../../process-launcher';
@@ -11,7 +11,7 @@ import { isHexCommit } from './types';
 
 /**
  * A file in a checkpoint commit: its text, absent from the commit, binary (a NUL among its first 8000 bytes; digest: sha1 of
- * its bytes), past EDITOR_MAX_DOCUMENT_BYTES, which neither the review nor the rewind diff shows, or unavailable (the commit
+ * its bytes), past EDITOR_CONFIRM_DOCUMENT_BYTES, which neither the review nor the rewind diff shows, or unavailable (the commit
  * is gone or git failed).
  */
 export type CheckpointFileRead = { kind: 'text'; text: string } | { kind: 'absent' } | { kind: 'binary'; digest: string } | { kind: 'tooLarge' } | { kind: 'unavailable' };
@@ -19,7 +19,7 @@ export type CheckpointFileRead = { kind: 'text'; text: string } | { kind: 'absen
 // git's binary test (`buffer_is_binary`): a NUL among the first 8000 bytes.
 const BINARY_PROBE_LENGTH = 8000;
 
-/** Bytes within EDITOR_MAX_DOCUMENT_BYTES as the review compares them, from a checkpoint or from disk. */
+/** Bytes within EDITOR_CONFIRM_DOCUMENT_BYTES as the review compares them, from a checkpoint or from disk. */
 export function classifyFileBytes(bytes: Buffer): { kind: 'text'; text: string } | { kind: 'binary'; digest: string } {
   if (bytes.subarray(0, BINARY_PROBE_LENGTH).includes(0)) return { kind: 'binary', digest: createHash('sha1').update(bytes).digest('hex') };
   return { kind: 'text', text: bytes.toString('utf8') };
@@ -37,7 +37,7 @@ const UNAVAILABLE: CheckpointFileRead = { kind: 'unavailable' };
 export async function checkpointCommitFile(repoDir: string, commit: string, relativePath: string): Promise<CheckpointFileRead> {
   if (!isHexCommit(commit)) return UNAVAILABLE;
   try {
-    const { bytes } = await exec(gitExecutable, [...PORTABLE_CONFIG, `--git-dir=${getGitDir(repoDir)}`, 'show', `${commit}:${relativePath}`], undefined, undefined, undefined, undefined, undefined, EDITOR_MAX_DOCUMENT_BYTES);
+    const { bytes } = await exec(gitExecutable, [...PORTABLE_CONFIG, `--git-dir=${getGitDir(repoDir)}`, 'show', `${commit}:${relativePath}`], undefined, undefined, undefined, undefined, undefined, EDITOR_CONFIRM_DOCUMENT_BYTES);
     return classifyFileBytes(bytes);
   } catch (err) {
     if (err instanceof ExecOutputTooLargeError) return { kind: 'tooLarge' };
@@ -124,7 +124,7 @@ export function openBlobReader(repoDir: string, launcher?: Launcher): BlobReader
         }
         const size = Number(match[2]);
         // content past the bound is read through and dropped, so the next answer still lines up
-        current.body = { type: match[1]!, size, remaining: size + 1, kept: size <= EDITOR_MAX_DOCUMENT_BYTES ? [] : undefined };
+        current.body = { type: match[1]!, size, remaining: size + 1, kept: size <= EDITOR_CONFIRM_DOCUMENT_BYTES ? [] : undefined };
         continue;
       }
       const take = Math.min(body.remaining, chunk.length - offset);

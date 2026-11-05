@@ -27,6 +27,7 @@ export function failureText(failure: ConnectFailure, name: string, t: Translate)
 function failureKey(failure: ConnectFailure): string {
   const reason = failure.params.reason;
   if (failure.code === 'noexec' && reason === 'notWritable') return 'noexecNotWritable';
+  if (failure.code === 'downloadAndUploadFailed' && reason === 'unpublished') return 'downloadAndUploadFailed_unpublished';
   if (failure.code === 'unknown' && (reason === 'sshMissing' || reason === 'noPackage' || reason === 'wslExited')) return `unknown_${reason}`;
   if (failure.code === 'permissionDenied' && typeof failure.params.hop === 'string') return 'permissionDenied_hop';
   return failure.code;

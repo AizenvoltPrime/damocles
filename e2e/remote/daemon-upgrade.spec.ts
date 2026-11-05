@@ -8,7 +8,7 @@ import { listChats } from '../desktop/support/shell-ui';
 import { awaitTurnEnd } from '../desktop/support/ui';
 import { shutdownHostDaemon } from './support/daemon-teardown';
 import { daemonVersions, installOlderServer, versionFolder } from './support/older-server';
-import { APP_VERSION } from './support/release-mirror';
+import { LINUX_TARGET, serverVersionOf } from './support/release-mirror';
 import { addHost, control, expect, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
 import { allowSleep, chatShowing, closeRemoteDialog, exited, requestQuit, sleeping, SLEEP, targetSessions } from './support/remote-runs';
 import { newRemoteChat, startTargetStub } from './support/target-agent';
@@ -79,7 +79,7 @@ test('this tree\'s app attaches to the reference server package\'s busy daemon, 
     const hostId = await hostIdOf(app);
     await remoteProjectKey(app, { authorityKey: `ssh+${hostId}` }, APP);
     expect(await daemonVersions(fixture)).toEqual([reference]);
-    expect(await fixture.sh(`test -x '${versionFolder(APP_VERSION)}/bin/damocles-server' && test -d '${versionFolder(reference)}' && echo both`, 'dev')).toContain('both');
+    expect(await fixture.sh(`test -x '${versionFolder(serverVersionOf(LINUX_TARGET))}/bin/damocles-server' && test -d '${versionFolder(reference)}' && echo both`, 'dev')).toContain('both');
     await chatShowing(app, 'Reference running.');
 
     // the frozen listRuns: the running chat, with the provider its broker used
@@ -94,9 +94,9 @@ test('this tree\'s app attaches to the reference server package\'s busy daemon, 
     expect(await targetSessions(fixture)).toContain(TURN_STOPPED);
     expect(await sleeping(fixture)).toBe(false);
 
-    // the next connection starts this app's own version, and the reference's chats open on it from the Chats list
+    // the next connection starts this build's server, and the reference's chats open on it from the Chats list
     await openRemoteFolder(app, hostId, APP);
-    expect(await daemonVersions(fixture)).toEqual([APP_VERSION]);
+    expect(await daemonVersions(fixture)).toEqual([serverVersionOf(LINUX_TARGET)]);
     let chatId = '';
     await expect.poll(async () => (chatId = (await listChats(app, key)).chats.find((chat) => chat.title === 'Finish on the reference')?.id ?? ''), { timeout: 60_000 }).not.toBe('');
     expect(await (await shellPage(app)).evaluate((id) => window.damoclesShell!.selectChat(id), chatId)).toEqual({ ok: true });
@@ -134,8 +134,8 @@ test('with a run on the reference daemon, this tree\'s app streams it, and once 
     release();
     // the reference's last run ending can switch the host at once, which replaces the page; any chat page may show it
     await chatShowing(app, 'Reference part one. Reference part two.');
-    // shutdownWhenIdle: the reference exits after its last run, and the reconnect starts this app's version
-    await expect.poll(() => daemonVersions(fixture), { timeout: 120_000 }).toEqual([APP_VERSION]);
+    // shutdownWhenIdle: the reference exits after its last run, and the reconnect starts this build
+    await expect.poll(() => daemonVersions(fixture), { timeout: 120_000 }).toEqual([serverVersionOf(LINUX_TARGET)]);
     await remoteProjectKey(app, { authorityKey: `ssh+${hostId}` }, APP);
     const after = await chatShowing(app, 'Reference part one. Reference part two.');
     await awaitTurnEnd(after);
