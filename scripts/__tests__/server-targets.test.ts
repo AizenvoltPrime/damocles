@@ -18,7 +18,7 @@ const ROOT = join(__dirname, '..', '..');
 const targets = SERVER_TARGETS as Record<string, ServerSpec>;
 const releases = NODE_RELEASES as Record<string, { modules: string; napi: string; alpineImage: string; archives: Record<string, { url: string; sha256: string }> }>;
 const workflow = parse(readFileSync(join(ROOT, '.github', 'workflows', 'release.yml'), 'utf8')) as { jobs: Record<string, Job> };
-const PINNED: Versions = { node: '24.22.0', modules: '150', napi: '10', electron: '45.0.0' };
+const PINNED: Versions = { node: '24.22.1', modules: '150', napi: '10', electron: '45.2.1' };
 
 describe('the server Node is derived from Electron', () => {
   it('reads the versions of the executable it runs as Node', () => {
@@ -49,8 +49,8 @@ describe('the server Node is derived from Electron', () => {
   });
 
   it('fails when a pinned release lacks a target archive', () => {
-    const { 'win32-arm64': _dropped, ...archives } = releases['24.22.0']!.archives;
-    expect(nodeReleaseProblem(PINNED, { '24.22.0': { ...releases['24.22.0'], archives } })).toMatch(/no archive for win32-arm64/);
+    const { 'win32-arm64': _dropped, ...archives } = releases['24.22.1']!.archives;
+    expect(nodeReleaseProblem(PINNED, { '24.22.1': { ...releases['24.22.1'], archives } })).toMatch(/no archive for win32-arm64/);
     expect(() => nodeArchive('win32-x64', '24.23.0')).toThrow(/No Node 24\.23\.0 archive is pinned/);
   });
 
@@ -98,8 +98,8 @@ describe('SERVER_TARGETS mirrors the release workflow', () => {
   it('pins every Alpine image by digest', () => {
     for (const [version, release] of Object.entries(releases)) expect(release.alpineImage).toMatch(new RegExp(`^node:${version.replaceAll('.', '\\.')}-alpine[\\d.]*@sha256:[0-9a-f]{64}$`));
     expect(ALPINE_TARGET_IMAGE).toMatch(/^alpine:[\d.]+@sha256:[0-9a-f]{64}$/);
-    const { alpineImage: _dropped, ...unpinned } = releases['24.22.0']!;
-    expect(nodeReleaseProblem(PINNED, { '24.22.0': unpinned })).toMatch(/pins no alpineImage/);
+    const { alpineImage: _dropped, ...unpinned } = releases['24.22.1']!;
+    expect(nodeReleaseProblem(PINNED, { '24.22.1': unpinned })).toMatch(/pins no alpineImage/);
   });
 
   it('self-tests every leg: on its runner, or for Alpine in the clean image with only the documented prerequisites', () => {

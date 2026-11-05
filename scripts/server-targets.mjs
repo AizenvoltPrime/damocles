@@ -69,19 +69,19 @@ export const ALPINE_PREREQUISITES = ['libstdc++', 'libgcc'];
  * node:<version>-alpine image, by its multi-arch index digest, the Alpine legs build node-pty in.
  */
 export const NODE_RELEASES = {
-  '24.22.0': {
+  '24.22.1': {
     modules: '150',
     napi: '10',
-    alpineImage: 'node:24.22.0-alpine3.24@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f',
+    alpineImage: 'node:24.22.1-alpine3.24@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53',
     archives: {
-      'linux-x64': { url: `${NODE_DIST}/v24.22.0/node-v24.22.0-linux-x64.tar.gz`, sha256: '28ea0a438de9a13bd7891fd758eee6c7819ee8af5442dfd8d45bd65e56d4228c' },
-      'linux-arm64': { url: `${NODE_DIST}/v24.22.0/node-v24.22.0-linux-arm64.tar.gz`, sha256: 'b7e7991d5407815adfa74a2a9cd4db683552c8ce32ff4a295c22e972849c3f5d' },
-      'alpine-x64': { url: `${NODE_UNOFFICIAL}/v24.22.0/node-v24.22.0-linux-x64-musl.tar.gz`, sha256: '72cd253fbe0c2539d52208ed098d47b78ff2c32ba76295d8e6b5b0ce067dcba5' },
-      'alpine-arm64': { url: `${NODE_UNOFFICIAL}/v24.22.0/node-v24.22.0-linux-arm64-musl.tar.gz`, sha256: '6812a53e5b37fbc32476d6c3511038d2bc3bbd1b3bb348d6c04dd2c70a1c8f4a' },
-      'darwin-x64': { url: `${NODE_DIST}/v24.22.0/node-v24.22.0-darwin-x64.tar.gz`, sha256: '495e3f273c645f3c4677d438304cdfc701729ea5dec5728f5c8e76a2dece4b91' },
-      'darwin-arm64': { url: `${NODE_DIST}/v24.22.0/node-v24.22.0-darwin-arm64.tar.gz`, sha256: '6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5' },
-      'win32-x64': { url: `${NODE_DIST}/v24.22.0/node-v24.22.0-win-x64.zip`, sha256: 'f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3' },
-      'win32-arm64': { url: `${NODE_DIST}/v24.22.0/node-v24.22.0-win-arm64.zip`, sha256: '3a5c209a5bc59e65b3bc0fa13ed5e166a26bd3d55332847f498b76b037408d61' },
+      'linux-x64': { url: `${NODE_DIST}/v24.22.1/node-v24.22.1-linux-x64.tar.gz`, sha256: 'eb6728e77c576a35162c122c45ccadf224d89ff00abc8dae46cc2897c6002d7c' },
+      'linux-arm64': { url: `${NODE_DIST}/v24.22.1/node-v24.22.1-linux-arm64.tar.gz`, sha256: '33c37be234ba8bee041961047b19160f4d7d0f164e8e246f78bdd10feff148b3' },
+      'alpine-x64': { url: `${NODE_UNOFFICIAL}/v24.22.1/node-v24.22.1-linux-x64-musl.tar.gz`, sha256: '0a9eddce2d2e8f3addbe94fa46d751325b2d74f7fd1ce63296164d36b6dfc6e5' },
+      'alpine-arm64': { url: `${NODE_UNOFFICIAL}/v24.22.1/node-v24.22.1-linux-arm64-musl.tar.gz`, sha256: '8254125825a3e5e834bd8a260dab4c8303f720464a741506ec27989b9ba1769b' },
+      'darwin-x64': { url: `${NODE_DIST}/v24.22.1/node-v24.22.1-darwin-x64.tar.gz`, sha256: 'd132557e7ee2b85af08b0c8c34338e65c6430f2238d01f727728ef42dc83b035' },
+      'darwin-arm64': { url: `${NODE_DIST}/v24.22.1/node-v24.22.1-darwin-arm64.tar.gz`, sha256: '89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7' },
+      'win32-x64': { url: `${NODE_DIST}/v24.22.1/node-v24.22.1-win-x64.zip`, sha256: 'd2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5' },
+      'win32-arm64': { url: `${NODE_DIST}/v24.22.1/node-v24.22.1-win-arm64.zip`, sha256: 'a0c807319fede24c4a0d8f84564c82a619bd313b16b10c007c383c2609e99171' },
     },
   },
 };
