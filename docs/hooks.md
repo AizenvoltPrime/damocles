@@ -52,6 +52,10 @@ notice**.
 Files are **JSONC**. Both `//` line and `/* */` block comments are allowed. Scripts live by convention next to
 the config (e.g. `~/.damocles/hooks/` or `<workspace>/.damocles/hooks/`), but any path works.
 
+These two files are the only hook sources. Damocles does not read the `hooks` key of Claude Code's
+`.claude/settings.json`; a Claude Code hook needs an entry here under Damocles' event names (`tool_call`, not
+`PreToolUse`) and the contract below.
+
 ---
 
 ## Config schema
@@ -75,7 +79,11 @@ the config (e.g. `~/.damocles/hooks/` or `<workspace>/.damocles/hooks/`), but an
 
 - **`command`**: a shell string **or** an argv array (`["uv", "run", "…"]`, no shell).
 - **`match`**: optional regex tested against the tool name (`Bash`, `Edit`, `Read`, …). Only applies to
-  `tool_call` / `tool_result`. Omit to match every tool.
+  `tool_call` / `tool_result`. Omit to match every tool. For `list_mcp_resources`,
+  `list_mcp_resource_templates` and `read_mcp_resource` calls that name a server, `match` is also tested
+  against `mcp__<server>__<tool>` (the server name sanitized as MCP tool names are), so
+  `"match": "mcp__secret__.*"` also runs for `read_mcp_resource({ "server": "secret" })`. The payload's
+  `tool_name` stays `read_mcp_resource`.
 - **`timeoutMs`**: optional per-hook timeout; a hook that overruns is killed and treated as fail-soft.
 - **`description`**: optional human label.
 
@@ -176,6 +184,8 @@ signal: any non-zero exit is fail-soft (logged, no effect) and can never silentl
 ---
 
 ## Event keys
+
+Keys are pi event names plus the Damocles-defined `subagent_end` and `permission_required`.
 
 ### Tier 1: block / mutate
 

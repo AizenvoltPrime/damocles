@@ -256,6 +256,8 @@ describe('formatReviewRoundReadyNotification', () => {
     expect(msg).toContain('  - A: no scratchpad section authored\n    user steer: "use v2"\n  - B: no scratchpad section authored\n\n');
     expect(msg.match(/user steer:/g)).toHaveLength(1);
     expect(msg).toContain("User steers are the user's authoritative changes");
+    // The lead must catch a specialist that treated a steer as a replacement and dropped the rest of its task.
+    expect(msg).toContain('review against the original task with each steer applied');
     expect(msg.indexOf("User steers are")).toBeLessThan(msg.indexOf('After reading'));
   });
 

@@ -237,8 +237,9 @@ export function formatReviewRoundReadyNotification(
     return `  - ${agent.name}: ${fragments.join(', ')}${tail}`;
   });
   const steerParagraph = current.length > 0
-    ? `\n\nUser steers are the user's authoritative changes to the steered specialist's task. Review against the ` +
-      `steered task and do not request a revision that undoes a steer.` +
+    ? `\n\nUser steers are the user's authoritative changes to the steered specialist's task. A steer amends the ` +
+      `task and does not replace it: review against the original task with each steer applied, request a revision ` +
+      `for any part of the task the specialist dropped, and do not request a revision that undoes a steer.` +
       (current.some(hasImages)
         ? ` Steer images reached only the steered specialist, not you; if its section does not say what they ` +
           `asked for, ask it.`

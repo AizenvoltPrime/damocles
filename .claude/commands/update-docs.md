@@ -18,17 +18,22 @@ Each file has a different reader, so the same change can belong in one and not t
 
 | File | Reader | Include when |
 | --- | --- | --- |
-| `README.md` | Someone deciding whether to install, or looking for how to use a feature | A user-visible capability, setting, command, keybind or requirement appeared, changed or went away |
+| `README.md` | Someone deciding whether to install, and looking for the doc that covers a feature | A feature, requirement, install step, provider sign-in or core dev command appeared, changed or went away, or a user doc was added, renamed or removed |
 | `CHANGELOG.md` | Someone upgrading, asking "what changed and does it affect me" | Any user-observable difference, including a fix and a dependency move |
 | `CLAUDE.md` | Every future agent session, on every turn | A session that lacks this line would make a wrong change |
-| `docs/*.md` | A session sent there by a CLAUDE.md pointer before changing a subsystem, and the owner | A behavior, invariant, failure mode, decision or measurement the doc states changed |
+| `docs/*.md` | A user doc's reader looking for how a feature works; for `invariants.md`, `perf.md` and `worktree-isolation.md`, a session sent there by a CLAUDE.md pointer before changing a subsystem | A behavior, setting, command, keybind, invariant, failure mode, decision or measurement the doc states changed |
 
 An internal refactor with identical behavior earns nothing in any of them.
 
 ## README.md
 
+README is an overview that points into `docs/`. Detail goes to the user doc that owns the feature, not to README.
+
 - Edit the bullet or section that already covers the area. A second bullet about the same feature is the failure mode here.
-- Feature bullets use `- **Name**: description`. Configuration, Authentication and Requirements have their own `##` sections; put settings and keys there, not in the feature list.
+- A feature bullet is one line, `- **Name**: what it does. See [Doc](docs/<doc>.md).`, linking the doc that owns it.
+- Settings go in `docs/configuration.md`, provider sign-in detail in `docs/authentication.md`. README's Authentication table and Requirements list change only when a provider or requirement itself does.
+- A new, renamed or removed user doc gets its row in README's Documentation table in the same pass.
+- Keep `## Code signing policy` and `### Desktop credential storage` in README under those exact names: the release workflow and the app link to them.
 - Describe the end state, not the change. README has no history, so never write "now", "previously" or "as of".
 - When a feature was removed or renamed, delete or rename its bullet in the same pass.
 
@@ -63,7 +68,7 @@ Before adding a line, apply the test: **would a session that never reads this li
 
 ## docs/
 
-Each fact lives in exactly one doc; a second copy drifts. `docs/invariants.md` holds the rationale and failure modes behind CLAUDE.md's rules, one `##` section per subsystem. The other files each own one topic.
+Each fact lives in exactly one doc; a second copy drifts. `docs/invariants.md` holds the rationale and failure modes behind CLAUDE.md's rules, one `##` section per subsystem. The other files each own one topic, and README's Documentation table names which.
 
 - Edit the doc or section that owns the area. The docs describe the current code: state what it does now, never how it came to be. Git holds the history.
 - When the change makes an assertion false, correct it in place, and everywhere else it is asserted (CLAUDE.md, README.md, source comments) in the same pass.

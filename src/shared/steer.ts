@@ -2,11 +2,10 @@
  * steer.ts — Shared contract for steering messages injected into a running subagent.
  *
  * A steering message (from the user's `/steer` command or the model's `SteerSubagent` tool) is injected
- * into the subagent's conversation as a user message. To make it an unambiguous, absolute-priority
- * mid-task override — rather than a suggestion the subagent can weigh against its original task — every
- * injected steer is tagged with `STEER_INSTRUCTION_PREFIX`, and each subagent's system prompt
- * (`buildAgentPrompt`) declares that a message carrying this marker overrides all prior instructions.
- * The prefix is stripped for UI display, since the overlay already labels the message as steering.
+ * into the subagent's conversation as a user message, tagged with `STEER_INSTRUCTION_PREFIX`. The
+ * steering protocol in each agent's system prompt (`STEERING_PROTOCOL_BLOCK`) makes a marked message win
+ * over any instruction it conflicts with while the rest of the task stands. Stored sessions carry the
+ * marker, so it never changes. It is stripped for UI display, since the overlay labels the message as steering.
  */
 
 /** Marker that opens every injected steering message; the subagent system prompt grants it top priority. */
